@@ -80,11 +80,19 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn borrow_fresh_composite_call_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("fresh_composite_borrow", borrow_fresh_composite_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn borrow_letbound_composite_call_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -93,6 +101,10 @@ fn borrow_letbound_composite_call_leak_slope_below_tolerance() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn borrow_fresh_composite_call_does_not_double_free() {
     assert_no_double_free(
@@ -101,6 +113,10 @@ fn borrow_fresh_composite_call_does_not_double_free() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn borrow_letbound_composite_call_does_not_double_free() {
     assert_no_double_free(

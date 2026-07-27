@@ -32,7 +32,7 @@
 mod support;
 
 use support::leak_slope::{
-    compile_to_native, leaks_supported, measure_leaks, run_under_malloc_scribble,
+    compile_to_native, measure_leaks, require_leaks_tool, run_under_malloc_scribble,
 };
 use support::{describe_output, require_codegen};
 
@@ -174,21 +174,21 @@ fn main() {
 /// The #2395 regression pin: an owned local live across a suspend, destroyed
 /// while parked, leaks zero nodes. Skips gracefully when `leaks(1)` is
 /// unavailable (non-macOS or `leaks` off PATH).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn parked_destroy_frees_owned_local_zero_leaks() {
     let shape = "parked_vec_teardown";
-    if !leaks_supported(shape) {
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
     let dir = tempfile::Builder::new()
         .prefix("parked-destroy-")
         .tempdir()
         .expect("tempdir");
     let bin = compile_to_native(PARKED_VEC_TEARDOWN, dir.path(), shape);
-    let Some(leaks) = measure_leaks(&bin) else {
-        return;
-    };
+    let leaks = measure_leaks(&bin);
     assert_eq!(
         leaks,
         0,
@@ -202,6 +202,10 @@ fn parked_destroy_frees_owned_local_zero_leaks() {
 /// The moved-out wall: a value moved across the suspend must not be double-freed
 /// on the abandon edge. Runs under the poisoned-allocator triple on any unix; a
 /// double-free of the shared buffer aborts. Also asserts zero leaks on macOS.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn moved_out_across_suspend_no_double_free() {
     let shape = "moved_out_across_suspend";
@@ -220,21 +224,22 @@ fn moved_out_across_suspend_no_double_free() {
         describe_output(&output)
     );
 
-    if leaks_supported(shape) {
-        if let Some(leaks) = measure_leaks(&bin) {
-            assert_eq!(
-                leaks, 0,
-                "moved-out-across-suspend leaked {leaks} node(s): the surviving \
-                 owner (ys) was not freed on the abandon edge.",
-            );
-        }
-    }
+    let leaks = measure_leaks(&bin);
+    assert_eq!(
+        leaks, 0,
+        "moved-out-across-suspend leaked {leaks} node(s): the surviving \
+         owner (ys) was not freed on the abandon edge.",
+    );
 }
 
 /// A bound `Vec.remove(i)` move-out result live across the park is dropped
 /// exactly once on the abandon edge: no double-free of the moved-out string
 /// under the poisoned allocator, zero leaks (binding + remaining elements +
 /// buffer all freed).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn removed_element_across_suspend_dropped_exactly_once() {
     let shape = "removed_element_across_suspend";
@@ -254,21 +259,22 @@ fn removed_element_across_suspend_dropped_exactly_once() {
         describe_output(&output)
     );
 
-    if leaks_supported(shape) {
-        if let Some(leaks) = measure_leaks(&bin) {
-            assert_eq!(
-                leaks, 0,
-                "removed-element-across-suspend leaked {leaks} node(s): the bound \
-                 move-out result (or the vec's remaining elements) was not freed \
-                 on the coroutine abandon edge.",
-            );
-        }
-    }
+    let leaks = measure_leaks(&bin);
+    assert_eq!(
+        leaks, 0,
+        "removed-element-across-suspend leaked {leaks} node(s): the bound \
+         move-out result (or the vec's remaining elements) was not freed \
+         on the coroutine abandon edge.",
+    );
 }
 
 /// A bound `HashMap.remove(k)` `Some` payload live across the park is dropped
 /// exactly once on the abandon edge; the map's tombstoned slot is never
 /// re-dropped and its surviving pair frees exactly once.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn hashmap_taken_value_across_suspend_dropped_exactly_once() {
     let shape = "hashmap_taken_value_across_suspend";
@@ -288,14 +294,11 @@ fn hashmap_taken_value_across_suspend_dropped_exactly_once() {
         describe_output(&output)
     );
 
-    if leaks_supported(shape) {
-        if let Some(leaks) = measure_leaks(&bin) {
-            assert_eq!(
-                leaks, 0,
-                "hashmap-taken-value-across-suspend leaked {leaks} node(s): the \
-                 bound Some payload, the dropped key, or the map's surviving pair \
-                 was not freed exactly once across remove + abandon.",
-            );
-        }
-    }
+    let leaks = measure_leaks(&bin);
+    assert_eq!(
+        leaks, 0,
+        "hashmap-taken-value-across-suspend leaked {leaks} node(s): the \
+         bound Some payload, the dropped key, or the map's surviving pair \
+         was not freed exactly once across remove + abandon.",
+    );
 }

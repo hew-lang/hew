@@ -143,16 +143,28 @@ fn escaped_projection_source() -> String {
     .to_string()
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn direct_fresh_vec_projection_has_no_per_frame_leak() {
     assert_frame_slope_below_tolerance("fresh_vec_index_projection", direct_projection_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bound_fresh_vec_index_control_has_no_per_frame_leak() {
     assert_frame_slope_below_tolerance("bound_vec_index_projection", bound_projection_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn early_return_fresh_vec_projection_has_no_per_frame_leak() {
     assert_frame_slope_below_tolerance(
@@ -161,11 +173,19 @@ fn early_return_fresh_vec_projection_has_no_per_frame_leak() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn break_fresh_vec_projection_has_no_per_frame_leak() {
     assert_frame_slope_below_tolerance("break_fresh_vec_index_projection", break_projection_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn direct_fresh_vec_projection_returns_exact_result_under_malloc_scribble() {
     require_codegen();
@@ -182,6 +202,10 @@ fn direct_fresh_vec_projection_returns_exact_result_under_malloc_scribble() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn escaped_projection_field_remains_live_under_malloc_scribble() {
     require_codegen();

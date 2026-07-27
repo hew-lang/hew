@@ -20,6 +20,67 @@
 //! slope logic cannot drift between oracles. The poisoned-allocator scribble
 //! primitive ([`run_under_malloc_scribble`]) is shared for the double-free /
 //! use-after-free correctness pins that accompany the slope assertions.
+//!
+//! ## No configuration may report success without measuring
+//!
+//! This harness used to early-return green three separate ways: on a non-macOS
+//! host, on a macOS host with no `leaks(1)` on `PATH`, and whenever `leaks`
+//! declined to attach or timed out. Every one of them logged `skip:` to stderr
+//! and returned, so the caller's `#[test]` reported PASS having asserted
+//! nothing — the same absent-capability-reads-as-success shape deleted from
+//! `try_require_wasi_runner` (see [`super::require_wasi_runner`]).
+//!
+//! The property this module now holds is: **a leak oracle either measures
+//! something or it does not report success.** Concretely:
+//!
+//!   * Host platform is a COMPILE-TIME fact, so it is gated at compile time.
+//!     Every test that reaches this harness carries
+//!     `#[cfg_attr(not(target_os = "macos"), ignore = "…")]`, which nextest and
+//!     libtest both record as a SKIP with its reason in the run summary — a
+//!     visible, counted outcome rather than a silent pass.
+//!     [`require_leaks_tool`] fails closed if one is ever missed.
+//!   * A macOS host with no `leaks(1)`, or a `leaks(1)` that declines to attach
+//!     / times out / emits no summary, is a PROVISIONING FAILURE and panics.
+//!   * A probe that compiled and ran but did not perform the work the shape
+//!     describes cannot count either: [`assert_frame_slope_below_tolerance_with`]
+//!     asserts a WORK WITNESS — a plain run of the probe, which must terminate
+//!     under its own control (never by a signal, never past the timeout) and
+//!     whose stdout line count must not shrink from LOW to HIGH — before it
+//!     trusts the leak numbers. Shapes whose output volume scales with the frame
+//!     count take the stronger
+//!     [`assert_frame_slope_below_tolerance_exact_lines`], which pins the exact
+//!     printed line count at both frame counts. Without a witness, a probe that
+//!     deadlocks at HIGH reports a low leak count and reads as a flat slope —
+//!     exactly how the `for_await_stream_bytes` shape passed while draining zero
+//!     frames at its HIGH probe.
+//!
+//! ## What this costs, and what covers the surface elsewhere
+//!
+//! These oracles are macOS-only and always were: `leaks(1)` and the
+//! `MallocScribble` / `MallocPreScribble` / `MallocGuardEdges` triple are Darwin
+//! facilities, and on another platform the env vars are ignored, so a
+//! use-after-free probe reads intact memory and "passes" without detecting
+//! anything. Recording that as a counted skip does not remove Linux coverage —
+//! the old early return fired before compiling anything, so Linux was already
+//! measuring nothing. It makes the gap visible in the run summary instead of
+//! invisible in a green tick.
+//!
+//! What genuinely covers generated-code leaks on Linux:
+//!
+//!   * `.github/workflows/nightly-sanitizers.yml` — the `compiled-fixture-asan`
+//!     job (ubuntu, `make asan-fixtures` → `scripts/asan-fixture-check.sh`)
+//!     builds an `ASan` `hew` and runs compiled `.hew` fixtures under
+//!     `LeakSanitizer`, so leaks in GENERATED code are caught, plus
+//!     `rust-runtime-asan` for `hew-runtime` itself. Both are scheduled daily,
+//!     not per-PR, and cover a fixed handful of fixtures rather than the shapes
+//!     enumerated here.
+//!   * The `hew-mir` / `hew-codegen-rs` unit suites, which run on every host and
+//!     pin drop EMISSION structurally rather than observing an allocator — see
+//!     `hew-mir/tests/lowering_expr/funcupdate_field_override_release.rs` for the
+//!     pattern. A shape whose ownership invariant can be stated as "which drop
+//!     instruction is emitted where" belongs there, because that assertion is
+//!     platform-independent and runs per-PR. That is the durable answer to a
+//!     leak bar that would otherwise live on one developer's laptop.
 
 #![allow(
     dead_code,
@@ -36,9 +97,11 @@ use super::{describe_output, hew_binary, repo_root, require_codegen, try_run_bou
 ///
 /// Restricted CI processes are not debuggable, and `leaks --atExit` can hang
 /// indefinitely instead of reporting that restriction. Keep every inspection
-/// bounded; timing out skips only the node-count oracle, while the separate
-/// poisoned-allocator crash check continues to run.
-const LEAKS_TIMEOUT: Duration = Duration::from_secs(5);
+/// bounded — but generously: a probe that parks its actors for a few seconds
+/// before exiting is normal (the recv shapes sleep 3s in `main`), and exceeding
+/// this deadline is now a FAILURE, not a skip. Sized for the slowest probe in
+/// the suite with an order of magnitude of headroom for a loaded CI host.
+const LEAKS_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Low iteration count: exercises the per-iteration path enough times to leave
 /// the constant-overhead floor while staying cheap to compile and scan.
@@ -86,21 +149,86 @@ pub fn compile_to_native(source: &str, dir: &Path, name: &str) -> PathBuf {
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some(leak_node_count)` when `leaks` produced a usable
-/// `Process <pid>: N leak(s) for B total leaked bytes.` summary.
+/// One observation of a probe binary: what it did, and what it leaked.
 ///
-/// Returns `None` (with a `skip:` notice on stderr) when `leaks(1)` declines to
-/// attach or does not emit the expected summary line — the caller treats that
-/// as a graceful skip rather than a failure.
-pub fn measure_leaks(bin: &Path) -> Option<usize> {
+/// `program_lines` is the WORK WITNESS — the number of stdout lines the probe
+/// itself printed on a plain (non-`leaks`) run that exited successfully. A probe
+/// that deadlocked, trapped, or bailed out early prints fewer lines than one
+/// that ran the loop under test to completion, and its leak count must not be
+/// trusted as a slope sample.
+#[derive(Debug, Clone, Copy)]
+pub struct LeakProbe {
+    /// Leak NODE count from the `Process <pid>: N leak(s) for B total leaked
+    /// bytes.` summary.
+    pub leak_nodes: usize,
+    /// Lines the probe itself printed on its witness run.
+    pub program_lines: usize,
+}
+
+/// Run `bin` plainly (no `leaks(1)`), require it to terminate under its own
+/// control, and return the number of stdout lines it printed.
+///
+/// This is the work witness every slope measurement is gated on. `leaks --atExit`
+/// does NOT propagate the inspected program's fate (measured: a probe returning
+/// 92 makes `leaks` exit 0, and a probe killed by a signal does too), so a probe
+/// that crashed or never ran its loop is invisible in the leak numbers alone.
+/// Running it once on its own is what makes that visible.
+///
+/// The universal assertions here are deliberately narrow, because probe exit
+/// codes are not uniform across the suite — several shapes return an accumulated
+/// checksum from `main() -> i64`, so a non-zero status is the RESULT, not a
+/// failure. What is never legitimate is a probe that hangs past
+/// [`LEAKS_TIMEOUT`] or dies to a signal. Shapes whose output volume scales with
+/// the frame count get the stronger witness via
+/// [`assert_frame_slope_below_tolerance_exact_lines`], which pins the printed
+/// line count at both frame counts and is what catches a probe that parked on
+/// backpressure and drained zero frames.
+pub fn run_probe_witness(bin: &Path, args: &[&str]) -> usize {
+    let mut command = Command::new(bin);
+    command.args(args);
+    let output = match try_run_bounded_command(
+        command,
+        format!("run probe {} for its work witness", bin.display()),
+        LEAKS_TIMEOUT,
+    ) {
+        Ok(output) => output,
+        Err(error) => panic!(
+            "probe {} did not finish within {LEAKS_TIMEOUT:?}: {error}. A probe that never \
+             completes has measured nothing; a leak oracle over it must not report success. \
+             Common cause: the shape saturates a bounded channel/pipe and parks forever on \
+             backpressure with no consumer to drain it.",
+            bin.display()
+        ),
+    };
+    assert!(
+        output.status.code().is_some(),
+        "probe {} was killed by a signal ({}), so it did not reach its own exit and its leak \
+         count is not a slope sample:\n{}",
+        bin.display(),
+        output.status,
+        describe_output(&output)
+    );
+    String::from_utf8_lossy(&output.stdout).lines().count()
+}
+
+/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
+/// the leak NODE count.
+///
+/// Panics when `leaks(1)` cannot produce a usable measurement — it declined to
+/// attach, exceeded [`LEAKS_TIMEOUT`], or emitted no
+/// `Process <pid>: N leak(s) for B total leaked bytes.` summary. Each of those
+/// used to return `None` and let the caller early-return green; an oracle that
+/// could not measure has established nothing, and reporting that as success is
+/// how a leak bar goes quietly hollow.
+pub fn measure_leaks(bin: &Path) -> usize {
     measure_leaks_with_args(bin, &[])
 }
 
 /// Run [`measure_leaks`] with command-line arguments for a runtime-configurable
 /// probe. This lets a slope test compile one binary and exercise it at multiple
 /// iteration counts without rebuilding the same program shape.
-pub fn measure_leaks_with_args(bin: &Path, args: &[&str]) -> Option<usize> {
+pub fn measure_leaks_with_args(bin: &Path, args: &[&str]) -> usize {
+    require_leaks_tool();
     let mut command = Command::new("leaks");
     command
         .args(["--atExit", "--"])
@@ -115,24 +243,22 @@ pub fn measure_leaks_with_args(bin: &Path, args: &[&str]) -> Option<usize> {
         LEAKS_TIMEOUT,
     ) {
         Ok(output) => output,
-        Err(error) => {
-            eprintln!(
-                "skip: leaks could not inspect {} within {LEAKS_TIMEOUT:?}: {error}",
-                bin.display()
-            );
-            return None;
-        }
+        Err(error) => panic!(
+            "leaks(1) could not inspect {} within {LEAKS_TIMEOUT:?}: {error}. A leak oracle \
+             that cannot measure must not report success — fix the host (a restricted, \
+             non-debuggable CI process cannot be inspected) or the probe (one that never \
+             exits will always exhaust the deadline).",
+            bin.display()
+        ),
     };
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
+    assert!(
+        output.status.success() || !output.stdout.is_empty(),
+        "leaks(1) declined to attach to {}: {}. A leak oracle that cannot measure must not \
+         report success — the inspected process is not debuggable on this host.",
+        bin.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
     let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
     for line in report.lines() {
         if !line.contains(" leaks for ") && !line.contains(" leak for ") {
             continue;
@@ -145,40 +271,62 @@ pub fn measure_leaks_with_args(bin: &Path, args: &[&str]) -> Option<usize> {
                 if let Some(n) = after_colon.split_whitespace().next() {
                     if let Ok(n) = n.parse::<usize>() {
                         eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
+                        return n;
                     }
                 }
             }
         }
     }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-             summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
+    panic!(
+        "leaks(1) emitted no `Process <pid>: N leak(s) for B total leaked bytes.` summary \
+         for {}: stderr=\n{}\nA leak oracle that cannot measure must not report success.",
+        bin.display(),
+        String::from_utf8_lossy(&output.stderr)
+    )
 }
 
-/// macOS + `leaks(1)` availability guard shared by every leak probe. Logs a
-/// `skip:` notice and returns `false` when the slope measurement cannot run on
-/// this host (non-macOS, or `leaks` missing from `PATH`).
-pub fn leaks_supported(shape_name: &str) -> bool {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return false;
+/// Fail closed unless `leaks(1)` can actually be invoked on this host.
+///
+/// There is deliberately no `bool`-returning variant. The predecessor
+/// (`leaks_supported`) returned `false` for BOTH "not macOS" and "`leaks` is
+/// missing", and every caller turned that into an early `return` — so the two
+/// were indistinguishable at the call site and both reported PASS.
+///
+/// The two conditions are not alike and are handled apart:
+///
+///   * NOT MACOS is a compile-time fact and belongs in a compile-time gate. A
+///     test that reaches this harness must carry
+///     `#[cfg_attr(not(target_os = "macos"), ignore = "…")]` so the runner
+///     RECORDS a skip. Reaching this function off macOS means that attribute
+///     is missing, which is a defect in the test — so it panics and names the
+///     attribute rather than quietly restoring the old behaviour.
+///   * A MISSING `leaks(1)` ON MACOS is a provisioning failure of the host,
+///     exactly as a missing `wasmtime` is (`#2826`), and it panics.
+pub fn require_leaks_tool() {
+    #[cfg(not(target_os = "macos"))]
+    panic!(
+        "leak oracle reached the leaks(1) harness on a non-macOS host. Platform gating for \
+         these oracles is a COMPILE-TIME concern: annotate the test with \
+         `#[cfg_attr(not(target_os = \"macos\"), ignore = \"leaks(1) is macOS-only\")]` so \
+         the runner records a SKIP. Silently returning success here is what let this whole \
+         file report green on Linux and Windows while asserting nothing."
+    );
+
+    #[cfg(target_os = "macos")]
+    {
+        let avail = Command::new("which")
+            .arg("leaks")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(
+            avail,
+            "`leaks` is not on PATH on this macOS host. That is a provisioning failure, not a \
+             reason to pass: `leaks(1)` ships with the Xcode command line tools \
+             (`xcode-select --install`). A leak oracle with no allocator inspector must not \
+             report success (LESSONS: absent capability is not a green result — see \
+             `require_wasi_runner`)."
+        );
     }
-    let avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-    }
-    avail
 }
 
 /// Build `shape_name` at [`LOW_FRAMES`] and [`HIGH_FRAMES`], measure leak NODE
@@ -201,8 +349,22 @@ pub fn assert_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize)
 /// under the poisoned-allocator triple, and asserts
 /// `high_leaks <= low_leaks + tolerance`. A positive slope above the tolerance
 /// means a per-iteration allocation is not being released; the failure message
-/// names the excess and the re-run command. Logs `skip:` and returns when
-/// `leaks(1)` is unavailable.
+/// names the excess and the re-run command.
+///
+/// Before it trusts either leak number it asserts a WORK WITNESS: the HIGH probe
+/// must not have printed FEWER lines than the LOW probe. A slope oracle compares
+/// two runs of the same shape at different iteration counts, so the HIGH run
+/// performs at least as much observable work as the LOW one — always, for every
+/// shape in the suite. When it performs LESS, the probe did not run the loop
+/// under test (it deadlocked, trapped, or exited early), its leak count is not a
+/// sample of the thing being measured, and a flat or negative delta is an
+/// artefact rather than a clean bill of health. That is not hypothetical: the
+/// `for_await_stream_bytes` shape sent `frames²` items into a bounded pipe, so
+/// its HIGH probe parked forever on backpressure and drained ZERO frames while
+/// the slope assertion happily compared the resulting numbers.
+///
+/// Panics (never skips) when `leaks(1)` is unavailable — see
+/// [`require_leaks_tool`].
 pub fn assert_frame_slope_below_tolerance_with(
     shape_name: &str,
     source_fn: fn(usize) -> String,
@@ -210,10 +372,48 @@ pub fn assert_frame_slope_below_tolerance_with(
     high_frames: usize,
     tolerance: usize,
 ) {
-    if !leaks_supported(shape_name) {
-        return;
-    }
+    assert_frame_slope_below_tolerance_witnessed(
+        shape_name,
+        source_fn,
+        low_frames,
+        high_frames,
+        tolerance,
+        None,
+    );
+}
 
+/// [`assert_frame_slope_below_tolerance_with`] plus an EXACT work witness.
+///
+/// `expected_program_lines(frames)` returns the number of stdout lines the probe
+/// must print at that iteration count. Shapes whose loop body prints exactly one
+/// line per iteration can pin the drained count precisely instead of settling for
+/// the monotonicity check, which turns "the loop ran fewer times than it was
+/// asked to" from an invisible artefact into a named failure. Use this wherever
+/// the shape's output is a deterministic function of `frames`.
+pub fn assert_frame_slope_below_tolerance_exact_lines(
+    shape_name: &str,
+    source_fn: fn(usize) -> String,
+    expected_program_lines: fn(usize) -> usize,
+) {
+    assert_frame_slope_below_tolerance_witnessed(
+        shape_name,
+        source_fn,
+        LOW_FRAMES,
+        HIGH_FRAMES,
+        SLOPE_TOLERANCE,
+        Some(expected_program_lines),
+    );
+}
+
+fn assert_frame_slope_below_tolerance_witnessed(
+    shape_name: &str,
+    source_fn: fn(usize) -> String,
+    low_frames: usize,
+    high_frames: usize,
+    tolerance: usize,
+    expected_program_lines: Option<fn(usize) -> usize>,
+) {
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -232,26 +432,149 @@ pub fn assert_frame_slope_below_tolerance_with(
         &format!("{shape_name}_high"),
     );
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
+    let low = LeakProbe {
+        program_lines: run_probe_witness(&bin_low, &[]),
+        leak_nodes: measure_leaks(&bin_low),
     };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
+    let high = LeakProbe {
+        program_lines: run_probe_witness(&bin_high, &[]),
+        leak_nodes: measure_leaks(&bin_high),
     };
 
     eprintln!(
-        "{shape_name}: low_frames={low_frames} low_leaks={low_leaks} \
-         high_frames={high_frames} high_leaks={high_leaks} tolerance={tolerance}"
+        "{shape_name}: low_frames={low_frames} low_leaks={} low_lines={} \
+         high_frames={high_frames} high_leaks={} high_lines={} tolerance={tolerance}",
+        low.leak_nodes, low.program_lines, high.leak_nodes, high.program_lines
     );
     assert!(
-        high_leaks <= low_leaks + tolerance,
-        "{shape_name}: per-iteration leak SLOPE — low_frames={low_frames} low_leaks={low_leaks}, \
-         high_frames={high_frames} high_leaks={high_leaks}. Excess of {} NODES over the \
+        high.program_lines >= low.program_lines,
+        "{shape_name}: WORK WITNESS — the HIGH probe ({high_frames} frames) printed {} lines, \
+         FEWER than the LOW probe ({low_frames} frames) at {} lines. The HIGH probe did not \
+         run the loop under test to completion, so its leak count is not a slope sample and \
+         the slope assertion below would be measuring nothing. Common cause: the probe shape \
+         saturates a bounded channel/pipe at the higher frame count and parks forever on \
+         backpressure with no consumer to drain it. Run `{}` directly to see how far it got.",
+        high.program_lines,
+        low.program_lines,
+        bin_high.display()
+    );
+    if let Some(expected) = expected_program_lines {
+        for (frames, probe, bin) in [(low_frames, low, &bin_low), (high_frames, high, &bin_high)] {
+            assert_eq!(
+                probe.program_lines,
+                expected(frames),
+                "{shape_name}: WORK WITNESS — the {frames}-frame probe printed \
+                 {} lines, not the {} its shape prescribes. The probe did not perform the \
+                 work under measurement, so its leak count is not a slope sample. Run `{}` \
+                 directly to see how far it got.",
+                probe.program_lines,
+                expected(frames),
+                bin.display()
+            );
+        }
+    }
+    assert!(
+        high.leak_nodes <= low.leak_nodes + tolerance,
+        "{shape_name}: per-iteration leak SLOPE — low_frames={low_frames} low_leaks={}, \
+         high_frames={high_frames} high_leaks={}. Excess of {} NODES over the \
          tolerance of {tolerance} indicates a per-iteration allocation is not being released. \
          Re-run with `MallocStackLogging=1 leaks --atExit -- {}` to see the leaked allocation \
          stack.",
-        high_leaks.saturating_sub(low_leaks + tolerance),
+        low.leak_nodes,
+        high.leak_nodes,
+        high.leak_nodes.saturating_sub(low.leak_nodes + tolerance),
         bin_high.display()
+    );
+}
+
+/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
+/// `(leak_node_count, leaked_bytes)`.
+///
+/// The byte total matters for the exact-zero pins: a shape that must release
+/// everything is checked as `(0, 0)`, and reporting the byte figure alongside
+/// the node count makes a partial release readable in the failure. Fails closed
+/// on every path that cannot produce a measurement, for the same reason
+/// [`measure_leaks`] does.
+pub fn measure_leaks_exact(bin: &Path) -> (usize, usize) {
+    require_leaks_tool();
+    let mut command = Command::new("leaks");
+    command
+        .args(["--atExit", "--"])
+        .arg(bin)
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1");
+    let output = match try_run_bounded_command(
+        command,
+        format!("inspect {} with leaks(1)", bin.display()),
+        LEAKS_TIMEOUT,
+    ) {
+        Ok(output) => output,
+        Err(error) => panic!(
+            "leaks(1) could not inspect {} within {LEAKS_TIMEOUT:?}: {error}. A leak oracle \
+             that cannot measure must not report success.",
+            bin.display()
+        ),
+    };
+    assert!(
+        output.status.success() || !output.stdout.is_empty(),
+        "leaks(1) declined to attach to {}: {}. A leak oracle that cannot measure must not \
+         report success — the inspected process is not debuggable on this host.",
+        bin.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = String::from_utf8_lossy(&output.stdout);
+    for line in report.lines() {
+        let Some(rest) = line.strip_prefix("Process ") else {
+            continue;
+        };
+        if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let Some(summary) = rest.split_once(": ").map(|(_, summary)| summary) else {
+            continue;
+        };
+        if !summary.contains(" leak") || !summary.contains(" for ") {
+            continue;
+        }
+        let mut words = summary.split_whitespace();
+        let (Some(count), _, _, Some(bytes)) =
+            (words.next(), words.next(), words.next(), words.next())
+        else {
+            continue;
+        };
+        let (Ok(count), Ok(bytes)) = (count.parse::<usize>(), bytes.parse::<usize>()) else {
+            continue;
+        };
+        return (count, bytes);
+    }
+    panic!(
+        "leaks(1) emitted no `Process <pid>: N leak(s) for B total leaked bytes.` summary \
+         for {}: stderr=\n{}\nA leak oracle that cannot measure must not report success.",
+        bin.display(),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+/// Fail closed unless the macOS poisoned allocator is available.
+///
+/// The `MallocScribble` / `MallocPreScribble` / `MallocGuardEdges` triple is a
+/// Darwin libmalloc facility. On any other platform the environment variables
+/// are ignored, so a freed buffer keeps its old contents and a use-after-free
+/// probe reads the value it expected — a PASS that proves nothing. Probes built
+/// on [`run_under_malloc_scribble`] are therefore macOS-only for the same reason
+/// the `leaks(1)` oracles are, and gate on the same compile-time
+/// `#[cfg_attr(not(target_os = "macos"), ignore = "…")]` attribute so the runner
+/// records a skip. This guard catches a caller that forgot it.
+pub fn require_macos_poisoned_allocator() {
+    #[cfg(not(target_os = "macos"))]
+    panic!(
+        "poisoned-allocator probe reached its assertion on a non-macOS host. \
+         `MallocScribble` / `MallocPreScribble` / `MallocGuardEdges` are Darwin libmalloc \
+         facilities; elsewhere they are ignored and freed memory keeps its contents, so a \
+         use-after-free probe passes without detecting anything. Annotate the test with \
+         `#[cfg_attr(not(target_os = \"macos\"), ignore = \"poisoned allocator is \
+         macOS-only\")]` so the runner records a SKIP instead."
     );
 }
 
@@ -261,6 +584,7 @@ pub fn assert_frame_slope_below_tolerance_with(
 /// an over-eager drop frees memory the program still owns, which the scribbled
 /// allocator turns into an abort (double-free) or a poisoned read.
 pub fn run_under_malloc_scribble(bin: &Path) -> Output {
+    require_macos_poisoned_allocator();
     Command::new(bin)
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")

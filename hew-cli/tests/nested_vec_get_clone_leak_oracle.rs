@@ -76,11 +76,19 @@ fn get_clone_bind_len_loop_source(frames: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn get_clone_for_in_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("nested_vec_get_clone_for_in", get_clone_for_in_loop_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn get_clone_bind_len_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(

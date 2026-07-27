@@ -164,6 +164,10 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
 /// Slope oracle: the D16 forward-param-into-field shape frees the record-owned
 /// closure env every iteration — flat leak slope. A leaked env (neither the
 /// record nor the parameter freeing it) grows the slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn forward_param_into_field_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -174,6 +178,10 @@ fn forward_param_into_field_leak_slope_below_tolerance() {
 
 /// Slope oracle: a struct holding the forwarded closure drops on a normal
 /// function exit and frees its env every iteration — flat leak slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn store_and_drop_struct_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("store_and_drop_struct", store_and_drop_struct_loop_source);
@@ -182,6 +190,10 @@ fn store_and_drop_struct_leak_slope_below_tolerance() {
 /// No-double-free pin: the forwarded-param field store frees the closure env
 /// EXACTLY once across 200 iterations. A second owner aborts under the poisoned
 /// allocator before the result prints. Runs on any unix host.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn forward_param_into_field_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
@@ -193,6 +205,10 @@ fn forward_param_into_field_freed_exactly_once_under_malloc_scribble() {
 /// Slope oracle for the fresh call-result carrier: the temp returned by
 /// `wrap(i)` transfers into the record every iteration and the record frees it
 /// once — flat leak slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn forward_fresh_call_result_into_field_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -206,6 +222,10 @@ fn forward_fresh_call_result_into_field_leak_slope_below_tolerance() {
 /// and rejects the shape at MIR lowering (`E_NOT_YET_IMPLEMENTED` "live owned
 /// call-carrier"); a transfer without neutralizing the source aborts under the
 /// poisoned allocator.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn forward_fresh_call_result_into_field_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(

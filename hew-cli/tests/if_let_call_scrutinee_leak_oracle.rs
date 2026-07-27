@@ -213,12 +213,20 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 
 /// #2429 if-let headline: owned-string payload holds a flat slope (slope 47
 /// pre-fix).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn iflet_option_string_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_iflet_option", iflet_option_string_loop_source);
 }
 
 /// `Result<bytes, _>` payload through the same if-let seam holds a flat slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn iflet_result_bytes_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_iflet_result", iflet_result_bytes_loop_source);
@@ -226,6 +234,10 @@ fn iflet_result_bytes_loop_leak_slope_below_tolerance() {
 
 /// Record payload with an owned field rides the composite drop through the
 /// if-let seam.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn iflet_record_payload_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_iflet_record", iflet_record_payload_loop_source);
@@ -233,6 +245,10 @@ fn iflet_record_payload_loop_leak_slope_below_tolerance() {
 
 /// The refuted (else) edge releases the composite shell — flat slope proves
 /// the else-edge drop fires (care point A: mint precedes the branch).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn iflet_refuted_edge_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_iflet_refuted", iflet_refuted_edge_loop_source);
@@ -240,6 +256,10 @@ fn iflet_refuted_edge_loop_leak_slope_below_tolerance() {
 
 /// Scope guard: a scalar `Option<i64>` call scrutinee stays flat — the mint
 /// owes nothing and introduces no spurious release.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn scalar_iflet_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_iflet_scalar", scalar_iflet_loop_source);
@@ -247,6 +267,10 @@ fn scalar_iflet_loop_leak_slope_below_tolerance() {
 
 /// Scope guard: an owned LOCAL unwrapped by if-let (not a call scrutinee)
 /// stays flat — the mint must not fire on a binding-ref scrutinee.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn local_iflet_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_iflet_local", local_iflet_loop_source);
@@ -254,6 +278,10 @@ fn local_iflet_loop_leak_slope_below_tolerance() {
 
 /// Exactly-once wall: straight-line if-let releases the payload once, reads it
 /// back verbatim, no double free.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn single_from_call_iflet_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -265,6 +293,10 @@ fn single_from_call_iflet_no_double_free_under_malloc_scribble() {
 
 /// Refuted-edge exactly-once wall: the `None`-tag composite shell drops once
 /// on the else edge, no double free.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn refuted_iflet_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(

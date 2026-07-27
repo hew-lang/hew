@@ -53,6 +53,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -162,54 +164,6 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and
-/// return `Some(leak_count)` when `leaks` produced a usable report. A
-/// non-zero exit from the binary itself (an over-eager-free abort under
-/// MallocScribble/GuardEdges) surfaces as a missing summary and fails the
-/// caller's slope assertion via `None`-propagation only if `leaks` also
-/// declined; the explicit abort check below catches the crash directly.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    let report = String::from_utf8_lossy(&output.stdout);
-    if !report.contains(" leaks for ") && !report.contains(" leak for ") {
-        eprintln!(
-            "skip: leaks did not emit a usable summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    parsed
-}
-
 /// Run `bin` under the full poisoned-allocator triple WITHOUT `leaks`, with
 /// periodic heap verification, and assert it exits cleanly. This is the
 /// over-eager-free / double-free / use-after-free guard: a nested predicate
@@ -238,20 +192,13 @@ fn assert_no_poisoned_allocator_abort(bin: &std::path::Path) {
 /// payloads must each free their heap exactly once. Pre-fix slope is ~1.0
 /// leak/iter per leaking nested arm; post-fix the count holds flat. Also
 /// asserts no over-eager free under the poisoned-allocator triple.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_payload_no_per_iter_leak_slope() {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: nested_payload oracle: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: nested_payload oracle: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 
@@ -267,12 +214,8 @@ fn nested_payload_no_per_iter_leak_slope() {
     // also break the leak probe, so surface the clearer failure mode.
     assert_no_poisoned_allocator_abort(&bin_high);
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "nested_payload: low_iters={LOW_ITERS} low_leaks={low_leaks} \

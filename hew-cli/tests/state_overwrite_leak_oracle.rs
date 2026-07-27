@@ -45,6 +45,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -585,73 +587,10 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and
-/// return `Some(leak_count)` when `leaks` produced a usable report.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) ...` summary for {}: \
-             stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
 /// Build the shape at LOW and HIGH frame counts, measure leak NODE
 /// counts, and assert the delta stays within `SLOPE_TOLERANCE`.
 fn assert_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize) -> String) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 
@@ -671,12 +610,8 @@ fn assert_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize) -> 
         &format!("{shape_name}_high"),
     );
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "{shape_name}: low_frames={LOW_FRAMES} low_leaks={low_leaks} \
@@ -737,6 +672,10 @@ fn assert_scribbled_run_exit(shape_name: &str, source: &str, expected_exit: i32)
 /// Collections: re-storing Vec/HashMap/HashSet state fields must release
 /// the previous handles (pre-fix slope ~2.6 nodes/frame across the three
 /// fields).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn collection_state_overwrite_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("collection_overwrite", collection_overwrite_source);
@@ -745,6 +684,10 @@ fn collection_state_overwrite_no_per_frame_leak_slope() {
 /// Records: the functional-update shape must release the replaced leaves
 /// (payload, nested note) every frame while keeping the aliased `label`
 /// alive (pre-fix slope ~3 nodes/frame; over-release crashes the run).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_state_overwrite_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("record_functional_update", record_functional_update_source);
@@ -752,6 +695,10 @@ fn record_state_overwrite_no_per_frame_leak_slope() {
 
 /// Enums: cycling variants must release each replaced payload through
 /// the tag-dispatched release (pre-fix slope ~0.7 nodes/frame).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_state_overwrite_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("enum_overwrite", enum_overwrite_source);
@@ -762,6 +709,10 @@ fn enum_state_overwrite_no_per_frame_leak_slope() {
 /// field on the borrowing load. The own/borrow classifier recognises the
 /// `string_args` borrow axis, so the load classifies `Borrowed` and emits no
 /// unbalanced `hew_string_clone` (pre-classifier slope ~1 buffer/frame).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_state_inspect_overwrite_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("string_inspect_overwrite", string_inspect_overwrite_source);
@@ -772,6 +723,10 @@ fn string_state_inspect_overwrite_no_per_frame_leak_slope() {
 /// synthetic `VecIter` cursor borrows the source handle it never frees, so the
 /// load classifies `Borrowed` (pre-classifier slope ~2 nodes/frame — the
 /// cloned handle plus buffer the cursor never released).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn collection_state_iterate_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("collection_iterate", collection_iterate_source);
@@ -780,6 +735,10 @@ fn collection_state_iterate_no_per_frame_leak_slope() {
 /// UAF pin — whole-value self-store: every leaf of the incoming value
 /// aliases the old value; the release must free nothing and the final
 /// read must see the heap-built name (`"SELF-STORE-NAME"`, len 15).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_self_store_keeps_aliased_leaves_alive() {
     assert_scribbled_run_exit("record_self_store", RECORD_SELF_STORE_SOURCE, 15);
@@ -788,6 +747,10 @@ fn record_self_store_keeps_aliased_leaves_alive() {
 /// UAF pin — cross-position swap: both old leaves reappear at swapped
 /// positions. After an odd swap count `a` holds the original `b`
 /// ("RIGHT-SIDE", len 10). A per-position-only alias guard frees them.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_swap_keeps_cross_position_leaves_alive() {
     assert_scribbled_run_exit("record_swap", RECORD_SWAP_SOURCE, 10);
@@ -795,6 +758,10 @@ fn record_swap_keeps_cross_position_leaves_alive() {
 
 /// UAF pin — functional update at HIGH frames: the aliased `label` leaf
 /// survives 50 rebuilds and the final count is exact.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_functional_update_keeps_aliased_label_alive() {
     assert_scribbled_run_exit(
@@ -807,6 +774,10 @@ fn record_functional_update_keeps_aliased_label_alive() {
 /// UAF pin — #2432 temp-bridged swap, Vec kind: `let t = x; x = y; y = t;`
 /// reads `x` through a third binding the per-store alias guard cannot see.
 /// After 25 (odd) flips `x` holds the ORIGINAL `y` ([10,20,30,40], sum 100).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_temp_bridged_swap_keeps_third_alias_alive() {
     assert_scribbled_run_exit("vec_temp_swap", VEC_SWAP_SOURCE, 100);
@@ -814,6 +785,10 @@ fn vec_temp_bridged_swap_keeps_third_alias_alive() {
 
 /// UAF pin — #2432 temp-bridged swap, string kind. After 25 (odd) flips
 /// `x` holds the ORIGINAL `y` (`"RIGHT-SIDE"`, len 10).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_temp_bridged_swap_keeps_third_alias_alive() {
     assert_scribbled_run_exit("string_temp_swap", STRING_SWAP_SOURCE, 10);
@@ -821,6 +796,10 @@ fn string_temp_bridged_swap_keeps_third_alias_alive() {
 
 /// UAF pin — #2432 temp-bridged swap, record kind (nested `Vec<i64>`
 /// field). After 25 (odd) flips `x` holds the ORIGINAL `y` (sum 100).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_temp_bridged_swap_keeps_third_alias_alive() {
     assert_scribbled_run_exit("record_temp_swap", RECORD_TEMP_SWAP_SOURCE, 100);
@@ -834,6 +813,10 @@ fn record_temp_bridged_swap_keeps_third_alias_alive() {
 /// began dropping actor state on `main` return: a deterministic abort under the
 /// poisoned-allocator triple. Isolates the projected-iterable over-drop from
 /// the temp-bridged-swap alias guard.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn projected_state_field_for_loop_frees_state_buffer_once() {
     assert_scribbled_run_exit(

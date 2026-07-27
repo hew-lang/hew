@@ -177,6 +177,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 /// `EnumInPlace` drop frees the `to_upper()` buffer every iteration. A regression
 /// that excluded the composite from its drop grows the count with the iteration
 /// count and trips the slope assertion.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn match_bound_owned_payload_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g63_match_bound", match_bound_loop_source);
@@ -184,6 +188,10 @@ fn match_bound_owned_payload_leak_slope_below_tolerance() {
 
 /// Slope guard for the `if let` binder shape: same owned payload bound through
 /// `if let Some(s) = opt`, borrow-only, must also hold a flat leak-node slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn iflet_bound_owned_payload_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g63_iflet_bound", iflet_bound_loop_source);
@@ -192,6 +200,10 @@ fn iflet_bound_owned_payload_leak_slope_below_tolerance() {
 /// Double-free / use-after-free guard under the poisoned allocator: the
 /// match-bound payload must run clean and read back its borrow. The composite's
 /// single `EnumInPlace` drop owns the payload; the binder earns no second release.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn match_bound_owned_payload_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(

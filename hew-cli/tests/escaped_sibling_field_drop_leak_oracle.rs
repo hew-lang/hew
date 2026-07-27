@@ -205,6 +205,10 @@ fn main() -> i64 {\n\
 /// The #2212 repro holds a flat leak slope: the non-escaped `tag` sibling
 /// is discharged in place once per frame. A regressed discharge leaks one
 /// 24-byte buffer per frame and trips the tolerance.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn escaped_sibling_field_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("escaped_sibling", escaped_sibling_loop_source);
@@ -214,6 +218,10 @@ fn escaped_sibling_field_leak_slope_below_tolerance() {
 /// escape attribution excludes ONLY the escaping record, so the bystander
 /// keeps its composite drop. Reverting to the blanket every-root exclusion
 /// leaks the bystander's two buffers per frame as well.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn escaped_sibling_bystander_record_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -227,6 +235,10 @@ fn escaped_sibling_bystander_record_leak_slope_below_tolerance() {
 /// The escaped field is never discharged: the caller reads the escapee's
 /// heap payload after the callee ran the sibling discharge, clean under
 /// the poisoned allocator and with the exact sentinel.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn escaped_field_not_dropped_under_malloc_scribble() {
     require_codegen();
@@ -256,6 +268,10 @@ fn escaped_field_not_dropped_under_malloc_scribble() {
 /// A record read after the escape refuses the discharge: the sibling read
 /// (`b.tag.len()`) after the escape instruction observes live bytes, clean
 /// under the poisoned allocator and with the exact sentinel.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_read_after_escape_not_discharged_under_malloc_scribble() {
     require_codegen();

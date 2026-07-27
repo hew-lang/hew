@@ -71,16 +71,28 @@ fn main() {\n\
 \x20   if run_return() == 1 { print(\"ok\"); }\n\
 }\n";
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn while_let_successful_scrutinees_have_flat_leak_slope() {
     assert_frame_slope_below_tolerance("while_let_success", successful_iterations_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn while_let_final_false_scrutinee_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("while_let_false", final_false_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn while_let_break_continue_and_return_release_exactly_once() {
     require_codegen();

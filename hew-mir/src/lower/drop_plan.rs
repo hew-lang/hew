@@ -4844,17 +4844,26 @@ pub(super) fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str
 /// (raw load → release → null-store) rather than the `RecordFieldLoad` +
 /// `Instr::Drop` pair.
 ///
-/// The predicate selects every SINGLE-POINTER COW-heap field — `string`,
-/// `Vec<T>`, `HashMap`, `HashSet`, and the `Generator` / `AsyncGenerator`
-/// companion handle — whose runtime value is exactly one pointer, so the
-/// `RecordFieldDrop` single-slot GEP + release is the whole destructor.
+/// The predicate selects every COW-heap field whose release can be driven
+/// through the field slot ITSELF — `string`, `Vec<T>`, `HashMap`, `HashSet`,
+/// the `Generator` / `AsyncGenerator` companion handle, and `bytes`.
 ///
-/// `bytes` is deliberately EXCLUDED: it is a fat `{ ptr, len, cap }` triple,
-/// not a single pointer. Its destructor takes the by-value triple, so it is
-/// reached through `RecordFieldLoad` + `Instr::Drop` (which materialises the
-/// fat value into a temp). The set mirrors codegen's `resolved_ty_cow_heap_release`
-/// (which returns `None` for `bytes`), so the `RecordFieldDrop` symbol/type
-/// congruence assertion in codegen always agrees with what is emitted here.
+/// The distinguishing property is not "the value is one pointer" but "the
+/// post-drop null-store lands in the OWNING slot". `RecordFieldDrop` GEPs the
+/// live record field and nulls it after releasing; the `RecordFieldLoad` +
+/// `Instr::Drop` alternative first copies the field into a temp local, so its
+/// null-store poisons the COPY and leaves the owner still pointing at freed
+/// memory. Functional update emits this release ahead of an assignment whose
+/// own overwrite-drop targets the same field, so a field routed to the copying
+/// path is released TWICE — the second release on a live pointer. That is a
+/// double free, not a leak.
+///
+/// `bytes` is included even though it is a fat `{ ptr, len, cap }` triple: only
+/// the data pointer participates in ownership, `hew_bytes_drop` takes exactly
+/// that pointer, and it is null-tolerant, so nulling the triple's pointer
+/// sub-field in place gives the same idempotency the single-pointer fields get.
+/// Codegen's `lower_record_field_drop` reaches the triple's field 0 for both the
+/// release argument and the poison store.
 ///
 /// Dispatch is on the `builtin` discriminant, never the `name` string, so a
 /// user-defined `type Vec { ... }` (`builtin: None`) is never mis-routed to a
@@ -4863,6 +4872,7 @@ pub(super) fn field_override_uses_record_field_drop(ty: &ResolvedTy) -> bool {
     matches!(
         ty,
         ResolvedTy::String
+            | ResolvedTy::Bytes
             | ResolvedTy::Named {
                 builtin: Some(
                     hew_types::BuiltinType::Vec

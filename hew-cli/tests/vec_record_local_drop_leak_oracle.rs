@@ -64,6 +64,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -325,81 +327,11 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some(leak_count)` when `leaks` produced a usable report.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-             summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
-/// macOS + `leaks(1)` availability guard shared by every leak probe.
-fn leaks_available(shape_name: &str) -> bool {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return false;
-    }
-    let avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-    }
-    avail
-}
-
 /// Compile + measure `fixture` against the scalar-Vec control and assert the
 /// fixture sits at the control's allocation floor (within `FLOOR_TOLERANCE`).
 /// A pre-fix record-Vec leak puts the fixture >= `ITERATIONS` nodes above.
 fn assert_no_record_vec_leak_over_control(shape_name: &str, fixture_source: &str) {
-    if !leaks_available(shape_name) {
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -410,12 +342,8 @@ fn assert_no_record_vec_leak_over_control(shape_name: &str, fixture_source: &str
     let control_bin = compile_to_native(&control_scalar_vec_source(), dir.path(), "control");
     let fixture_bin = compile_to_native(fixture_source, dir.path(), shape_name);
 
-    let Some(control_leaks) = measure_leaks(&control_bin) else {
-        return;
-    };
-    let Some(fixture_leaks) = measure_leaks(&fixture_bin) else {
-        return;
-    };
+    let control_leaks = measure_leaks(&control_bin);
+    let fixture_leaks = measure_leaks(&fixture_bin);
 
     eprintln!(
         "{shape_name}: control_leaks={control_leaks} fixture_leaks={fixture_leaks} \
@@ -441,6 +369,10 @@ fn assert_no_record_vec_leak_over_control(shape_name: &str, fixture_source: &str
 /// Vec. Pre-fix its backing buffer leaked once per helper call; post-fix it
 /// sits at the scalar control floor. Reverting the plain-vec admission arm
 /// fails this by >= `ITERATIONS` nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_record_new_push_no_leak() {
     assert_no_record_vec_leak_over_control("vec_record_new_push", &vec_record_new_push_source());
@@ -448,6 +380,10 @@ fn vec_record_new_push_no_leak() {
 
 /// `[Point { .. }]` array literal of a `BitCopy` record -- the same
 /// `hew_vec_new_with_layout` backing buffer must be released at scope exit.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_record_array_literal_no_leak() {
     assert_no_record_vec_leak_over_control(
@@ -458,6 +394,10 @@ fn vec_record_array_literal_no_leak() {
 
 /// `[Point { .. }; 3]` array-repeat of a `BitCopy` record -- the array-repeat
 /// gate's own leak-clean shape. The cloned 3-slot buffer must be released once.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_record_array_repeat_no_leak() {
     assert_no_record_vec_leak_over_control(
@@ -471,6 +411,10 @@ fn vec_record_array_repeat_no_leak() {
 /// (CAP-09) and scalar paths must stay clean. A double-free or wrong-ABI free
 /// crashes under the poisoned-allocator triple before the sentinel prints.
 /// Runs on any unix.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_record_release_is_exactly_once_under_malloc_scribble() {
     require_codegen();
@@ -515,6 +459,10 @@ fn vec_record_release_is_exactly_once_under_malloc_scribble() {
 /// on the tuple, which always returns `CowValue`). Post-fix `tuple_is_all_bitcopy`
 /// recurses into the element types and correctly classifies the buffer as
 /// plain-vec → `hew_vec_free` on scope exit.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_tuple_new_push_no_leak() {
     assert_no_record_vec_leak_over_control("vec_tuple_new_push", &vec_tuple_new_push_source());
@@ -522,6 +470,10 @@ fn vec_tuple_new_push_no_leak() {
 
 /// `[(n, n+1); 3]` array-repeat of an all-`BitCopy` tuple. The repeat lowers via
 /// `hew_vec_new_with_layout`; pre-fix that buffer leaked once per helper call.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_tuple_array_repeat_no_leak() {
     assert_no_record_vec_leak_over_control(
@@ -534,6 +486,10 @@ fn vec_tuple_array_repeat_no_leak() {
 /// The tuple-Vec must get a buffer-only `hew_vec_free`; the string-Vec must get
 /// `hew_vec_free_owned`. A wrong-ABI free or double-free crashes under
 /// `MallocScribble` before the sentinel. Runs on any unix.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_tuple_release_is_exactly_once_under_malloc_scribble() {
     require_codegen();

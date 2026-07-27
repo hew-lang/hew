@@ -254,6 +254,10 @@ fn enum_payload_nested_destructure_source(frames: usize) -> String {
 /// Record-parent nested extraction holds a flat slope: `inner.b`,
 /// `inner.a`'s original, and the sibling `c` are each freed exactly once
 /// by the retained outer composite.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_record_extraction_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("nested_record_extract", nested_record_extraction_source);
@@ -262,6 +266,10 @@ fn nested_record_extraction_leak_slope_below_tolerance() {
 /// Tuple-parent nested extraction holds a flat slope — the regression
 /// leaked ~2 nodes/iteration (the blanket-excluded composite stranded the
 /// sibling and the bound element's original).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_tuple_extraction_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("nested_tuple_extract", nested_tuple_extraction_source);
@@ -269,6 +277,10 @@ fn nested_tuple_extraction_leak_slope_below_tolerance() {
 
 /// Skipped-composite (escapee-is-itself-composite) variant holds a flat
 /// slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_composite_skip_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -278,6 +290,10 @@ fn nested_composite_skip_leak_slope_below_tolerance() {
 }
 
 /// Enum-payload two-step nested destructure holds a flat slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_payload_nested_destructure_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -314,6 +330,10 @@ fn assert_scribble_clean(name: &str, source: &str) {
 }
 
 /// Record parent: no composite re-walk of the alias-discharged field.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_record_extraction_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("nested_record_extract", &nested_record_extraction_source(4));
@@ -321,6 +341,10 @@ fn nested_record_extraction_no_double_free_under_malloc_scribble() {
 
 /// Tuple parent: no re-walk, and no over-exclusion strand (the slope test
 /// carries the leak half of the pin).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_tuple_extraction_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("nested_tuple_extract", &nested_tuple_extraction_source(4));
@@ -328,6 +352,10 @@ fn nested_tuple_extraction_no_double_free_under_malloc_scribble() {
 
 /// Skipped-composite variant: inline composites have NO null-store, so
 /// this is the shape where a re-walk is unconditionally fatal.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_composite_skip_no_double_free_under_malloc_scribble() {
     assert_scribble_clean(
@@ -338,6 +366,10 @@ fn nested_composite_skip_no_double_free_under_malloc_scribble() {
 
 /// Enum-payload two-step destructure: the composite's `EnumInPlace` must
 /// not re-free the payload field discharged through the binder alias.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_payload_nested_destructure_no_double_free_under_malloc_scribble() {
     assert_scribble_clean(

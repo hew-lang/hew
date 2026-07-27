@@ -44,6 +44,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -164,74 +166,13 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-             summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
 fn assert_frame_slope_below_tolerance(
     shape_name: &str,
     source_fn: fn(usize) -> String,
     low_frames: usize,
     high_frames: usize,
 ) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 
@@ -251,12 +192,8 @@ fn assert_frame_slope_below_tolerance(
         &format!("{shape_name}_high"),
     );
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "{shape_name}: low_frames={low_frames} low_leaks={low_leaks} \
@@ -316,6 +253,10 @@ fn assert_runs_clean(shape_name: &str, source: &str, expected_stdout: &str) {
 
 /// `HashMap.insert` overwrite must not leak the caller's duplicate key.
 /// Reverting `emit_insert_overwrite_key_release` fails this by ~47 nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn hashmap_overwrite_no_per_frame_key_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -327,6 +268,10 @@ fn hashmap_overwrite_no_per_frame_key_leak_slope() {
 }
 
 /// `HashSet.insert` overwrite must not leak the caller's duplicate element.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn hashset_overwrite_no_per_frame_key_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -340,6 +285,10 @@ fn hashset_overwrite_no_per_frame_key_leak_slope() {
 /// Vacant-path exactly-once: three distinct keys all moved into the map; the
 /// overwrite release must NOT fire (no double-free of the map-owned keys). The
 /// map's scope-exit drop frees them once. Prints `3OK`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn hashmap_vacant_inserts_exactly_once_under_malloc_scribble() {
     assert_runs_clean("hashmap_vacant", VACANT_SHAPE_SOURCE, "3OK");
@@ -348,6 +297,10 @@ fn hashmap_vacant_inserts_exactly_once_under_malloc_scribble() {
 /// Overwrite-path exactly-once: one vacant + two overwrites of the same key.
 /// The two orphaned caller keys are each freed once by the conditional release;
 /// the one stored key is freed once by the map's scope-exit drop. Prints `1OK`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn hashmap_overwrite_inserts_exactly_once_under_malloc_scribble() {
     assert_runs_clean("hashmap_overwrite_once", OVERWRITE_SHAPE_SOURCE, "1OK");

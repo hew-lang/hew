@@ -61,6 +61,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -431,73 +433,10 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and
-/// return `Some(leak_count)` when `leaks` produced a usable report.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) ...` summary for {}: \
-             stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
 /// Build the shape at LOW and HIGH frame counts, measure leak NODE
 /// counts, and assert the delta stays within `SLOPE_TOLERANCE`.
 fn assert_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize) -> String) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 
@@ -517,12 +456,8 @@ fn assert_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize) -> 
         &format!("{shape_name}_high"),
     );
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "{shape_name}: low_frames={LOW_FRAMES} low_leaks={low_leaks} \
@@ -552,6 +487,10 @@ fn assert_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize) -> 
 
 /// `string` field override: pre-fix slope ~1.0 node/frame (one leaked
 /// `cstring` buffer per iteration); post-fix slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_string_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_string_field", string_field_source);
@@ -559,6 +498,10 @@ fn funcupdate_string_field_no_per_frame_leak_slope() {
 
 /// `bytes` field override: pre-fix slope ~1.0 node/frame (one leaked
 /// `BytesTriple` data-ptr per iteration); post-fix slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_bytes_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_bytes_field", bytes_field_source);
@@ -566,6 +509,10 @@ fn funcupdate_bytes_field_no_per_frame_leak_slope() {
 
 /// `Vec<i64>` field override: pre-fix slope ~1.0 node/frame (one leaked
 /// Vec header per iteration); post-fix slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_vec_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_vec_field", vec_field_source);
@@ -573,6 +520,10 @@ fn funcupdate_vec_field_no_per_frame_leak_slope() {
 
 /// `HashMap<string,i64>` field override: pre-fix slope ~1.0 node/frame
 /// (one leaked map-control node per iteration); post-fix slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_hashmap_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_hashmap_field", hashmap_field_source);
@@ -580,6 +531,10 @@ fn funcupdate_hashmap_field_no_per_frame_leak_slope() {
 
 /// `HashSet<i64>` field override: pre-fix slope ~1.0 node/frame (one
 /// leaked set-control node per iteration); post-fix slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_hashset_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_hashset_field", hashset_field_source);
@@ -587,6 +542,10 @@ fn funcupdate_hashset_field_no_per_frame_leak_slope() {
 
 /// Multi-field override (`string` + `Vec<i64>`): pre-fix slope ~2.0
 /// nodes/frame (two leaked allocations per iteration); post-fix slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_multi_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_multi_field", multi_field_source);
@@ -597,6 +556,10 @@ fn funcupdate_multi_field_no_per_frame_leak_slope() {
 /// Carried nested owned-RECORD field: pre-fix this SIGSEGV'd on the
 /// double-freed carried record; post-fix the carry transfers it once per
 /// frame — slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_carry_record_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_carry_record_field", carry_record_field_source);
@@ -605,18 +568,30 @@ fn funcupdate_carry_record_field_no_per_frame_leak_slope() {
 /// Carried `string` field (the retain-vs-exclude question): the
 /// carried string is moved once per frame, not retained-without-release —
 /// slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_carry_string_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_carry_string_field", carry_string_field_source);
 }
 
 /// Carried `Vec<string>` (owned-element) field: moved once per frame, slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_carry_vec_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_carry_vec_field", carry_vec_field_source);
 }
 
 /// Carried `HashMap<string,string>` field: moved once per frame, slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_carry_hashmap_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -626,6 +601,10 @@ fn funcupdate_carry_hashmap_field_no_per_frame_leak_slope() {
 }
 
 /// Carried `HashSet<string>` field: moved once per frame, slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_carry_hashset_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -636,6 +615,10 @@ fn funcupdate_carry_hashset_field_no_per_frame_leak_slope() {
 
 /// Carried `bytes` field: the fat `{ptr,len,cap}` triple is moved once per
 /// frame, slope 0.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn funcupdate_carry_bytes_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_carry_bytes_field", carry_bytes_field_source);

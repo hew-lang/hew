@@ -281,18 +281,30 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 // ── oracles ─────────────────────────────────────────────────────────────────
 
 /// #2429 headline: the zero-FFI bytes repro holds a flat leak slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn from_call_bytes_scrutinee_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_bytes_scrutinee", bytes_scrutinee_loop_source);
 }
 
 /// String payload through the unbound-scrutinee seam holds a flat slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn from_call_string_scrutinee_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_string_scrutinee", string_scrutinee_loop_source);
 }
 
 /// The Err-arm payload is released per iteration, not just the Ok arm.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn err_arm_payload_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_err_arm", err_arm_loop_source);
@@ -300,6 +312,10 @@ fn err_arm_payload_loop_leak_slope_below_tolerance() {
 
 /// A record payload with an owned field rides the composite in-place drop
 /// through the same seam.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn composite_payload_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_composite_payload", composite_payload_loop_source);
@@ -307,6 +323,10 @@ fn composite_payload_loop_leak_slope_below_tolerance() {
 
 /// `continue` from the consuming arm releases the continued iteration's
 /// payload.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn continue_edge_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_continue_edge", continue_loop_source);
@@ -314,6 +334,10 @@ fn continue_edge_loop_leak_slope_below_tolerance() {
 
 /// Early `return` out of the consuming arm releases the in-flight payload on
 /// the Return plan and prior iterations on the back-edge.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn early_return_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_early_return", early_return_loop_source);
@@ -321,6 +345,10 @@ fn early_return_loop_leak_slope_below_tolerance() {
 
 /// The #2429 acceptance surface: a looped `tls.read()` (offline Err path)
 /// holds a flat slope — one composite + one payload per read, each released.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn tls_read_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_tls_read_loop", tls_read_loop_source);
@@ -329,6 +357,10 @@ fn tls_read_loop_leak_slope_below_tolerance() {
 /// Exactly-once wall: back-edge release adjacent to the break/loop-exit edge
 /// on the last iteration must not double-free, and the payload reads back
 /// verbatim first.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn last_iteration_break_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -340,6 +372,10 @@ fn last_iteration_break_no_double_free_under_malloc_scribble() {
 
 /// Straight-line from-call scrutinee: single Return-plan release, no
 /// double-free, payload readable.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn single_from_call_match_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(

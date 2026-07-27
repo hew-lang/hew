@@ -245,6 +245,10 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
 /// Slope oracle (record): pump + consumer each release their copy per yield —
 /// flat leak slope. Pre-fix this leaked exactly 1 node / 32 B per yield (the
 /// record's `name` string, both references unreleased).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_yield_stream_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("record_yield_stream", record_yield_loop_source);
@@ -252,6 +256,10 @@ fn record_yield_stream_leak_slope_below_tolerance() {
 
 /// Slope oracle (enum, drain consumer): the tag-dispatched enum in-place
 /// release fires on both sides per yield — flat leak slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_yield_stream_drain_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("enum_yield_stream_drain", enum_yield_drain_loop_source);
@@ -260,6 +268,10 @@ fn enum_yield_stream_drain_leak_slope_below_tolerance() {
 /// No-double-free pin (record): 200 yields, retained heap-field reads in the
 /// body — a producer-side release reaching the consumer's copy (or a
 /// premature body-end drop) is a poisoned read here, not a leak.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_yield_stream_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free("record_yield_df", &record_yield_field_read_loop_source(200));
@@ -268,6 +280,10 @@ fn record_yield_stream_freed_exactly_once_under_malloc_scribble() {
 /// No-double-free pin (enum, destructuring consumer): 200 yields; the
 /// moved-out payload must never be freed by the frame binding's suppressed
 /// body-end release.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_yield_destructure_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
@@ -279,6 +295,10 @@ fn enum_yield_destructure_freed_exactly_once_under_malloc_scribble() {
 /// No-double-free pin (record, break edge): the break-edge release and the
 /// body-end release are mutually exclusive; 200 fall-through iterations plus
 /// the breaking one must stay exactly-once.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_yield_break_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(

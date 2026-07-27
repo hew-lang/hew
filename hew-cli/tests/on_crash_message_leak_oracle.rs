@@ -57,6 +57,8 @@
 
 mod support;
 
+use support::leak_slope::require_leaks_tool;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -160,20 +162,13 @@ fn assert_plain_exit(bin: &std::path::Path, expected: i32, label: &str) {
 
 /// Normal return, real-crash restart, and explicit stop must all converge on the
 /// canonical supervisor-root destructor path exactly once.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn supervisor_exit_paths_are_leak_free_under_guard_malloc() {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: leaks(1) is macOS-only (Linux coverage: scripts/asan-fixture-check.sh)");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 

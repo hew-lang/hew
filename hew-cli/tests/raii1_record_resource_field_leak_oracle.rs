@@ -58,6 +58,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks_exact, require_leaks_tool};
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -335,51 +337,6 @@ fn assert_overwrite_rejected(name: &str, source: &str) {
     );
 }
 
-/// Run `bin` under the poisoned-allocator triple; return `(success, leak_count,
-/// leaked_bytes)` from `leaks --atExit` when a summary is produced.
-fn measure_leaks_exact(bin: &Path) -> Option<(usize, usize)> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        let Some(rest) = line.strip_prefix("Process ") else {
-            continue;
-        };
-        if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) else {
-            continue;
-        };
-        let mut words = after_colon.split_whitespace();
-        let count = words.next()?.parse::<usize>().ok()?;
-        let _ = words.next(); // "leaks" / "leak"
-        let _ = words.next(); // "for"
-        let bytes = words.next()?.parse::<usize>().ok()?;
-        eprintln!("  leaks(1) summary: count={count} bytes={bytes} (from: {line})");
-        return Some((count, bytes));
-    }
-    None
-}
-
 // ── oracles ───────────────────────────────────────────────────────────────────
 
 /// Sync scope-exit: `close` fires exactly once on drop. Deterministic stdout.
@@ -433,6 +390,10 @@ fn raii1_record_resource_field_closes_once_in_forked_task() {
 }
 
 /// Looped construct-then-drop, 200×: no double-free under the poisoned triple.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn raii1_record_resource_field_no_double_free_under_malloc_scribble() {
     require_codegen();
@@ -457,29 +418,20 @@ fn raii1_record_resource_field_no_double_free_under_malloc_scribble() {
 }
 
 /// Looped construct-then-drop: exactly `0 leaks for 0 total leaked bytes`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn raii1_record_resource_field_zero_leaks_exact() {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
     let dir = tempfile::Builder::new()
         .prefix("raii1-leak-")
         .tempdir()
         .expect("tempdir");
     let bin = compile_to_native(&src(LOOP_BODY), dir.path(), "loop");
-    let Some((count, bytes)) = measure_leaks_exact(&bin) else {
-        return;
-    };
+    let (count, bytes) = measure_leaks_exact(&bin);
     assert_eq!(
         count,
         0,

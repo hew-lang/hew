@@ -177,6 +177,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 /// payload cell verbatim and exit clean under the poisoned allocator. Routing
 /// the copy-in push to a shallow byte-copy (aliasing the source buffer) or
 /// dropping an element shallowly fails this.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn push_clone_record_collection_field_exact_contents_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -189,6 +193,10 @@ fn push_clone_record_collection_field_exact_contents_under_malloc_scribble() {
 /// Exact-contents pin for the self-recursive enum push: the recursive enum
 /// clone/drop thunk must recurse through the inner `Vec<Reply>` without
 /// double-freeing the nested buffer.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn push_recursive_enum_exact_contents_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -202,6 +210,10 @@ fn push_recursive_enum_exact_contents_under_malloc_scribble() {
 /// a live source must not grow the leak-node count with the frame count. A
 /// regression that fails to clone the source in (or drops an element shallowly)
 /// shows a per-frame slope this catches.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn push_clone_record_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -211,6 +223,10 @@ fn push_clone_record_no_per_frame_leak_slope() {
 }
 
 /// Forward leak guard for the self-recursive enum push path.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn push_recursive_enum_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(

@@ -500,11 +500,12 @@ jobs:
           # must build the archive itself — the workspace build used to produce
           # it as a side effect, which is not a guarantee.
           cargo build -p hew-lib
+          test -f target/debug/libhew.a
           # parity-cmd: make test
-          cargo nextest run --workspace
-          --exclude hew-wasm
-          --exclude hew-cabi
-          --profile ci
+          cargo nextest run --workspace \
+            --exclude hew-wasm \
+            --exclude hew-cabi \
+            --profile ci
 
       - name: Run vertical-slice end-to-end oracle
         if: env.RUN_CODE_PATH == 'true'

@@ -115,14 +115,6 @@ fn process_error_message(err: ProcessError) -> string {
     }
 }
 
-fn process_error_from_message(message: string) -> ProcessError {
-    if message.contains("arg_count") || message.contains("argc") || message.contains("args[") || message.contains("args must be Vec<string>") || message.contains("args is null") {
-        ProcessError::InvalidArguments(message)
-    } else {
-        ProcessError::LaunchFailed(message)
-    }
-}
-
 fn last_process_error(default_message: string) -> ProcessError {
     unsafe {
         let message = hew_process_last_error();
@@ -130,7 +122,10 @@ fn last_process_error(default_message: string) -> ProcessError {
         if message == "" {
             ProcessError::LaunchFailed(default_message)
         } else {
-            process_error_from_message(message)
+            // Public argument-shape validation happens before FFI. A runtime
+            // execution failure is therefore always a launch failure; never
+            // classify it by searching attacker-controlled command text.
+            ProcessError::LaunchFailed(message)
         }
     }
 }

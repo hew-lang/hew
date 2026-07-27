@@ -28,6 +28,13 @@ const REFUSED_URL: &str = "about:blank#refused";
 /// `#` precedes it — `foo/bar:baz` is a relative path, not a `foo` URL. A
 /// destination with no scheme is relative and is allowed.
 fn url_is_allowed(url: &str) -> bool {
+    // WHATWG URL parsing removes ASCII tabs/newlines before scheme
+    // interpretation. Refuse controls (including percent-encoded controls)
+    // before policy evaluation so `java\nscript:` cannot be normalized into
+    // `javascript:` after this check.
+    if url.chars().any(|c| c.is_ascii_control()) || contains_encoded_ascii_control(url) {
+        return false;
+    }
     let trimmed = url.trim_start_matches([' ', '\t', '\n', '\r', '\u{0b}', '\u{0c}']);
     let Some(colon) = trimmed.find(':') else {
         return true;
@@ -51,6 +58,28 @@ fn url_is_allowed(url: &str) -> bool {
     ALLOWED_URL_SCHEMES
         .iter()
         .any(|scheme| before.eq_ignore_ascii_case(scheme))
+}
+
+fn contains_encoded_ascii_control(url: &str) -> bool {
+    fn hex(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    url.as_bytes().windows(3).any(|window| {
+        if window[0] != b'%' {
+            return false;
+        }
+        let (Some(hi), Some(lo)) = (hex(window[1]), hex(window[2])) else {
+            return false;
+        };
+        let decoded = hi * 16 + lo;
+        decoded <= 0x1f || decoded == 0x7f
+    })
 }
 
 fn sanitize_url(url: &CowStr<'_>) -> CowStr<'static> {
@@ -354,6 +383,34 @@ mod tests {
         assert!(!url_is_allowed("data:text/html,<script>"));
         assert!(!url_is_allowed("file:///etc/passwd"));
         assert!(!url_is_allowed("vbscript:x"));
+    }
+
+    #[test]
+    fn sanitizer_refuses_ascii_control_scheme_normalization() {
+        // Browsers remove ASCII tab/newline controls while parsing a URL.
+        // Without this rejection the checked spelling can differ from the
+        // executable scheme after normalization.
+        for destination in [
+            "java\nscript:alert(1)",
+            "java\tscript:alert(1)",
+            "java\u{0b}script:alert(1)",
+            "java%0Ascript:alert(1)",
+            "java%09script:alert(1)",
+            "java%7Fscript:alert(1)",
+        ] {
+            assert!(
+                !url_is_allowed(destination),
+                "control-obfuscated destination must be refused: {destination:?}"
+            );
+        }
+
+        // pulldown-cmark preserves the percent-encoded spelling in the parsed
+        // destination, so drive the full Markdown-to-HTML path as the
+        // counterfactual rather than testing the predicate alone.
+        // SAFETY: the helper accepts a valid Rust string and owns its output.
+        let html = unsafe { md_to_html_safe("[x](java%0Ascript:alert(1))") };
+        assert!(html.contains(REFUSED_URL), "unsafe URL survived: {html}");
+        assert!(!html.contains("java%0A"), "unsafe URL survived: {html}");
     }
 
     #[test]

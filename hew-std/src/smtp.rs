@@ -499,8 +499,11 @@ pub unsafe extern "C" fn hew_smtp_close(conn: *mut HewSmtpConn) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lettre::transport::smtp::client::Tls;
     use std::cell::RefCell;
     use std::ffi::{CStr, CString};
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
     use std::ptr;
     use std::rc::Rc;
 
@@ -518,6 +521,77 @@ mod tests {
         // SAFETY: `err` was allocated via `malloc`.
         unsafe { hew_cabi::cabi::free_cstring(err) }; // CSTRING-FREE: str-open (test frees str_to_malloc error)
         text
+    }
+
+    #[test]
+    fn connection_probe_rejects_a_reachable_server_that_refuses_noop() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback SMTP oracle");
+        let port = listener.local_addr().expect("listener address").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept SMTP probe");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .expect("set write timeout");
+            stream.write_all(b"220 oracle ESMTP\r\n").expect("greeting");
+
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read EHLO");
+            assert!(line.starts_with("EHLO "), "unexpected command: {line:?}");
+            stream
+                .write_all(b"250-oracle\r\n250 HELP\r\n")
+                .expect("EHLO response");
+
+            line.clear();
+            reader.read_line(&mut line).expect("read NOOP");
+            assert_eq!(line, "NOOP\r\n");
+            stream
+                .write_all(b"550 NOOP refused\r\n")
+                .expect("NOOP rejection");
+
+            line.clear();
+            if reader.read_line(&mut line).unwrap_or(0) > 0 && line == "QUIT\r\n" {
+                stream.write_all(b"221 bye\r\n").expect("QUIT response");
+            }
+        });
+
+        let transport = SmtpTransport::builder_dangerous("127.0.0.1")
+            .port(port)
+            .tls(Tls::None)
+            .timeout(Some(Duration::from_secs(2)))
+            .build();
+        let result = probe_transport(&transport, "127.0.0.1", port);
+        assert!(
+            result.is_err(),
+            "NOOP refusal must reject the constructor gate"
+        );
+        server.join().expect("SMTP oracle thread");
+    }
+
+    #[test]
+    fn connection_probe_rejects_reachable_non_smtp_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback oracle");
+        let port = listener.local_addr().expect("listener address").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept probe");
+            stream
+                .write_all(b"this is not SMTP\r\n")
+                .expect("write junk");
+        });
+
+        let host = CString::new("127.0.0.1").expect("host CString");
+        // SAFETY: host is a valid C string and optional credentials are null.
+        let conn =
+            unsafe { hew_smtp_connect(host.as_ptr(), i64::from(port), ptr::null(), ptr::null()) };
+        assert!(
+            conn.is_null(),
+            "the public constructor must reject a reachable non-SMTP endpoint"
+        );
+        assert!(!last_error_text().is_empty());
+        server.join().expect("non-SMTP oracle thread");
     }
 
     #[test]

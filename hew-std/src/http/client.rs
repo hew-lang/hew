@@ -28,16 +28,16 @@ std::thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-fn set_http_last_error(msg: impl Into<String>) {
+pub(crate) fn set_http_last_error(msg: impl Into<String>) {
     LAST_HTTP_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
 }
 
-fn clear_http_last_error() {
+pub(crate) fn clear_http_last_error() {
     LAST_HTTP_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
 fn get_http_last_error() -> String {
-    LAST_HTTP_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+    LAST_HTTP_ERROR.with(|error| error.borrow_mut().take().unwrap_or_default())
 }
 
 #[cfg(test)]

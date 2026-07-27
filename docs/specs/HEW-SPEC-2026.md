@@ -815,13 +815,13 @@ import std::io;            // Available as "io"
 import std::text::regex;   // Available as "regex"
 
 // Call module functions with dot-syntax: module.function(args)
-let server = http.listen("0.0.0.0:8080");   // Uses short name "http"
+let listening = http.listen("0.0.0.0:8080");   // Uses short name "http"
+                                            // Returns Result<Server, NetError>
 let content = fs.read("config.toml");
 let exists = fs.exists("output.txt");       // Returns bool
 let line = io.read_line();                  // Preferred stdin surface
 let re = regex.new("[a-z]+");
 let matched = regex.is_match(re, input);    // Returns bool
-server.close();
 re.close();
 ```
 
@@ -2504,7 +2504,7 @@ implementation.
 
 | Type             | Created by                                 | Methods                                                                                                                              |
 | ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `http.Server`    | `http.listen(addr)`                        | `.accept()` → `http.Request`, `.close()`                                                                                              |
+| `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `http.Request`, `.close()`                                                                                              |
 | `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)`, `.close()` |
 | `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `await ln.accept() \| after d` → `Result<net.Connection, IoError>`, `.close()`                        |
 | `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `bytes`, `.try_read()` → `Result<bytes, net.NetError>`, `.read_string()` → `string`, `.try_read_string()` → `Result<string, net.NetError>`, `await conn.read_string() \| after d` → `Result<string, IoError>`, `.write(data)`, `.write_string(data)`, `.close()` |

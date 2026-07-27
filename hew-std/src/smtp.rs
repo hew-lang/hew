@@ -93,19 +93,60 @@ where
 }
 
 /// Apply optional credentials and port to an SMTP transport builder.
+/// Upper bound on how long a connect probe may block.
+///
+/// `connect` must prove the server is reachable and speaking SMTP before it
+/// hands back a connection, and proving that means a real round trip. The
+/// bound keeps an unreachable host from stalling the caller indefinitely.
+use std::time::Duration;
+
+const SMTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn configure_builder(
     builder: lettre::transport::smtp::SmtpTransportBuilder,
     port: u16,
     user: Option<&str>,
     pass: Option<&str>,
 ) -> SmtpTransport {
-    let builder = builder.port(port);
+    let builder = builder.port(port).timeout(Some(SMTP_CONNECT_TIMEOUT));
     let builder = if let (Some(u), Some(p)) = (user, pass) {
         builder.credentials(Credentials::new(u.to_owned(), p.to_owned()))
     } else {
         builder
     };
     builder.build()
+}
+
+/// Open a connection to the configured server and exchange one command.
+///
+/// `SmtpTransport` is lazy: building it performs no I/O, so a transport for an
+/// unreachable host is indistinguishable from a working one until the first
+/// send. `test_connection` opens the connection and issues a `NOOP`, which is
+/// what makes a connect failure observable at connect time.
+fn probe_transport(transport: &SmtpTransport, host: &str, port: u16) -> Result<(), String> {
+    match transport.test_connection() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "SMTP connect failed: server at `{host}:{port}` did not accept the connection probe"
+        )),
+        Err(err) => Err(format!(
+            "SMTP connect failed: cannot reach `{host}:{port}`: {err}"
+        )),
+    }
+}
+
+/// Report whether `conn` is backed by a probed connection.
+///
+/// A failed connect returns null, which is otherwise indistinguishable from a
+/// live connection until the first send.
+///
+/// # Safety
+///
+/// `conn` must be null or a pointer previously returned by
+/// [`hew_smtp_connect`] or [`hew_smtp_connect_tls`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_smtp_conn_is_valid(conn: *const HewSmtpConn) -> bool {
+    !conn.is_null()
 }
 
 fn normalize_port(port: i64) -> Option<u16> {
@@ -155,6 +196,11 @@ pub unsafe extern "C" fn hew_smtp_connect(
     };
 
     let transport = configure_builder(builder, port, user_str, pass_str);
+    if let Err(reason) = probe_transport(&transport, host_str, port) {
+        set_smtp_last_error(reason);
+        return std::ptr::null_mut();
+    }
+    clear_smtp_last_error();
     Box::into_raw(Box::new(HewSmtpConn { transport }))
 }
 
@@ -200,6 +246,11 @@ pub unsafe extern "C" fn hew_smtp_connect_tls(
     };
 
     let transport = configure_builder(builder, port, user_str, pass_str);
+    if let Err(reason) = probe_transport(&transport, host_str, port) {
+        set_smtp_last_error(reason);
+        return std::ptr::null_mut();
+    }
+    clear_smtp_last_error();
     Box::into_raw(Box::new(HewSmtpConn { transport }))
 }
 

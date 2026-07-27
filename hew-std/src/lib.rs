@@ -83,6 +83,9 @@ pub mod dns;
 pub mod http;
 #[cfg(not(target_family = "wasm"))]
 pub mod ipnet;
+
+#[cfg(not(target_family = "wasm"))]
+mod bind_addr;
 // Shared #[cfg(test)] scaffolding for the tls/smtp/quic actor-scoped
 // last-error regression tests (#2659) — a single runtime-guard/actor-context
 // helper reused by all three so their tests serialize on one process-global

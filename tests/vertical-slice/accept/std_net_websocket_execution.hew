@@ -1,11 +1,21 @@
 import std::net::websocket;
 
+import std::net;
+
 fn main() {
-    let server = websocket.listen("127.0.0.1:0");
-    let port = server.port();
-    if port <= 0 {
-        panic("WebSocket listener has no assigned port");
+    match websocket.listen("127.0.0.1:0") {
+        Ok(server) => {
+            let port = server.port();
+            if port <= 0 {
+                panic("WebSocket listener has no assigned port");
+            }
+            server.close();
+            println("websocket:ok");
+        },
+        Err(err) => {
+            let reason = net.net_error_message(err);
+            let detail = websocket.last_error();
+            println(f"websocket:listen-failed {reason} - {detail}");
+        },
     }
-    server.close();
-    println("websocket:ok");
 }

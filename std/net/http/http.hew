@@ -11,11 +11,17 @@
 //! import std::net::http;
 //!
 //! fn main() {
-//!     let server = http.listen(":8080");
-//!     let req = server.accept();
-//!     req.respond_text(200, "Hello from Hew!");
-//!     req.close();
-//!     server.close();
+//!     match http.listen(":8080") {
+//!         Ok(server) => {
+//!             let req = server.accept();
+//!             req.respond_text(200, "Hello from Hew!");
+//!             req.close();
+//!             server.close();
+//!         },
+//!         Err(_err) => {
+//!             println(http.listen_error());
+//!         },
+//!     }
 //! }
 //! ```
 
@@ -23,7 +29,8 @@ import std::net;
 
 /// An HTTP server bound to a TCP address.
 ///
-/// Created by calling `http.listen(addr)`. Use `accept()` to wait for
+/// Created by calling `http.listen(addr)`, which returns `Err` when the
+/// address cannot be bound. Use `accept()` to wait for
 /// incoming requests in a loop, then call `close()` before the value goes
 /// out of scope.
 #[opaque]
@@ -318,23 +325,57 @@ impl Request {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
+/// Return and clear the detail of this actor's most recent HTTP failure.
+///
+/// Reads the same runtime authority as `http_client.last_error()`; the name
+/// differs only because both files share one package pub-name namespace.
+/// Returns the empty string when the last HTTP call succeeded. Call it
+/// immediately after an `Err` from `listen` for the precise, non-secret
+/// reason.
+pub fn listen_error() -> string {
+    unsafe {
+        hew_http_last_error()
+    }
+}
+
 /// Create a new HTTP server listening on the given address.
 ///
 /// The address format is `"host:port"` or `":port"` to listen on all
 /// interfaces.
 ///
+/// Returns `Err(net.NetError)` when the address cannot be bound — the port is
+/// already in use, the address is not local, or the string is not a valid
+/// endpoint. Use `http.listen_error()` for the precise detail.
+///
 /// # Examples
 ///
 /// ```
-/// let server = http.listen(":8080");
-/// server.close();
-/// let server = http.listen("127.0.0.1:3000");
-/// server.close();
+/// match http.listen("127.0.0.1:0") {
+///     Ok(server) => server.close(),
+///     Err(err) => println(f"listen failed: {net.net_error_message(err)}"),
+/// }
 /// ```
-pub fn listen(addr: string) -> Server {
-    unsafe {
+pub fn listen(addr: string) -> Result<Server, net.NetError> {
+    let server = unsafe {
         hew_http_server_new(addr)
+    };
+    let ok = unsafe {
+        hew_http_server_is_valid(server)
+    };
+    if ok {
+        return Ok(server);
     }
+    // Read the errno before the detail: reading the detail clears the slot.
+    let errno = unsafe {
+        hew_http_last_listen_errno()
+    };
+    if errno == 0 {
+        let detail = unsafe {
+            hew_http_last_error()
+        };
+        return Err(net.NetError::InvalidArgument(detail));
+    }
+    Err(net.net_error_from_errno(errno))
 }
 
 /// Send a full HTTP response, returning `Err(net.NetError)` on failure.
@@ -360,6 +401,9 @@ pub fn try_respond_stream(req: Request, status: i64, content_type: string) -> Re
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
     fn hew_http_server_new(addr: string) -> Server;
+    fn hew_http_server_is_valid(server: Server) -> bool;
+    fn hew_http_last_listen_errno() -> i64;
+    fn hew_http_last_error() -> string;
     fn hew_http_server_recv(server: Server) -> RequestHandle;
     fn hew_http_server_set_request_timeout_ms(server: Server, timeout_ms: i64) -> i32;
     fn hew_http_request_method(req: RequestHandle) -> string;

@@ -914,6 +914,7 @@ stable-stdlib = [
   "hew_gzip_decompress_hew",
   "hew_hmac_sha256_hew",
   "hew_http_last_error",
+  "hew_http_last_listen_errno",
   "hew_http_request_body_string",
   "hew_http_request_free",
   "hew_http_request_header",
@@ -933,6 +934,7 @@ stable-stdlib = [
   "hew_http_response_status",
   "hew_http_server_close",
   "hew_http_server_new",
+  "hew_http_server_is_valid",
   "hew_http_server_recv",
   "hew_http_server_set_request_timeout_ms",
   "hew_http_set_timeout",
@@ -1057,6 +1059,7 @@ stable-stdlib = [
   "hew_sha384_hew",
   "hew_sha512_hew",
   "hew_smtp_close",
+  "hew_smtp_conn_is_valid",
   "hew_smtp_connect",
   "hew_smtp_connect_tls",
   "hew_smtp_last_error",
@@ -1116,8 +1119,11 @@ stable-stdlib = [
   "hew_uuid_v7",
   "hew_ws_attach",
   "hew_ws_close",
+  "hew_ws_conn_is_valid",
   "hew_ws_connect",
   "hew_ws_message_free",
+  "hew_ws_last_errno",
+  "hew_ws_last_error",
   "hew_ws_message_is_valid",
   "hew_ws_message_text",
   "hew_ws_message_type",
@@ -1128,6 +1134,7 @@ stable-stdlib = [
   "hew_ws_server_accept",
   "hew_ws_server_close",
   "hew_ws_server_new",
+  "hew_ws_server_is_valid",
   "hew_ws_server_port",
   "hew_xml_children_count",
   "hew_xml_free",
@@ -5484,6 +5491,55 @@ discharge-depth = "none"
 # deliberately NOT consulted (see the system-lane provenance boundary above).
 [[ownership.contracts]]
 symbol = "hew_mailbox_has_user_messages"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_last_listen_errno"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_server_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ws_last_errno"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_conn_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_server_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_smtp_conn_is_valid"
 result = "none"
 params = ["borrow"]
 release-symbol = ""

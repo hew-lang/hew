@@ -25,7 +25,9 @@
 // WASM-TODO(#1451): std::net::smtp remains native-only until Hew has a wasm SMTP transport.
 /// An open SMTP connection handle.
 ///
-/// Created by calling `smtp.connect(...)` or `smtp.connect_tls(...)`.
+/// Created by calling `smtp.connect(...)` or `smtp.connect_tls(...)`, which
+/// probe the server before returning `Ok` and report an unreachable or
+/// non-SMTP endpoint as `Err`.
 /// Use `send()` or `send_html()` to deliver messages.
 #[opaque]
 pub type Conn {
@@ -121,27 +123,57 @@ fn smtp_err(fallback: string) -> string {
 
 /// Connect to an SMTP server using STARTTLS.
 ///
+/// The connection is opened and probed before it is returned, so an
+/// unreachable host, a refused port, or a server that is not speaking SMTP is
+/// reported here rather than at the first send.
+///
 /// # Examples
 ///
 /// ```
-/// let conn = smtp.connect("smtp.example.com", 587, "user", "pass");
+/// match smtp.connect("smtp.example.com", 587, "user", "pass") {
+///     Ok(conn) => conn.close(),
+///     Err(reason) => println(f"connect failed: {reason}"),
+/// }
 /// ```
-pub fn connect(host: string, port: i64, username: string, password: string) -> Conn {
-    unsafe {
+pub fn connect(host: string, port: i64, username: string, password: string) -> Result<Conn, string> {
+    let conn = unsafe {
         hew_smtp_connect(host, port, username, password)
+    };
+    let ok = unsafe {
+        hew_smtp_conn_is_valid(conn)
+    };
+    if ok {
+        Ok(conn)
+    } else {
+        Err(smtp_err("smtp connect failed"))
     }
 }
 
 /// Connect to an SMTP server using implicit TLS.
 ///
+/// The connection is opened and probed before it is returned, so an
+/// unreachable host, a refused port, or a server that is not speaking SMTP is
+/// reported here rather than at the first send.
+///
 /// # Examples
 ///
 /// ```
-/// let conn = smtp.connect_tls("smtp.example.com", 465, "user", "pass");
+/// match smtp.connect_tls("smtp.example.com", 465, "user", "pass") {
+///     Ok(conn) => conn.close(),
+///     Err(reason) => println(f"connect failed: {reason}"),
+/// }
 /// ```
-pub fn connect_tls(host: string, port: i64, username: string, password: string) -> Conn {
-    unsafe {
+pub fn connect_tls(host: string, port: i64, username: string, password: string) -> Result<Conn, string> {
+    let conn = unsafe {
         hew_smtp_connect_tls(host, port, username, password)
+    };
+    let ok = unsafe {
+        hew_smtp_conn_is_valid(conn)
+    };
+    if ok {
+        Ok(conn)
+    } else {
+        Err(smtp_err("smtp connect failed"))
     }
 }
 
@@ -197,6 +229,7 @@ pub fn try_send_html(host: string, port: i64, username: string, password: string
 extern "C" {
     fn hew_smtp_connect(host: string, port: i64, username: string, password: string) -> Conn;
     fn hew_smtp_connect_tls(host: string, port: i64, username: string, password: string) -> Conn;
+    fn hew_smtp_conn_is_valid(conn: Conn) -> bool;
     fn hew_smtp_last_error() -> string;
     fn hew_smtp_send(conn: Conn, from: string, to: string, subject: string, body: string) -> i32;
     fn hew_smtp_send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> i32;

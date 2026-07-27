@@ -7,13 +7,22 @@
 //
 // Usage: http_server [port] [root_dir]
 // Defaults: port=8080, root_dir="."
-import std::net::http::http::{Request};
+import std::net::http::http::{Request, Server};
 
 import std::fs;
 
 import std::os;
 
 import std::net::mime;
+
+import std::net;
+
+fn serve_forever(root: string, srv: Server) {
+    loop {
+        let req = srv.accept();
+        serve_request(root, req);
+    }
+}
 
 fn serve_request(root: string, req: Request) {
     let request_path = req.path();
@@ -55,9 +64,14 @@ fn main() {
     let addr = f"0.0.0.0:{port}";
     println("=== Hew HTTP Static File Server ===");
     println(f"Listening on http://{addr}  root={root}");
-    let srv = http.listen(addr);
-    loop {
-        let req = srv.accept();
-        serve_request(root, req);
+    match http.listen(addr) {
+        Ok(srv) => {
+            serve_forever(root, srv);
+        },
+        Err(err) => {
+            let reason = net.net_error_message(err);
+            let detail = http.listen_error();
+            println(f"cannot listen on {addr}: {reason} - {detail}");
+        },
     }
 }

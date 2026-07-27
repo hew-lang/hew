@@ -14,12 +14,19 @@ fn main() {
     let tls_stream: tls.TlsStream = tls.connect("example.com", tls_port);
     let _tls_chunk: Result<bytes, net.NetError> = tls.read(tls_stream, tls_size);
     let smtp_port: i64 = 587;
-    let _smtp_conn: smtp.Conn = smtp.connect("smtp.example.com", smtp_port, "user", "pass");
-    let _smtp_tls_conn: smtp.Conn = smtp.connect_tls("smtp.example.com", 465, "user", "pass");
+    let _smtp_conn: Result<smtp.Conn, string> = smtp.connect("smtp.example.com", smtp_port, "user", "pass");
+    let _smtp_tls_conn: Result<smtp.Conn, string> = smtp.connect_tls("smtp.example.com", 465, "user", "pass");
     let _smtp_send_status: i64 = smtp.send("smtp.example.com", smtp_port, "user", "pass", "from@example.com", "to@example.com", "subject", "body");
     let _smtp_send_html_status: i64 = smtp.send_html("smtp.example.com", smtp_port, "user", "pass", "from@example.com", "to@example.com", "subject", "<p>body</p>");
-    let ws_server: websocket.Server = websocket.listen("127.0.0.1:0");
-    let ws_port: i64 = ws_server.port();
+    let ws_listen: Result<websocket.Server, net.NetError> = websocket.listen("127.0.0.1:0");
+    var ws_port: i64 = 0;
+    match ws_listen {
+        Ok(ws_server) => {
+            ws_port = ws_server.port();
+            ws_server.close();
+        },
+        Err(_err) => {},
+    }
     let timeout_ms: i64 = 1500;
     let conn: net.Connection = net.connect_timeout("127.0.0.1:8080", 1, 500000);
     let _read_timeout_status: Result<(), net.NetError> = conn.set_read_timeout(timeout_ms);

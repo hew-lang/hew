@@ -5,6 +5,7 @@
 //! All returned data pointers are allocated with `libc::malloc` so callers can
 //! free them with the corresponding free function.
 
+use crate::bind_addr::normalize_bind_addr;
 use hew_cabi::cabi::{alloc_cstring, free_cstring, malloc_bytes};
 use std::ffi::{c_void, CStr};
 use std::io::{self, Read, Write};
@@ -865,24 +866,78 @@ fn recv_message(inner: &Arc<HewWsConnInner>) -> (HewWsRecvResult, *mut HewWsMess
 #[no_mangle]
 pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
     if url.is_null() {
+        set_ws_last_error(0, "websocket.connect: url is null".to_owned());
         return std::ptr::null_mut();
     }
     // SAFETY: `url` is a valid NUL-terminated C string per caller contract.
     let Ok(url_str) = unsafe { CStr::from_ptr(url) }.to_str() else {
+        set_ws_last_error(0, "websocket.connect: url is not valid UTF-8".to_owned());
         return std::ptr::null_mut();
     };
 
     let config = match websocket_config_from_env() {
         Ok(config) => config,
         Err(err) => {
-            eprintln!("[connect] invalid websocket config: {err}");
+            set_ws_last_error(0, format!("websocket.connect: invalid config: {err}"));
             return std::ptr::null_mut();
         }
     };
 
     match connect_with_config(url_str, Some(config), 3) {
-        Ok((ws, _response)) => Box::into_raw(Box::new(HewWsConn::new(ws, Role::Client))),
-        Err(_) => std::ptr::null_mut(),
+        Ok((ws, _response)) => {
+            clear_ws_last_error();
+            Box::into_raw(Box::new(HewWsConn::new(ws, Role::Client)))
+        }
+        Err(err) => {
+            set_ws_last_error(
+                ws_errno_of(&err, url_str),
+                format!("websocket.connect: {err}"),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Recover the OS errno a tungstenite error carries, or 0 when it is a
+/// protocol/handshake failure with no syscall behind it.
+fn ws_errno_of(err: &tungstenite::Error, url_str: &str) -> i64 {
+    match err {
+        tungstenite::Error::Io(io_err) => io_err.raw_os_error().map_or(0, i64::from),
+        // tungstenite collapses a failed TCP connect for every resolved
+        // address into `UnableToConnect`, discarding the OS error. Re-run the
+        // connect to observe the errno rather than guess one; this only runs
+        // once the transport is already known to be unreachable.
+        tungstenite::Error::Url(tungstenite::error::UrlError::UnableToConnect(_)) => {
+            observed_connect_errno(url_str)
+        }
+        _ => 0,
+    }
+}
+
+/// Connect to `url_str`'s authority once and report the OS error it produces.
+///
+/// Returns 0 when the address cannot be derived or when the connect
+/// unexpectedly succeeds, so no errno is ever invented.
+fn observed_connect_errno(url_str: &str) -> i64 {
+    let Ok(parsed) = url::Url::parse(url_str) else {
+        return 0;
+    };
+    let Some(host) = parsed.host_str() else {
+        return 0;
+    };
+    let Some(port) = parsed
+        .port_or_known_default()
+        .or_else(|| match parsed.scheme() {
+            "ws" => Some(80),
+            "wss" => Some(443),
+            _ => None,
+        })
+    else {
+        return 0;
+    };
+    match TcpStream::connect((host, port)) {
+        Ok(_) => 0,
+        Err(io_err) => io_err.raw_os_error().map_or(0, i64::from),
     }
 }
 
@@ -1011,6 +1066,68 @@ pub unsafe extern "C" fn hew_ws_recv(ws: *mut HewWsConn) -> *mut HewWsMessage {
 // because the FFI returns a single pointer. Cleared at every call.
 std::thread_local! {
     static LAST_WS_RECV_TIMED_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// This actor's most recent WebSocket construction failure: the errno the
+    /// underlying socket reported and a non-secret detail.
+    ///
+    /// One slot serves both `hew_ws_connect` and `hew_ws_server_new`, so a
+    /// caller reads a single authority for the module. Both halves are written
+    /// together and cleared together on success.
+    static LAST_WS_ERROR: std::cell::RefCell<(i64, Option<String>)> =
+        const { std::cell::RefCell::new((0, None)) };
+}
+
+fn set_ws_last_error(errno: i64, detail: String) {
+    LAST_WS_ERROR.with(|slot| *slot.borrow_mut() = (errno, Some(detail)));
+}
+
+fn clear_ws_last_error() {
+    LAST_WS_ERROR.with(|slot| *slot.borrow_mut() = (0, None));
+}
+
+/// Return and clear the errno of this actor's most recent failed
+/// `hew_ws_connect` or `hew_ws_server_new`, or 0 when the last call succeeded.
+///
+/// Read this before [`hew_ws_last_error`], which clears the detail.
+#[no_mangle]
+pub extern "C" fn hew_ws_last_errno() -> i64 {
+    LAST_WS_ERROR.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let errno = slot.0;
+        slot.0 = 0;
+        errno
+    })
+}
+
+/// Return and clear the detail of this actor's most recent failed
+/// `hew_ws_connect` or `hew_ws_server_new`, or the empty string when the last
+/// call succeeded.
+#[no_mangle]
+pub extern "C" fn hew_ws_last_error() -> *mut c_char {
+    let detail = LAST_WS_ERROR.with(|slot| slot.borrow_mut().1.take());
+    hew_cabi::cabi::str_to_malloc(&detail.unwrap_or_default())
+}
+
+/// Report whether `ws` is backed by a live WebSocket connection.
+///
+/// # Safety
+///
+/// `ws` must be null or a pointer previously returned by [`hew_ws_connect`]
+/// or `hew_ws_server_accept`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_ws_conn_is_valid(ws: *const HewWsConn) -> bool {
+    !ws.is_null()
+}
+
+/// Report whether `server` is backed by a bound listener.
+///
+/// # Safety
+///
+/// `server` must be null or a pointer previously returned by
+/// [`hew_ws_server_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_ws_server_is_valid(server: *const HewWsServer) -> bool {
+    !server.is_null()
 }
 
 fn set_last_ws_recv_timed_out(v: bool) {
@@ -1397,18 +1514,36 @@ fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
 #[no_mangle]
 pub unsafe extern "C" fn hew_ws_server_new(addr: *const c_char) -> *mut HewWsServer {
     if addr.is_null() {
+        set_ws_last_error(0, "websocket.listen: address is null".to_owned());
         return std::ptr::null_mut();
     }
     // SAFETY: `addr` is a valid NUL-terminated C string per caller contract.
     let Ok(addr_str) = (unsafe { CStr::from_ptr(addr) }).to_str() else {
+        set_ws_last_error(0, "websocket.listen: address is not valid UTF-8".to_owned());
         return std::ptr::null_mut();
     };
-    match TcpListener::bind(addr_str) {
+    let bind_addr = normalize_bind_addr(addr_str);
+    match TcpListener::bind(bind_addr.as_ref()) {
         Ok(listener) => match HewWsServer::new(listener) {
-            Ok(server) => Box::into_raw(Box::new(server)),
-            Err(_) => std::ptr::null_mut(),
+            Ok(server) => {
+                clear_ws_last_error();
+                Box::into_raw(Box::new(server))
+            }
+            Err(err) => {
+                set_ws_last_error(
+                    err.raw_os_error().map_or(0, i64::from),
+                    format!("websocket.listen: cannot prepare listener on `{addr_str}`: {err}"),
+                );
+                std::ptr::null_mut()
+            }
         },
-        Err(_) => std::ptr::null_mut(),
+        Err(err) => {
+            set_ws_last_error(
+                err.raw_os_error().map_or(0, i64::from),
+                format!("websocket.listen: cannot bind `{addr_str}`"),
+            );
+            std::ptr::null_mut()
+        }
     }
 }
 

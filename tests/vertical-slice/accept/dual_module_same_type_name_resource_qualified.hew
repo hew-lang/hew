@@ -17,8 +17,20 @@ import std::net::http;
 import std::net::websocket;
 
 fn main() {
-    let http_server = http.listen(":0");
-    http_server.close();
-    let ws_server = websocket.listen(":0");
-    ws_server.close();
+    match http.listen(":0") {
+        Ok(http_server) => {
+            http_server.close();
+        },
+        Err(_) => {
+            panic("http listener did not bind");
+        },
+    }
+    match websocket.listen(":0") {
+        Ok(ws_server) => {
+            ws_server.close();
+        },
+        Err(_) => {
+            panic("websocket listener did not bind");
+        },
+    }
 }

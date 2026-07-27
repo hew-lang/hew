@@ -58,7 +58,7 @@ trait UrlMethods {
     fn to_string(self) -> string;
 
     /// Resolve a relative path onto this URL, returning a new `Url`.
-    fn resolve(self, path: string) -> Url;
+    fn resolve(self, path: string) -> Result<Url, string>;
 }
 
 impl UrlMethods for Url {
@@ -110,9 +110,21 @@ impl UrlMethods for Url {
         }
     }
     /// Resolve a relative path onto this URL, returning a new `Url`.
-    fn resolve(u: Url, path: string) -> Url {
-        unsafe {
-            Url { handle: hew_url_join(u.handle, path) }
+    ///
+    /// Returns `Err(string)` when the path cannot be resolved against this
+    /// base. A failed join produces a null handle, which is otherwise
+    /// indistinguishable from a resolved URL until the handle is read.
+    fn resolve(u: Url, path: string) -> Result<Url, string> {
+        let handle = unsafe {
+            hew_url_join(u.handle, path)
+        };
+        let ok = unsafe {
+            hew_url_is_valid(handle)
+        };
+        if ok {
+            Ok(Url { handle: handle })
+        } else {
+            Err(f"url.resolve: cannot resolve `{path}` against this base")
         }
     }
 }

@@ -8,6 +8,7 @@
 //! Use [`hew_http_server_set_request_timeout_ms`] to tune that deadline.
 
 use super::headers_vec::string_pair_elem_layout;
+use crate::bind_addr::normalize_bind_addr;
 use hew_cabi::cabi::{free_cstring, malloc_bytes, malloc_cstring, str_to_malloc};
 use hew_cabi::sink::{into_write_sink_ptr, set_last_error, HewSink};
 use hew_cabi::vec::HewVec;
@@ -19,6 +20,49 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+thread_local! {
+    /// The errno the most recent failed [`hew_http_server_new`] bind reported
+    /// on this actor, or 0 when the last call succeeded.
+    ///
+    /// The human-readable half lives in the module's single
+    /// `hew_http_last_error` slot, so a caller reads one authority for the
+    /// detail whether the failure came from the client or the server.
+    static LAST_LISTEN_ERRNO: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+}
+
+fn set_listen_error(errno: i64, detail: String) {
+    LAST_LISTEN_ERRNO.with(|slot| slot.set(errno));
+    crate::http::client::set_http_last_error(detail);
+}
+
+fn clear_listen_error() {
+    LAST_LISTEN_ERRNO.with(|slot| slot.set(0));
+    crate::http::client::clear_http_last_error();
+}
+
+/// Return and clear the errno of this actor's most recent failed
+/// [`hew_http_server_new`], or 0 when the last call succeeded.
+///
+/// Read this before `hew_http_last_error`, which clears the detail.
+#[no_mangle]
+pub extern "C" fn hew_http_last_listen_errno() -> i64 {
+    LAST_LISTEN_ERRNO.with(std::cell::Cell::take)
+}
+
+/// Report whether `srv` is backed by a bound listener.
+///
+/// A failed [`hew_http_server_new`] returns null, which is indistinguishable
+/// from a live server until it is asked.
+///
+/// # Safety
+///
+/// `srv` must be null or a pointer previously returned by
+/// [`hew_http_server_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_server_is_valid(srv: *const HewHttpServer) -> bool {
+    !srv.is_null()
+}
 
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 const DEFAULT_REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -323,22 +367,45 @@ impl Drop for HewHttpServer {
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_server_new(addr: *const c_char) -> *mut HewHttpServer {
     if addr.is_null() {
+        set_listen_error(0, "http.listen: address is null".to_owned());
         return std::ptr::null_mut();
     }
     // SAFETY: addr is a valid NUL-terminated C string per caller contract.
     let Ok(addr_str) = unsafe { CStr::from_ptr(addr) }.to_str() else {
+        set_listen_error(0, "http.listen: address is not valid UTF-8".to_owned());
         return std::ptr::null_mut();
     };
 
-    match tiny_http::Server::http(addr_str) {
-        Ok(server) => Box::into_raw(Box::new(HewHttpServer {
-            inner: server,
-            max_body_size: MAX_BODY_SIZE,
-            request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
-            response_threads: ResponseThreadTracker::new(),
-        })),
-        Err(_) => std::ptr::null_mut(),
+    let bind_addr = normalize_bind_addr(addr_str);
+    match tiny_http::Server::http(bind_addr.as_ref()) {
+        Ok(server) => {
+            clear_listen_error();
+            Box::into_raw(Box::new(HewHttpServer {
+                inner: server,
+                max_body_size: MAX_BODY_SIZE,
+                request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
+                response_threads: ResponseThreadTracker::new(),
+            }))
+        }
+        Err(err) => {
+            let errno = io_errno_of(err.as_ref());
+            set_listen_error(errno, format!("http.listen: cannot bind `{addr_str}`"));
+            std::ptr::null_mut()
+        }
     }
+}
+
+/// Recover the OS errno from a boxed error, walking the source chain because
+/// `tiny_http` wraps the `io::Error` the bind produced.
+fn io_errno_of(err: &(dyn std::error::Error + 'static)) -> i64 {
+    let mut current = Some(err);
+    while let Some(e) = current {
+        if let Some(io_err) = e.downcast_ref::<io::Error>() {
+            return io_err.raw_os_error().map_or(0, i64::from);
+        }
+        current = e.source();
+    }
+    0
 }
 
 /// Block until the next request arrives.

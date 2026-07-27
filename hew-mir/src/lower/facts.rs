@@ -60,7 +60,7 @@ impl Builder {
 /// admitted because every definition is a record literal / funcupdate result.
 pub(super) fn compute_funcupdate_base_provenance<'f>(
     func: &'f HirFn,
-    fresh: &'f HashMap<hew_hir::ItemId, bool>,
+    fresh: &'f crate::return_provenance::FreshOwnerVerdicts,
 ) -> HashMap<BindingId, bool> {
     let mut defs: HashMap<BindingId, Vec<&HirExpr>> = HashMap::new();
     let mut let_or_param: HashSet<BindingId> = HashSet::new();
@@ -77,6 +77,12 @@ pub(super) fn compute_funcupdate_base_provenance<'f>(
         params,
         memo: HashMap::new(),
         fresh,
+        // This prescan runs BEFORE the function is lowered, so the lowering's
+        // proven-foreign binder ledger does not exist yet. Empty is safe here:
+        // a `let` bound to a foreign producer already fails this resolver's own
+        // call check (the authority declines a direct extern and every wrapper
+        // of one), so the ledger would add nothing a funcupdate base could use.
+        proven_foreign: HashSet::new(),
     };
     let ids: Vec<BindingId> = resolver.let_or_param.iter().copied().collect();
     for id in ids {
@@ -89,14 +95,15 @@ pub(super) fn compute_funcupdate_base_provenance<'f>(
 /// binding to every initialiser/reassignment expression that defines it;
 /// `let_or_param` is the set of bindings introduced by a `let` or a parameter
 /// (any other origin is unproven); `params` is the by-value parameter subset;
-/// `fresh` is the module interprocedural freshness summary
-/// (`compute_fn_returns_fresh_owner`) consulted when a definition is a call.
+/// `fresh` is the module's table-aware freshness authority
+/// (`FreshOwnerVerdicts`) consulted when a definition is a call.
 struct BaseOwnerResolver<'f> {
     defs: HashMap<BindingId, Vec<&'f HirExpr>>,
     let_or_param: HashSet<BindingId>,
     params: HashSet<BindingId>,
     memo: HashMap<BindingId, bool>,
-    fresh: &'f HashMap<hew_hir::ItemId, bool>,
+    fresh: &'f crate::return_provenance::FreshOwnerVerdicts,
+    proven_foreign: HashSet<BindingId>,
 }
 impl<'f> BaseOwnerResolver<'f> {
     /// True iff `{ ..<binding>, f: new }` is a proven unique owner: `binding` is
@@ -168,7 +175,12 @@ impl<'f> BaseOwnerResolver<'f> {
             // and fails here; a call is checked against the freshness summary; a
             // construction embedding a whole by-value parameter is rejected via
             // the prescan's `params` set.
-            _ => Builder::expr_is_materialized_owner(init, self.fresh, &self.params),
+            _ => Builder::expr_is_materialized_owner(
+                init,
+                self.fresh,
+                &self.params,
+                &self.proven_foreign,
+            ),
         }
     }
 }
@@ -2104,6 +2116,17 @@ fn fn_body_returns_fresh_owner(f: &HirFn, fresh: &HashMap<hew_hir::ItemId, bool>
 /// reassign consumers unchanged while #2648's Precise driver consumes the same
 /// walk under a different policy. Pinned byte-identical by the
 /// `coarse_verdict_differential` frozen-reference test.
+///
+/// # This proof is not a release licence
+///
+/// It cannot see an extern at all: a declared `extern "C"` fn is body-less, so
+/// this walk's own `unwrap_or(true)` classifies it fresh and a Hew wrapper
+/// around one inherits that verdict. That is precisely why NO ownership
+/// consumer is ever handed this map. The veto of
+/// [`crate::return_provenance::compute_fn_return_launders_opaque_extern`] is
+/// conjoined into it ONCE, inside
+/// [`crate::return_provenance::FreshOwnerVerdicts`], and that authority is the
+/// only thing [`callee_returns_fresh_owner`] can be called with.
 fn return_value_may_alias_borrow(
     expr: &HirExpr,
     body: &hew_hir::HirBlock,
@@ -2111,40 +2134,74 @@ fn return_value_may_alias_borrow(
 ) -> bool {
     crate::return_provenance::coarse_may_alias_borrow_in_body(expr, body, fresh)
 }
-/// Resolve a `Call` callee to its freshness fact.
+/// Resolve a `Call` callee to its freshness fact, read from the SINGLE
+/// table-aware authority ([`FreshOwnerVerdicts`]): `true` only when `callee`
+/// resolves to a function body this module's freshness fixpoint actually
+/// ANALYZED, proved fresh, AND proved free of any ownership-opaque extern on
+/// every return path.
 ///
+/// - A declared `extern "C"` callee with no audited fresh-owner return contract
+///   is vetoed FIRST, by NAME. Its call site's `ResolvedRef::Item` carries a
+///   placeholder id, so no id lookup can catch it — an id lookup would also
+///   COLLIDE with the module-fn summary space.
 /// - A statically-resolved item callee (`BindingRef { resolved: Item(id) }`)
-///   that names a function body IN THIS MODULE reads that body's summary entry
-///   (the analyzed `fresh` verdict — a HEW function that forwards a by-value
-///   parameter is `false`, caught by the interprocedural fixpoint).
-/// - A resolved item callee with NO body in this module is an extern / runtime
-///   primitive (`hew_string_repeat`, `hew_vec_*`, …) or an aggregate
-///   constructor. Both return a freshly-owned value by the cross-ABI
-///   owned-return contract: a callee returning a heap type hands back a value
-///   the caller owns and must free, so it cannot be a borrowed alias of an
-///   argument (an extern that returned an un-retained borrow would double-free
-///   in EVERY caller that frees the result, not just funcupdate — that is an
-///   ABI violation at the extern boundary, the same trust the `RecordCloneCall`
-///   / `Index` / `Slice` arms already extend to the `hew_*_clone` /
-///   `hew_*_get_clone` primitives they lower to). Classified fresh.
+///   reads its authority row: the coarse interprocedural verdict CONJOINED with
+///   the opaque-extern laundering veto. A Hew function that forwards a by-value
+///   parameter is `false` (the coarse fixpoint); a Hew wrapper that launders an
+///   opaque extern's return is `false` too (the taint fixpoint), transitively.
+/// - A resolved item callee with NO row is an item this module never analysed —
+///   a compiler-emitted body-less item, a cross-module item, or the placeholder
+///   id of a declared extern. It answers `false`: not-analysed is not a
+///   freshness proof, and the worst case of declining is a missed drop, never a
+///   caller-side double release.
 /// - Any other callee shape (an unresolved name, a value-typed fn pointer, an
 ///   indirect/closure call) is not statically resolvable and fails closed.
+///
+/// # The row must be TABLE-DERIVED, not merely present
+///
+/// Requiring a `true` row in the plain coarse summary is not enough, because
+/// that summary is built before and independently of the extern contract table
+/// and its own leaf policy launders a body-less extern into `Fresh`. A single
+/// Hew frame is then enough to restore the forbidden caller drop:
+///
+/// ```hew
+/// extern "C" { fn host_string() -> string; }
+/// fn wrapper() -> string { unsafe { host_string() } }   // plain summary: true
+/// ```
+///
+/// So the row read here comes from the single authority
+/// [`crate::return_provenance::FreshOwnerVerdicts`], which is the coarse proof
+/// CONJOINED with the veto of
+/// [`crate::return_provenance::compute_fn_return_launders_opaque_extern`] — a
+/// fixpoint that resolves every declared extern through the audited
+/// [`ExternContractTable`]. That makes the answer transitive: a wrapper of a
+/// wrapper, a generic wrapper and a recursive-looking wrapper all inherit the
+/// `false` row.
+///
+/// Generic origins are included: a monomorphisation's callee resolves to the
+/// generic ORIGIN `ItemId`, and the fixpoint is computed over `origin_fns`
+/// (every `HirItem::Function`, generic or not), so a proven-fresh generic still
+/// answers `true` here.
+///
+/// [`ExternContractTable`]: crate::return_provenance::ExternContractTable
 pub(super) fn callee_returns_fresh_owner(
     callee: &HirExpr,
-    fresh: &HashMap<hew_hir::ItemId, bool>,
+    verdicts: &crate::return_provenance::FreshOwnerVerdicts,
 ) -> bool {
-    if let HirExprKind::BindingRef {
-        resolved: ResolvedRef::Item(item_id),
-        ..
-    } = &callee.kind
-    {
-        // `Some(f)` — a module function body the summary analyzed; trust its
-        // verdict. `None` — a resolved item with no analyzable body here
-        // (extern primitive or constructor); fresh by the owned-return ABI.
-        fresh.get(item_id).copied().unwrap_or(true)
-    } else {
-        false
+    let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
+        return false;
+    };
+    let symbol = match resolved {
+        ResolvedRef::Builtin(family) => family.c_symbol(),
+        _ => name.as_str(),
+    };
+    if verdicts.symbol_is_ownership_opaque_extern(symbol) {
+        return false;
     }
+    let ResolvedRef::Item(item_id) = resolved else {
+        return false;
+    };
+    verdicts.item_returns_fresh_owner(*item_id)
 }
 /// True when `callee` names a statically-resolved Item — a free function (whose
 /// body the freshness fixpoint analyzed), an extern / runtime primitive, or an
@@ -4005,5 +4062,488 @@ mod call_param_verdict_tests {
         assert!(v[&(ItemId(10), 0)].is_consume());
         assert!(v[&(ItemId(20), 0)].is_consume());
         assert!(!v[&(ItemId(30), 0)].is_consume());
+    }
+}
+
+#[cfg(test)]
+mod analyzed_freshness_strictness {
+    //! [`callee_returns_fresh_owner`] must answer `true` ONLY for an item this
+    //! module analysed and proved clean.
+    //!
+    //! The reader used to fall back to `unwrap_or(true)` for an absent row, on
+    //! the theory that a body-less resolved item (an aggregate constructor, a
+    //! runtime primitive) returns an owned value by the cross-ABI contract. A
+    //! declared `extern "C"` fn is body-less too, so that fallback handed a
+    //! caller-side RELEASE obligation to an un-audited host — and it made an
+    //! EMPTY authority answer fresh for EVERY id. Both are closed here: an
+    //! absent row is not a freshness proof, so an empty authority grants
+    //! nothing.
+    use super::*;
+
+    fn callee_with(resolved: ResolvedRef) -> HirExpr {
+        HirExpr {
+            node: hew_hir::HirNodeId(0),
+            site: hew_hir::SiteId(0),
+            ty: ResolvedTy::String,
+            value_class: hew_hir::ValueClass::CowValue,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name: "callee".to_string(),
+                resolved,
+            },
+            span: hew_parser::ast::Span::default(),
+        }
+    }
+
+    fn item_callee(id: u32) -> HirExpr {
+        callee_with(ResolvedRef::Item(hew_hir::ItemId(id)))
+    }
+
+    /// An authority assembled from explicit rows and no declared extern.
+    fn rows(pairs: &[(u32, bool)]) -> crate::return_provenance::FreshOwnerVerdicts {
+        crate::return_provenance::FreshOwnerVerdicts::from_parts_for_tests(
+            pairs
+                .iter()
+                .map(|&(id, fresh)| (hew_hir::ItemId(id), fresh))
+                .collect(),
+            HashSet::new(),
+        )
+    }
+
+    #[test]
+    fn an_absent_row_is_not_fresh() {
+        let fresh = rows(&[]);
+        assert!(
+            !callee_returns_fresh_owner(&item_callee(7), &fresh),
+            "the reader must require a body this module ANALYZED; an absent row \
+             (an extern, a cross-module item, an un-analysed compiler-emitted \
+             item) is NOT a freshness proof"
+        );
+    }
+
+    /// The empty authority must be UNABLE to report fresh — the shape F1
+    /// described, where a default-constructed authority answered `true` for
+    /// every id and minted the caller release the type exists to forbid.
+    ///
+    /// The type no longer has a `Default`, so the only empty authority left to
+    /// test is the one the empty `CallScrutineeProvenance` carries — the value a
+    /// builder holds before the module context is threaded in. It must grant
+    /// nothing, for an arbitrary id AND for the id space the real rows use.
+    #[test]
+    fn an_empty_authority_cannot_report_fresh() {
+        let empty = crate::return_provenance::CallScrutineeProvenance::default();
+        for id in [0_u32, 1, 7, 99, u32::MAX] {
+            assert!(
+                !callee_returns_fresh_owner(&item_callee(id), &empty.fresh_owner_verdicts),
+                "an authority with no analysed rows must not license a release \
+                 for item {id}"
+            );
+            assert!(
+                !empty
+                    .fresh_owner_verdicts
+                    .item_returns_fresh_owner(hew_hir::ItemId(id)),
+                "and the row reader itself must fail closed for item {id}"
+            );
+        }
+        // The same emptiness at the reader assembled from explicit parts: no
+        // rows, no extern names, no fresh answer.
+        assert!(
+            !callee_returns_fresh_owner(&item_callee(7), &rows(&[])),
+            "an explicitly empty row set must not license a release either"
+        );
+    }
+
+    #[test]
+    fn an_analyzed_false_row_is_not_fresh() {
+        let fresh = rows(&[(7, false)]);
+        assert!(
+            !callee_returns_fresh_owner(&item_callee(7), &fresh),
+            "a forwarder the fixpoint proved non-fresh stays non-fresh — the \
+             taint is written into the authority's rows, not conjoined per \
+             consumer"
+        );
+    }
+
+    #[test]
+    fn a_declared_opaque_extern_is_not_fresh_at_either_reader() {
+        // A direct extern call site's `ResolvedRef::Item` carries a PLACEHOLDER
+        // id, so no row exists and the permissive reader's `unwrap_or(true)`
+        // would classify it fresh. The authority's NAME veto is what stops it.
+        let verdicts = crate::return_provenance::FreshOwnerVerdicts::from_parts_for_tests(
+            HashMap::new(),
+            HashSet::from(["host_string".to_string()]),
+        );
+        let mut callee = item_callee(99);
+        if let HirExprKind::BindingRef { name, .. } = &mut callee.kind {
+            *name = "host_string".to_string();
+        }
+        assert!(
+            !callee_returns_fresh_owner(&callee, &verdicts),
+            "a direct opaque-extern callee must not read as a fresh owner — an \
+             id lookup cannot catch it, only the NAME veto can"
+        );
+    }
+
+    /// Lower `source`, run the REAL fixpoints exactly as `lower_module` does,
+    /// and report `(coarse verdict, strict verdict)` for the function `name`.
+    ///
+    /// This deliberately never seeds a row. A test that inserts the fact it
+    /// means to test proves nothing about DERIVATION, and derivation is the
+    /// whole defect: the coarse fixpoint classifies every body-less resolved
+    /// item — a declared extern included — as fresh, so the `true` a wrapper
+    /// inherits is `true` for a reason that has nothing to do with the wrapper.
+    fn freshness_verdicts(source: &str, name: &str) -> (bool, bool) {
+        let module = crate::return_provenance::tests::lower_source(source);
+        let origin_fns: HashMap<hew_hir::ItemId, &HirFn> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(f) => Some((f.id, f)),
+                _ => None,
+            })
+            .collect();
+        let Some((&id, _)) = origin_fns.iter().find(|(_, f)| f.name == name) else {
+            panic!("no function named `{name}` in the lowered module");
+        };
+
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        let provenance = crate::return_provenance::build_call_scrutinee_provenance(
+            &module,
+            &origin_fns,
+            &coarse,
+        );
+        (
+            coarse[&id],
+            callee_returns_fresh_owner(&item_callee(id.0), &provenance.fresh_owner_verdicts),
+        )
+    }
+
+    /// The strict verdict, guarded so the case genuinely exercises the strict
+    /// variant's extra work rather than riding on a coarse decline.
+    fn analyzed_fresh_for(source: &str, name: &str) -> bool {
+        let (coarse, strict) = freshness_verdicts(source, name);
+        assert!(
+            coarse,
+            "guard: the coarse summary must say `{name}` is fresh, otherwise \
+             this case never exercises the strict variant's extra work"
+        );
+        strict
+    }
+
+    const EXTERN_DECL: &str = "extern \"C\" {\n    fn host_string() -> string;\n}\n";
+
+    #[test]
+    fn a_constructed_fresh_producer_is_fresh() {
+        assert!(
+            analyzed_fresh_for("fn mk(i: i64) -> string { f\"tok{i}\" }", "mk"),
+            "the leak fix must survive: `fn mk(i: i64) -> string {{ f\"tok{{i}}\" }}` \
+             is analyzed fresh and keeps its caller-side temp mint"
+        );
+    }
+
+    #[test]
+    fn a_direct_extern_wrapper_is_not_fresh() {
+        let src = format!("{EXTERN_DECL}fn wrapper() -> string {{ unsafe {{ host_string() }} }}");
+        assert!(
+            !analyzed_fresh_for(&src, "wrapper"),
+            "a Hew frame around an opaque extern return must not launder it into \
+             a freshness proof — the caller would mint a release obligation over \
+             an un-audited foreign handle"
+        );
+    }
+
+    #[test]
+    fn a_wrapper_of_a_wrapper_is_not_fresh() {
+        let src = format!(
+            "{EXTERN_DECL}fn wrapper() -> string {{ unsafe {{ host_string() }} }}\n\
+             fn wrapper2() -> string {{ wrapper() }}"
+        );
+        assert!(
+            !analyzed_fresh_for(&src, "wrapper2"),
+            "the veto is a fixpoint, so it must be TRANSITIVE across an arbitrary \
+             chain of Hew frames"
+        );
+    }
+
+    #[test]
+    fn a_generic_wrapper_is_not_fresh() {
+        let src =
+            format!("{EXTERN_DECL}fn gwrap<T>(t: T) -> string {{ unsafe {{ host_string() }} }}");
+        assert!(
+            !analyzed_fresh_for(&src, "gwrap"),
+            "a monomorphisation's callee resolves to the generic ORIGIN item, so \
+             the origin's row must carry the veto too"
+        );
+    }
+
+    #[test]
+    fn an_argument_launderer_is_not_fresh() {
+        let src = format!(
+            "{EXTERN_DECL}fn forward(s: string) -> string {{ s }}\n\
+             fn launder() -> string {{ forward(unsafe {{ host_string() }}) }}"
+        );
+        assert!(
+            !analyzed_fresh_for(&src, "launder"),
+            "an opaque extern result passed THROUGH a pass-through Hew fn is \
+             still an opaque extern result"
+        );
+    }
+
+    #[test]
+    fn a_recursive_wrapper_is_not_fresh() {
+        let src = format!(
+            "{EXTERN_DECL}fn rec(n: i64) -> string {{ \
+             if n > 0 {{ rec(n - 1) }} else {{ unsafe {{ host_string() }} }} }}"
+        );
+        let (coarse, strict) = freshness_verdicts(&src, "rec");
+        assert!(
+            !strict,
+            "a cycle must fail closed: the taint fixpoint only ever adds, so a \
+             recursive path back to the extern taints the whole cycle"
+        );
+        // Defence in depth, and an honest note about WHICH guard fires here: the
+        // coarse fixpoint is a LEAST-fixpoint needing positive proof, so a
+        // self-recursive producer never reaches `true` there in the first place
+        // (a pure recursive `f"base"` producer reads false too). The veto is
+        // redundant for this shape rather than load-bearing — but it must still
+        // hold, because the coarse verdict is not this gate's authority.
+        assert!(
+            !coarse,
+            "guard: this shape is expected to be declined by the coarse fixpoint \
+             as well; if that ever changes the veto becomes load-bearing here and \
+             this test must keep passing"
+        );
+    }
+
+    #[test]
+    fn an_indirect_callee_fails_closed() {
+        let callee = callee_with(ResolvedRef::Binding(hew_hir::BindingId(3)));
+        assert!(
+            !callee_returns_fresh_owner(&callee, &rows(&[(7, true)])),
+            "a closure value / fn-pointer parameter is not a resolved item and \
+             must fail closed"
+        );
+    }
+
+    /// Lower `source`, run the REAL fixpoints, and ask the authority's COMPOSITE
+    /// query about the tail expression of the function `name`.
+    ///
+    /// As with [`freshness_verdicts`], nothing is seeded: the extern contract
+    /// table, the analysed set and the taint set all come out of the same
+    /// derivation the module lowering performs.
+    fn tail_is_free_of_opaque_foreign_provenance(source: &str, name: &str) -> bool {
+        let module = crate::return_provenance::tests::lower_source(source);
+        let origin_fns: HashMap<hew_hir::ItemId, &HirFn> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(f) => Some((f.id, f)),
+                _ => None,
+            })
+            .collect();
+        let Some(f) = origin_fns.values().find(|f| f.name == name) else {
+            panic!("no function named `{name}` in the lowered module");
+        };
+        let Some(tail) = f.body.tail.as_ref() else {
+            panic!("function `{name}` must end in a tail expression");
+        };
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        let provenance = crate::return_provenance::build_call_scrutinee_provenance(
+            &module,
+            &origin_fns,
+            &coarse,
+        );
+        provenance
+            .fresh_owner_verdicts
+            .value_is_free_of_opaque_foreign_provenance(tail)
+    }
+
+    /// Same derivation as [`tail_is_free_of_opaque_foreign_provenance`], but
+    /// asking the DUAL — the suppression-side query.
+    fn tail_carries_proven_foreign_provenance(source: &str, name: &str) -> bool {
+        let module = crate::return_provenance::tests::lower_source(source);
+        let origin_fns: HashMap<hew_hir::ItemId, &HirFn> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(f) => Some((f.id, f)),
+                _ => None,
+            })
+            .collect();
+        let Some(f) = origin_fns.values().find(|f| f.name == name) else {
+            panic!("no function named `{name}` in the lowered module");
+        };
+        let Some(tail) = f.body.tail.as_ref() else {
+            panic!("function `{name}` must end in a tail expression");
+        };
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        let provenance = crate::return_provenance::build_call_scrutinee_provenance(
+            &module,
+            &origin_fns,
+            &coarse,
+        );
+        provenance
+            .fresh_owner_verdicts
+            .value_carries_proven_foreign_provenance(tail)
+    }
+
+    const RECORD_DECL: &str = "record Outer { inner: string }\n\
+         extern \"C\" {\n    fn host_string() -> string;\n}\n";
+
+    #[test]
+    fn a_direct_root_extern_call_is_proven_foreign() {
+        assert!(tail_carries_proven_foreign_provenance(
+            &format!("{RECORD_DECL}fn t() -> string {{ unsafe {{ host_string() }} }}"),
+            "t"
+        ));
+    }
+
+    #[test]
+    fn a_hew_wrapper_over_a_root_extern_is_proven_foreign() {
+        assert!(tail_carries_proven_foreign_provenance(
+            &format!(
+                "{RECORD_DECL}fn w() -> string {{ unsafe {{ host_string() }} }}\n\
+                 fn t() -> string {{ w() }}"
+            ),
+            "t"
+        ));
+    }
+
+    #[test]
+    fn a_domestic_value_is_not_proven_foreign() {
+        assert!(!tail_carries_proven_foreign_provenance(
+            &format!("{RECORD_DECL}fn t() -> Outer {{ Outer {{ inner: \"x\" }} }}"),
+            "t"
+        ));
+    }
+
+    /// The polarity that separates the two queries. The strict, MINT-side query
+    /// must read an unresolvable callee as foreign; the suppression-side query
+    /// must read the same callee as domestic, because being wrong here costs a
+    /// LEAK in code that never touches an extern rather than a double release.
+    #[test]
+    fn an_unresolvable_callee_is_opaque_to_the_strict_query_and_not_proven_to_the_dual() {
+        let source = format!("{RECORD_DECL}fn t(f: fn() -> string) -> string {{ f() }}");
+        assert!(
+            !tail_is_free_of_opaque_foreign_provenance(&source, "t"),
+            "the mint-side query must refuse an indirect callee"
+        );
+        assert!(
+            !tail_carries_proven_foreign_provenance(&source, "t"),
+            "the suppression-side query must not claim proof from an indirect callee"
+        );
+    }
+
+    #[test]
+    fn an_empty_authority_answers_no_to_the_proven_foreign_query() {
+        let module = crate::return_provenance::tests::lower_source(&format!(
+            "{RECORD_DECL}fn t() -> string {{ unsafe {{ host_string() }} }}"
+        ));
+        let f = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Function(f) if f.name == "t" => Some(f),
+                _ => None,
+            })
+            .expect("fn t");
+        let tail = f.body.tail.as_ref().expect("tail");
+        let empty = crate::return_provenance::FreshOwnerVerdicts::from_parts_for_tests(
+            HashMap::new(),
+            HashSet::new(),
+        );
+        assert!(
+            !empty.value_carries_proven_foreign_provenance(tail),
+            "an authority built from no module analysis proves nothing"
+        );
+    }
+
+    #[test]
+    fn a_domestic_record_literal_is_free_of_foreign_provenance() {
+        let src =
+            format!("{RECORD_DECL}fn mk(i: i64) -> Outer {{ Outer {{ inner: f\"tok{{i}}\" }} }}");
+        assert!(
+            tail_is_free_of_opaque_foreign_provenance(&src, "mk"),
+            "the composite rule must not be a blanket stop: a container built \
+             entirely from domestic values keeps its caller-side mint"
+        );
+    }
+
+    #[test]
+    fn a_record_literal_embedding_a_direct_extern_is_not_free() {
+        let src = format!(
+            "{RECORD_DECL}fn mk() -> Outer {{ Outer {{ inner: unsafe {{ host_string() }} }} }}"
+        );
+        assert!(
+            !tail_is_free_of_opaque_foreign_provenance(&src, "mk"),
+            "F2: the OUTER record genuinely is fresh, but every composite \
+             release in this compiler is recursive, so minting an owner over it \
+             schedules a release of the host's handle in `inner`"
+        );
+    }
+
+    #[test]
+    fn a_record_literal_embedding_a_wrapper_is_not_free() {
+        let src = format!(
+            "{RECORD_DECL}fn wrapper() -> string {{ unsafe {{ host_string() }} }}\n\
+             fn mk() -> Outer {{ Outer {{ inner: wrapper() }} }}"
+        );
+        assert!(
+            !tail_is_free_of_opaque_foreign_provenance(&src, "mk"),
+            "the composite query runs the SAME taint transfer as the return \
+             channel, so a laundering Hew frame between the extern and the field \
+             does not buy ownership"
+        );
+    }
+
+    #[test]
+    fn a_tuple_embedding_a_direct_extern_is_not_free() {
+        let src =
+            format!("{RECORD_DECL}fn mk() -> (string, i64) {{ (unsafe {{ host_string() }}, 1) }}");
+        assert!(
+            !tail_is_free_of_opaque_foreign_provenance(&src, "mk"),
+            "the rule is about COMPOSITES, not about one container syntax: a \
+             tuple's recursive release reaches the foreign element too"
+        );
+    }
+
+    #[test]
+    fn a_nested_record_embedding_a_direct_extern_is_not_free() {
+        let src = format!(
+            "record Mid {{ o: Outer }}\n{RECORD_DECL}\
+             fn mk() -> Mid {{ Mid {{ o: Outer {{ inner: unsafe {{ host_string() }} }} }} }}"
+        );
+        assert!(
+            !tail_is_free_of_opaque_foreign_provenance(&src, "mk"),
+            "a foreign handle buried at any depth taints the whole spine, since \
+             the outermost release walks all of it"
+        );
+    }
+
+    #[test]
+    fn an_empty_authority_answers_no_to_the_composite_query() {
+        // The same unrepresentability the row reader has: an authority that
+        // never ran the module analysis must not certify ANY value clean. The
+        // taint policy's own body-less-item clause would otherwise classify
+        // every call `Fresh` against an empty extern table — a `Default`-shaped
+        // fail-open reintroduced at a new query.
+        let empty = crate::return_provenance::CallScrutineeProvenance::default();
+        let literal = HirExpr {
+            node: hew_hir::HirNodeId(0),
+            site: hew_hir::SiteId(0),
+            ty: ResolvedTy::I64,
+            value_class: hew_hir::ValueClass::CowValue,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(hew_hir::HirLiteral::Integer(1)),
+            span: hew_parser::ast::Span::default(),
+        };
+        assert!(
+            !empty
+                .fresh_owner_verdicts
+                .value_is_free_of_opaque_foreign_provenance(&literal),
+            "an authority with no module analysis behind it must decline even \
+             for an integer literal — the query reports a PROOF, and an empty \
+             authority has proved nothing"
+        );
     }
 }

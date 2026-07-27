@@ -141,12 +141,20 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            // U1 — an `if let` / `while let` / `let else` payload binder is a
+            // field of the scrutinee; the warrant puts the scrutinee's
+            // provenance to the ledger and the authority before any owner
+            // exists to mint.
+            let warrant =
+                self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
+            let keep_for_drop_elab =
+                self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
             if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
                     binding_ty.clone(),
+                    warrant,
                 );
             }
             let dest = self.alloc_local(binding.ty.clone());
@@ -183,12 +191,20 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            // U1 — an `if let` / `while let` / `let else` payload binder is a
+            // field of the scrutinee; the warrant puts the scrutinee's
+            // provenance to the ledger and the authority before any owner
+            // exists to mint.
+            let warrant =
+                self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
+            let keep_for_drop_elab =
+                self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
             if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
                     binding_ty.clone(),
+                    warrant,
                 );
             }
             let dest = self.alloc_local(binding.ty.clone());
@@ -564,12 +580,20 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            // U1 — an `if let` / `while let` / `let else` payload binder is a
+            // field of the scrutinee; the warrant puts the scrutinee's
+            // provenance to the ledger and the authority before any owner
+            // exists to mint.
+            let warrant =
+                self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
+            let keep_for_drop_elab =
+                self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
             if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
                     binding_ty.clone(),
+                    warrant,
                 );
             }
             let dest = self.alloc_local(binding.ty.clone());
@@ -609,12 +633,20 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            // U1 — an `if let` / `while let` / `let else` payload binder is a
+            // field of the scrutinee; the warrant puts the scrutinee's
+            // provenance to the ledger and the authority before any owner
+            // exists to mint.
+            let warrant =
+                self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
+            let keep_for_drop_elab =
+                self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
             if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
                     binding_ty.clone(),
+                    warrant,
                 );
             }
             let dest = self.alloc_local(binding.ty.clone());
@@ -1399,12 +1431,20 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            // U1 — an `if let` / `while let` / `let else` payload binder is a
+            // field of the scrutinee; the warrant puts the scrutinee's
+            // provenance to the ledger and the authority before any owner
+            // exists to mint.
+            let warrant =
+                self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
+            let keep_for_drop_elab =
+                self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
             if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
                     binding_ty.clone(),
+                    warrant,
                 );
             }
             let dest = self.alloc_local(binding.ty.clone());
@@ -1441,12 +1481,20 @@ impl Builder {
                 ty: binding_ty.clone(),
             });
             self.record_binding_scope(binding.binding);
-            let keep_for_drop_elab = self.binding_seeds_drop_elaboration(&binding_ty);
+            // U1 — an `if let` / `while let` / `let else` payload binder is a
+            // field of the scrutinee; the warrant puts the scrutinee's
+            // provenance to the ledger and the authority before any owner
+            // exists to mint.
+            let warrant =
+                self.owner_warrant_for_scrutinee_payload(binding.binding, scrutinee, &binding_ty);
+            let keep_for_drop_elab =
+                self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
             if keep_for_drop_elab {
                 self.register_owned_local(
                     binding.binding,
                     binding.name.clone(),
                     binding_ty.clone(),
+                    warrant,
                 );
             }
             let dest = self.alloc_local(binding.ty.clone());

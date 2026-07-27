@@ -53,6 +53,182 @@ use hew_hir::{
 use hew_types::ResolvedTy;
 
 // ---------------------------------------------------------------------------
+// The DECLARED-RELEASE authority — the third provenance class
+// ---------------------------------------------------------------------------
+
+/// The named types whose release this program DECLARES, rather than the
+/// compiler deriving it from the type's layout.
+///
+/// # The provenance class the two taint policies could not express
+///
+/// Both policies below sort a value into one of two classes: domestic (mintable)
+/// or ownership-opaque foreign (never mintable). Neither can express the class
+/// in between — a handle whose ORIGIN is foreign but whose RELEASE this program
+/// has taken responsibility for. That class already exists in the language and
+/// was already carved out once, ad hoc: a root `extern "C" -> string` is
+/// ADOPTED at the call edge (`emit_extern_malloc_string_adoption` copies the
+/// foreign C string into a refcounted Hew buffer and `free`s the raw pointer),
+/// and the `let` binder exempts `ResolvedTy::String` for exactly that reason.
+///
+/// `#[resource]` is the same class, spelled by the user instead of by the ABI:
+///
+/// ```hew
+/// #[opaque] type Dq {}
+/// #[resource] type Handle { raw: Dq; }
+/// impl Handle {
+///     fn close(self) { unsafe { hew_deque_free(self.raw) }; }
+/// }
+/// Handle { raw: unsafe { hew_deque_new() } }   // <- an ADOPTION
+/// ```
+///
+/// Constructing that record is the program taking delivery of the host's handle
+/// and naming `close` as its release. Reading the construction as "a container
+/// embedding a foreign value" withholds the owner and the handle is never
+/// closed at all.
+///
+/// # Why the composite-ownership rule does not reach these types
+///
+/// The rule the container mints enforce —
+/// [`FreshOwnerVerdicts::value_is_free_of_opaque_foreign_provenance`] — rests on
+/// a stated premise: *every composite release in this compiler is recursive and
+/// generated from the container's LAYOUT, so there is no drop plan that frees
+/// the container's spine while sparing a field.* For a `#[resource]` record that
+/// premise is false. Its drop plan is
+/// [`IrPipeline::resource_record_close`](crate::model::IrPipeline::resource_record_close):
+/// codegen's `__hew_record_drop_inplace_<R>` thunk calls the user's
+/// `<R>::close(self)` as the FIRST step, and only then tears the fields down
+/// field-wise. The declared destructor IS the per-value drop plan the rule
+/// assumed did not exist.
+///
+/// # Membership, and the clause that keeps it sound
+///
+/// A type is admitted when all three hold:
+///
+/// 1. it carries `ResourceMarker::Resource` in the module's
+///    [`TypeClassTable`](hew_hir::TypeClassTable);
+/// 2. that same table entry names its close method — the identical
+///    `(marker, close)` entry `resource_record_close` reads to seed the thunk,
+///    so this authority and codegen cannot disagree about which types have a
+///    declared release;
+/// 3. **every declared field is one the post-close field-wise teardown cannot
+///    free** — a scalar leaf, or an `#[opaque]` handle declared in this module
+///    (an `#[opaque]` decl is a pointer-width slot with no fields and no
+///    structural drop).
+///
+/// Clause 3 is the whole soundness argument and it is why this is not simply
+/// "`#[resource]` types are exempt". The thunk runs `close(self)` and THEN the
+/// field-wise teardown. For a type that satisfies clause 3 the second half frees
+/// nothing, so the type's entire release is the one declared call and no
+/// compiler-generated free can reach an operand. A `#[resource]` type with a
+/// heap-owning field — `#[resource] type Conn { raw: Sock; log: string; }` — is
+/// NOT admitted: its `log` really is torn down field-wise after `close`, so a
+/// foreign value in that position would be freed by a plan the program never
+/// declared, and its operands' provenance must keep flowing. That is the
+/// fail-closed direction, and it costs a leak rather than a double release.
+///
+/// An EMPTY table admits nothing, so every default/unbuilt authority keeps the
+/// pre-existing two-class behaviour.
+#[derive(Debug, Clone, Default)]
+pub struct DeclaredReleaseTypes {
+    /// Admitted type names, stored under both the declaration's spelling and
+    /// its short name so a qualified construction site resolves.
+    names: HashSet<String>,
+}
+
+impl DeclaredReleaseTypes {
+    /// Build from the module's type declarations and its `#[resource]` close
+    /// registry. See the type docs for the three admission clauses.
+    #[must_use]
+    pub fn from_module(module: &hew_hir::HirModule) -> Self {
+        let opaque_handles: HashSet<&str> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hew_hir::HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let mut names = HashSet::new();
+        for item in &module.items {
+            let hew_hir::HirItem::TypeDecl(decl) = item else {
+                continue;
+            };
+            // Clauses 1 and 2 — the `#[resource]` marker AND a declared close,
+            // read from the one table codegen's thunk synthesis reads.
+            let declares_close = module
+                .type_classes
+                .get(decl.name.as_str())
+                .or_else(|| module.type_classes.get(hew_types::short_name(&decl.name)))
+                .is_some_and(|(marker, close)| {
+                    matches!(marker, hew_hir::ResourceMarker::Resource) && close.is_some()
+                });
+            if !declares_close || decl.fields.is_empty() {
+                continue;
+            }
+            // Clause 3 — the post-close field-wise teardown must free nothing.
+            if !decl.fields.iter().all(|field| {
+                field_is_released_only_by_the_declared_close(&field.ty, &opaque_handles)
+            }) {
+                continue;
+            }
+            names.insert(decl.name.clone());
+            names.insert(hew_types::short_name(&decl.name).to_string());
+        }
+        Self { names }
+    }
+
+    /// True when a construction of `name` is an adoption: the constructed
+    /// value's whole release is the type's declared close.
+    #[must_use]
+    pub fn release_is_declared(&self, name: &str) -> bool {
+        self.names.contains(name) || self.names.contains(hew_types::short_name(name))
+    }
+
+    /// True when this authority admits no type at all — the state every
+    /// unbuilt/default authority is in, and the state that reproduces the
+    /// pre-existing two-class behaviour exactly.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+}
+
+/// True for a field type the `#[resource]` record-drop thunk's post-close
+/// field-wise teardown provably does not free: a scalar leaf, or a named
+/// `#[opaque]` handle declared in this module.
+///
+/// Deliberately narrow. It answers from the field type's own spelling plus the
+/// module's `#[opaque]` declaration set, so an unknown or unresolved named type
+/// answers `false` and its declaring `#[resource]` type is simply not admitted.
+/// Widening this to "not heap-owning under the layout registry" would admit more
+/// types, but a layout registry that is absent or partial reads a composite as
+/// non-heap, which is the permissive direction — the exact `Default`-shaped
+/// fail-open the authority was hardened against.
+fn field_is_released_only_by_the_declared_close(
+    ty: &ResolvedTy,
+    opaque_handles: &HashSet<&str>,
+) -> bool {
+    if ty_is_scalar_non_heap(ty) {
+        return true;
+    }
+    let ResolvedTy::Named {
+        name,
+        args,
+        is_opaque,
+        ..
+    } = ty
+    else {
+        return false;
+    };
+    if !args.is_empty() {
+        return false;
+    }
+    *is_opaque
+        || opaque_handles.contains(name.as_str())
+        || opaque_handles.contains(hew_types::short_name(name))
+}
+
+// ---------------------------------------------------------------------------
 // The three-state may-alias lattice
 // ---------------------------------------------------------------------------
 
@@ -188,6 +364,23 @@ pub trait LeafPolicy {
         let _ = enclosing;
         AliasBits::OPAQUE
     }
+
+    /// True when constructing the record named `name` ADOPTS its operands: the
+    /// constructed value's whole release is the type's declared close, so no
+    /// compiler-generated free can reach an operand and the operands'
+    /// provenance does not flow into the construction. See
+    /// [`DeclaredReleaseTypes`].
+    ///
+    /// Defaults to `false`, which is what keeps this confined to the two
+    /// OWNERSHIP-provenance policies. [`CoarsePolicy`] and [`PrecisePolicy`]
+    /// answer a different question — may this return value alias a by-value
+    /// heap PARAMETER of the returning function — and for that question an
+    /// adoption proves nothing: `Handle { raw: p }` over a borrowed parameter
+    /// `p` still aliases `p`. They keep the default and stay byte-identical.
+    fn construction_release_is_declared(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
 }
 
 /// The single structural walk. Structural arms are identical for every policy;
@@ -304,8 +497,18 @@ fn return_alias_bits_scoped<P: LeafPolicy>(
         | HirExprKind::Index { .. }
         | HirExprKind::Slice { .. }
         | HirExprKind::Literal(_) => AliasBits::EMPTY,
-        // A construction aliases a parameter iff one of its owned operands does.
-        HirExprKind::StructInit { fields, base, .. } => {
+        // A construction aliases a parameter iff one of its owned operands does
+        // — unless the construction is an ADOPTION, in which case the value's
+        // whole release is the type's declared close and no compiler-generated
+        // free reaches an operand. A functional-update base is excluded: it
+        // re-wraps an already-constructed owner rather than taking delivery of
+        // fresh operands, so it keeps the union.
+        HirExprKind::StructInit {
+            name, fields, base, ..
+        } => {
+            if base.is_none() && policy.construction_release_is_declared(name) {
+                return AliasBits::EMPTY;
+            }
             let mut bits = fields.iter().fold(AliasBits::EMPTY, |acc, (_, v)| {
                 acc | return_alias_bits_scoped(v, policy, scope)
             });
@@ -628,6 +831,481 @@ pub fn coarse_may_alias_borrow_in_body(
 }
 
 // ---------------------------------------------------------------------------
+// Opaque-extern laundering summary — the table veto on the freshness fact
+// ---------------------------------------------------------------------------
+
+/// The `LeafPolicy` that answers ONE question about a return value: can it be
+/// (or embed, or project, or launder) the result of an ownership-OPAQUE extern?
+///
+/// # Why the freshness summary needs this veto
+///
+/// [`CoarsePolicy`] answers a different question — may this return value alias a
+/// by-value heap PARAMETER of the returning function — and for a body-less
+/// resolved item it answers "no" through `unwrap_or(true)`. That is sound for
+/// its own consumers (a foreign return does not alias a Hew parameter) and it is
+/// pinned byte-identical by the frozen-reference differential.
+///
+/// It is not a proof that the caller may RELEASE the value. A declared
+/// `extern "C" fn host() -> string` is body-less, so `unwrap_or(true)` marks it
+/// fresh and a Hew WRAPPER inherits that verdict:
+///
+/// ```hew
+/// extern "C" { fn host_string() -> string; }
+/// fn wrapper() -> string { unsafe { host_string() } }   // coarse: FRESH
+/// fn main() -> i64 { println(f"value={wrapper()}"); 0 }
+/// ```
+///
+/// The wrapper's row then licenses a caller-side owner over an un-audited
+/// foreign handle through ONE visible Hew frame. That is observable, not
+/// theoretical: an extern declared in a module with stdlib provenance is
+/// classified `HeaderAware` ([`crate::model::classify_extern_string_ownership`]),
+/// so codegen does NOT adopt-and-copy its return and the minted release lands on
+/// the host's own live handle.
+///
+/// # The transfer
+///
+/// The bits produced here mean "tainted by an opaque extern", not "aliases a
+/// parameter", so the clauses read differently from `CoarsePolicy`:
+///
+/// 1. a non-item callee (closure, fn-pointer param, dynamic dispatch) can hand
+///    back anything, including a value it obtained from a host → `Opaque`;
+/// 2. a DECLARED EXTERN — claimed by NAME *and* by declaration id, ahead of every
+///    id lookup — is clean ONLY with an audited fresh-`+1`-return row, and
+///    `Opaque` otherwise. The name is the primary key because an extern call
+///    site's `ResolvedRef::Item` carries a placeholder id rather than the
+///    declaration's; the id is checked too so a future lowering that resolves the
+///    real id cannot slip past;
+/// 3. an ANALYZED module body reads its own row in the taint set under
+///    construction — this is the TRANSITIVE step. An already-tainted callee is
+///    `Opaque`; an as-yet-clean callee is `ParamSubst`, which keeps walking its
+///    ARGUMENTS, so `fn c() -> string {{ forward(unsafe {{ ext() }}) }}` is
+///    tainted through the argument even when `forward` itself is clean;
+/// 4. a body-less NON-extern resolved item (an aggregate constructor, the minted
+///    `string_concat` shim an f-string tail lowers to, a runtime primitive) keeps
+///    the cross-ABI owned-return treatment through
+///    [`bodyless_item_is_audited_owned_return`] — the one explicit carve-out,
+///    unreachable for anything clause 2 owns.
+///
+/// A non-`Call` leaf contributes NOTHING (`EMPTY`): a literal, an index, a
+/// binding are not extern results. That is not a hole, because this summary is
+/// only ever read as a VETO on top of the coarse freshness proof, and the coarse
+/// proof already fails closed (`OPAQUE`) on every leaf its walk reaches. A path
+/// the coarse proof admits therefore consists exclusively of the structural arms
+/// and `Call`s this walk classifies — the two walks visit the same nodes.
+#[derive(Debug)]
+pub struct OpaqueExternTaintPolicy<'a> {
+    /// The audited extern owned-return contract table — the authority for every
+    /// declared `extern "C"` callee.
+    pub extern_table: &'a ExternContractTable,
+    /// The `ItemId`s of the module bodies the summary analyzes.
+    pub analyzed: &'a HashSet<hew_hir::ItemId>,
+    /// The taint set under construction (the fixpoint state).
+    pub tainted: &'a HashSet<hew_hir::ItemId>,
+    /// The types whose release the program declares — the adoption boundary.
+    pub declared_release: &'a DeclaredReleaseTypes,
+}
+
+impl LeafPolicy for OpaqueExternTaintPolicy<'_> {
+    fn classify_call(&self, callee: &HirExpr) -> CallClass {
+        // Clause 1 — an indirect/closure/dynamic callee can hand back anything.
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Item(item_id),
+            ..
+        } = &callee.kind
+        else {
+            return CallClass::Opaque;
+        };
+        // Clause 2 — the audited extern authority, ahead of every id lookup.
+        if self.extern_table.is_extern_name(name) || self.extern_table.is_extern_id(*item_id) {
+            return if self.extern_table.extern_return_is_audited_fresh_owner(name) {
+                CallClass::Fresh
+            } else {
+                CallClass::Opaque
+            };
+        }
+        // Clause 3 — an analyzed module body: the transitive step.
+        if self.analyzed.contains(item_id) {
+            return if self.tainted.contains(item_id) {
+                CallClass::Opaque
+            } else {
+                CallClass::ParamSubst
+            };
+        }
+        // Clause 4 — the explicit body-less carve-out.
+        if bodyless_item_is_audited_owned_return(name, *item_id, self.extern_table) {
+            CallClass::Fresh
+        } else {
+            CallClass::Opaque
+        }
+    }
+
+    fn leaf_bits(&self, _expr: &HirExpr) -> AliasBits {
+        // A non-call leaf is not an extern result. See the type doc: this
+        // summary is a veto on top of a coarse proof that already fails closed
+        // on every leaf it reaches.
+        AliasBits::EMPTY
+    }
+
+    fn missing_position_bits(&self, _enclosing: &HirExpr) -> AliasBits {
+        // An absent value position carries no value at all, so it carries no
+        // foreign value either. Same reasoning as `leaf_bits`.
+        AliasBits::EMPTY
+    }
+
+    fn construction_release_is_declared(&self, name: &str) -> bool {
+        self.declared_release.release_is_declared(name)
+    }
+}
+
+/// The DUAL of [`OpaqueExternTaintPolicy`], used to SUPPRESS a release rather
+/// than to license one.
+///
+/// The two policies answer opposite questions, and each is fail-closed for the
+/// consumer it serves:
+///
+/// * [`OpaqueExternTaintPolicy`] answers "is this value PROVABLY free of foreign
+///   provenance?", and its consumers mint a caller-side release when it says
+///   yes. Doubt must therefore read as foreign, so an indirect callee and an
+///   unanalysed item both classify `Opaque`. Being wrong the other way would be
+///   a DOUBLE RELEASE.
+/// * This policy answers "is this value PROVABLY foreign?", and its one consumer
+///   REMOVES a release the compiler would otherwise emit. Doubt must therefore
+///   read as domestic, so an indirect callee and an unanalysed item both
+///   classify `Fresh`. Being wrong the other way would be a LEAK in ordinary
+///   code that never touches an extern at all.
+///
+/// This is not a permissive second opinion on freshness: it can never turn a
+/// `false` from the first policy into a licence to release. Its only power is to
+/// take a release away, and it exercises that power exactly when the audited
+/// [`ExternContractTable`] — the same single source of truth — says a declared
+/// extern with no audited fresh-owner return is in the value's history.
+#[derive(Debug)]
+pub struct ProvenForeignPolicy<'a> {
+    /// The audited extern owned-return contract table. The ONLY thing that can
+    /// inject foreignness here.
+    pub extern_table: &'a ExternContractTable,
+    /// The `ItemId`s of the module bodies the summary analyzes.
+    pub analyzed: &'a HashSet<hew_hir::ItemId>,
+    /// The proven-foreign taint set (the fixpoint state).
+    pub tainted: &'a HashSet<hew_hir::ItemId>,
+    /// The types whose release the program declares — the adoption boundary.
+    pub declared_release: &'a DeclaredReleaseTypes,
+}
+
+impl LeafPolicy for ProvenForeignPolicy<'_> {
+    fn classify_call(&self, callee: &HirExpr) -> CallClass {
+        // Clause 1 — an indirect/closure/dynamic callee is UNKNOWN, and unknown
+        // is not proof. See the type doc for why the polarity flips here.
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Item(item_id),
+            ..
+        } = &callee.kind
+        else {
+            return CallClass::Fresh;
+        };
+        // Clause 2 — the sole injection point: a declared extern that is a
+        // FOREIGN host, carries no audited fresh-owner return, and carries no
+        // audited owned-RESULT contract either.
+        //
+        // A `std.*` extern is this compiler's own runtime ABI, reached through
+        // its own headers and covered by its own suites; the stdlib's
+        // `Vec<string>` / `bytes` / `Stream` / channel handle producers are
+        // owned returns by that ABI, and suppressing their bindings' releases
+        // would leak in every program that uses the standard library. It is
+        // still not MINTABLE — the strict policy vetoes it exactly as before —
+        // it merely is not PROOF of foreignness.
+        //
+        // The declaring module's identity is not the only evidence available,
+        // and on its own it is not stable under HOW a file is compiled: the
+        // same `std/process.hew` is `Module("std.process")` when imported and
+        // `Root` when handed to `hew check` directly. The audited
+        // `[[ownership.contracts]]` result axis is evidence about the CALLEE
+        // and is invariant under that, so it is conjoined here. An audited
+        // owned result is a value the caller owns; calling it proof of an
+        // un-releasable foreign handle is simply wrong, and it is what refused
+        // `std/process.hew` and `std/time/cron/cron.hew`.
+        if self.extern_table.is_extern_name(name) || self.extern_table.is_extern_id(*item_id) {
+            return if self.extern_table.extern_return_is_audited_fresh_owner(name)
+                || self
+                    .extern_table
+                    .extern_result_is_provably_not_a_foreign_handle(name)
+                || !self.extern_table.extern_is_foreign_host(name, *item_id)
+            {
+                CallClass::Fresh
+            } else {
+                CallClass::Opaque
+            };
+        }
+        // Clause 3 — an analyzed module body: the transitive step, read out of
+        // THIS set so the proof stays a proof across Hew frames.
+        if self.analyzed.contains(item_id) {
+            return if self.tainted.contains(item_id) {
+                CallClass::Opaque
+            } else {
+                CallClass::ParamSubst
+            };
+        }
+        // Clause 4 — an unanalysed body-less item is unknown, not proven.
+        CallClass::Fresh
+    }
+
+    fn leaf_bits(&self, expr: &HirExpr) -> AliasBits {
+        // See `composite_position_bits`: the suppression side asks whether a
+        // foreign value is REACHABLE, and a container literal is how one hides.
+        composite_position_bits(expr, self).unwrap_or(AliasBits::EMPTY)
+    }
+
+    fn missing_position_bits(&self, _enclosing: &HirExpr) -> AliasBits {
+        AliasBits::EMPTY
+    }
+
+    fn construction_release_is_declared(&self, name: &str) -> bool {
+        self.declared_release.release_is_declared(name)
+    }
+}
+
+/// Reads a set of BINDINGS the enclosing lowering has already proven foreign,
+/// so the same structural walk that answers the module-level provenance
+/// questions also answers "does this value embed a handle that reached here
+/// through a `let`?".
+///
+/// The module authority's walk treats a `BindingRef` as a leaf with no scope in
+/// hand, so a foreign handle laundered through one binder re-enters every
+/// container mint clean. This policy carries the missing fact — and nothing
+/// else: calls classify `ParamSubst` so the walk descends into their arguments
+/// without ever ruling on the callee, which stays the authority's business.
+#[derive(Debug)]
+struct ProvenForeignBindingPolicy<'a> {
+    foreign: &'a HashSet<BindingId>,
+    declared_release: &'a DeclaredReleaseTypes,
+}
+
+impl LeafPolicy for ProvenForeignBindingPolicy<'_> {
+    fn classify_call(&self, _callee: &HirExpr) -> CallClass {
+        CallClass::ParamSubst
+    }
+
+    fn leaf_bits(&self, expr: &HirExpr) -> AliasBits {
+        match &expr.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } if self.foreign.contains(id) => AliasBits::OPAQUE,
+            _ => composite_position_bits(expr, self).unwrap_or(AliasBits::EMPTY),
+        }
+    }
+
+    fn missing_position_bits(&self, _enclosing: &HirExpr) -> AliasBits {
+        AliasBits::EMPTY
+    }
+
+    fn construction_release_is_declared(&self, name: &str) -> bool {
+        self.declared_release.release_is_declared(name)
+    }
+}
+
+/// Fold `policy` over the value positions of a COMPOSITE literal.
+///
+/// [`return_alias_bits`] deliberately stops at a container literal: on the
+/// mint side a container is the thing being decided about, so descending would
+/// beg the question. The two SUPPRESSION-side policies want the opposite —
+/// they are asking whether a foreign value is *reachable* from this
+/// expression, and a container is exactly how one hides. Both call this from
+/// their `leaf_bits`, so the recursion is opt-in and cannot alter the strict
+/// walk.
+///
+/// The composite-ownership rule makes this sound: a container with any
+/// opaque-provenance embed is never minted as caller-owned, so removing its
+/// binder's release cannot remove a release the program was entitled to.
+fn composite_position_bits<P: LeafPolicy>(expr: &HirExpr, policy: &P) -> Option<AliasBits> {
+    let parts: Vec<&HirExpr> = match &expr.kind {
+        HirExprKind::TupleLiteral { elements } => elements.iter().collect(),
+        HirExprKind::StructInit { fields, base, .. } => fields
+            .iter()
+            .map(|(_, e)| e)
+            .chain(base.iter().map(std::convert::AsRef::as_ref))
+            .collect(),
+        HirExprKind::MachineVariantCtor { payload, .. } => payload
+            .iter()
+            .flat_map(|fields| fields.iter().map(|(_, e)| e))
+            .collect(),
+        _ => return None,
+    };
+    Some(parts.into_iter().fold(AliasBits::EMPTY, |acc, part| {
+        acc | return_alias_bits(part, policy)
+    }))
+}
+
+/// True when `expr` reads any binding in `foreign` at a value position.
+///
+/// Used to conjoin a lowering's per-function proven-foreign ledger onto
+/// [`FreshOwnerVerdicts::value_is_free_of_opaque_foreign_provenance`]. It runs
+/// the SAME structural walk, so the two halves agree about which positions of a
+/// composite carry its value.
+#[must_use]
+pub(crate) fn value_reads_a_proven_foreign_binding(
+    expr: &HirExpr,
+    foreign: &HashSet<BindingId>,
+    declared_release: &DeclaredReleaseTypes,
+) -> bool {
+    if foreign.is_empty() {
+        return false;
+    }
+    return_alias_bits(
+        expr,
+        &ProvenForeignBindingPolicy {
+            foreign,
+            declared_release,
+        },
+    )
+    .contains(AliasBits::OPAQUE)
+}
+
+/// The ONE explicit path by which a body-less resolved item keeps the cross-ABI
+/// owned-return treatment in [`OpaqueExternTaintPolicy`] (clause 4).///
+/// The class it covers is the compiler's OWN body-less items: aggregate
+/// constructors, the minted stdlib shims an f-string tail lowers to
+/// (`string_concat`), and the runtime primitives behind `RecordCloneCall` /
+/// `Index` / `Slice`. Every one of them is emitted by this compiler under the
+/// owned-return contract — the same trust the walk's fresh structural leaves
+/// already extend, and the treatment the coarse policy gives them today.
+///
+/// It is NOT a place to admit a foreign callee, and it does not widen the
+/// audited set. A declared extern can never reach here: clause 2 claims every
+/// extern by NAME and by declaration ID first, both answered from the
+/// [`ExternContractTable`] built from the module's `HirItem::ExternFn`
+/// declarations, imports included. Widening this predicate to cover an extern —
+/// or widening the table's audited fresh-return set so an extern reaches clause
+/// 2's clean arm — reopens exactly the laundering this summary exists to close.
+#[must_use]
+fn bodyless_item_is_audited_owned_return(
+    name: &str,
+    id: hew_hir::ItemId,
+    extern_table: &ExternContractTable,
+) -> bool {
+    !extern_table.is_extern_name(name) && !extern_table.is_extern_id(id)
+}
+
+/// The module-global OPAQUE-EXTERN LAUNDERING summary: every `ItemId` whose
+/// function can hand back a value that crossed an ownership-opaque extern.
+///
+/// This is the veto a RELEASE mint must apply on top of the coarse freshness
+/// proof (`compute_fn_returns_fresh_owner`), which cannot see externs at all.
+/// Membership is TRANSITIVE by construction: every callee's row is read out of
+/// the set being built, so a wrapper, a wrapper of a wrapper, a generic wrapper
+/// (analyzed once at its origin `ItemId`, which is what a monomorphisation
+/// resolves to) and a recursive-looking wrapper all end up in it.
+///
+/// Monotone least-fixpoint from the EMPTY set, growing only: taint is injected
+/// by non-recursive transfers (an opaque extern callee, an indirect callee) and
+/// propagated by union, so a cycle that touches an extern anywhere taints every
+/// member, while a cycle that touches none stays clean. The set is finite and a
+/// pass only ever adds, so it converges.
+#[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "built once over the pipeline's default-hasher origin_fns map"
+)]
+pub fn compute_fn_return_launders_opaque_extern(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    extern_table: &ExternContractTable,
+    declared_release: &DeclaredReleaseTypes,
+) -> HashSet<hew_hir::ItemId> {
+    let analyzed: HashSet<hew_hir::ItemId> = fns.keys().copied().collect();
+    let mut tainted: HashSet<hew_hir::ItemId> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for (&id, &f) in fns {
+            if tainted.contains(&id) {
+                continue;
+            }
+            let policy = OpaqueExternTaintPolicy {
+                extern_table,
+                analyzed: &analyzed,
+                tainted: &tainted,
+                declared_release,
+            };
+            let mut return_values: Vec<&HirExpr> = Vec::new();
+            crate::lower::collect_return_values_in_block(&f.body, &mut return_values);
+            if let Some(tail) = &f.body.tail {
+                if !matches!(tail.ty, ResolvedTy::Unit | ResolvedTy::Never) {
+                    return_values.push(tail);
+                }
+            }
+            if return_values
+                .iter()
+                .any(|e| !return_alias_bits_in_block(e, &f.body, &policy).is_fresh())
+            {
+                tainted.insert(id);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    tainted
+}
+
+/// The PROVEN-FOREIGN companion to
+/// [`compute_fn_return_launders_opaque_extern`]: every `ItemId` whose function
+/// can hand back a value that provably crossed a declared, non-audited extern.
+///
+/// Same monotone least-fixpoint, same audited table, same transfer function —
+/// the only difference is [`ProvenForeignPolicy`]'s flipped treatment of the
+/// UNKNOWN cases (an indirect callee, an unanalysed body-less item), which
+/// inject nothing here. It is therefore a SUBSET of the strict taint set by
+/// construction, and it exists because its consumer removes releases instead of
+/// adding them.
+#[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "built once over the pipeline's default-hasher origin_fns map"
+)]
+pub fn compute_fn_return_carries_proven_foreign(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    extern_table: &ExternContractTable,
+    declared_release: &DeclaredReleaseTypes,
+) -> HashSet<hew_hir::ItemId> {
+    let analyzed: HashSet<hew_hir::ItemId> = fns.keys().copied().collect();
+    let mut tainted: HashSet<hew_hir::ItemId> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for (&id, &f) in fns {
+            if tainted.contains(&id) {
+                continue;
+            }
+            let policy = ProvenForeignPolicy {
+                extern_table,
+                analyzed: &analyzed,
+                tainted: &tainted,
+                declared_release,
+            };
+            let mut return_values: Vec<&HirExpr> = Vec::new();
+            crate::lower::collect_return_values_in_block(&f.body, &mut return_values);
+            if let Some(tail) = &f.body.tail {
+                if !matches!(tail.ty, ResolvedTy::Unit | ResolvedTy::Never) {
+                    return_values.push(tail);
+                }
+            }
+            if return_values
+                .iter()
+                .any(|e| !return_alias_bits_in_block(e, &f.body, &policy).is_fresh())
+            {
+                tainted.insert(id);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    tainted
+}
+
+// ---------------------------------------------------------------------------
 // Type short-circuit — the scalar non-heap leaf (needs no layout registry)
 // ---------------------------------------------------------------------------
 
@@ -713,6 +1391,130 @@ pub fn method_return_provenance(emitted_symbol: &str) -> AliasBits {
     }
 }
 
+/// Every `VecElementProfile` the dispatch authority can be asked about.
+///
+/// The product is deliberately UNCONSTRAINED — it enumerates combinations no
+/// real element ever has (`is_owned` with a `Str` ABI, say). That over-breadth
+/// is the safe direction: [`placeholder_method_return_provenance`] UNIONS the
+/// answers, so a spurious profile can only add `{OPAQUE}` and push the verdict
+/// further fail-closed. Constraining it could only remove an `{OPAQUE}`
+/// contributor, which is the unsafe direction.
+fn every_vec_element_profile() -> impl Iterator<Item = hew_types::vec_authority::VecElementProfile>
+{
+    use hew_types::vec_authority::{VecElementProfile, VecElementToken};
+    const TOKENS: &[Option<VecElementToken>] = &[
+        None,
+        Some(VecElementToken::Bool),
+        Some(VecElementToken::I8),
+        Some(VecElementToken::U8),
+        Some(VecElementToken::I16),
+        Some(VecElementToken::U16),
+        Some(VecElementToken::I32),
+        Some(VecElementToken::I64),
+        Some(VecElementToken::F32),
+        Some(VecElementToken::F64),
+        Some(VecElementToken::Str),
+        Some(VecElementToken::Ptr),
+        Some(VecElementToken::Layout),
+    ];
+    TOKENS.iter().flat_map(|abi| {
+        (0..16u8).map(move |mask| VecElementProfile {
+            abi: *abi,
+            is_owned: mask & 1 != 0,
+            is_copy_layout: mask & 2 != 0,
+            is_function_like: mask & 4 != 0,
+            is_abstract: mask & 8 != 0,
+        })
+    })
+}
+
+/// Return-provenance of a method call whose HIR `target_symbol` is a
+/// PLACEHOLDER rather than the symbol the call site will actually emit, or
+/// `None` when the placeholder is not one this can answer.
+///
+/// # Why a placeholder needs its own answer
+///
+/// [`method_return_provenance`] is keyed on the EMITTED symbol, and that is not
+/// negotiable — keying on a family would admit the receiver-alias class it
+/// exists to reject. But two HIR shapes never carry the emitted symbol:
+///
+///  * a `HashMap::get`, which the checker records as `hew_hashmap_get_layout`
+///    while lowering ALWAYS emits the fresh-owner clone choke
+///    (`hew_hashmap_get_clone_layout` — `lower_hashmap_index_trap`); and
+///  * an element-typed `Vec<T>` method on a GENERIC spine, whose checker
+///    dispatch left a `hew_vec_*_FAMILY` placeholder because the element was
+///    still a type parameter.
+///
+/// Looking those spellings up in the emitted-symbol contract yields `Untracked`
+/// → `{OPAQUE}`, so the summary of `fn first<T>(v: Vec<T>) -> Option<T> {
+/// v.get(0) }` read "may alias the receiver" even though every element class it
+/// can ever be instantiated at emits `hew_vec_get_clone`, a proved `+1` owner.
+/// The consumer then withheld a legitimate release.
+///
+/// # The missing input, and how it is supplied
+///
+/// The input the emitted-symbol resolution needs is the ELEMENT CLASS, and that
+/// is genuinely unreachable here: this summary is computed once over the
+/// pre-monomorphisation origin function, where the element is still `T`.
+///
+/// Failing closed on an unreachable input is not the only option. The element
+/// class is drawn from a FINITE, enumerable domain, and the resolver
+/// ([`hew_types::vec_authority::resolve_runtime_symbol`], the same authority the
+/// call lowering consults) is a total function of it. So instead of asking "what
+/// does this site emit?" — unanswerable — ask "what could it emit, over every
+/// element class?" and UNION the contracts of the answers. When every resolvable
+/// element class agrees on a proved-owner symbol, the verdict is knowable
+/// WITHOUT the missing input. When they disagree, the union carries `{OPAQUE}`
+/// and the result is exactly the fail-closed answer this replaced.
+///
+/// That makes the widening additive-only by construction: the union is over a
+/// superset of the reachable profiles, so it can never be MORE permissive than a
+/// per-monomorphisation resolution would be.
+///
+/// A placeholder with no resolvable profile at all (an element ABI the authority
+/// only ever reports `Deferred`/`Unavailable`/`Unsupported` for) yields `None`,
+/// and the caller falls back to the raw-symbol contract — still fail-closed.
+#[must_use]
+pub fn placeholder_method_return_provenance(
+    target_symbol: &str,
+    target_family: hew_types::MethodTargetFamily,
+) -> Option<AliasBits> {
+    use hew_types::vec_authority::{
+        resolve_runtime_symbol, VecResolutionContext, VecSymbolResolution,
+    };
+    use hew_types::{HashMapMethod, MethodTargetFamily};
+
+    // `HashMap::get -> Option<V>` is the degenerate quantification: the emitted
+    // symbol does not depend on the element class at all.
+    if matches!(
+        target_family,
+        MethodTargetFamily::HashMap(HashMapMethod::Get)
+    ) {
+        return Some(method_return_provenance("hew_hashmap_get_clone_layout"));
+    }
+
+    if !target_symbol.ends_with("_FAMILY") {
+        return None;
+    }
+    let MethodTargetFamily::Vec(vec_method) = target_family else {
+        return None;
+    };
+
+    let mut resolved_any = false;
+    let mut bits = AliasBits::EMPTY;
+    for profile in every_vec_element_profile() {
+        if let VecSymbolResolution::Resolved(symbol) = resolve_runtime_symbol(
+            vec_method,
+            profile,
+            VecResolutionContext::MonomorphizedPlaceholder,
+        ) {
+            resolved_any = true;
+            bits |= method_return_provenance(&symbol);
+        }
+    }
+    resolved_any.then_some(bits)
+}
+
 // ---------------------------------------------------------------------------
 // Audited ExternFn owned-return contract table [F3] — EMPTY/fail-closed interim
 // ---------------------------------------------------------------------------
@@ -744,6 +1546,81 @@ pub struct ExternContractTable {
     /// summary, the jwt/encrypt contamination). The Precise walk therefore
     /// checks the callee NAME here BEFORE any id lookup.
     names: HashSet<String>,
+    /// The NAME-keyed mirror of the audited owned-return allowlist: an extern
+    /// whose RETURN is proved a fresh `+1` owner (interim: the scalar-return
+    /// externs — a scalar owns nothing and aliases nothing). Name-keyed
+    /// because an extern call site cannot be resolved by id (see `names`).
+    ///
+    /// Every heap-returning extern is ABSENT — that is the whole point of the
+    /// interim table (`evil() -> string` returning an interior pointer).
+    fresh_return_names: HashSet<String>,
+    /// Declared externs whose block was NOT lowered from a `std.*` module —
+    /// the genuinely FOREIGN hosts, as distinct from this compiler's own
+    /// runtime ABI. Keyed by declaration `ItemId` and by name, from the
+    /// per-item [`hew_hir::ExternProvenance`] record captured at HIR lowering:
+    /// a positive fact, not a name-prefix guess, so a root extern that spells
+    /// its symbol `hew_channel_new` is still `Root` and still foreign.
+    ///
+    /// Read ONLY by [`ProvenForeignPolicy`], which suppresses releases. The
+    /// strict [`OpaqueExternTaintPolicy`] that LICENSES releases ignores this
+    /// split entirely — a std extern is exactly as un-mintable as a root one.
+    foreign_decl_ids: HashSet<hew_hir::ItemId>,
+    foreign_names: HashSet<String>,
+    /// The NAME-keyed audited ARGUMENT contract: an extern proved to BORROW the
+    /// heap arguments it is handed rather than to consume or retain them.
+    ///
+    /// # The declared-borrow provenance class
+    ///
+    /// There is no `return_ty`-shaped shortcut here as there is for scalar
+    /// returns: a `string` PARAMETER is a pointer the callee may retain or
+    /// release no matter what the declaration says. So a name enters this set
+    /// only when an AUDIT says so — see
+    /// [`build_extern_contract_table`] for the two admission clauses, for the
+    /// argument that they are a proof rather than a fallback, and for why an
+    /// UNAUDITED parameter is read as possibly-taken (a leak) rather than as a
+    /// declared borrow (a double release).
+    ///
+    /// Admission keys on the SYMBOL, never on the declaring module's
+    /// [`hew_hir::ExternProvenance`]: the same extern reached as a root
+    /// compilation unit and through an import must get the same answer.
+    borrowing_arg_names: HashSet<String>,
+    /// Declared externs whose RESULT is provably not an un-releasable foreign
+    /// handle — the set that answers "this call is not PROOF of foreignness".
+    ///
+    /// # Why the argument axis alone was not enough
+    ///
+    /// `borrowing_arg_names` reads the ARGUMENT axis of
+    /// [`crate::ffi_contracts::extern_ownership_contract`] and nothing read the
+    /// RESULT axis of those same rows. The gap only became visible when the
+    /// declaring module's identity stopped agreeing with itself: `std/process.hew`
+    /// reached through `import std::process` carries `Module("std.process")`
+    /// provenance, but the SAME file handed to `hew check` directly is the root
+    /// compilation unit and carries `Root`. Under the second reading
+    /// `hew_process_last_error` — `result = "fresh"`,
+    /// `release-symbol = "hew_string_drop"` — was classified a non-audited
+    /// foreign host and the standard library was refused by the compiler that
+    /// ships it.
+    ///
+    /// # Read ONLY by the suppression side
+    ///
+    /// [`ProvenForeignPolicy`] consults this; the strict
+    /// [`OpaqueExternTaintPolicy`] does not. So membership never LICENSES a
+    /// caller-side mint — an extern in this set is exactly as un-mintable as
+    /// before. Its only effect is to stop calling the value proof of
+    /// foreignness, which is what the two admission clauses actually establish.
+    ///
+    /// See [`build_extern_contract_table`] for the clauses.
+    audited_domestic_return_names: HashSet<String>,
+    /// Every declared `extern "C"` fn DECLARATION id.
+    ///
+    /// The name set above is the primary key (an extern call site's
+    /// `ResolvedRef::Item` carries a placeholder id today), but a summary that
+    /// mints a RELEASE obligation must not depend on that staying true: if a
+    /// future lowering resolves an extern call to its real declaration id, the
+    /// name lookup alone would still answer correctly while an id-keyed consumer
+    /// would not. Both keys are therefore checked, and either one claims the
+    /// callee for the extern contract.
+    decl_ids: HashSet<hew_hir::ItemId>,
 }
 
 impl ExternContractTable {
@@ -753,6 +1630,72 @@ impl ExternContractTable {
     #[must_use]
     pub fn is_extern_name(&self, name: &str) -> bool {
         self.names.contains(name)
+    }
+
+    /// True when `id` is a declared `extern "C"` fn's DECLARATION id — the
+    /// id-keyed companion of [`ExternContractTable::is_extern_name`]. See
+    /// `decl_ids` for why both keys are checked by the ownership consumers.
+    #[must_use]
+    pub fn is_extern_id(&self, id: hew_hir::ItemId) -> bool {
+        self.decl_ids.contains(&id)
+    }
+
+    /// True when `name` is a declared extern whose RETURN carries an audited
+    /// fresh-`+1`-owner contract. A declared extern that is NOT in the audited
+    /// set is ownership-OPAQUE: its result is neither provably fresh nor
+    /// provably borrowed, so no caller-side release obligation may be minted
+    /// for it.
+    ///
+    /// This is the ownership authority for an extern callee. Membership in the
+    /// call-DISPATCH set (`Builder::module_fn_names`, which deliberately
+    /// carries every `HirItem::ExternFn` so its calls lower as
+    /// `Terminator::Call`) says NOTHING about ownership and must never be
+    /// consulted in its place.
+    #[must_use]
+    pub fn extern_return_is_audited_fresh_owner(&self, name: &str) -> bool {
+        self.fresh_return_names.contains(name)
+    }
+
+    /// True when this declared extern's block came from OUTSIDE the standard
+    /// library — a root compilation unit or a user package module. See
+    /// `foreign_decl_ids` for why only the suppression side reads it.
+    #[must_use]
+    pub fn extern_is_foreign_host(&self, name: &str, id: hew_hir::ItemId) -> bool {
+        self.foreign_decl_ids.contains(&id) || self.foreign_names.contains(name)
+    }
+
+    /// True when `name` is a declared extern with an audited ARGUMENT contract
+    /// proving it BORROWS the heap arguments it is passed, so the caller keeps
+    /// the sole release obligation for them.
+    ///
+    /// An extern with no such audit answers `false`: its behaviour at its
+    /// parameters is unknowable, so the caller must assume the handle was
+    /// consumed or retained and must NOT keep a release obligation for it.
+    ///
+    /// Fail-closed direction: `false` costs a leak; `true` on a consuming host
+    /// costs a double release (heap corruption). That asymmetry is why the
+    /// admission in [`build_extern_contract_table`] requires EVERY parameter to
+    /// be audited `Borrow`, not merely the heap-typed ones.
+    #[must_use]
+    pub fn extern_borrows_audited_heap_args(&self, name: &str) -> bool {
+        self.borrowing_arg_names.contains(name)
+    }
+
+    /// True when `name` is a declared extern whose RESULT is provably not an
+    /// un-releasable foreign handle — either because an audited row says the
+    /// call transfers a newly owned allocation together with the release that
+    /// balances it, or because the declared return type provably contains no
+    /// pointer at all.
+    ///
+    /// This is a statement about what the result CANNOT be, so it is exactly as
+    /// strong as its two clauses and no stronger: it says the value is not
+    /// proof of foreignness. It does NOT say the caller may mint a release
+    /// wherever it likes — that remains
+    /// [`ExternContractTable::extern_return_is_audited_fresh_owner`]'s much
+    /// narrower claim, and the strict mint-side policy still reads only that.
+    #[must_use]
+    pub fn extern_result_is_provably_not_a_foreign_handle(&self, name: &str) -> bool {
+        self.audited_domestic_return_names.contains(name)
     }
 
     /// Return-provenance of a resolved extern `ItemId`. An extern absent from the
@@ -777,28 +1720,701 @@ impl ExternContractTable {
     }
 }
 
-/// Build the interim (empty/fail-closed) extern contract table over a module's
-/// `extern "C"` declarations: scalar-return externs → Fresh; every
-/// heap-returning extern is omitted (→ `{OPAQUE}` on lookup). Zero marker-backed
-/// rows — the trusted-root precursor is required for those (S4b).
+/// Build the extern contract table over a module's `extern "C"` declarations:
+/// scalar-return externs → Fresh; every heap-returning extern is omitted (→
+/// `{OPAQUE}` on lookup). Zero marker-backed owned-RETURN rows — the
+/// trusted-root precursor is required for those (S4b).
+///
+/// # The audited ARGUMENT contract — the declared-borrow class
+///
+/// `borrowing_arg_names` is the ARGUMENT-side sibling of round seven's declared
+/// RELEASE class, and it is admitted the same way: from a row source the
+/// program already declares and a validator already checks, never from a
+/// permissive fallback.
+///
+/// The rows come from [`crate::ffi_contracts::extern_ownership_contract`],
+/// which `hew-mir/build.rs` projects from the `[[ownership.contracts]]` table
+/// of `scripts/jit-symbol-classification.toml` — the single authority for
+/// per-parameter consume/borrow facts, validated out of band by
+/// `scripts/verify-ffi-symbols.py`. `ExternParamOwnership::Borrow` is defined
+/// as "the callee reads (or copies from) the parameter; **the caller keeps the
+/// drop obligation**", which is exactly the fact this set is read for.
+///
+/// Two admission clauses, both required, and NEITHER of them the declaring
+/// module's identity:
+///
+/// 1. [`hew_types::jit_symbols::is_classified_hew_ffi_symbol`] claims the name,
+///    and the declaration's arity equals the audited contract's parameter
+///    count. This is the positive symbol identity the RESULT axis already
+///    requires (Clause A2/A3 below): the audited row is a fact about THIS
+///    compiler's own runtime symbol, keyed by the symbol, so a name it does not
+///    claim cannot claim the row and a declaration that disagrees with the
+///    audited signature is not a declaration of the audited callee;
+/// 2. the audited contract exists AND every parameter position is `Borrow`. A
+///    `Consume` or `Retain` position anywhere in the signature, or an
+///    [`crate::ffi_contracts::ExternOwnershipFact::Absent`] verdict, refuses the
+///    name outright.
+///
+/// Clause 1 used to read [`hew_hir::ExternProvenance::is_stdlib`] instead. That
+/// made the answer depend on HOW the declaring file was handed to the compiler:
+/// `std/net/net.hew` reached through `import std::net` carries
+/// `Module("std.net")` and was admitted, while the SAME file as a root
+/// compilation unit carries `Root` and was not — so `connect_timeout` lost
+/// every one of its thirteen `host` releases on the root path, including the
+/// ordinary `return`. Round ten removed exactly this dependency from the RESULT
+/// axis; it was still live here, on the axis the same table had read first.
+/// Symbol identity is a property of the callee, which is what the question is
+/// about; the declaring module's spelling is a property of the invocation.
+///
+/// Clause 2 is deliberately whole-signature rather than per-position. The
+/// consumer ([`crate::lower::temp_drop::string_call_borrows`]) asks one boolean
+/// about the CALL, so a per-position answer could not be expressed there
+/// faithfully; requiring every position to borrow makes the boolean sound for
+/// every argument of every admitted call. `hew_string_drop`
+/// (`params = [Consume]`) is refused by this clause, so the universal release
+/// can never be read as borrowing its argument.
+///
+/// # What an UNAUDITED extern argument means, and why
+///
+/// An extern with no audited row answers `false` here, and the consumer reads
+/// `false` as "the callee may have taken the handle" — so the caller withholds
+/// its release. The failure direction is a LEAK: a host that really borrows,
+/// but carries no row, keeps a buffer alive forever.
+///
+/// The alternative reading is available and tempting. Hew spells transfer as
+/// `consume`, and [`hew_hir::HirExternFn::param_consume`] carries that modifier
+/// per parameter, so "a non-`consume` extern parameter is a declared borrow"
+/// could be read straight off the declaration with no audit at all. It is
+/// rejected here for one reason: its failure direction is a DOUBLE RELEASE.
+/// Nothing in the front end requires an author to have thought about ownership
+/// at a heap-typed extern parameter — `ResourceBoundaryParamMustConsume` fires
+/// only for an affine `#[resource]`/`#[linear]` parameter, so an omitted
+/// `consume` on a `string` is indistinguishable from an omitted THOUGHT. Under
+/// that reading every such declaration silently licenses a caller-side free of
+/// a pointer the host may already have freed, and heap corruption is neither
+/// diagnosable nor recoverable, whereas the leak this file chooses is bounded,
+/// observable, and — as of this round — measured file by file by the
+/// release-count differential over the shipped corpora.
+///
+/// Making the declaration load-bearing is the right end state and is a
+/// front-end change, not a MIR one: the checker would have to REQUIRE an
+/// explicit disposition on every heap-typed extern parameter (a breaking
+/// surface rule) before an absent `consume` could be read as a considered
+/// borrow. Until it does, "borrow only where audited" is the reading whose
+/// mistakes leak instead of corrupting.
+///
+/// # The RESULT axis — the two clauses that answer "not proof of foreignness"
+///
+/// `audited_domestic_return_names` admits a declared extern under EITHER of two
+/// independent clauses. Both are fail-closed: refusing a name restores the
+/// previous verdict (proven foreign ⇒ a release suppressed ⇒ a leak), never a
+/// double release. And neither licenses a mint — see the field docs.
+///
+/// **Clause A — the audited owned transfer.** All three parts required:
+///
+/// A1. the `[[ownership.contracts]]` row exists, its result is `Fresh` or
+///     `Retained`, and it names a non-empty release symbol. `Borrowed`
+///     (`hew_vec_get_owned`, an alias invalidated by mutation) is REFUSED:
+///     that result genuinely is not the caller's to release, and suppressing
+///     its releases is correct behaviour this set must not disturb;
+/// A2. [`hew_types::jit_symbols::is_classified_hew_ffi_symbol`] claims the
+///     name. The audited row is a fact about this compiler's own runtime
+///     symbol, so admitting it requires the same positive symbol identity
+///     [`crate::model::classify_extern_string_ownership`] already requires
+///     before it will call a root-provenance `-> string` return header-aware.
+///     That classifier decides the return's memory LAYOUT from this key today,
+///     a strictly more dangerous decision, so the key is trusted with nothing
+///     new here;
+/// A3. the declaration's arity equals the audited contract's parameter count. A
+///     declaration that disagrees with the audited signature is not a
+///     declaration of the audited callee, so the row says nothing about it.
+///
+/// **Clause B — the pointer-free result.** The declared return type provably
+/// contains no pointer: a scalar/unit leaf, or a record declared in THIS module
+/// all of whose fields are (transitively) such leaves. A value with no pointer
+/// in it cannot be a handle, foreign or otherwise, so no audit is needed and
+/// none is required. `hew_cron_next_hew -> CronNextResult { status: i32;
+/// timestamp: i64 }` is admitted here; it is the shape that refused
+/// `std/time/cron/cron.hew`.
+///
+/// Clause B deliberately does NOT consult the layout registry and deliberately
+/// does not admit an `#[opaque]` handle. `ty_owns_heap_mir` reads an absent or
+/// partial registry as non-heap — the permissive direction, the exact
+/// `Default`-shaped fail-open round 4 hardened against — and an `#[opaque]`
+/// declaration is a pointer-width slot that IS the foreign-handle shape this
+/// whole authority exists to refuse. The narrow structural predicate answers
+/// `false` for anything unresolved.
 #[must_use]
 pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContractTable {
     let mut rows: HashMap<hew_hir::ItemId, ReturnProvenance> = HashMap::new();
     let mut names: HashSet<String> = HashSet::new();
+    let mut fresh_return_names: HashSet<String> = HashSet::new();
+    let mut decl_ids: HashSet<hew_hir::ItemId> = HashSet::new();
+    let mut foreign_decl_ids: HashSet<hew_hir::ItemId> = HashSet::new();
+    let mut foreign_names: HashSet<String> = HashSet::new();
+    let mut borrowing_arg_names: HashSet<String> = HashSet::new();
+    let mut audited_domestic_return_names: HashSet<String> = HashSet::new();
+    let pointer_free_records = PointerFreeRecords::from_module(module);
     for item in &module.items {
         if let hew_hir::HirItem::ExternFn(ef) = item {
             names.insert(ef.name.clone());
-            if ty_is_scalar_non_heap(&ef.return_ty) {
+            decl_ids.insert(ef.id);
+            if !ef.provenance.is_stdlib() {
+                foreign_decl_ids.insert(ef.id);
+                foreign_names.insert(ef.name.clone());
+            }
+            if extern_all_params_audited_borrow(&ef.name, ef.param_tys.len()) {
+                borrowing_arg_names.insert(ef.name.clone());
+            }
+            if extern_result_is_audited_owned_transfer(&ef.name, ef.param_tys.len())
+                || pointer_free_records.ty_is_pointer_free(&ef.return_ty)
+            {
+                audited_domestic_return_names.insert(ef.name.clone());
+            }
+            // The MINT-side admission, and the only line here the strict
+            // policy reads. `ty_is_scalar_non_heap` is the degenerate case of
+            // `ty_is_pointer_free`: an `i64` return is admitted because it
+            // cannot carry a handle, and a record whose fields are
+            // transitively such leaves cannot either. Withholding the record
+            // case is not the conservative choice — a pointer-free value has
+            // nothing to release, so admitting it can never emit a release for
+            // a handle this program does not own, while REFUSING it taints
+            // every domestic value the callee derives from it. That is the
+            // `hew_cron_next_hew -> CronNextResult` leak: the POD is read as a
+            // foreign handle, the taint travels out through
+            // `cron_error_from_result`, and the ordinary `+1` string the error
+            // carrier holds gets no owner at all.
+            if ty_is_scalar_non_heap(&ef.return_ty)
+                || pointer_free_records.ty_is_pointer_free(&ef.return_ty)
+            {
                 rows.insert(ef.id, AliasBits::EMPTY);
+                fresh_return_names.insert(ef.name.clone());
             }
         }
     }
-    ExternContractTable { rows, names }
+    ExternContractTable {
+        rows,
+        names,
+        fresh_return_names,
+        foreign_decl_ids,
+        foreign_names,
+        borrowing_arg_names,
+        audited_domestic_return_names,
+        decl_ids,
+    }
+}
+
+/// Clause A of the RESULT-axis admission — see [`build_extern_contract_table`]
+/// for why each part is required.
+fn extern_result_is_audited_owned_transfer(symbol: &str, declared_arity: usize) -> bool {
+    if !hew_types::jit_symbols::is_classified_hew_ffi_symbol(symbol) {
+        return false;
+    }
+    crate::ffi_contracts::extern_ownership_contract(symbol)
+        .contract()
+        .is_some_and(|contract| {
+            matches!(
+                contract.result,
+                crate::ffi_contracts::ExternResultOwnership::Fresh
+                    | crate::ffi_contracts::ExternResultOwnership::Retained
+            ) && !contract.release_symbol.is_empty()
+                && contract.params.len() == declared_arity
+        })
+}
+
+/// Clause B of the RESULT-axis admission: the module's records that provably
+/// contain no pointer, resolved from the module's own type declarations.
+///
+/// Same discipline as [`DeclaredReleaseTypes`]: structural, module-local, and
+/// `false` for anything it cannot resolve. It never consults a layout registry,
+/// because an absent or partial registry reads a composite as non-heap and that
+/// is the permissive direction.
+#[derive(Debug, Default)]
+struct PointerFreeRecords {
+    names: HashSet<String>,
+}
+
+impl PointerFreeRecords {
+    fn from_module(module: &hew_hir::HirModule) -> Self {
+        let decls: HashMap<&str, &hew_hir::HirTypeDecl> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                hew_hir::HirItem::TypeDecl(decl) => Some((decl.name.as_str(), decl)),
+                _ => None,
+            })
+            .collect();
+        let mut names: HashSet<String> = HashSet::new();
+        // Monotone least fixpoint from the empty set: a record is admitted once
+        // every field is a scalar leaf or an already-admitted record. Growing
+        // only and over a finite item list, so it converges; a cyclic record
+        // (which cannot be pointer-free anyway) is never admitted.
+        loop {
+            let mut changed = false;
+            for (name, decl) in &decls {
+                if names.contains(*name) || decl.is_opaque || decl.fields.is_empty() {
+                    continue;
+                }
+                if decl
+                    .fields
+                    .iter()
+                    .all(|field| field_ty_is_pointer_free(&field.ty, &names))
+                {
+                    names.insert((*name).to_string());
+                    names.insert(hew_types::short_name(name).to_string());
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        Self { names }
+    }
+
+    fn ty_is_pointer_free(&self, ty: &ResolvedTy) -> bool {
+        field_ty_is_pointer_free(ty, &self.names)
+    }
+}
+
+/// True for a type that provably contains no pointer: a scalar/unit leaf, or a
+/// named non-generic record already admitted to `pointer_free`.
+///
+/// An `#[opaque]` declaration answers `false` — it is a pointer-width handle
+/// slot, and admitting it would exempt the exact shape this authority exists to
+/// refuse. So does anything unresolved.
+fn field_ty_is_pointer_free(ty: &ResolvedTy, pointer_free: &HashSet<String>) -> bool {
+    if ty_is_scalar_non_heap(ty) {
+        return true;
+    }
+    let ResolvedTy::Named {
+        name,
+        args,
+        is_opaque,
+        ..
+    } = ty
+    else {
+        return false;
+    };
+    if *is_opaque || !args.is_empty() {
+        return false;
+    }
+    pointer_free.contains(name.as_str()) || pointer_free.contains(hew_types::short_name(name))
+}
+
+/// The ARGUMENT-axis admission — see [`build_extern_contract_table`] for why
+/// each part is required. Structurally the mirror of
+/// [`extern_result_is_audited_owned_transfer`], and deliberately so: the two
+/// axes read the same audited rows, so they must key on the same identity.
+///
+/// A zero-parameter contract vacuously satisfies "every position borrows" and
+/// is admitted; it has no heap argument to get wrong, and the consumer's
+/// question is only ever asked about a call that passes one.
+fn extern_all_params_audited_borrow(symbol: &str, declared_arity: usize) -> bool {
+    if !hew_types::jit_symbols::is_classified_hew_ffi_symbol(symbol) {
+        return false;
+    }
+    crate::ffi_contracts::extern_ownership_contract(symbol)
+        .contract()
+        .is_some_and(|contract| {
+            contract.params.len() == declared_arity
+                && contract
+                    .params
+                    .iter()
+                    .all(|param| *param == crate::ffi_contracts::ExternParamOwnership::Borrow)
+        })
 }
 
 // ---------------------------------------------------------------------------
 // Module-global preflight context — built once, threaded into every builder
 // ---------------------------------------------------------------------------
+
+/// The SINGLE authority for the question "does this call hand back a fresh owner
+/// I may mint a caller-side RELEASE obligation over?".
+///
+/// # Why a type and not a map
+///
+/// The coarse freshness fixpoint (`compute_fn_returns_fresh_owner`) answers a
+/// NARROWER question — may a return value alias a by-value parameter — and it
+/// cannot see an extern at all: a declared `extern "C"` fn is body-less, so the
+/// coarse walk's `unwrap_or(true)` cross-ABI fallback classifies an un-audited
+/// host as a fresh-owner producer, and one Hew frame around it inherits a `true`
+/// row. Conjoining the veto at each consumer was tried and failed three times:
+/// the defect reappeared one call site at a time, because the coarse `HashMap`
+/// stayed reachable and a new consumer could always read it directly.
+///
+/// So the veto lives in the TYPE. The rows are private, the only analysing
+/// constructor is [`FreshOwnerVerdicts::build`] (module-private, called once
+/// from [`build_call_scrutinee_provenance`]), and every ownership consumer takes
+/// a `&FreshOwnerVerdicts`. A coarse `HashMap<ItemId, bool>` is not
+/// type-compatible with any of those signatures, so no consumer — present or
+/// future — can obtain a "fresh" answer for a laundering wrapper.
+///
+/// # The three vetoes it carries
+///
+/// * **Wrapper laundering (id-keyed).** Every row is a freshness proof
+///   CONJOINED with `compute_fn_return_launders_opaque_extern`, a transitive
+///   fixpoint over the audited [`ExternContractTable`]. A wrapper, a wrapper of
+///   a wrapper, a generic wrapper (analyzed at its origin `ItemId`, which is
+///   what a monomorphisation's callee resolves to) and a recursive-looking
+///   wrapper all read `false`. The freshness proof itself is the coarse
+///   may-alias-a-parameter fixpoint UNIONED with a precise `∅` return summary —
+///   see [`FreshOwnerVerdicts::build`] for why the second is needed and why it
+///   cannot widen what this veto refuses.
+/// * **Direct extern (name-keyed).** An extern call site's `ResolvedRef::Item`
+///   carries a PLACEHOLDER id, not the declaration's — an id lookup would both
+///   miss the extern and collide with the module-fn summary space. The declared
+///   opaque-extern NAMES are therefore carried here too and vetoed first.
+/// * **Embedded foreign provenance (structural).**
+///   [`FreshOwnerVerdicts::value_is_free_of_opaque_foreign_provenance`] answers
+///   the COMPOSITE question the first two cannot: a fresh CONTAINER does not
+///   confer ownership of a foreign value embedded in it. See that method for
+///   the rule and for what it deliberately does not prove.
+///
+/// All three vetoes are TYPE-AGNOSTIC: neither the laundering fixpoint nor the
+/// extern table filters on `string`, so a record, a tuple, an enum and a `Vec`
+/// element are covered identically.
+///
+/// # No fallback: an absent row is NOT a fresh owner
+///
+/// [`FreshOwnerVerdicts::item_returns_fresh_owner`] is the ONE reader and it
+/// fails CLOSED: `true` only for an id this module analysed AND proved clean.
+/// A missing row means "not analysed", and not-analysed never grants a release.
+/// The earlier permissive `unwrap_or(true)` sibling is gone: it made an EMPTY
+/// authority answer fresh for every id, so any way of obtaining an empty
+/// authority — a derived `Default`, a not-yet-threaded field — minted exactly
+/// the caller release this type exists to forbid. Costing an absent row a
+/// missed move/clone optimisation is the price; the alternative price was a
+/// double release.
+///
+/// The type therefore has NO `Default`. It can only come from
+/// [`FreshOwnerVerdicts::build`] (the real conjunction), from the module-private
+/// [`FreshOwnerVerdicts::denying_all`] (an explicitly empty authority that
+/// grants nothing, needed only to stand up a [`CallScrutineeProvenance`] that
+/// has not been built yet), or — under `#[cfg(test)]` only — from
+/// `from_parts_for_tests`. It is `pub(crate)`: no consumer outside this crate
+/// can name it, hold it, or construct one.
+#[derive(Debug, Clone)]
+pub(crate) struct FreshOwnerVerdicts {
+    /// `ItemId` → (coarse ∨ precise) freshness ∧ ¬laundering. Private: the whole
+    /// point.
+    rows: HashMap<hew_hir::ItemId, bool>,
+    /// Declared `extern "C"` fn names with no audited fresh-owner return.
+    opaque_extern_names: HashSet<String>,
+    /// The audited extern contract table, carried so
+    /// [`Self::value_is_free_of_opaque_foreign_provenance`] can re-run the
+    /// module taint transfer at an arbitrary VALUE position.
+    extern_table: ExternContractTable,
+    /// The `ItemId`s whose bodies this module analysed — the taint fixpoint's
+    /// own `analyzed` set, carried for the same reason.
+    analyzed: HashSet<hew_hir::ItemId>,
+    /// The opaque-extern laundering taint set, carried for the same reason.
+    /// This is NOT `rows`-with-`false`: a `false` row also covers a callee that
+    /// merely forwards a by-value parameter, which is a value of the ENCLOSING
+    /// frame, not a foreign one.
+    launders_opaque_extern: HashSet<hew_hir::ItemId>,
+    /// The PROVEN-foreign taint set — a subset of `launders_opaque_extern` in
+    /// which nothing was injected by an unknown (indirect or unanalysed)
+    /// callee. Carried for [`Self::value_carries_proven_foreign_provenance`],
+    /// whose consumer removes a release rather than adding one.
+    carries_proven_foreign: HashSet<hew_hir::ItemId>,
+    /// The types whose release this program DECLARES rather than the compiler
+    /// deriving it from their layout — the adoption boundary, carried so both
+    /// value-position queries below apply the identical rule the two module
+    /// fixpoints were computed under. See [`DeclaredReleaseTypes`].
+    declared_release: DeclaredReleaseTypes,
+    /// `true` only for an authority produced by [`Self::build`] from a real
+    /// module analysis. [`Self::denying_all`] sets it `false`, and every query
+    /// that could otherwise answer PERMISSIVELY denies outright.
+    ///
+    /// The row-keyed queries fail closed on their own (an empty row set answers
+    /// `false` for every id), but the composite query cannot: its policy
+    /// classifies a body-less non-extern callee as the compiler's own
+    /// owned-return item, so an authority with no extern table would report an
+    /// UNANALYSED expression free of foreign provenance. That is precisely the
+    /// `Default`-shaped fail-open this type was hardened against in round four,
+    /// so the flag closes it for every query at once.
+    from_module_analysis: bool,
+}
+
+impl FreshOwnerVerdicts {
+    /// The ONLY analysing constructor. Module-private so the conjunction cannot
+    /// be skipped by a caller that happens to hold a coarse map.
+    ///
+    /// The row set is the UNION of the coarse fixpoint's keys, the precise
+    /// summary's keys and the taint set's: a laundering id that the coarse
+    /// fixpoint somehow never keyed still lands as an explicit `false` rather
+    /// than as an absent row.
+    ///
+    /// # Why the precise summary is read alongside the coarse one
+    ///
+    /// The two fixpoints answer DIFFERENT questions, and the freshness warrant
+    /// wants the better-informed answer to its own.
+    ///
+    /// The coarse walk asks "may this return alias a by-value heap PARAMETER?"
+    /// and it answers with a blanket `AliasBits::OPAQUE` at every leaf it does
+    /// not model — including a scalar literal and a bare `var` binding of type
+    /// `f64`. A wholly domestic helper such as `string.parse_valid_float_literal`,
+    /// whose last expression is a bare scalar binding, therefore reads
+    /// "may alias a borrow" for a value that owns no heap at all, and every
+    /// caller up the chain inherits that. `string.to_float`'s
+    /// `Result<f64, string>` scrutinee lost its release that way: the value is
+    /// domestic, the taint fixpoint is silent about it, and nothing foreign is
+    /// anywhere near it — the question was simply answered with too little
+    /// information.
+    ///
+    /// The precise fixpoint answers the same question with more: it
+    /// short-circuits scalar non-heap types to `∅`, models string concatenation,
+    /// reads audited method contracts, and tracks local bindings. Where it
+    /// differs from the coarse walk it is STRICTER in exactly the direction that
+    /// matters — a body-less or unresolvable callee is `Opaque` rather than the
+    /// coarse walk's permissive "fresh", and EVERY declared extern is `Opaque`
+    /// by name — so a precise `∅` cannot re-admit the extern-wrapper shapes the
+    /// coarse walk over-admits and the laundering veto removes.
+    ///
+    /// So a precise `∅` is a positive proof that every return path produces a
+    /// value that aliases neither a parameter nor any opaque origin, which is
+    /// strictly more than the coarse row claims. It is unioned in, and the
+    /// laundering veto still applies to the result: widening the freshness proof
+    /// must never widen what the taint fixpoint refuses.
+    ///
+    /// The coarse walk itself is deliberately left alone. Its own consumers
+    /// (the funcupdate materialised-owner gate and the reassign may-alias gate)
+    /// are pinned byte-identical by `coarse_verdict_differential`; this reads
+    /// past it rather than changing it.
+    fn build(
+        coarse_fresh_returns: &HashMap<hew_hir::ItemId, bool>,
+        precise_returns: &HashMap<hew_hir::ItemId, ReturnProvenance>,
+        launders_opaque_extern: &HashSet<hew_hir::ItemId>,
+        carries_proven_foreign: &HashSet<hew_hir::ItemId>,
+        extern_table: &ExternContractTable,
+        declared_release: &DeclaredReleaseTypes,
+    ) -> Self {
+        let proven_fresh = |id: hew_hir::ItemId| {
+            coarse_fresh_returns.get(&id).copied().unwrap_or(false)
+                || precise_returns.get(&id).is_some_and(|bits| bits.is_fresh())
+        };
+        let mut rows: HashMap<hew_hir::ItemId, bool> = coarse_fresh_returns
+            .keys()
+            .chain(precise_returns.keys())
+            .map(|&id| {
+                (
+                    id,
+                    proven_fresh(id) && !launders_opaque_extern.contains(&id),
+                )
+            })
+            .collect();
+        for &id in launders_opaque_extern {
+            rows.insert(id, false);
+        }
+        let opaque_extern_names = extern_table
+            .names
+            .iter()
+            .filter(|name| !extern_table.extern_return_is_audited_fresh_owner(name))
+            .cloned()
+            .collect();
+        let analyzed = rows.keys().copied().collect();
+        Self {
+            rows,
+            opaque_extern_names,
+            extern_table: extern_table.clone(),
+            analyzed,
+            launders_opaque_extern: launders_opaque_extern.clone(),
+            carries_proven_foreign: carries_proven_foreign.clone(),
+            declared_release: declared_release.clone(),
+            from_module_analysis: true,
+        }
+    }
+
+    /// The explicitly EMPTY authority: no analysed rows, no declared externs.
+    ///
+    /// It grants NOTHING — every [`Self::item_returns_fresh_owner`] query
+    /// answers `false`, because an absent row is not a freshness proof, and
+    /// [`Self::value_is_free_of_opaque_foreign_provenance`] answers `false`
+    /// because `from_module_analysis` is unset. Named, rather than a `Default`
+    /// derive, so that "I have not been given the real authority yet" is written
+    /// out at the one place that means it: the [`CallScrutineeProvenance`]
+    /// `Default` that backs a lowering builder before the module context is
+    /// threaded in. Module-private: no other module can mint one.
+    fn denying_all() -> Self {
+        Self {
+            rows: HashMap::new(),
+            opaque_extern_names: HashSet::new(),
+            extern_table: ExternContractTable::default(),
+            analyzed: HashSet::new(),
+            launders_opaque_extern: HashSet::new(),
+            carries_proven_foreign: HashSet::new(),
+            declared_release: DeclaredReleaseTypes::default(),
+            from_module_analysis: false,
+        }
+    }
+
+    /// The table-aware freshness verdict for a resolved item: `true` ONLY for an
+    /// id whose body this module analysed, proved fresh, and proved free of
+    /// opaque-extern laundering.
+    ///
+    /// FAIL CLOSED. An absent row means "not analysed" — a declared extern's
+    /// placeholder call-site id, a cross-module item, an aggregate constructor,
+    /// a compiler-minted runtime primitive — and not-analysed never licenses a
+    /// caller-side release. The worst case is a missed drop (a leak); the
+    /// permissive alternative's worst case was a double release.
+    #[must_use]
+    pub(crate) fn item_returns_fresh_owner(&self, id: hew_hir::ItemId) -> bool {
+        self.rows.get(&id) == Some(&true)
+    }
+
+    /// True when `symbol` names a declared `extern "C"` fn with no audited
+    /// fresh-owner return contract — an ownership-OPAQUE callee whose result
+    /// may be an interior, static or retained host pointer.
+    #[must_use]
+    pub(crate) fn symbol_is_ownership_opaque_extern(&self, symbol: &str) -> bool {
+        self.opaque_extern_names.contains(symbol)
+    }
+
+    /// The adoption boundary this authority was built with, so the per-function
+    /// ledger query ([`value_reads_a_proven_foreign_binding`]) walks under the
+    /// SAME rule as the two module fixpoints and the two value queries. There is
+    /// one table and one place it comes from.
+    #[must_use]
+    pub(crate) fn declared_release_types(&self) -> &DeclaredReleaseTypes {
+        &self.declared_release
+    }
+
+    /// The COMPOSITE provenance query: `true` only when `expr` is PROVEN to
+    /// evaluate to — and to EMBED — no value that crossed an ownership-opaque
+    /// foreign producer.
+    ///
+    /// # Why the container's own freshness is not the question
+    ///
+    /// Every composite release this compiler emits is RECURSIVE: releasing a
+    /// record frees its fields, releasing a tuple frees its elements, releasing
+    /// an enum frees its payload. So a mint over a container is a mint over the
+    /// whole tree beneath it, and there is no drop plan that frees the
+    /// container's spine while sparing one field — the container's release
+    /// symbol is generated from its layout, not from a per-field provenance
+    /// map. `Outer { inner: unsafe { host_record() } }` is genuinely a FRESH
+    /// outer allocation, and minting it caller-owned is still a release of the
+    /// host's handle.
+    ///
+    /// The rule this query enforces is therefore:
+    ///
+    /// > **Freshness of a container is not ownership of its contents.** A
+    /// > caller-side drop may be minted over a composite only when the
+    /// > composite's own allocation is fresh AND every value embedded in it is
+    /// > free of ownership-opaque foreign provenance. A container with any
+    /// > opaque embed is not minted at all.
+    ///
+    /// # It is the module taint transfer, evaluated at a value position
+    ///
+    /// The walk is [`return_alias_bits`] under the SAME
+    /// [`OpaqueExternTaintPolicy`] that [`compute_fn_return_launders_opaque_extern`]
+    /// runs over each function's RETURN expressions — the same audited
+    /// [`ExternContractTable`], the same analysed set, the same taint set. No
+    /// new trust is extended and no second policy can drift from the first: the
+    /// only change is the position it is asked about. That makes the answer
+    /// transitive and TYPE-AGNOSTIC exactly as the row-keyed veto is: a record
+    /// field, a tuple element, an enum payload and a nested container all reach
+    /// the identical structural arms, and a wrapper, a wrapper of a wrapper and
+    /// a generic wrapper are all `false` through their taint rows.
+    ///
+    /// # What it does NOT prove
+    ///
+    /// The policy's non-call leaf contributes nothing, so a foreign value that
+    /// reaches the container through a `let` binder
+    /// (`let h = unsafe { host_record() }; Outer { inner: h }`) is not seen
+    /// here. That is not this query's hole to close: the binder ITSELF is minted
+    /// caller-owned at the `let`, which releases the foreign handle with no
+    /// container involved at all. The `let`-binder construct is unguarded and is
+    /// reported as such; closing it is a separate decision, because a root
+    /// `extern -> string` return is ADOPTED by codegen and must keep its
+    /// release.
+    ///
+    /// FAIL CLOSED on an authority that was never built from a module analysis.
+    #[must_use]
+    pub(crate) fn value_is_free_of_opaque_foreign_provenance(&self, expr: &HirExpr) -> bool {
+        if !self.from_module_analysis {
+            return false;
+        }
+        let policy = OpaqueExternTaintPolicy {
+            extern_table: &self.extern_table,
+            analyzed: &self.analyzed,
+            tainted: &self.launders_opaque_extern,
+            declared_release: &self.declared_release,
+        };
+        !return_alias_bits(expr, &policy).contains(AliasBits::OPAQUE)
+    }
+
+    /// The DROP-SUPPRESSION query: `true` only when this value PROVABLY carries
+    /// a handle that came out of a declared, non-audited extern.
+    ///
+    /// # Why this is not a permissive second opinion
+    ///
+    /// [`Self::value_is_free_of_opaque_foreign_provenance`] guards the sites
+    /// that MINT a release, so it must deny on doubt. This one guards the one
+    /// site that REMOVES a release the compiler would otherwise emit — the
+    /// `let` binder's scope-exit owner — so it must require proof, or every
+    /// binding whose initializer reaches an indirect callee would silently stop
+    /// being dropped. The two directions are not symmetric: minting on doubt is
+    /// a double release, suppressing on doubt is a leak in code that never
+    /// touches an extern.
+    ///
+    /// It can never license a release. Its only power is to take one away, and
+    /// only the audited [`ExternContractTable`] can trigger it.
+    ///
+    /// # What it deliberately does not cover
+    ///
+    /// A root `extern "C" -> string` is ADOPTED by codegen (the foreign C
+    /// string is copied into a refcounted Hew buffer at the call edge and the
+    /// raw pointer is `free`d), so a `string` binding holds a value this program
+    /// really does own and its release must survive. The caller carves that
+    /// class out; this query does not, because adoption is a property of the
+    /// ABI seam, not of the value's history.
+    ///
+    /// FAIL CLOSED on an authority that was never built from a module analysis —
+    /// which here means answering `false`, i.e. changing nothing.
+    #[must_use]
+    pub(crate) fn value_carries_proven_foreign_provenance(&self, expr: &HirExpr) -> bool {
+        if !self.from_module_analysis {
+            return false;
+        }
+        let policy = ProvenForeignPolicy {
+            extern_table: &self.extern_table,
+            analyzed: &self.analyzed,
+            tainted: &self.carries_proven_foreign,
+            declared_release: &self.declared_release,
+        };
+        return_alias_bits(expr, &policy).contains(AliasBits::OPAQUE)
+    }
+
+    /// Test-only assembly of an authority from explicit parts, so a unit test
+    /// can pin a consumer's behaviour against a hand-built row set without
+    /// standing up a whole module. `#[cfg(test)]` keeps the production build's
+    /// single-constructor invariant intact.
+    ///
+    /// It counts as an analysis (`from_module_analysis: true`) — the rows were
+    /// seeded deliberately. The composite query it yields therefore reads an
+    /// EMPTY extern table and taint set, which is only meaningful for a test
+    /// that seeds no foreign producer; the composite rule's own tests derive
+    /// their authority from real source instead.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn from_parts_for_tests(
+        rows: HashMap<hew_hir::ItemId, bool>,
+        opaque_extern_names: HashSet<String>,
+    ) -> Self {
+        let analyzed = rows.keys().copied().collect();
+        Self {
+            rows,
+            opaque_extern_names,
+            extern_table: ExternContractTable::default(),
+            analyzed,
+            launders_opaque_extern: HashSet::new(),
+            carries_proven_foreign: HashSet::new(),
+            declared_release: DeclaredReleaseTypes::default(),
+            from_module_analysis: true,
+        }
+    }
+}
 
 /// The module-global call-scrutinee return-provenance context the #2648 preflight
 /// admission classifier consults at every scrutinee consumer.
@@ -808,12 +2424,15 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
 /// set of declared extern `ItemId`s, and the audited owned-return extern table.
 ///
 /// `Default` (empty) fails SAFE: an empty summary classifies every module-fn
-/// callee as an unknown item → interim `LegacyModuleCall` (today's fail-open
-/// mint), never a wrongly-Fresh admit and never a spurious reject. The live
-/// pipeline always threads the fully-built context; the empty default only backs
-/// `Builder::default()` in unit tests that do not exercise a forwarder scrutinee.
-#[derive(Debug, Default, Clone)]
-pub struct CallScrutineeProvenance {
+/// callee as an unknown item, which the authority
+/// ([`FreshOwnerVerdicts::denying_all`]) then declines — `NotApplicable`, no
+/// mint — never a wrongly-Fresh admit and never a spurious reject. The
+/// live pipeline always threads the fully-built context; the empty default only
+/// backs `Builder::default()` in unit tests that do not exercise a forwarder
+/// scrutinee. It is hand-written rather than derived because the authority has
+/// no `Default` of its own — the empty case must be spelled out, not inferred.
+#[derive(Debug, Clone)]
+pub(crate) struct CallScrutineeProvenance {
     /// Per-module-fn `ItemId` → precise three-state return provenance.
     pub provenance: HashMap<hew_hir::ItemId, ReturnProvenance>,
     /// Every declared `extern "C"` fn NAME. A call to an extern dispatches by
@@ -835,6 +2454,42 @@ pub struct CallScrutineeProvenance {
     /// arg-scan's fresh-local admit additionally requires an entry in the
     /// freshness map, so an empty context never widens an admit.
     pub may_mutate: HashMap<hew_hir::ItemId, bool>,
+    /// The TABLE-AWARE freshness authority: the single object every ownership
+    /// consumer asks "does this call produce a fresh owner I may drop".
+    ///
+    /// It is the CONJUNCTION of facts that no single existing summary carries:
+    ///
+    /// * a freshness proof — the coarse fixpoint
+    ///   (`compute_fn_returns_fresh_owner`), which answers the narrower
+    ///   may-alias-a-by-value-parameter question, unioned with a precise `∅`
+    ///   return summary for the domestic shapes the coarse walk's blanket
+    ///   opaque leaf cannot see through;
+    /// * the veto of [`compute_fn_return_launders_opaque_extern`], because the
+    ///   coarse proof is built before and independently of the extern contract
+    ///   table and classifies EVERY body-less resolved item — a declared extern
+    ///   included — as fresh, so a Hew wrapper around an extern inherits a
+    ///   `true` row there; and
+    /// * the name-keyed direct-extern veto, because an extern call site's
+    ///   resolved id is a placeholder that no id lookup can catch.
+    ///
+    /// Empty default grants NOTHING: with no analysed rows every freshness
+    /// query fails closed, so a builder that has not been handed the module
+    /// authority cannot mint a caller-side release.
+    ///
+    /// [`compute_fn_return_launders_opaque_extern`]: crate::return_provenance::compute_fn_return_launders_opaque_extern
+    pub fresh_owner_verdicts: FreshOwnerVerdicts,
+}
+
+impl Default for CallScrutineeProvenance {
+    fn default() -> Self {
+        Self {
+            provenance: HashMap::new(),
+            extern_names: HashSet::new(),
+            extern_table: ExternContractTable::default(),
+            may_mutate: HashMap::new(),
+            fresh_owner_verdicts: FreshOwnerVerdicts::denying_all(),
+        }
+    }
 }
 
 /// Build the module-global preflight context: the precise return-provenance
@@ -845,9 +2500,10 @@ pub struct CallScrutineeProvenance {
     clippy::implicit_hasher,
     reason = "built once over the pipeline's default-hasher origin_fns map"
 )]
-pub fn build_call_scrutinee_provenance(
+pub(crate) fn build_call_scrutinee_provenance(
     module: &hew_hir::HirModule,
     origin_fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    coarse_fresh_returns: &HashMap<hew_hir::ItemId, bool>,
 ) -> CallScrutineeProvenance {
     let extern_table = build_extern_contract_table(module);
     let extern_names: HashSet<String> = module
@@ -861,11 +2517,32 @@ pub fn build_call_scrutinee_provenance(
     let may_mutate = compute_may_mutate_heap_param(origin_fns);
     let provenance =
         compute_call_scrutinee_return_provenance(origin_fns, &extern_table, &may_mutate);
+    // The table-aware freshness authority: the coarse proof MINUS everything the
+    // opaque-extern laundering summary vetoes, plus the direct-extern name veto.
+    // The coarse map is passed in rather than recomputed so both consumers read
+    // one fixpoint, and it is consumed HERE — no builder ever sees it.
+    // The adoption boundary, read off the module's own type declarations
+    // BEFORE either fixpoint runs, so both are computed under the identical
+    // rule the value-position queries later apply.
+    let declared_release = DeclaredReleaseTypes::from_module(module);
+    let launders_opaque_extern =
+        compute_fn_return_launders_opaque_extern(origin_fns, &extern_table, &declared_release);
+    let carries_proven_foreign =
+        compute_fn_return_carries_proven_foreign(origin_fns, &extern_table, &declared_release);
+    let fresh_owner_verdicts = FreshOwnerVerdicts::build(
+        coarse_fresh_returns,
+        &provenance,
+        &launders_opaque_extern,
+        &carries_proven_foreign,
+        &extern_table,
+        &declared_release,
+    );
     CallScrutineeProvenance {
         provenance,
         extern_names,
         extern_table,
         may_mutate,
+        fresh_owner_verdicts,
     }
 }
 
@@ -935,14 +2612,6 @@ pub enum CallScrutineeAdmission {
     /// A `Fresh` (or `ParamsOnly`-with-all-fresh-args) scrutinee → mint the #2429
     /// owner and classify #2523's move-out as `EphemeralTemp`.
     Admit,
-    /// INTERIM ONLY (S2–S4; DELETED at S4b) [Rev-8, round-6 item 2]: a resolved
-    /// module-fn callee whose precise summary carries NO `PARAM` bit → today's
-    /// admission EXACTLY (the existing owner gate mints `__hew_call_scrutinee`;
-    /// #2523 keeps its legacy `EphemeralTemp`). The precise module summary is
-    /// consulted ONLY for the `PARAM`-present early reject, never for the
-    /// admission shape — so opaque-hidden forwarding stays legacy fail-open until
-    /// the trusted-root precursor merges.
-    LegacyModuleCall,
 }
 
 // ---------------------------------------------------------------------------
@@ -2429,6 +4098,69 @@ pub fn is_builtin_fresh_ctor(name: &str) -> bool {
     matches!(name, "Vec::new" | "HashMap::new" | "HashSet::new")
 }
 
+/// The stdlib catalog's IDENTITY JOIN: the emitted runtime symbol a body-less
+/// resolved callee will actually lower to, or `None` when the callee is not a
+/// catalog shim row.
+///
+/// # Why an identity join and not a name lookup
+///
+/// `LowerCtx::seed_stdlib_fn_registry` mints one `ItemId(u32::MAX - index)` per
+/// `stdlib_catalog::entries()` row and registers that SAME id under BOTH
+/// spellings a call site can carry — the row's surface `name` (`to_upper_str`,
+/// `to_string_i64`) and, when the row's linkage declares one, its emitted
+/// runtime `symbol` (`hew_string_to_uppercase`, `hew_i64_to_string`). So the
+/// callee's `(name, ItemId)` pair is a compiler-minted identity, and this
+/// function is its inverse.
+///
+/// Both halves are required, and each closes a forgery direction:
+///
+/// * **id without name.** The id band is not exclusively the catalog's:
+///   `SYNTHETIC_OPTION_ITEM` / `SYNTHETIC_RESULT_ITEM` are `u32::MAX - 1` and
+///   `u32::MAX - 2`, which index real catalog rows. Requiring the name to match
+///   the row rejects those.
+/// * **name without id.** A user `fn hew_string_to_uppercase()` or an
+///   `extern "C" { fn hew_string_to_uppercase(); }` carries a REAL source
+///   `ItemId`, whose `u32::MAX - id` is far past the end of the catalog. This is
+///   the same discipline the audited-argument table applies to `hew_fs_rename`:
+///   a declaration cannot claim a runtime row by spelling its name.
+///
+/// Only the three linkages that DECLARE an emitted C symbol
+/// ([`BuiltinLinkage::runtime_symbol`]) join. A `CompilerIntrinsic`,
+/// `PrintIntercept`, `CalleeNameDispatchOnly`, `NodeRegisterByPid` or
+/// `LayoutDescriptorSymbol` row has no single emitted callee whose ownership
+/// contract could be read, so it does not join and keeps its caller's
+/// fail-closed answer.
+#[must_use]
+pub fn stdlib_shim_emitted_symbol(name: &str, id: hew_hir::ItemId) -> Option<&'static str> {
+    let index = usize::try_from(u32::MAX - id.0).ok()?;
+    let entry = hew_hir::stdlib_catalog::entries().get(index)?;
+    let symbol = entry.linkage.runtime_symbol()?;
+    (entry.name == name || symbol == name).then_some(symbol)
+}
+
+/// The provenance of a call to a body-less stdlib catalog shim, read from the
+/// ONE emitted-symbol ownership contract ([`method_return_provenance`]).
+///
+/// `Some(CallClass::Fresh)` ONLY when that contract proves the result is a new
+/// `+1` owner. Every other answer — a borrowed getter, an interior alias of the
+/// receiver, an untracked result, or a callee that is not a catalog shim at all
+/// — is `None`, which leaves the caller's own fail-closed answer in place. The
+/// function can therefore only ever turn an `Opaque` fall-through into `Fresh`;
+/// it can never narrow an admission the caller already made.
+///
+/// This is not new trust. [`PrecisePolicy`] already reads
+/// [`method_return_provenance`] at its `ResolvedImplCall` leaf, for the same
+/// question about the same values; the catalog simply did not join at the `Call`
+/// arm, so `Some(Row { name: "x".to_upper(), id: n })` read `{OPAQUE}` while
+/// `"x".to_upper()` reached in a method position read `∅`.
+#[must_use]
+pub fn stdlib_shim_return_class(name: &str, id: hew_hir::ItemId) -> Option<CallClass> {
+    let symbol = stdlib_shim_emitted_symbol(name, id)?;
+    method_return_provenance(symbol)
+        .is_fresh()
+        .then_some(CallClass::Fresh)
+}
+
 /// The Precise `LeafPolicy`: consumes the module provenance table (for the
 /// three-way `Call` resolution), the audited extern table, and the CURRENT
 /// function's local binding-provenance.
@@ -2489,7 +4221,19 @@ impl LeafPolicy for PrecisePolicy<'_> {
         // inside `new_ctx()`-style producers) — a fresh empty allocation.
         } else if self.extern_table.provenance_of(*id).is_fresh() || is_builtin_fresh_ctor(name) {
             CallClass::Fresh
-        // Clause 4: an unknown/missing item (absent from every table → Opaque).
+        // Clause 4: a body-less stdlib CATALOG shim, resolved through the
+        // compiler-minted `(name, ItemId)` identity and answered from the one
+        // emitted-symbol ownership contract. Additive only: a row that is not a
+        // proved `+1` producer, and any callee that is not a catalog shim, falls
+        // through to clause 5 unchanged.
+        //
+        // Without this join a fresh-owner shim reached through a `Call`
+        // (`Row { name: "x".to_upper(), .. }`) read `{OPAQUE}` while the SAME
+        // contract read `∅` for the same value reached through a method leaf,
+        // and the summary's consumer withheld a legitimate release.
+        } else if let Some(class) = stdlib_shim_return_class(name, *id) {
+            class
+        // Clause 5: an unknown/missing item (absent from every table → Opaque).
         // Never `unwrap_or(true)`.
         } else {
             CallClass::Opaque
@@ -2512,12 +4256,18 @@ impl LeafPolicy for PrecisePolicy<'_> {
                     AliasBits::OPAQUE
                 }
             }
-            // A method call → the emitted-symbol contract (S1: keyed on the
-            // placeholder `target_symbol`, sound-but-conservative — see the type
-            // doc).
-            HirExprKind::ResolvedImplCall { target_symbol, .. } => {
-                method_return_provenance(target_symbol)
-            }
+            // A method call → the EMITTED-symbol contract. When the HIR carries a
+            // placeholder instead of the symbol the site will emit, the
+            // placeholder is resolved against the same dispatch authority first
+            // (see [`placeholder_method_return_provenance`]); only a placeholder
+            // that authority cannot answer falls back to the raw-symbol lookup,
+            // which is fail-closed for every unknown spelling.
+            HirExprKind::ResolvedImplCall {
+                target_symbol,
+                target_family,
+                ..
+            } => placeholder_method_return_provenance(target_symbol, *target_family)
+                .unwrap_or_else(|| method_return_provenance(target_symbol)),
             // A binding reference to a tracked local reads its computed bits; a
             // by-value param not in the local map is `{PARAM}`.
             HirExprKind::BindingRef {
@@ -2648,13 +4398,13 @@ impl crate::model::HeapOwnershipLayouts for EmptyLayouts {
 mod frozen_reference;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::frozen_reference::compute_fn_returns_fresh_owner_ref;
     use super::*;
     use crate::lower::compute_fn_returns_fresh_owner;
 
     /// Front-end-lower a `.hew` source string to a `HirModule`.
-    fn lower_source(source: &str) -> hew_hir::HirModule {
+    pub(crate) fn lower_source(source: &str) -> hew_hir::HirModule {
         let parsed = hew_parser::parse(source);
         assert!(
             parsed.errors.is_empty(),
@@ -2953,6 +4703,106 @@ mod tests {
         assert!(method_return_provenance("hew_totally_unknown_symbol").is_opaque());
     }
 
+    // -- The stdlib catalog identity join -------------------------------------
+
+    /// The `ItemId` `seed_stdlib_fn_registry` mints for the catalog row at
+    /// `index`, computed the same way the seeder computes it.
+    fn catalog_item_id(index: usize) -> hew_hir::ItemId {
+        hew_hir::ItemId(u32::MAX - u32::try_from(index).expect("catalog index fits in u32"))
+    }
+
+    /// The index of the catalog row with the given surface name.
+    fn catalog_index_of(name: &str) -> usize {
+        hew_hir::stdlib_catalog::entries()
+            .iter()
+            .position(|entry| entry.name == name)
+            .unwrap_or_else(|| panic!("catalog row {name} must exist"))
+    }
+
+    #[test]
+    fn a_catalog_shim_joins_under_both_spellings_of_its_identity() {
+        // `seed_stdlib_fn_registry` registers ONE id under the row's surface
+        // name AND under its emitted runtime symbol, so a call site can carry
+        // either spelling. Both must join to the same emitted symbol.
+        let id = catalog_item_id(catalog_index_of("to_upper_str"));
+        assert_eq!(
+            stdlib_shim_emitted_symbol("to_upper_str", id),
+            Some("hew_string_to_uppercase")
+        );
+        assert_eq!(
+            stdlib_shim_emitted_symbol("hew_string_to_uppercase", id),
+            Some("hew_string_to_uppercase")
+        );
+        // …and the emitted symbol's audited contract is what answers, so the
+        // `Call` arm and the method leaf agree about the same value.
+        assert!(matches!(
+            stdlib_shim_return_class("hew_string_to_uppercase", id),
+            Some(CallClass::Fresh)
+        ));
+    }
+
+    #[test]
+    fn a_source_declaration_cannot_claim_a_catalog_row_by_spelling_its_name() {
+        // A user `fn`/`extern` spelling a runtime symbol carries a REAL source
+        // `ItemId`, which is nowhere near the catalog band. The name alone
+        // proves nothing — the same discipline the audited ARGUMENT table
+        // applies to a root declaration spelling `hew_fs_rename`.
+        for forged in [0_u32, 1, 7, 4096] {
+            assert_eq!(
+                stdlib_shim_emitted_symbol("hew_string_to_uppercase", hew_hir::ItemId(forged)),
+                None,
+                "a source item id must not resolve a catalog row"
+            );
+        }
+    }
+
+    #[test]
+    fn a_synthetic_id_colliding_with_the_catalog_band_cannot_claim_a_row() {
+        // The `u32::MAX - n` band is NOT exclusively the catalog's:
+        // `SYNTHETIC_OPTION_ITEM` is `u32::MAX - 1` and `SYNTHETIC_RESULT_ITEM`
+        // is `u32::MAX - 2`, both of which index real catalog rows. The name
+        // half of the identity is what rejects them.
+        for (offset, name) in [(1_usize, "Option"), (2, "Result")] {
+            assert_eq!(
+                stdlib_shim_emitted_symbol(name, catalog_item_id(offset)),
+                None,
+                "a synthetic item sharing the catalog id band must not join"
+            );
+        }
+    }
+
+    #[test]
+    fn the_join_is_additive_only_and_never_narrows() {
+        // A catalog row whose emitted symbol is NOT a proved `+1` producer
+        // answers `None`, leaving the caller's own fail-closed answer in place —
+        // the join can only ever turn an `Opaque` fall-through into `Fresh`.
+        let index = catalog_index_of("len_str");
+        let id = catalog_item_id(index);
+        assert_eq!(
+            stdlib_shim_emitted_symbol("len_str", id),
+            Some("hew_string_length"),
+            "the row must join"
+        );
+        assert!(method_return_provenance("hew_string_length").is_opaque());
+        assert!(
+            stdlib_shim_return_class("len_str", id).is_none(),
+            "a non-producer row must not answer at all"
+        );
+        // A row with no emitted C symbol (an intrinsic, a print intercept, a
+        // layout descriptor) has no single callee whose contract could be read,
+        // so it does not join either.
+        for (index, entry) in hew_hir::stdlib_catalog::entries().iter().enumerate() {
+            if entry.linkage.runtime_symbol().is_none() {
+                assert_eq!(
+                    stdlib_shim_emitted_symbol(entry.name, catalog_item_id(index)),
+                    None,
+                    "row {} has no emitted symbol and must not join",
+                    entry.name
+                );
+            }
+        }
+    }
+
     // -- Extern owned-return contract table (interim empty/fail-closed) [F3] --
 
     #[test]
@@ -3046,6 +4896,123 @@ mod tests {
             }
         }
         panic!("function {name} not found");
+    }
+
+    /// The generic-spine placeholder resolves to the SAME verdict the emitted
+    /// symbol would give, without the element class the site cannot see.
+    ///
+    /// `fn first<T>(v: Vec<T>) -> Option<T> { v.get(0) }` is summarised once,
+    /// over the pre-monomorphisation body, where the element is still `T`. The
+    /// checker left `hew_vec_get_FAMILY`; the emitted-symbol contract has no row
+    /// for that spelling and answers `{OPAQUE}`. But the dispatch authority
+    /// resolves EVERY element class it can resolve at all to `hew_vec_get_clone`,
+    /// a proved `+1` owner — so the verdict is knowable without the element.
+    #[test]
+    fn a_generic_vec_get_placeholder_is_fresh_over_every_element_class() {
+        use hew_types::{MethodTargetFamily, VecMethod};
+        assert_eq!(
+            placeholder_method_return_provenance(
+                "hew_vec_get_FAMILY",
+                MethodTargetFamily::Vec(VecMethod::Get),
+            ),
+            Some(AliasBits::EMPTY),
+            "every element class `Vec::get` resolves at all emits `hew_vec_get_clone`, so the \
+             generic spine's placeholder must read as fresh — reading it as `{{OPAQUE}}` is what \
+             withheld the release for `Some(g) => g` over a generic getter"
+        );
+        assert_eq!(
+            method_return_provenance("hew_vec_get_clone"),
+            AliasBits::EMPTY,
+            "the quantified answer must agree with the emitted-symbol contract it quantifies over"
+        );
+    }
+
+    /// The quantification is not a blanket "a placeholder is fresh". Every other
+    /// `Vec` method's emitted symbol genuinely depends on the element class, and
+    /// the element classes disagree — so the union carries `{OPAQUE}` and the
+    /// verdict stays exactly as fail-closed as before.
+    #[test]
+    fn a_family_placeholder_whose_element_classes_disagree_stays_opaque() {
+        use hew_types::{MethodTargetFamily, VecMethod};
+        for method in [
+            VecMethod::Push,
+            VecMethod::Pop,
+            VecMethod::Set,
+            VecMethod::Remove,
+            VecMethod::Contains,
+            VecMethod::Clear,
+            VecMethod::Clone,
+            VecMethod::Append,
+            VecMethod::Join,
+        ] {
+            assert_eq!(
+                placeholder_method_return_provenance(
+                    "hew_vec_x_FAMILY",
+                    MethodTargetFamily::Vec(method),
+                ),
+                Some(AliasBits::OPAQUE),
+                "{method:?} has no element-class-independent answer, so quantifying over the \
+                 element must leave it fail-closed"
+            );
+        }
+    }
+
+    /// `HashMap::get` is the degenerate quantification: lowering always emits the
+    /// fresh-owner clone choke, so the checker's `hew_hashmap_get_layout`
+    /// placeholder — which the emitted-symbol contract refuses — must not be the
+    /// spelling the walk reads.
+    #[test]
+    fn a_hashmap_get_placeholder_reads_the_clone_choke_not_the_layout_placeholder() {
+        use hew_types::{HashMapMethod, MethodTargetFamily};
+        assert_eq!(
+            method_return_provenance("hew_hashmap_get_layout"),
+            AliasBits::OPAQUE,
+            "the placeholder spelling itself must stay unknown to the emitted-symbol contract"
+        );
+        assert_eq!(
+            placeholder_method_return_provenance(
+                "hew_hashmap_get_layout",
+                MethodTargetFamily::HashMap(HashMapMethod::Get),
+            ),
+            Some(method_return_provenance("hew_hashmap_get_clone_layout")),
+            "the resolved answer must be the contract of the symbol the site EMITS"
+        );
+    }
+
+    /// A concrete call already carries the symbol it will emit. The placeholder
+    /// path must decline it so the raw-symbol contract stays authoritative —
+    /// otherwise a family verdict could override a specific one.
+    #[test]
+    fn a_concrete_emitted_symbol_is_not_rerouted_through_the_placeholder_path() {
+        use hew_types::{MethodTargetFamily, VecMethod};
+        assert_eq!(
+            placeholder_method_return_provenance(
+                "hew_vec_get_ptr",
+                MethodTargetFamily::Vec(VecMethod::Get),
+            ),
+            None,
+            "a resolved symbol is not a placeholder — `hew_vec_get_ptr` borrows the slot and must \
+             keep reading opaque from its own row, not inherit `Get`'s family verdict"
+        );
+        assert_eq!(
+            method_return_provenance("hew_vec_get_ptr"),
+            AliasBits::OPAQUE
+        );
+    }
+
+    /// A non-collection family never reaches the quantification at all.
+    #[test]
+    fn a_non_vec_family_placeholder_declines() {
+        use hew_types::{HashSetMethod, MethodTargetFamily};
+        assert_eq!(
+            placeholder_method_return_provenance(
+                "hew_hashset_x_FAMILY",
+                MethodTargetFamily::HashSet(HashSetMethod::Contains),
+            ),
+            None,
+            "only the two placeholder shapes this resolves are answerable here; every other \
+             family falls back to its own fail-closed row"
+        );
     }
 
     /// Fix (i) — the fresh-owner see-through. A helper that tail-returns a
@@ -3513,8 +5480,9 @@ mod tests {
     // closure capture ledger reached via a callable-parameter invocation. Each
     // caller returns a heap param it smuggled through a may-mutate helper, so the
     // return is OPAQUE and its `match caller()` scrutinee rejects at S4b. These
-    // pin the ANALYSIS verdict (the interim compile verdict is `LegacyModuleCall`
-    // fail-open; the precise reject lands at S4b).
+    // pin the ANALYSIS verdict; at compile time the authority now simply declines
+    // to mint for such a callee (the precise diagnostic-bearing reject lands at
+    // S4b).
     // -----------------------------------------------------------------------
 
     #[test]
@@ -3645,5 +5613,162 @@ mod tests {
         assert!(!ty_is_scalar_non_heap(&ResolvedTy::String));
         assert!(!ty_is_scalar_non_heap(&ResolvedTy::Bytes));
         assert!(!ty_is_scalar_non_heap(&ResolvedTy::CancellationToken));
+    }
+}
+
+#[cfg(test)]
+mod extern_ownership_opacity {
+    //! An extern's ownership behaviour is unknowable, so the authority answers
+    //! from an explicit audited contract or not at all.
+    //!
+    //! This is deliberately NOT `Builder::module_fn_names`. That set carries
+    //! every `HirItem::ExternFn` so extern calls lower as `Terminator::Call`
+    //! rather than through the runtime-ABI path — it is a call-DISPATCH fact and
+    //! says nothing about who owns a returned or passed heap handle.
+    use super::*;
+
+    const SOURCE: &str = r#"extern "C" {
+    fn host_string() -> string;
+    fn host_bytes() -> bytes;
+    fn host_len(s: string) -> i64;
+    fn host_sink(s: string);
+}
+fn hew_mk() -> string { "x" }
+fn main() {}
+"#;
+
+    fn table() -> ExternContractTable {
+        build_extern_contract_table(&tests::lower_source(SOURCE))
+    }
+
+    #[test]
+    fn every_declared_extern_is_recognised_as_extern() {
+        let t = table();
+        for name in ["host_string", "host_bytes", "host_len", "host_sink"] {
+            assert!(t.is_extern_name(name), "`{name}` must be a known extern");
+        }
+        assert!(
+            !t.is_extern_name("hew_mk"),
+            "a Hew-bodied function is not an extern"
+        );
+    }
+
+    #[test]
+    fn a_heap_returning_extern_is_never_an_audited_fresh_owner() {
+        let t = table();
+        for name in ["host_string", "host_bytes"] {
+            assert!(
+                !t.extern_return_is_audited_fresh_owner(name),
+                "`{name}` returns a heap handle whose provenance is unknowable: \
+                 the host may hand back an interior or borrowed pointer and \
+                 release it itself. Minting a caller-side owner here is the \
+                 second release."
+            );
+        }
+    }
+
+    #[test]
+    fn a_scalar_returning_extern_carries_no_release_obligation() {
+        assert!(
+            table().extern_return_is_audited_fresh_owner("host_len"),
+            "an `-> i64` return has no heap handle at all, so the audited row \
+             is vacuously safe and the summary stays usable"
+        );
+    }
+
+    #[test]
+    fn no_extern_borrows_its_heap_arguments() {
+        let t = table();
+        for name in ["host_string", "host_bytes", "host_len", "host_sink"] {
+            assert!(
+                !t.extern_borrows_audited_heap_args(name),
+                "`{name}` is a foreign host declaration with no audited row: \
+                 nothing proves it borrows rather than retains or drops the \
+                 handle it is passed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_root_declaration_reads_the_same_audited_argument_row_as_an_import() {
+        // `hew_fs_rename` carries an all-`Borrow` audited contract. The row is a
+        // fact about the SYMBOL, so it must answer the same for a declaration
+        // reached as a root compilation unit as for one reached through
+        // `import std::fs` — the axis that cost `std/net/net.hew` thirteen
+        // `host` releases when this clause read `ExternProvenance::is_stdlib`.
+        const ROOT_UNIT: &str = r#"extern "C" {
+    fn hew_fs_rename(from: string, to: string) -> i64;
+}
+fn main() {}
+"#;
+        // The declaration is still checked against the audited signature: a
+        // block that declares a DIFFERENT function under a classified name is
+        // not a declaration of the audited callee, and says nothing about it.
+        const WRONG_ARITY: &str = r#"extern "C" {
+    fn hew_fs_rename(only_one: string) -> i64;
+}
+fn main() {}
+"#;
+        let t = build_extern_contract_table(&tests::lower_source(ROOT_UNIT));
+        assert!(
+            extern_all_params_audited_borrow("hew_fs_rename", 2),
+            "guard: the audited table must actually carry an all-`Borrow` row \
+             for `hew_fs_rename`, or this test proves nothing"
+        );
+        assert!(
+            t.extern_borrows_audited_heap_args("hew_fs_rename"),
+            "how the declaring file was handed to the compiler is not a property \
+             of what the callee does with its arguments"
+        );
+        let t = build_extern_contract_table(&tests::lower_source(WRONG_ARITY));
+        assert!(
+            !t.extern_borrows_audited_heap_args("hew_fs_rename"),
+            "an arity that disagrees with the audited signature is a different \
+             function; the row must not be claimed by name alone"
+        );
+    }
+
+    #[test]
+    fn an_unclassified_symbol_is_not_admitted_by_its_declaration() {
+        // The ARGUMENT axis keys on the same positive symbol identity the
+        // RESULT axis uses. A host symbol the runtime does not classify has no
+        // audited row to read, so it is ownership-opaque and the caller
+        // withholds — a leak, never a double release.
+        const FOREIGN: &str = r#"extern "C" {
+    fn definitely_not_a_hew_runtime_symbol(s: string) -> i64;
+}
+fn main() {}
+"#;
+        let t = build_extern_contract_table(&tests::lower_source(FOREIGN));
+        assert!(t.is_extern_name("definitely_not_a_hew_runtime_symbol"));
+        assert!(!t.extern_borrows_audited_heap_args("definitely_not_a_hew_runtime_symbol"));
+    }
+
+    #[test]
+    fn an_all_borrow_audited_signature_is_the_only_admitted_shape() {
+        assert!(
+            extern_all_params_audited_borrow("hew_fs_rename", 2),
+            "`hew_fs_rename` is audited `params = [borrow, borrow]`: it reads \
+             both paths and releases neither, so the caller keeps the sole drop \
+             obligation for the temporaries it passes"
+        );
+        assert!(
+            !extern_all_params_audited_borrow("hew_string_drop", 1),
+            "the universal release consumes its argument; reading it as \
+             borrowing would leave the caller a second release"
+        );
+        assert!(
+            !extern_all_params_audited_borrow("no_such_audited_symbol", 0),
+            "an unaudited symbol has no contract at all and must not be \
+             admitted by absence"
+        );
+    }
+
+    #[test]
+    fn an_unknown_name_answers_nothing() {
+        let t = table();
+        assert!(!t.is_extern_name("not_declared"));
+        assert!(!t.extern_return_is_audited_fresh_owner("not_declared"));
+        assert!(!t.extern_borrows_audited_heap_args("not_declared"));
     }
 }

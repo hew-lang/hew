@@ -684,11 +684,12 @@ fn fs$read(string) -> string [conv=default]
     neutralize_payload _20 -> _33 [SendTransferLastUse]
     _21 = call fs$io_error_message(_33) -> bb15
   bb15:
+    stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(215) ty=string
     _22 = call string::fmt(_21) -> bb16
   bb16:
     _23 = call string_concat(_18, _22) -> bb17
   bb17:
-    stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(209) ty=string
+    stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(209) ty=string
     drop _22 ty=string fn=release(hew_string_drop)
     drop _18 ty=string fn=release(hew_string_drop)
     call panic(_23) -> bb18
@@ -708,7 +709,7 @@ fn fs$read(string) -> string [conv=default]
   bb22:
     _30 = call string_concat(_28, _29) -> bb23
   bb23:
-    stmt: bind BindingId(4294967230) __hew_temp_arg site=SiteId(232) ty=string
+    stmt: bind BindingId(4294967229) __hew_temp_arg site=SiteId(232) ty=string
     drop _29 ty=string fn=release(hew_string_drop)
     drop _28 ty=string fn=release(hew_string_drop)
     call panic(_30) -> bb24
@@ -1567,7 +1568,6 @@ fn stream$pipe(i64) -> (Sink<string>, Stream<string>) [conv=default]
     stmt: use BindingId(64) capacity site=SiteId(490) ty=i64 intent=Read
     _2 = call stream$try_pipe(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(489) ty=Result<(Sink<string>, Stream<string>), string>
     _3 = move etag2
     _4 = const.i64 0
     _5 = icmp.eq _3 _4
@@ -1752,7 +1752,6 @@ fn stream$bytes_pipe(i64) -> (Sink<bytes>, Stream<bytes>) [conv=default]
     stmt: use BindingId(72) capacity site=SiteId(549) ty=i64 intent=Read
     _2 = call stream$try_bytes_pipe(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(548) ty=Result<(Sink<bytes>, Stream<bytes>), string>
     _3 = move etag2
     _4 = const.i64 0
     _5 = icmp.eq _3 _4

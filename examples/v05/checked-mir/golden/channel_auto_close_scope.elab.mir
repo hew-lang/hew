@@ -118,7 +118,6 @@ fn Receiver::close -> ()
 fn channel$new -> (Sender, Receiver)
   statements:
     use BindingId(12) capacity site=SiteId(48) ty=i64 intent=Read
-    bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(47) ty=Result<(Sender, Receiver), string>
     return site=Some(SiteId(46)) ty=(Sender, Receiver)
     bind BindingId(13) pair site=SiteId(50) ty=(Sender, Receiver)
     use BindingId(13) pair site=SiteId(50) ty=(Sender, Receiver) intent=Read
@@ -126,7 +125,6 @@ fn channel$new -> (Sender, Receiver)
     use BindingId(14) err site=SiteId(52) ty=string intent=Read
     drop BindingId(14) err ty=string
     drop BindingId(13) pair ty=(Sender, Receiver)
-    drop BindingId(4294967231) __hew_call_scrutinee ty=Result<(Sender, Receiver), string>
   drop_plans:
     call[bb0 channel$try_new -> bb1] ->
       (none)

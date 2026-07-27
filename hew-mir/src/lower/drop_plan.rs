@@ -10,14 +10,14 @@ use super::{
     derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
     derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
     instr_source_places, mangle_layout_key, place_is_interior_projection, place_refs_local,
-    retained_string_terminator_drop_safe, short_name, terminator_is_suspend_carrier,
-    terminator_source_places, user_record_layout_key, vec_iter_record_init_vec_source, BTreeMap,
-    BasicBlock, BindingId, BlockKind, Builder, BuiltinType, CheckedMirFunction, ClosurePairRhs,
-    Disposition, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, HashMap,
-    HashSet, HirExpr, HirExprKind, Instr, IntentKind, LambdaCapture, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, ResolvedRef, ResolvedTy,
-    ResourceMarker, ScopeId, SuspendKind, Terminator, TraitObjectStorage, ValueClass,
-    ENTRY_BLOCK_ID,
+    retained_string_terminator_drop_safe, short_name, string_call_borrows,
+    terminator_is_suspend_carrier, terminator_source_places, user_record_layout_key,
+    vec_iter_record_init_vec_source, BTreeMap, BasicBlock, BindingId, BlockKind, Builder,
+    BuiltinType, CheckedMirFunction, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock,
+    ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr,
+    IntentKind, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
+    RawMirFunction, ResolvedRef, ResolvedTy, ResourceMarker, ScopeId, SuspendKind, Terminator,
+    TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
 };
 
 /// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
@@ -360,6 +360,7 @@ pub(super) fn elaborate(
             &builder.parameter_locals,
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
+            &builder.call_scrutinee_provenance.extern_table,
         )
         .allowed;
         derived.extend(derive_cow_fresh_borrowed_owner(
@@ -370,6 +371,7 @@ pub(super) fn elaborate(
             &builder.locals,
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
+            &builder.call_scrutinee_provenance.extern_table,
         ));
         for states in dataflow_result.exit_states.values() {
             for (binding, state) in states {
@@ -402,6 +404,9 @@ pub(super) fn elaborate(
         &builder.record_field_orders,
         &builder.enum_layouts,
         &builder.proven_borrow_call_args,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
     );
 
     // W5.016 — owned-element `Vec<T>` scope-exit drop allow-set. An owned Vec
@@ -5120,6 +5125,73 @@ pub(super) fn binder_read_is_borrow_safe_terminator(
     }
     false
 }
+/// A `string` payload binder read as an ARGUMENT of a call that borrows its
+/// string arguments is a transient borrow, not an ownership escape of the
+/// composite that owns the buffer.
+///
+/// [`retained_string_terminator_drop_safe`] already exempts the runtime
+/// `borrows_string_call_args` family plus the four print sinks, but it has no
+/// view of the enclosing module so it cannot see the LARGER borrowing
+/// population: every Hew-bodied function. `lower_params` ratifies that a
+/// by-value `string` parameter is a caller-owned BORROW (it is registered in
+/// `borrowed_string_param_locals` — `param_consume` is seeded only for
+/// `is_user_resource_ty` params, and `snapshot_root_outside_carrier_protocol`
+/// keeps `String` out of the owned-carrier protocol), so such a callee releases
+/// nothing and the caller keeps the sole drop obligation.
+///
+/// Without this, `match mk() { Some(s) => println(f"v={s}") }` classified `s` as
+/// escaped — the f-string lowers to `string::fmt(s)`, a Hew-bodied stdlib
+/// `impl Display for string` — and the whole `Option<string>` composite lost its
+/// `EnumInPlace` drop, leaking the payload on every iteration.
+///
+/// Deliberately narrow, three conjunctive gates:
+/// - the binder's registered type is exactly `ResolvedTy::String`. The shared
+///   [`retained_string_terminator_drop_safe`] is also invoked with WHOLE-composite
+///   locals, where a Hew-bodied callee may legitimately CONSUME the composite;
+///   restricting to the leaf `string` type is what makes the `lower_params`
+///   borrow rule applicable.
+/// - [`string_call_borrows`] proves the callee borrows rather than consumes,
+///   which vetoes every known runtime symbol lacking an explicit borrow row and
+///   every symbol this module cannot see (`extern` FFI).
+/// - every source-Place read of the binder in this terminator is an argument of
+///   that call — a binder that also flows out as, say, a `Send` payload is not
+///   covered here.
+///
+/// Conservative: `false` (treat as escape) whenever any gate is undecided. That
+/// leaks, exactly as before, and can never double-release.
+///
+/// LESSONS: boundary-fail-closed (P0), cleanup-all-exits.
+pub(super) fn string_binder_read_is_user_fn_borrow(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+    binder: u32,
+    binder_ty: Option<&ResolvedTy>,
+    module_fn_names: &HashSet<String>,
+    module_generic_fn_names: &HashSet<String>,
+    extern_contracts: &crate::return_provenance::ExternContractTable,
+) -> bool {
+    if !matches!(binder_ty, Some(ResolvedTy::String)) {
+        return false;
+    }
+    let Terminator::Call { callee, args, .. } = term else {
+        return false;
+    };
+    if !string_call_borrows(
+        callee,
+        module_fn_names,
+        module_generic_fn_names,
+        extern_contracts,
+    ) {
+        return false;
+    }
+    // Every read of the binder here must be one of the borrowed arguments; a
+    // read reaching the terminator through any other operand is unclassified.
+    let reads_outside_args = terminator_source_places(term, suspend_kind)
+        .into_iter()
+        .filter(|place| place_refs_local(*place, binder))
+        .any(|place| !args.contains(&place));
+    !reads_outside_args && args.iter().any(|arg| place_refs_local(*arg, binder))
+}
 /// Instruction analogue of [`binder_read_is_borrow_safe_terminator`]. The `xs[i]`
 /// bounds-check + getter path lowers `hew_vec_len` / `hew_vec_get_*` as
 /// `Instr::CallRuntimeAbi` (not a terminator), so a field/element binder read
@@ -6993,6 +7065,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
+            ..CallScrutineeProvenance::default()
         });
         let callee = expr(
             HirExprKind::BindingRef {
@@ -7036,6 +7109,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
+            ..CallScrutineeProvenance::default()
         });
         let callee = expr(
             HirExprKind::BindingRef {
@@ -7073,6 +7147,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
+            ..CallScrutineeProvenance::default()
         });
         let callee = expr(
             HirExprKind::BindingRef {
@@ -7110,6 +7185,7 @@ mod twin_gate_classifier {
             extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
+            ..CallScrutineeProvenance::default()
         });
         let callee = expr(
             HirExprKind::BindingRef {

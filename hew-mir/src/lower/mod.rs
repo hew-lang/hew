@@ -64,6 +64,7 @@ mod expr;
 mod facts;
 mod machine_synth;
 mod move_value;
+mod owner_mint;
 mod ownership;
 mod pattern;
 mod rc_intrinsic;
@@ -74,6 +75,12 @@ mod task;
 mod temp_drop;
 
 use self::pattern::{project_match_ownership_mode, ProjectMatchOwnershipMode};
+
+/// The owner-mint warrant. Re-exported here so every lowering submodule reaches
+/// it through `super::`, exactly as it reaches [`Builder`] — while the type's
+/// fields, and therefore its construction, stay private to
+/// [`self::owner_mint`]. See that module for why that is the whole close.
+pub(crate) use self::owner_mint::OwnerMintWarrant;
 
 /// Crate-visible re-export of the layout-key mangler for the MIR-owned
 /// thunk-synthesis registry (`crate::thunk_requirements`), which must resolve
@@ -117,10 +124,10 @@ use self::drop_plan::{
     describe_vec_element, dyn_rebind_source_binding, elaborate, exit_block_id,
     field_override_uses_record_field_drop, is_borrowing_call_abi, is_handle_borrowing_call_abi,
     note_payload_escape, render_owned_handle_ty, resource_drop_fn, resource_opaque_close_registry,
-    stream_handle_drop_descriptor, ty_is_closure_pair, ty_is_generator_handle,
-    ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
-    ty_is_local_collection_handle, ty_is_nonowning_handle_leaf, ty_is_owned_handle_leaf,
-    ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
+    stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow, ty_is_closure_pair,
+    ty_is_generator_handle, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
+    ty_is_indirect_enum, ty_is_local_collection_handle, ty_is_nonowning_handle_leaf,
+    ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
     validate_discharge_authority_corroboration, validate_drop_plan, validate_field_drop_in_place,
     validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
 };
@@ -161,7 +168,7 @@ use self::temp_drop::{
     compute_collection_interior_alias_taint, compute_projection_alias_taint,
     derive_cow_fresh_borrowed_owner, derive_cow_sole_owner, finalize_bytes_ownership,
     finalize_string_local_share_intents, finalize_string_ownership,
-    readmit_retained_bytes_tuple_roots, string_field_load_producer_dest,
+    readmit_retained_bytes_tuple_roots, string_call_borrows, string_field_load_producer_dest,
 };
 
 /// Maps each original (unsanitized) callee symbol to the adapter symbol
@@ -578,24 +585,39 @@ struct Builder {
     /// (match-arm payload, let-else, loop var), is ABSENT or `false` — the gate
     /// then fails closed. See `base_is_safe_for_destructive_funcupdate`.
     pub(crate) funcupdate_base_proven: HashMap<BindingId, bool>,
-    /// Module-global interprocedural freshness summary: maps each free-function
-    /// `ItemId` to whether it provably returns a FRESH MATERIALISED owner on
-    /// every return path (`compute_fn_returns_fresh_owner`). Consulted by
-    /// `expr_is_materialized_owner` so a `..f(args)` funcupdate base is admitted
-    /// ONLY when `f` cannot launder a borrowed by-value parameter through its
-    /// return (the call-returns-borrowed-param use-after-free). `Rc` so child
-    /// builders share it cheaply; the empty default fails every call-base
-    /// closed, which is sound. See `compute_fn_returns_fresh_owner`.
-    pub(crate) funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>>,
     /// Module-global call-scrutinee return-provenance context (#2648) for the
     /// preflight admission classifier (`classify_call_scrutinee_admission`). Maps
     /// each module-fn `ItemId` to its precise three-state return provenance, the
     /// declared-extern id set, and the audited extern contract table. `Rc` so
     /// child builders share it cheaply; the empty default classifies every callee
-    /// as an unknown item → interim `LegacyModuleCall` fail-open (sound —
-    /// preserves today's mint, never a wrongly-Fresh admit). See
+    /// as an unknown item, which the fresh-owner authority then declines — no
+    /// mint, never a wrongly-Fresh admit. See
     /// `crate::return_provenance::CallScrutineeProvenance`.
+    ///
+    /// Its `fresh_owner_verdicts` field is the ONE place a builder holds the
+    /// TABLE-AWARE fresh-owner authority — the object every ownership consumer
+    /// asks "does this call hand back a fresh owner I may drop, move, or
+    /// consume". It is the coarse interprocedural freshness fixpoint
+    /// (`compute_fn_returns_fresh_owner`) CONJOINED with the opaque-extern
+    /// laundering veto and the direct-extern name veto. The builder deliberately
+    /// keeps NO second copy: one holder, one authority. The COARSE map is never
+    /// threaded here at all — it is a local in `lower_module` consumed only by
+    /// the authority builder, so a laundering wrapper cannot be read as fresh at
+    /// any consumer, and an un-threaded (default) context grants nothing because
+    /// the authority fails closed on every absent row.
     pub(crate) call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance>,
+    /// Bindings this function `let`-bound to a value that PROVABLY carries a
+    /// declared, non-audited extern's handle, and which were therefore refused a
+    /// scope-exit owner (`let_binder_owns_proven_foreign_value`).
+    ///
+    /// The authority's value queries walk an expression's own structure, and a
+    /// `BindingRef` is a leaf to them — so without this ledger a foreign handle
+    /// laundered through one `let` would re-enter every container mint clean
+    /// (`let h = unsafe { host_record() }; Outer { inner: h }`). It is the
+    /// per-function carrier of the same fact, consulted by
+    /// `Builder::value_is_free_of_opaque_foreign_provenance` beside the
+    /// module-level authority. Reset per function, like every other local ledger.
+    pub(crate) proven_foreign_bindings: std::collections::HashSet<hew_hir::BindingId>,
     /// Per-function local-binding freshness facts (#2648 S2b) consumed by the
     /// caller-side argument scan: which of the CURRENT function's locals are
     /// provably solely-owned fresh values (S1 bits `∅`, plain `let`, not
@@ -3060,23 +3082,27 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         }
     }
 
-    // Module-global interprocedural freshness summary, computed ONCE over every
-    // function item (a least-fixpoint). Threaded into every body-lowering
-    // builder so the destructive-funcupdate base gate can admit a `..f(args)`
-    // base ONLY when `f` provably returns a fresh owner — closing the
-    // call-returns-borrowed-param use-after-free. `Rc` so child builders share
-    // it without re-cloning the map.
-    let funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>> =
-        Rc::new(compute_fn_returns_fresh_owner(&origin_fns));
+    // Module-global interprocedural COARSE freshness summary, computed ONCE over
+    // every function item (a least-fixpoint). It answers the narrow
+    // may-alias-a-by-value-parameter question and CANNOT see an extern, so it is
+    // deliberately a LOCAL: its only consumer is the authority builder below.
+    // Nothing downstream — no builder, no consumer — is ever handed this map,
+    // which is what makes the opaque-extern taint unbypassable.
+    let coarse_fn_returns_fresh: HashMap<hew_hir::ItemId, bool> =
+        compute_fn_returns_fresh_owner(&origin_fns);
     // Module-global call-scrutinee return-provenance context (#2648): the precise
     // three-state provenance fixpoint (+ the interprocedural mutation summary),
-    // the declared-extern id set, and the audited extern contract table. Computed
-    // ONCE and threaded (as `Rc`) into every body-lowering builder so the
-    // preflight admission classifier rejects a forwarded borrowed-parameter
-    // scrutinee before the from-call owner mint fires.
-    let call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance> = Rc::new(
-        crate::return_provenance::build_call_scrutinee_provenance(module, &origin_fns),
-    );
+    // the declared-extern id set, the audited extern contract table, and the
+    // table-aware fresh-owner authority. Computed ONCE and threaded (as `Rc`)
+    // into every body-lowering builder so the preflight admission classifier
+    // rejects a forwarded borrowed-parameter scrutinee before the from-call owner
+    // mint fires.
+    let call_scrutinee_provenance: Rc<crate::return_provenance::CallScrutineeProvenance> =
+        Rc::new(crate::return_provenance::build_call_scrutinee_provenance(
+            module,
+            &origin_fns,
+            &coarse_fn_returns_fresh,
+        ));
     // Module-global RAII-2 (#1295) param-ownership facts: which affine
     // `#[resource]` free-fn value params are CONSUME vs BORROW, and the
     // call-arg `SiteId`s whose over-stamped `Consume` intent is downgraded to a
@@ -3128,7 +3154,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                         None,
                         &module_fn_names,
                         &module_generic_fn_names,
-                        &funcupdate_fn_returns_fresh,
                         &call_scrutinee_provenance,
                         &param_ownership,
                         &trait_impl_index,
@@ -3180,7 +3205,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     None,
                     &module_fn_names,
                     &module_generic_fn_names,
-                    &funcupdate_fn_returns_fresh,
                     &call_scrutinee_provenance,
                     &param_ownership,
                     &trait_impl_index,
@@ -3221,7 +3245,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
-                    &funcupdate_fn_returns_fresh,
                     &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
@@ -3263,7 +3286,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
-                    &funcupdate_fn_returns_fresh,
                     &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
@@ -3351,7 +3373,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     &classification_enum_layouts,
                     &module_fn_names,
                     &module_generic_fn_names,
-                    &funcupdate_fn_returns_fresh,
                     &call_scrutinee_provenance,
                     &param_ownership,
                     &module.call_site_type_args,
@@ -3417,7 +3438,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             None,
             &module_fn_names,
             &module_generic_fn_names,
-            &funcupdate_fn_returns_fresh,
             &call_scrutinee_provenance,
             &param_ownership,
             &trait_impl_index,
@@ -4814,7 +4834,6 @@ pub(crate) fn lower_function(
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
-    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_scrutinee_provenance: &Rc<crate::return_provenance::CallScrutineeProvenance>,
     param_ownership: &Rc<ParamOwnershipFacts>,
     trait_impl_index: &HashMap<
@@ -4863,8 +4882,8 @@ pub(crate) fn lower_function(
             .unwrap_or_default(),
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
-        funcupdate_fn_returns_fresh: funcupdate_fn_returns_fresh.clone(),
         call_scrutinee_provenance: call_scrutinee_provenance.clone(),
+        proven_foreign_bindings: std::collections::HashSet::new(),
         param_ownership: param_ownership.clone(),
         trait_impl_index: trait_impl_index.clone(),
         subst,
@@ -4914,7 +4933,7 @@ pub(crate) fn lower_function(
     }
     builder.lower_params(func);
     builder.funcupdate_base_proven =
-        compute_funcupdate_base_provenance(func, funcupdate_fn_returns_fresh);
+        compute_funcupdate_base_provenance(func, &call_scrutinee_provenance.fresh_owner_verdicts);
     // #2648 S2b — the caller arg-scan's per-function local freshness facts,
     // computed under the SAME module tables the S1 fixpoint used.
     builder.call_scrutinee_local_freshness =
@@ -5956,7 +5975,9 @@ impl Builder {
             }
             if param_is_consumed {
                 let owned_ty = self.subst_ty(&param.ty);
-                self.register_owned_local(param.id, param.name.clone(), owned_ty.clone());
+                // U3 — see `owner_warrant_for_owned_parameter`.
+                let warrant = self.owner_warrant_for_owned_parameter(param.id, &owned_ty);
+                self.register_owned_local(param.id, param.name.clone(), owned_ty.clone(), warrant);
                 // Register the param in the function's top body scope so it
                 // participates in the elaborator's path-sensitive drop passes
                 // (forward-`Goto` scope-close + per-exit narrowing) exactly like
@@ -6021,8 +6042,7 @@ impl Builder {
                     &self.record_field_orders,
                     &self.enum_layouts,
                 ) {
-                    self.register_owned_local(param.id, param.name.clone(), owned_ty);
-                    self.binding_scope.insert(param.id, func.body.scope);
+                    self.register_owned_param(param, owned_ty, func.body.scope);
                     callee_owns_param = true;
                 }
             }
@@ -6060,8 +6080,7 @@ impl Builder {
             {
                 let owned_ty = self.subst_ty(&param.ty);
                 if self.is_owned_aggregate_record_ty(&owned_ty) {
-                    self.register_owned_local(param.id, param.name.clone(), owned_ty);
-                    self.binding_scope.insert(param.id, func.body.scope);
+                    self.register_owned_param(param, owned_ty, func.body.scope);
                 }
             }
             // The mailbox copy transfers ownership of a top-level indirect-enum
@@ -6072,8 +6091,7 @@ impl Builder {
             {
                 let owned_ty = self.subst_ty(&param.ty);
                 if crate::lower::drop_plan::ty_is_indirect_enum(&owned_ty, &self.enum_layouts) {
-                    self.register_owned_local(param.id, param.name.clone(), owned_ty);
-                    self.binding_scope.insert(param.id, func.body.scope);
+                    self.register_owned_param(param, owned_ty, func.body.scope);
                 }
             }
             if !callee_owns_param {
@@ -6082,6 +6100,23 @@ impl Builder {
                 }
             }
         }
+    }
+
+    /// Register a parameter this frame's callee-side rules say the callee OWNS.
+    ///
+    /// U3 — the warrant is built by
+    /// [`Builder::owner_warrant_for_owned_parameter`], which explains why the
+    /// provenance question for a parameter is answered at the CALLER and what
+    /// enforces that.
+    fn register_owned_param(
+        &mut self,
+        param: &hew_hir::HirBinding,
+        owned_ty: ResolvedTy,
+        scope: hew_hir::ScopeId,
+    ) {
+        let warrant = self.owner_warrant_for_owned_parameter(param.id, &owned_ty);
+        self.register_owned_local(param.id, param.name.clone(), owned_ty, warrant);
+        self.binding_scope.insert(param.id, scope);
     }
 
     fn seed_fn_param_provenance(&mut self, param: &hew_hir::HirBinding) {

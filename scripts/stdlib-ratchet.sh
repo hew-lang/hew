@@ -177,7 +177,12 @@ if [[ $count_unexpected_fail -gt 0 ]]; then
     while IFS= read -r path; do
         [[ -z "$path" ]] && continue
         echo "  UNEXPECTED: $path"
-        "$HEW_BIN" check "$REPO_ROOT/$path" 2>&1 | head -3 | sed 's/^/    /'
+        # The excerpt is informational. Under `set -e -o pipefail` a non-zero
+        # status anywhere in this pipeline would abort the whole script and
+        # truncate the report after the FIRST entry — which is how a two-file
+        # regression reached CI showing only one file. `head` closing the pipe
+        # early is a normal outcome here, so the status is deliberately dropped.
+        "$HEW_BIN" check "$REPO_ROOT/$path" 2>&1 | head -3 | sed 's/^/    /' || true
     done <<< "$unexpected_failures"
     echo ""
     echo "  To accept these as known failures, add them to:"

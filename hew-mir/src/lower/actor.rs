@@ -2119,6 +2119,26 @@ impl Builder {
         }
     }
 
+    /// True iff an `ActorHandler`-convention `lower_params` will register a
+    /// scope-exit owner for a message parameter of this argument's type.
+    ///
+    /// Mirrors the two `FunctionCallConv::ActorHandler` mint arms — the #2747
+    /// owned-aggregate record message and the indirect-enum message — plus the
+    /// #2732 enum-composite arm, which an actor handler reaches on the same
+    /// terms as a free function. Every other message type leaves the handler
+    /// with no mint, so there is nothing at the far end to double-release and
+    /// nothing to refuse.
+    fn actor_handler_mints_an_owner_for_message(&self, arg: &HirExpr) -> bool {
+        let ty = self.subst_ty(&arg.ty);
+        self.is_owned_aggregate_record_ty(&ty)
+            || crate::lower::drop_plan::ty_is_indirect_enum(&ty, &self.enum_layouts)
+            || crate::lower::ty_is_heap_owning_enum_composite(
+                &ty,
+                &self.record_field_orders,
+                &self.enum_layouts,
+            )
+    }
+
     pub(crate) fn lower_actor_send(
         &mut self,
         receiver: &HirExpr,
@@ -2144,6 +2164,20 @@ impl Builder {
                 ),
             });
             return None;
+        }
+        // U3 tail — the mailbox hand-off MOVES every argument out of this frame
+        // and the delivered copy is minted a scope-exit owner inside the actor
+        // handler, from the parameter's type (`lower_params`, the
+        // `FunctionCallConv::ActorHandler` arms). That frame cannot ask; this one
+        // can. Preflighted before the receiver is lowered so a refusal leaves no
+        // partial MIR.
+        for arg in args {
+            if !self.actor_handler_mints_an_owner_for_message(arg) {
+                continue;
+            }
+            if self.reject_opaque_foreign_ownership_transfer(arg, "an actor handler's mailbox") {
+                return None;
+            }
         }
         let actor = self.lower_value(receiver)?;
         let child_ref = self.fungible_child_ref_of(actor);

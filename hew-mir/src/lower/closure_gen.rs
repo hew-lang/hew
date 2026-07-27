@@ -214,10 +214,32 @@ impl Builder {
         Some(closure_place)
     }
 
+    /// U2 — the per-function proven-foreign ledger CROSSES into the closure
+    /// environment, and this is where it crosses.
+    ///
+    /// The decision the round-5 report asked for is "either the ledger crosses,
+    /// or captures are proven ownerless by construction". It crosses, and it
+    /// crosses here rather than being shipped into the closure body, because
+    /// `materialize_closure_env` runs in the ENCLOSING builder — the frame whose
+    /// ledger holds the fact — and `OwnsMoved` is the ONLY way a capture becomes
+    /// owned. The closure body never mints an owner for a capture: it reads one
+    /// through `capture_env_sources` / `ClosureEnvFieldLoad`, and whole-value
+    /// escapes out of the env are already refused
+    /// (`reject_capture_env_whole_escape`).
+    ///
+    /// `OwnsMoved` does two things at once: it consumes the source binding's
+    /// owner (suppressing that binding's own drop) and it makes the heap env's
+    /// destructor the release authority for the field. For a binding the `let`
+    /// binder refused an owner for, the first half consumes an owner that never
+    /// existed and the second half frees a handle the host still owns. Reading
+    /// the ledger turns exactly that case into `BorrowsOnly`: the env aliases the
+    /// value and releases nothing — the leak-not-double-free direction, and the
+    /// same answer the binder itself gave.
     fn closure_env_capture_ownership(
         &self,
         strategy: crate::closure_env::AllocationStrategy,
         ty: &ResolvedTy,
+        source_binding: Option<BindingId>,
     ) -> ClosureEnvFieldOwnership {
         match strategy {
             crate::closure_env::AllocationStrategy::Stack
@@ -226,7 +248,21 @@ impl Builder {
             }
             crate::closure_env::AllocationStrategy::Heap => {
                 let ty = self.subst_ty(ty);
-                if ValueClass::of_ty(&ty, &self.type_classes) == ValueClass::BitCopy {
+                // Nothing to release, so nothing to own.
+                let nothing_to_own =
+                    ValueClass::of_ty(&ty, &self.type_classes) == ValueClass::BitCopy;
+                // U2 — THE LEDGER CROSSES. `own_moved` consumes the source
+                // binding's scope-exit owner AND installs the heap env
+                // destructor as the release authority for the captured value.
+                // For a binding this frame proved foreign, the second half is a
+                // release of a handle the program never owned. This decision
+                // runs in the ENCLOSING builder, which is exactly the frame
+                // whose ledger holds the fact, and the parent's ledger is
+                // cloned into every child builder so a nested closure sees it
+                // too.
+                let proven_foreign = source_binding
+                    .is_some_and(|binding| self.proven_foreign_bindings.contains(&binding));
+                if nothing_to_own || proven_foreign {
                     ClosureEnvFieldOwnership::BorrowsOnly
                 } else {
                     ClosureEnvFieldOwnership::OwnsMoved
@@ -369,7 +405,7 @@ impl Builder {
                 continue;
             };
             let field_ty = self.subst_ty(&capture.ty);
-            let ownership = self.closure_env_capture_ownership(strategy, &field_ty);
+            let ownership = self.closure_env_capture_ownership(strategy, &field_ty, source_binding);
             if ownership == ClosureEnvFieldOwnership::OwnsMoved {
                 if let Some(binding) = source_binding {
                     self.statements.push(MirStatement::Use {
@@ -459,8 +495,15 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
-            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             param_ownership: self.param_ownership.clone(),
+            // U2 — the proven-foreign ledger CROSSES the frame boundary with the
+            // captures. `BindingId`s are globally unique, so carrying the
+            // parent's set verbatim is exact: a nested body that re-derives
+            // ownership for a captured binding reads the same refusal the
+            // enclosing `let` recorded, and a binding the child cannot see is
+            // never consulted. Without this the child's ledger is empty and a
+            // captured foreign handle re-enters every mint inside the body clean.
+            proven_foreign_bindings: self.proven_foreign_bindings.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -482,11 +525,10 @@ impl Builder {
             funcupdate_param_ids: self.funcupdate_param_ids.clone(),
             // #2648 — the module return-provenance context MUST reach every
             // child builder: without it the preflight classifies a resolved
-            // module fn as an unknown item → interim `LegacyModuleCall`
-            // fail-open → a `match wrap(captured)` INSIDE a closure minted an
-            // owner the enclosing frame also releases (a reproduced
-            // double-free). Never `Builder::default()` for this field on a
-            // user-body child.
+            // module fn as an unknown item, which now declines rather than
+            // mints — so a `match wrap(captured)` INSIDE a closure would lose a
+            // legitimate release instead of gaining a double one. Never
+            // `Builder::default()` for this field on a user-body child.
             call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
             // `call_scrutinee_local_freshness` is deliberately NOT inherited
             // (the spread leaves it the empty fail-closed default): the
@@ -735,8 +777,15 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
-            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             param_ownership: self.param_ownership.clone(),
+            // U2 — the proven-foreign ledger CROSSES the frame boundary with the
+            // captures. `BindingId`s are globally unique, so carrying the
+            // parent's set verbatim is exact: a nested body that re-derives
+            // ownership for a captured binding reads the same refusal the
+            // enclosing `let` recorded, and a binding the child cannot see is
+            // never consulted. Without this the child's ledger is empty and a
+            // captured foreign handle re-enters every mint inside the body clean.
+            proven_foreign_bindings: self.proven_foreign_bindings.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -1953,8 +2002,15 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
-            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             param_ownership: self.param_ownership.clone(),
+            // U2 — the proven-foreign ledger CROSSES the frame boundary with the
+            // captures. `BindingId`s are globally unique, so carrying the
+            // parent's set verbatim is exact: a nested body that re-derives
+            // ownership for a captured binding reads the same refusal the
+            // enclosing `let` recorded, and a binding the child cannot see is
+            // never consulted. Without this the child's ledger is empty and a
+            // captured foreign handle re-enters every mint inside the body clean.
+            proven_foreign_bindings: self.proven_foreign_bindings.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),

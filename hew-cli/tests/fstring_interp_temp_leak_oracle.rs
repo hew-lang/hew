@@ -179,6 +179,191 @@ fn fstring_five_interp_loop_source(frames: usize) -> String {
     fstring_multi_interp_loop_source(5, frames)
 }
 
+/// Call-result directly interpolated: `println(f"v={mk(i)}")` where `mk`
+/// is a USER function returning a fresh owned `string`. The call result is
+/// consumed straight into the interpolation with no intervening `let`, so
+/// the only thing that can release it is a caller-side temp-arg drop minted
+/// at the call. Pre-fix `caller_borrowed_temp_arg_owned_ty` recognised only
+/// runtime fresh-string producers, so a user-function result leaked 1 node
+/// per iteration. Binding first (`let s = mk(i)`) or dropping the f-string
+/// (`println(mk(i))`) were both already clean — those are the controls
+/// below.
+fn fstring_user_call_result_interp_loop_source(frames: usize) -> String {
+    let expected_total: usize = (0..frames).sum();
+    format!(
+        "fn mk(i: i64) -> string {{ f\"tok{{i}}\" }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       println(f\"v={{mk(i)}}\");\n\
+         \x20       total = total + i;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total != {expected_total} {{ return 90; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// Control for [`fstring_user_call_result_interp_loop_source`]: the identical
+/// program with the call result bound to a `let` before interpolation. This
+/// path was always clean (the binding anchors the string sole-owner prover);
+/// pin it so a future change to the temp-arg mint cannot regress it into a
+/// double release.
+fn fstring_user_call_bound_interp_loop_source(frames: usize) -> String {
+    let expected_total: usize = (0..frames).sum();
+    format!(
+        "fn mk(i: i64) -> string {{ f\"tok{{i}}\" }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let s = mk(i);\n\
+         \x20       println(f\"v={{s}}\");\n\
+         \x20       total = total + i;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total != {expected_total} {{ return 89; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// Match-payload variant: an `Option<string>` payload binder interpolated
+/// directly. `f"v={s}"` lowers the binder through the stdlib `impl Display
+/// for string` (`string::fmt`), a Hew-bodied callee — which the enum
+/// composite escape scan read as an ownership ESCAPE, stripping the whole
+/// `Option<string>` of its `EnumInPlace` scope-exit drop and leaking the
+/// payload every iteration. `println(s)` (no f-string) was clean, because
+/// `println` is on the hardcoded borrow-sink list. The binder is read AGAIN
+/// after the interpolation so an over-eager release surfaces as a scribbled
+/// length rather than passing silently.
+fn fstring_enum_payload_interp_loop_source(frames: usize) -> String {
+    let expected_len: usize = (0..frames).map(|i| format!("tok{i}").len()).sum();
+    format!(
+        "fn mkopt(i: i64) -> Option<string> {{ Some(f\"tok{{i}}\") }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       match mkopt(i) {{\n\
+         \x20           Some(s) => {{ println(f\"v={{s}}\"); total = total + s.len(); }}\n\
+         \x20           None => {{}}\n\
+         \x20       }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total != {expected_len} {{ return 88; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// `Result<string, string>` sibling of
+/// [`fstring_enum_payload_interp_loop_source`] — the same defect reached
+/// through a two-owned-payload enum, where BOTH variants carry a `string` the
+/// composite drop must dispose tag-aware.
+///
+/// BOTH tags are constructed and BOTH payloads are interpolated. Exercising
+/// only `Ok` would leave the `Err` arm's payload -- a distinct variant slot
+/// with its own field offset in the tagged union -- entirely unobserved, so a
+/// tag-blind drop that disposed the wrong slot would pass unnoticed. The
+/// alternation is odd/even on the loop counter so both arms run on every
+/// probe frame count, and the two running totals are checked independently at
+/// exit, which pins that each arm read its OWN payload intact.
+fn fstring_result_payload_interp_loop_source(frames: usize) -> String {
+    let ok_len: usize = (0..frames)
+        .filter(|i| i % 2 == 0)
+        .map(|i| format!("tok{i}").len())
+        .sum();
+    let err_len: usize = (0..frames)
+        .filter(|i| i % 2 == 1)
+        .map(|i| format!("bad{i}").len())
+        .sum();
+    format!(
+        "fn mkres(i: i64) -> Result<string, string> {{\n\
+         \x20   if i % 2 == 0 {{ Ok(f\"tok{{i}}\") }} else {{ Err(f\"bad{{i}}\") }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var ok_total: i64 = 0;\n\
+         \x20   var err_total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       match mkres(i) {{\n\
+         \x20           Ok(s) => {{ println(f\"v={{s}}\"); ok_total = ok_total + s.len(); }}\n\
+         \x20           Err(e) => {{ println(f\"e={{e}}\"); err_total = err_total + e.len(); }}\n\
+         \x20       }}\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if ok_total != {ok_len} {{ return 87; }}\n\
+         \x20   if err_total != {err_len} {{ return 86; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// Fail-closed pin with a NON-COPY-IN sink. The `Option<string>` payload is
+/// interpolated (the shape the fix admits) AND then MOVED into an outer
+/// `var` that outlives the match arm. `last = s` aliases the same refcounted
+/// buffer with no copy-in, so a composite drop admitted here would release a
+/// buffer the outer binding still owns — a double release, not a leak.
+///
+/// The escape must keep excluding the composite: this program is EXPECTED to
+/// leak. What is pinned is that it exits cleanly with the exact post-loop
+/// values, i.e. the buffer stayed alive and was never released twice. A
+/// `Vec::push` sink would prove nothing here — it byte-copies the handle and
+/// so cannot exhibit the failure at all.
+fn fstring_enum_payload_escapes_loop_source(frames: usize) -> String {
+    let expected_len: usize = (0..frames).map(|i| format!("tok{i}").len()).sum();
+    let last = format!("tok{}", frames - 1);
+    format!(
+        "fn mkopt(i: i64) -> Option<string> {{ Some(f\"tok{{i}}\") }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var last: string = \"\";\n\
+         \x20   while i < {frames} {{\n\
+         \x20       match mkopt(i) {{\n\
+         \x20           Some(s) => {{ println(f\"v={{s}}\"); last = s; }}\n\
+         \x20           None => {{}}\n\
+         \x20       }}\n\
+         \x20       total = total + last.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if last != \"{last}\" {{ return 86; }}\n\
+         \x20   if total != {expected_len} {{ return 85; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
+/// Fail-closed pin with a non-copy-in sink at a CALL boundary: the fresh
+/// call-result temp is handed to a user function that aliases it into a
+/// record the caller then owns and reads after the call returns. The
+/// temp-arg mint must NOT claim this buffer — the record does. Expected to
+/// leak; pinned to exit cleanly with the exact total, proving the record's
+/// field was never released out from under the read.
+fn fstring_user_call_result_escapes_loop_source(frames: usize) -> String {
+    let expected_len: usize = (0..frames).map(|i| format!("tok{i}").len()).sum();
+    format!(
+        "record Box {{ s: string }}\n\
+         fn mk(i: i64) -> string {{ f\"tok{{i}}\" }}\n\
+         fn keep(s: string) -> Box {{ Box {{ s: s }} }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let b = keep(mk(i));\n\
+         \x20       println(f\"v={{b.s}}\");\n\
+         \x20       total = total + b.s.len();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total != {expected_len} {{ return 84; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 // -- correctness pins --------------------------------------------------------
 
 /// Run `source` to native, execute under the poisoned-allocator triple, and
@@ -293,4 +478,105 @@ fn fstring_four_interp_freed_exactly_once_under_malloc_scribble() {
 #[test]
 fn fstring_five_interp_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free("fstring_5interp_df", &fstring_five_interp_loop_source(200));
+}
+
+// -- #2803 owned-call-result / match-payload interpolation oracles -----------
+
+/// Teeth: a USER function's fresh `string` result interpolated DIRECTLY into
+/// an f-string. Pre-fix the caller-side temp-arg mint recognised only runtime
+/// fresh-string producers, so the result leaked 1 node/iteration
+/// (`println(f"v={mk(i)}")` — 5 leaks / 160 bytes over 5 iterations).
+#[test]
+fn fstring_user_call_result_interp_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "fstring_user_call_result",
+        fstring_user_call_result_interp_loop_source,
+    );
+}
+
+/// Control: binding the call result first was always clean. Pinned so the
+/// temp-arg mint cannot regress it into a second owner.
+#[test]
+fn fstring_user_call_bound_interp_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "fstring_user_call_bound",
+        fstring_user_call_bound_interp_loop_source,
+    );
+}
+
+/// Teeth: an `Option<string>` payload binder interpolated directly. Pre-fix
+/// the Hew-bodied `string::fmt` call read as an ownership escape and stripped
+/// the composite's `EnumInPlace` drop, leaking the payload every iteration.
+#[test]
+fn fstring_enum_payload_interp_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "fstring_enum_payload",
+        fstring_enum_payload_interp_loop_source,
+    );
+}
+
+/// Teeth: the `Result<string, string>` sibling — both variants own a string,
+/// so the composite drop must dispose the active one tag-aware.
+#[test]
+fn fstring_result_payload_interp_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "fstring_result_payload",
+        fstring_result_payload_interp_loop_source,
+    );
+}
+
+/// No-double-free pin: the user-call result releases EXACTLY once across 200
+/// interpolations. A second owner aborts under the poisoned allocator; an
+/// over-drop scribbles the read and trips the fixture's own total check.
+#[test]
+fn fstring_user_call_result_interp_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
+        "fstring_user_call_result_df",
+        &fstring_user_call_result_interp_loop_source(200),
+    );
+}
+
+/// No-double-free pin: the `Option<string>` payload releases EXACTLY once
+/// across 200 iterations, and stays readable after the interpolation.
+#[test]
+fn fstring_enum_payload_interp_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
+        "fstring_enum_payload_df",
+        &fstring_enum_payload_interp_loop_source(200),
+    );
+}
+
+/// No-double-free pin: the `Result<string, string>` payload releases EXACTLY
+/// once across 200 iterations.
+#[test]
+fn fstring_result_payload_interp_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
+        "fstring_result_payload_df",
+        &fstring_result_payload_interp_loop_source(200),
+    );
+}
+
+/// Fail-closed pin (non-copy-in sink, enum payload): interpolating a payload
+/// that ALSO escapes into an outer `var` must keep the composite excluded.
+/// The program is expected to leak; what is pinned is that the aliased buffer
+/// is never released twice — a double release scribbles `last`/`total` and
+/// trips the fixture's own post-loop checks, or aborts outright.
+#[test]
+fn fstring_enum_payload_escape_is_not_released_twice_under_malloc_scribble() {
+    assert_no_double_free(
+        "fstring_enum_payload_escape_df",
+        &fstring_enum_payload_escapes_loop_source(200),
+    );
+}
+
+/// Fail-closed pin (non-copy-in sink, call boundary): a fresh call-result
+/// temp aliased by the callee into a record the caller keeps must not be
+/// claimed by the temp-arg mint. Expected to leak; pinned to never release
+/// the record's field out from under the caller's read.
+#[test]
+fn fstring_user_call_result_escape_is_not_released_twice_under_malloc_scribble() {
+    assert_no_double_free(
+        "fstring_user_call_result_escape_df",
+        &fstring_user_call_result_escapes_loop_source(200),
+    );
 }

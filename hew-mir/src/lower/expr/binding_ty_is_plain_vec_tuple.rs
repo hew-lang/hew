@@ -790,6 +790,7 @@ fn unsupported_vec_element_diagnostics_rejects_unwired_owned_local() {
         BindingId(7),
         "nodes".to_string(),
         vec_of_ty(unregistered_named("Foo")),
+        crate::lower::OwnerMintWarrant::granting_for_tests(),
     );
     // The construction site is sourced from the finalized `Bind` statements,
     // keyed by the owned local's binding id.
@@ -814,6 +815,7 @@ fn unsupported_vec_element_diagnostics_rejects_unwired_owned_local() {
         BindingId(8),
         "names".to_string(),
         vec_of_ty(ResolvedTy::String),
+        crate::lower::OwnerMintWarrant::granting_for_tests(),
     );
     assert!(
         ok.unsupported_vec_element_diagnostics(&bind_sites)
@@ -832,7 +834,12 @@ fn register_owned_local_records_classified_ownership_and_scope_exit() {
     use crate::ownership::{DropClass, HeapLeaf};
 
     let mut builder = builder_with_indirect_enum();
-    builder.register_owned_local(BindingId(3), "s".to_string(), ResolvedTy::String);
+    builder.register_owned_local(
+        BindingId(3),
+        "s".to_string(),
+        ResolvedTy::String,
+        crate::lower::OwnerMintWarrant::granting_for_tests(),
+    );
 
     // The compat view is exactly the registered triple, in registration
     // order — what `owned_locals_snapshot` feeds the provers.
@@ -945,6 +952,7 @@ fn byte_copy_alias_registers_aliasof_and_leaves_the_live_view() {
         "mid".to_string(),
         unregistered_named("Rec"),
         provenance.clone(),
+        crate::lower::OwnerMintWarrant::granting_for_tests(),
     );
 
     let entry = &builder.owned_locals[0];
@@ -976,8 +984,18 @@ fn byte_copy_alias_registers_aliasof_and_leaves_the_live_view() {
 #[test]
 fn dispositioned_binding_leaves_live_view_but_survives_whole_ledger() {
     let mut builder = builder_with_indirect_enum();
-    builder.register_owned_local(BindingId(3), "kept".to_string(), ResolvedTy::String);
-    builder.register_owned_local(BindingId(4), "moved".to_string(), ResolvedTy::String);
+    builder.register_owned_local(
+        BindingId(3),
+        "kept".to_string(),
+        ResolvedTy::String,
+        crate::lower::OwnerMintWarrant::granting_for_tests(),
+    );
+    builder.register_owned_local(
+        BindingId(4),
+        "moved".to_string(),
+        ResolvedTy::String,
+        crate::lower::OwnerMintWarrant::granting_for_tests(),
+    );
 
     // Both are scope-exit-live before any retraction.
     assert_eq!(

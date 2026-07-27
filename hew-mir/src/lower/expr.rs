@@ -30,6 +30,34 @@ pub(super) fn binding_seeds_drop_elaboration(
 }
 
 impl Builder {
+    /// The `let` / `var` binder's combined seed-and-provenance gate.
+    ///
+    /// `Some(warrant)` when this binding earns a scope-exit owner: its type
+    /// seeds drop elaboration, the same iteration will wire its backend slot,
+    /// and the provenance question over its initializer came back not-proven-
+    /// foreign. `None` withholds — and because the whole registration block
+    /// hangs off this `Option`, a withheld binder also skips the generator /
+    /// stream / `VecIter` per-scope-exit taggings that would otherwise schedule
+    /// their own release for a value this program does not own.
+    ///
+    /// The warrant it returns is the only thing that will satisfy
+    /// [`Builder::register_owned_local`], so the gate and the mint cannot drift:
+    /// there is no path from "this type is not `BitCopy`" to an owner entry that
+    /// does not pass through here.
+    pub(crate) fn let_binder_owner_warrant(
+        &mut self,
+        binding: BindingId,
+        value: &HirExpr,
+        binding_ty: &ResolvedTy,
+        slot_is_wired: bool,
+    ) -> Option<super::OwnerMintWarrant> {
+        if !self.binding_seeds_drop_elaboration(binding_ty) || !slot_is_wired {
+            return None;
+        }
+        let warrant = self.owner_warrant_for_initializer(binding, value, binding_ty);
+        (!warrant.withholds_mint()).then_some(warrant)
+    }
+
     /// True when a `Vec` element is released through the owned-element ABI
     /// (`hew_vec_free_owned` running the per-element `drop_fn`, #1722): a
     /// registered, genuinely heap-owning, non-closure record or enum. This is
@@ -1360,10 +1388,19 @@ impl Builder {
                     match classify_dyn_trait_storage(value, &self.dyn_trait_storage) {
                         Ok(storage) => {
                             self.dyn_trait_storage.insert(binding.id, storage);
+                            // U4 — the dyn-Trait binder decided storage from the
+                            // RHS SHAPE and minted from the shape alone. The
+                            // warrant puts the RHS's provenance to the ledger and
+                            // the authority, exactly as the plain `let` binder
+                            // does; a proven-foreign initializer earns the fat
+                            // pointer no vtable-slot-0 release.
+                            let warrant =
+                                self.owner_warrant_for_initializer(binding.id, value, &value_ty);
                             self.register_owned_local(
                                 binding.id,
                                 binding.name.clone(),
                                 value_ty.clone(),
+                                warrant,
                             );
                             // Transitive `dyn -> dyn` rebind suppression.
                             //
@@ -1429,9 +1466,12 @@ impl Builder {
                             });
                         }
                     }
-                } else if self.binding_seeds_drop_elaboration(&binding_ty)
-                    && (pending || value_place.is_some())
-                {
+                } else if let Some(warrant) = self.let_binder_owner_warrant(
+                    binding.id,
+                    value,
+                    &binding_ty,
+                    pending || value_place.is_some(),
+                ) {
                     // Only register the binding in `owned_locals` when
                     // the same iteration will also wire `binding_locals`
                     // (either pre-emptively via the lambda-actor
@@ -1462,11 +1502,13 @@ impl Builder {
                             binding.name.clone(),
                             binding_ty.clone(),
                             provenance,
+                            warrant,
                         ),
                         None => self.register_owned_local(
                             binding.id,
                             binding.name.clone(),
                             binding_ty.clone(),
+                            warrant,
                         ),
                     }
                     // Tag generator/`AsyncGenerator` handle bindings with their
@@ -4567,8 +4609,9 @@ impl Builder {
                     && args.len() == 1
                     && Self::expr_is_materialized_owner(
                         &args[0],
-                        &self.funcupdate_fn_returns_fresh,
+                        &self.call_scrutinee_provenance.fresh_owner_verdicts,
                         &self.funcupdate_param_ids,
+                        &self.proven_foreign_bindings,
                     ) {
                     "hew_vec_push_owned_move".to_string()
                 } else {
@@ -4598,8 +4641,9 @@ impl Builder {
                     && args.len() == 2
                     && Self::expr_is_materialized_owner(
                         &args[1],
-                        &self.funcupdate_fn_returns_fresh,
+                        &self.call_scrutinee_provenance.fresh_owner_verdicts,
                         &self.funcupdate_param_ids,
+                        &self.proven_foreign_bindings,
                     ) {
                     "hew_vec_set_owned_move".to_string()
                 } else {
@@ -4638,12 +4682,28 @@ impl Builder {
                 let receiver_place = self.lower_value(receiver)?;
                 let mut arg_places = vec![receiver_place];
                 for arg in args {
-                    let arg_place = self.lower_method_arg_value(
-                        arg,
-                        is_vec_element_store || builtin_method_arg_is_move_ingress(*target_family),
-                    )?;
+                    let move_ingress = builtin_method_arg_is_move_ingress(*target_family);
+                    // `HashMap`/`HashSet` ingress is MOVE by ABI — the runtime
+                    // documents copy-in as intentionally absent — so the operand's
+                    // heap is byte-transferred into the collection and the
+                    // collection's compiler-scheduled teardown releases it through
+                    // the value layout's `drop_fn`. Deciding that from the method
+                    // FAMILY alone schedules a release of a value the compiler may
+                    // not own: `m.insert(k, wrap())` hands the map an
+                    // ownership-opaque foreign record and the teardown frees a
+                    // handle the host still holds.
+                    //
+                    // Unlike the `Vec` seam there is no COPY-IN sibling to fall
+                    // back to, so failing closed cannot mean "mint nothing" — the
+                    // move happens either way. It means refusing to compile the
+                    // ingress at all, which is what this does.
+                    if move_ingress && self.reject_opaque_foreign_collection_ingress(arg) {
+                        return None;
+                    }
+                    let arg_place =
+                        self.lower_method_arg_value(arg, is_vec_element_store || move_ingress)?;
                     arg_places.push(arg_place);
-                    if builtin_method_arg_is_move_ingress(*target_family) {
+                    if move_ingress {
                         self.consume_moved_builtin_method_arg(arg);
                     }
                     if is_array_literal_push {
@@ -5525,7 +5585,11 @@ impl Builder {
                     // defaults to `Place::Local(0)` — dropping the WRONG local.
                     self.binding_locals.insert(companion, gen_place);
                     self.record_binding_scope(companion);
-                    self.register_owned_local(companion, companion_name, companion_ty);
+                    // The companion owns the coro handle THIS expression just
+                    // materialised, so the gen-block expression is the value the
+                    // provenance question is about.
+                    let warrant = self.owner_warrant_for_admitted_temp(expr);
+                    self.register_owned_local(companion, companion_name, companion_ty, warrant);
                     self.build_stream_producer_pump(gen_place, &pump);
                     None
                 } else {
@@ -7613,7 +7677,12 @@ impl Builder {
                 entry.binding == binding_id && entry.disposition == Disposition::ScopeExit
             })
         {
-            self.register_owned_local(binding_id, name.to_string(), ty.clone());
+            // U1 tail — the `var`-self receiver restore re-mints an owner for a
+            // binding that already exists in this frame. Ask the ledger about
+            // that same binding: one the `let` binder refused an owner for must
+            // not acquire one by being written back.
+            let warrant = self.owner_warrant_for_rebind(binding_id, binding_id, ty);
+            self.register_owned_local(binding_id, name.to_string(), ty.clone(), warrant);
         }
     }
 
@@ -7761,6 +7830,14 @@ impl Builder {
         if ty_is_generator_handle(ret_ty) {
             self.reject_unproven_generator_fn_args(hir_args);
         }
+        // U3 / U9 preflight, BEFORE any argument lowering so a refusal leaves no
+        // partial MIR — the same posture the #2648 scrutinee reject takes. A
+        // callee-owned parameter mints its scope-exit owner from the parameter's
+        // TYPE inside the callee, a frame with no expression to ask about; this
+        // is where the question is answerable, so this is where it is asked.
+        if self.reject_opaque_foreign_call_arg_transfers(callee_item, hir_args) {
+            return None;
+        }
         // Lower each argument left-to-right.  If any fails to produce a
         // Place, fail the whole call — argument diagnostics already capture
         // the root cause.
@@ -7844,10 +7921,10 @@ impl Builder {
                 // not, so that contract is the exact discriminator. The string
                 // sole-owner prover then gates the actual drop (borrow admits,
                 // consume/escape excludes), as for the named `let s = a+b; h(s)`.
+                // Extern veto + dispatch-set test: see `callee_is_analyzed_hew_arg_sink`.
                 !crate::runtime_symbols::callee_ownership_contract(callee_symbol)
                     .borrows_string_call_args()
-                    && (self.module_fn_names.contains(callee_symbol)
-                        || self.module_generic_fn_names.contains(callee_symbol))
+                    && self.callee_is_analyzed_hew_arg_sink(callee_symbol)
             } else {
                 proven_borrow_args.contains(&index)
             };
@@ -7863,7 +7940,14 @@ impl Builder {
             if self.parameter_locals.contains(&local) {
                 continue;
             }
-            self.register_synthetic_owned_local(SYNTHETIC_TEMP_ARG_NAME, arg.site, local, owned_ty);
+            let warrant = self.owner_warrant_for_admitted_temp(arg);
+            self.register_synthetic_owned_local(
+                SYNTHETIC_TEMP_ARG_NAME,
+                arg.site,
+                local,
+                owned_ty,
+                warrant,
+            );
         }
         if !proven_borrow_args.is_empty() {
             self.proven_borrow_call_args

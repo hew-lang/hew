@@ -57,6 +57,21 @@ fn main() {
     // nested ASTs (e.g. thousands of chained binary operators) don't cause
     // a stack overflow in the parser, type checker, or serializer.
     const STACK_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
+
+    // A closed output pipe must not be able to abort the compiler. Rust
+    // installs SIG_IGN for SIGPIPE before `main`, so a write to a pipe whose
+    // reader has gone away returns EPIPE and the print macros panic on it —
+    // and this workspace builds with `panic = "abort"`, so that panic is a
+    // SIGABRT. `hew check f.hew 2>&1 | head -3` (what the stdlib ratchet does
+    // when it reports a failure) then exits 134 with a core dump instead of
+    // printing the three lines its consumer asked for. Restoring the default
+    // disposition here, once, before any output is produced, covers every
+    // subcommand and every write site rather than one stream at a time.
+    #[cfg(unix)]
+    {
+        signal::reset_sigpipe_to_default();
+    }
+
     let builder = std::thread::Builder::new()
         .name("hew-main".into())
         .stack_size(STACK_SIZE);

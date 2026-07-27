@@ -1352,7 +1352,6 @@ mod slice3_invariants {
                 None,
                 &HashSet::new(),
                 &HashSet::new(),
-                &std::rc::Rc::new(std::collections::HashMap::new()),
                 &std::rc::Rc::new(crate::return_provenance::CallScrutineeProvenance::default()),
                 &std::rc::Rc::new(ParamOwnershipFacts::default()),
                 &HashMap::new(),

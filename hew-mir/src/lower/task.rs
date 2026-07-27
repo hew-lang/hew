@@ -837,7 +837,6 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
-            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             param_ownership: self.param_ownership.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
@@ -1695,7 +1694,22 @@ impl Builder {
                 // value-bearing arm kind — covers ActorAsk, StreamNext,
                 // TaskAwait, and ChannelRecv uniformly; AfterTimer arms
                 // bind nothing and fall outside this block.
-                self.register_owned_local(binding_id, binding_name.clone(), ty_of_place);
+                //
+                // U8 — the value in the slot is materialised by the RUNTIME on
+                // the win edge (a reply channel, a channel/stream frame, a task
+                // result), so there is no producing expression in this frame to
+                // put to the authority. What makes the type-driven mint sound is
+                // that a proven-foreign value cannot ENTER the carrier: every
+                // ownership transfer out of a frame — a callee-owned parameter,
+                // an actor `tell`/`ask` message — is refused by
+                // `reject_opaque_foreign_ownership_transfer`, and every
+                // collection ingress by
+                // `reject_opaque_foreign_collection_ingress`. The warrant asks
+                // the remaining question this frame CAN answer (has the ledger
+                // already refused this binding an owner) and carries the
+                // tripwire for the ingress argument ceasing to hold.
+                let warrant = self.owner_warrant_for_owned_parameter(binding_id, &ty_of_place);
+                self.register_owned_local(binding_id, binding_name.clone(), ty_of_place, warrant);
                 arm_binding = Some((binding_id, binding_place));
             }
             let body_value = self.lower_value(&arm.body);

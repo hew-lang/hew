@@ -157,7 +157,6 @@ fn channel$new(i64) -> (Sender, Receiver) [conv=default]
     stmt: use BindingId(12) capacity site=SiteId(48) ty=i64 intent=Read
     _2 = call channel$try_new(_0) -> bb1
   bb1:
-    stmt: bind BindingId(4294967231) __hew_call_scrutinee site=SiteId(47) ty=Result<(Sender, Receiver), string>
     _3 = move etag2
     _4 = const.i64 0
     _5 = icmp.eq _3 _4

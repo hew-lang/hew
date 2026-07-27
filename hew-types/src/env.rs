@@ -65,13 +65,25 @@ pub enum BindingOrigin {
     Local,
     /// A function / method / init / hook / closure parameter.
     Parameter,
+    /// A method receiver parameter. Receivers have caller-visible write-back
+    /// semantics and are exempt from ordinary by-value parameter guards.
+    ReceiverParameter,
 }
 
 impl Binding {
     /// Whether this binding is a function parameter.
     #[must_use]
     pub fn is_param(&self) -> bool {
-        self.origin == BindingOrigin::Parameter
+        matches!(
+            self.origin,
+            BindingOrigin::Parameter | BindingOrigin::ReceiverParameter
+        )
+    }
+
+    /// Whether this binding is a method receiver parameter.
+    #[must_use]
+    pub fn is_receiver(&self) -> bool {
+        self.origin == BindingOrigin::ReceiverParameter
     }
 }
 
@@ -195,6 +207,41 @@ impl TypeEnv {
     /// shadows the parameter name is downgraded from hard error to warning,
     /// the same treatment given to shadowing a user-declared local variable.
     pub fn define_param_with_span(&mut self, name: String, ty: Ty, is_mutable: bool, span: Span) {
+        self.define_param_with_span_and_origin(
+            name,
+            ty,
+            is_mutable,
+            span,
+            BindingOrigin::Parameter,
+        );
+    }
+
+    /// Define a method receiver parameter, preserving its caller-visible
+    /// write-back provenance for mutation diagnostics.
+    pub fn define_receiver_param_with_span(
+        &mut self,
+        name: String,
+        ty: Ty,
+        is_mutable: bool,
+        span: Span,
+    ) {
+        self.define_param_with_span_and_origin(
+            name,
+            ty,
+            is_mutable,
+            span,
+            BindingOrigin::ReceiverParameter,
+        );
+    }
+
+    fn define_param_with_span_and_origin(
+        &mut self,
+        name: String,
+        ty: Ty,
+        is_mutable: bool,
+        span: Span,
+        origin: BindingOrigin,
+    ) {
         let id = self.next_binding_id();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(
@@ -209,7 +256,7 @@ impl TypeEnv {
                     is_written: false,
                     def_span: None,
                     shadow_span: Some(span),
-                    origin: BindingOrigin::Parameter,
+                    origin,
                 },
             );
         }

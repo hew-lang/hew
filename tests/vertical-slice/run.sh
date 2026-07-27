@@ -767,6 +767,14 @@ expect_check_fail_contains \
   "\`var acc\` on a by-value parameter of type \`Account\` has no caller-visible effect" \
   "mutable by-value record param"
 
+# #2821: a compiler-known sum wrapper is still inline value storage. The old
+# builtin blanket exemption treated Option<Account> like Vec and accepted the
+# same silent wrong-result shape one wrapper deep.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/var_option_value_param.hew" \
+  "\`var acc\` on a by-value parameter of type \`Option<Account>\` has no caller-visible effect" \
+  "mutable Option-wrapped by-value record param"
+
 # #2810: and the help text that routed users into that shape. The immutable
 # assignment must name the by-value parameter instead of suggesting \`var acc\`.
 expect_check_fail_contains_without \
@@ -798,6 +806,11 @@ run_accept_expect_stdout "sink_half_in_actor_state"
 # caller-visible, so the widened ineffective-var guard must leave it alone and
 # both writes must reach the caller. Exact-stdout oracle: `9` then `3`.
 run_accept_expect_stdout "var_vec_param_caller_visible"
+
+# #2821 reverse direction: a record can contain both private value storage and
+# caller-shared collection handles. These concrete Vec/HashMap projections cross
+# the shared boundary and must remain accepted. Exact stdout: `9` then `7`.
+run_accept_expect_stdout "var_record_collection_projection_caller_visible"
 
 # Static trait dispatch through supertrait bounds:
 # - reject missing concrete dispatch target at checker time, before MIR;

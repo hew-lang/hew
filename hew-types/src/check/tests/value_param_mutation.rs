@@ -38,6 +38,11 @@ fn assert_no_ineffective_diagnostic(source: &str) {
     );
 }
 
+fn assert_check_clean(source: &str) {
+    let (errors, _) = parse_and_check(source);
+    assert!(errors.is_empty(), "expected clean check, got: {errors:?}");
+}
+
 // ── Admitted: the parameter owns a private copy ───────────────────────────
 
 /// The reproducer from #2810 verbatim. Before the fix this compiled clean,
@@ -171,6 +176,49 @@ fn resource_record_is_rejected() {
     );
 }
 
+/// #2821: builtin sum wrappers carry their payload inline. They are not
+/// caller-visible handles merely because they have a `builtin` discriminator.
+#[test]
+fn issue_2821_option_of_value_aggregate_is_rejected() {
+    assert_ineffective(
+        concat!(
+            "type Account { balance: i64; }\n",
+            "fn withdraw(var acc: Option<Account>, amount: i64) -> i64 {\n",
+            "    let current = acc.unwrap();\n",
+            "    acc = Some(Account { balance: current.balance - amount });\n",
+            "    return acc.unwrap().balance;\n",
+            "}\n",
+        ),
+        "`var acc` on a by-value parameter of type `Option<Account>` has no caller-visible effect",
+    );
+}
+
+#[test]
+fn result_of_value_aggregate_is_rejected() {
+    assert_ineffective(
+        concat!(
+            "type Account { balance: i64; }\n",
+            "fn replace(var acc: Result<Account, string>) {\n",
+            "    acc = Ok(Account { balance: 60 });\n",
+            "}\n",
+        ),
+        "`var acc` on a by-value parameter of type `Result<Account, string>` has no caller-visible effect",
+    );
+}
+
+#[test]
+fn nested_option_result_value_aggregate_is_rejected() {
+    assert_ineffective(
+        concat!(
+            "type Account { balance: i64; }\n",
+            "fn replace(var acc: Option<Result<(Account, i64), string>>) {\n",
+            "    acc = Some(Ok((Account { balance: 60 }, 1)));\n",
+            "}\n",
+        ),
+        "`var acc` on a by-value parameter of type `Option<Result<(Account, i64), string>>` has no caller-visible effect",
+    );
+}
+
 // ── Rejected: mutation through the parameter reaches the caller ───────────
 
 /// `Vec` is a handle to storage the caller still references: `v[0] = 9`
@@ -202,6 +250,73 @@ fn actor_handle_param_is_not_flagged() {
         "}\n",
         "fn poke(var p: LocalPid<Probe>) { p.bump(); }\n",
     ));
+}
+
+#[test]
+fn record_vec_field_index_projection_is_not_flagged() {
+    assert_check_clean(concat!(
+        "type Holder { items: Vec<i64>; }\n",
+        "fn set_first(var holder: Holder) { holder.items[0] = 9; }\n",
+    ));
+}
+
+#[test]
+fn record_hashmap_field_mutation_is_not_flagged() {
+    assert_check_clean(concat!(
+        "type Holder { items: HashMap<string, i64>; }\n",
+        "fn put(var holder: Holder) { holder.items.insert(\"k\", 9); }\n",
+    ));
+}
+
+/// The root has a valid shared projection, so it cannot be rejected wholesale.
+/// This concrete assignment never crosses that boundary and must still fail.
+#[test]
+fn record_handle_sibling_value_projection_is_rejected() {
+    let (errors, _) = parse_and_check(concat!(
+        "type Holder { items: Vec<i64>; count: i64; }\n",
+        "fn retag(var holder: Holder) { holder.count = 9; }\n",
+    ));
+    assert!(
+        errors.iter().any(|error| error.message
+            == "`holder` is a by-value parameter; this assignment mutates only its private copy \
+                and has no caller-visible effect"),
+        "expected private-projection diagnostic, got: {errors:?}"
+    );
+}
+
+/// Mutable receiver dispatch stores the returned receiver back into the
+/// binding. On a non-receiver by-value parameter that binding is private, even
+/// when another field happens to contain shared collection storage.
+#[test]
+fn record_handle_mutable_receiver_call_is_rejected_fail_closed() {
+    let (errors, _) = parse_and_check(concat!(
+        "trait Retag { fn retag(var self); }\n",
+        "type Holder { items: Vec<i64>; count: i64; }\n",
+        "impl Retag for Holder {\n",
+        "    fn retag(var self) { self.count = 9; }\n",
+        "}\n",
+        "fn retag_param(var holder: Holder) { holder.retag(); }\n",
+    ));
+    assert!(
+        errors.iter().any(|error| error.message
+            == "`holder` is a by-value parameter; method `retag` writes back only to its private \
+                copy, so the mutation is not proven caller-visible"),
+        "expected mutable-receiver private-copy diagnostic, got: {errors:?}"
+    );
+}
+
+/// A wrapper can contain a shared handle, but replacing the wrapper itself is
+/// still a write to the callee's private wrapper storage.
+#[test]
+fn option_handle_root_replacement_is_rejected() {
+    let (errors, _) =
+        parse_and_check("fn replace(var items: Option<Vec<i64>>) { items = Some([1, 2]); }\n");
+    assert!(
+        errors.iter().any(|error| error.message
+            == "`items` is a by-value parameter; this assignment mutates only its private copy \
+                and has no caller-visible effect"),
+        "expected private-wrapper diagnostic, got: {errors:?}"
+    );
 }
 
 // ── Rejected: not aggregates this predicate classifies ────────────────────
@@ -316,5 +431,61 @@ fn handle_param_assignment_still_suggests_var() {
     assert_eq!(
         suggestions,
         vec!["consider changing this to `var v`".to_string()]
+    );
+}
+
+#[test]
+fn option_value_param_assignment_does_not_suggest_var() {
+    let suggestions = mutability_suggestions(
+        concat!(
+            "type Account { balance: i64; }\n",
+            "fn replace(acc: Option<Account>) {\n",
+            "    acc = Some(Account { balance: 60 });\n",
+            "}\n",
+        ),
+        "acc",
+    );
+    assert!(
+        !suggestions
+            .iter()
+            .any(|suggestion| suggestion.contains(VAR_SUGGESTION)),
+        "must not steer an Option value parameter into `var`, got: {suggestions:?}"
+    );
+    assert_eq!(
+        suggestions[0],
+        "`acc` is a by-value parameter of type `Option<Account>`; mutating it has no \
+         caller-visible effect"
+    );
+}
+
+#[test]
+fn record_handle_private_projection_does_not_suggest_var() {
+    let suggestions = mutability_suggestions(
+        concat!(
+            "type Holder { items: Vec<i64>; count: i64; }\n",
+            "fn retag(holder: Holder) { holder.count = 9; }\n",
+        ),
+        "holder",
+    );
+    assert!(
+        !suggestions
+            .iter()
+            .any(|suggestion| suggestion.contains(VAR_SUGGESTION)),
+        "must not steer a private field write into `var`, got: {suggestions:?}"
+    );
+}
+
+#[test]
+fn record_handle_shared_projection_still_suggests_var() {
+    let suggestions = mutability_suggestions(
+        concat!(
+            "type Holder { items: Vec<i64>; }\n",
+            "fn set_first(holder: Holder) { holder.items[0] = 9; }\n",
+        ),
+        "holder",
+    );
+    assert_eq!(
+        suggestions,
+        vec!["consider changing this to `var holder`".to_string()]
     );
 }

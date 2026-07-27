@@ -251,6 +251,48 @@ impl CollectionTyCx {
 }
 
 impl Checker {
+    /// Reject a mutable-receiver store-back through a non-receiver by-value
+    /// parameter when the declaration was admitted only because some separate
+    /// projection reaches shared collection storage.
+    ///
+    /// For example, `VecIter<T>` contains a shared `Vec<T>` but its `idx`
+    /// cursor is inline value storage. Calling `next()` on a by-value
+    /// `VecIter<T>` parameter advances only the callee's copy. Method bodies
+    /// can be external or dynamically dispatched, so the call site cannot
+    /// prove that their mutation crosses the shared boundary; reject
+    /// fail-closed and direct users to an explicit collection projection.
+    fn reject_private_param_mutable_receiver_call(
+        &mut self,
+        receiver_name: &str,
+        operation: &str,
+        span: &Span,
+    ) {
+        let Some(binding) = self.env.lookup_ref(receiver_name) else {
+            return;
+        };
+        if !binding.is_param() || binding.is_receiver() {
+            return;
+        }
+        let binding_ty = self.subst.resolve(&binding.ty);
+        if !self.param_ty_has_caller_visible_projection(&binding_ty) {
+            // Value-only aggregates were already rejected at their parameter
+            // declaration. Avoid a second diagnostic at every use.
+            return;
+        }
+        self.report_error_with_suggestions(
+            TypeErrorKind::MutabilityError,
+            span,
+            format!(
+                "`{receiver_name}` is a by-value parameter; {operation} writes back only to its \
+                 private copy, so the mutation is not proven caller-visible"
+            ),
+            vec![
+                "return the modified value to the caller".to_string(),
+                "mutate through a shared collection projection instead".to_string(),
+            ],
+        );
+    }
+
     /// Stdlib modules that have no wasm32 runtime support, together with the
     /// [`WasmUnsupportedFeature`] variant used in the rejection diagnostic.
     /// Any call expression or value-position reference to a function in one of
@@ -7797,6 +7839,11 @@ impl Checker {
                             // analysis does not flag `var it = …; it.next()`
                             // as a never-reassigned mutable binding.
                             self.env.mark_written(n);
+                            self.reject_private_param_mutable_receiver_call(
+                                n,
+                                &format!("method `{method}`"),
+                                span,
+                            );
                         }
                     }
                     let applied_sig = self.apply_instantiated_call_signature(
@@ -7932,6 +7979,11 @@ impl Checker {
                                     // not flag `var lc = ...; lc.step(...)` as a
                                     // never-reassigned mutable binding.
                                     self.env.mark_written(n);
+                                    self.reject_private_param_mutable_receiver_call(
+                                        n,
+                                        "`.step()`",
+                                        span,
+                                    );
                                 }
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
@@ -8240,6 +8292,11 @@ impl Checker {
                                 );
                             } else if let Some(n) = &receiver_binding_name {
                                 self.env.mark_written(n);
+                                self.reject_private_param_mutable_receiver_call(
+                                    n,
+                                    &format!("trait method `{declaring_trait}::{method}`"),
+                                    span,
+                                );
                             }
                         }
                         let applied_sig = self.apply_instantiated_call_signature(
@@ -8491,6 +8548,11 @@ impl Checker {
                                 );
                             } else if let Some(n) = &receiver_binding_name {
                                 self.env.mark_written(n);
+                                self.reject_private_param_mutable_receiver_call(
+                                    n,
+                                    &format!("method `{method}` on `dyn {}`", bound.trait_name),
+                                    span,
+                                );
                             }
                         }
                         // Record the per-call-site vtable-slot resolution that

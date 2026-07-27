@@ -331,6 +331,28 @@ fn install_drain_post_pin_pre_stop_hook_for_test(
     install_registration_retirement_hook(&DRAIN_POST_PIN_PRE_STOP_HOOK, actor_id, entered, release)
 }
 
+// The second drain lifetime boundary is the handoff from a quiescent state
+// observation to cleanup preparation and the LIVE_ACTORS retirement claim.
+// This hook pauses after the exact actor has been pinned and its state read,
+// but before cleanup first dereferences it.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static DRAIN_POST_STATE_PRE_CLEANUP_HOOK: Mutex<Option<RegistrationRetirementHook>> =
+    Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn install_drain_post_state_pre_cleanup_hook_for_test(
+    actor_id: u64,
+    entered: std::sync::Arc<std::sync::Barrier>,
+    release: std::sync::Arc<std::sync::Barrier>,
+) -> RegistrationRetirementHookGuard {
+    install_registration_retirement_hook(
+        &DRAIN_POST_STATE_PRE_CLEANUP_HOOK,
+        actor_id,
+        entered,
+        release,
+    )
+}
+
 // ── cleanup_all_actors post-prepare rendezvous hook (test-only) ───────────
 //
 // Fires inside `cleanup_all_actors` for each actor, AFTER
@@ -1647,8 +1669,8 @@ fn record_terminate_wait_poll_tick() {}
 
 /// Check whether an actor ID still maps to the expected live actor pointer.
 ///
-/// Delegates to [`live_actors::with_live_actor_by_id`].
-// live on not(wasm32) — monitor.rs + link.rs; dead on wasm32; callers monitor.rs:98, link.rs:201
+/// Test wrapper around [`live_actors::with_live_actor_by_id`].
+#[cfg(test)]
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn with_live_actor_by_id<R>(
     actor_id: u64,
@@ -4608,6 +4630,12 @@ fn collect_pending_actor(id: ActorId) -> Option<(ActorId, live_actors::ActorPin)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn pin_pending_actor(actor_id: ActorId, expected: *mut HewActor) -> Option<live_actors::ActorPin> {
+    let pin = live_actors::pin_actor_by_id(actor_id)?;
+    (pin.as_ptr() == expected).then_some(pin)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn drain_backoff_duration(delay: std::time::Duration) -> std::time::Duration {
     (delay.saturating_mul(2)).min(std::time::Duration::from_millis(50))
 }
@@ -4638,26 +4666,28 @@ fn drain_backoff_duration(delay: std::time::Duration) -> std::time::Duration {
 ///
 /// # Safety
 ///
-/// `expected` must be a valid, quiescent actor pointer that is still tracked
-/// in `LIVE_ACTORS`.
+/// `pin` must name the exact actor tracked under `actor_id`, and the caller must
+/// have observed it in a quiescent state while holding this pin.
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn drain_quiesced_actor(
     actor_id: ActorId,
-    expected: *mut HewActor,
+    pin: live_actors::ActorPin,
     deadline: std::time::Instant,
 ) {
-    // SAFETY: caller guarantees `expected` is quiescent and still tracked in
-    // LIVE_ACTORS. prepare_quiescent_actor_for_cleanup must run before
-    // untracking so that any in-flight timer callback or signal propagation
-    // still observes the actor as live and bails out cooperatively.
+    let expected = pin.as_ptr();
+    // The caller pin bridges the state-observation -> first-dereference gap.
+    // A concurrent free may retire the actor now, but its post-untrack pin
+    // drain cannot reclaim the allocation until this preparation and the
+    // retirement claim below finish.
+    //
+    // SAFETY: caller guarantees `pin` owns this valid quiescent allocation.
     unsafe { prepare_quiescent_actor_for_cleanup(expected) };
 
     // Wake-proof + finalize decision by the CAS RESULT, BEFORE untracking
     // (mirrors `hew_actor_free_inner` / `cleanup_all_actors`). Under the
     // stop-first contract this is `Err(Stopped) ⇒ Finalize(Stopped)`; a
     // re-enqueued actor (contract drift) takes the fail-closed `Skip` leak.
-    // SAFETY: caller guarantees `expected` is valid.
-    let a = unsafe { &*expected };
+    let a = pin.actor();
     let finalize_state = match decide_finalize_by_latch(a) {
         FinalizeDecision::Finalize(state) => state,
         FinalizeDecision::Skip => {
@@ -4672,6 +4702,12 @@ unsafe fn drain_quiesced_actor(
     };
 
     if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
+        // This function now owns the retired allocation. Release its caller pin
+        // before waiting for all remaining pins, otherwise it would wait on
+        // itself until the deadline. The allocation stays live by cleanup
+        // ownership after take_actor_by_id.
+        drop(pin);
+
         // After take_actor_by_id the map entry is removed: no new send pins
         // can be taken.  Drain any in-flight pins before finalizing.
         // LIVE_ACTORS is not held here; pinned senders can re-acquire it.
@@ -4702,6 +4738,8 @@ unsafe fn drain_quiesced_actor(
         // no longer tracked, and all send pins have drained.
         unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
     }
+    // If another freer won retirement, `pin` drops here and releases that
+    // winner's final reclamation wait.
 }
 
 /// Cooperatively stop a set of native actors and wait for quiescence with a shared deadline.
@@ -4729,7 +4767,7 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
         unsafe { hew_actor_stop(actor) };
         pending.push((actor_id, actor));
         // Release exactly after the last unvalidated raw-pointer dereference.
-        // Later state reads revalidate actor_id + pointer under LIVE_ACTORS.
+        // Later state/cleanup work acquires a fresh exact-pointer pin.
         drop(pin);
     }
 
@@ -4740,23 +4778,30 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
         let mut index = 0;
         while index < pending.len() {
             let (actor_id, expected) = pending[index];
-            let state = with_live_actor_by_id(actor_id, expected, |actor| {
-                actor.actor_state.load(Ordering::Acquire)
-            });
+            let Some(pin) = pin_pending_actor(actor_id, expected) else {
+                pending.swap_remove(index);
+                continue;
+            };
+            let state = pin.actor().actor_state.load(Ordering::Acquire);
             match state {
-                None => {
-                    pending.swap_remove(index);
-                }
-                Some(state) if state == HewActorState::Crashed as i32 => {
+                state if state == HewActorState::Crashed as i32 => {
+                    drop(pin);
                     crashed.push(actor_id);
                     pending.swap_remove(index);
                 }
-                Some(state) if actor_free_state_is_quiescent(state) => {
-                    // SAFETY: `expected` is quiescent and still tracked in LIVE_ACTORS.
-                    unsafe { drain_quiesced_actor(actor_id, expected, deadline) };
+                state if actor_free_state_is_quiescent(state) => {
+                    // Deterministic proof hook: the exact allocation remains
+                    // pinned from this state observation into cleanup.
+                    #[cfg(all(test, not(target_arch = "wasm32")))]
+                    run_registration_retirement_hook(&DRAIN_POST_STATE_PRE_CLEANUP_HOOK, actor_id);
+
+                    // SAFETY: `pin` names expected under actor_id and held the
+                    // allocation across the quiescent state observation.
+                    unsafe { drain_quiesced_actor(actor_id, pin, deadline) };
                     pending.swap_remove(index);
                 }
-                Some(_) => {
+                _ => {
+                    drop(pin);
                     index += 1;
                 }
             }
@@ -4780,17 +4825,24 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
 
     let mut still_live = Vec::with_capacity(pending.len());
     for (actor_id, expected) in pending {
-        let state = with_live_actor_by_id(actor_id, expected, |actor| {
-            actor.actor_state.load(Ordering::Acquire)
-        });
+        let Some(pin) = pin_pending_actor(actor_id, expected) else {
+            continue;
+        };
+        let state = pin.actor().actor_state.load(Ordering::Acquire);
         match state {
-            None => {}
-            Some(state) if state == HewActorState::Crashed as i32 => crashed.push(actor_id),
-            Some(state) if actor_free_state_is_quiescent(state) => {
-                // SAFETY: `expected` is quiescent and still tracked in LIVE_ACTORS.
-                unsafe { drain_quiesced_actor(actor_id, expected, deadline) };
+            state if state == HewActorState::Crashed as i32 => {
+                drop(pin);
+                crashed.push(actor_id);
             }
-            Some(_) => still_live.push(actor_id),
+            state if actor_free_state_is_quiescent(state) => {
+                // SAFETY: `pin` names expected under actor_id and held the
+                // allocation across the quiescent state observation.
+                unsafe { drain_quiesced_actor(actor_id, pin, deadline) };
+            }
+            _ => {
+                drop(pin);
+                still_live.push(actor_id);
+            }
         }
     }
 
@@ -8758,6 +8810,172 @@ mod tests {
             "drain must release its allocation pin exactly once after stop"
         );
         assert_eq!(free_result, 0, "final actor free must succeed");
+    }
+
+    static DRAIN_CLEANUP_FINALIZE_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    fn drain_one_actor_via_ffi(actor_id: ActorId) -> (i32, usize, usize) {
+        let ids = [actor_id];
+        let mut outcome = DrainOutcomeRepr::default();
+        // SAFETY: ids and outcome remain valid for this synchronous call.
+        let status = unsafe {
+            hew_actor_drain_set(ids.as_ptr(), ids.len(), 5_000_000_000, &raw mut outcome)
+        };
+        let observed = (status, outcome.still_live_len, outcome.crashed_len);
+        // SAFETY: outcome was initialized by hew_actor_drain_set.
+        unsafe { hew_actor_drain_outcome_free(&raw mut outcome) };
+        observed
+    }
+
+    fn spawn_stateful_noop_actor() -> *mut HewActor {
+        let mut initial_state = 0_u8;
+        // SAFETY: the one-byte source remains valid for this synchronous deep
+        // copy, and no-op dispatch is a valid actor entry point.
+        unsafe {
+            hew_actor_spawn(
+                (&raw mut initial_state).cast(),
+                std::mem::size_of_val(&initial_state),
+                Some(noop_dispatch),
+            )
+        }
+    }
+
+    fn count_drain_cleanup_finalize(_actor: *mut HewActor) {
+        DRAIN_CLEANUP_FINALIZE_COUNT.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Prove that a drain's quiescent state observation retains exact actor
+    /// lifetime through cleanup's first dereference and retirement claim.
+    ///
+    /// The rendezvous is the old unlock-to-prepare gap: the drain has observed
+    /// `Stopped`, but has not entered `prepare_quiescent_actor_for_cleanup`.
+    /// A concurrent free then retires the actor. Without the carried pin, the
+    /// actor can be finalized while drain still holds the stale raw pointer.
+    /// The post-retire free hook keeps the counterfactual executable without
+    /// allowing that UAF; the test records all proof values, releases and joins
+    /// both threads, then asserts the carried pin, exact release, and one final
+    /// cleanup.
+    #[test]
+    fn drain_set_pins_quiescent_state_into_cleanup_claim() {
+        let _guard = crate::runtime_test_guard();
+
+        let actor = spawn_stateful_noop_actor();
+        assert!(!actor.is_null());
+        // SAFETY: the actor remains live through the coordinated teardown.
+        let actor_id = unsafe { (*actor).id };
+        TERMINATE_CALL_COUNT.store(0, Ordering::Release);
+        DRAIN_CLEANUP_FINALIZE_COUNT.store(0, Ordering::Release);
+        // SAFETY: the actor is live and solely controlled by this test.
+        unsafe { hew_actor_set_terminate(actor, counting_terminate_callback) };
+        set_pre_queue_destroy_hook_for_test(Some(count_drain_cleanup_finalize));
+
+        let state_entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let state_release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let _state_hook = install_drain_post_state_pre_cleanup_hook_for_test(
+            actor_id,
+            std::sync::Arc::clone(&state_entered),
+            std::sync::Arc::clone(&state_release),
+        );
+
+        let free_entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let free_release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let _free_hook = install_free_post_retire_registration_hook_for_test(
+            actor_id,
+            std::sync::Arc::clone(&free_entered),
+            std::sync::Arc::clone(&free_release),
+        );
+
+        let (drain_done_tx, drain_done_rx) = std::sync::mpsc::channel();
+        let drain = std::thread::spawn(move || {
+            drain_done_tx
+                .send(drain_one_actor_via_ffi(actor_id))
+                .expect("drain result receiver must remain live");
+        });
+
+        // Initial stop has completed; drain now owns the state-to-cleanup pin.
+        state_entered.wait();
+        // SAFETY: the drain pin keeps this allocation live at the rendezvous.
+        let pin_at_state_handoff = unsafe { (*actor).send_pin_count.load(Ordering::Acquire) };
+
+        let actor_addr = actor as usize;
+        let (free_done_tx, free_done_rx) = std::sync::mpsc::channel();
+        let free = std::thread::spawn(move || {
+            // SAFETY: drain's carried pin keeps the actor allocated until free
+            // wins retirement and later observes that pin reach zero.
+            let status = unsafe { hew_actor_free(actor_addr as *mut HewActor) };
+            free_done_tx
+                .send(status)
+                .expect("free result receiver must remain live");
+        });
+
+        // Free owns final retirement but cannot reclaim across drain's first
+        // cleanup dereference or retirement-claim attempt.
+        free_entered.wait();
+        let retired_before_cleanup = !live_actors::is_actor_live_with_id(actor_id, actor);
+        // SAFETY: free is paused after retirement and before pin drain/finalize.
+        let pin_while_retired = unsafe { (*actor).send_pin_count.load(Ordering::Acquire) };
+        let drain_blocked_before_release = matches!(
+            drain_done_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        let free_blocked_before_release = matches!(
+            free_done_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+
+        state_release.wait();
+        let drain_result = drain_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("drain must yield to the winning final freer");
+        drain.join().expect("drain thread");
+        // SAFETY: free remains blocked at its post-retirement proof hook.
+        let pin_after_cleanup_handoff = unsafe { (*actor).send_pin_count.load(Ordering::Acquire) };
+
+        free_release.wait();
+        let free_result = free_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("free must complete after the cleanup pin is released");
+        free.join().expect("free thread");
+
+        let terminate_count = TERMINATE_CALL_COUNT.load(Ordering::Acquire);
+        let finalize_count = DRAIN_CLEANUP_FINALIZE_COUNT.load(Ordering::Acquire);
+        set_pre_queue_destroy_hook_for_test(None);
+
+        assert_eq!(
+            pin_at_state_handoff, 1,
+            "quiescent state must be carried by exactly one allocation pin"
+        );
+        assert!(
+            retired_before_cleanup,
+            "the final free must retire the actor in the old state-to-prepare gap"
+        );
+        assert_eq!(
+            pin_while_retired, 1,
+            "retirement must retain the drain's state-to-cleanup pin"
+        );
+        assert!(
+            drain_blocked_before_release,
+            "drain must remain paused before cleanup's first dereference"
+        );
+        assert!(
+            free_blocked_before_release,
+            "free must not reclaim while the cleanup handoff pin is owned"
+        );
+        assert_eq!(drain_result, (0, 0, 0));
+        assert_eq!(
+            pin_after_cleanup_handoff, 0,
+            "the losing drain must release its caller pin exactly once"
+        );
+        assert_eq!(free_result, 0, "the retirement winner must finalize");
+        assert_eq!(
+            terminate_count, 1,
+            "stop/free composition must invoke terminate exactly once"
+        );
+        assert_eq!(
+            finalize_count, 1,
+            "exactly one path may reach actor resource finalization"
+        );
     }
 
     #[test]

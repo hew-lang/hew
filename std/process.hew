@@ -163,7 +163,9 @@ pub fn try_run(command: string) -> Result<CommandOutput, ProcessError> {
         if hew_process_result_is_valid(result) {
             Ok(take_command_output(result))
         } else {
-            Err(last_process_error("process.try_run: command execution failed"))
+            let error = last_process_error("process.try_run: command execution failed");
+            hew_process_result_free(result);
+            Err(error)
         }
     }
 }
@@ -190,7 +192,9 @@ pub fn try_run_argv(command: string, args: Vec<string>) -> Result<CommandOutput,
         if hew_process_result_is_valid(result) {
             Ok(take_command_output(result))
         } else {
-            Err(last_process_error("process.try_run_argv: command execution failed"))
+            let error = last_process_error("process.try_run_argv: command execution failed");
+            hew_process_result_free(result);
+            Err(error)
         }
     }
 }
@@ -248,11 +252,13 @@ pub fn run_args(command: string, args: string, arg_count: i64) -> string {
 pub fn start(command: string) -> Child {
     unsafe {
         hew_clear_error();
-        let child = Child { handle: hew_process_spawn(command) };
-        if !hew_process_is_valid(child.handle) {
-            panic(f"process.start failed: {process_error_message(last_process_error("process.start: command launch failed"))}");
+        let handle = hew_process_spawn(command);
+        if !hew_process_is_valid(handle) {
+            let error = last_process_error("process.start: command launch failed");
+            hew_process_drop(handle);
+            panic(f"process.start failed: {process_error_message(error)}");
         }
-        child
+        Child { handle: handle }
     }
 }
 
@@ -263,11 +269,13 @@ pub fn start(command: string) -> Child {
 pub fn try_start(command: string) -> Result<Child, ProcessError> {
     unsafe {
         hew_clear_error();
-        let child = Child { handle: hew_process_spawn(command) };
-        if hew_process_is_valid(child.handle) {
-            Ok(child)
+        let handle = hew_process_spawn(command);
+        if hew_process_is_valid(handle) {
+            Ok(Child { handle: handle })
         } else {
-            Err(last_process_error("process.try_start: command launch failed"))
+            let error = last_process_error("process.try_start: command launch failed");
+            hew_process_drop(handle);
+            Err(error)
         }
     }
 }
@@ -280,11 +288,13 @@ pub fn try_start(command: string) -> Result<Child, ProcessError> {
 pub fn try_start_argv(command: string, args: Vec<string>) -> Result<Child, ProcessError> {
     unsafe {
         hew_clear_error();
-        let child = Child { handle: hew_process_spawn_argv(command, args) };
-        if hew_process_is_valid(child.handle) {
-            Ok(child)
+        let handle = hew_process_spawn_argv(command, args);
+        if hew_process_is_valid(handle) {
+            Ok(Child { handle: handle })
         } else {
-            Err(last_process_error("process.try_start_argv: command launch failed"))
+            let error = last_process_error("process.try_start_argv: command launch failed");
+            hew_process_drop(handle);
+            Err(error)
         }
     }
 }

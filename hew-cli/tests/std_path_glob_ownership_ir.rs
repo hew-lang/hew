@@ -13,7 +13,7 @@ use std::process::Command;
 
 use tempfile::tempdir;
 
-use support::{describe_output, hew_binary, repo_root};
+use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const SOURCE: &str = r#"
 import std::path;
@@ -31,7 +31,9 @@ fn function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
         .find(symbol)
         .unwrap_or_else(|| panic!("missing {symbol} in emitted IR"));
     let body = &ir[start..];
-    let end = body.find("\ndefine ").unwrap_or(body.len());
+    let end = body
+        .find("\n}")
+        .map_or(body.len(), |closing_brace| closing_brace + 2);
     &body[..end]
 }
 
@@ -51,12 +53,18 @@ fn assert_one_failure_cleanup(ir: &str, symbol: &str) {
     assert_eq!(
         body.matches("call void @hew_glob_free").count(),
         1,
-        "{symbol} must consume the invalid handle exactly once while leaving a valid handle owned by GlobResult:\n{body}"
+        "{symbol} must consume the invalid handle exactly once:\n{body}"
+    );
+    assert_eq!(
+        body.matches("@\"GlobResult::close\"").count(),
+        0,
+        "{symbol} must not close the success-arm GlobResult before transferring it to the caller:\n{body}"
     );
 }
 
 #[test]
 fn path_glob_failure_handles_are_released_once_after_detail_is_copied() {
+    require_codegen();
     let dir = tempdir().expect("temporary emit directory");
     let source = dir.path().join("glob_ownership.hew");
     std::fs::write(&source, SOURCE).expect("write Hew source");

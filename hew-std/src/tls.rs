@@ -685,125 +685,147 @@ fn tls_actor_send(
 /// can poll the closed flag and actor liveness between reads.
 const TLS_READER_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
+#[cfg(test)]
+std::thread_local! {
+    /// Deterministic one-shot failure at the synchronous attach setup seam.
+    ///
+    /// Thread-local scope keeps parallel tests from stealing the injection.
+    static FAIL_NEXT_TLS_ATTACH_SETUP: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+}
+
+#[cfg(test)]
+fn fail_next_tls_attach_setup() {
+    FAIL_NEXT_TLS_ATTACH_SETUP.with(|fail| fail.set(true));
+}
+
+fn prepare_tls_attach_reader(inner: &TlsShared) -> Result<(), String> {
+    #[cfg(test)]
+    if FAIL_NEXT_TLS_ATTACH_SETUP.with(std::cell::Cell::take) {
+        return Err("tls.attach: failed to set read timeout: injected failure".to_owned());
+    }
+
+    let mut guard = inner.stream.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(stream) = guard.as_mut() else {
+        return Err("tls.attach: connection already closed".to_owned());
+    };
+    stream
+        .sock
+        .set_read_timeout(Some(TLS_READER_TIMEOUT))
+        .map_err(|err| format!("tls.attach: failed to set read timeout: {err}"))
+}
+
+fn run_tls_attach_reader(
+    inner: &TlsInner,
+    actor_ref: &TlsActorRef,
+    on_data_type: i32,
+    on_close_type: i32,
+) {
+    let mut buf = vec![0u8; READ_BUFFER_SIZE];
+    let mut notify_close = false;
+
+    loop {
+        if inner.closed.load(Ordering::Acquire) {
+            break;
+        }
+        if !tls_actor_is_alive(actor_ref) {
+            break;
+        }
+
+        let read_result: io::Result<usize> = {
+            let mut guard = inner
+                .stream
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(s) = guard.as_mut() else {
+                break; // stream dropped by hew_tls_close
+            };
+            s.read(&mut buf)
+        };
+
+        match read_result {
+            Ok(0) => {
+                // Orderly EOF — notify close and stop.
+                notify_close = true;
+                break;
+            }
+            Ok(n) => {
+                if inner.closed.load(Ordering::Acquire) {
+                    break;
+                }
+                // Deliver the received bytes as a `bytes` argument.
+                // SAFETY: `buf[..n]` is valid for `n` bytes; alloc_cstring
+                // copies the content with a header word prepended.
+                let str_ptr = unsafe { alloc_cstring(buf.as_ptr(), n) }; // CSTRING-ALLOC: str-open (tls-reader str_ptr: header-aware Hew bytes passed to on_data)
+                if str_ptr.is_null() {
+                    eprintln!("[tls-attach] alloc_cstring failed; exiting");
+                    notify_close = true;
+                    break;
+                }
+                let mut arg_buf = [0u8; std::mem::size_of::<usize>()];
+                arg_buf.copy_from_slice(&(str_ptr as usize).to_ne_bytes());
+                if let Err(rc) = tls_actor_send(
+                    actor_ref,
+                    on_data_type,
+                    arg_buf.as_mut_ptr().cast(),
+                    arg_buf.len(),
+                ) {
+                    eprintln!("[tls-attach] on_data delivery failed: rc={rc}; exiting");
+                    // SAFETY: send failed before the actor took ownership.
+                    unsafe { hew_cabi::cabi::free_cstring(str_ptr) }; // CSTRING-FREE: str-open (frees tls-reader str_ptr on send-fail)
+                    notify_close = true;
+                    break;
+                }
+            }
+            Err(err)
+                if err.kind() == io::ErrorKind::WouldBlock
+                    || err.kind() == io::ErrorKind::TimedOut =>
+            {
+                // Read timeout expired — loop to re-check flags.
+                // (no explicit `continue` needed — this is the last arm)
+            }
+            Err(err) => {
+                if !inner.closed.load(Ordering::Acquire) {
+                    eprintln!("[tls-attach] read error: {err}; exiting");
+                    notify_close = true;
+                }
+                break;
+            }
+        }
+    }
+
+    if notify_close && tls_actor_is_alive(actor_ref) {
+        if let Err(rc) = tls_actor_send(actor_ref, on_close_type, std::ptr::null_mut(), 0) {
+            eprintln!("[tls-attach] on_close delivery failed: rc={rc}");
+        }
+    }
+
+    // Drop the inner stream to close the underlying socket on reader exit.
+    // `hew_tls_close` does NOT re-acquire the stream lock when a reader was
+    // attached (it relies on this drop), so there is no competing lock here.
+    if let Ok(mut guard) = inner.stream.lock() {
+        *guard = None;
+    }
+
+    // Signal that the reader has fully exited. This is the last write the
+    // reader performs; `hew_tls_close` calls `join.join()` before returning,
+    // so the join's happens-before guarantees this store is visible (Acquire)
+    // the instant `hew_tls_close` returns — but ONLY if `join.join()` was
+    // called (not `drop(join)`). The test asserts this flag immediately after
+    // `hew_tls_close` to prove the join happened.
+    inner.reader_exited.store(true, Ordering::Release);
+}
+
 fn spawn_tls_attach_reader(
     inner: TlsInner,
     actor_ref: TlsActorRef,
     on_data_type: i32,
     on_close_type: i32,
-) -> JoinHandle<()> {
-    std::thread::spawn(move || {
-        // Set a read timeout on the underlying TCP socket so we can poll the
-        // closed flag. We must do this inside the thread after acquiring the
-        // lock, because the TcpStream's timeout is per-stream not per-FD.
-        {
-            let mut guard = inner
-                .stream
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(s) = guard.as_mut() {
-                if let Err(err) = s.sock.set_read_timeout(Some(TLS_READER_TIMEOUT)) {
-                    eprintln!("[tls-attach] set_read_timeout failed: {err}; exiting");
-                    return;
-                }
-            } else {
-                return; // already closed before the thread started
-            }
-        }
-
-        let mut buf = vec![0u8; READ_BUFFER_SIZE];
-        let mut notify_close = false;
-
-        loop {
-            if inner.closed.load(Ordering::Acquire) {
-                break;
-            }
-            if !tls_actor_is_alive(&actor_ref) {
-                break;
-            }
-
-            let read_result: io::Result<usize> = {
-                let mut guard = inner
-                    .stream
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let Some(s) = guard.as_mut() else {
-                    break; // stream dropped by hew_tls_close
-                };
-                s.read(&mut buf)
-            };
-
-            match read_result {
-                Ok(0) => {
-                    // Orderly EOF — notify close and stop.
-                    notify_close = true;
-                    break;
-                }
-                Ok(n) => {
-                    if inner.closed.load(Ordering::Acquire) {
-                        break;
-                    }
-                    // Deliver the received bytes as a `bytes` argument.
-                    // SAFETY: `buf[..n]` is valid for `n` bytes; alloc_cstring
-                    // copies the content with a header word prepended.
-                    let str_ptr = unsafe { alloc_cstring(buf.as_ptr(), n) }; // CSTRING-ALLOC: str-open (tls-reader str_ptr: header-aware Hew bytes passed to on_data)
-                    if str_ptr.is_null() {
-                        eprintln!("[tls-attach] alloc_cstring failed; exiting");
-                        notify_close = true;
-                        break;
-                    }
-                    let mut arg_buf = [0u8; std::mem::size_of::<usize>()];
-                    arg_buf.copy_from_slice(&(str_ptr as usize).to_ne_bytes());
-                    if let Err(rc) = tls_actor_send(
-                        &actor_ref,
-                        on_data_type,
-                        arg_buf.as_mut_ptr().cast(),
-                        arg_buf.len(),
-                    ) {
-                        eprintln!("[tls-attach] on_data delivery failed: rc={rc}; exiting");
-                        // SAFETY: send failed before the actor took ownership.
-                        unsafe { hew_cabi::cabi::free_cstring(str_ptr) }; // CSTRING-FREE: str-open (frees tls-reader str_ptr on send-fail)
-                        notify_close = true;
-                        break;
-                    }
-                }
-                Err(err)
-                    if err.kind() == io::ErrorKind::WouldBlock
-                        || err.kind() == io::ErrorKind::TimedOut =>
-                {
-                    // Read timeout expired — loop to re-check flags.
-                    // (no explicit `continue` needed — this is the last arm)
-                }
-                Err(err) => {
-                    if !inner.closed.load(Ordering::Acquire) {
-                        eprintln!("[tls-attach] read error: {err}; exiting");
-                        notify_close = true;
-                    }
-                    break;
-                }
-            }
-        }
-
-        if notify_close && tls_actor_is_alive(&actor_ref) {
-            if let Err(rc) = tls_actor_send(&actor_ref, on_close_type, std::ptr::null_mut(), 0) {
-                eprintln!("[tls-attach] on_close delivery failed: rc={rc}");
-            }
-        }
-
-        // Drop the inner stream to close the underlying socket on reader exit.
-        // `hew_tls_close` does NOT re-acquire the stream lock when a reader was
-        // attached (it relies on this drop), so there is no competing lock here.
-        if let Ok(mut guard) = inner.stream.lock() {
-            *guard = None;
-        }
-
-        // Signal that the reader has fully exited. This is the last write the
-        // reader performs; `hew_tls_close` calls `join.join()` before returning,
-        // so the join's happens-before guarantees this store is visible (Acquire)
-        // the instant `hew_tls_close` returns — but ONLY if `join.join()` was
-        // called (not `drop(join)`). The test asserts this flag immediately after
-        // `hew_tls_close` to prove the join happened.
-        inner.reader_exited.store(true, Ordering::Release);
-    })
+) -> io::Result<JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("hew-tls-attach-reader".to_owned())
+        .spawn(move || run_tls_attach_reader(&inner, &actor_ref, on_data_type, on_close_type))
 }
 
 /// Attach a TLS stream to an actor for Erlang-style active mode.
@@ -873,6 +895,10 @@ pub unsafe extern "C" fn hew_tls_attach(
         set_tls_last_error("tls.attach: reader already attached");
         return -1;
     }
+    if let Err(detail) = prepare_tls_attach_reader(&s.inner) {
+        set_tls_last_error(detail);
+        return -1;
+    }
     // Hew `LocalPid<T>` crosses an extern C call as the bare local actor
     // pointer. Build the stable by-value actor-ref snapshot the reader owns.
     let actor_ref = TlsActorRef {
@@ -880,7 +906,14 @@ pub unsafe extern "C" fn hew_tls_attach(
         data: TlsActorRefData { local: actor },
     };
     let join =
-        spawn_tls_attach_reader(Arc::clone(&s.inner), actor_ref, on_data_type, on_close_type);
+        match spawn_tls_attach_reader(Arc::clone(&s.inner), actor_ref, on_data_type, on_close_type)
+        {
+            Ok(join) => join,
+            Err(err) => {
+                set_tls_last_error(format!("tls.attach: failed to spawn reader: {err}"));
+                return -1;
+            }
+        };
     *reader_guard = Some(join);
     clear_tls_last_error();
     0
@@ -1712,6 +1745,48 @@ mod tests {
         rustls::StreamOwned::new(conn, tcp)
     }
 
+    fn assert_attach_setup_failure_is_fail_closed(
+        stream_ptr: *mut HewTlsStream,
+        actor: *mut actor::HewActor,
+    ) {
+        // The old attach path spawned first and returned success before the
+        // reader attempted this fallible setup. Injecting the same failure
+        // therefore used to produce a false `0` with a dead published reader.
+        fail_next_tls_attach_setup();
+        // SAFETY: the caller keeps `stream_ptr` and `actor` live for this probe.
+        let setup_failure = unsafe {
+            hew_tls_attach(
+                stream_ptr,
+                actor.cast(),
+                TLS_ON_DATA_TYPE.into(),
+                TLS_ON_CLOSE_TYPE.into(),
+            )
+        };
+        assert_eq!(
+            setup_failure, -1,
+            "fallible reader setup must complete before attach reports success"
+        );
+        assert_eq!(
+            last_error_string(),
+            "tls.attach: failed to set read timeout: injected failure"
+        );
+        assert_eq!(
+            last_error_string(),
+            "tls.attach: failed to set read timeout: injected failure",
+            "reading attach detail must not consume it"
+        );
+        assert!(
+            // SAFETY: the refused attach did not consume `stream_ptr`.
+            unsafe { &*stream_ptr }
+                .inner
+                .reader
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_none(),
+            "failed startup must not publish a dead reader"
+        );
+    }
+
     #[test]
     fn attach_reader_delivers_decrypted_data_and_reaps_on_close() {
         let _runtime = TlsRuntimeGuard::new();
@@ -1752,6 +1827,8 @@ mod tests {
             )
         };
         assert!(!actor.is_null(), "test actor should spawn");
+        assert_attach_setup_failure_is_fail_closed(stream_ptr, actor);
+
         // SAFETY: `stream_ptr` and `actor` are live for the attach.
         let attach_status = unsafe {
             hew_tls_attach(

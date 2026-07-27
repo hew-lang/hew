@@ -1437,6 +1437,30 @@ pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
     }
 }
 
+/// Refuse WASM lifecycle cleanup when the native-only generator-sink slot is
+/// unexpectedly populated.
+///
+/// No legal WASM producer can write this slot. A non-null value therefore
+/// proves invariant corruption, not ownership of a sink this target knows how
+/// to close. Refusing before any frame, debt, or actor allocation is touched is
+/// the only release-build behavior that preserves the evidence and avoids
+/// freeing underneath an unknown owner.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn refuse_wasm_lifecycle_cleanup_with_gen_sink(actor: &HewActor) -> bool {
+    if actor.gen_sink.load(Ordering::Acquire).is_null() {
+        return false;
+    }
+
+    let message = format!(
+        "WASM actor lifecycle cleanup refused: actor {:#x} carried a native-only \
+         registered generator sink; actor preserved fail-closed",
+        actor.id
+    );
+    crate::set_last_error(&message);
+    eprintln!("hew: runtime error: {message}");
+    true
+}
+
 /// Discharge the reply a parked `ask` handler still owes, on whichever target
 /// this build is.
 ///
@@ -2464,9 +2488,21 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     // Preserve the complete actor -- including all reply/cancel/sink debts --
     // when that earlier ownership proof failed.
     if crate::coro_exec::has_live_parked_cont(a) {
-        crate::set_last_error(
-            "WASM actor cleanup refused: live continuation survived pre-timer retirement",
+        let message = format!(
+            "WASM actor cleanup refused: actor {:#x} retained a live continuation \
+             after pre-timer retirement; actor leaked to avoid UAF",
+            a.id
         );
+        crate::set_last_error(&message);
+        eprintln!("hew: runtime error: {message}");
+        return;
+    }
+
+    // The stream/sink runtime is intentionally absent from WASM, so no legal
+    // producer can populate this slot. Refuse before retiring any activation
+    // debt or freeing any actor resource if the invariant is ever violated.
+    #[cfg(target_arch = "wasm32")]
+    if refuse_wasm_lifecycle_cleanup_with_gen_sink(a) {
         return;
     }
 
@@ -2485,11 +2521,6 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     // from WASM, where the ABI slot therefore has no legal non-null producer.
     #[cfg(not(target_arch = "wasm32"))]
     fault_close_registered_gen_sink(a);
-    #[cfg(target_arch = "wasm32")]
-    debug_assert!(
-        a.gen_sink.load(Ordering::Acquire).is_null(),
-        "WASM actor carried a native-only registered generator sink"
-    );
 
     // Run codegen-generated state-drop on the live state so types
     // implementing `impl Drop` release their resources before the
@@ -7308,6 +7339,12 @@ pub(crate) unsafe fn cancel_parked_activation_for_free_wasm(a: &HewActor) {
     if !crate::coro_exec::has_live_parked_cont(a) {
         return;
     }
+    // WASM cannot own a registered generator sink. Preserve the complete
+    // activation if that impossible slot state appears.
+    #[cfg(target_arch = "wasm32")]
+    if refuse_wasm_lifecycle_cleanup_with_gen_sink(a) {
+        return;
+    }
     // SAFETY: the caller owns the teardown; nothing else runs on this thread.
     let destroyed = unsafe { crate::coro_exec::destroy_parked(a) };
     if destroyed.is_ok() {
@@ -7320,13 +7357,6 @@ pub(crate) unsafe fn cancel_parked_activation_for_free_wasm(a: &HewActor) {
         // The slot swap is idempotent across stop/free/shutdown overlap.
         #[cfg(not(target_arch = "wasm32"))]
         fault_close_registered_gen_sink(a);
-        // `receive gen fn` and its `HewSink` runtime are rejected from WASM;
-        // the ABI slot therefore has no legal non-null producer on this target.
-        #[cfg(target_arch = "wasm32")]
-        debug_assert!(
-            a.gen_sink.load(Ordering::Acquire).is_null(),
-            "WASM actor carried a native-only registered generator sink"
-        );
         let _ = a.actor_state.compare_exchange(
             HewActorState::Suspended as i32,
             HewActorState::Stopped as i32,
@@ -7415,10 +7445,8 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     // deadline and returns `-2`: the free FAILS, the frame and the actor box
     // leak, and -- if the parked handler was serving an `ask` -- the asking side
     // waits on a reply that is never coming.
-    // SAFETY: `a` is the actor being freed; nothing else runs on this thread,
-    // so no resume can be driving the frame.
-    // SAFETY: `a` is the actor being freed; no dispatch is in progress on this
-    // single cooperative thread.
+    // SAFETY: `a` is the actor being freed; no dispatch or resume is in progress
+    // on this single cooperative thread.
     unsafe { cancel_parked_activation_for_free_wasm(a) };
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

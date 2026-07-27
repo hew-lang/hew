@@ -1331,6 +1331,12 @@ pub(crate) fn retire_suspended_reply_channel_wasm(a: &crate::actor::HewActor) {
 #[cfg(any(target_arch = "wasm32", test))]
 unsafe fn cancel_parked_activation_for_stop_wasm(actor: *mut HewActor) -> bool {
     let a = as_native_actor(actor);
+    // WASM has no legal generator-sink producer. Preserve the entire
+    // activation if invariant corruption populates the slot.
+    #[cfg(target_arch = "wasm32")]
+    if crate::actor::refuse_wasm_lifecycle_cleanup_with_gen_sink(a) {
+        return false;
+    }
     // SAFETY: single-threaded; this frame owns the activation, so no resume can
     // be driving the frame.
     if !unsafe { crate::coro_exec::destroy_parked(a) }.is_ok() {
@@ -1343,11 +1349,6 @@ unsafe fn cancel_parked_activation_for_stop_wasm(actor: *mut HewActor) -> bool {
     retire_suspended_reply_channel_wasm(a);
     #[cfg(not(target_arch = "wasm32"))]
     crate::actor::fault_close_registered_gen_sink(a);
-    #[cfg(target_arch = "wasm32")]
-    debug_assert!(
-        a.gen_sink.load(Ordering::Acquire).is_null(),
-        "WASM actor carried a native-only registered generator sink"
-    );
     // SAFETY: single-threaded; actor valid and owned by this frame.
     unsafe {
         (*actor)
@@ -2545,6 +2546,16 @@ mod tests {
             spawn_serial: 1,
             sys_dispatch: None,
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn assert_last_error_eq(expected: &str) {
+        let error = crate::hew_last_error();
+        assert!(!error.is_null(), "runtime refusal must set hew_last_error");
+        // SAFETY: `hew_last_error` returns a live NUL-terminated string until
+        // the next call that mutates the thread-local error slot.
+        let actual = unsafe { std::ffi::CStr::from_ptr(error) }.to_string_lossy();
+        assert_eq!(actual, expected);
     }
 
     #[repr(C)]
@@ -4084,6 +4095,116 @@ mod tests {
             replies_before
         );
 
+        hew_sched_shutdown();
+    }
+
+    /// WASM has no legal producer for `HewActor::gen_sink`. If invariant
+    /// corruption nevertheless makes the slot non-null, all three lifecycle
+    /// cleanup sites must refuse before touching the frame or actor box.
+    ///
+    /// The dangling value is an inert sentinel, never a fabricated producer:
+    /// the guard must only observe that it is non-null and must never
+    /// dereference or release it.
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn wasm_native_only_gen_sink_refuses_all_lifecycle_cleanup_sites() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let impossible_slot = std::ptr::NonNull::<u8>::dangling()
+            .as_ptr()
+            .cast::<c_void>();
+        let expected = |actor_id| {
+            format!(
+                "WASM actor lifecycle cleanup refused: actor {actor_id:#x} carried a \
+                 native-only registered generator sink; actor preserved fail-closed"
+            )
+        };
+
+        // Stop/free cancellation sites: both must leave the parked frame and
+        // lifecycle latch untouched.
+        let actor = stub_actor();
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+        let a = as_native_actor(actor_ptr);
+        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
+        let handle = (&raw mut *frame).cast::<c_void>();
+        assert!(crate::coro_exec::begin_park(a).is_ok());
+        // SAFETY: the scratch frame remains live for the complete test.
+        unsafe { crate::coro_exec::finish_park(a, handle) };
+        actor
+            .actor_state
+            .store(HewActorState::Suspended as i32, Ordering::Release);
+        a.gen_sink.store(impossible_slot, Ordering::Release);
+
+        crate::hew_clear_error();
+        // SAFETY: the test exclusively owns this parked activation.
+        assert!(!unsafe { cancel_parked_activation_for_stop_wasm(actor_ptr) });
+        assert_last_error_eq(&expected(actor.id));
+        assert_eq!(a.suspended_cont.load(Ordering::Acquire), handle);
+        assert_eq!(frame.destroyed.load(Ordering::Acquire), 0);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32
+        );
+
+        crate::hew_clear_error();
+        // SAFETY: the same parked activation remains exclusively owned.
+        unsafe { crate::actor::cancel_parked_activation_for_free_wasm(a) };
+        assert_last_error_eq(&expected(actor.id));
+        assert_eq!(a.suspended_cont.load(Ordering::Acquire), handle);
+        assert_eq!(frame.destroyed.load(Ordering::Acquire), 0);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Suspended as i32
+        );
+
+        // Clear only the synthetic corruption, then reclaim the frame through
+        // the ordinary proven-owner free cancellation path.
+        a.gen_sink.store(ptr::null_mut(), Ordering::Release);
+        // SAFETY: this test still exclusively owns the parked activation.
+        unsafe { crate::actor::cancel_parked_activation_for_free_wasm(a) };
+        assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
+
+        // Resource-free site: use a real tracked box so a successful refusal
+        // can prove the allocation and registry entry both remain intact.
+        // SAFETY: zero-state spawn is supported and returns a runtime-owned box.
+        let boxed_actor = unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
+        assert!(!boxed_actor.is_null());
+        // SAFETY: the actor is live and this single WASM thread owns it.
+        unsafe {
+            (*boxed_actor)
+                .gen_sink
+                .store(impossible_slot, Ordering::Release);
+        }
+        let boxed_id = unsafe { (*boxed_actor).id };
+        let box_counts_before = crate::actor_balance::actor_box_counts();
+        crate::hew_clear_error();
+
+        // SAFETY: the actor is quiescent and exclusively owned.
+        unsafe { crate::actor::free_actor_resources_wasm(boxed_actor) };
+
+        assert_last_error_eq(&expected(boxed_id));
+        assert!(
+            crate::actor::is_actor_live(boxed_actor),
+            "resource cleanup refusal must preserve live tracking"
+        );
+        assert_eq!(
+            crate::actor_balance::actor_box_counts(),
+            box_counts_before,
+            "resource cleanup refusal must preserve the actor box"
+        );
+
+        // Remove only the synthetic corruption, then use the complete free
+        // path to retire and reclaim the actor normally.
+        // SAFETY: the refusal above preserved the complete actor.
+        unsafe {
+            (*boxed_actor)
+                .gen_sink
+                .store(ptr::null_mut(), Ordering::Release);
+            assert_eq!(crate::actor::actor_free_wasm_impl(boxed_actor), 0);
+        }
         hew_sched_shutdown();
     }
 
@@ -6319,6 +6440,7 @@ mod tests {
         // SAFETY: single-threaded test seam.
         unsafe { ptr::addr_of_mut!(ACTIVATING).write(true) };
         hew_sched_shutdown();
+        crate::hew_clear_error();
         hew_runtime_cleanup();
 
         // The Stopped latch made cleanup reach resource-free, but that choke
@@ -6335,6 +6457,11 @@ mod tests {
             crate::actor_balance::actor_box_counts(),
             (actor_counts_before.0 + 1, actor_counts_before.1)
         );
+        assert_last_error_eq(&format!(
+            "WASM actor cleanup refused: actor {:#x} retained a live continuation \
+             after pre-timer retirement; actor leaked to avoid UAF",
+            a.id
+        ));
 
         // Manual repair after the assertion; production made no post-timer
         // destroy attempt.

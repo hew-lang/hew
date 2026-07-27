@@ -10,10 +10,10 @@
 //!
 //! After the fix, `lower_value`'s `HirExprKind::StructInit { base: Some(_) }`
 //! arm releases each overridden owned field's OLD value before the
-//! `RecordInit` that builds the new record: a single-pointer COW field
-//! (`string` / `Vec<T>` / `HashMap` / `HashSet`) via `Instr::RecordFieldDrop`,
-//! the fat `bytes` triple via `RecordFieldLoad` + inline `Instr::Drop`. The
-//! release is sound because `..base` consumes the base.
+//! `RecordInit` that builds the new record. Every COW field uses owning-slot
+//! `Instr::RecordFieldDrop`; for the fat `bytes` `{ptr,offset,len}` triple,
+//! codegen releases and nulls field 0 in place. The release is sound because
+//! `..base` consumes the base.
 //!
 //! These tests verify correctness (not just non-crash): the new field value
 //! is the replacement, the non-overridden fields carry over intact, and the

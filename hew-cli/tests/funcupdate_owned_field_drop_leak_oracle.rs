@@ -16,8 +16,8 @@
 //! 1. `RecordFieldDrop { record: base, field_offset: N, … }` for every
 //!    single-pointer COW field (`string`, `Vec<T>`, `HashMap`, `HashSet`):
 //!    raw load → release → null-store.
-//! 2. `RecordFieldLoad + Instr::Drop` for the fat `bytes` `{ptr,len,cap}`
-//!    triple, whose destructor takes the whole by-value value.
+//! 2. The same owning-slot `RecordFieldDrop` for the fat `bytes`
+//!    `{ptr,offset,len}` triple: GEP field 0 → release → null-store.
 //!
 //! `Generator` is also a single-pointer COW field handled by
 //! `RecordFieldDrop`, but a *functional update* can never reach one: a record

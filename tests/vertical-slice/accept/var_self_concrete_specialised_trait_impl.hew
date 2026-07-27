@@ -1,0 +1,20 @@
+// A `var self` method on a concrete specialisation of a generic type already
+// has a fully specialised HIR symbol (`Vec$$i64::bump`). MIR must call that
+// exact symbol instead of attempting to append the receiver type arguments a
+// second time.
+trait Bump {
+    fn bump(var self);
+}
+
+impl Bump for Vec<i64> {
+    fn bump(var self) {
+        self[0] = 99;
+    }
+}
+
+fn main() -> i64 {
+    var values: Vec<i64> = [1, 2];
+    values.bump();
+    println(values[0]);
+    if values[0] == 99 { 0 } else { 1 }
+}

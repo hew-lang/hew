@@ -80,7 +80,7 @@ fn Pattern::is_match(Pattern, string) -> bool [conv=default]
   locals:
     _0: Pattern
     _1: string
-    _2: PatternHandle
+    _2: regex.PatternHandle
     _3: bool
     _4: bool
   bb0:
@@ -98,7 +98,7 @@ fn Pattern::matches(Pattern, string) -> bool [conv=default]
   locals:
     _0: Pattern
     _1: string
-    _2: PatternHandle
+    _2: regex.PatternHandle
     _3: bool
     _4: bool
   bb0:
@@ -116,7 +116,7 @@ fn Pattern::find(Pattern, string) -> string [conv=default]
   locals:
     _0: Pattern
     _1: string
-    _2: PatternHandle
+    _2: regex.PatternHandle
     _3: string
     _4: string
   bb0:
@@ -135,7 +135,7 @@ fn Pattern::replace(Pattern, string, string) -> string [conv=default]
     _0: Pattern
     _1: string
     _2: string
-    _3: PatternHandle
+    _3: regex.PatternHandle
     _4: string
     _5: string
   bb0:
@@ -154,7 +154,7 @@ fn Pattern::find_all(Pattern, string) -> Vec<string> [conv=default]
   locals:
     _0: Pattern
     _1: string
-    _2: PatternHandle
+    _2: regex.PatternHandle
     _3: Vec<string>
     _4: Vec<string>
   bb0:
@@ -173,7 +173,7 @@ fn Pattern::capture(Pattern, string, i64) -> Option<string> [conv=default]
     _0: Pattern
     _1: string
     _2: i64
-    _3: PatternHandle
+    _3: regex.PatternHandle
     _4: Vec<string>
     _5: Vec<string>
     _6: Vec<string>
@@ -239,7 +239,7 @@ fn Pattern::capture_named(Pattern, string, string) -> Option<string> [conv=defau
     _0: Pattern
     _1: string
     _2: string
-    _3: PatternHandle
+    _3: regex.PatternHandle
     _4: Vec<string>
     _5: Vec<string>
     _6: Vec<string>
@@ -304,11 +304,11 @@ fn Pattern::captures(Pattern, string) -> CaptureMatches [conv=default]
   locals:
     _0: Pattern
     _1: string
-    _2: PatternHandle
+    _2: regex.PatternHandle
     _3: Vec<string>
     _4: Vec<string>
     _5: Vec<string>
-    _6: PatternHandle
+    _6: regex.PatternHandle
     _7: i64
     _8: i64
     _9: i64
@@ -341,11 +341,11 @@ fn Pattern::find_all_submatch(Pattern, string) -> CaptureMatches [conv=default]
   locals:
     _0: Pattern
     _1: string
-    _2: PatternHandle
+    _2: regex.PatternHandle
     _3: Vec<string>
     _4: Vec<string>
     _5: Vec<string>
-    _6: PatternHandle
+    _6: regex.PatternHandle
     _7: i64
     _8: i64
     _9: i64
@@ -377,7 +377,7 @@ fn Pattern::find_all_submatch(Pattern, string) -> CaptureMatches [conv=default]
 fn Pattern::clone(Pattern) -> Pattern [conv=default]
   locals:
     _0: Pattern
-    _1: PatternHandle
+    _1: regex.PatternHandle
     _2: regex.PatternHandle
     _3: Pattern
     _4: Pattern
@@ -395,7 +395,7 @@ fn Pattern::clone(Pattern) -> Pattern [conv=default]
 fn Pattern::close(Pattern) -> () [conv=default]
   locals:
     _0: Pattern
-    _1: PatternHandle
+    _1: regex.PatternHandle
   bb0:
     stmt: use BindingId(29) pat site=SiteId(127) ty=Pattern intent=Read
     _1 = _0.field[0]

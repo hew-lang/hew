@@ -246,15 +246,83 @@ fn test_from_float_round_trip_via_table_field() {
 }
 
 #[test]
-fn test_from_float_bare_stringify_is_empty() {
-    // toml::to_string requires a table-rooted value. A bare float value
-    // (not inside a table) cannot be serialized to TOML text, so stringify
-    // returns an empty string. Asserted via len() == 0 because assert_eq_str
-    // has a known quirk comparing null-derived strings to literal "".
+fn test_try_stringify_rejects_a_root_toml_cannot_represent() {
+    // A TOML document root must be a table. A bare float root produces no
+    // text at all, which is exactly what an empty table produces, so an empty
+    // string here would be a fabricated success.
     let val = toml.from_float(1.5);
-    let s = val.stringify();
-    testing.assert_eq(s.len(), 0);
+    match toml.try_stringify(val) {
+        Ok(text) => panic(f"expected a bare float root to be rejected, got {text.len()} bytes"),
+        Err(reason) => testing.assert_true(reason.contains("unsupported")),
+    }
     val.free();
+}
+
+#[test]
+fn test_try_stringify_rejects_a_bare_integer_root() {
+    let val = toml.from_int(7);
+    match toml.try_stringify(val) {
+        Ok(text) => panic(f"expected a bare integer root to be rejected, got {text.len()} bytes"),
+        Err(reason) => testing.assert_gt(reason.len(), 0),
+    }
+    val.free();
+}
+
+#[test]
+fn test_try_stringify_rejects_a_bare_array_root() {
+    let val = toml.array();
+    val.push_int(1);
+    match toml.try_stringify(val) {
+        Ok(text) => panic(f"expected a bare array root to be rejected, got {text.len()} bytes"),
+        Err(reason) => testing.assert_gt(reason.len(), 0),
+    }
+    val.free();
+}
+
+#[test]
+fn test_try_stringify_of_an_empty_table_is_a_valid_empty_document() {
+    // The same zero-length answer a rejected root produces, but this one is
+    // real: an empty table is a well-formed, empty TOML document.
+    let tbl = toml.table();
+    match toml.try_stringify(tbl) {
+        Ok(text) => testing.assert_eq(text.len(), 0),
+        Err(reason) => panic(f"an empty table is a valid TOML document: {reason}"),
+    }
+    tbl.free();
+}
+
+#[test]
+fn test_try_stringify_preserves_a_populated_table() {
+    let tbl = toml.table();
+    tbl.with_int("n", 42);
+    match toml.try_stringify(tbl) {
+        Ok(text) => testing.assert_eq_str(text, "n = 42\n"),
+        Err(reason) => panic(f"a populated table must serialize: {reason}"),
+    }
+    tbl.free();
+}
+
+#[test]
+fn test_stringify_failure_does_not_leak_into_the_next_call() {
+    let bad = toml.from_float(1.5);
+    match toml.try_stringify(bad) {
+        Ok(_) => panic("expected a bare float root to be rejected"),
+        Err(_) => {},
+    }
+    bad.free();
+    let tbl = toml.table();
+    match toml.try_stringify(tbl) {
+        Ok(text) => testing.assert_eq(text.len(), 0),
+        Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
+    }
+    tbl.free();
+}
+
+#[test]
+#[should_panic]
+fn test_stringify_panics_at_legacy_boundary_on_an_unrepresentable_root() {
+    let val = toml.from_float(1.5);
+    let _ = val.stringify();
 }
 
 #[test]

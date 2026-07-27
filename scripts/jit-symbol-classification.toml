@@ -904,6 +904,7 @@ stable-stdlib = [
   "hew_ed25519_sign_hew",
   "hew_ed25519_verify_hew",
   "hew_encrypt_last_open_error_code",
+  "hew_compress_last_error",
   "hew_encrypt_last_seal_error_code",
   "hew_encrypt_must_open_hew",
   "hew_encrypt_try_open_hew",
@@ -958,6 +959,8 @@ stable-stdlib = [
   "hew_json_get_field",
   "hew_json_get_float",
   "hew_json_get_int",
+  "hew_json_int_status",
+  "hew_json_unrepresentable_int_count",
   "hew_json_get_string",
   "hew_json_last_error",
   "hew_json_object_keys",
@@ -1086,6 +1089,7 @@ stable-stdlib = [
   "hew_toml_get_int",
   "hew_toml_get_string",
   "hew_toml_last_error",
+  "hew_toml_last_serialize_error",
   "hew_toml_parse",
   "hew_toml_stringify",
   "hew_toml_table_new",
@@ -1153,6 +1157,8 @@ stable-stdlib = [
   "hew_yaml_get_field",
   "hew_yaml_get_float",
   "hew_yaml_get_int",
+  "hew_yaml_int_status",
+  "hew_yaml_unrepresentable_int_count",
   "hew_yaml_get_string",
   "hew_yaml_last_error",
   "hew_yaml_object_new",
@@ -1962,6 +1968,13 @@ discharge-depth = "deep"
 symbol = "hew_proto_msg_get_string"
 result = "fresh"
 params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_toml_last_serialize_error"
+result = "fresh"
+params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 
@@ -3433,6 +3446,13 @@ release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
 
 [[ownership.contracts]]
+symbol = "hew_compress_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
 symbol = "hew_gzip_compress_hew"
 result = "fresh"
 params = ["borrow"]
@@ -4690,6 +4710,20 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_json_int_status"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_unrepresentable_int_count"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_json_get_int"
 result = "none"
 params = ["borrow"]
@@ -5050,6 +5084,20 @@ discharge-depth = "deep"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_get_float"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_int_status"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_unrepresentable_int_count"
 result = "none"
 params = ["borrow"]
 release-symbol = ""

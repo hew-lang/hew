@@ -72,6 +72,11 @@ trait ValueMethods: CanonicalValueMethods {
     fn array_get(self, index: i64) -> Value;
 
     /// Serialize the value back to a TOML string.
+    ///
+    /// Panics if the value cannot be a TOML document root. Only a table can:
+    /// an integer, string, or array root serializes to no text at all, which
+    /// is exactly what an empty table serializes to. Use `try_stringify()`
+    /// when that failure should be returned as an error.
     fn stringify(self) -> string;
 
     /// Release the value resources.
@@ -142,7 +147,7 @@ impl CanonicalValueMethods for Value {
     }
     fn array_len(val: Value) -> i64 {
         unsafe {
-            hew_toml_array_len(val) as i64
+            hew_toml_array_len(val)
         }
     }
     fn array_get(val: Value, index: i64) -> Value {
@@ -154,8 +159,17 @@ impl CanonicalValueMethods for Value {
         }
     } // INTERNAL-ABI: C ABI index is i32
     fn stringify(val: Value) -> string {
-        unsafe {
+        let text = unsafe {
             hew_toml_stringify(val)
+        };
+        let reason = unsafe {
+            hew_toml_last_serialize_error()
+        };
+        if reason.len() > 0 {
+            panic(f"toml.Value.stringify: {reason}");
+            ""
+        } else {
+            text
         }
     }
     fn free(val: Value) {
@@ -259,6 +273,25 @@ pub fn try_parse(s: string) -> Result<Value, ParseError> {
     }
 }
 
+/// Serialize `val` back to a TOML string without panicking.
+///
+/// A TOML document root must be a table. An integer, string, or array root
+/// serializes to no text at all, which is exactly what an empty table
+/// serializes to, so the two are only distinguishable through this result.
+pub fn try_stringify(val: Value) -> Result<string, string> {
+    let text = unsafe {
+        hew_toml_stringify(val)
+    };
+    let reason = unsafe {
+        hew_toml_last_serialize_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
+    } else {
+        Ok(text)
+    }
+}
+
 /// Create a new empty TOML table.
 pub fn table() -> Value {
     unsafe {
@@ -310,9 +343,10 @@ extern "C" {
     fn hew_toml_get_float(val: Value) -> f64;
     fn hew_toml_get_bool(val: Value) -> i32;
     fn hew_toml_get_field(val: Value, key: string) -> Value;
-    fn hew_toml_array_len(val: Value) -> i32;
+    fn hew_toml_array_len(val: Value) -> i64;
     fn hew_toml_array_get(val: Value, index: i32) -> Value;
     fn hew_toml_stringify(val: Value) -> string;
+    fn hew_toml_last_serialize_error() -> string;
     fn hew_toml_free(val: Value);
     // Builders
     fn hew_toml_table_new() -> Value;

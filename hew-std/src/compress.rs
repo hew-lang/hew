@@ -14,7 +14,8 @@ use flate2::read::{
     DeflateDecoder, DeflateEncoder, GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder,
 };
 use flate2::Compression;
-use hew_cabi::cabi::malloc_bytes;
+use hew_cabi::cabi::{malloc_bytes, str_to_malloc};
+use std::os::raw::c_char;
 
 /// Conservative starting point for explicit decompression caps.
 pub const DEFAULT_MAX_OUTPUT_LEN: usize = 64 * 1024 * 1024;
@@ -37,11 +38,25 @@ fn get_last_error() -> String {
     LAST_ERROR.with(|error| error.borrow().clone().unwrap_or_else(String::new))
 }
 
+/// Return and clear the reason the most recent codec call on this thread
+/// failed, or the empty string if it succeeded.
+///
+/// Reading is the clear, so a reason is consumed exactly once and a later
+/// successful call can never be read as the earlier failure. This is what
+/// separates a valid empty codec result from a failed one: both produce zero
+/// bytes, only the failure leaves a reason here.
+#[no_mangle]
+pub extern "C" fn hew_compress_last_error() -> *mut c_char {
+    let message = LAST_ERROR.with(|error| error.borrow_mut().take());
+    str_to_malloc(&message.unwrap_or_default())
+}
+
 #[derive(Debug)]
 enum CompressError {
     InvalidInput(&'static str),
     InvalidMaxOutputLen(i64),
     OutputLimitExceeded { limit: usize },
+    OutputTooLargeForBytes { len: usize },
     Read(io::Error),
     AllocationFailed,
 }
@@ -55,6 +70,12 @@ impl std::fmt::Display for CompressError {
             }
             Self::OutputLimitExceeded { limit } => {
                 write!(f, "output exceeded {limit} byte limit")
+            }
+            Self::OutputTooLargeForBytes { len } => {
+                write!(
+                    f,
+                    "output of {len} bytes exceeds the maximum a bytes value can hold"
+                )
             }
             Self::Read(err) => write!(f, "stream read failed: {err}"),
             Self::AllocationFailed => f.write_str("malloc failed"),
@@ -440,7 +461,16 @@ fn bytes_triple_from_slice(data: &[u8]) -> BytesTriple {
             len: 0,
         };
     }
-    let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+    let Ok(len) = u32::try_from(data.len()) else {
+        // Saturating here would hand back a silently truncated buffer that
+        // reports success, so refuse the conversion instead.
+        set_last_error(CompressError::OutputTooLargeForBytes { len: data.len() }.to_string());
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+    };
     // SAFETY: data is valid for len bytes; hew_bytes_from_static copies the slice.
     unsafe { hew_runtime::bytes::hew_bytes_from_static(data.as_ptr(), len) }
 }

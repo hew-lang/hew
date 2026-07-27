@@ -25,6 +25,7 @@ fn clear_msgpack_last_error() {
     LAST_MSGPACK_ERROR.with(|error| *error.borrow_mut() = None);
 }
 
+#[cfg(test)]
 fn get_msgpack_last_error() -> String {
     LAST_MSGPACK_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
 }
@@ -248,12 +249,15 @@ pub unsafe extern "C" fn hew_msgpack_to_json(data: *const u8, len: usize) -> *mu
     str_to_malloc(&json)
 }
 
-/// Return this actor's last `MessagePack` parse error.
+/// Return and clear this actor's last `MessagePack` error.
 ///
-/// Returns an empty string when no parse error has been recorded.
+/// Returns an empty string when the most recent codec call succeeded. Reading
+/// is the clear, so a reason is consumed exactly once and a later successful
+/// call can never be read as the earlier failure.
 #[no_mangle]
 pub extern "C" fn hew_msgpack_last_error() -> *mut c_char {
-    str_to_malloc(&get_msgpack_last_error())
+    let message = LAST_MSGPACK_ERROR.with(|error| error.borrow_mut().take());
+    str_to_malloc(&message.unwrap_or_default())
 }
 
 /// Encode a single integer as `MessagePack`.
@@ -267,13 +271,16 @@ pub extern "C" fn hew_msgpack_last_error() -> *mut c_char {
 #[no_mangle]
 pub unsafe extern "C" fn hew_msgpack_encode_int(val: i64, out_len: *mut usize) -> *mut u8 {
     if out_len.is_null() {
+        set_msgpack_last_error("msgpack: output length pointer was null");
         return std::ptr::null_mut();
     }
     let Ok(bytes) = rmp_serde::to_vec(&val) else {
+        set_msgpack_last_error("msgpack: failed to encode integer");
         return std::ptr::null_mut();
     };
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
+    clear_msgpack_last_error();
     malloc_bytes(&bytes)
 }
 
@@ -292,17 +299,21 @@ pub unsafe extern "C" fn hew_msgpack_encode_string(
     out_len: *mut usize,
 ) -> *mut u8 {
     if s.is_null() || out_len.is_null() {
+        set_msgpack_last_error("msgpack: null string input");
         return std::ptr::null_mut();
     }
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
+        set_msgpack_last_error("msgpack: string input was not valid UTF-8");
         return std::ptr::null_mut();
     };
     let Ok(bytes) = rmp_serde::to_vec(rust_str) else {
+        set_msgpack_last_error("msgpack: failed to encode string");
         return std::ptr::null_mut();
     };
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
+    clear_msgpack_last_error();
     malloc_bytes(&bytes)
 }
 
@@ -321,17 +332,55 @@ pub unsafe extern "C" fn hew_msgpack_encode_bytes(
     len: usize,
     out_len: *mut usize,
 ) -> *mut u8 {
-    if data.is_null() || out_len.is_null() {
+    if out_len.is_null() {
+        set_msgpack_last_error("msgpack: output length pointer was null");
         return std::ptr::null_mut();
     }
-    // SAFETY: data is valid for len bytes per caller contract.
-    let slice = unsafe { std::slice::from_raw_parts(data, len) };
-    let Ok(bytes) = rmp_serde::to_vec(&slice.to_vec()) else {
+    if data.is_null() && len > 0 {
+        set_msgpack_last_error("msgpack: null binary input with non-zero length");
+        return std::ptr::null_mut();
+    }
+    let slice: &[u8] = if len == 0 {
+        &[]
+    } else {
+        // SAFETY: data is non-null and valid for len bytes per caller contract.
+        unsafe { std::slice::from_raw_parts(data, len) }
+    };
+    let Some(bytes) = encode_msgpack_bin(slice) else {
+        set_msgpack_last_error(format!(
+            "msgpack: binary input of {len} bytes exceeds the largest MessagePack bin length"
+        ));
         return std::ptr::null_mut();
     };
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
+    clear_msgpack_last_error();
     malloc_bytes(&bytes)
+}
+
+/// Frame `data` as a `MessagePack` bin8/bin16/bin32 value.
+///
+/// `rmp_serde::to_vec` over a `Vec<u8>` goes through serde's sequence
+/// serializer and produces a `MessagePack` *array of integers*, which a peer
+/// reads back as a list of numbers rather than as binary. Frame the bin
+/// family directly so the encoding is what the function name claims.
+/// Returns `None` when the payload is longer than a bin32 length can express.
+fn encode_msgpack_bin(data: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(data.len() + 5);
+    if let Ok(len) = u8::try_from(data.len()) {
+        out.push(0xc4);
+        out.push(len);
+    } else if let Ok(len) = u16::try_from(data.len()) {
+        out.push(0xc5);
+        out.extend_from_slice(&len.to_be_bytes());
+    } else if let Ok(len) = u32::try_from(data.len()) {
+        out.push(0xc6);
+        out.extend_from_slice(&len.to_be_bytes());
+    } else {
+        return None;
+    }
+    out.extend_from_slice(data);
+    Some(out)
 }
 
 /// Free a `malloc_bytes` buffer previously returned by a `hew_msgpack_*`
@@ -408,7 +457,19 @@ fn bytes_triple_from_slice(data: &[u8]) -> BytesTriple {
             len: 0,
         };
     }
-    let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+    let Ok(len) = u32::try_from(data.len()) else {
+        // Saturating here would hand back a silently truncated buffer that
+        // reports success, so refuse the conversion instead.
+        set_msgpack_last_error(format!(
+            "msgpack: encoded output of {} bytes exceeds the maximum a bytes value can hold",
+            data.len()
+        ));
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+    };
     // SAFETY: data is valid for len bytes; hew_bytes_from_static copies the slice.
     unsafe { hew_bytes_from_static(data.as_ptr(), len) }
 }
@@ -528,6 +589,20 @@ pub unsafe extern "C" fn hew_msgpack_encode_bytes_hew(v: *const BytesTriple) -> 
 mod tests {
     use super::*;
     use std::ffi::{CStr, CString};
+
+    /// Copy a codec buffer out and free it.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a `hew_msgpack_*` codec buffer valid for `len` bytes.
+    unsafe fn copy_and_free(ptr: *mut u8, len: usize) -> Vec<u8> {
+        assert!(!ptr.is_null(), "pointer must be non-null");
+        // SAFETY: ptr is valid for len bytes per this helper's contract.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+        // SAFETY: ptr was allocated by a hew_msgpack_* codec function.
+        unsafe { hew_msgpack_free(ptr) };
+        bytes
+    }
 
     unsafe fn read_and_free(ptr: *mut c_char) -> String {
         assert!(!ptr.is_null());
@@ -871,13 +946,61 @@ mod tests {
     }
 
     #[test]
-    fn encode_bytes_empty_data_returns_null_from_null_guard() {
+    fn encode_bytes_empty_input_is_a_valid_empty_bin_not_a_failure() {
         let mut len: usize = 0;
-        // encode_bytes with null data returns null (the null guard).
-        // SAFETY: testing boundary — null data with len=0.
-        unsafe {
-            assert!(hew_msgpack_encode_bytes(std::ptr::null(), 0, &raw mut len).is_null());
-        }
+        // An empty `bytes` value crosses the ABI as {null, 0, 0}. It is a
+        // value, not a missing argument, so it encodes to an empty bin8.
+        // SAFETY: null data with len=0 is the empty-bytes representation.
+        let buf = unsafe { hew_msgpack_encode_bytes(std::ptr::null(), 0, &raw mut len) };
+        assert!(!buf.is_null(), "an empty bytes value must encode");
+        // SAFETY: buf is a codec buffer valid for len bytes.
+        // SAFETY: buf is a codec buffer valid for len bytes.
+        let encoded = unsafe { copy_and_free(buf, len) };
+        assert_eq!(encoded, vec![0xc4, 0x00], "empty bin8");
+        assert_eq!(get_msgpack_last_error(), "");
+    }
+
+    #[test]
+    fn encode_bytes_frames_a_bin_not_an_array_of_integers() {
+        let data: [u8; 3] = [0x01, 0x02, 0x03];
+        let mut len: usize = 0;
+        // SAFETY: data is a valid buffer; len is a valid pointer.
+        let buf = unsafe { hew_msgpack_encode_bytes(data.as_ptr(), data.len(), &raw mut len) };
+        assert!(!buf.is_null());
+        // SAFETY: buf is a codec buffer valid for len bytes.
+        // SAFETY: buf is a codec buffer valid for len bytes.
+        let encoded = unsafe { copy_and_free(buf, len) };
+        assert_eq!(
+            encoded,
+            vec![0xc4, 0x03, 0x01, 0x02, 0x03],
+            "a bin must be framed as bin8, not as a MessagePack array of integers"
+        );
+    }
+
+    #[test]
+    fn encode_bytes_frames_bin16_at_the_bin8_boundary() {
+        let data = vec![0x7fu8; 256];
+        let mut len: usize = 0;
+        // SAFETY: data is a valid buffer; len is a valid pointer.
+        let buf = unsafe { hew_msgpack_encode_bytes(data.as_ptr(), data.len(), &raw mut len) };
+        assert!(!buf.is_null());
+        // SAFETY: buf is a codec buffer valid for len bytes.
+        // SAFETY: buf is a codec buffer valid for len bytes.
+        let encoded = unsafe { copy_and_free(buf, len) };
+        assert_eq!(&encoded[..3], &[0xc5, 0x01, 0x00], "bin16 header");
+        assert_eq!(&encoded[3..], &data[..]);
+    }
+
+    #[test]
+    fn encode_bytes_null_input_with_a_length_is_reported() {
+        let mut len: usize = 0;
+        // SAFETY: testing the null-with-length boundary.
+        let buf = unsafe { hew_msgpack_encode_bytes(std::ptr::null(), 5, &raw mut len) };
+        assert!(buf.is_null());
+        assert_eq!(
+            get_msgpack_last_error(),
+            "msgpack: null binary input with non-zero length"
+        );
     }
 
     // ----- JSON type coverage -----

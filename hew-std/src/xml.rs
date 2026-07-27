@@ -75,31 +75,59 @@ struct Frame {
 #[derive(Debug)]
 enum ParseXmlError {
     Malformed,
+    Reader(String),
     MaximumDepthExceeded,
+    NoRootElement,
+    MultipleRootElements,
+    MismatchedClose { expected: String, found: String },
+    UnexpectedClose(String),
+    InvalidAttribute(String),
+    UnknownEntity(String),
 }
 
 impl ParseXmlError {
-    fn message(&self) -> &'static str {
+    fn message(&self) -> String {
         match self {
-            Self::Malformed => "xml: parse error",
-            Self::MaximumDepthExceeded => "xml: maximum nesting depth (256) exceeded",
+            Self::Malformed => "xml: parse error".to_owned(),
+            Self::Reader(detail) => format!("xml: {detail}"),
+            Self::MaximumDepthExceeded => "xml: maximum nesting depth (256) exceeded".to_owned(),
+            Self::NoRootElement => "xml: document has no root element".to_owned(),
+            Self::MultipleRootElements => "xml: document has more than one root element".to_owned(),
+            Self::MismatchedClose { expected, found } => {
+                format!("xml: `</{found}>` does not close `<{expected}>`")
+            }
+            Self::UnexpectedClose(tag) => {
+                format!("xml: `</{tag}>` closes an element that was never opened")
+            }
+            Self::InvalidAttribute(tag) => {
+                format!("xml: element `{tag}` has a malformed attribute")
+            }
+            Self::UnknownEntity(name) => {
+                format!("xml: `&{name};` is not a known entity reference")
+            }
         }
     }
 }
 
 /// Extract tag name and attributes from a [`BytesStart`] event.
-fn extract_tag_and_attrs(e: &BytesStart<'_>) -> (String, Vec<(String, String)>) {
+///
+/// A malformed attribute is a parse failure, not something to drop: silently
+/// discarding it would hand back an element that claims not to carry the
+/// attribute the document tried to give it.
+fn extract_tag_and_attrs(
+    e: &BytesStart<'_>,
+) -> Result<(String, Vec<(String, String)>), ParseXmlError> {
     let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-    let attributes = e
-        .attributes()
-        .filter_map(Result::ok)
-        .map(|a| {
-            let key = String::from_utf8_lossy(a.key.as_ref()).to_string();
-            let val = String::from_utf8_lossy(&a.value).to_string();
-            (key, val)
-        })
-        .collect();
-    (tag, attributes)
+    let mut attributes = Vec::new();
+    for attribute in e.attributes() {
+        let Ok(a) = attribute else {
+            return Err(ParseXmlError::InvalidAttribute(tag));
+        };
+        let key = String::from_utf8_lossy(a.key.as_ref()).to_string();
+        let val = String::from_utf8_lossy(&a.value).to_string();
+        attributes.push((key, val));
+    }
+    Ok((tag, attributes))
 }
 
 /// Push a node onto the parent frame or into the top-level list.
@@ -150,16 +178,25 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
                 if stack.len() + 1 > MAX_XML_DEPTH {
                     return Err(ParseXmlError::MaximumDepthExceeded);
                 }
-                let (tag, attributes) = extract_tag_and_attrs(e);
+                let (tag, attributes) = extract_tag_and_attrs(e)?;
                 stack.push(Frame {
                     tag,
                     attributes,
                     children: Vec::new(),
                 });
             }
-            Ok(Event::End(_)) => {
+            Ok(Event::End(ref e)) => {
                 flush_text(&mut text_buf, &mut stack, &mut top_level);
-                let frame = stack.pop().ok_or(ParseXmlError::Malformed)?;
+                let closing = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let Some(frame) = stack.pop() else {
+                    return Err(ParseXmlError::UnexpectedClose(closing));
+                };
+                if frame.tag != closing {
+                    return Err(ParseXmlError::MismatchedClose {
+                        expected: frame.tag,
+                        found: closing,
+                    });
+                }
                 let node = XmlNodeKind::Element {
                     tag: frame.tag,
                     attributes: frame.attributes,
@@ -172,7 +209,7 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
                 if stack.len() + 1 > MAX_XML_DEPTH {
                     return Err(ParseXmlError::MaximumDepthExceeded);
                 }
-                let (tag, attributes) = extract_tag_and_attrs(e);
+                let (tag, attributes) = extract_tag_and_attrs(e)?;
                 let node = XmlNodeKind::Element {
                     tag,
                     attributes,
@@ -193,13 +230,15 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
                 b"quot" => text_buf.push('"'),
                 b"apos" => text_buf.push('\''),
                 _ => {
-                    if let Ok(Some(ch)) = e.resolve_char_ref() {
-                        text_buf.push(ch);
-                    } else {
-                        text_buf.push('&');
-                        text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
-                        text_buf.push(';');
-                    }
+                    // An unresolvable reference is malformed XML. Echoing it
+                    // back as literal text would silently turn a broken
+                    // document into one that parses.
+                    let Ok(Some(ch)) = e.resolve_char_ref() else {
+                        return Err(ParseXmlError::UnknownEntity(
+                            String::from_utf8_lossy(e.as_ref()).to_string(),
+                        ));
+                    };
+                    text_buf.push(ch);
                 }
             },
             Ok(Event::CData(ref e)) => {
@@ -214,7 +253,7 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
                 break;
             }
             Ok(_) => {}
-            Err(_) => return Err(ParseXmlError::Malformed),
+            Err(err) => return Err(ParseXmlError::Reader(err.to_string())),
         }
     }
 
@@ -222,14 +261,17 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
         return Err(ParseXmlError::Malformed);
     }
 
-    match top_level.len() {
-        0 => Err(ParseXmlError::Malformed),
-        1 => Ok(top_level.remove(0)),
-        _ => Ok(XmlNodeKind::Element {
-            tag: String::new(),
-            attributes: Vec::new(),
-            children: top_level,
-        }),
+    // A well-formed XML document has exactly one root element. Wrapping
+    // several in a synthetic tagless element would invent structure the
+    // document never had, and serializing that tree back produces `<>`.
+    let mut roots = top_level
+        .into_iter()
+        .filter(|node| matches!(node, XmlNodeKind::Element { .. }))
+        .collect::<Vec<_>>();
+    match roots.len() {
+        0 => Err(ParseXmlError::NoRootElement),
+        1 => Ok(roots.remove(0)),
+        _ => Err(ParseXmlError::MultipleRootElements),
     }
 }
 
@@ -815,17 +857,127 @@ mod tests {
     }
 
     #[test]
-    fn general_entity_references_are_not_expanded() {
+    fn general_entity_references_are_refused_not_echoed_as_text() {
+        // quick-xml 0.39 surfaces `&lol;` as a GeneralRef event and does not
+        // expand it via the DTD. Echoing the reference back as literal text
+        // would hand the caller text the document never contained, so the
+        // document is refused instead.
         let xml = r#"<!DOCTYPE foo [<!ENTITY lol "LOL">]><root>&lol;</root>"#;
         let node = parse(xml);
-        assert!(!node.is_null());
+        assert!(node.is_null(), "an unexpanded entity must not parse");
+        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
+        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        assert_eq!(
+            last_error,
+            Some("xml: `&lol;` is not a known entity reference".to_string())
+        );
+    }
 
-        // quick-xml 0.39 surfaces `&lol;` as a GeneralRef event and does not
-        // expand it via the DTD, so this crate preserves the literal reference.
+    #[test]
+    fn predefined_entity_references_still_expand() {
+        let xml = "<root>a &lt; b &amp; c &gt; d &quot;e&quot; &apos;f&apos;</root>";
+        let node = parse(xml);
+        assert!(!node.is_null());
         // SAFETY: node is a valid HewXmlNode from parse.
         unsafe {
             let text = read_and_free_cstr(hew_xml_get_text(node));
-            assert_eq!(text, "&lol;");
+            assert_eq!(text, "a < b & c > d \"e\" 'f'");
+            hew_xml_free(node);
+        }
+    }
+
+    #[test]
+    fn numeric_character_references_still_expand() {
+        let node = parse("<root>&#72;&#x69;</root>");
+        assert!(!node.is_null());
+        // SAFETY: node is a valid HewXmlNode from parse.
+        unsafe {
+            let text = read_and_free_cstr(hew_xml_get_text(node));
+            assert_eq!(text, "Hi");
+            hew_xml_free(node);
+        }
+    }
+
+    #[test]
+    fn multiple_root_elements_are_refused_not_wrapped() {
+        // Wrapping them in a synthetic tagless element invents structure the
+        // document never had, and serializes back as `<>`.
+        let node = parse("<a/><b/>");
+        assert!(node.is_null());
+        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
+        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        assert_eq!(
+            last_error,
+            Some("xml: document has more than one root element".to_string())
+        );
+    }
+
+    #[test]
+    fn a_close_tag_that_does_not_match_its_open_tag_is_refused() {
+        let node = parse("<a><b></c></a>");
+        assert!(node.is_null());
+        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
+        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        assert_eq!(
+            last_error,
+            Some("xml: ill-formed document: expected `</b>`, but `</c>` was found".to_string())
+        );
+    }
+
+    #[test]
+    fn a_close_tag_with_no_open_tag_is_refused() {
+        let node = parse("<a/></b>");
+        assert!(node.is_null());
+        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
+        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        assert_eq!(
+            last_error,
+            Some(
+                "xml: ill-formed document: close tag `</b>` does not match any open tag"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_malformed_attribute_is_refused_not_dropped() {
+        // `b` has no value. Dropping it hands back an element that claims not
+        // to carry the attribute the document tried to give it.
+        let node = parse("<a b>text</a>");
+        assert!(node.is_null());
+        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
+        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        assert_eq!(
+            last_error,
+            Some("xml: element `a` has a malformed attribute".to_string())
+        );
+    }
+
+    #[test]
+    fn a_text_only_document_has_no_root_element() {
+        let node = parse("just text");
+        assert!(node.is_null());
+        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
+        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        assert_eq!(
+            last_error,
+            Some("xml: document has no root element".to_string())
+        );
+    }
+
+    #[test]
+    fn a_single_root_with_a_declaration_and_comments_still_parses() {
+        let xml = "<?xml version=\"1.0\"?><!-- lead --><root a=\"1\"><kid/></root><!-- trail -->";
+        let node = parse(xml);
+        assert!(!node.is_null());
+        // SAFETY: node is a valid HewXmlNode from parse.
+        unsafe {
+            assert_eq!(read_and_free_cstr(hew_xml_get_tag(node)), "root");
+            assert_eq!(
+                read_and_free_cstr(hew_xml_get_attribute(node, c"a".as_ptr())),
+                "1"
+            );
+            assert_eq!(hew_xml_children_count(node), 1);
             hew_xml_free(node);
         }
     }

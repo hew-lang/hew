@@ -301,6 +301,70 @@ pub unsafe extern "C" fn hew_yaml_get_int(val: *const HewYamlValue) -> i64 {
     v.inner.as_i64().unwrap_or(0)
 }
 
+fn yaml_int_status_of(value: &serde_yaml::Value) -> i32 {
+    match value {
+        serde_yaml::Value::Number(n) if n.is_i64() => 1,
+        serde_yaml::Value::Number(n) if n.is_u64() => 0,
+        _ => -1,
+    }
+}
+
+fn count_unrepresentable_yaml_ints(value: &serde_yaml::Value) -> i64 {
+    match value {
+        serde_yaml::Value::Number(n) => i64::from(!n.is_i64() && n.is_u64()),
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .map(count_unrepresentable_yaml_ints)
+            .fold(0i64, i64::saturating_add),
+        serde_yaml::Value::Mapping(fields) => fields
+            .values()
+            .map(count_unrepresentable_yaml_ints)
+            .fold(0i64, i64::saturating_add),
+        _ => 0,
+    }
+}
+
+/// Report whether [`hew_yaml_get_int`] can return this value truthfully.
+///
+/// Returns 1 when the value is an integer an `i64` can hold, 0 when it is an
+/// integer no `i64` can hold (a YAML integer above `i64::MAX`), and -1 when
+/// it is not an integer at all or the pointer is null.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewYamlValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_int_status(val: *const HewYamlValue) -> i32 {
+    if val.is_null() {
+        return -1;
+    }
+    // SAFETY: val is a valid HewYamlValue pointer per caller contract.
+    let v = unsafe { &*val };
+    yaml_int_status_of(&v.inner)
+}
+
+/// Count the integers in this subtree that no `i64` can hold.
+///
+/// A document is only safe to read through [`hew_yaml_get_int`] when this
+/// returns 0. The walk is recursive, so an unrepresentable integer nested
+/// inside sequences and mappings is found rather than discovered later as a
+/// fabricated `0`.
+///
+/// Returns -1 if the pointer is null.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewYamlValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_unrepresentable_int_count(val: *const HewYamlValue) -> i64 {
+    if val.is_null() {
+        return -1;
+    }
+    // SAFETY: val is a valid HewYamlValue pointer per caller contract.
+    let v = unsafe { &*val };
+    count_unrepresentable_yaml_ints(&v.inner)
+}
+
 /// Get the floating-point value from a [`HewYamlValue`].
 ///
 /// Returns the `f64` value, or 0.0 if the value is not a number.

@@ -306,3 +306,86 @@ fn test_array_get_rejects_index_that_would_wrap_to_zero() {
     let arr = yaml.array();
     arr.array_get(4294967296);
 }
+
+// ── Unsigned values are preserved or reported, never fabricated as 0 ──
+#[test]
+fn test_try_get_int_rejects_an_integer_no_i64_can_hold() {
+    match yaml.try_parse("n: 18446744073709551615\n") {
+        Ok(doc) => {
+            let n = doc.get_field("n");
+            match yaml.try_get_int(n) {
+                Ok(v) => panic(f"expected an out-of-range integer to be rejected, got {v}"),
+                Err(reason) => testing.assert_eq_str(reason, "yaml: the value is an integer no i64 can hold"),
+            }
+            n.free();
+            doc.free();
+        },
+        Err(_) => panic("expected the document to parse"),
+    }
+}
+
+#[test]
+fn test_try_get_int_preserves_representable_values_including_the_boundary() {
+    match yaml.try_parse("max: 9223372036854775807\nmin: -9223372036854775808\nzero: 0\n") {
+        Ok(doc) => {
+            let max = doc.get_field("max");
+            match yaml.try_get_int(max) {
+                Ok(v) => testing.assert_eq(v, 9223372036854775807),
+                Err(reason) => panic(f"i64::MAX must be readable: {reason}"),
+            }
+            max.free();
+            let min = doc.get_field("min");
+            match yaml.try_get_int(min) {
+                Ok(v) => testing.assert_eq(v, -9223372036854775808),
+                Err(reason) => panic(f"i64::MIN must be readable: {reason}"),
+            }
+            min.free();
+            let zero = doc.get_field("zero");
+            match yaml.try_get_int(zero) {
+                Ok(v) => testing.assert_eq(v, 0),
+                Err(reason) => panic(f"a real zero must be readable: {reason}"),
+            }
+            zero.free();
+            doc.free();
+        },
+        Err(_) => panic("expected the document to parse"),
+    }
+}
+
+#[test]
+fn test_unrepresentable_int_count_finds_a_nested_value() {
+    match yaml.try_parse("a:\n  - 1\n  - b: 18446744073709551615\nc: 2\n") {
+        Ok(doc) => {
+            testing.assert_eq(yaml.unrepresentable_int_count(doc), 1);
+            testing.assert_false(yaml.ints_are_representable(doc));
+            doc.free();
+        },
+        Err(_) => panic("expected the document to parse"),
+    }
+}
+
+#[test]
+fn test_unrepresentable_int_count_is_zero_for_a_representable_document() {
+    match yaml.try_parse("a:\n  - 1\n  - b: 9223372036854775807\nc: -5\n") {
+        Ok(doc) => {
+            testing.assert_eq(yaml.unrepresentable_int_count(doc), 0);
+            testing.assert_true(yaml.ints_are_representable(doc));
+            doc.free();
+        },
+        Err(_) => panic("expected the document to parse"),
+    }
+}
+
+#[test]
+#[should_panic]
+fn test_get_int_panics_at_legacy_boundary_on_an_unrepresentable_value() {
+    match yaml.try_parse("n: 18446744073709551615\n") {
+        Ok(doc) => {
+            let n = doc.get_field("n");
+            let _ = n.get_int();
+            n.free();
+            doc.free();
+        },
+        Err(_) => panic("expected the document to parse"),
+    }
+}

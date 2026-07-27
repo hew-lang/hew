@@ -21,6 +21,19 @@ fn boxed_value(v: toml::Value) -> *mut HewTomlValue {
     Box::into_raw(Box::new(HewTomlValue { inner: v }))
 }
 
+std::thread_local! {
+    static LAST_SERIALIZE_ERROR: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn set_serialize_last_error(msg: impl Into<String>) {
+    LAST_SERIALIZE_ERROR.with(|slot| *slot.borrow_mut() = Some(msg.into()));
+}
+
+fn clear_serialize_last_error() {
+    LAST_SERIALIZE_ERROR.with(|slot| *slot.borrow_mut() = None);
+}
+
 fn set_parse_last_error(msg: impl Into<String>) {
     hew_runtime::parse_error_slot::set_error(
         hew_runtime::parse_error_slot::ErrorSlotKind::Toml,
@@ -214,19 +227,21 @@ pub unsafe extern "C" fn hew_toml_get_field(
 
 /// Return the number of elements in a TOML array.
 ///
-/// Returns -1 if `val` is null or not an array.
+/// Returns -1 if `val` is null or not an array. The count crosses at `i64`
+/// width: narrowing it to `i32` would have to saturate, and a saturated count
+/// is a length the array does not have.
 ///
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_toml_array_len(val: *const HewTomlValue) -> i32 {
+pub unsafe extern "C" fn hew_toml_array_len(val: *const HewTomlValue) -> i64 {
     if val.is_null() {
         return -1;
     }
     // SAFETY: val is a valid pointer to a HewTomlValue per caller contract.
     match &unsafe { &*val }.inner {
-        toml::Value::Array(a) => i32::try_from(a.len()).unwrap_or(i32::MAX),
+        toml::Value::Array(a) => i64::try_from(a.len()).unwrap_or(-1),
         _ => -1,
     }
 }
@@ -264,8 +279,10 @@ pub unsafe extern "C" fn hew_toml_array_get(
 /// Serialize a TOML value back to a TOML-formatted string.
 ///
 /// Returns a header-aware, NUL-terminated Hew string. The caller must release
-/// it with `hew_string_drop`. Returns null if `val` is null or serialization
-/// fails.
+/// it with `hew_string_drop`. Returns an empty string if `val` is null or
+/// serialization fails, and records the reason in the serialize slot so an
+/// empty document (a valid table with no keys) stays distinguishable from a
+/// root TOML cannot represent.
 ///
 /// # Safety
 ///
@@ -273,14 +290,33 @@ pub unsafe extern "C" fn hew_toml_array_get(
 #[no_mangle]
 pub unsafe extern "C" fn hew_toml_stringify(val: *const HewTomlValue) -> *mut c_char {
     if val.is_null() {
-        return std::ptr::null_mut();
+        set_serialize_last_error("toml: cannot serialize an invalid value");
+        return str_to_malloc("");
     }
     // SAFETY: val is a valid pointer to a HewTomlValue per caller contract.
     let v = &unsafe { &*val }.inner;
     match toml::to_string(v) {
-        Ok(s) => str_to_malloc(&s),
-        Err(_) => std::ptr::null_mut(),
+        Ok(s) => {
+            clear_serialize_last_error();
+            str_to_malloc(&s)
+        }
+        Err(err) => {
+            set_serialize_last_error(format!("toml: {err}"));
+            str_to_malloc("")
+        }
     }
+}
+
+/// Return and clear the reason the most recent [`hew_toml_stringify`] call on
+/// this thread failed, or the empty string if it succeeded.
+///
+/// A TOML document root must be a table. Serializing an integer, string, or
+/// array root produces no text at all, which is exactly what an empty table
+/// produces, so the reason slot is what separates the two.
+#[no_mangle]
+pub extern "C" fn hew_toml_last_serialize_error() -> *mut c_char {
+    let message = LAST_SERIALIZE_ERROR.with(|slot| slot.borrow_mut().take());
+    str_to_malloc(&message.unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------
@@ -749,7 +785,14 @@ mod tests {
             assert!(hew_toml_get_field(std::ptr::null(), std::ptr::null()).is_null());
             assert_eq!(hew_toml_array_len(std::ptr::null()), -1);
             assert!(hew_toml_array_get(std::ptr::null(), 0).is_null());
-            assert!(hew_toml_stringify(std::ptr::null()).is_null());
+            // A null root serializes to no text, so the reason slot is what
+            // distinguishes it from a valid empty table.
+            let text = read_and_free_cstr(hew_toml_stringify(std::ptr::null()));
+            assert_eq!(text, "");
+            assert_eq!(
+                read_and_free_cstr(hew_toml_last_serialize_error()),
+                "toml: cannot serialize an invalid value"
+            );
             hew_toml_free(std::ptr::null_mut()); // must not crash
         }
     }

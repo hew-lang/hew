@@ -42,9 +42,11 @@ fn test_encode_string_produces_nonempty_bytes() {
 
 // ── Error boundary ────────────────────────────────────────────────────
 #[test]
-fn test_from_json_invalid_returns_empty() {
-    let packed = msgpack.from_json("{not json}");
-    testing.assert_eq(packed.len(), 0);
+#[should_panic]
+fn test_from_json_panics_at_legacy_boundary_on_invalid_json() {
+    // Invalid JSON used to come back as an empty buffer, which reads exactly
+    // like a successful encoding of nothing.
+    let _ = msgpack.from_json("{not json}");
 }
 
 #[test]
@@ -61,10 +63,9 @@ fn test_try_from_json_invalid_surfaces_reason() {
 
 #[test]
 fn test_try_to_json_empty_surfaces_reason() {
-    // from_json("{not json}") yields empty bytes (the documented sentinel);
-    // try_to_json of that empty buffer must surface the specific reason.
-    let empty = msgpack.from_json("{not json}");
-    let result = msgpack.try_to_json(empty);
+    // An empty buffer holds no MessagePack value at all; decoding it must
+    // surface the specific reason rather than an empty JSON string.
+    let result = msgpack.try_to_json(bytes []);
     match result {
         Ok(_) => panic("expected empty input to fail"),
         Err(msg) => testing.assert_true(msg.contains("invalid input buffer")),
@@ -263,9 +264,73 @@ fn test_encode_string_empty_produces_nonempty_bytes() {
 
 // ── to_json error boundary ────────────────────────────────────────────
 #[test]
-fn test_to_json_empty_bytes_returns_empty_string() {
-    // The C implementation rejects len==0 and returns null, which the Hew
-    // binding converts to an empty string.
-    let result = msgpack.to_json(bytes []);
-    testing.assert_eq(result.len(), 0);
+#[should_panic]
+fn test_to_json_panics_at_legacy_boundary_on_an_empty_buffer() {
+    // An empty buffer used to decode to an empty string, which is
+    // indistinguishable from a successful decode that produced no text.
+    let _ = msgpack.to_json(bytes []);
+}
+
+// ── Codec value truth: bin framing and empty-versus-failure ───────────
+#[test]
+fn test_encode_bytes_frames_a_bin_not_an_array_of_integers() {
+    let data: bytes = bytes::new();
+    data.push(1);
+    data.push(2);
+    data.push(3);
+    let encoded = msgpack.encode_bytes(data);
+    testing.assert_eq(encoded.len(), 5);
+    testing.assert_eq_u8(encoded[0], 196); // 0xc4 bin8
+    testing.assert_eq_u8(encoded[1], 3);
+    testing.assert_eq_u8(encoded[2], 1);
+    testing.assert_eq_u8(encoded[3], 2);
+    testing.assert_eq_u8(encoded[4], 3);
+}
+
+#[test]
+fn test_encode_bytes_frames_bin16_past_the_bin8_boundary() {
+    let data: bytes = bytes::new();
+    for _ in 0 .. 256 {
+        data.push(127);
+    }
+    let encoded = msgpack.encode_bytes(data);
+    testing.assert_eq(encoded.len(), 259);
+    testing.assert_eq_u8(encoded[0], 197); // 0xc5 bin16
+    testing.assert_eq_u8(encoded[1], 1);
+    testing.assert_eq_u8(encoded[2], 0);
+}
+
+#[test]
+fn test_try_encode_bytes_of_an_empty_value_is_an_empty_bin_not_a_failure() {
+    match msgpack.try_encode_bytes(bytes []) {
+        Ok(encoded) => {
+            testing.assert_eq(encoded.len(), 2);
+            testing.assert_eq_u8(encoded[0], 196); // 0xc4 bin8
+            testing.assert_eq_u8(encoded[1], 0);
+        },
+        Err(reason) => panic(f"an empty bytes value must encode: {reason}"),
+    }
+}
+
+#[test]
+fn test_codec_failure_does_not_leak_into_the_next_call() {
+    match msgpack.try_from_json("{not json}") {
+        Ok(_) => panic("expected invalid JSON to fail"),
+        Err(_) => {},
+    }
+    match msgpack.try_encode_int(7) {
+        Ok(encoded) => testing.assert_gt(encoded.len(), 0),
+        Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
+    }
+}
+
+#[test]
+fn test_try_to_json_rejects_a_truncated_buffer() {
+    // 0x92 opens a 2-element array whose elements never arrive.
+    let truncated: bytes = bytes::new();
+    truncated.push(146);
+    match msgpack.try_to_json(truncated) {
+        Ok(json) => panic(f"expected a truncated buffer to fail, got {json}"),
+        Err(reason) => testing.assert_true(reason.contains("msgpack:")),
+    }
 }

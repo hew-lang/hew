@@ -74,3 +74,95 @@ fn test_zlib_round_trip_empty() {
     let decompressed = compress.zlib_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT);
     assert_bytes_eq(decompressed, input);
 }
+
+// ── #36: a codec failure is distinguishable from valid empty output ───
+fn garbage() -> bytes {
+    let data: bytes = bytes::new();
+    data.push(1);
+    data.push(2);
+    data.push(3);
+    data.push(4);
+    data
+}
+
+#[test]
+fn test_try_gzip_decompress_reports_a_malformed_stream_as_a_failure() {
+    match compress.try_gzip_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
+        Ok(out) => panic(f"expected a malformed gzip stream to fail, got {out.len()} bytes"),
+        Err(reason) => testing.assert_gt(reason.len(), 0),
+    }
+}
+
+#[test]
+fn test_try_zlib_decompress_reports_a_malformed_stream_as_a_failure() {
+    match compress.try_zlib_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
+        Ok(out) => panic(f"expected a malformed zlib stream to fail, got {out.len()} bytes"),
+        Err(reason) => testing.assert_gt(reason.len(), 0),
+    }
+}
+
+#[test]
+fn test_try_decompress_of_a_valid_empty_payload_is_an_empty_success() {
+    // The same zero-byte answer a failure produces, but this one is real; the
+    // codec's reason slot is what tells them apart.
+    let empty: bytes = bytes::new();
+    let compressed = compress.gzip_compress(empty);
+    match compress.try_gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
+        Ok(out) => testing.assert_eq(out.len(), 0),
+        Err(reason) => panic(f"a valid empty payload must decompress: {reason}"),
+    }
+}
+
+#[test]
+fn test_try_deflate_decompress_of_a_valid_empty_payload_is_an_empty_success() {
+    let empty: bytes = bytes::new();
+    let compressed = compress.deflate_compress(empty);
+    match compress.try_deflate_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
+        Ok(out) => testing.assert_eq(out.len(), 0),
+        Err(reason) => panic(f"a valid empty payload must decompress: {reason}"),
+    }
+}
+
+#[test]
+fn test_try_decompress_rejects_a_negative_output_limit() {
+    let empty: bytes = bytes::new();
+    let compressed = compress.gzip_compress(empty);
+    match compress.try_gzip_decompress(compressed, -1) {
+        Ok(out) => panic(f"expected a negative limit to be rejected, got {out.len()} bytes"),
+        Err(reason) => testing.assert_eq_str(reason, "max output length must be non-negative, got -1"),
+    }
+}
+
+#[test]
+fn test_try_decompress_rejects_output_over_the_limit() {
+    let input: bytes = bytes::new();
+    for _ in 0 .. 64 {
+        input.push(65);
+    }
+    let compressed = compress.zlib_compress(input);
+    match compress.try_zlib_decompress(compressed, 8) {
+        Ok(out) => panic(f"expected the output limit to be enforced, got {out.len()} bytes"),
+        Err(reason) => testing.assert_eq_str(reason, "output exceeded 8 byte limit"),
+    }
+}
+
+#[test]
+fn test_codec_failure_does_not_leak_into_the_next_call() {
+    match compress.try_gzip_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT) {
+        Ok(_) => panic("expected a malformed gzip stream to fail"),
+        Err(_) => {},
+    }
+    let input: bytes = bytes::new();
+    input.push(90);
+    let compressed = compress.gzip_compress(input);
+    match compress.try_gzip_decompress(compressed, DEFAULT_DECOMPRESS_LIMIT) {
+        Ok(out) => testing.assert_eq(out.len(), 1),
+        Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
+    }
+}
+
+#[test]
+#[should_panic]
+fn test_gzip_decompress_panics_at_legacy_boundary_on_a_malformed_stream() {
+    let _ = compress.gzip_decompress(garbage(), DEFAULT_DECOMPRESS_LIMIT);
+}

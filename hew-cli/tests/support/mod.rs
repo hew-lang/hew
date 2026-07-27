@@ -34,25 +34,21 @@ pub fn require_codegen() {
     }
 }
 
+/// Panics when the WASI toolchain or the `wasmtime` runtime is unavailable.
+///
+/// There is deliberately no non-panicking variant. A `try_require_wasi_runner`
+/// used to exist and returned `false` with a stderr SKIP notice; the callers
+/// early-returned green having asserted nothing, so on a runner without
+/// wasmtime — which is what the Windows job was until it was given one — those
+/// tests reported success while executing no WASM at all. A missing runner is a
+/// provisioning failure, and it must be reported as a failure.
+///
+/// A caller that genuinely wants to skip on an unsupported host must say so at
+/// its own site, where the condition is visible and reviewable, rather than
+/// inheriting it from a shared helper.
 pub fn require_wasi_runner() {
     if let Err(error) = WASI_RUNNER_STATUS.get_or_init(bootstrap_wasi_runner) {
         panic!("{error}");
-    }
-}
-
-/// Non-panicking variant of [`require_wasi_runner`].
-///
-/// Returns `false` (and emits a skip notice to stderr) when the WASI
-/// toolchain or `wasmtime` runtime is unavailable, allowing tests to
-/// early-return cleanly instead of panicking. Returns `true` when the
-/// bootstrap succeeds and the test should proceed.
-pub fn try_require_wasi_runner() -> bool {
-    match WASI_RUNNER_STATUS.get_or_init(bootstrap_wasi_runner) {
-        Ok(()) => true,
-        Err(error) => {
-            eprintln!("SKIP: WASI runner unavailable — {error}");
-            false
-        }
     }
 }
 

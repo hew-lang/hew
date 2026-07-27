@@ -164,8 +164,6 @@ fn sort_merge_authority_runs_at_native_o0_and_o2() {
     assert_authority_output(&run_native("2"), "native O2");
 }
 
-// WINDOWS-TODO: requires the Wasmtime runtime, which is not configured on Windows.
-#[cfg_attr(windows, ignore)]
 #[test]
 fn sort_merge_authority_runs_under_wasmtime() {
     support::require_wasi_runner();

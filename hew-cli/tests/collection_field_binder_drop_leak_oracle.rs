@@ -49,6 +49,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -349,72 +351,11 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some(leak_count)` when `leaks` produced a usable report.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    parsed
-}
-
-/// macOS + `leaks(1)` availability guard.
-fn leaks_available(shape_name: &str) -> bool {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return false;
-    }
-    let avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-    }
-    avail
-}
-
 /// Compile + measure `fixture` against the scalar-read control and assert the
 /// fixture sits at the control's floor. A pre-fix collection-field-binder leak
 /// puts the fixture >= `ITERATIONS` nodes above.
 fn assert_no_leak_over_control(shape_name: &str, fixture_source: &str) {
-    if !leaks_available(shape_name) {
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -426,12 +367,8 @@ fn assert_no_leak_over_control(shape_name: &str, fixture_source: &str) {
         compile_to_native(&control_record_scalar_read_source(), dir.path(), "control");
     let fixture_bin = compile_to_native(fixture_source, dir.path(), shape_name);
 
-    let Some(control_leaks) = measure_leaks(&control_bin) else {
-        return;
-    };
-    let Some(fixture_leaks) = measure_leaks(&fixture_bin) else {
-        return;
-    };
+    let control_leaks = measure_leaks(&control_bin);
+    let fixture_leaks = measure_leaks(&fixture_bin);
 
     eprintln!(
         "{shape_name}: control_leaks={control_leaks} fixture_leaks={fixture_leaks} \
@@ -458,6 +395,10 @@ fn assert_no_leak_over_control(shape_name: &str, fixture_source: &str) {
 /// `Pair { a: i64, b: Vec<i64> }` read via `p.b.len()` -- the headline shape.
 /// Pre-fix the inner Vec leaked once per helper call; post-fix it sits at the
 /// scalar-read control floor.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_collection_field_read_no_leak() {
     assert_no_leak_over_control(
@@ -467,6 +408,10 @@ fn record_collection_field_read_no_leak() {
 }
 
 /// `Boxed { payload: Vec<i64> }` (single owned field) read via `.payload.len()`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bare_record_collection_field_read_no_leak() {
     assert_no_leak_over_control(
@@ -476,6 +421,10 @@ fn bare_record_collection_field_read_no_leak() {
 }
 
 /// `(Vec<i64>, i64)` tuple read via `p.0.len()` -- the tuple escape-scan analogue.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn tuple_collection_member_read_no_leak() {
     assert_no_leak_over_control(
@@ -486,6 +435,10 @@ fn tuple_collection_member_read_no_leak() {
 
 /// `Outer { inner: Inner { payload: Vec<i64> } }` read via
 /// `o.inner.payload.len()` -- the exemption must recurse through both layers.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_record_collection_field_read_no_leak() {
     assert_no_leak_over_control(
@@ -496,6 +449,10 @@ fn nested_record_collection_field_read_no_leak() {
 
 /// `Boxed { payload: Vec<i64> }` read via the borrowing element getter
 /// `.payload[0]` -- confirms the getter family is exempt, not only `.len()`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_collection_index_read_no_leak() {
     assert_no_leak_over_control(
@@ -507,6 +464,10 @@ fn record_collection_index_read_no_leak() {
 /// `Named { label: string }` read via `.label.len()` -- the ALREADY-exempt string
 /// side. Stays at the floor; a regression that broke the string exemption while
 /// adding the collection one is caught here.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_string_field_read_no_leak() {
     assert_no_leak_over_control(
@@ -518,6 +479,10 @@ fn record_string_field_read_no_leak() {
 /// No-double-free pin: the `Pair { b: Vec }` member-drop must run EXACTLY once
 /// and free the inner Vec; the co-resident scalar Vec stays clean. A double-free
 /// or wrong-ABI free crashes under `MallocScribble` before the sentinel. Any unix.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_collection_field_read_release_is_exactly_once_under_malloc_scribble() {
     require_codegen();

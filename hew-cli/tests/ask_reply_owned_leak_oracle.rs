@@ -54,6 +54,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -170,48 +172,6 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some(leak_count)` when `leaks` produced a usable report.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    let report = String::from_utf8_lossy(&output.stdout);
-    if !report.contains(" leaks for ") && !report.contains(" leak for ") {
-        eprintln!(
-            "skip: leaks did not emit a usable summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        return Some(n);
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Run `bin` under the full poisoned-allocator triple WITHOUT `leaks`, with
 /// periodic heap verification, and assert it exits cleanly. This is the
 /// over-eager-free / double-free / use-after-free guard: a reply destructor
@@ -236,26 +196,19 @@ fn assert_no_poisoned_allocator_abort(bin: &std::path::Path, label: &str) {
     );
 }
 
-fn leaks_available() -> bool {
-    cfg!(target_os = "macos")
-        && Command::new("which")
-            .arg("leaks")
-            .output()
-            .is_ok_and(|o| o.status.success())
-}
-
 // ── oracles ────────────────────────────────────────────────────────────────
 
 /// Cancel-leg reclaim: every owned reply landing on an already-cancelled
 /// channel is reaped by the registered destructor, so the leak count is flat
 /// across the iteration delta. Pre-fix slope is ~1 leak/iter (20 → 1168 over
 /// 20 → 2000 iters); post-fix it holds at ≈0. Also asserts no over-eager free.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn cancelled_owned_reply_no_per_iter_leak_slope() {
-    if !leaks_available() {
-        eprintln!("skip: ask_reply_owned_leak oracle: leaks(1) is macOS-only / not on PATH");
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -278,12 +231,8 @@ fn cancelled_owned_reply_no_per_iter_leak_slope() {
     // break the leak probe, so surface the clearer failure mode.
     assert_no_poisoned_allocator_abort(&bin_high, "cancel-leg owned reply");
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "cancelled_owned_reply: low_iters={LOW_ITERS} low_leaks={low_leaks} \
@@ -307,12 +256,13 @@ fn cancelled_owned_reply_no_per_iter_leak_slope() {
 /// Pinned as a no-over-eager-free probe (see the module docs for why this leg
 /// is not a leak-slope assertion here — the authoritative reclaim proof is the
 /// `hew-runtime` reply-destructor counter unit tests).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn never_consumed_owned_reply_no_double_free() {
-    if !leaks_available() {
-        eprintln!("skip: ask_reply_owned_leak oracle: leaks(1) is macOS-only / not on PATH");
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()

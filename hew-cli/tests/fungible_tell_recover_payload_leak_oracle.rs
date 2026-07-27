@@ -129,6 +129,10 @@ fn main() -> i64 {\n\
 /// The not-live tell loop holds a flat leak slope: each undelivered payload
 /// is released on the recover edge. A regressed release leaks one payload
 /// buffer per send and trips the tolerance.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fungible_tell_recover_payload_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("fungible_tell_recover", fungible_tell_recover_loop_source);
@@ -139,6 +143,10 @@ fn fungible_tell_recover_payload_leak_slope_below_tolerance() {
 /// Delivered-path control: the live-child tell delivers every payload (the
 /// child's count is the sentinel) and runs clean under the poisoned
 /// allocator — the recover-edge release must not touch the delivery edge.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fungible_tell_delivered_payload_clean_under_malloc_scribble() {
     require_codegen();

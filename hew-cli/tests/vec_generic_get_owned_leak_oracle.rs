@@ -149,6 +149,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 /// poisoned allocator. Reverting the owned-getter routing (so the getter aliases
 /// the Vec's slot while `hew_vec_free_owned` also releases it) fails this with
 /// either an abort (double-free) or garbled output (UAF read).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_generic_get_owned_element_exact_contents_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -160,6 +164,10 @@ fn vec_generic_get_owned_element_exact_contents_under_malloc_scribble() {
 
 /// Slope oracle: the non-vacuous push-get(move-out)-drop cycle must hold the
 /// leak-node count flat.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_generic_get_owned_element_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("vec_generic_get_owned", generic_get_loop_source);

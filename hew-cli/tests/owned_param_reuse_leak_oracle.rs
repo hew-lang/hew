@@ -126,31 +126,55 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_param_reuse_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_param_reuse_record", record_reuse_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn tuple_param_reuse_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_param_reuse_tuple", tuple_reuse_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_param_reuse_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_param_reuse_enum", enum_reuse_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_param_reuse_does_not_double_free() {
     assert_no_double_free("record_reuse_df", &record_reuse_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn tuple_param_reuse_does_not_double_free() {
     assert_no_double_free("tuple_reuse_df", &tuple_reuse_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_param_reuse_does_not_double_free() {
     assert_no_double_free("enum_reuse_df", &enum_reuse_source(50));

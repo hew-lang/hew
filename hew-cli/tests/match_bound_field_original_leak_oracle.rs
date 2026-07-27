@@ -199,6 +199,10 @@ fn main() -> i64 {\n\
 /// Bound `string` record field on a consumed root holds a flat leak slope —
 /// the stranded-original pin (record parent). Losing the in-place discharge
 /// leaks one original per iteration and trips the tolerance.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bound_string_record_field_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("bound_string_record", bound_string_record_loop_source);
@@ -206,6 +210,10 @@ fn bound_string_record_field_leak_slope_below_tolerance() {
 
 /// Bound `string` tuple element on a consumed root holds a flat leak slope —
 /// the stranded-original pin (tuple parent).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bound_string_tuple_element_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("bound_string_tuple", bound_string_tuple_loop_source);
@@ -216,6 +224,10 @@ fn bound_string_tuple_element_leak_slope_below_tolerance() {
 /// The binder-used destructure runs clean under the poisoned allocator and
 /// prints its sentinel — an over-eager free of the discharged original (or a
 /// re-drop of the binder's clone) aborts here.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bound_string_binder_used_no_double_free_under_malloc_scribble() {
     require_codegen();
@@ -250,6 +262,10 @@ fn bound_string_binder_used_no_double_free_under_malloc_scribble() {
 /// prints the returned string exactly — the in-place discharge releases only
 /// the root's share, so the binder survives the return and the caller reads
 /// live memory.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bound_string_binder_escapes_no_double_free_under_malloc_scribble() {
     require_codegen();

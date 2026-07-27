@@ -14,7 +14,7 @@
 
 mod support;
 
-use support::leak_slope::{compile_to_native, leaks_supported, measure_leaks};
+use support::leak_slope::{compile_to_native, measure_leaks, require_leaks_tool};
 use support::require_codegen;
 
 const PENDING_HEAP_CAPTURED_CLOSURE: &str = r#"
@@ -44,9 +44,7 @@ fn main() {
 ";
 
 fn assert_pending_generator_closure_has_no_leaks(source: &str, shape: &str, description: &str) {
-    if !leaks_supported(shape) {
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -54,9 +52,7 @@ fn assert_pending_generator_closure_has_no_leaks(source: &str, shape: &str, desc
         .tempdir()
         .expect("tempdir");
     let bin = compile_to_native(source, dir.path(), shape);
-    let Some(leaks) = measure_leaks(&bin) else {
-        return;
-    };
+    let leaks = measure_leaks(&bin);
 
     assert_eq!(
         leaks, 0,
@@ -66,6 +62,10 @@ fn assert_pending_generator_closure_has_no_leaks(source: &str, shape: &str, desc
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn pending_generator_drops_yielded_heap_capturing_closure() {
     assert_pending_generator_closure_has_no_leaks(
@@ -75,6 +75,10 @@ fn pending_generator_drops_yielded_heap_capturing_closure() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn pending_generator_drops_yielded_copy_capturing_closure() {
     assert_pending_generator_closure_has_no_leaks(

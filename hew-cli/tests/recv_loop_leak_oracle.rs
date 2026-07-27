@@ -83,21 +83,60 @@
 //!
 //! ## Skip behaviour
 //!
-//! macOS-only oracle (`leaks(1)` is Darwin's Mach-port allocator
-//! inspector; Linux has no equivalent). On any other platform the test
-//! logs `skip:` and returns without failing. Inside the macOS path
-//! `leaks` itself may decline to attach when the binary is not
-//! debuggable (rare in CI; logs `skip:` and returns); the assertion
-//! only runs when both the LOW and HIGH measurements succeed.
+//! macOS-only oracle: `leaks(1)` is Darwin's Mach-port allocator
+//! inspector and Linux has no equivalent, and the payload-escape UAF
+//! probes need the `MallocScribble` / `MallocPreScribble` /
+//! `MallocGuardEdges` poisoned allocator to turn a use-after-free into
+//! an observable signal. Every test here is therefore annotated
+//! `#[cfg_attr(not(target_os = "macos"), ignore = "…")]`, which the
+//! runner RECORDS as a skip with its reason.
+//!
+//! Nothing in this file skips at run time any more. It used to: the
+//! slope harness returned early on a non-macOS host, again when `leaks`
+//! was missing from `PATH`, and again whenever `leaks` declined to
+//! attach — each logging `skip:` to stderr and returning, so the
+//! `#[test]` reported PASS having asserted nothing. That made the whole
+//! file green on Linux and Windows always, and on macOS whenever the
+//! tool was absent. An absent capability is not a green result (the
+//! shape deleted from `try_require_wasi_runner` in `#2826`): the
+//! macOS-only condition is now a compile-time `ignore` the runner
+//! counts, and every other way of failing to measure — no `leaks` on a
+//! macOS host, `leaks` declining to attach, a probe that does not run to
+//! completion — is a FAILURE. See `support::leak_slope`.
+//!
+//! ## Work witness
+//!
+//! A slope oracle whose HIGH probe never ran the loop under test
+//! measures nothing while reporting a flat slope. Every slope test here
+//! goes through `assert_frame_slope_below_tolerance_exact_lines`, which
+//! runs each probe plainly, requires a successful exit, and pins the
+//! stdout line count to the shape's declared per-frame output. That is
+//! not a hypothetical guard: the `for_await_stream_bytes` fixture
+//! shipped emitting `frames²` sends into a `CHANNEL_CAPACITY`-bounded
+//! pipe, so its HIGH probe (`50² = 2500 > 1024`) parked forever on
+//! backpressure and drained ZERO frames from the day it landed.
 
 #![cfg(unix)]
 
 mod support;
 
-use std::path::PathBuf;
 use std::process::Command;
 
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::leak_slope::{
+    assert_frame_slope_below_tolerance, assert_frame_slope_below_tolerance_exact_lines,
+    compile_to_native, require_macos_poisoned_allocator,
+};
+use support::{describe_output, require_codegen};
+
+/// Every slope shape in this file prints exactly one line per frame from
+/// its consuming loop body, so the drained-frame count is the frame
+/// count. Passed to
+/// [`assert_frame_slope_below_tolerance_exact_lines`] as the work
+/// witness: a probe that prints a different number of lines did not
+/// drain what it was asked to and its leak count is not a slope sample.
+fn one_line_per_frame(frames: usize) -> usize {
+    frames
+}
 
 // ── per-shape Hew fixtures ────────────────────────────────────────────────
 //
@@ -116,29 +155,27 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 /// reaches the same peak allocation across LOW and HIGH measurements,
 /// contributing one stable node (a single growing allocation) to both
 /// leak counts.
+///
+/// It is also a HARD CEILING on how many items a probe may enqueue
+/// before its consumer starts draining. Every shape here makes one
+/// actor both producer and consumer — the sends all run before the
+/// drain loop — and these are BOUNDED, blocking, backpressured
+/// channels and pipes. A shape that enqueues more than this parks
+/// forever inside its send with nothing left to drain it, never
+/// reaches `close()`, and measures a stalled process instead of a
+/// per-frame slope. Keep every probe's send count at exactly one per
+/// frame so `HIGH_FRAMES` sends stay far below this.
 const CHANNEL_CAPACITY: usize = 1024;
 
-/// Low frame count: minimum value that exercises the back-edge at
-/// least once. With `frames = 3` the loop body runs four times (three
-/// drains + the closing `None`), so the back-edge fires three times.
-const LOW_FRAMES: usize = 3;
-
-/// High frame count for the slope check. Picked to be large enough
-/// that a per-frame leak would dominate any constant-overhead noise
-/// (a slope of 1 leak / frame would produce `HIGH_FRAMES - LOW_FRAMES
-/// = 47` extra leak nodes against the `SLOPE_TOLERANCE` of 5), yet
-/// small enough to keep the test runtime under a second per shape on
-/// macOS even when the binary is built in `--release`.
-const HIGH_FRAMES: usize = 50;
-
-/// Maximum permitted leak-node delta between the HIGH and LOW probes.
-/// Counts excess leak nodes only; the channel's internal ring buffer
-/// resizing is ONE node growing in bytes, not multiple new nodes, so
-/// it does not contribute. A per-frame allocation leak would each
-/// produce its own node — e.g. trunk pre-fix's 32-byte cstring per
-/// iteration showed 1.0 leak / frame slope, which over `delta = 47`
-/// frames would land at 47 excess leak nodes (9× the tolerance).
-const SLOPE_TOLERANCE: usize = 5;
+// Frame counts and tolerance come from `support::leak_slope`, the single
+// authority for the slope methodology; they are the same values this
+// file used to define privately. `LOW_FRAMES = 3` is the minimum that
+// exercises the back-edge (the body runs four times: three drains plus
+// the closing `None`). `HIGH_FRAMES = 50` makes a 1-leak/frame slope
+// worth 47 excess NODES against `SLOPE_TOLERANCE = 5`. The tolerance
+// counts excess NODES only: a channel's internal ring buffer resizing
+// is ONE node growing in bytes, while a per-frame allocation leak
+// produces one node each.
 
 /// `for await item in rx` over `std::channel::Receiver<string>`.
 /// `frames` drives the number of `send` calls before the channel
@@ -371,197 +408,6 @@ fn owned_send_source(frames: usize) -> String {
     )
 }
 
-// ── leak measurement plumbing ─────────────────────────────────────────────
-
-/// Compile `source` to a native binary via `hew compile --emit-dir` and
-/// return the binary path. The temp dir backs the binary; keep it alive
-/// for the duration of the measurement.
-fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf {
-    let hew_src = dir.join(format!("{name}.hew"));
-    std::fs::write(&hew_src, source).expect("write hew source");
-
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.to_str().expect("emit-dir utf-8"),
-            hew_src.to_str().expect("hew src utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
-
-    assert!(
-        output.status.success(),
-        "hew compile failed for {name}:\n{}",
-        describe_output(&output)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let bin = stdout
-        .lines()
-        .find_map(|l| l.strip_prefix("native: "))
-        .unwrap_or_else(|| panic!("no `native:` line for {name}:\n{stdout}"))
-        .to_string();
-    PathBuf::from(bin)
-}
-
-/// Run `bin` under `MallocScribble` + `MallocGuardEdges` + `leaks
-/// --atExit` and return `Some(leak_count)` if `leaks` produced a usable
-/// report, `None` if it declined to attach (the binary was not debuggable
-/// or `leaks` was unavailable). The leak-count is parsed from the
-/// canonical line `Process <pid>: N leaks for B total leaked bytes.` —
-/// the only stable field across macOS releases.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        // Two canonical summary lines (plural for N≠1, singular for N=1):
-        //   "Process <pid>: N leaks for B total leaked bytes."
-        //   "Process <pid>: 1 leak for B total leaked bytes."
-        // Reject the "Process <pid>: N nodes malloced for B KB" line that
-        // appears AHEAD of the leak summary (it counts total allocations,
-        // not leaks). The Stream<bytes> oracle holds at 1 producer-side
-        // leak (singular form) post-fix, so handling both forms is load-
-        // bearing for the bytes slope tests.
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-             summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
-/// Per-shape probe: build a LOW-frame binary and a HIGH-frame binary
-/// for the SAME shape, measure leak NODE counts under `leaks --atExit`
-/// with the `MallocScribble` / `MallocPreScribble` / `MallocGuardEdges`
-/// poisoned-allocator triple, and assert the per-frame slope is below
-/// `SLOPE_TOLERANCE`, i.e. `high_leaks` fits within
-/// `low_leaks + SLOPE_TOLERANCE`.
-///
-/// The check ignores BYTES (the channel's internal ring buffer is one
-/// allocation that resizes with peak items enqueued — its size grows
-/// but the NODE COUNT stays at one). A per-frame allocation leak (the
-/// original bug class — one 32-byte `alloc_cstring_data` block per
-/// iteration that the back-edge drop should have released) shows up
-/// as `HIGH_FRAMES - LOW_FRAMES = 47` extra NODES, far above the
-/// tolerance.
-///
-/// Pre-fix trunk measurement on `for_await_source`:
-/// `LOW (3 frames) = 8 leaks, HIGH (30 frames) = 35 leaks` →
-/// `slope = (35-8)/(30-3) = 1.0 leaks/frame`. Extrapolated to this
-/// oracle's `HIGH_FRAMES=50` the pre-fix delta would be ~47, an order
-/// of magnitude above the tolerance. Post-fix both probes hold at the
-/// same NODE count (currently 5 across the whole range; tolerance 5
-/// absorbs any one-off scheduler / runtime / channel-warmup
-/// allocation that sometimes appears only in the HIGH probe).
-fn assert_per_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize) -> String) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-        return;
-    }
-
-    require_codegen();
-
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("recv-leak-{shape_name}-"))
-        .tempdir()
-        .expect("tempdir");
-
-    let bin_low = compile_to_native(
-        &source_fn(LOW_FRAMES),
-        dir.path(),
-        &format!("{shape_name}_low"),
-    );
-    let bin_high = compile_to_native(
-        &source_fn(HIGH_FRAMES),
-        dir.path(),
-        &format!("{shape_name}_high"),
-    );
-
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
-
-    eprintln!(
-        "{shape_name}: low_frames={LOW_FRAMES} low_leaks={low_leaks} \
-         high_frames={HIGH_FRAMES} high_leaks={high_leaks} \
-         tolerance={SLOPE_TOLERANCE}"
-    );
-    assert!(
-        high_leaks <= low_leaks + SLOPE_TOLERANCE,
-        "{shape_name}: per-frame leak SLOPE — low_frames={LOW_FRAMES} low_leaks={low_leaks}, \
-         high_frames={HIGH_FRAMES} high_leaks={high_leaks}. Excess of {} NODES over the \
-         tolerance of {SLOPE_TOLERANCE} indicates the back-edge is producing a per-iteration \
-         allocation. Trunk pre-fix slope is ~1.0 leak/frame for the original bug \
-         (`alloc_cstring_data` per iteration). Re-run with `MallocStackLogging=1 leaks \
-         --atExit -- {}` to see which stack the leaked block came from.",
-        high_leaks.saturating_sub(low_leaks + SLOPE_TOLERANCE),
-        bin_high.display()
-    );
-    // Also assert non-negative growth — a HIGH probe with FEWER leaks
-    // than LOW would mean the higher-frame run did not actually drain
-    // the channel before `leaks --atExit` snapshotted, so the test is
-    // not measuring what we think. The sleep budget in main is sized
-    // for `HIGH_FRAMES` to complete; if this fires, increase it.
-    assert!(
-        high_leaks + SLOPE_TOLERANCE >= low_leaks,
-        "{shape_name}: HIGH leak count is more than {SLOPE_TOLERANCE} below LOW \
-         (low={low_leaks}, high={high_leaks}) — the actor likely did not finish \
-         draining {HIGH_FRAMES} frames before `leaks --atExit` snapshotted. Increase \
-         the `sleep_ms(...)` budget in the shape source."
-    );
-}
-
 // ── per-shape slope tests ─────────────────────────────────────────────────
 
 /// `for await item in rx` over `Receiver<string>`: no per-frame leak
@@ -570,9 +416,17 @@ fn assert_per_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize)
 /// bug class produced one `alloc_cstring_data` allocation per
 /// iteration (trunk slope: 1.0 leak / frame); the slope check fails
 /// at +47 NODES against the +5 tolerance.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn for_await_recv_string_loop_no_per_frame_leak_slope() {
-    assert_per_frame_slope_below_tolerance("for_await", for_await_source);
+    assert_frame_slope_below_tolerance_exact_lines(
+        "for_await",
+        for_await_source,
+        one_line_per_frame,
+    );
 }
 
 /// Source-level `let opt = await rx.recv()` + `match opt`: no
@@ -580,9 +434,17 @@ fn for_await_recv_string_loop_no_per_frame_leak_slope() {
 /// discipline (`binding_scope` + `loop_back_edge_blocks` populating
 /// the back-edge `Goto` plan with the scope-filtered `EnumInPlace`
 /// drop).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn source_await_recv_string_loop_no_per_frame_leak_slope() {
-    assert_per_frame_slope_below_tolerance("await_recv", await_recv_source);
+    assert_frame_slope_below_tolerance_exact_lines(
+        "await_recv",
+        await_recv_source,
+        one_line_per_frame,
+    );
 }
 
 /// Non-suspending `let opt = rx.try_recv()` loop: no per-frame leak
@@ -590,9 +452,13 @@ fn source_await_recv_string_loop_no_per_frame_leak_slope() {
 /// differs from `await rx.recv()` only at the call seam (no suspend
 /// ramp), so the MIR loop shape is identical and the same back-edge
 /// drop applies.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn try_recv_string_loop_no_per_frame_leak_slope() {
-    assert_per_frame_slope_below_tolerance("try_recv", try_recv_source);
+    assert_frame_slope_below_tolerance_exact_lines("try_recv", try_recv_source, one_line_per_frame);
 }
 
 /// `let opt = rx.try_recv(); match opt { Some(_) => { ...; continue; }
@@ -602,9 +468,17 @@ fn try_recv_string_loop_no_per_frame_leak_slope() {
 /// fall-through Goto, so the fall-through registration alone would
 /// miss this exit. Trunk pre-fix slope on this shape mirrors
 /// `for_await` (1.0 leak / frame).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn try_recv_continue_loop_no_per_frame_leak_slope() {
-    assert_per_frame_slope_below_tolerance("try_recv_continue", try_recv_continue_source);
+    assert_frame_slope_below_tolerance_exact_lines(
+        "try_recv_continue",
+        try_recv_continue_source,
+        one_line_per_frame,
+    );
 }
 
 /// Same continue back-edge probe but through the suspending
@@ -613,9 +487,17 @@ fn try_recv_continue_loop_no_per_frame_leak_slope() {
 /// `Call` (`try_recv`) or `SuspendingChannelRecv` (await recv) —
 /// both shapes feed the same `Goto` back to the loop header, and the
 /// scope-filtered drop discipline is terminator-agnostic.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn await_recv_continue_loop_no_per_frame_leak_slope() {
-    assert_per_frame_slope_below_tolerance("await_recv_continue", await_recv_continue_source);
+    assert_frame_slope_below_tolerance_exact_lines(
+        "await_recv_continue",
+        await_recv_continue_source,
+        one_line_per_frame,
+    );
 }
 
 /// Owned f-string payload sent per frame (`let s = f"item-{i}";
@@ -628,9 +510,17 @@ fn await_recv_continue_loop_no_per_frame_leak_slope() {
 /// the string retain-on-share branch: LOW(3)=5, HIGH(50)=5 leak nodes
 /// (slope 0; the channel ring buffer grows in bytes, not nodes). An
 /// unbalanced send-side owner would show slope 1.0 = +47 nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn owned_payload_send_loop_no_per_frame_leak_slope() {
-    assert_per_frame_slope_below_tolerance("owned_send", owned_send_source);
+    assert_frame_slope_below_tolerance_exact_lines(
+        "owned_send",
+        owned_send_source,
+        one_line_per_frame,
+    );
 }
 
 // ── Stream<bytes> per-frame leak oracle ───────────────────────────────────
@@ -684,6 +574,20 @@ fn owned_payload_send_loop_no_per_frame_leak_slope() {
 // (one node, independent of frame count), so the slope check sees
 // the same 1-node baseline at LOW and HIGH probes; the slope tolerance
 // of 5 absorbs it with headroom.
+//
+// Send count MUST stay at exactly one per loop iteration. `bytes_pipe`
+// is a BOUNDED, blocking, backpressured pipe (`std/stream.hew`), and
+// this shape makes ONE actor both producer and consumer: the sends all
+// run before the drain loop starts. Emit more than `CHANNEL_CAPACITY`
+// sends and the actor parks forever inside `await sink.send(b)` with
+// nothing left to drain it — it never reaches `sink.close()`, never
+// enters the `for await`, and the probe measures a stalled process's
+// orphaned pipe buffer instead of a per-frame drop slope. That is the
+// defect this fixture shipped with: it spliced `frames` copies of the
+// send inside `while i < frames`, so the send count was `frames²` and
+// the HIGH probe at `50² = 2500 > 1024` drained ZERO frames.
+// `assert_per_frame_slope_below_tolerance`'s drained-frame witness now
+// makes that stall a failure instead of a measurement.
 
 /// `for await frame in <Stream<bytes>>`: the canonical recv-scrutinee
 /// payload-binding shape for the Bytes ABI variant. `frames` controls
@@ -694,16 +598,11 @@ fn owned_payload_send_loop_no_per_frame_leak_slope() {
 /// Some-arm payload binding's `Instr::Drop { ty: Bytes, drop_fn:
 /// Some("hew_bytes_drop") }` registration releases the triple's data
 /// buffer on every body-end edge.
+///
+/// One send per iteration, so the total send count is `frames` and
+/// stays under the bounded pipe's `CHANNEL_CAPACITY` — see the
+/// send-count note above the shape rationale.
 fn for_await_stream_bytes_source(frames: usize) -> String {
-    use std::fmt::Write as _;
-    let sends = (0..frames).fold(String::new(), |mut acc, _| {
-        // Reuse a single pre-allocated `bytes` value per send so the
-        // producer side does not introduce per-frame allocation noise.
-        // `await sink.send(b)` borrows; `b`'s refcount stays at 1 for
-        // the lifetime of the actor.
-        let _ = writeln!(acc, "            await sink.send(b);");
-        acc
-    });
     format!(
         "import std::stream;\n\
          \n\
@@ -713,7 +612,7 @@ fn for_await_stream_bytes_source(frames: usize) -> String {
          \x20       let b = \"frame-some-long-data\".to_bytes();\n\
          \x20       var i: i64 = 0;\n\
          \x20       while i < {frames} {{\n\
-         {sends}\
+         \x20           await sink.send(b);\n\
          \x20           i = i + 1;\n\
          \x20       }}\n\
          \x20       sink.close();\n\
@@ -733,8 +632,8 @@ fn for_await_stream_bytes_source(frames: usize) -> String {
 
 /// `for await frame in <Stream<bytes>>` per-frame leak-slope oracle.
 ///
-/// Trunk PRE-FIX leak counts on this exact probe (50-frame, reuse-one-
-/// `bytes` producer):
+/// Trunk PRE-FIX leak counts on this exact probe (reuse-one-`bytes`
+/// producer, ONE send per iteration):
 ///   * LOW (3 frames):  ~4   leaks (consumer-side per-frame + 1 constant)
 ///   * HIGH (50 frames): ~51 leaks (consumer-side per-frame + 1 constant)
 ///   * slope ≈ 1.0 leak/frame → +47 over the +5 tolerance → loud
@@ -743,17 +642,28 @@ fn for_await_stream_bytes_source(frames: usize) -> String {
 /// POST-FIX leak counts on the same probe:
 ///   * LOW: 1, HIGH: 1 — slope = 0 (the producer's single pre-
 ///     allocated `b` is the only leak; consumer-side per-frame leak
-///     is now zero).
+///     is now zero). Re-measured out to 500 frames: still 1.
 ///
-/// Without the MIR `generator_yield_drop_symbol` Bytes arm + codegen
-/// `lower_inline_drop` Bytes interceptor, the for-await body emits no
-/// `hew_bytes_drop` call per iteration (IR-verified: pre-fix `grep -c
-/// hew_bytes_drop <ir>` returns 0 inside the body block; post-fix
-/// returns 1, calling against `%bytes_drop_ptr`). This test fails
-/// trunk-style by a factor of ~10× if either end is reverted.
+/// The MIR `generator_yield_drop_symbol` Bytes arm + codegen
+/// `lower_inline_drop` Bytes interceptor are what put the
+/// `hew_bytes_drop` call in the for-await body: without them the body
+/// block emits none (IR-verified — `grep -c hew_bytes_drop <ir>`
+/// returns 0 pre-fix; post-fix the body-end block carries exactly one
+/// `call void @hew_bytes_drop(ptr %bytes_drop_ptr)` preceded by the
+/// triple-field-0 GEP + load and followed by the null-store). This
+/// test fails trunk-style by a factor of ~10× if either end is
+/// reverted.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn for_await_stream_bytes_loop_no_per_frame_leak_slope() {
-    assert_per_frame_slope_below_tolerance("for_await_stream_bytes", for_await_stream_bytes_source);
+    assert_frame_slope_below_tolerance_exact_lines(
+        "for_await_stream_bytes",
+        for_await_stream_bytes_source,
+        one_line_per_frame,
+    );
 }
 
 // ── Stream<bytes> payload-escape UAF probe ────────────────────────────────
@@ -825,6 +735,10 @@ fn carry_for_await_bytes_escape_source() -> String {
 /// (not type-keyed) so the same gate that protects String payload
 /// escapes protects Bytes payload escapes; this probe asserts the
 /// cross-type invariant directly.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn carry_for_await_bytes_payload_escape_no_uaf() {
     assert_payload_escape_prints(
@@ -950,10 +864,13 @@ fn carry_fallthrough_escape_source() -> String {
 /// poisoned in place; print reads the poison-init bytes as a
 /// zero-length string) or crash (when the guard pages catch the read).
 fn assert_payload_escape_prints(shape_name: &str, source: &str, expected: &[&str]) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: payload-escape probe is macOS-only (MallocScribble)");
-        return;
-    }
+    // No runtime skip: the poisoned allocator this probe depends on is a
+    // macOS facility, and that is a compile-time fact gated by the
+    // `#[cfg_attr(not(target_os = "macos"), ignore = "…")]` on each caller
+    // so the runner records a SKIP. Reaching here off macOS means the
+    // attribute is missing, and the guard says so loudly rather than
+    // returning green having asserted nothing.
+    require_macos_poisoned_allocator();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -1004,6 +921,10 @@ fn assert_payload_escape_prints(shape_name: &str, source: &str, expected: &[&str
 /// MallocPreScribble` — the buffer was freed by the back-edge
 /// `EnumInPlace` and `MallocScribble` poisoned the freed cstring so
 /// the post-loop print read a zero-length string.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn carry_continue_payload_escape_no_uaf() {
     assert_payload_escape_prints(
@@ -1019,6 +940,10 @@ fn carry_continue_payload_escape_no_uaf() {
 /// the body bottom for fallthrough and at the `Continue` lowering for
 /// the explicit form), but the escape-scan check that gates the
 /// `EnumInPlace` admission runs once per function and protects both.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn carry_fallthrough_payload_escape_no_uaf() {
     assert_payload_escape_prints(
@@ -1156,28 +1081,40 @@ fn gen_stream_return_carry_source() -> String {
 
 /// Full-drain slope oracle for the actor-generator string stream (the
 /// consumer decode copy is released at body end, one per yield).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn gen_stream_string_drain_no_per_frame_leak_slope() {
-    assert_per_frame_slope_below_tolerance(
-        "gen_stream_string_drain",
-        gen_stream_string_drain_source,
-    );
+    // This shape prints nothing: it signals a short drain through its EXIT
+    // CODE (`92` when `seen != frames`), which the harness's work witness
+    // checks by requiring a successful plain run.
+    assert_frame_slope_below_tolerance("gen_stream_string_drain", gen_stream_string_drain_source);
 }
 
 /// Early-return slope oracle: a `return`-carrying body path must not
 /// suppress the per-iteration release (pre-fix slope 1.0 leak/frame).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn gen_stream_string_early_return_no_per_frame_leak_slope() {
-    assert_per_frame_slope_below_tolerance(
+    assert_frame_slope_below_tolerance(
         "gen_stream_string_early_return",
         gen_stream_string_early_return_source,
     );
 }
 
 /// Bytes variant of the early-return slope oracle.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn gen_stream_bytes_early_return_no_per_frame_leak_slope() {
-    assert_per_frame_slope_below_tolerance(
+    assert_frame_slope_below_tolerance(
         "gen_stream_bytes_early_return",
         gen_stream_bytes_early_return_source,
     );
@@ -1185,6 +1122,10 @@ fn gen_stream_bytes_early_return_no_per_frame_leak_slope() {
 
 /// Exactly-once wall for the return edge: a loop variable RETURNED to the
 /// caller is caller-owned; the return-edge release must stay suppressed.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn gen_stream_returned_loop_var_no_uaf() {
     assert_payload_escape_prints(
@@ -1282,6 +1223,10 @@ fn gen_stream_break_forwarded_via_call_source() -> String {
 
 /// Identity-callee forwarding on the RETURN edge must not free the buffer
 /// the caller is about to read. `GuardMalloc` ×3 in the flake gate.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn gen_stream_return_forwarded_via_call_no_uaf() {
     assert_payload_escape_prints(
@@ -1294,6 +1239,10 @@ fn gen_stream_return_forwarded_via_call_no_uaf() {
 /// Identity-callee forwarding on the BREAK edge — same ledger emitter and
 /// escape scan as the return edge, so the fix must close both. `GuardMalloc`
 /// ×3 in the flake gate.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn gen_stream_break_forwarded_via_call_no_uaf() {
     assert_payload_escape_prints(

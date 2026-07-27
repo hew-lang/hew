@@ -395,6 +395,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 
 /// #1875 headline: an unused owned ask-reply binding is released per
 /// iteration — flat slope (pre-fix ~1 leak/iter).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn ask_unused_owned_binding_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g1875_ask_unused", ask_unused_binding_loop_source);
@@ -402,6 +406,10 @@ fn ask_unused_owned_binding_loop_leak_slope_below_tolerance() {
 
 /// Channel-recv mirror: an unused owned recv binding is released per
 /// iteration — flat slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn recv_unused_owned_binding_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g1875_recv_unused", recv_unused_binding_loop_source);
@@ -410,6 +418,10 @@ fn recv_unused_owned_binding_loop_leak_slope_below_tolerance() {
 /// Timeout-wins: `after` beats owned ask/recv losers every iteration; losers
 /// reaped by the channel destructor, unwritten binding slots not dropped —
 /// flat slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn after_wins_owned_losers_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g1875_after_wins", after_wins_owned_losers_loop_source);
@@ -417,6 +429,10 @@ fn after_wins_owned_losers_loop_leak_slope_below_tolerance() {
 
 /// Selected-value escape holds a flat slope: the moved-out reply is released
 /// exactly once per iteration as the `let`-bound result.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn escape_binding_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g1875_escape_loop", escape_binding_loop_source);
@@ -424,6 +440,10 @@ fn escape_binding_loop_leak_slope_below_tolerance() {
 
 /// Loser-leg exactly-once wall: winner escapes, loser reaped by the channel
 /// destructor, no double-free under the poisoned allocator, winner readable.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn select_loser_owned_reply_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -435,6 +455,10 @@ fn select_loser_owned_reply_no_double_free_under_malloc_scribble() {
 
 /// Escape exactly-once wall: the arm-body move suppresses the scope-exit
 /// drop; the escaped value reads back verbatim and the run exits clean.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn selected_value_escape_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -445,6 +469,10 @@ fn selected_value_escape_no_double_free_under_malloc_scribble() {
 }
 
 /// Straight-line unused binding: single Return-edge release, no double-free.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn unused_owned_binding_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -458,6 +486,10 @@ fn unused_owned_binding_no_double_free_under_malloc_scribble() {
 
 /// `Option<string>` ask-reply escaping the select arm: released once per
 /// iteration as the `let`-bound composite — flat slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn opt_string_escape_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_opt_string_escape", opt_string_escape_loop_source);
@@ -465,6 +497,10 @@ fn opt_string_escape_loop_leak_slope_below_tolerance() {
 
 /// `Option<Row>` (owned-field record) ask-reply escaping the select arm — flat
 /// slope; the interior owned field rides the one composite release.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn opt_record_escape_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_opt_record_escape", opt_record_escape_loop_source);
@@ -472,6 +508,10 @@ fn opt_record_escape_loop_leak_slope_below_tolerance() {
 
 /// Owned `Row` record ask-reply, binding unused: whole-record scope-exit
 /// release once per iteration — flat slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_unused_binding_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_record_unused", record_unused_binding_loop_source);
@@ -479,6 +519,10 @@ fn record_unused_binding_loop_leak_slope_below_tolerance() {
 
 /// Exactly-once wall for the `Option<string>` escape: the interior payload
 /// reads back verbatim and the run exits clean under the poisoned allocator.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn opt_string_escape_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(

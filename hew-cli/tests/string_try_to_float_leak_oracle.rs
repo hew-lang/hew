@@ -79,11 +79,19 @@ fn varied_float_source(frames: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn valid_decimal_parse_has_no_per_character_leak_slope() {
     assert_frame_slope_below_tolerance("try_to_float_valid_decimal", valid_decimal_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn varied_valid_and_invalid_parses_have_no_per_character_leak_slope() {
     assert_frame_slope_below_tolerance("try_to_float_varied", varied_float_source);

@@ -388,6 +388,10 @@ const EXACTLY_ONCE_PIN_EXPECTED: &str = "020134413213221029992122102999OK";
 /// Not-taken conditional move of a `Vec<i64>` must not leak per call.
 /// Pre-fix slope is 2 nodes/call (handle + buffer, never registered for the
 /// scope-exit drop); post-fix the guarded drop releases each call's vec.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_conditional_move_not_taken_no_per_call_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -397,6 +401,10 @@ fn vec_conditional_move_not_taken_no_per_call_leak_slope() {
 }
 
 /// `Vec<string>` variant: the guarded free must walk the string elements.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_string_conditional_move_not_taken_no_per_call_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -406,6 +414,10 @@ fn vec_string_conditional_move_not_taken_no_per_call_leak_slope() {
 }
 
 /// `HashMap` handle variant of the not-taken conditional move.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn hashmap_conditional_move_not_taken_no_per_call_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -416,6 +428,10 @@ fn hashmap_conditional_move_not_taken_no_per_call_leak_slope() {
 
 /// Taken path: the arm owner's release must keep firing (the guard gates
 /// only the source's scope-exit drop, never the destination's).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_conditional_move_taken_no_per_call_leak_slope() {
     assert_frame_slope_below_tolerance("vec_conditional_taken", vec_conditional_taken_source);
@@ -425,6 +441,10 @@ fn vec_conditional_move_taken_no_per_call_leak_slope() {
 /// scope-exit release must survive the fan-out collapse (the CFG-exclusivity
 /// rule). The pre-rule behaviour stripped the whole component and leaked 2
 /// nodes/call on every path.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_double_destination_not_taken_no_per_call_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -438,6 +458,10 @@ fn vec_double_destination_not_taken_no_per_call_leak_slope() {
 /// double-free — the guarded source drop firing on the moved path, or the
 /// dedup admitting two owners over one handle — aborts or scribbles the
 /// output before `OK`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn conditional_move_shapes_run_clean_under_malloc_scribble() {
     require_codegen();

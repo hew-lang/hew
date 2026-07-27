@@ -43,11 +43,19 @@ fn invalid_trailing_digit_source(frames: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn valid_multi_digit_parse_has_no_per_digit_leak_slope() {
     assert_frame_slope_below_tolerance("try_to_int_valid_multi_digit", valid_multi_digit_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn invalid_digit_early_return_has_no_per_digit_leak_slope() {
     assert_frame_slope_below_tolerance(

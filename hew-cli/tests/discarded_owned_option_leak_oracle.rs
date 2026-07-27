@@ -68,26 +68,46 @@ fn main() {\n\
 \x20   print(m[\"k\"]);\n\
 }\n";
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn discarded_hashmap_remove_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("discarded_hashmap_remove", discarded_remove_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn wildcard_hashmap_remove_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("wildcard_hashmap_remove", wildcard_remove_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn discarded_hashmap_get_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("discarded_hashmap_get", discarded_get_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn discarded_none_control_has_flat_leak_slope() {
     assert_frame_slope_below_tolerance("discarded_none_control", none_control_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn discarded_get_does_not_release_the_maps_copy() {
     require_codegen();

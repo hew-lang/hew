@@ -31,6 +31,8 @@ mod extern_wrapper_result_opacity;
 mod forawait_loopvar_release;
 #[path = "lowering_expr/fresh_vec_projection_owner.rs"]
 mod fresh_vec_projection_owner;
+#[path = "lowering_expr/funcupdate_field_override_release.rs"]
+mod funcupdate_field_override_release;
 #[path = "lowering_expr/gen_block_mir_lowering.rs"]
 mod gen_block_mir_lowering;
 #[path = "lowering_expr/generic_record_layout_test.rs"]

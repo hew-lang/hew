@@ -602,6 +602,10 @@ fn match_intermediate_return_tuple_source(frames: usize) -> String {
 
 /// Two-level record chain holds a flat slope — the outer composite frees the
 /// whole tree; the intermediate aliases free nothing (#2375).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn two_level_record_chain_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("chain_record", two_level_record_chain_source);
@@ -609,6 +613,10 @@ fn two_level_record_chain_leak_slope_below_tolerance() {
 
 /// Double-skip destructure holds a flat slope — nothing bound out, the outer
 /// composite owns the whole tree.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn two_level_double_skip_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("chain_double_skip", two_level_double_skip_source);
@@ -616,6 +624,10 @@ fn two_level_double_skip_leak_slope_below_tolerance() {
 
 /// Two-level tuple chain holds a flat slope — the tuple prover's twin of the
 /// record path.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn two_level_tuple_chain_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("chain_tuple", two_level_tuple_chain_source);
@@ -623,6 +635,10 @@ fn two_level_tuple_chain_leak_slope_below_tolerance() {
 
 /// Bystander standalone record is freed exactly once alongside the admitted
 /// chain root — flat slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bystander_root_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("chain_bystander", bystander_root_source);
@@ -638,6 +654,10 @@ fn bystander_root_leak_slope_below_tolerance() {
 /// leaked every frame (2 strings / call). This is the slope check that was
 /// missing for the escape shapes; the double-free pin below only proved no
 /// re-free, not the absence of a per-iteration leak.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn escaped_return_record_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("chain_escaped_return", escaped_return_record_source);
@@ -647,6 +667,10 @@ fn escaped_return_record_leak_slope_below_tolerance() {
 /// owning record the caller keeps, so the owner's composite is excluded and the
 /// same multi-hop sibling walk discharges the non-escaped siblings along the
 /// chain exactly once. The `RecordInit` twin of the returned-record slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn escaped_into_record_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("chain_escaped_store", escaped_into_record_source);
@@ -662,6 +686,10 @@ fn escaped_into_record_leak_slope_below_tolerance() {
 /// discharged the deeper siblings, so all four strings of the nested tuple
 /// leaked every frame (slope 4/call; the double-free pin above only proved no
 /// re-free, not the absence of a per-iteration leak).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn escaped_return_tuple_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("chain_escaped_tuple", escaped_return_tuple_source);
@@ -670,6 +698,10 @@ fn escaped_return_tuple_leak_slope_below_tolerance() {
 /// #2387 match-hop return holds a FLAT slope: the owner composite is excluded
 /// so the returned `Leaf` is not re-freed, while the sibling compensator follows
 /// the match-bound immediate-parent chain and releases `mid.x` plus `o.c`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn match_intermediate_return_leaf_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -680,6 +712,10 @@ fn match_intermediate_return_leaf_leak_slope_below_tolerance() {
 
 /// Tuple twin of the match-hop return: the shared chain helper must compensate
 /// non-escaped tuple siblings while preserving the returned pair.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn match_intermediate_return_tuple_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -711,18 +747,30 @@ fn assert_scribble_clean(name: &str, source: &str) {
 }
 
 /// Two-level record chain: no composite re-walk of the aliased tree.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn two_level_record_chain_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("chain_record", &two_level_record_chain_source(6));
 }
 
 /// Two-level tuple chain: no re-walk of the aliased tuple tree.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn two_level_tuple_chain_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("chain_tuple", &two_level_tuple_chain_source(6));
 }
 
 /// Double-skip: the outer composite frees the whole tree once, no re-walk.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn two_level_double_skip_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("chain_double_skip", &two_level_double_skip_source(6));
@@ -731,6 +779,10 @@ fn two_level_double_skip_no_double_free_under_malloc_scribble() {
 /// `HandleTransfer` control: the transferred `Generator` handle is released
 /// exactly once (by the for-loop consume); the record's whole-root exclusion
 /// keeps its composite from re-freeing the moved handle.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn handle_transfer_control_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("chain_handle_transfer", &handle_transfer_control_source(6));
@@ -738,6 +790,10 @@ fn handle_transfer_control_no_double_free_under_malloc_scribble() {
 
 /// Owner-consumed control: the alias emits no drop; the consumer frees the
 /// tree, and nothing re-frees it.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn owner_consumed_control_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("chain_owner_consumed", &owner_consumed_control_source(6));
@@ -746,6 +802,10 @@ fn owner_consumed_control_no_double_free_under_malloc_scribble() {
 /// Escaped-return record: the deep alias is handed to the caller. The owner's
 /// composite must not free the escapee's still-shared subtree — a re-walk here
 /// is the double-free the projection-alias classification must exclude.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn escaped_return_record_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("chain_escaped_return", &escaped_return_record_source(6));
@@ -753,6 +813,10 @@ fn escaped_return_record_no_double_free_under_malloc_scribble() {
 
 /// Escaped into an owning record: the deep alias is stored into a fresh record
 /// the caller keeps. Same double-free boundary as the returned variant.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn escaped_into_record_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("chain_escaped_store", &escaped_into_record_source(6));
@@ -760,6 +824,10 @@ fn escaped_into_record_no_double_free_under_malloc_scribble() {
 
 /// Escaped-return TUPLE twin: the deep tuple alias is handed to the caller —
 /// the tuple prover's twin of the returned-record double-free boundary.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn escaped_return_tuple_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("chain_escaped_tuple", &escaped_return_tuple_source(6));
@@ -772,6 +840,10 @@ fn escaped_return_tuple_no_double_free_under_malloc_scribble() {
 /// `Move`s, and the destructure hop is a field load off the scrutinee copy),
 /// so the owner's composite re-freed the strings the returned `Leaf` still
 /// owns — the `free_cstring` header-sentinel abort.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn match_intermediate_return_leaf_no_double_free_under_malloc_scribble() {
     assert_scribble_clean(
@@ -783,6 +855,10 @@ fn match_intermediate_return_leaf_no_double_free_under_malloc_scribble() {
 /// #2384 tuple twin: the element bound out of a `match` on an intermediate
 /// tuple hop and returned — same double-free boundary through the tuple
 /// prover.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn match_intermediate_return_tuple_no_double_free_under_malloc_scribble() {
     assert_scribble_clean(

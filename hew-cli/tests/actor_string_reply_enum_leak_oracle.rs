@@ -221,12 +221,20 @@ fn result_enum_scalar_sibling_source(frames: usize) -> String {
 
 /// The headline #2717 leak: actor enum reply with a scalar sibling holds a flat
 /// slope post-fix (pre-fix: ~1 leak / reply).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn actor_enum_reply_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("actor_enum_reply", actor_enum_reply_source);
 }
 
 /// Concat plain-string reply control holds a flat slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn actor_string_concat_reply_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -236,6 +244,10 @@ fn actor_string_concat_reply_leak_slope_below_tolerance() {
 }
 
 /// Constant plain-string reply control holds a flat slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn actor_string_plain_reply_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("actor_string_plain_reply", actor_string_plain_reply_source);
@@ -243,6 +255,10 @@ fn actor_string_plain_reply_leak_slope_below_tolerance() {
 
 /// Non-actor `Result<Status, i64>` substrate reproduction holds a flat slope —
 /// the minimal shape the prover fix targets.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn result_enum_scalar_sibling_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -278,12 +294,20 @@ fn assert_scribble_clean(name: &str, source: &str) {
 
 /// Actor enum reply: the handler alternates the heap and scalar variants, so
 /// both the composite `EnumInPlace` drop and the scalar-extraction path run.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn actor_enum_reply_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("actor_enum_reply", &actor_enum_reply_source(6));
 }
 
 /// Concat plain-string reply: no double-free of the reply string.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn actor_string_concat_reply_no_double_free_under_malloc_scribble() {
     assert_scribble_clean(
@@ -293,6 +317,10 @@ fn actor_string_concat_reply_no_double_free_under_malloc_scribble() {
 }
 
 /// Non-actor substrate reproduction: no re-walk of the nested payload.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn result_enum_scalar_sibling_no_double_free_under_malloc_scribble() {
     assert_scribble_clean(

@@ -232,6 +232,10 @@ fn main() -> i64 {\n\
 /// Skipped `string` record field holds a flat leak slope — the
 /// retain-cancel pin (record parent). A reroute back onto the load+drop
 /// path leaks one buffer per iteration and trips the tolerance.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn skipped_string_record_field_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("skip_string_record", skip_string_record_loop_source);
@@ -239,6 +243,10 @@ fn skipped_string_record_field_leak_slope_below_tolerance() {
 
 /// Skipped `string` tuple element holds a flat leak slope — the
 /// retain-cancel pin (tuple parent).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn skipped_string_tuple_element_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("skip_string_tuple", skip_string_tuple_loop_source);
@@ -248,6 +256,10 @@ fn skipped_string_tuple_element_leak_slope_below_tolerance() {
 /// the back-edge leg: `FieldDropInPlace` fires exactly once per
 /// iteration, and the bitcopy-binder prover exclusion (not a heap-owning
 /// binder) suppresses the composite.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn skipped_record_field_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("skip_record_field_loop", skip_record_field_loop_source);
@@ -256,6 +268,10 @@ fn skipped_record_field_loop_leak_slope_below_tolerance() {
 /// Partial-skip and all-wildcard paths joining holds a flat leak slope —
 /// each path discharges its own local exactly once (in-place drops vs the
 /// retained composite drop) and nothing re-drops after the join.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn skipped_field_join_paths_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("skip_join_paths", skip_join_paths_loop_source);
@@ -267,6 +283,10 @@ fn skipped_field_join_paths_leak_slope_below_tolerance() {
 /// allocator and prints its sentinel — a composite re-drop of the
 /// in-place-freed field (inline composites have no null-store) aborts
 /// here.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn skipped_aggregate_field_no_double_free_under_malloc_scribble() {
     require_codegen();
@@ -299,6 +319,10 @@ fn skipped_aggregate_field_no_double_free_under_malloc_scribble() {
 
 /// The join shape runs clean under the poisoned allocator — neither path
 /// double-frees and the join block re-drops nothing.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn skipped_field_join_paths_no_double_free_under_malloc_scribble() {
     require_codegen();

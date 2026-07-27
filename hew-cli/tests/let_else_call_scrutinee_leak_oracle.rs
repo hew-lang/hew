@@ -174,6 +174,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 
 /// #2429 let-else headline: owned-string payload holds a flat slope (slope 47
 /// pre-fix).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn letelse_option_string_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_letelse_option", letelse_option_string_loop_source);
@@ -181,6 +185,10 @@ fn letelse_option_string_loop_leak_slope_below_tolerance() {
 
 /// `Result<bytes, _>` payload through the same let-else seam holds a flat
 /// slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn letelse_result_bytes_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g2429_letelse_result", letelse_result_bytes_loop_source);
@@ -188,6 +196,10 @@ fn letelse_result_bytes_loop_leak_slope_below_tolerance() {
 
 /// The divergent (else) edge releases the full composite temp — flat slope
 /// proves the divergent-else drop fires (care point B).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn letelse_divergent_edge_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -198,6 +210,10 @@ fn letelse_divergent_edge_loop_leak_slope_below_tolerance() {
 
 /// Exactly-once wall across divergent edges: `return`/`continue` on both taken
 /// and refuted calls, clean under the poisoned allocator.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn letelse_divergent_edges_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -209,6 +225,10 @@ fn letelse_divergent_edges_no_double_free_under_malloc_scribble() {
 
 /// Straight-line matched let-else: single scope-exit release, payload
 /// readable, no double free.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn single_from_call_letelse_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(

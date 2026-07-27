@@ -118,16 +118,28 @@ fn local_and_param_share_source(frames: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_aggregate_share_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("string_aggregate_share", aggregate_share_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_duplicating_return_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("string_duplicating_return", duplicating_return_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_local_and_param_share_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(

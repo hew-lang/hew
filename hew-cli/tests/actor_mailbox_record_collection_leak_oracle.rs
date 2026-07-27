@@ -238,6 +238,10 @@ const MAILBOX_RETAINED_CONTENT_SOURCE: &str = "type Boxed { payload: Vec<i64> }\
      \x20   }\n\
      }\n";
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn mailbox_record_collection_field_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -246,6 +250,10 @@ fn mailbox_record_collection_field_leak_slope_below_tolerance() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn mailbox_record_two_collections_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -256,6 +264,10 @@ fn mailbox_record_two_collections_leak_slope_below_tolerance() {
 
 /// #2747 — the BORROW-only slice handler holds a flat slope post-fix (leaked
 /// pre-fix). The primary regression this fix closes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn mailbox_record_borrow_only_slice_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -267,6 +279,10 @@ fn mailbox_record_borrow_only_slice_leak_slope_below_tolerance() {
 /// #2747 — the BORROW-only `Vec<i64>` handler holds a flat slope post-fix,
 /// proving the fix is spelling-agnostic (both `[i64]` and `Vec<i64>` leaked
 /// identically pre-fix).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn mailbox_record_borrow_only_vec_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -279,6 +295,10 @@ fn mailbox_record_borrow_only_vec_leak_slope_below_tolerance() {
 /// leak (the state overwrite releases the previous buffer) AND must not
 /// double-free (over-admission crashes under the poisoned allocator, spiking
 /// the slope or aborting the run).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn mailbox_record_retained_into_state_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -292,6 +312,10 @@ fn mailbox_record_retained_into_state_leak_slope_below_tolerance() {
 /// `store[0]` of the last retained buffer (`60`) survives every send. If the
 /// handler double-freed the retained buffer, the trailing state read would trap
 /// or return a scribbled value.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn mailbox_record_retained_into_state_keeps_exact_content() {
     require_codegen();

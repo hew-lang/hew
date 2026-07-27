@@ -119,6 +119,10 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn generic_record_repeat_field_has_no_per_iteration_leak_slope() {
     assert_frame_slope_below_tolerance_with(
@@ -130,6 +134,10 @@ fn generic_record_repeat_field_has_no_per_iteration_leak_slope() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_concat_without_record_has_no_per_iteration_leak_slope() {
     assert_frame_slope_below_tolerance_with(
@@ -141,6 +149,10 @@ fn nested_concat_without_record_has_no_per_iteration_leak_slope() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn terminator_produced_concat_operand_has_no_per_iteration_leak_slope() {
     assert_frame_slope_below_tolerance_with(
@@ -152,6 +164,10 @@ fn terminator_produced_concat_operand_has_no_per_iteration_leak_slope() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn closure_returned_concat_operand_has_no_per_iteration_leak_slope() {
     assert_frame_slope_below_tolerance_with(
@@ -163,6 +179,10 @@ fn closure_returned_concat_operand_has_no_per_iteration_leak_slope() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn generic_record_repeat_field_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
@@ -171,6 +191,10 @@ fn generic_record_repeat_field_freed_exactly_once_under_malloc_scribble() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_concat_without_record_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
@@ -179,6 +203,10 @@ fn nested_concat_without_record_freed_exactly_once_under_malloc_scribble() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn terminator_produced_concat_operand_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
@@ -187,6 +215,10 @@ fn terminator_produced_concat_operand_freed_exactly_once_under_malloc_scribble()
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn closure_returned_concat_operand_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(

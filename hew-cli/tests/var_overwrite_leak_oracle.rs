@@ -45,6 +45,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -263,64 +265,8 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some(leak_count)` when `leaks` produced a usable report.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        return Some(n);
-                    }
-                }
-            }
-        }
-    }
-    eprintln!(
-        "skip: leaks did not emit a `Process <pid>: N leak(s) ...` summary for {}",
-        bin.display()
-    );
-    None
-}
-
 fn assert_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize) -> String) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 
@@ -340,12 +286,8 @@ fn assert_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize) -> 
         &format!("{shape_name}_high"),
     );
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "{shape_name}: low_frames={LOW_FRAMES} low_leaks={low_leaks} \
@@ -395,12 +337,20 @@ fn assert_scribbled_run_exit(shape_name: &str, source: &str, expected_exit: i32)
 
 /// Record var: reassigning an owned record in a loop releases the prior record
 /// every iteration (pre-fix slope 1 block/frame).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_var_overwrite_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("record_var_overwrite", record_var_overwrite_source);
 }
 
 /// String var: reassigning a string in a loop releases the prior owner.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_var_overwrite_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("string_var_overwrite", string_var_overwrite_source);
@@ -408,6 +358,10 @@ fn string_var_overwrite_no_per_frame_leak_slope() {
 
 /// UAF pin — self-reassign keeps the byte-copied `..r` leaf alive (release
 /// skipped; final name is `"KEEPER-"`, len 7).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_self_reassign_keeps_aliased_leaf_alive() {
     assert_scribbled_run_exit("record_self_reassign", RECORD_SELF_REASSIGN_SOURCE, 7);
@@ -415,6 +369,10 @@ fn record_self_reassign_keeps_aliased_leaf_alive() {
 
 /// UAF pin — consume-then-reassign does not double-free the value the callee
 /// already freed (release skipped; final name is `"FRESH"`, len 5).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_consume_then_reassign_no_double_free() {
     assert_scribbled_run_exit("record_consume_reassign", RECORD_CONSUME_REASSIGN_SOURCE, 5);
@@ -424,6 +382,10 @@ fn record_consume_then_reassign_no_double_free() {
 /// on a sibling arm that reassigns `r` without consuming it. Pre-fix the
 /// reassigning arm leaked one record per frame (path-insensitive `owned_locals`
 /// removal); the runtime drop-flag flattens the slope to a single residual.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn branch_asym_consume_overwrite_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -435,6 +397,10 @@ fn branch_asym_consume_overwrite_no_per_frame_leak_slope() {
 /// #2301 UAF pin — alternating consume/non-consume arms: the runtime drop-flag
 /// releases on exactly the non-consuming iterations and skips the consuming
 /// ones, so no value is double-freed (final name is `"PAYLOAD-"`, len 8).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_branch_asym_alternating_no_double_free() {
     assert_scribbled_run_exit(

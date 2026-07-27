@@ -22,6 +22,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -95,70 +97,16 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the macOS poisoned-allocator triple + `leaks --atExit` and
-/// return the parsed leak-node count, or `None` if `leaks` declined to attach.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        return Some(n);
-                    }
-                }
-            }
-        }
-    }
-    eprintln!(
-        "skip: leaks did not emit a leak summary for {}: stderr=\n{}",
-        bin.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    None
-}
-
 /// Spawning N actors with suspending `#[on(start)]` hooks must NOT leak a coro
 /// frame per actor. A regression that parked-but-never-destroyed the lifecycle
 /// continuation would show a per-actor slope (`HIGH - LOW` extra nodes).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn suspending_on_start_no_per_actor_coro_frame_leak() {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 
@@ -170,12 +118,8 @@ fn suspending_on_start_no_per_actor_coro_frame_leak() {
     let bin_low = compile_to_native(&suspending_on_start_source(LOW_ACTORS), dir.path(), "low");
     let bin_high = compile_to_native(&suspending_on_start_source(HIGH_ACTORS), dir.path(), "high");
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "on_start_suspension: low_actors={LOW_ACTORS} low_leaks={low_leaks} \

@@ -669,8 +669,27 @@ mod tests {
         reg.load("std::process").unwrap();
         assert_eq!(
             reg.drop_func_for("process.Child"),
-            Some("hew_process_drop"),
-            "process.Child drop func should be hew_process_drop"
+            None,
+            "process.Child is a fielded resource record; its generated drop \
+             dispatches through Child::close instead of a direct opaque-handle \
+             registry drop function"
+        );
+        assert!(
+            reg.is_drop_type("process.Child"),
+            "process.Child must remain a drop type even without a direct \
+             opaque-handle drop function"
+        );
+        let process_source = include_str!("../../std/process.hew");
+        assert!(
+            process_source.contains("fn close(child: Child)"),
+            "process.Child must retain its source-level resource close method"
+        );
+        assert_eq!(
+            process_source
+                .matches("hew_process_drop(child.handle)")
+                .count(),
+            1,
+            "process.Child::close must release its wrapped ChildHandle exactly once"
         );
         assert_eq!(
             reg.drop_func_for("http.Server"),
@@ -684,7 +703,11 @@ mod tests {
             "regex.Pattern should not have a drop func"
         );
         let all = reg.all_drop_funcs();
-        assert!(!all.is_empty(), "should have at least one drop func");
+        assert!(
+            all.is_empty(),
+            "the loaded fielded resource records dispatch through their \
+             source-level close methods, not direct opaque-handle drop funcs: {all:?}"
+        );
     }
 
     #[test]

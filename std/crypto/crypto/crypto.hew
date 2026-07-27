@@ -49,9 +49,39 @@ pub fn hmac_sha256(key: bytes, data: bytes) -> bytes {
 }
 
 /// Generate `len` cryptographically random bytes.
+///
+/// Panics when the request cannot be served. `len == 0` is a valid empty
+/// draw. Use `try_random_bytes` to handle the failure instead.
 pub fn random_bytes(len: i64) -> bytes {
-    unsafe {
+    match try_random_bytes(len) {
+        Ok(drawn) => drawn,
+        Err(message) => {
+            panic(message);
+            "".to_bytes()
+        },
+    }
+}
+
+/// Generate `len` cryptographically random bytes, reporting a request that
+/// could not be served.
+///
+/// An empty result is only ever a `len == 0` draw. A negative length, a length
+/// no `bytes` value can hold, and an entropy-source failure are reported as
+/// `Err` rather than returned as an empty buffer or answered by terminating
+/// the process.
+pub fn try_random_bytes(len: i64) -> Result<bytes, string> {
+    let drawn = unsafe {
         hew_random_bytes_hew(len)
+    };
+    let code = unsafe {
+        hew_random_last_error_code()
+    };
+    match code {
+        0 => Ok(drawn),
+        1 => Err(f"crypto.random_bytes: invalid length {len} (must be >= 0)"),
+        2 => Err(f"crypto.random_bytes: length {len} exceeds the maximum a bytes value can hold"),
+        3 => Err("crypto.random_bytes: the system entropy source failed"),
+        _ => Err(f"crypto.random_bytes: failed with status {code}"),
     }
 }
 
@@ -72,5 +102,6 @@ extern "C" {
     fn hew_sha512_hew(data: bytes) -> bytes;
     fn hew_hmac_sha256_hew(key: bytes, data: bytes) -> bytes;
     fn hew_random_bytes_hew(len: i64) -> bytes;
+    fn hew_random_last_error_code() -> i32;
     fn hew_constant_time_eq_hew(a: bytes, b: bytes) -> i32;
 }

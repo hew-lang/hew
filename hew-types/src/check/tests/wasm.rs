@@ -704,6 +704,27 @@ mod wasm_rejects {
     }
 
     #[test]
+    fn wasm_rejects_crypto_try_random_bytes() {
+        // The fallible twin draws from the same native-only entropy source, so
+        // it must not become a way around the fail-closed wasm32 rejection.
+        let source = concat!(
+            "import std::crypto::crypto;\n",
+            "fn main() { crypto.try_random_bytes(16); }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "crypto.try_random_bytes should be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "random_bytes"),
+            "error message should mention crypto.random_bytes; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn wasm_rejects_crypto_random_bytes() {
         // crypto.random_bytes requires secure entropy. On wasm32, no secure
         // implementation is linked, so the checker must fail closed.

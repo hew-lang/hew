@@ -904,9 +904,10 @@ stable-stdlib = [
   "hew_ed25519_sign_hew",
   "hew_ed25519_verify_hew",
   "hew_encrypt_last_open_error_code",
+  "hew_encrypt_last_seal_error_code",
   "hew_encrypt_must_open_hew",
-  "hew_encrypt_seal_base64_hew",
   "hew_encrypt_try_open_hew",
+  "hew_encrypt_try_seal_base64_hew",
   "hew_gzip_compress_hew",
   "hew_gzip_decompress_hew",
   "hew_hmac_sha256_hew",
@@ -1034,6 +1035,7 @@ stable-stdlib = [
   "hew_quic_stream_send_timeout_hew",
   "hew_quic_stream_stop",
   "hew_random_bytes_hew",
+  "hew_random_last_error_code",
   "hew_regex_capture_index_one",
   "hew_regex_capture_name_one",
   "hew_regex_capture_width",
@@ -3543,6 +3545,20 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_encrypt_last_seal_error_code"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_random_last_error_code"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_encrypt_must_open_hew"
 result = "fresh"
 params = ["borrow", "borrow"]
@@ -3550,7 +3566,7 @@ release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 
 [[ownership.contracts]]
-symbol = "hew_encrypt_seal_base64_hew"
+symbol = "hew_encrypt_try_seal_base64_hew"
 result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"

@@ -6287,10 +6287,10 @@ impl Checker {
                             self.reject_wasm_feature(span, feature);
                         }
                     }
-                    // crypto.random_bytes depends on a native-only secure entropy
-                    // source absent from the wasm32 link set; reject so secure
-                    // randomness fails closed on wasm32.
-                    if name == "crypto" && method == "random_bytes" {
+                    // crypto.random_bytes and its fallible twin depend on a
+                    // native-only secure entropy source absent from the wasm32 link
+                    // set; reject so secure randomness fails closed on wasm32.
+                    if name == "crypto" && matches!(method, "random_bytes" | "try_random_bytes") {
                         self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
                     }
                 }

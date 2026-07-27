@@ -6,8 +6,59 @@
 use ring::digest;
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
+use std::cell::Cell;
+use zeroize::Zeroize;
 
 type BytesTriple = hew_runtime::bytes::BytesTriple;
+
+/// Status codes reported by [`hew_random_last_error_code`].
+///
+/// A random-byte request that cannot be served must be reported, not answered
+/// with an empty buffer (which reads as a successful zero-length draw) and not
+/// answered by terminating the process.
+pub const HEW_RANDOM_OK: i32 = 0;
+/// The requested length was negative.
+pub const HEW_RANDOM_NEGATIVE_LEN: i32 = 1;
+/// The requested length exceeds what a `bytes` value can represent.
+pub const HEW_RANDOM_LEN_TOO_LARGE: i32 = 2;
+/// The system entropy source refused to fill the buffer.
+pub const HEW_RANDOM_RNG_FAILURE: i32 = 3;
+
+thread_local! {
+    static LAST_RANDOM_ERROR: Cell<i32> = const { Cell::new(HEW_RANDOM_OK) };
+}
+
+fn set_last_random_error(code: i32) {
+    LAST_RANDOM_ERROR.with(|slot| slot.set(code));
+}
+
+/// Return and clear the status of the most recent random-byte request on this
+/// thread.
+///
+/// Reading is the clear, so a status is consumed exactly once and a later
+/// successful draw can never be read as the earlier failure.
+#[no_mangle]
+pub extern "C" fn hew_random_last_error_code() -> i32 {
+    LAST_RANDOM_ERROR.with(|slot| slot.replace(HEW_RANDOM_OK))
+}
+
+// Test-only injection of an entropy-source failure. The RNG-failure branch is
+// otherwise unreachable in a test, and an unreachable branch cannot be proven
+// to report rather than abort.
+#[cfg(test)]
+thread_local! {
+    static FORCE_RNG_FAILURE: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+fn take_forced_rng_failure() -> bool {
+    FORCE_RNG_FAILURE.with(|slot| slot.replace(false))
+}
+
+#[cfg(not(test))]
+const fn take_forced_rng_failure() -> bool {
+    false
+}
 
 fn abort_crypto_failure() -> ! {
     // SAFETY: abort terminates fail-closed; no fabricated crypto bytes escape.
@@ -277,25 +328,48 @@ pub unsafe extern "C" fn hew_hmac_sha256_hew(
 
 /// Fill and return a `bytes` value of `len` cryptographically random bytes.
 ///
+/// On failure an empty triple is returned and the reason is recorded for
+/// [`hew_random_last_error_code`], which `crypto.try_random_bytes` consumes
+/// immediately. A negative length, a length no `bytes` value can hold, and an
+/// entropy-source failure are all reported: none of them is answered with an
+/// empty buffer presented as a successful draw, and none terminates the
+/// process. `len == 0` is a valid empty draw and reports success.
+///
 /// # Safety
 ///
 /// None — all memory is managed by the runtime allocator.
 #[no_mangle]
 pub unsafe extern "C" fn hew_random_bytes_hew(len: i64) -> BytesTriple {
-    let n = if len <= 0 {
-        0
-    } else {
-        usize::try_from(len).unwrap_or_else(|_| abort_crypto_failure())
+    let empty = BytesTriple {
+        ptr: std::ptr::null_mut(),
+        offset: 0,
+        len: 0,
+    };
+    if len < 0 {
+        set_last_random_error(HEW_RANDOM_NEGATIVE_LEN);
+        return empty;
+    }
+    let Ok(n) = usize::try_from(len) else {
+        set_last_random_error(HEW_RANDOM_LEN_TOO_LARGE);
+        return empty;
     };
     if u32::try_from(n).is_err() {
-        abort_crypto_failure();
+        set_last_random_error(HEW_RANDOM_LEN_TOO_LARGE);
+        return empty;
     }
     let mut buf = vec![0u8; n];
     if n > 0 {
-        // SAFETY: buf is valid for n bytes.
-        unsafe { hew_random_bytes(buf.as_mut_ptr(), n) };
+        let rng = SystemRandom::new();
+        if take_forced_rng_failure() || rng.fill(&mut buf).is_err() {
+            buf.zeroize();
+            set_last_random_error(HEW_RANDOM_RNG_FAILURE);
+            return empty;
+        }
     }
-    bytes_from_slice(&buf)
+    set_last_random_error(HEW_RANDOM_OK);
+    let out = bytes_from_slice(&buf);
+    buf.zeroize();
+    out
 }
 
 /// Compare two `bytes` values in constant time.
@@ -585,6 +659,60 @@ mod tests {
         // SAFETY: buf is valid; len=0 means no bytes written.
         unsafe { hew_random_bytes(buf.as_mut_ptr(), 0) };
         assert_eq!(buf, [0xffu8; 4], "buffer should be untouched");
+    }
+
+    /// An entropy-source failure is reported, not answered with an empty
+    /// buffer and not answered by terminating the process.
+    #[test]
+    fn random_bytes_hew_rng_failure_is_reported_not_aborted() {
+        let _ = hew_random_last_error_code();
+        FORCE_RNG_FAILURE.with(|slot| slot.set(true));
+
+        // SAFETY: no pointers are involved; the runtime owns the allocation.
+        let drawn = unsafe { hew_random_bytes_hew(32) };
+
+        assert_eq!(drawn.len, 0, "a failed draw yields no bytes");
+        assert_eq!(
+            hew_random_last_error_code(),
+            HEW_RANDOM_RNG_FAILURE,
+            "an entropy failure must be reported, not returned as an empty draw"
+        );
+    }
+
+    /// A negative length is a rejection, not a zero-length draw.
+    #[test]
+    fn random_bytes_hew_negative_length_is_reported() {
+        let _ = hew_random_last_error_code();
+
+        // SAFETY: no pointers are involved.
+        let drawn = unsafe { hew_random_bytes_hew(-1) };
+
+        assert_eq!(drawn.len, 0);
+        assert_eq!(hew_random_last_error_code(), HEW_RANDOM_NEGATIVE_LEN);
+    }
+
+    /// A length no `bytes` value can hold is a rejection, not an abort.
+    #[test]
+    fn random_bytes_hew_oversized_length_is_reported_not_aborted() {
+        let _ = hew_random_last_error_code();
+
+        // SAFETY: no pointers are involved.
+        let drawn = unsafe { hew_random_bytes_hew(4_294_967_296) };
+
+        assert_eq!(drawn.len, 0);
+        assert_eq!(hew_random_last_error_code(), HEW_RANDOM_LEN_TOO_LARGE);
+    }
+
+    /// A zero-length draw is a valid empty success, distinct from a failure.
+    #[test]
+    fn random_bytes_hew_zero_length_is_a_valid_empty_draw() {
+        let _ = hew_random_last_error_code();
+
+        // SAFETY: no pointers are involved.
+        let drawn = unsafe { hew_random_bytes_hew(0) };
+
+        assert_eq!(drawn.len, 0);
+        assert_eq!(hew_random_last_error_code(), HEW_RANDOM_OK);
     }
 
     /// Two random byte calls should produce different output.

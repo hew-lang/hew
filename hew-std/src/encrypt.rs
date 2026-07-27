@@ -14,13 +14,12 @@ use ring::{
     rand::{SecureRandom, SystemRandom},
 };
 use std::{cell::Cell, ffi::c_char, ptr};
+use zeroize::Zeroize;
 
 const AES_256_KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 
-const SEAL_FAILURE_MSG: &[u8] =
-    b"encrypt.seal failed: expected a 32-byte key and a valid plaintext string\0";
 const OPEN_FAILURE_MSG: &[u8] =
     b"encrypt.open failed: authentication failed or ciphertext was malformed\0";
 const OPEN_ALLOC_FAILURE_MSG: &[u8] = b"encrypt.open failed: native string allocation failed\0";
@@ -58,10 +57,15 @@ impl From<EncryptError> for HewEncryptError {
 
 thread_local! {
     static LAST_OPEN_ERROR: Cell<HewEncryptError> = const { Cell::new(HewEncryptError::None) };
+    static LAST_SEAL_ERROR: Cell<HewEncryptError> = const { Cell::new(HewEncryptError::None) };
 }
 
 fn set_last_open_error(err: HewEncryptError) {
     LAST_OPEN_ERROR.with(|slot| slot.set(err));
+}
+
+fn set_last_seal_error(err: HewEncryptError) {
+    LAST_SEAL_ERROR.with(|slot| slot.set(err));
 }
 
 fn last_open_error() -> HewEncryptError {
@@ -179,6 +183,64 @@ unsafe fn bytes_triple_to_vec(triple: *const BytesTriple) -> Option<Vec<u8>> {
 #[no_mangle]
 pub extern "C" fn hew_encrypt_last_open_error_code() -> i32 {
     last_open_error() as i32
+}
+
+/// Return and clear the last `try_seal` error observed on this thread.
+///
+/// Reading is the clear, so a status is consumed exactly once and a later
+/// successful seal can never be read as the earlier failure.
+#[no_mangle]
+pub extern "C" fn hew_encrypt_last_seal_error_code() -> i32 {
+    LAST_SEAL_ERROR.with(|slot| slot.replace(HewEncryptError::None)) as i32
+}
+
+/// Hew-facing fallible seal wrapper that returns base64 text.
+///
+/// A key that is not a valid AES-256 key, a malformed plaintext, an entropy
+/// failure, and an allocation failure all return a null string pointer with
+/// the reason recorded for [`hew_encrypt_last_seal_error_code`], rather than
+/// panicking out of the FFI boundary where a caller cannot handle it. The key
+/// copy is zeroized before this function returns on every path.
+///
+/// # Safety
+///
+/// `key` must be a valid `bytes` value and `plaintext` must be a valid
+/// NUL-terminated string pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_encrypt_try_seal_base64_hew(
+    key: *const BytesTriple,
+    plaintext: *const c_char,
+) -> *mut c_char {
+    // SAFETY: Hew caller provides a valid bytes value.
+    let Some(mut key_bytes) = (unsafe { bytes_triple_to_vec(key) }) else {
+        set_last_seal_error(HewEncryptError::InvalidKey);
+        return ptr::null_mut();
+    };
+    // SAFETY: Hew caller provides a valid string pointer.
+    let Some(plaintext_str) = (unsafe { cstr_to_str(plaintext) }) else {
+        key_bytes.zeroize();
+        set_last_seal_error(HewEncryptError::InvalidUtf8);
+        return ptr::null_mut();
+    };
+
+    let sealed = seal_impl(&key_bytes, plaintext_str);
+    key_bytes.zeroize();
+    let ciphertext = match sealed {
+        Ok(ciphertext) => ciphertext,
+        Err(err) => {
+            // The tag alone is recorded — no key or plaintext material.
+            set_last_seal_error(err.into());
+            return ptr::null_mut();
+        }
+    };
+    let encoded = BASE64_STANDARD.encode(ciphertext);
+    let out = str_to_malloc(&encoded);
+    if out.is_null() {
+        set_last_seal_error(HewEncryptError::AllocationFailure);
+        return ptr::null_mut();
+    }
+    set_last_seal_error(HewEncryptError::None);
+    out
 }
 
 /// Encrypt `plaintext` with AES-256-GCM, writing `nonce || ciphertext || tag`
@@ -305,41 +367,6 @@ pub unsafe extern "C" fn hew_encrypt_try_open(
     }
 }
 
-/// Hew-facing seal wrapper that returns base64 text.
-///
-/// The Hew surface decodes this back to `bytes` using the canonical pure-Hew
-/// bytes builder, avoiding the platform-specific aggregate return ABI mismatch
-/// for module-level externs returning `bytes`.
-///
-/// # Safety
-///
-/// `key` must be a valid `bytes` value and `plaintext` must be a valid
-/// NUL-terminated string pointer.
-#[no_mangle]
-pub unsafe extern "C" fn hew_encrypt_seal_base64_hew(
-    key: *const BytesTriple,
-    plaintext: *const c_char,
-) -> *mut c_char {
-    // SAFETY: Hew caller provides a valid bytes value.
-    let Some(key_bytes) = (unsafe { bytes_triple_to_vec(key) }) else {
-        panic_with_message(SEAL_FAILURE_MSG);
-    };
-    // SAFETY: Hew caller provides a valid string pointer.
-    let Some(plaintext_str) = (unsafe { cstr_to_str(plaintext) }) else {
-        panic_with_message(SEAL_FAILURE_MSG);
-    };
-
-    let Ok(ciphertext) = seal_impl(&key_bytes, plaintext_str) else {
-        panic_with_message(SEAL_FAILURE_MSG);
-    };
-    let encoded = BASE64_STANDARD.encode(ciphertext);
-    let ptr = str_to_malloc(&encoded);
-    if ptr.is_null() {
-        panic_with_message(SEAL_FAILURE_MSG);
-    }
-    ptr
-}
-
 /// Hew-facing fallible wrapper for [`hew_encrypt_try_open`].
 ///
 /// Authentication failure and malformed ciphertext return a null string pointer
@@ -355,12 +382,13 @@ pub unsafe extern "C" fn hew_encrypt_try_open_hew(
     ciphertext: *const BytesTriple,
 ) -> *mut c_char {
     // SAFETY: Hew caller provides valid bytes values.
-    let Some(key_bytes) = (unsafe { bytes_triple_to_vec(key) }) else {
+    let Some(mut key_bytes) = (unsafe { bytes_triple_to_vec(key) }) else {
         set_last_open_error(HewEncryptError::InvalidKey);
         return ptr::null_mut();
     };
     // SAFETY: Hew caller provides valid bytes values.
     let Some(ciphertext_bytes) = (unsafe { bytes_triple_to_vec(ciphertext) }) else {
+        key_bytes.zeroize();
         set_last_open_error(HewEncryptError::AuthFailed);
         return ptr::null_mut();
     };
@@ -376,6 +404,7 @@ pub unsafe extern "C" fn hew_encrypt_try_open_hew(
             &raw mut err,
         )
     };
+    key_bytes.zeroize();
     set_last_open_error(err);
     result
 }
@@ -429,6 +458,88 @@ mod tests {
         0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D,
         0x1E, 0x1F,
     ];
+
+    /// Build a borrowed triple over `data` for the by-pointer bytes convention.
+    fn borrowed_triple(data: &mut [u8]) -> BytesTriple {
+        BytesTriple {
+            ptr: data.as_mut_ptr(),
+            offset: 0,
+            len: u32::try_from(data.len()).expect("test input fits in u32"),
+        }
+    }
+
+    /// A key the cipher cannot use is reported through the status slot rather
+    /// than taken out of the FFI boundary as a process-fatal failure.
+    #[test]
+    fn try_seal_short_key_is_reported_not_fatal() {
+        let _ = hew_encrypt_last_seal_error_code();
+        let mut key = [0x11u8; AES_256_KEY_LEN - 1];
+        let triple = borrowed_triple(&mut key);
+        let plaintext = CString::new("hew").expect("no interior NUL");
+
+        // SAFETY: both arguments are valid for the duration of the call.
+        let out = unsafe { hew_encrypt_try_seal_base64_hew(&raw const triple, plaintext.as_ptr()) };
+
+        assert!(
+            out.is_null(),
+            "an unusable key must not produce a sealed value"
+        );
+        assert_eq!(
+            hew_encrypt_last_seal_error_code(),
+            HewEncryptError::InvalidKey as i32
+        );
+    }
+
+    /// A rejection carries a bounded status code only — the sealed-value
+    /// channel stays null, so no key- or plaintext-derived bytes cross.
+    #[test]
+    fn try_seal_rejection_carries_no_secret_bytes() {
+        let _ = hew_encrypt_last_seal_error_code();
+        let mut key = [0x5Au8; AES_256_KEY_LEN - 1];
+        let triple = borrowed_triple(&mut key);
+        let plaintext = CString::new("a secret plaintext").expect("no interior NUL");
+
+        // SAFETY: both arguments are valid for the duration of the call.
+        let out = unsafe { hew_encrypt_try_seal_base64_hew(&raw const triple, plaintext.as_ptr()) };
+
+        assert!(out.is_null(), "no value may cross on a rejection");
+        assert_eq!(
+            hew_encrypt_last_seal_error_code(),
+            HewEncryptError::InvalidKey as i32,
+            "the only thing that crosses is a bounded status code"
+        );
+    }
+
+    /// A usable key still seals exactly as before and round-trips.
+    #[test]
+    fn try_seal_valid_key_still_roundtrips() {
+        let _ = hew_encrypt_last_seal_error_code();
+        let mut key = TEST_KEY;
+        let triple = borrowed_triple(&mut key);
+        let plaintext = CString::new("hew round trip").expect("no interior NUL");
+
+        // SAFETY: both arguments are valid for the duration of the call.
+        let out = unsafe { hew_encrypt_try_seal_base64_hew(&raw const triple, plaintext.as_ptr()) };
+        assert!(!out.is_null(), "a valid key must seal");
+        assert_eq!(
+            hew_encrypt_last_seal_error_code(),
+            HewEncryptError::None as i32
+        );
+
+        // SAFETY: `out` is a fresh NUL-terminated string owned by this test.
+        let encoded = unsafe { CStr::from_ptr(out) }
+            .to_str()
+            .expect("base64 is valid UTF-8")
+            .to_owned();
+        // SAFETY: `out` is a fresh string this test now owns.
+        unsafe { free_cstring(out) };
+
+        let ciphertext = BASE64_STANDARD
+            .decode(&encoded)
+            .expect("sealed output must decode");
+        let recovered = open_impl(&TEST_KEY, &ciphertext).expect("open should succeed");
+        assert_eq!(recovered, "hew round trip");
+    }
 
     #[test]
     fn roundtrip_recovers_plaintext() {

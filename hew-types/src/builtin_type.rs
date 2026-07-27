@@ -395,6 +395,38 @@ impl BuiltinType {
         matches!(self, Self::Vec | Self::HashMap | Self::HashSet)
     }
 
+    /// Whether a by-value copy of this builtin still refers to storage or
+    /// process state visible through the caller's copy.
+    ///
+    /// This is the checker authority for projection-aware mutable-parameter
+    /// diagnostics. The set is intentionally narrower than `Resource`: some
+    /// resources are merely affine values, while `RemotePid` and
+    /// `SupervisorPool` are bit-copy representations that still designate
+    /// shared actor state. Unknown and future builtins fail closed by default.
+    #[must_use]
+    pub const fn is_caller_visible_shared_handle(self) -> bool {
+        matches!(
+            self,
+            Self::Vec
+                | Self::HashMap
+                | Self::HashSet
+                | Self::Rc
+                | Self::Weak
+                | Self::Sender
+                | Self::Receiver
+                | Self::LocalPid
+                | Self::RemotePid
+                | Self::Duplex
+                | Self::Stream
+                | Self::Sink
+                | Self::SendHalf
+                | Self::RecvHalf
+                | Self::HewActor
+                | Self::LambdaActorHandle
+                | Self::SupervisorPool
+        )
+    }
+
     #[must_use]
     pub const fn is_substrate_handle(self) -> bool {
         matches!(
@@ -467,6 +499,38 @@ mod tests {
     fn lookup_rejects_user_names() {
         assert_eq!(lookup_builtin_type("UserOption"), None);
         assert_eq!(lookup_builtin_type("user.Option"), None);
+    }
+
+    #[test]
+    fn caller_visible_shared_handle_facts_are_exact() {
+        let expected = [
+            BuiltinType::Vec,
+            BuiltinType::HashMap,
+            BuiltinType::HashSet,
+            BuiltinType::Rc,
+            BuiltinType::Weak,
+            BuiltinType::Sender,
+            BuiltinType::Receiver,
+            BuiltinType::LocalPid,
+            BuiltinType::RemotePid,
+            BuiltinType::Duplex,
+            BuiltinType::Stream,
+            BuiltinType::Sink,
+            BuiltinType::SendHalf,
+            BuiltinType::RecvHalf,
+            BuiltinType::HewActor,
+            BuiltinType::LambdaActorHandle,
+            BuiltinType::SupervisorPool,
+        ];
+
+        for info in builtin_types() {
+            assert_eq!(
+                info.kind.is_caller_visible_shared_handle(),
+                expected.contains(&info.kind),
+                "{:?} caller-visible shared-handle classification",
+                info.kind
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,23 @@
+// #2821 reverse direction: the record itself is a by-value copy, but these
+// concrete projections cross into Vec/HashMap storage still shared with the
+// caller. The declaration must remain accepted and both mutations must be
+// visible after the call.
+type Holder {
+    items: Vec<i64>;
+    counts: HashMap<string, i64>;
+}
+
+fn mutate(var holder: Holder) {
+    holder.items[0] = 9;
+    holder.counts.insert("changed", 7);
+}
+
+fn main() -> i64 {
+    let items: Vec<i64> = [1, 2];
+    let counts: HashMap<string, i64> = HashMap::new();
+    let holder = Holder { items: items, counts: counts };
+    mutate(holder);
+    println(holder.items[0]);
+    println(holder.counts.get("changed").unwrap());
+    0
+}

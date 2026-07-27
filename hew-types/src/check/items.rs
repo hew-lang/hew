@@ -919,8 +919,17 @@ impl Checker {
             if in_actor {
                 self.check_shadowing(&p.name, &p.ty.1);
             }
-            self.env
-                .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
+            if is_receiver {
+                self.env.define_receiver_param_with_span(
+                    p.name.clone(),
+                    ty,
+                    p.is_mutable,
+                    p.ty.1.clone(),
+                );
+            } else {
+                self.env
+                    .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
+            }
         }
 
         // Use the return type from the already-registered fn signature so that
@@ -2442,51 +2451,132 @@ impl Checker {
         );
     }
 
-    /// Whether `var` on a by-value parameter of this type is invisible to the
-    /// caller — i.e. whether the parameter binding owns a **private copy** of
-    /// the whole aggregate, so every assignment rooted at that binding lands on
-    /// storage the caller does not share.
+    /// Whether every mutable projection of this by-value parameter is private
+    /// to the callee.
     ///
-    /// Admitted (mutation is caller-invisible, so `var` is a trap):
-    /// - user-defined nominal aggregates — records/structs, `record` types,
-    ///   enums with payloads, actor and machine value types — at any
-    ///   instantiation: `Pair<T>`, `Pair<i64>` and a plain `Account` are the
-    ///   same case, because the parameter carries the aggregate's own storage
-    ///   either way;
-    /// - structural aggregates: tuples and fixed-size arrays.
+    /// Value aggregates are walked structurally. `Option` and `Result` are
+    /// inline sum wrappers, not handles, so their payloads are inspected just
+    /// like tuple elements, array elements, record fields, and enum payloads.
+    /// This closes the one-wrapper-deep form of the #2810 trap: replacing an
+    /// `Option<Account>` or `Result<Account, E>` mutates only the callee's copy.
     ///
-    /// A type alias never reaches here as an alias: `resolve_type_expr` has
-    /// already collapsed it to the underlying `Ty`, so an alias of a record is
-    /// admitted exactly like the record it names.
+    /// A compiler-proven caller-visible handle is a shared storage or process
+    /// boundary. The exact authority is
+    /// [`crate::BuiltinType::is_caller_visible_shared_handle`]: collections,
+    /// `Rc`/`Weak`, channel and stream handles, actor handles, and
+    /// `SupervisorPool`. A value aggregate containing one is therefore not
+    /// rejected wholesale: `holder.items[0] = value` reaches storage the caller
+    /// still references, and `holder.pid.send(value)` reaches actor state. The
+    /// assignment checker separately validates the concrete projection, so
+    /// `holder.count = value` and replacing `holder.items` are still diagnosed
+    /// as private-copy writes.
     ///
-    /// Rejected, because mutation through them *is* caller-visible and
-    /// flagging them would refuse correct code:
-    /// - every `builtin: Some(..)` container or handle — `Vec`, `HashMap`,
-    ///   `HashSet`, `Rc`, `Weak`, `Sender`/`Receiver`, `LocalPid`, and friends.
-    ///   The parameter carries a handle to storage the caller still references,
-    ///   so `v[i] = x` or `m.insert(..)` through it does reach the caller and
-    ///   `var` is the correct — and required — declaration.
+    /// Unknown leaves, opaque builtins, bare type parameters, pointers,
+    /// functions, and scalars are not guessed to be aggregates or shared
+    /// storage. This is deliberately fail-closed when descending through a
+    /// value wrapper: only the compiler-known shared-handle authority proves a
+    /// caller-visible projection. Recursive nominal types are cycle-broken by
+    /// definition identity; other fields and variants are still inspected.
     ///
-    /// Rejected because they are not aggregates whose storage this predicate
-    /// can classify: bare type parameters with no in-scope definition, trait
-    /// objects, slices, pointers and borrows, functions and closures, and
-    /// scalars (`var n: i64` is an ordinary local accumulator).
-    ///
-    /// Copy-ness is deliberately **not** consulted. The predicate this replaced
-    /// admitted only *non*-`Copy`-layout aggregates, which is backwards: a
-    /// `Copy` aggregate is more certainly a private copy, not less. That is why
-    /// `fn withdraw(var acc: Account, ..)` — a record of one `i64`, so a
-    /// computable `Copy` layout — compiled clean and silently debited a
-    /// throwaway copy, while the very same shape behind a type parameter was a
-    /// hard error (#2810).
+    /// Copy-ness remains irrelevant. A `Copy` aggregate is more certainly a
+    /// private copy, not less (#2810).
     pub(super) fn param_var_has_no_caller_visible_effect(&self, ty: &Ty) -> bool {
-        match ty {
+        self.param_ty_is_value_aggregate(ty) && !self.param_ty_has_caller_visible_projection(ty)
+    }
+
+    /// Whether `ty` itself is an inline value aggregate whose binding carries
+    /// private storage at the call boundary.
+    fn param_ty_is_value_aggregate(&self, ty: &Ty) -> bool {
+        match self.subst.resolve(ty) {
             Ty::Named {
                 builtin: None,
                 name,
                 ..
-            } => self.lookup_type_def(name).is_some(),
-            Ty::Tuple(_) | Ty::Array(_, _) => true,
+            } => self.lookup_type_def(&name).is_some(),
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::Option | crate::BuiltinType::Result),
+                ..
+            }
+            | Ty::Tuple(_)
+            | Ty::Array(_, _) => true,
+            _ => false,
+        }
+    }
+
+    /// Whether some projection from `ty` reaches compiler-proven storage shared
+    /// with the caller. This is a possibility query; an actual assignment is
+    /// checked against its concrete projection in `statements.rs`.
+    pub(super) fn param_ty_has_caller_visible_projection(&self, ty: &Ty) -> bool {
+        self.param_ty_has_caller_visible_projection_inner(
+            &self.subst.resolve(ty),
+            &mut std::collections::HashSet::new(),
+        )
+    }
+
+    fn param_ty_has_caller_visible_projection_inner(
+        &self,
+        ty: &Ty,
+        visiting_nominals: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        match self.subst.resolve(ty) {
+            Ty::Named {
+                builtin: Some(builtin),
+                args: _,
+                ..
+            } if builtin.is_caller_visible_shared_handle() => true,
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::Option | crate::BuiltinType::Result),
+                args,
+                ..
+            } => args.iter().any(|arg| {
+                self.param_ty_has_caller_visible_projection_inner(arg, visiting_nominals)
+            }),
+            Ty::Named {
+                builtin: None,
+                name,
+                args,
+            } => {
+                let Some(def) = self.lookup_type_def(&name) else {
+                    return false;
+                };
+                if !visiting_nominals.insert(name.clone()) {
+                    return false;
+                }
+
+                let substitutions: std::collections::HashMap<String, Ty> =
+                    def.type_params.iter().cloned().zip(args).collect();
+                let mut projected_tys = def
+                    .fields
+                    .values()
+                    .map(|field| field.substitute_named_params_parallel(&substitutions))
+                    .collect::<Vec<_>>();
+                for variant in def.variants.values() {
+                    match variant {
+                        VariantDef::Unit => {}
+                        VariantDef::Tuple(fields) => {
+                            projected_tys.extend(fields.iter().map(|field| {
+                                field.substitute_named_params_parallel(&substitutions)
+                            }));
+                        }
+                        VariantDef::Struct(fields) => {
+                            projected_tys.extend(fields.iter().map(|(_, field)| {
+                                field.substitute_named_params_parallel(&substitutions)
+                            }));
+                        }
+                    }
+                }
+                let has_shared = projected_tys.iter().any(|projected| {
+                    self.param_ty_has_caller_visible_projection_inner(projected, visiting_nominals)
+                });
+                visiting_nominals.remove(&name);
+                has_shared
+            }
+            Ty::Tuple(items) => items.iter().any(|item| {
+                self.param_ty_has_caller_visible_projection_inner(item, visiting_nominals)
+            }),
+            Ty::Array(item, _) => {
+                self.param_ty_has_caller_visible_projection_inner(&item, visiting_nominals)
+            }
             _ => false,
         }
     }

@@ -1,0 +1,21 @@
+// #2821: Option is inline value storage, not a caller-visible handle. Before
+// this guard the checker accepted the program and execution printed `60` then
+// `100`: the function returned its plausible private result while the caller's
+// wrapped Account stayed untouched.
+type Account {
+    balance: i64;
+}
+
+fn withdraw(var acc: Option<Account>, amount: i64) -> i64 {
+    let current = acc.unwrap();
+    acc = Some(Account { balance: current.balance - amount });
+    return acc.unwrap().balance;
+}
+
+fn main() {
+    let acc = Some(Account { balance: 100 });
+    let debited = withdraw(acc, 40);
+    let original = acc.unwrap();
+    println(debited);
+    println(original.balance);
+}

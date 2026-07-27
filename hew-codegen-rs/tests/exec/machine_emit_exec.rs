@@ -347,11 +347,14 @@ fn machine_emit_placeholder_lowers_to_push_call() {
 /// 7. Assert the outermost step exit drained the thread-local queue.
 ///
 /// This test is NOT `#[ignore]`d, unlike the MCJIT execution tests that were
-/// removed alongside it. They resolved runtime symbols through the engine's
-/// dynamic-symbol generator, which cannot see a Rust test binary's
-/// `#[no_mangle]` exports, so they SIGSEGV on the first runtime call. This one
-/// binds every symbol by address up front (step 3), which is exactly that gap
-/// closed, so it runs on every `cargo nextest run`.
+/// removed alongside it. Those also called `add_global_mapping` — the
+/// difference is completeness, not technique: each mapped only a subset, or
+/// mapped conditionally, and fell back to the engine's dynamic-symbol
+/// generator for the rest. That generator cannot see a Rust test binary's
+/// `#[no_mangle]` exports, so the first unmapped runtime call SIGSEGVs. This
+/// one binds every symbol it needs by address up front (step 3) and `.expect()`s
+/// each, so no symbol reaches the generator. Removing any one of those mappings
+/// reproduces the siblings' crash exactly.
 #[test]
 #[cfg(unix)]
 fn machine_emit_push_populates_thread_queue_in_fifo_order() {

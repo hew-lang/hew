@@ -7,27 +7,64 @@
 //! strings are allocated with `libc::malloc` and NUL-terminated.
 use hew_cabi::cabi::{cstr_to_str, malloc_bytes, str_to_malloc};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
-use std::cell::RefCell;
 use std::ffi::c_char;
 
 const MAX_MSGPACK_DEPTH: usize = 128;
 const MALFORMED_MSGPACK_ERROR: &str = "msgpack: malformed input during depth pre-scan";
 
 std::thread_local! {
-    static LAST_MSGPACK_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    #[cfg(test)]
+    static FAIL_NEXT_MSGPACK_OUTPUT_ALLOC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn set_msgpack_last_error(msg: impl Into<String>) {
-    LAST_MSGPACK_ERROR.with(|error| *error.borrow_mut() = Some(msg.into()));
+    hew_runtime::parse_error_slot::set_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Msgpack,
+        msg,
+    );
 }
 
 fn clear_msgpack_last_error() {
-    LAST_MSGPACK_ERROR.with(|error| *error.borrow_mut() = None);
+    hew_runtime::parse_error_slot::clear_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Msgpack,
+    );
+}
+
+fn get_msgpack_last_error() -> String {
+    hew_runtime::parse_error_slot::get_error(hew_runtime::parse_error_slot::ErrorSlotKind::Msgpack)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
-fn get_msgpack_last_error() -> String {
-    LAST_MSGPACK_ERROR.with(|error| error.borrow().clone().unwrap_or_default())
+fn fail_next_msgpack_output_allocation() {
+    FAIL_NEXT_MSGPACK_OUTPUT_ALLOC.with(|slot| slot.set(true));
+}
+
+fn take_msgpack_output_allocation_failure() -> bool {
+    #[cfg(test)]
+    {
+        FAIL_NEXT_MSGPACK_OUTPUT_ALLOC.with(|slot| slot.replace(false))
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+fn alloc_msgpack_bytes(bytes: &[u8]) -> *mut u8 {
+    if take_msgpack_output_allocation_failure() {
+        std::ptr::null_mut()
+    } else {
+        malloc_bytes(bytes)
+    }
+}
+
+fn alloc_msgpack_string(text: &str) -> *mut c_char {
+    if take_msgpack_output_allocation_failure() {
+        std::ptr::null_mut()
+    } else {
+        str_to_malloc(text)
+    }
 }
 
 fn depth_exceeded_error() -> String {
@@ -208,10 +245,17 @@ pub unsafe extern "C" fn hew_msgpack_from_json(
         set_msgpack_last_error("msgpack: failed to serialize to MessagePack");
         return std::ptr::null_mut();
     };
+    let ptr = alloc_msgpack_bytes(&bytes);
+    if ptr.is_null() {
+        set_msgpack_last_error("msgpack: allocation failed while returning encoded bytes");
+        // SAFETY: out_len is a valid pointer per caller contract.
+        unsafe { *out_len = 0 };
+        return std::ptr::null_mut();
+    }
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
     clear_msgpack_last_error();
-    malloc_bytes(&bytes)
+    ptr
 }
 
 /// Convert `MessagePack` binary to a JSON string.
@@ -245,19 +289,22 @@ pub unsafe extern "C" fn hew_msgpack_to_json(data: *const u8, len: usize) -> *mu
         set_msgpack_last_error("msgpack: failed to serialize JSON output");
         return std::ptr::null_mut();
     };
+    let ptr = alloc_msgpack_string(&json);
+    if ptr.is_null() {
+        set_msgpack_last_error("msgpack: allocation failed while returning JSON");
+        return std::ptr::null_mut();
+    }
     clear_msgpack_last_error();
-    str_to_malloc(&json)
+    ptr
 }
 
-/// Return and clear this actor's last `MessagePack` error.
+/// Return this actor's last `MessagePack` error.
 ///
 /// Returns an empty string when the most recent codec call succeeded. Reading
-/// is the clear, so a reason is consumed exactly once and a later successful
-/// call can never be read as the earlier failure.
+/// does not consume the detail; a later successful codec call clears it.
 #[no_mangle]
 pub extern "C" fn hew_msgpack_last_error() -> *mut c_char {
-    let message = LAST_MSGPACK_ERROR.with(|error| error.borrow_mut().take());
-    str_to_malloc(&message.unwrap_or_default())
+    str_to_malloc(&get_msgpack_last_error())
 }
 
 /// Encode a single integer as `MessagePack`.
@@ -278,10 +325,17 @@ pub unsafe extern "C" fn hew_msgpack_encode_int(val: i64, out_len: *mut usize) -
         set_msgpack_last_error("msgpack: failed to encode integer");
         return std::ptr::null_mut();
     };
+    let ptr = alloc_msgpack_bytes(&bytes);
+    if ptr.is_null() {
+        set_msgpack_last_error("msgpack: allocation failed while returning encoded integer");
+        // SAFETY: out_len is a valid pointer per caller contract.
+        unsafe { *out_len = 0 };
+        return std::ptr::null_mut();
+    }
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
     clear_msgpack_last_error();
-    malloc_bytes(&bytes)
+    ptr
 }
 
 /// Encode a single string as `MessagePack`.
@@ -311,10 +365,17 @@ pub unsafe extern "C" fn hew_msgpack_encode_string(
         set_msgpack_last_error("msgpack: failed to encode string");
         return std::ptr::null_mut();
     };
+    let ptr = alloc_msgpack_bytes(&bytes);
+    if ptr.is_null() {
+        set_msgpack_last_error("msgpack: allocation failed while returning encoded string");
+        // SAFETY: out_len is a valid pointer per caller contract.
+        unsafe { *out_len = 0 };
+        return std::ptr::null_mut();
+    }
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
     clear_msgpack_last_error();
-    malloc_bytes(&bytes)
+    ptr
 }
 
 /// Encode a binary blob as `MessagePack`.
@@ -352,10 +413,17 @@ pub unsafe extern "C" fn hew_msgpack_encode_bytes(
         ));
         return std::ptr::null_mut();
     };
+    let ptr = alloc_msgpack_bytes(&bytes);
+    if ptr.is_null() {
+        set_msgpack_last_error("msgpack: allocation failed while returning encoded binary");
+        // SAFETY: out_len is a valid pointer per caller contract.
+        unsafe { *out_len = 0 };
+        return std::ptr::null_mut();
+    }
     // SAFETY: out_len is a valid pointer per caller contract.
     unsafe { *out_len = bytes.len() };
     clear_msgpack_last_error();
-    malloc_bytes(&bytes)
+    ptr
 }
 
 /// Frame `data` as a `MessagePack` bin8/bin16/bin32 value.
@@ -589,6 +657,35 @@ pub unsafe extern "C" fn hew_msgpack_encode_bytes_hew(v: *const BytesTriple) -> 
 mod tests {
     use super::*;
     use std::ffi::{CStr, CString};
+
+    #[test]
+    fn output_allocation_failure_is_reported_instead_of_empty_success() {
+        clear_msgpack_last_error();
+        fail_next_msgpack_output_allocation();
+        let mut len = usize::MAX;
+        // SAFETY: len is a valid output slot.
+        let ptr = unsafe { hew_msgpack_encode_int(42, &raw mut len) };
+        assert!(ptr.is_null());
+        assert_eq!(len, 0);
+        assert_eq!(
+            get_msgpack_last_error(),
+            "msgpack: allocation failed while returning encoded integer"
+        );
+    }
+
+    #[test]
+    fn json_output_allocation_failure_preserves_failure_reason() {
+        let encoded = [0x81, 0xa1, b'x', 0x01];
+        clear_msgpack_last_error();
+        fail_next_msgpack_output_allocation();
+        // SAFETY: encoded is a valid readable MessagePack buffer.
+        let ptr = unsafe { hew_msgpack_to_json(encoded.as_ptr(), encoded.len()) };
+        assert!(ptr.is_null());
+        assert_eq!(
+            get_msgpack_last_error(),
+            "msgpack: allocation failed while returning JSON"
+        );
+    }
 
     /// Copy a codec buffer out and free it.
     ///

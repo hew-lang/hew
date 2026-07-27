@@ -170,6 +170,43 @@ fn test_try_parse_preserves_predefined_entities() {
 }
 
 #[test]
+fn test_try_parse_decodes_entities_in_attributes() {
+    match xml.try_parse("<root label=\"a &lt; b &amp; &quot;q&quot;\"/>") {
+        Ok(node) => {
+            testing.assert_eq_str(node.get_attribute("label"), "a < b & \"q\"");
+            node.close();
+        },
+        Err(reason) => panic(f"attribute entities must expand: {reason}"),
+    }
+}
+
+#[test]
+fn test_try_parse_rejects_non_whitespace_outside_the_root() {
+    match xml.try_parse("before<root/>") {
+        Ok(node) => {
+            node.close();
+            panic("text before the root must be rejected");
+        },
+        Err(reason) => testing.assert_true(reason.contains("outside the root")),
+    }
+    match xml.try_parse("<root/>after") {
+        Ok(node) => {
+            node.close();
+            panic("text after the root must be rejected");
+        },
+        Err(reason) => testing.assert_true(reason.contains("outside the root")),
+    }
+}
+
+#[test]
+fn test_try_parse_allows_xml_whitespace_around_the_root() {
+    match xml.try_parse(" \t\n<root/>\r\n") {
+        Ok(node) => node.close(),
+        Err(reason) => panic(f"XML whitespace around the root is valid: {reason}"),
+    }
+}
+
+#[test]
 fn test_is_wellformed_rejects_multiple_roots() {
     testing.assert_false(xml.is_wellformed("<a/><b/>"));
     testing.assert_true(xml.is_wellformed("<a><b/></a>"));

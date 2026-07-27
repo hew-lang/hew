@@ -365,6 +365,19 @@ fn test_unrepresentable_int_count_finds_a_nested_value() {
 }
 
 #[test]
+fn test_unrepresentable_int_count_includes_mapping_keys() {
+    let source = "18446744073709551615: root\nouter:\n  9223372036854775808: nested";
+    match yaml.try_parse(source) {
+        Ok(doc) => {
+            testing.assert_eq(yaml.unrepresentable_int_count(doc), 2);
+            testing.assert_false(yaml.ints_are_representable(doc));
+            doc.free();
+        },
+        Err(_reason) => panic("valid YAML with large integer keys must parse"),
+    }
+}
+
+#[test]
 fn test_unrepresentable_int_count_is_zero_for_a_representable_document() {
     match yaml.try_parse("a:\n  - 1\n  - b: 9223372036854775807\nc: -5\n") {
         Ok(doc) => {

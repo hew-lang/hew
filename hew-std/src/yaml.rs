@@ -317,8 +317,11 @@ fn count_unrepresentable_yaml_ints(value: &serde_yaml::Value) -> i64 {
             .map(count_unrepresentable_yaml_ints)
             .fold(0i64, i64::saturating_add),
         serde_yaml::Value::Mapping(fields) => fields
-            .values()
-            .map(count_unrepresentable_yaml_ints)
+            .iter()
+            .map(|(key, value)| {
+                count_unrepresentable_yaml_ints(key)
+                    .saturating_add(count_unrepresentable_yaml_ints(value))
+            })
             .fold(0i64, i64::saturating_add),
         _ => 0,
     }
@@ -1048,6 +1051,21 @@ mod tests {
         // SAFETY: ptr was allocated by the runtime allocator.
         unsafe { hew_cabi::vec::hew_vec_free(ptr) };
         bytes
+    }
+
+    #[test]
+    fn representability_walk_includes_mapping_keys() {
+        let value = parse("18446744073709551615: ok\nnested:\n  9223372036854775808: value\n");
+        assert!(!value.is_null());
+        // SAFETY: value is a live parsed YAML handle.
+        unsafe {
+            assert_eq!(
+                hew_yaml_unrepresentable_int_count(value),
+                2,
+                "both the root and nested unrepresentable mapping keys must be counted"
+            );
+            hew_yaml_free(value);
+        }
     }
 
     #[test]

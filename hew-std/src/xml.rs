@@ -79,6 +79,7 @@ enum ParseXmlError {
     MaximumDepthExceeded,
     NoRootElement,
     MultipleRootElements,
+    TextOutsideRoot,
     MismatchedClose { expected: String, found: String },
     UnexpectedClose(String),
     InvalidAttribute(String),
@@ -93,6 +94,9 @@ impl ParseXmlError {
             Self::MaximumDepthExceeded => "xml: maximum nesting depth (256) exceeded".to_owned(),
             Self::NoRootElement => "xml: document has no root element".to_owned(),
             Self::MultipleRootElements => "xml: document has more than one root element".to_owned(),
+            Self::TextOutsideRoot => {
+                "xml: non-whitespace text is not allowed outside the root element".to_owned()
+            }
             Self::MismatchedClose { expected, found } => {
                 format!("xml: `</{found}>` does not close `<{expected}>`")
             }
@@ -124,7 +128,10 @@ fn extract_tag_and_attrs(
             return Err(ParseXmlError::InvalidAttribute(tag));
         };
         let key = String::from_utf8_lossy(a.key.as_ref()).to_string();
-        let val = String::from_utf8_lossy(&a.value).to_string();
+        let Ok(val) = a.normalized_value(quick_xml::XmlVersion::Implicit1_0) else {
+            return Err(ParseXmlError::InvalidAttribute(tag));
+        };
+        let val = val.into_owned();
         attributes.push((key, val));
     }
     Ok((tag, attributes))
@@ -147,6 +154,33 @@ fn flush_text(buf: &mut String, stack: &mut [Frame], top_level: &mut Vec<XmlNode
     } else {
         let text = std::mem::take(buf);
         push_node(stack, top_level, XmlNodeKind::Text(text));
+    }
+}
+
+/// Validate the document-level shape and return its sole element root.
+fn sole_document_root(mut roots: Vec<XmlNodeKind>) -> Result<XmlNodeKind, ParseXmlError> {
+    if !roots
+        .iter()
+        .any(|node| matches!(node, XmlNodeKind::Element { .. }))
+    {
+        return Err(ParseXmlError::NoRootElement);
+    }
+    if roots.iter().any(|node| {
+        matches!(
+            node,
+            XmlNodeKind::Text(text)
+                if !text
+                    .chars()
+                    .all(|ch| matches!(ch, ' ' | '\t' | '\r' | '\n'))
+        )
+    }) {
+        return Err(ParseXmlError::TextOutsideRoot);
+    }
+    roots.retain(|node| !matches!(node, XmlNodeKind::Text(_)));
+    match roots.len() {
+        0 => Err(ParseXmlError::NoRootElement),
+        1 => Ok(roots.remove(0)),
+        _ => Err(ParseXmlError::MultipleRootElements),
     }
 }
 
@@ -264,15 +298,7 @@ fn parse_xml(xml: &str) -> Result<XmlNodeKind, ParseXmlError> {
     // A well-formed XML document has exactly one root element. Wrapping
     // several in a synthetic tagless element would invent structure the
     // document never had, and serializing that tree back produces `<>`.
-    let mut roots = top_level
-        .into_iter()
-        .filter(|node| matches!(node, XmlNodeKind::Element { .. }))
-        .collect::<Vec<_>>();
-    match roots.len() {
-        0 => Err(ParseXmlError::NoRootElement),
-        1 => Ok(roots.remove(0)),
-        _ => Err(ParseXmlError::MultipleRootElements),
-    }
+    sole_document_root(top_level)
 }
 
 // ---------------------------------------------------------------------------
@@ -887,6 +913,31 @@ mod tests {
     }
 
     #[test]
+    fn attribute_entities_are_decoded_before_exposure() {
+        let node = parse(r#"<root label="a &lt; b &amp; &quot;q&quot;"/>"#);
+        assert!(!node.is_null());
+        let name = c"label";
+        // SAFETY: node and attribute name are valid.
+        unsafe {
+            let value = read_and_free_cstr(hew_xml_get_attribute(node, name.as_ptr()));
+            assert_eq!(value, "a < b & \"q\"");
+            hew_xml_free(node);
+        }
+    }
+
+    #[test]
+    fn unknown_attribute_entity_is_rejected() {
+        let node = parse(r#"<root label="&notDeclared;"/>"#);
+        assert!(node.is_null());
+        // SAFETY: accessor returns null or a valid allocated string.
+        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        assert_eq!(
+            last_error,
+            Some("xml: element `root` has a malformed attribute".to_owned())
+        );
+    }
+
+    #[test]
     fn numeric_character_references_still_expand() {
         let node = parse("<root>&#72;&#x69;</root>");
         assert!(!node.is_null());
@@ -910,6 +961,28 @@ mod tests {
             last_error,
             Some("xml: document has more than one root element".to_string())
         );
+    }
+
+    #[test]
+    fn non_whitespace_text_outside_the_single_root_is_rejected() {
+        for xml in ["before<root/>", "<root/>after"] {
+            let node = parse(xml);
+            assert!(node.is_null(), "{xml:?} must not parse");
+            // SAFETY: accessor returns null or a valid allocated string.
+            let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+            assert_eq!(
+                last_error,
+                Some("xml: non-whitespace text is not allowed outside the root element".to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn xml_whitespace_around_the_single_root_is_allowed() {
+        let node = parse(" \t\r\n<root/>\n");
+        assert!(!node.is_null());
+        // SAFETY: node is a valid HewXmlNode from parse.
+        unsafe { hew_xml_free(node) };
     }
 
     #[test]

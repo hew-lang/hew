@@ -24,6 +24,9 @@ fn boxed_value(v: toml::Value) -> *mut HewTomlValue {
 std::thread_local! {
     static LAST_SERIALIZE_ERROR: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
+    #[cfg(test)]
+    static FAIL_NEXT_TOML_OUTPUT_ALLOC: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 fn set_serialize_last_error(msg: impl Into<String>) {
@@ -32,6 +35,19 @@ fn set_serialize_last_error(msg: impl Into<String>) {
 
 fn clear_serialize_last_error() {
     LAST_SERIALIZE_ERROR.with(|slot| *slot.borrow_mut() = None);
+}
+
+#[cfg(test)]
+fn fail_next_toml_output_allocation() {
+    FAIL_NEXT_TOML_OUTPUT_ALLOC.with(|slot| slot.set(true));
+}
+
+fn alloc_toml_output(text: &str) -> *mut c_char {
+    #[cfg(test)]
+    if FAIL_NEXT_TOML_OUTPUT_ALLOC.with(|slot| slot.replace(false)) {
+        return std::ptr::null_mut();
+    }
+    str_to_malloc(text)
 }
 
 fn set_parse_last_error(msg: impl Into<String>) {
@@ -297,8 +313,15 @@ pub unsafe extern "C" fn hew_toml_stringify(val: *const HewTomlValue) -> *mut c_
     let v = &unsafe { &*val }.inner;
     match toml::to_string(v) {
         Ok(s) => {
+            let ptr = alloc_toml_output(&s);
+            if ptr.is_null() {
+                set_serialize_last_error(
+                    "toml: allocation failed while returning serialized document",
+                );
+                return std::ptr::null_mut();
+            }
             clear_serialize_last_error();
-            str_to_malloc(&s)
+            ptr
         }
         Err(err) => {
             set_serialize_last_error(format!("toml: {err}"));
@@ -659,6 +682,22 @@ pub unsafe extern "C" fn hew_toml_free(val: *mut HewTomlValue) {
 mod tests {
     use super::*;
     use std::ffi::CString;
+
+    #[test]
+    fn stringify_allocation_failure_is_reported_instead_of_empty_success() {
+        let table = hew_toml_table_new();
+        fail_next_toml_output_allocation();
+        // SAFETY: table is a live TOML value.
+        let text = unsafe { hew_toml_stringify(table) };
+        assert!(text.is_null());
+        let reason = LAST_SERIALIZE_ERROR.with(|slot| slot.borrow().clone());
+        assert_eq!(
+            reason.as_deref(),
+            Some("toml: allocation failed while returning serialized document")
+        );
+        // SAFETY: table is live and freed exactly once.
+        unsafe { hew_toml_free(table) };
+    }
 
     #[test]
     fn test_parse_and_get_string() {

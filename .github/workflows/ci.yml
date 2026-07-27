@@ -18,6 +18,16 @@ env:
   # llvm-sys-221) build script. Bumps must be reflected in
   # .github/actions/setup-llvm/action.yml (asset SHA256 pins) too.
   LLVM_VERSION: "22.1.5"
+  # Pinned wasmtime release tag. Every job that provisions a WASI runner
+  # downloads its per-platform asset from THIS tag. It is pinned, and pinned in
+  # one place, for two reasons: resolving "latest" per job (as the Linux job
+  # did) or taking whatever a package manager ships (as macOS did with brew)
+  # let the three platforms straddle different wasmtime releases inside a
+  # single run, so a WASI behaviour difference could be read as a platform
+  # difference; and an unpinned runtime changes the tested surface without a
+  # commit. Assets used: x86_64-linux.tar.xz, aarch64-macos.tar.xz,
+  # x86_64-windows.zip.
+  WASMTIME_VERSION: "v47.0.2"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -484,9 +494,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          WASMTIME_TAG="$(gh release view --repo bytecodealliance/wasmtime --json tagName --jq .tagName)"
-          WASMTIME_DIR="wasmtime-${WASMTIME_TAG}-x86_64-linux"
-          gh release download "$WASMTIME_TAG" --repo bytecodealliance/wasmtime \
+          set -euo pipefail
+          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
             --pattern "${WASMTIME_DIR}.tar.xz" --clobber
           tar -xJf "${WASMTIME_DIR}.tar.xz"
           echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
@@ -799,6 +809,60 @@ jobs:
         # because the upstream LLVM tarball is provisioned above.
         run: cargo build -p adze-cli -p hew-runtime -p hew-lsp -p hew-cli --release
 
+      - name: Install WASI runner prerequisites
+        # Windows had no equivalent of the Linux tarball / macOS brew install,
+        # so `wasmtime` was absent here and every WASI-dependent hew-cli test
+        # either failed with "`wasmtime` not found" or — via the deleted
+        # try_require_wasi_runner — passed having asserted nothing. Provision
+        # the runner from the same pinned WASMTIME_VERSION the other two jobs
+        # use, and prove it runs inside this step: a broken install must fail
+        # the job here, not resurface as "not found" inside a test.
+        if: env.RUN_CODE_PATH == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rustup target add wasm32-wasip1
+          if ($LASTEXITCODE -ne 0) { throw "rustup target add wasm32-wasip1 failed" }
+
+          $dir = "wasmtime-${env:WASMTIME_VERSION}-x86_64-windows"
+          gh release download "${env:WASMTIME_VERSION}" --repo bytecodealliance/wasmtime --pattern "$dir.zip" --clobber
+          if ($LASTEXITCODE -ne 0) { throw "downloading $dir.zip from bytecodealliance/wasmtime failed" }
+
+          Expand-Archive -Path "$dir.zip" -DestinationPath . -Force
+          $wasmtimeBin = Join-Path (Get-Location).Path $dir
+          $wasmtimeExe = Join-Path $wasmtimeBin "wasmtime.exe"
+          if (-not (Test-Path -LiteralPath $wasmtimeExe)) {
+            throw "wasmtime.exe not found at $wasmtimeExe after extracting $dir.zip"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $wasmtimeBin
+
+          & $wasmtimeExe --version
+          if ($LASTEXITCODE -ne 0) { throw "wasmtime installed but 'wasmtime --version' exited $LASTEXITCODE" }
+
+          # wasm-ld comes from the LLVM install provisioned above; hew's WASM
+          # link step shells out to it, so an unreachable wasm-ld is the same
+          # class of silent gap as a missing runtime.
+          $wasmLd = Get-Command wasm-ld -ErrorAction SilentlyContinue
+          if (-not $wasmLd) { throw "wasm-ld not found on PATH (expected from the LLVM ${env:LLVM_VERSION} install)" }
+          & $wasmLd.Source --version
+          if ($LASTEXITCODE -ne 0) { throw "wasm-ld found at $($wasmLd.Source) but 'wasm-ld --version' exited $LASTEXITCODE" }
+
+      - name: Build hew-runtime for wasm32-wasip1 (debug)
+        # Mirrors the macOS job. The WASI tests run as debug binaries and
+        # bootstrap_wasi_runner builds this archive on demand when it is
+        # absent, so without a pre-build every parallel nextest process races
+        # to cargo-build the same non-atomically written staticlib and wasm-ld
+        # intermittently fails to open it.
+        if: env.RUN_CODE_PATH == 'true'
+        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
+
+      - name: Build hew-std for wasm32-wasip1 (debug)
+        # Same race, same medicine: bootstrap_wasi_runner also builds
+        # libhew_std.a on demand when it is missing.
+        if: env.RUN_CODE_PATH == 'true'
+        run: cargo build -p hew-std --target wasm32-wasip1
+
       - name: Run platform smoke tests
         # Default Windows path: prove the platform build links and the
         # platform-sensitive crates pass on windows-msvc, without re-running the
@@ -821,8 +885,11 @@ jobs:
         # Platform/toolchain/ABI change: run the full workspace nextest on
         # Windows so a native-linking or cross-platform regression is caught
         # per-PR, not only by the nightly matrix.
-        # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols that
-        # conflict with hew-runtime when both link into a test binary.
+        # hew-wasm is excluded on every platform (profile.ci's default-filter
+        # does the same) — the browser/tooling WASM surface has its own
+        # playground-wasm-build job. hew-cabi has #[no_mangle] symbols that
+        # conflict with hew-runtime when both link into a test binary; the
+        # C-ABI step below is its coverage.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
         if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
@@ -908,10 +975,17 @@ jobs:
 
       - name: Install WASI runner prerequisites
         if: env.RUN_CODE_PATH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           rustup target add wasm32-wasip1
-          brew install wasmtime
-          wasmtime --version
+          WASMTIME_DIR="wasmtime-${WASMTIME_VERSION}-aarch64-macos"
+          gh release download "$WASMTIME_VERSION" --repo bytecodealliance/wasmtime \
+            --pattern "${WASMTIME_DIR}.tar.xz" --clobber
+          tar -xJf "${WASMTIME_DIR}.tar.xz"
+          echo "$PWD/${WASMTIME_DIR}" >> "$GITHUB_PATH"
+          "./${WASMTIME_DIR}/wasmtime" --version
           command -v wasm-ld
           wasm-ld --version
 

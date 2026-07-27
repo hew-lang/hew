@@ -786,6 +786,71 @@ def test_a_dead_reference_in_a_tracked_doc_is_found_end_to_end() -> None:
     )
 
 
+# ── A5: a declared target does work ──────────────────────────────────────────
+#
+# A0..A4 resolve a name. A5 asks whether the name does anything, because a
+# `.PHONY` target with no recipe and no prerequisites succeeds having run
+# nothing — and satisfies every name-resolving check while it does.
+
+
+def test_a_phony_target_with_no_rule_has_no_recipe_and_no_prerequisites() -> None:
+    phony, prereqs, recipes = gate.parse_makefile(
+        ".PHONY: verify-thing\n\nother:\n\techo hi\n"
+    )
+    assert "verify-thing" in phony
+    assert not recipes.get("verify-thing", "").strip(), (
+        "a .PHONY name with no rule line must read as having no recipe — that "
+        "is the state make treats as a target that succeeds doing nothing"
+    )
+    assert not prereqs.get("verify-thing"), (
+        "and no prerequisites either; with prerequisites it would be a "
+        "legitimate aggregator"
+    )
+
+
+def test_an_aggregator_with_prerequisites_and_no_recipe_does_work() -> None:
+    # `lint: a b c` is the correct shape for a target that exists to bring
+    # others up to date. A5 must not read it as inert.
+    _, prereqs, recipes = gate.parse_makefile(
+        ".PHONY: lint\nlint: alpha beta\n\nalpha:\n\techo a\n"
+    )
+    assert not recipes.get("lint", "").strip()
+    assert prereqs.get("lint") == {"alpha", "beta"}
+
+
+def test_a_recipe_guarded_by_a_make_conditional_still_belongs_to_its_target() -> None:
+    # A conditional directive sits at column 0 like a rule line does. Reading it
+    # as the end of the rule loses every recipe line on both arms, which reads a
+    # host-guarded target as inert. `asan-fixtures` and `tsan` are both this
+    # shape, and both were false positives until the parser learned it.
+    _, _, recipes = gate.parse_makefile(
+        ".PHONY: asan-fixtures\n"
+        "asan-fixtures:\n"
+        "ifeq ($(shell uname -s),Darwin)\n"
+        "\t@echo skipped\n"
+        "else\n"
+        "\tscripts/asan-fixture-check.sh\n"
+        "endif\n"
+    )
+    recipe = recipes.get("asan-fixtures", "")
+    assert "asan-fixture-check.sh" in recipe, (
+        "the recipe on the else arm belongs to asan-fixtures; losing it reads a "
+        f"working gate as one that does nothing, got {recipe!r}"
+    )
+    assert "@echo skipped" in recipe
+
+
+def test_the_real_makefile_has_no_inert_declared_target() -> None:
+    phony, prereqs, recipes = gate.parse_makefile((ROOT / "Makefile").read_text())
+    inert = sorted(
+        t for t in phony if not recipes.get(t, "").strip() and not prereqs.get(t)
+    )
+    assert inert == [], (
+        "these targets are declared but neither run a recipe nor pull in a "
+        f"prerequisite, so make succeeds having done nothing: {inert}"
+    )
+
+
 def test_script_stays_python_3_10_compatible_with_no_new_dependency() -> None:
     # Structural YAML parsing was the fix for finding 1, and the obvious
     # implementation is PyYAML. Nothing in this repo installs it: no workflow

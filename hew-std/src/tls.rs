@@ -868,6 +868,7 @@ pub unsafe extern "C" fn hew_tls_attach(
 mod tests {
     use super::*;
     use hew_cabi::cabi::free_cstring;
+    use hew_runtime::bytes::{hew_bytes_clone_ref, hew_bytes_drop, hew_bytes_push};
     use hew_runtime::{actor, scheduler, transport};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use std::cell::Cell;
@@ -1744,6 +1745,158 @@ mod tests {
         // SAFETY: `actor` is stopped above; free reclaims it exactly once.
         assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
         unregister_tls_actor_events(test_id);
+    }
+
+    // ── Result retention: who owns the buffer hew_tls_read_result returns ────
+    //
+    // hew-lang/hew#2828. The compiler may only mint a caller-side release for
+    // an extern result once the callee is known to keep no pointer into it, and
+    // "the audit says fresh" is a proxy for that, not the answer. This measures
+    // it at the real allocation site over a real handshake, and the answer is
+    // recorded as `result-retention = "transferred"` on the symbol's
+    // [[ownership.contracts]] row in scripts/jit-symbol-classification.toml.
+    //
+    // Three probes, all on results obtained from a live stream:
+    //
+    //   R1  two results held live at once occupy DISTINCT allocations. A callee
+    //       handing back a pointer into storage it keeps cannot satisfy this.
+    //   R2  each result is SOLELY owned. `hew_bytes_push` forks a shared buffer
+    //       (refcount > 1) and writes in place otherwise, so "the data pointer
+    //       did not move" reads the runtime's own live-owner count at the real
+    //       allocation. The payload is shorter than MIN_CAPACITY, so a push can
+    //       never grow the buffer and the address can only move by forking.
+    //   R3  releasing both results leaves the stream fully usable, so nothing
+    //       the callee kept pointed into what the caller freed.
+    //
+    // R2's counterfactual is asserted inline: an explicitly retained second
+    // reference DOES move the pointer, which is what makes the probe evidence
+    // rather than a restatement of allocator behaviour.
+
+    /// Read from `stream_ptr` until a non-empty chunk arrives or the deadline
+    /// passes. A TLS record may not have been decrypted yet on the first call.
+    fn read_result_until_data(stream_ptr: *mut HewTlsStream, size: c_int) -> HewTlsReadResult {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            // SAFETY: `stream_ptr` is a live stream owned by the caller.
+            let result = unsafe { hew_tls_read_result(stream_ptr, size) };
+            if result.data.len > 0 {
+                return result;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "expected decrypted bytes from the loopback server within 5s"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// True when `triple` is the SOLE owner of its allocation: a push that
+    /// cannot grow the buffer moves the data pointer only by forking a shared
+    /// one. Mutates the copy it is given, never the caller's triple.
+    fn bytes_owner_is_sole(triple: BytesTriple) -> bool {
+        assert!(
+            !triple.ptr.is_null() && triple.len < 16,
+            "the probe needs a non-empty buffer below MIN_CAPACITY so a push \
+             cannot grow it: len={}",
+            triple.len
+        );
+        let mut probe = triple;
+        // SAFETY: `probe` is a valid triple; push is refcount-aware.
+        unsafe { hew_bytes_push(&mut probe, b'!') };
+        let unmoved = probe.ptr == triple.ptr;
+        if !unmoved {
+            // The fork produced a second allocation; release it.
+            // SAFETY: the forked buffer is ours and released exactly once.
+            unsafe { hew_bytes_drop(probe.ptr) };
+        }
+        unmoved
+    }
+
+    #[test]
+    fn read_result_transfers_the_decrypted_buffer() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let (server_config, cert_der) = self_signed_server_pair();
+
+        // Two records, each shorter than MIN_CAPACITY so the R2 push cannot
+        // grow the buffer, separated so the client sees them as two reads.
+        let first = b"alpha";
+        let second = b"bravo";
+        let server = thread::spawn(move || {
+            let (tcp, _) = listener.accept().expect("server accept");
+            let conn = rustls::ServerConnection::new(server_config).expect("server connection");
+            let mut tls = rustls::StreamOwned::new(conn, tcp);
+            tls.write_all(first).expect("server write 1");
+            tls.flush().expect("server flush 1");
+            thread::sleep(Duration::from_millis(100));
+            tls.write_all(second).expect("server write 2");
+            tls.flush().expect("server flush 2");
+            thread::sleep(Duration::from_millis(300));
+            tls.conn.send_close_notify();
+            let _ = tls.flush();
+            drop(tls);
+        });
+
+        let client = client_stream_trusting(addr, cert_der);
+        let stream_ptr = HewTlsStream::from_stream(client);
+
+        let a = read_result_until_data(stream_ptr, 8);
+        let b = read_result_until_data(stream_ptr, 8);
+        assert_eq!(a.status, TLS_STATUS_SUCCESS);
+        assert_eq!(b.status, TLS_STATUS_SUCCESS);
+
+        // R1 — two live results, two allocations.
+        assert_ne!(
+            a.data.ptr, b.data.ptr,
+            "two results held live at once must occupy distinct allocations; a \
+             shared address would mean the stream handed back storage it keeps"
+        );
+
+        // R2 — each is solely owned, so exactly one release balances each.
+        assert!(
+            bytes_owner_is_sole(a.data),
+            "the first result must be solely owned by the caller"
+        );
+        assert!(
+            bytes_owner_is_sole(b.data),
+            "the second result must be solely owned by the caller"
+        );
+
+        // R2's counterfactual: with a second reference outstanding the same
+        // probe reports NOT sole, so it is reading the owner count rather than
+        // reporting a constant.
+        // SAFETY: `a.data.ptr` is a live bytes allocation.
+        unsafe { hew_bytes_clone_ref(a.data.ptr) };
+        assert!(
+            !bytes_owner_is_sole(a.data),
+            "the sole-ownership probe must be able to say no, or it proves nothing"
+        );
+        // SAFETY: releases the reference taken immediately above.
+        unsafe { hew_bytes_drop(a.data.ptr) };
+
+        // R3 — release both results; the stream keeps working, so it kept no
+        // pointer into what the caller just freed.
+        // SAFETY: each result is released exactly once, by the release the
+        // audited contract names.
+        unsafe {
+            hew_bytes_drop(a.data.ptr);
+            hew_bytes_drop(b.data.ptr);
+        }
+        // SAFETY: `stream_ptr` is still live; this is a normal read.
+        let after = unsafe { hew_tls_read_result(stream_ptr, 8) };
+        assert_eq!(
+            after.status, TLS_STATUS_SUCCESS,
+            "the stream must remain usable after the caller released every \
+             buffer it was handed"
+        );
+        if !after.data.ptr.is_null() {
+            // SAFETY: a third result is ours to release on the same terms.
+            unsafe { hew_bytes_drop(after.data.ptr) };
+        }
+
+        // SAFETY: `stream_ptr` came from `from_stream` and is freed once.
+        unsafe { hew_tls_close(stream_ptr) };
+        server.join().expect("server thread");
     }
 
     #[test]

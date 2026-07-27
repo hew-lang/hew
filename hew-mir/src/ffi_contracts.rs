@@ -54,6 +54,43 @@ pub enum ReleaseDischargeDepth {
     None,
 }
 
+/// Whether the callee keeps a pointer into the allocation it returned.
+///
+/// This is the RETENTION axis, and it is a different question from
+/// [`ExternResultOwnership`]. `Fresh` says the result is a newly owned
+/// allocation; it does not by itself say the callee stopped referring to it.
+/// A callee that allocates and *also* keeps the pointer — to free it later, to
+/// overwrite it on the next call, or to hand the same address out again —
+/// produces a value the caller must not release, and the distinction is
+/// invisible on the ownership axis alone.
+///
+/// The axis exists because that difference is real inside this very runtime.
+/// `hew_process_last_error` copies its thread-local message into a fresh
+/// header-aware allocation and keeps nothing; `hew_last_error` hands back the
+/// interior of the `CString` the runtime stores and keeps everything. Both are
+/// `hew_*` exports, both return a C string, and only the first is the caller's
+/// to release.
+///
+/// # `Unspecified` is fail-closed, not "probably fine"
+///
+/// A row carries `Transferred` only when an executable oracle established it
+/// for that symbol — see `hew-runtime/tests/last_error_result_retention.rs` and
+/// `hew-std/src/last_error_retention.rs`, which measure distinct-address,
+/// sole-ownership (`rc == 1`) and slot-survives-release per symbol. Every other
+/// row is `Unspecified`, which licenses no caller-side release; the cost of
+/// being wrong that way is a leak, and the cost of the other way is a double
+/// free.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternResultRetention {
+    /// The callee provably keeps no pointer into the returned allocation: the
+    /// caller holds the sole owner and the contract's release symbol is the
+    /// balancing release.
+    Transferred,
+    /// The question has not been answered for this symbol. No caller-side
+    /// release may be minted from this row.
+    Unspecified,
+}
+
 /// One extern symbol's machine-checked ownership contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExternOwnershipContract {
@@ -66,6 +103,8 @@ pub struct ExternOwnershipContract {
     pub release_symbol: &'static str,
     /// Recursion depth of the release symbol's discharge.
     pub discharge_depth: ReleaseDischargeDepth,
+    /// Whether the callee provably keeps no pointer into an owned result.
+    pub result_retention: ExternResultRetention,
 }
 
 /// The fact available at a lowering position for an extern callee symbol.
@@ -153,6 +192,66 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn retention_axis_only_on_owned_results() {
+        // Mirror of the verify-ffi-symbols.py coupling rule: the retention
+        // question ("does the callee still hold a pointer into what it just
+        // returned?") is only meaningful about an allocation the caller was
+        // given, so an unowned result may never claim to have transferred one.
+        for (symbol, contract) in FFI_OWNERSHIP_CONTRACTS {
+            if contract.result_retention == ExternResultRetention::Transferred {
+                assert!(
+                    matches!(
+                        contract.result,
+                        ExternResultOwnership::Fresh | ExternResultOwnership::Retained
+                    ),
+                    "{symbol}: result-retention is meaningless without an owned result"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn last_error_family_answer_is_readable_and_not_uniform() {
+        // hew-lang/hew#2828. The answer lives in the table, per symbol, so the
+        // ownership authority reads it rather than inferring one from the
+        // shared name shape.
+        let transferring = extern_ownership_contract("hew_process_last_error")
+            .contract()
+            .expect("hew_process_last_error is classified");
+        assert_eq!(transferring.result, ExternResultOwnership::Fresh);
+        assert_eq!(transferring.release_symbol, "hew_string_drop");
+        assert_eq!(
+            transferring.result_retention,
+            ExternResultRetention::Transferred
+        );
+
+        // The member of the same family whose answer is the other one: it
+        // returns the interior of a CString the runtime keeps.
+        let borrowing = extern_ownership_contract("hew_last_error")
+            .contract()
+            .expect("hew_last_error is classified");
+        assert_eq!(borrowing.result, ExternResultOwnership::Borrowed);
+        assert_eq!(
+            borrowing.result_retention,
+            ExternResultRetention::Unspecified
+        );
+    }
+
+    #[test]
+    fn retention_defaults_to_unspecified() {
+        // Absence is the fail-closed answer, and it is the common case: a row
+        // that has never been measured must not read as a transfer.
+        let bytes_to_string = extern_ownership_contract("hew_bytes_to_string")
+            .contract()
+            .expect("hew_bytes_to_string is classified");
+        assert_eq!(bytes_to_string.result, ExternResultOwnership::Fresh);
+        assert_eq!(
+            bytes_to_string.result_retention,
+            ExternResultRetention::Unspecified
+        );
     }
 
     #[test]

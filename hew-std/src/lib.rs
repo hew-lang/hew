@@ -89,6 +89,13 @@ pub mod ipnet;
 // scheduler slot instead of racing on independent per-module locks.
 #[cfg(all(test, not(target_family = "wasm")))]
 mod net_error_slot_test_support;
+// The hew-std half of the `*_last_error` result-retention oracle (#2828) —
+// establishes, per symbol, that the returned buffer is transferred to the
+// caller rather than borrowed from storage this crate keeps. The hew-runtime
+// half and the counterfactual live in
+// `hew-runtime/tests/last_error_result_retention.rs`.
+#[cfg(all(test, not(target_family = "wasm")))]
+mod last_error_retention;
 #[cfg(not(target_family = "wasm"))]
 pub mod quic;
 #[cfg(not(target_family = "wasm"))]

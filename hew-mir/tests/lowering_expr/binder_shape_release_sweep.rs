@@ -643,7 +643,13 @@ fn release_count_is_invariant_across_carrier_class() {
 /// * `audited_extern` is `std/process.hew`'s
 ///   `hew_process_last_error() -> string`: an audited `result = "fresh"` row
 ///   with `release-symbol = "hew_string_drop"`. It hands the caller a newly
-///   owned allocation, exactly as `mk()` does.
+///   owned allocation, exactly as `mk()` does. It was a DEFERRED cell until
+///   #2828 settled the retention question — the row now also carries
+///   `result-retention = "transferred"`, measured at the runtime's own
+///   alloc/free sites, and the mint side reads that rather than inferring it
+///   from "audited fresh". Before that answer existed this cell planned ZERO
+///   releases against the domestic one's; folding it back in is what pins the
+///   leak closed.
 /// * `pod_extern` is `std/time/cron/cron.hew`'s
 ///   `hew_cron_next_hew(...) -> CronNextResult`, consumed the way
 ///   `Err(cron_error_from_result(result))` consumes it: the POD is passed into
@@ -657,6 +663,11 @@ fn release_count_is_invariant_across_carrier_class() {
 const PAYLOAD_SOURCES: &[(&str, &str, &str)] = &[
     ("domestic", "", "mk()"),
     (
+        "audited_extern",
+        "extern \"C\" {\n    fn hew_process_last_error() -> string;\n}\n",
+        "unsafe { hew_process_last_error() }",
+    ),
+    (
         "pod_extern",
         "extern \"C\" {\n    fn host_pod() -> Pod;\n}\n\
          type Pod { status: i32; timestamp: i64 }\n\
@@ -664,36 +675,6 @@ const PAYLOAD_SOURCES: &[(&str, &str, &str)] = &[
         "from_pod(unsafe { host_pod() })",
     ),
 ];
-
-/// The DEFERRED half of the payload-provenance question, kept as a ratchet
-/// rather than deleted.
-///
-/// `hew_process_last_error() -> string` carries an audited `result = "fresh"`
-/// row with `release-symbol = "hew_string_drop"`, and
-/// `classify_extern_string_ownership` already reads it as `HeaderAware` from the
-/// same catalog key — so the caller holds a `+1` header-aware Hew string and
-/// owes exactly one `hew_string_drop`. The frame plans ZERO releases for it.
-/// That is a leak, and it is a real one: `std/process.hew` takes this path on
-/// every error.
-///
-/// It is NOT fixed here, and the reason is polarity. Every change this round
-/// makes is either on the suppression side (wrong ⇒ leak) or is the
-/// pointer-free admission, whose value has nothing to release at all. Minting
-/// an owner for an `extern` result that IS a pointer is the strict mint side —
-/// wrong ⇒ double free — and it is the specific fail-open this branch exists to
-/// close. Trusting a name-keyed audit for a MINT is a separate decision with a
-/// separate argument, and it is not required to make the compiler stop
-/// rejecting the standard library.
-///
-/// The ratchet: `audited_extern` must still diverge from `domestic`. If someone
-/// closes the mint side, this test fails and tells them to fold the source back
-/// into [`PAYLOAD_SOURCES`] — the finding cannot be quietly lost, and the fix
-/// cannot land unnoticed.
-const DEFERRED_PAYLOAD_SOURCE: (&str, &str, &str) = (
-    "audited_extern",
-    "extern \"C\" {\n    fn hew_process_last_error() -> string;\n}\n",
-    "unsafe { hew_process_last_error() }",
-);
 
 /// Plane 5: **payload provenance** × carrier class × binder shape.
 ///
@@ -748,43 +729,5 @@ fn release_count_and_acceptance_are_invariant_across_payload_provenance() {
          class — the compiler rejecting shipped code because an `extern` in its own \
          runtime ABI was read as a foreign host:\n{}",
         failures.join("\n")
-    );
-}
-
-/// The ratchet for [`DEFERRED_PAYLOAD_SOURCE`]. See its doc for why the fix is
-/// deferred; this pins that the finding is still there and still shaped the way
-/// it was recorded, so it can neither be forgotten nor silently fixed.
-#[test]
-fn the_audited_extern_payload_mint_gap_is_still_open() {
-    let (_, decls, heap) = DEFERRED_PAYLOAD_SOURCE;
-    let carrier = &CARRIERS[0];
-    let binder = BINDERS
-        .iter()
-        .find(|(n, _)| *n == "if_let")
-        .expect("if_let")
-        .1;
-    let domestic = cell_verdict(&pipeline_with_tc(&instantiate(
-        carrier,
-        binder,
-        "    HITEXPR\n",
-        PAYLOAD_SOURCES[0].2,
-        SCALAR[0].1,
-    )));
-    let audited = cell_verdict(&pipeline_with_tc(&format!(
-        "{decls}{}",
-        instantiate(carrier, binder, "    HITEXPR\n", heap, SCALAR[0].1)
-    )));
-    assert_eq!(
-        audited.refusals, 0,
-        "the audited `extern` payload must at least be ACCEPTED — that half IS fixed \
-         here, and a refusal returning is this round's defect coming back"
-    );
-    assert!(
-        audited.releases < domestic.releases,
-        "the deferred mint-side gap has closed: an audited `+1` `extern` payload now \
-         plans {} releases against the domestic {}. Fold DEFERRED_PAYLOAD_SOURCE back \
-         into PAYLOAD_SOURCES and delete this test.",
-        audited.releases,
-        domestic.releases
     );
 }

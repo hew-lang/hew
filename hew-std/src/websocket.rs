@@ -866,19 +866,19 @@ fn recv_message(inner: &Arc<HewWsConnInner>) -> (HewWsRecvResult, *mut HewWsMess
 #[no_mangle]
 pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
     if url.is_null() {
-        set_ws_last_error(0, "websocket.connect: url is null".to_owned());
+        set_ws_last_error(-1, "websocket.connect: url is null".to_owned());
         return std::ptr::null_mut();
     }
     // SAFETY: `url` is a valid NUL-terminated C string per caller contract.
     let Ok(url_str) = unsafe { CStr::from_ptr(url) }.to_str() else {
-        set_ws_last_error(0, "websocket.connect: url is not valid UTF-8".to_owned());
+        set_ws_last_error(-1, "websocket.connect: url is not valid UTF-8".to_owned());
         return std::ptr::null_mut();
     };
 
     let config = match websocket_config_from_env() {
         Ok(config) => config,
         Err(err) => {
-            set_ws_last_error(0, format!("websocket.connect: invalid config: {err}"));
+            set_ws_last_error(-1, format!("websocket.connect: invalid config: {err}"));
             return std::ptr::null_mut();
         }
     };
@@ -889,10 +889,7 @@ pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
             Box::into_raw(Box::new(HewWsConn::new(ws, Role::Client)))
         }
         Err(err) => {
-            set_ws_last_error(
-                ws_errno_of(&err, url_str),
-                format!("websocket.connect: {err}"),
-            );
+            set_ws_last_error(ws_errno_of(&err), format!("websocket.connect: {err}"));
             std::ptr::null_mut()
         }
     }
@@ -900,44 +897,10 @@ pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
 
 /// Recover the OS errno a tungstenite error carries, or 0 when it is a
 /// protocol/handshake failure with no syscall behind it.
-fn ws_errno_of(err: &tungstenite::Error, url_str: &str) -> i64 {
+fn ws_errno_of(err: &tungstenite::Error) -> i64 {
     match err {
         tungstenite::Error::Io(io_err) => io_err.raw_os_error().map_or(0, i64::from),
-        // tungstenite collapses a failed TCP connect for every resolved
-        // address into `UnableToConnect`, discarding the OS error. Re-run the
-        // connect to observe the errno rather than guess one; this only runs
-        // once the transport is already known to be unreachable.
-        tungstenite::Error::Url(tungstenite::error::UrlError::UnableToConnect(_)) => {
-            observed_connect_errno(url_str)
-        }
         _ => 0,
-    }
-}
-
-/// Connect to `url_str`'s authority once and report the OS error it produces.
-///
-/// Returns 0 when the address cannot be derived or when the connect
-/// unexpectedly succeeds, so no errno is ever invented.
-fn observed_connect_errno(url_str: &str) -> i64 {
-    let Ok(parsed) = url::Url::parse(url_str) else {
-        return 0;
-    };
-    let Some(host) = parsed.host_str() else {
-        return 0;
-    };
-    let Some(port) = parsed
-        .port_or_known_default()
-        .or_else(|| match parsed.scheme() {
-            "ws" => Some(80),
-            "wss" => Some(443),
-            _ => None,
-        })
-    else {
-        return 0;
-    };
-    match TcpStream::connect((host, port)) {
-        Ok(_) => 0,
-        Err(io_err) => io_err.raw_os_error().map_or(0, i64::from),
     }
 }
 
@@ -1066,46 +1029,41 @@ pub unsafe extern "C" fn hew_ws_recv(ws: *mut HewWsConn) -> *mut HewWsMessage {
 // because the FFI returns a single pointer. Cleared at every call.
 std::thread_local! {
     static LAST_WS_RECV_TIMED_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-
-    /// This actor's most recent WebSocket construction failure: the errno the
-    /// underlying socket reported and a non-secret detail.
-    ///
-    /// One slot serves both `hew_ws_connect` and `hew_ws_server_new`, so a
-    /// caller reads a single authority for the module. Both halves are written
-    /// together and cleared together on success.
-    static LAST_WS_ERROR: std::cell::RefCell<(i64, Option<String>)> =
-        const { std::cell::RefCell::new((0, None)) };
 }
 
 fn set_ws_last_error(errno: i64, detail: String) {
-    LAST_WS_ERROR.with(|slot| *slot.borrow_mut() = (errno, Some(detail)));
+    hew_runtime::parse_error_slot::set_error_with_errno(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Websocket,
+        errno,
+        detail,
+    );
 }
 
 fn clear_ws_last_error() {
-    LAST_WS_ERROR.with(|slot| *slot.borrow_mut() = (0, None));
+    hew_runtime::parse_error_slot::clear_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Websocket,
+    );
 }
 
-/// Return and clear the errno of this actor's most recent failed
+/// Return the errno of this actor's most recent failed
 /// `hew_ws_connect` or `hew_ws_server_new`, or 0 when the last call succeeded.
-///
-/// Read this before [`hew_ws_last_error`], which clears the detail.
 #[no_mangle]
 pub extern "C" fn hew_ws_last_errno() -> i64 {
-    LAST_WS_ERROR.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let errno = slot.0;
-        slot.0 = 0;
-        errno
-    })
+    hew_runtime::parse_error_slot::get_errno(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Websocket,
+    )
 }
 
-/// Return and clear the detail of this actor's most recent failed
+/// Return the detail of this actor's most recent failed
 /// `hew_ws_connect` or `hew_ws_server_new`, or the empty string when the last
 /// call succeeded.
 #[no_mangle]
 pub extern "C" fn hew_ws_last_error() -> *mut c_char {
-    let detail = LAST_WS_ERROR.with(|slot| slot.borrow_mut().1.take());
-    hew_cabi::cabi::str_to_malloc(&detail.unwrap_or_default())
+    let detail = hew_runtime::parse_error_slot::get_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Websocket,
+    )
+    .unwrap_or_default();
+    hew_cabi::cabi::str_to_malloc(&detail)
 }
 
 /// Report whether `ws` is backed by a live WebSocket connection.
@@ -1375,14 +1333,17 @@ pub unsafe extern "C" fn hew_ws_attach(
     actor: *mut std::ffi::c_void,
     on_message_type: i64,
     on_close_type: i64,
-) {
+) -> i32 {
     if ws.is_null() || actor.is_null() {
-        eprintln!(
-            "[attach] null pointer: ws={} actor={}",
-            ws.is_null(),
-            actor.is_null()
+        set_ws_last_error(
+            -1,
+            format!(
+                "websocket.attach: null handle (ws={}, actor={})",
+                ws.is_null(),
+                actor.is_null()
+            ),
         );
-        return;
+        return -1;
     }
     // The indices cross as `i64` and are range-checked here: narrowing them on
     // the Hew side would turn `2^32 + 1` into index `1` and attach the reader
@@ -1390,22 +1351,24 @@ pub unsafe extern "C" fn hew_ws_attach(
     let (Ok(on_message_type), Ok(on_close_type)) =
         (i32::try_from(on_message_type), i32::try_from(on_close_type))
     else {
-        hew_cabi::sink::set_last_error_with_errno(
+        set_ws_last_error(
+            -1,
             format!(
-                "hew_ws_attach: message-type index out of range \
+                "websocket.attach: message-type index out of range \
                  (on_message_type={on_message_type}, on_close_type={on_close_type})"
             ),
-            22, // EINVAL: Invalid argument
         );
         eprintln!(
             "[attach] message-type index out of range: on_message_type={on_message_type} \
              on_close_type={on_close_type}"
         );
-        return;
+        return -1;
     };
     // SAFETY: nulls are rejected above and `ws` remains valid for this call.
     let conn = unsafe { &*ws };
     spawn_attach_reader(conn, actor, on_message_type, on_close_type, ws);
+    clear_ws_last_error();
+    0
 }
 
 // Import the actor send function from the runtime.
@@ -1514,12 +1477,15 @@ fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
 #[no_mangle]
 pub unsafe extern "C" fn hew_ws_server_new(addr: *const c_char) -> *mut HewWsServer {
     if addr.is_null() {
-        set_ws_last_error(0, "websocket.listen: address is null".to_owned());
+        set_ws_last_error(-1, "websocket.listen: address is null".to_owned());
         return std::ptr::null_mut();
     }
     // SAFETY: `addr` is a valid NUL-terminated C string per caller contract.
     let Ok(addr_str) = (unsafe { CStr::from_ptr(addr) }).to_str() else {
-        set_ws_last_error(0, "websocket.listen: address is not valid UTF-8".to_owned());
+        set_ws_last_error(
+            -1,
+            "websocket.listen: address is not valid UTF-8".to_owned(),
+        );
         return std::ptr::null_mut();
     };
     let bind_addr = normalize_bind_addr(addr_str);
@@ -1627,6 +1593,60 @@ mod tests {
     const TEST_STOP_TYPE: i32 = 101;
     const TEST_CRASH_TYPE: i32 = 102;
     const TEST_SEND_TEXT_TYPE: i32 = 103;
+
+    fn ws_last_error_text() -> String {
+        let ptr = hew_ws_last_error();
+        assert!(!ptr.is_null());
+        // SAFETY: accessor returns a valid header-aware C string.
+        let text = unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: pointer came from hew_ws_last_error.
+        unsafe { hew_cabi::cabi::free_cstring(ptr) };
+        text
+    }
+
+    #[test]
+    fn websocket_error_and_errno_follow_actor_across_worker_threads() {
+        use crate::net_error_slot_test_support::{
+            spawn_error_slot_test_actor, with_actor_context, NetErrorSlotRuntimeGuard,
+        };
+
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+        for _ in 0..3 {
+            let actor = spawn_error_slot_test_actor();
+            assert!(!actor.is_null());
+            let actor_addr = actor as usize;
+            let barrier = Arc::new(Barrier::new(2));
+            let worker_barrier = Arc::clone(&barrier);
+            let worker = std::thread::spawn(move || {
+                worker_barrier.wait();
+                let actor = actor_addr as *mut hew_runtime::actor::HewActor;
+                with_actor_context(actor, || (hew_ws_last_errno(), ws_last_error_text()))
+            });
+
+            with_actor_context(actor, || {
+                // SAFETY: null is the documented invalid-URL path.
+                let conn = unsafe { hew_ws_connect(std::ptr::null()) };
+                assert!(conn.is_null());
+            });
+            barrier.wait();
+            assert_eq!(
+                worker.join().expect("worker should read actor error"),
+                (-1, "websocket.connect: url is null".to_owned())
+            );
+
+            with_actor_context(actor, || {
+                assert_eq!(hew_ws_last_errno(), -1);
+                assert_eq!(ws_last_error_text(), "websocket.connect: url is null");
+            });
+
+            // SAFETY: actor is live and owned by this test.
+            unsafe { actor::hew_actor_stop(actor) };
+            // SAFETY: actor was stopped immediately above and is freed once.
+            assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
+        }
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum ActorEvent {
@@ -2024,16 +2044,11 @@ mod tests {
         let (server, conn, client) = attach_test_conn();
         let mut actor_slot: usize = 0;
         let actor_ptr = std::ptr::from_mut(&mut actor_slot).cast::<c_void>();
-        let _ = hew_cabi::sink::hew_stream_last_errno();
-
         // SAFETY: `conn` is a live connection and `actor_ptr` is a valid slot.
-        unsafe { hew_ws_attach(conn, actor_ptr, 4_294_967_297, 1) };
+        let status = unsafe { hew_ws_attach(conn, actor_ptr, 4_294_967_297, 1) };
 
-        assert_eq!(
-            hew_cabi::sink::hew_stream_last_errno(),
-            22,
-            "an unrepresentable message-type index must be reported, not narrowed"
-        );
+        assert_eq!(status, -1);
+        assert!(ws_last_error_text().contains("message-type index out of range"));
         // SAFETY: `conn` is live for the duration of this borrow.
         let attached = { lock_or_recover(&unsafe { &*conn }.inner.reader).is_some() };
         assert!(

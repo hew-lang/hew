@@ -27,6 +27,10 @@
 
 import std::net;
 
+fn checked_attach_msg_type(context: string, index: i64) -> Result<i64, net.NetError> {
+    net.try_msg_type_arg(context, index)
+}
+
 /// An established TLS connection to a remote host.
 ///
 /// Created by `tls.connect(host, port)`. Must be released with `close()`.
@@ -168,12 +172,12 @@ impl TlsStreamMethods for TlsStream {
         })
     }
     fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64) {
-        // The indices are passed at full width: narrowing them here would turn
-        // `2^32 + 1` into index `1` and attach the reader to a different
-        // message. `hew_tls_attach` range-checks them and refuses to attach.
-        unsafe {
-            hew_tls_attach(stream, handler, on_data_type, on_close_type)
-        };
+        match try_attach(stream, handler, on_data_type, on_close_type) {
+            Ok(()) => {},
+            Err(err) => {
+                panic(f"tls.TlsStream.attach failed: {net.net_error_message(err)}");
+            },
+        }
     }
     fn close(stream: TlsStream) {
         unsafe {
@@ -183,6 +187,29 @@ impl TlsStreamMethods for TlsStream {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
+/// Attach a TLS stream to an actor, returning a typed error on refusal.
+///
+/// Message-type indices are validated at Hew's full `i64` width before the
+/// runtime FFI is entered, so an out-of-range value cannot wrap to a different
+/// actor message.
+pub fn try_attach(
+    stream: TlsStream,
+    handler: LocalPid<TlsHandler>,
+    on_data_type: i64,
+    on_close_type: i64,
+) -> Result<(), net.NetError> {
+    let checked_data = checked_attach_msg_type("tls.try_attach.on_data_type", on_data_type)?;
+    let checked_close = checked_attach_msg_type("tls.try_attach.on_close_type", on_close_type)?;
+    let status = unsafe {
+        hew_tls_attach(stream, handler, checked_data, checked_close)
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(net.net_error_from_errno(0))
+    }
+}
+
 /// Open a TLS connection to a remote host.
 ///
 /// Uses system root certificates to verify the server. Returns a
@@ -250,7 +277,7 @@ extern "C" {
     fn hew_tls_last_error() -> string;
     fn hew_tls_write_result(stream: TlsStream, data: bytes) -> TlsWriteFfiResult;
     fn hew_tls_read_result(stream: TlsStream, size: i32) -> TlsReadFfiResult;
-    fn hew_tls_attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64);
+    fn hew_tls_attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64) -> i32;
     fn hew_tls_close(stream: TlsStream);
 }
 
@@ -288,4 +315,11 @@ fn tls_error_from_status_tls_error_and_io_error_currently_collapse() {
     assert(tls_error == NetError::Other(0));
     assert(io_error == NetError::Other(0));
     assert(tls_error == io_error);
+}
+
+#[test]
+fn tls_attach_indices_are_rejected_before_ffi_narrowing() {
+    assert(checked_attach_msg_type("tls.attach", -1).is_err());
+    assert(checked_attach_msg_type("tls.attach", 2147483648).is_err());
+    assert(checked_attach_msg_type("tls.attach", 2147483647).is_ok());
 }

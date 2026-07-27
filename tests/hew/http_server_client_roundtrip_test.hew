@@ -56,9 +56,10 @@ actor Client {
 /// so the assertions pin the exact status and the exact echoed body.
 #[test]
 fn test_server_client_roundtrip_returns_200_and_echoes_path() {
-    match http.listen("127.0.0.1:19717") {
+    match http.listen("127.0.0.1:0") {
         Ok(server) => {
-            let client = spawn Client(url: "http://127.0.0.1:19717/ping", status: 0, body: "");
+            let port = http.server_port(server);
+            let client = spawn Client(url: f"http://127.0.0.1:{port}/ping", status: 0, body: "");
             client.fetch(0);
             let req = server.accept();
             let path = req.path();

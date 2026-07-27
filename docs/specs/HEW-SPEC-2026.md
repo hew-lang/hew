@@ -815,8 +815,13 @@ import std::io;            // Available as "io"
 import std::text::regex;   // Available as "regex"
 
 // Call module functions with dot-syntax: module.function(args)
-let listening = http.listen("0.0.0.0:8080");   // Uses short name "http"
-                                            // Returns Result<Server, NetError>
+match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
+    Ok(server) => {
+        println(f"HTTP server listening on port {http.server_port(server)}");
+        server.close(); // Explicitly release the listener on every success path.
+    },
+    Err(_err) => println(f"listen failed: {http.listen_error()}"),
+}
 let content = fs.read("config.toml");
 let exists = fs.exists("output.txt");       // Returns bool
 let line = io.read_line();                  // Preferred stdin surface

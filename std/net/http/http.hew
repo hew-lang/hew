@@ -92,6 +92,16 @@ impl ServerMethods for Server {
     }
 }
 
+/// Return the TCP port selected for this listener.
+///
+/// This is primarily useful after binding to port `0`, which asks the kernel
+/// to choose an available ephemeral port.
+pub fn server_port(server: Server) -> i64 {
+    unsafe {
+        hew_http_server_port(server) as i64
+    }
+}
+
 // ── Request methods ───────────────────────────────────────────────────
 /// Methods available on an HTTP `Request`.
 trait RequestMethods {
@@ -325,7 +335,7 @@ impl Request {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-/// Return and clear the detail of this actor's most recent HTTP failure.
+/// Return the detail of this actor's most recent HTTP failure.
 ///
 /// Reads the same runtime authority as `http_client.last_error()`; the name
 /// differs only because both files share one package pub-name namespace.
@@ -365,11 +375,10 @@ pub fn listen(addr: string) -> Result<Server, net.NetError> {
     if ok {
         return Ok(server);
     }
-    // Read the errno before the detail: reading the detail clears the slot.
     let errno = unsafe {
         hew_http_last_listen_errno()
     };
-    if errno == 0 {
+    if errno == -1 {
         let detail = unsafe {
             hew_http_last_error()
         };
@@ -402,6 +411,7 @@ pub fn try_respond_stream(req: Request, status: i64, content_type: string) -> Re
 extern "C" {
     fn hew_http_server_new(addr: string) -> Server;
     fn hew_http_server_is_valid(server: Server) -> bool;
+    fn hew_http_server_port(server: Server) -> i32;
     fn hew_http_last_listen_errno() -> i64;
     fn hew_http_last_error() -> string;
     fn hew_http_server_recv(server: Server) -> RequestHandle;

@@ -21,33 +21,19 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-thread_local! {
-    /// The errno the most recent failed [`hew_http_server_new`] bind reported
-    /// on this actor, or 0 when the last call succeeded.
-    ///
-    /// The human-readable half lives in the module's single
-    /// `hew_http_last_error` slot, so a caller reads one authority for the
-    /// detail whether the failure came from the client or the server.
-    static LAST_LISTEN_ERRNO: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
-}
-
 fn set_listen_error(errno: i64, detail: String) {
-    LAST_LISTEN_ERRNO.with(|slot| slot.set(errno));
-    crate::http::client::set_http_last_error(detail);
+    crate::http::client::set_http_last_error_with_errno(errno, detail);
 }
 
 fn clear_listen_error() {
-    LAST_LISTEN_ERRNO.with(|slot| slot.set(0));
     crate::http::client::clear_http_last_error();
 }
 
-/// Return and clear the errno of this actor's most recent failed
+/// Return the errno of this actor's most recent failed
 /// [`hew_http_server_new`], or 0 when the last call succeeded.
-///
-/// Read this before `hew_http_last_error`, which clears the detail.
 #[no_mangle]
 pub extern "C" fn hew_http_last_listen_errno() -> i64 {
-    LAST_LISTEN_ERRNO.with(std::cell::Cell::take)
+    hew_runtime::parse_error_slot::get_errno(hew_runtime::parse_error_slot::ErrorSlotKind::Http)
 }
 
 /// Report whether `srv` is backed by a bound listener.
@@ -62,6 +48,26 @@ pub extern "C" fn hew_http_last_listen_errno() -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_server_is_valid(srv: *const HewHttpServer) -> bool {
     !srv.is_null()
+}
+
+/// Return the TCP port selected for a bound server, or -1 for an invalid
+/// handle/non-IP listener address.
+///
+/// # Safety
+///
+/// `srv` must be null or a pointer returned by [`hew_http_server_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_server_port(srv: *const HewHttpServer) -> i32 {
+    if srv.is_null() {
+        return -1;
+    }
+    // SAFETY: non-null `srv` is valid per the caller contract.
+    let server = unsafe { &*srv };
+    server
+        .inner
+        .server_addr()
+        .to_ip()
+        .map_or(-1, |addr| i32::from(addr.port()))
 }
 
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -367,12 +373,12 @@ impl Drop for HewHttpServer {
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_server_new(addr: *const c_char) -> *mut HewHttpServer {
     if addr.is_null() {
-        set_listen_error(0, "http.listen: address is null".to_owned());
+        set_listen_error(-1, "http.listen: address is null".to_owned());
         return std::ptr::null_mut();
     }
     // SAFETY: addr is a valid NUL-terminated C string per caller contract.
     let Ok(addr_str) = unsafe { CStr::from_ptr(addr) }.to_str() else {
-        set_listen_error(0, "http.listen: address is not valid UTF-8".to_owned());
+        set_listen_error(-1, "http.listen: address is not valid UTF-8".to_owned());
         return std::ptr::null_mut();
     };
 
@@ -1088,6 +1094,64 @@ pub unsafe extern "C" fn hew_http_request_headers(req: *const HewHttpRequest) ->
 mod tests {
     use super::*;
     use std::net::{Shutdown, SocketAddr, TcpStream};
+
+    fn http_last_error_text() -> String {
+        let ptr = crate::http::client::hew_http_last_error();
+        assert!(!ptr.is_null());
+        // SAFETY: accessor returns a valid header-aware C string.
+        let text = unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: pointer came from hew_http_last_error.
+        unsafe { free_cstring(ptr) };
+        text
+    }
+
+    #[test]
+    fn http_error_and_errno_follow_actor_across_worker_threads() {
+        use crate::net_error_slot_test_support::{
+            spawn_error_slot_test_actor, with_actor_context, NetErrorSlotRuntimeGuard,
+        };
+
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+        for _ in 0..3 {
+            let actor = spawn_error_slot_test_actor();
+            assert!(!actor.is_null());
+            let actor_addr = actor as usize;
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let worker_barrier = Arc::clone(&barrier);
+            let worker = std::thread::spawn(move || {
+                worker_barrier.wait();
+                let actor = actor_addr as *mut hew_runtime::actor::HewActor;
+                with_actor_context(actor, || {
+                    (hew_http_last_listen_errno(), http_last_error_text())
+                })
+            });
+
+            with_actor_context(actor, || {
+                // SAFETY: null is the documented invalid-address path.
+                let server = unsafe { hew_http_server_new(std::ptr::null()) };
+                assert!(server.is_null());
+            });
+            barrier.wait();
+            assert_eq!(
+                worker.join().expect("worker should read actor error"),
+                (-1, "http.listen: address is null".to_owned())
+            );
+
+            // Reading the classification while building NetError must not
+            // consume the detail observed by a later last_error call.
+            with_actor_context(actor, || {
+                assert_eq!(hew_http_last_listen_errno(), -1);
+                assert_eq!(http_last_error_text(), "http.listen: address is null");
+            });
+
+            // SAFETY: actor is live and owned by this test.
+            unsafe { hew_runtime::actor::hew_actor_stop(actor) };
+            // SAFETY: actor was stopped immediately above and is freed once.
+            assert_eq!(unsafe { hew_runtime::actor::hew_actor_free(actor) }, 0);
+        }
+    }
 
     #[test]
     fn invalid_response_status_is_rejected_exactly() {

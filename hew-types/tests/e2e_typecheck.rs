@@ -2464,9 +2464,15 @@ fn http_respond_three_arg_typechecks() {
         import std::net::http;
 
         fn main() {
-            let server = http.listen(":8080");
-            let req = server.accept();
-            req.respond(200, "text/plain", "Hello, Hew!");
+            match http.listen(":8080") {
+                Ok(server) => {
+                    let req = server.accept();
+                    req.respond(200, "text/plain", "Hello, Hew!");
+                    req.close();
+                    server.close();
+                },
+                Err(_err) => {},
+            }
         }
         "#,
     );
@@ -2487,9 +2493,15 @@ fn http_respond_four_arg_rejected() {
         import std::net::http;
 
         fn main() {
-            let server = http.listen(":8080");
-            let req = server.accept();
-            req.respond(200, "text/plain", 11, "Hello, Hew!");
+            match http.listen(":8080") {
+                Ok(server) => {
+                    let req = server.accept();
+                    req.respond(200, "text/plain", 11, "Hello, Hew!");
+                    req.close();
+                    server.close();
+                },
+                Err(_err) => {},
+            }
         }
         "#,
     );

@@ -834,31 +834,28 @@ pub unsafe extern "C" fn hew_tls_attach(
     actor: *mut c_void,
     on_data_type: i64,
     on_close_type: i64,
-) {
+) -> i32 {
     if stream.is_null() || actor.is_null() {
-        eprintln!(
-            "[tls-attach] null pointer: stream={} actor={}",
+        set_tls_last_error(format!(
+            "tls.attach: null handle (stream={}, actor={})",
             stream.is_null(),
             actor.is_null()
-        );
-        return;
+        ));
+        return -1;
     }
     let (Ok(on_data_type), Ok(on_close_type)) = (
         c_int::try_from(on_data_type),
         c_int::try_from(on_close_type),
     ) else {
-        hew_cabi::sink::set_last_error_with_errno(
-            format!(
-                "hew_tls_attach: message-type index out of range (on_data_type={on_data_type}, \
-                 on_close_type={on_close_type})"
-            ),
-            22, // EINVAL: Invalid argument
-        );
+        set_tls_last_error(format!(
+            "tls.attach: message-type index out of range (on_data_type={on_data_type}, \
+             on_close_type={on_close_type})"
+        ));
         eprintln!(
             "[tls-attach] message-type index out of range: on_data_type={on_data_type} \
              on_close_type={on_close_type}"
         );
-        return;
+        return -1;
     };
     // SAFETY: `stream` is a valid HewTlsStream pointer per caller contract.
     let s = unsafe { &*stream };
@@ -873,8 +870,8 @@ pub unsafe extern "C" fn hew_tls_attach(
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     if reader_guard.is_some() {
-        eprintln!("[tls-attach] reader already attached for stream={stream:p}");
-        return;
+        set_tls_last_error("tls.attach: reader already attached");
+        return -1;
     }
     // SAFETY: `actor` points to a valid HewActorRef for the duration of this
     // call; we snapshot the ref by value so the reader owns its own copy.
@@ -882,6 +879,8 @@ pub unsafe extern "C" fn hew_tls_attach(
     let join =
         spawn_tls_attach_reader(Arc::clone(&s.inner), actor_ref, on_data_type, on_close_type);
     *reader_guard = Some(join);
+    clear_tls_last_error();
+    0
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1466,13 +1465,12 @@ mod tests {
     // ── hew_tls_attach null-pointer guards ───────────────────────────────────
 
     #[test]
-    fn attach_null_stream_is_noop() {
+    fn attach_null_stream_is_rejected() {
         // SAFETY: null stream exercises the guard path; actor pointer is
         // irrelevant because the null-stream check fires first.
-        unsafe {
-            hew_tls_attach(std::ptr::null_mut(), std::ptr::null_mut(), 0, 1);
-        };
-        // No panic, no crash — guard exited cleanly.
+        let status = unsafe { hew_tls_attach(std::ptr::null_mut(), std::ptr::null_mut(), 0, 1) };
+        assert_eq!(status, -1);
+        assert!(last_error_string().contains("null handle"));
     }
 
     #[test]
@@ -1489,7 +1487,8 @@ mod tests {
         });
         let stream_ptr = Box::into_raw(boxed);
         // SAFETY: null actor pointer exercises the null-actor guard.
-        unsafe { hew_tls_attach(stream_ptr, std::ptr::null_mut(), 0, 1) };
+        let status = unsafe { hew_tls_attach(stream_ptr, std::ptr::null_mut(), 0, 1) };
+        assert_eq!(status, -1);
         // SAFETY: we created `stream_ptr` and it was not consumed.
         unsafe { hew_tls_close(stream_ptr) };
     }
@@ -1511,16 +1510,11 @@ mod tests {
         let stream_ptr = Box::into_raw(boxed);
         let mut actor: usize = 0;
         let actor_ptr = std::ptr::from_mut(&mut actor).cast::<c_void>();
-        let _ = hew_cabi::sink::hew_stream_last_errno();
-
         // SAFETY: `stream_ptr` is live and `actor_ptr` is a valid, aligned slot.
-        unsafe { hew_tls_attach(stream_ptr, actor_ptr, 4_294_967_297, 1) };
+        let status = unsafe { hew_tls_attach(stream_ptr, actor_ptr, 4_294_967_297, 1) };
 
-        assert_eq!(
-            hew_cabi::sink::hew_stream_last_errno(),
-            22,
-            "an unrepresentable message-type index must be reported, not narrowed"
-        );
+        assert_eq!(status, -1);
+        assert!(last_error_string().contains("message-type index out of range"));
         assert!(
             shared
                 .reader

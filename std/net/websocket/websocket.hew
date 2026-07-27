@@ -47,6 +47,18 @@
 
 import std::net;
 
+fn checked_attach_msg_type(context: string, index: i64) -> Result<i64, net.NetError> {
+    net.try_msg_type_arg(context, index)
+}
+
+fn checked_recv_deadline(deadline_ms: i64) -> Result<i64, net.NetError> {
+    if deadline_ms <= 0 {
+        Ok(0)
+    } else {
+        net.try_duration_ms("websocket.Conn.recv_timeout", deadline_ms)
+    }
+}
+
 /// An open WebSocket connection handle.
 ///
 /// Created by calling `websocket.connect(url)`, which returns `Err` when the
@@ -126,7 +138,7 @@ impl ConnMethods for Conn {
         }
     }
     fn recv_timeout(conn: Conn, deadline_ms: i64) -> Result<Message, net.NetError> {
-        let deadline = net.try_duration_ms("websocket.Conn.recv_timeout", deadline_ms)?;
+        let deadline = checked_recv_deadline(deadline_ms)?;
         let handle = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI, range-checked above
             hew_ws_recv_timeout(conn, deadline as i32)
         };
@@ -151,13 +163,52 @@ impl ConnMethods for Conn {
         };
     }
     fn attach(conn: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64) {
-        // The indices are passed at full width: narrowing them here would turn
-        // `2^32 + 1` into index `1` and attach the reader to a different
-        // message. `hew_ws_attach` range-checks them and refuses to attach.
-        unsafe {
-            hew_ws_attach(conn, handler, on_message_type, on_close_type)
-        };
+        match try_attach(conn, handler, on_message_type, on_close_type) {
+            Ok(()) => {},
+            Err(err) => {
+                panic(f"websocket.Conn.attach failed: {net.net_error_message(err)}");
+            },
+        }
     }
+}
+
+/// Attach a WebSocket connection to an actor, returning a typed error on
+/// refusal.
+///
+/// Message-type indices are validated at Hew's full `i64` width before the
+/// runtime FFI is entered, so an out-of-range value cannot wrap to a different
+/// actor message.
+pub fn try_attach(
+    conn: Conn,
+    handler: LocalPid<WebSocketHandler>,
+    on_message_type: i64,
+    on_close_type: i64,
+) -> Result<(), net.NetError> {
+    let checked_message = checked_attach_msg_type("websocket.try_attach.on_message_type", on_message_type)?;
+    let checked_close = checked_attach_msg_type("websocket.try_attach.on_close_type", on_close_type)?;
+    let status = unsafe {
+        hew_ws_attach(conn, handler, checked_message, checked_close)
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(net.net_error_from_errno(0))
+    }
+}
+
+#[test]
+fn websocket_attach_indices_are_rejected_before_ffi_narrowing() {
+    assert(checked_attach_msg_type("websocket.attach", -1).is_err());
+    assert(checked_attach_msg_type("websocket.attach", 2147483648).is_err());
+    assert(checked_attach_msg_type("websocket.attach", 2147483647).is_ok());
+}
+
+#[test]
+fn websocket_nonpositive_deadlines_disable_but_positive_overflow_is_rejected() {
+    assert(checked_recv_deadline(-9223372036854775807).unwrap_or(-1) == 0);
+    assert(checked_recv_deadline(0).unwrap_or(-1) == 0);
+    assert(checked_recv_deadline(2147483647).is_ok());
+    assert(checked_recv_deadline(2147483648).is_err());
 }
 
 // ── Message methods ───────────────────────────────────────────────────
@@ -261,7 +312,7 @@ trait WebSocketHandler {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-/// Return and clear the detail of this actor's most recent WebSocket failure.
+/// Return the detail of this actor's most recent WebSocket failure.
 ///
 /// Returns the empty string when the last call succeeded. Call it immediately
 /// after an `Err` for the precise, non-secret reason.
@@ -294,11 +345,10 @@ pub fn connect(url: string) -> Result<Conn, net.NetError> {
     if ok {
         return Ok(conn);
     }
-    // Read the errno before the detail: reading the detail clears the slot.
     let errno = unsafe {
         hew_ws_last_errno()
     };
-    if errno == 0 {
+    if errno == -1 {
         let detail = unsafe {
             hew_ws_last_error()
         };
@@ -330,11 +380,10 @@ pub fn listen(addr: string) -> Result<Server, net.NetError> {
     if ok {
         return Ok(server);
     }
-    // Read the errno before the detail: reading the detail clears the slot.
     let errno = unsafe {
         hew_ws_last_errno()
     };
-    if errno == 0 {
+    if errno == -1 {
         let detail = unsafe {
             hew_ws_last_error()
         };
@@ -363,5 +412,5 @@ extern "C" {
     fn hew_ws_server_port(server: Server) -> i32;
     fn hew_ws_server_accept(server: Server) -> Conn;
     fn hew_ws_server_close(server: Server);
-    fn hew_ws_attach(ws: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64);
+    fn hew_ws_attach(ws: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64) -> i32;
 }

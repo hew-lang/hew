@@ -303,11 +303,10 @@ jobs:
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
         # when both link into a test binary.
         #
-        # Skip the leak-slope oracles on the 3-core macos-14 runner: they
-        # compile/run Hew programs through LLVM at test time and measure RSS
-        # over loops, and slope measurement is timing-sensitive on a noisy
-        # cloud runner. The Linux job runs the full oracle set on its faster
-        # runner, so that coverage is not lost.
+        # Oracle integration binaries are intentionally outside ordinary
+        # hosted macOS jobs for runner cost/reliability. The macOS-only
+        # leaks(1) oracles cannot run on Linux; their project-facing authority
+        # is dedicated release-tip validation and the explicit local gate.
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm

@@ -117,6 +117,36 @@ pub const HIGH_FRAMES: usize = 50;
 /// while still catching a slope of ~0.1 leaks/iteration.
 pub const SLOPE_TOLERANCE: usize = 5;
 
+/// Parse the canonical summary emitted by `leaks --atExit`.
+///
+/// Returns both the leaked node count and total leaked bytes. Callers remain
+/// responsible for attaching their own fail-closed diagnostic when no summary
+/// is present, because that message should name the probe they were measuring.
+pub fn parse_leaks_summary(report: &str) -> Option<(usize, usize)> {
+    parse_leaks_summary_line(report).map(|(_, leaks, bytes)| (leaks, bytes))
+}
+
+fn parse_leaks_summary_line(report: &str) -> Option<(&str, usize, usize)> {
+    report.lines().find_map(|line| {
+        let rest = line.strip_prefix("Process ")?;
+        if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let summary = rest.split_once(": ")?.1;
+        let mut words = summary.split_whitespace();
+        let leaks = words.next()?.parse().ok()?;
+        let leak_word = words.next()?;
+        if leak_word != "leak" && leak_word != "leaks" {
+            return None;
+        }
+        if words.next()? != "for" {
+            return None;
+        }
+        let bytes = words.next()?.parse().ok()?;
+        Some((line, leaks, bytes))
+    })
+}
+
 /// Compile `source` to a native binary via `hew compile --emit-dir` and return
 /// the binary path. Panics with the captured compiler output on failure.
 pub fn compile_to_native(source: &str, dir: &Path, name: &str) -> PathBuf {
@@ -259,23 +289,9 @@ pub fn measure_leaks_with_args(bin: &Path, args: &[&str]) -> usize {
         String::from_utf8_lossy(&output.stderr)
     );
     let report = String::from_utf8_lossy(&output.stdout);
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        return n;
-                    }
-                }
-            }
-        }
+    if let Some((line, leaks, _)) = parse_leaks_summary_line(&report) {
+        eprintln!("  parsed leak count from line: {line}");
+        return leaks;
     }
     panic!(
         "leaks(1) emitted no `Process <pid>: N leak(s) for B total leaked bytes.` summary \
@@ -524,29 +540,8 @@ pub fn measure_leaks_exact(bin: &Path) -> (usize, usize) {
         String::from_utf8_lossy(&output.stderr)
     );
     let report = String::from_utf8_lossy(&output.stdout);
-    for line in report.lines() {
-        let Some(rest) = line.strip_prefix("Process ") else {
-            continue;
-        };
-        if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let Some(summary) = rest.split_once(": ").map(|(_, summary)| summary) else {
-            continue;
-        };
-        if !summary.contains(" leak") || !summary.contains(" for ") {
-            continue;
-        }
-        let mut words = summary.split_whitespace();
-        let (Some(count), _, _, Some(bytes)) =
-            (words.next(), words.next(), words.next(), words.next())
-        else {
-            continue;
-        };
-        let (Ok(count), Ok(bytes)) = (count.parse::<usize>(), bytes.parse::<usize>()) else {
-            continue;
-        };
-        return (count, bytes);
+    if let Some(summary) = parse_leaks_summary(&report) {
+        return summary;
     }
     panic!(
         "leaks(1) emitted no `Process <pid>: N leak(s) for B total leaked bytes.` summary \

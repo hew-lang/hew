@@ -653,6 +653,17 @@ pub(crate) fn shutdown_requested() -> bool {
 /// shutdown. It is a no-op if the scheduler was never initialized.
 #[no_mangle]
 pub extern "C" fn hew_runtime_cleanup() {
+    // Release any activation still parked at a suspend point FIRST, while the
+    // machinery its continuation frame unwinds through is still alive. A frame
+    // parked on `sleep` cancels its await registration through the global
+    // periodic timer wheel, which `hew_periodic_shutdown` below frees; doing
+    // this after that call dereferences freed memory. Workers are joined before
+    // this function runs (see the doc comment above), so nothing can resume an
+    // activation while the frames are destroyed. Without this, a parked actor
+    // stays non-quiescent and `cleanup_all_actors` leaks it fail-closed.
+    // SAFETY: worker threads are joined, per this function's precondition.
+    unsafe { crate::actor::retire_parked_activations() };
+
     // Stop the active-mode I/O reactor BEFORE any actors are freed. The reactor
     // thread delivers socket data into actor mailboxes; joining it here ensures
     // no in-flight readiness event can target an actor that cleanup_all_actors
@@ -730,6 +741,13 @@ pub extern "C" fn hew_runtime_cleanup() {
     // can still reference it. Dropping it frees the scheduler (deques, parkers,
     // stealers, global queue) and the now-empty live-actor registry.
     drop(runtime::take_default());
+
+    // Every actor this runtime intended to reclaim has now been reclaimed, so
+    // this is the one point where the actor-box balance is a statement about
+    // the whole program. Disarmed by default; `HEW_ACTOR_LEAK_CHECK=1` turns an
+    // imbalance into a diagnostic and a distinct exit status, which is what
+    // makes a leaked actor visible to a caller that can only see exit status.
+    crate::actor_balance::verdict_after_runtime_cleanup();
 }
 
 /// Run the canonical runtime cleanup chain from a compiled native `main` return.

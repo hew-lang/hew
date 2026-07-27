@@ -51,6 +51,9 @@ STAGES=(raw elab)
 # the gate rather than hang the build; 124/137 land in the transcript and
 # mismatch the committed exit status.
 RUN_TIMEOUT_SECS="${CHECKED_MIR_RUN_TIMEOUT_SECS:-60}"
+# Per-execution environment overlay consumed by execute_fixture; empty for
+# every ordinary fixture run and set only by the leak-oracle counterfactual.
+EXTRA_RUN_ENV=()
 
 # sha256 over stdin-named files; `sha256sum` on Linux, `shasum -a 256` on
 # macOS. Both print `<hash>  <name>`, so the manifest format is identical.
@@ -144,6 +147,16 @@ render_transcript() {
 # Compile a fixture and, if it links, execute it under a wall-clock cap in
 # a scratch working directory (fixtures that persist node identity files
 # must not write into the checkout). Fills the caller's transcript path.
+#
+# Every execution runs with the runtime's actor-box balance check armed
+# (HEW_ACTOR_LEAK_CHECK=1). Exit status and stdout cannot see a leaked
+# actor — a fixture that never reclaims one still prints the right thing
+# and returns the right code — so without the check this gate is
+# structurally blind to the exact defect issue #2817 reports. With it, an
+# actor that outlives runtime cleanup lands in the transcript as
+# `exit: 93` and mismatches the committed expectation. Extra environment
+# for a single execution can be passed in EXTRA_RUN_ENV (name=value
+# entries).
 execute_fixture() {
     local fixture="$1" name="$2" workdir="$3" transcript="$4"
     local emit="$workdir/emit" scratch="$workdir/cwd"
@@ -161,13 +174,68 @@ execute_fixture() {
         # being printed by this script's shell across the gate's own output.
         # The status still arrives as 128+signo.
         # shellcheck disable=SC2016  # positional parameters expand in inner bash.
-        "$TIMEOUT_BIN" --kill-after=5s "${RUN_TIMEOUT_SECS}s" \
+        env HEW_ACTOR_LEAK_CHECK=1 ${EXTRA_RUN_ENV[@]+"${EXTRA_RUN_ENV[@]}"} \
+            "$TIMEOUT_BIN" --kill-after=5s "${RUN_TIMEOUT_SECS}s" \
             bash -c 'cd "$1" && "$2"; exit $?' _ "$scratch" "$emit/$name" \
             >"$stdout_path" 2>"$workdir/$name.stderr" || run_status=$?
     fi
     render_transcript "$compile_status" "$compile_log" "$run_status" "$stdout_path" "$transcript"
     LAST_COMPILE_STATUS="$compile_status"
     LAST_RUN_STATUS="$run_status"
+}
+
+# Exit status the runtime publishes when its actor-box balance check finds
+# an actor still allocated after runtime cleanup. Must match
+# `HEW_EXIT_ACTOR_LEAK` in hew-runtime/src/actor_balance.rs.
+ACTOR_LEAK_EXIT=93
+
+# Counterfactual for the leak check: accounting that has quietly stopped
+# counting passes every fixture while proving nothing, so prove it can
+# still fail before trusting it on any fixture.
+#
+# `HEW_ACTOR_LEAK_SELFTEST=skip-free` makes the runtime's shutdown sweep
+# omit the free of exactly one actor it would otherwise reclaim — the same
+# program, with the free left out. It must then exit ACTOR_LEAK_EXIT. The
+# specific status matters: a counterfactual that merely exits non-zero
+# could be failing for an unrelated reason and would prove nothing.
+#
+# Picks a runnable fixture that spawns an actor. Chosen by asking the
+# runtime, not by trusting a name: the baseline run must first exit
+# something OTHER than ACTOR_LEAK_EXIT, which is only possible if the
+# fixture reaches runtime cleanup with a balanced count.
+leak_oracle_selftest() {
+    local workdir="$1"
+    local fixture name baseline_status leaked_status
+    for fixture in "${fixtures[@]}"; do
+        name="$(basename "$fixture" .hew)"
+        [[ -f "$CORPUS/$name.expected" ]] || continue
+        grep -q '^actor ' "$fixture" || continue
+
+        local sub="$workdir/selftest-$name"
+        mkdir -p "$sub"
+        EXTRA_RUN_ENV=()
+        execute_fixture "$fixture" "$name" "$sub" "$sub/$name.baseline"
+        [[ "$LAST_COMPILE_STATUS" -eq 0 ]] || continue
+        baseline_status="$LAST_RUN_STATUS"
+        if [[ "$baseline_status" -eq "$ACTOR_LEAK_EXIT" ]] || is_crash_status "$baseline_status"; then
+            continue
+        fi
+
+        EXTRA_RUN_ENV=(HEW_ACTOR_LEAK_SELFTEST=skip-free)
+        execute_fixture "$fixture" "$name" "$sub" "$sub/$name.leaked"
+        EXTRA_RUN_ENV=()
+        leaked_status="$LAST_RUN_STATUS"
+        if [[ "$leaked_status" -ne "$ACTOR_LEAK_EXIT" ]]; then
+            echo "LEAK ORACLE SELFTEST FAILED: $name with one actor free omitted exited $leaked_status, expected $ACTOR_LEAK_EXIT" >&2
+            echo "  the actor-box balance check is not catching a leaked actor, so every PASS below is meaningless" >&2
+            head -20 "$sub/$name.stderr" >&2
+            return 1
+        fi
+        echo "SELFTEST $name (baseline exit $baseline_status; one free omitted -> exit $leaked_status)"
+        return 0
+    done
+    echo "LEAK ORACLE SELFTEST FAILED: no runnable actor-spawning fixture available to run the counterfactual against" >&2
+    return 1
 }
 
 fixtures=()
@@ -283,6 +351,13 @@ run)
     nonrunnable=0
     tmpdir="$(mktemp -d)"
     trap 'rm -rf "$tmpdir"' EXIT
+    # The leak check below is only evidence if it can still fail. Prove that
+    # first, against a deliberately leaked actor, and refuse to report on the
+    # corpus at all if the counterfactual comes back green.
+    if ! leak_oracle_selftest "$tmpdir"; then
+        echo "checked-mir-run: FAILED (leak oracle selftest)" >&2
+        exit 1
+    fi
     for f in "${fixtures[@]}"; do
         name="$(basename "$f" .hew)"
         expected="$CORPUS/$name.expected"
@@ -385,6 +460,13 @@ expect)
             refused+=("$name (compile exit $LAST_COMPILE_STATUS, run exit $LAST_RUN_STATUS)")
             continue
         fi
+        # A leaked actor is a defect this gate exists to catch, so capturing
+        # `exit: 93` as the expectation would bless it. Same rule as a crash:
+        # recording one has to be a deliberate hand-written act.
+        if [[ "$LAST_RUN_STATUS" -eq "$ACTOR_LEAK_EXIT" ]]; then
+            refused+=("$name (leaked an actor: run exit $LAST_RUN_STATUS)")
+            continue
+        fi
         if [[ ! -f "$expected" ]]; then
             added+=("$name.expected")
         elif cmp -s "$expected" "$tmpdir/$name.actual"; then
@@ -403,7 +485,7 @@ expect)
         echo "  CHANGED $entry"
     done
     for entry in ${refused[@]+"${refused[@]}"}; do
-        echo "  REFUSED $entry — does not build or died on a signal; write the expectation by hand" >&2
+        echo "  REFUSED $entry — does not build, died on a signal, or leaked an actor; write the expectation by hand" >&2
     done
     ;;
 *)

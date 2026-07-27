@@ -534,6 +534,25 @@ pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> b
     with_live_actor_by_id(actor_id, expected, |_| ()).is_some()
 }
 
+/// Copy the currently tracked actor pointers without removing them.
+///
+/// Unlike [`drain_all_for_cleanup`] this leaves the registry intact, so the
+/// caller can act on live actors while reclamation ownership stays with the
+/// cleanup sweep. Used by `actor::retire_parked_activations`, which must run
+/// before the sweep but must not take the actors from it.
+///
+/// Safe to call only once worker threads are joined: the returned pointers are
+/// unpinned, so a concurrent free would dangle them.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn snapshot_live_actor_ptrs() -> Vec<*mut HewActor> {
+    with_live_actors_opt(|map| {
+        map.as_ref()
+            .map(|m| m.values().map(|ActorPtr(actor)| *actor).collect())
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
+}
+
 /// Take all currently tracked actors out of the live map.
 ///
 /// Returns the drained map so the caller can free each actor.

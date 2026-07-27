@@ -2247,13 +2247,17 @@ mod tests {
         // SAFETY: url is a valid C string.
         let conn = unsafe { hew_ws_connect(url.as_ptr()) };
         assert!(conn.is_null(), "expected null for unreachable address");
+        let errno = hew_ws_last_errno();
         assert!(
-            matches!(hew_ws_last_errno(), 61 | 111 | 10061),
+            matches!(errno, 61 | 111 | 10061),
             "closed loopback port must retain ECONNREFUSED"
         );
+        let detail = ws_last_error_text();
         assert!(
-            ws_last_error_text().contains("Connection refused"),
-            "the precise transport failure must remain observable"
+            detail.starts_with("websocket.connect: ")
+                && detail.contains(&format!("os error {errno}")),
+            "the precise OS transport failure must remain observable without \
+             assuming a platform-localized message: {detail:?}"
         );
         assert!(
             matches!(hew_ws_last_errno(), 61 | 111 | 10061),

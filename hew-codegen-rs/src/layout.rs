@@ -711,7 +711,7 @@ fn tag_int_type_for_width<'ctx>(
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, test))]
 fn legacy_tag_storage_width(variant_count: usize) -> CodegenResult<u32> {
     if variant_count <= 256 {
         Ok(8)

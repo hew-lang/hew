@@ -1987,7 +1987,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // the handle), a sweep reached by some other route than
         // `hew_runtime_cleanup`, or the WASM sweep, which has no abandonment
         // path of its own yet.
-        // WASM-TODO: the WASM scheduler has no `retire_parked_activations`
+        // WASM-TODO(#2825): the WASM scheduler has no `retire_parked_activations`
         // equivalent, so a WASM actor parked at a suspend point still takes the
         // fail-closed leak below.
         // Leaking those remains correct: the frame that

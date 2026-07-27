@@ -7621,6 +7621,20 @@ impl Builder {
         site: SiteId,
         receiver_ty: &ResolvedTy,
     ) -> Option<String> {
+        // HIR is authoritative when it already emitted a directly callable
+        // symbol. In particular, a concrete-specialised impl method is named
+        // with its self-type arguments (`Vec$$i64::bump`) and appears in
+        // `module_fn_names` exactly as emitted. Trying the parameterised
+        // receiver fallback first would feed that already-mangled symbol back
+        // into `monomorph::mangle`, violating the origin-name invariant and
+        // panicking at `hew check`.
+        //
+        // Generic impl/method origins are deliberately absent from
+        // `module_fn_names`; they therefore continue through the two
+        // monomorphisation probes below.
+        if self.module_fn_names.contains(callee) {
+            return Some(callee.to_string());
+        }
         if let Some(type_args) = self.call_site_type_args.get(&site).cloned() {
             let substituted: Vec<ResolvedTy> = type_args.iter().map(|t| self.subst_ty(t)).collect();
             let mangled = hew_hir::monomorph::mangle(callee, &substituted);
@@ -7636,9 +7650,6 @@ impl Builder {
                     return Some(mangled);
                 }
             }
-        }
-        if self.module_fn_names.contains(callee) {
-            return Some(callee.to_string());
         }
         self.diagnostics.push(MirDiagnostic {
             kind: MirDiagnosticKind::NotYetImplemented {

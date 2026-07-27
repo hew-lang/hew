@@ -1191,6 +1191,51 @@ fn main() {
 }
 
 #[test]
+fn var_self_concrete_specialised_trait_impl_checks_compiles_and_runs() {
+    require_codegen();
+
+    let source = repo_root()
+        .join("tests/vertical-slice/accept/var_self_concrete_specialised_trait_impl.hew");
+    let source_str = source.to_str().expect("fixture path is valid UTF-8");
+
+    // `hew check` runs through HIR, MIR, and codegen-front. Before the fix,
+    // MIR tried to mangle the already-specialised `Vec$$i64::bump` symbol
+    // again and panicked here.
+    let check = support::bounded_hew_command(
+        ["check", source_str],
+        repo_root(),
+        "check concrete-specialised var-self trait impl",
+    );
+    assert!(
+        check.status.success(),
+        "concrete-specialised var-self trait impl should check; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr),
+    );
+
+    // Compile independently of `hew run`, then execute that exact native
+    // artifact so codegen/link and receiver write-back semantics are both
+    // witnessed.
+    let dir = support::tempdir();
+    let binary = compile_vertical_slice_fixture_to_native(
+        "var_self_concrete_specialised_trait_impl",
+        dir.path(),
+    );
+    let output = support::run_bounded_command(
+        Command::new(&binary),
+        "run concrete-specialised var-self trait impl",
+    );
+    assert!(
+        output.status.success(),
+        "compiled concrete-specialised var-self trait impl should exit zero; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, "99\n");
+}
+
+#[test]
 fn var_self_generic_impl_direct_second_next_resolves_monomorphized_callee() {
     require_codegen();
 

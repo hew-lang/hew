@@ -190,6 +190,85 @@ fn q297_var_bound_receiver_accepts_var_self_method_call() {
 }
 
 #[test]
+fn concrete_specialised_builtin_var_self_preserves_vec_dispatch_authority() {
+    // A receiver binding reconstructed from `current_self_type` must retain
+    // the builtin discriminator on parameterised builtins. Without
+    // `BuiltinType::Vec`, `self[0] = 99` type-checks as a generic Index
+    // operation but publishes no resolved `Vec::set` call for HIR/MIR.
+    let output = check_source(
+        r"
+        trait Bump {
+            fn bump(var self);
+        }
+
+        impl Bump for Vec<i64> {
+            fn bump(var self) {
+                self[0] = 99;
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:?}",
+        output.errors,
+    );
+    assert!(
+        output
+            .resolved_calls
+            .values()
+            .any(|call| call.target.family == MethodTargetFamily::Vec(VecMethod::Set)),
+        "Vec index assignment inside the specialised var-self impl must publish \
+         a checker-authoritative Vec::set call; got: {:?}",
+        output.resolved_calls,
+    );
+}
+
+#[test]
+fn user_generic_builtin_shadow_var_self_preserves_source_identity() {
+    let output = check_source(
+        r"
+        type Option<T> { value: T; }
+
+        trait Bump {
+            fn bump(var self);
+        }
+
+        impl Bump for Option<i64> {
+            fn bump(var self) {
+                self.value = 99;
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "expected clean typecheck, got: {:?}",
+        output.errors,
+    );
+    let option_types: Vec<&Ty> = output
+        .expr_types
+        .values()
+        .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "Option"))
+        .collect();
+    assert!(
+        !option_types.is_empty()
+            && option_types.iter().all(|ty| {
+                !matches!(
+                    *ty,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Option),
+                        ..
+                    }
+                )
+            }),
+        "a source-defined Option<T> must never be tagged as builtin Option in \
+         the impl body; got: {:?}",
+        output.expr_types,
+    );
+}
+
+#[test]
 fn w3042_static_trait_dispatch_let_bound_receiver_rejects_var_self_method() {
     // W3.042 S2-S4: receiver-mutability gate on the generic-bound
     // StaticTraitDispatch sub-arm. A `let`-bound generic-typed receiver

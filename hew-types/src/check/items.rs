@@ -2207,7 +2207,7 @@ impl Checker {
         }
         if let TypeExpr::Named {
             name: type_name,
-            type_args,
+            type_args: _,
         } = &id.target_type.0
         {
             let target_is_struct = self
@@ -2262,17 +2262,22 @@ impl Checker {
                 self.generic_ctx.push(generic_bindings);
             }
 
-            // Set current_self_type for resolving `Self` in parameters
+            // Resolve the whole target through the source-aware resolver once,
+            // while impl generic parameters are in scope. Besides supplying
+            // the arguments used to recognize `Self`, this preserves nominal
+            // identity for the receiver binding: a source-defined `Option<T>`
+            // must not later be reconstructed as builtin `Option<T>`, while a
+            // builtin `Vec<T>` must retain its builtin discriminator.
+            let resolved_self_binding_ty = self.resolve_type_expr(&id.target_type);
             let prev_self_type = self.current_self_type.take();
-            let self_type_args: Vec<Ty> = type_args
-                .as_ref()
-                .map(|args| {
-                    args.iter()
-                        .map(|type_arg| self.resolve_type_expr(type_arg))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let self_type_args = match &resolved_self_binding_ty {
+                Ty::Named { args, .. } => args.clone(),
+                _ => Vec::new(),
+            };
             self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
+            let prev_self_binding_ty = self
+                .current_self_binding_ty
+                .replace(resolved_self_binding_ty);
             let scope_pushed = self.enter_impl_scope(id, span, Some(type_name.as_str()), true);
 
             for method in &id.methods {
@@ -2336,6 +2341,7 @@ impl Checker {
 
             // Restore previous self type
             self.current_self_type = prev_self_type;
+            self.current_self_binding_ty = prev_self_binding_ty;
             if scope_pushed {
                 self.exit_impl_scope();
             }
@@ -2396,8 +2402,14 @@ fn ty_is_supervisor_init_reproducible(ty: &Ty) -> bool {
 
 impl Checker {
     fn resolve_param_binding_ty(&mut self, index: usize, param: &Param) -> (Ty, bool) {
-        let ty = self.resolve_type_expr(&param.ty);
         let is_receiver = index == 0 && self.is_receiver_param(param);
+        if is_receiver {
+            if let Some(receiver_ty) = self.current_self_binding_ty.clone() {
+                return (receiver_ty, true);
+            }
+        }
+
+        let ty = self.resolve_type_expr(&param.ty);
         if !is_receiver {
             return (ty, false);
         }
@@ -2405,21 +2417,14 @@ impl Checker {
             return (ty, true);
         };
 
-        // Primitive receivers bind to canonical primitives so in-body method
-        // calls route through primitive dispatch instead of nominal lookup.
-        let receiver_ty = if self_args.is_empty() {
-            Ty::from_name(self_name).unwrap_or_else(|| Ty::Named {
-                builtin: None,
-                name: self_name.clone(),
-                args: self_args.clone(),
-            })
-        } else {
-            Ty::Named {
-                builtin: None,
-                name: self_name.clone(),
-                args: self_args.clone(),
-            }
-        };
+        // Trait declarations and other receiver contexts outside an impl do
+        // not have a source-resolved impl target to reuse. Preserve the
+        // existing primitive/nominal fallback for those contexts.
+        let receiver_ty = Ty::from_name(self_name).unwrap_or_else(|| Ty::Named {
+            builtin: None,
+            name: self_name.clone(),
+            args: self_args.clone(),
+        });
         (receiver_ty, true)
     }
 

@@ -1353,19 +1353,18 @@ pub struct HewActor {
     #[cfg(target_arch = "wasm32")]
     pub(crate) runtime: *const c_void,
 
-    /// Count of in-flight by-ID send/ask/stop operations currently pinning
-    /// this actor allocation.
+    /// Count of in-flight by-ID operations and scheduler queue entries
+    /// currently pinning this actor allocation.
     ///
     /// `with_actor_send_by_id` increments this field (atomically, under
     /// `LIVE_ACTORS`) before releasing the registry lock, then decrements it
-    /// via a RAII guard when the operation completes.  The free path in
-    /// `hew_actor_free_inner` calls `untrack_actor` first (removing the actor
-    /// from `LIVE_ACTORS` so no new pins can be taken), then spins until
-    /// `send_pin_count` reaches 0 (draining any in-flight pins taken before
-    /// the untrack) before calling `finalize`.  This untrack-first ordering
-    /// makes the pin-drain and the liveness check mutually exclusive: either
-    /// the sender pins before the freer untracks (freer waits), or the freer
-    /// untracks before the sender's map lookup (sender gets `None`, no pin).
+    /// via a RAII guard when the operation completes. Scheduler producers take
+    /// another reference before making an actor Runnable, and the queue
+    /// consumer transfers that ownership to `dispatch_active` before releasing
+    /// it. The free path in `hew_actor_free_inner` calls `untrack_actor` first
+    /// (removing the actor from `LIVE_ACTORS` so no new registry pins can be
+    /// taken), then waits for both this count and `dispatch_active` before
+    /// finalizing.
     ///
     /// **Why not `dispatch_active`**: `dispatch_active` serialises the
     /// scheduler worker's activation ownership; reusing it for external sends
@@ -5669,6 +5668,11 @@ unsafe fn finish_mailbox_enqueue_inner(
     a: &HewActor,
     close_terminal_handoff: bool,
 ) {
+    // Own the prospective queue entry before publishing Runnable. If the CAS
+    // loses, dropping the unused entry releases the reference; if it wins,
+    // ownership moves through the queue into `dispatch_active`.
+    // SAFETY: the function contract guarantees the actor is live.
+    let queue_entry = unsafe { scheduler::SchedulerQueueEntry::retain(actor) };
     if a.actor_state
         .compare_exchange(
             HewActorState::Idle as i32,
@@ -5680,8 +5684,9 @@ unsafe fn finish_mailbox_enqueue_inner(
     {
         a.idle_count.store(0, Ordering::Relaxed);
         a.hibernating.store(0, Ordering::Relaxed);
-        scheduler::sched_enqueue(actor);
+        scheduler::sched_enqueue_owned(queue_entry);
     } else if close_terminal_handoff {
+        drop(queue_entry);
         // SAFETY: this producer just completed an enqueue against `a`.
         unsafe { reclaim_terminal_enqueue_if_unowned(a) };
     }
@@ -10970,10 +10975,12 @@ mod tests {
             let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
             assert!(!actor.is_null());
             let id = unsafe { (*actor).id };
-            unsafe {
-                (*actor)
-                    .actor_state
-                    .store(HewActorState::Runnable as i32, Ordering::Release);
+            if !own_queue_ref {
+                unsafe {
+                    (*actor)
+                        .actor_state
+                        .store(HewActorState::Runnable as i32, Ordering::Release);
+                }
             }
 
             let (hook, entered, release) =
@@ -10982,7 +10989,10 @@ mod tests {
             let producer = std::thread::spawn(move || {
                 let actor = ptr::with_exposed_provenance_mut::<HewActor>(actor_addr);
                 if own_queue_ref {
-                    scheduler::sched_enqueue(actor);
+                    // SAFETY: the test keeps this actor live through the call.
+                    // The canonical producer takes queue ownership before its
+                    // Idle -> Runnable transition.
+                    unsafe { finish_mailbox_enqueue(actor, &*actor) };
                 } else {
                     // SAFETY: actor is live on hook entry; this is the exact
                     // missing-retain counterfactual.

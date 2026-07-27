@@ -4430,6 +4430,10 @@ mod tests {
             // free path retires the queued ask's sender ref).
             let retired = take_child_slot(&mut *sup, 0);
             assert_eq!(retired, replacement);
+            assert!(
+                scheduler::discard_queued_actor_for_test(retired),
+                "worker-less fixture must consume the accepted ask's wake entry"
+            );
             (*retired)
                 .actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Release);
@@ -4533,6 +4537,10 @@ mod tests {
             assert!(crate::reply_channel::hew_reply_wait(ch).is_null());
             crate::reply_channel::hew_reply_channel_free(ch);
 
+            assert!(
+                scheduler::discard_queued_actor_for_test(old_child),
+                "worker-less fixture must consume the accepted ask's wake entry"
+            );
             (*old_child)
                 .actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Release);

@@ -1025,54 +1025,88 @@ pub extern "C" fn hew_runtime_cleanup_after_main() {
 /// # Panics
 ///
 /// Panics if the scheduler has not been initialized.
-pub fn sched_enqueue(actor: *mut HewActor) {
-    sched_enqueue_inner(actor, true);
-}
-
-fn sched_enqueue_inner(actor: *mut HewActor, retain_queue_ref: bool) {
+pub(crate) fn sched_enqueue(actor: *mut HewActor) {
     let sched = get_scheduler().expect("scheduler not initialized");
     if actor.is_null() {
         return;
     }
-    // Every published scheduler pointer owns one allocation-lifetime
-    // reference. The worker transfers that ownership to `dispatch_active`
-    // before releasing it; shutdown drains entries that workers abandon.
-    // SAFETY: every caller holds a live actor through publication (a send pin,
-    // activation ownership, registry authority, or the public held-pointer
-    // contract).
-    if retain_queue_ref {
-        // SAFETY: every production caller holds a live actor through publish.
-        unsafe { retain_scheduler_queue_ref(actor) };
-    }
+    // SAFETY: every production caller holds a live actor while transferring
+    // that lifetime to the scheduler queue entry.
+    let entry = unsafe { SchedulerQueueEntry::retain(actor) };
+    sched_enqueue_owned_inner(sched, entry);
+}
+
+/// Publish an already-owned scheduler entry.
+///
+/// Taking ownership before an `Idle/Suspended -> Runnable` transition closes
+/// the producer-side interval between making an actor dispatchable and
+/// publishing its raw pointer.
+pub(crate) fn sched_enqueue_owned(entry: SchedulerQueueEntry) {
+    let sched = get_scheduler().expect("scheduler not initialized");
+    sched_enqueue_owned_inner(sched, entry);
+}
+
+fn sched_enqueue_owned_inner(sched: &Scheduler, mut entry: SchedulerQueueEntry) {
+    let actor = entry.actor;
     #[cfg(test)]
     run_scheduler_queue_handoff_hook(&SCHED_ENQUEUE_PRE_PUBLISH_HOOK, actor);
     TASKS_SPAWNED.fetch_add(1, Ordering::Relaxed);
     sched.global_queue.push(actor.cast::<()>());
+    entry.disarm();
     sched_try_wake();
 }
 
 /// Exact counterfactual for the pre-publish queue-reference regression.
 #[cfg(test)]
 pub(crate) unsafe fn sched_enqueue_omitting_queue_ref_for_test(actor: *mut HewActor) {
-    sched_enqueue_inner(actor, false);
+    let sched = get_scheduler().expect("scheduler not initialized");
+    if actor.is_null() {
+        return;
+    }
+    run_scheduler_queue_handoff_hook(&SCHED_ENQUEUE_PRE_PUBLISH_HOOK, actor);
+    TASKS_SPAWNED.fetch_add(1, Ordering::Relaxed);
+    sched.global_queue.push(actor.cast::<()>());
+    sched_try_wake();
 }
 
-/// Retain the actor allocation for one scheduler queue entry.
+/// One allocation-lifetime reference destined for a scheduler queue entry.
 ///
 /// Queue ownership shares the actor's general lifetime-pin counter with by-ID
 /// operations. This is intentional: after untracking, free waits for both
 /// admitted senders and every queued/dequeued-before-claim scheduler pointer.
-///
-/// # Safety
-///
-/// `actor` must be non-null and live while this reference is acquired.
-unsafe fn retain_scheduler_queue_ref(actor: *mut HewActor) {
-    // SAFETY: caller guarantees a live actor allocation.
-    let pins = unsafe { &(*actor).send_pin_count };
-    pins.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-        current.checked_add(1)
-    })
-    .expect("scheduler queue reference count overflow");
+pub(crate) struct SchedulerQueueEntry {
+    actor: *mut HewActor,
+}
+
+impl SchedulerQueueEntry {
+    /// Retain the actor allocation before making it scheduler-reachable.
+    ///
+    /// # Safety
+    ///
+    /// `actor` must be non-null and live while this reference is acquired.
+    pub(crate) unsafe fn retain(actor: *mut HewActor) -> Self {
+        debug_assert!(!actor.is_null());
+        // SAFETY: caller guarantees a live actor allocation.
+        let pins = unsafe { &(*actor).send_pin_count };
+        pins.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(1)
+        })
+        .expect("scheduler queue reference count overflow");
+        Self { actor }
+    }
+
+    fn disarm(&mut self) {
+        self.actor = std::ptr::null_mut();
+    }
+}
+
+impl Drop for SchedulerQueueEntry {
+    fn drop(&mut self) {
+        if !self.actor.is_null() {
+            // SAFETY: an armed entry owns exactly one lifetime reference.
+            unsafe { release_scheduler_queue_ref(self.actor) };
+        }
+    }
 }
 
 /// Release one scheduler queue entry's allocation-lifetime reference.
@@ -1220,9 +1254,15 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
             // edge's pending-wake drain. (Two-phase park, both directions.)
             if a.actor_state.load(Ordering::Acquire) != HewActorState::Suspended as i32 {
                 let _ = cont; // handle is owned by the suspend edge; nothing to store.
-                return (false, actor_runtime_id);
+                return (None, actor_runtime_id);
             }
         }
+
+        // Own the prospective queue entry before publishing Runnable. The
+        // registry lock keeps the allocation live while this reference is
+        // acquired; afterward the entry itself closes the pre-publish window.
+        // SAFETY: `with_live_actor` holds registry authority for this actor.
+        let queue_entry = unsafe { SchedulerQueueEntry::retain(actor) };
 
         // CAS Suspended → Runnable; only enqueue on success (fail-closed against
         // a terminal or not-yet-parked actor). The loop runs AT MOST twice: the
@@ -1249,7 +1289,7 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
                     // wake contract), so the single direct wake's resume scan
                     // observes that readiness too.
                     let _ = crate::coro_exec::take_pending_wake(a);
-                    break (true, actor_runtime_id);
+                    break (Some(queue_entry), actor_runtime_id);
                 }
                 Err(observed) if observed == HewActorState::Runnable as i32 => {
                     // `Runnable`: a delivery is ALREADY enqueued — either the
@@ -1269,7 +1309,7 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
                     //   status-gated re-scan finds it) or lost it (the winner
                     //   carries the resume; our effect is resolved by the
                     //   arbiter).
-                    break (false, actor_runtime_id);
+                    break (None, actor_runtime_id);
                 }
                 Err(_) => {
                     // `Running` (dispatch park not yet published — the FG3
@@ -1306,16 +1346,14 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
                         retried = true;
                         continue;
                     }
-                    break (false, actor_runtime_id);
+                    break (None, actor_runtime_id);
                 }
             }
         }
     });
 
-    // `sched_enqueue` pushes onto the global queue and wakes a worker; it does not
-    // dereference the actor, so it is safe to run after dropping the registry lock
-    // (the successful `Suspended → Runnable` CAS already latched the actor out of
-    // any racing free path, exactly like the `Idle → Runnable` waker discipline).
+    // The owned entry keeps the allocation live after dropping the registry
+    // lock and until the queue consumer claims dispatch ownership.
     //
     // R4 wake-routing net: `sched_enqueue` resolves its scheduler through
     // `get_scheduler()` → `rt_default()`, which `enter()` does not reroute, so an
@@ -1323,9 +1361,9 @@ pub unsafe fn enqueue_resume(actor: *mut HewActor, cont: *mut c_void) {
     // Fail closed before the enqueue (single-runtime actors pass straight
     // through). The runtime id was captured under the registry lock above, so
     // this reads no freed memory.
-    if let Some((true, actor_runtime_id)) = enqueued {
+    if let Some((Some(entry), actor_runtime_id)) = enqueued {
         assert_wake_routes_to_owning_runtime(actor_runtime_id);
-        sched_enqueue(actor);
+        sched_enqueue_owned(entry);
     }
 }
 
@@ -3579,7 +3617,8 @@ pub(crate) fn activate_actor_for_test(actor: *mut HewActor) {
     // Direct unit tests do not arrive through a deque, so mint the same single
     // queue reference the production entry consumes.
     // SAFETY: test caller guarantees a live actor for the call.
-    unsafe { retain_scheduler_queue_ref(actor) };
+    let mut entry = unsafe { SchedulerQueueEntry::retain(actor) };
+    entry.disarm();
     activate_queued_actor(actor);
 }
 
@@ -3587,6 +3626,41 @@ pub(crate) fn activate_actor_for_test(actor: *mut HewActor) {
 pub(crate) unsafe fn release_scheduler_queue_ref_for_test(actor: *mut HewActor) {
     // SAFETY: caller guarantees one scheduler queue reference is owned.
     unsafe { release_scheduler_queue_ref(actor) };
+}
+
+/// Remove one queued entry for `actor` from a worker-less test scheduler.
+///
+/// Some mailbox-level tests consume a node directly instead of running the
+/// scheduler activation that owns its wake entry. Explicit queue references
+/// make that shortcut visible, so those fixtures must discard the matching
+/// entry before manually terminalizing/freeing the actor.
+#[cfg(test)]
+pub(crate) fn discard_queued_actor_for_test(actor: *mut HewActor) -> bool {
+    let Some(sched) = get_scheduler() else {
+        return false;
+    };
+    // SAFETY: runtime-touching tests hold `SchedTestLock`; their placeholder
+    // scheduler has no workers, so this temporary owner deque is exclusive.
+    let (local, _stealer) = unsafe { WorkDeque::new() };
+    let mut entries = Vec::new();
+    while let Some(ptr) = sched.global_queue.steal_batch_and_pop(&local) {
+        entries.push(ptr.cast::<HewActor>());
+        while let Some(extra) = local.pop() {
+            entries.push(extra.cast::<HewActor>());
+        }
+    }
+
+    let mut removed = false;
+    for queued in entries {
+        if !removed && queued == actor {
+            // SAFETY: removal transfers this entry's one lifetime reference.
+            unsafe { release_scheduler_queue_ref(queued) };
+            removed = true;
+        } else {
+            sched.global_queue.push(queued.cast::<()>());
+        }
+    }
+    removed
 }
 
 #[cfg(test)]

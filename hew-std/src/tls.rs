@@ -819,6 +819,11 @@ fn spawn_tls_attach_reader(
 /// - `on_data_type`: `msg_type` index for data delivery.
 /// - `on_close_type`: `msg_type` index for close/error notification.
 ///
+/// The two message-type indices cross as `i64` and are range-checked here.
+/// Narrowing them on the Hew side would turn `2^32 + 1` into index `1` and
+/// attach the reader to a different message than the caller named, so an
+/// index outside `c_int` range is refused and no reader is spawned.
+///
 /// # Safety
 ///
 /// - `stream` must be a valid pointer returned by [`hew_tls_connect`].
@@ -827,8 +832,8 @@ fn spawn_tls_attach_reader(
 pub unsafe extern "C" fn hew_tls_attach(
     stream: *mut HewTlsStream,
     actor: *mut c_void,
-    on_data_type: c_int,
-    on_close_type: c_int,
+    on_data_type: i64,
+    on_close_type: i64,
 ) {
     if stream.is_null() || actor.is_null() {
         eprintln!(
@@ -838,6 +843,23 @@ pub unsafe extern "C" fn hew_tls_attach(
         );
         return;
     }
+    let (Ok(on_data_type), Ok(on_close_type)) = (
+        c_int::try_from(on_data_type),
+        c_int::try_from(on_close_type),
+    ) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            format!(
+                "hew_tls_attach: message-type index out of range (on_data_type={on_data_type}, \
+                 on_close_type={on_close_type})"
+            ),
+            22, // EINVAL: Invalid argument
+        );
+        eprintln!(
+            "[tls-attach] message-type index out of range: on_data_type={on_data_type} \
+             on_close_type={on_close_type}"
+        );
+        return;
+    };
     // SAFETY: `stream` is a valid HewTlsStream pointer per caller contract.
     let s = unsafe { &*stream };
     // Refuse a second attach: the stored handle would otherwise be overwritten
@@ -1473,6 +1495,45 @@ mod tests {
     }
 
     #[test]
+    fn attach_wrapped_message_type_index_is_refused_not_narrowed() {
+        // `2^32 + 1` narrows to message-type index 1. Attaching under that
+        // index would deliver data to a different `receive fn` than the caller
+        // named, so the attach is refused and no reader is spawned.
+        let shared = Arc::new(TlsShared {
+            stream: Mutex::new(None),
+            closed: AtomicBool::new(false),
+            reader: Mutex::new(None),
+            reader_exited: AtomicBool::new(false),
+        });
+        let boxed = Box::new(HewTlsStream {
+            inner: Arc::clone(&shared),
+        });
+        let stream_ptr = Box::into_raw(boxed);
+        let mut actor: usize = 0;
+        let actor_ptr = std::ptr::from_mut(&mut actor).cast::<c_void>();
+        let _ = hew_cabi::sink::hew_stream_last_errno();
+
+        // SAFETY: `stream_ptr` is live and `actor_ptr` is a valid, aligned slot.
+        unsafe { hew_tls_attach(stream_ptr, actor_ptr, 4_294_967_297, 1) };
+
+        assert_eq!(
+            hew_cabi::sink::hew_stream_last_errno(),
+            22,
+            "an unrepresentable message-type index must be reported, not narrowed"
+        );
+        assert!(
+            shared
+                .reader
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_none(),
+            "no reader may be attached under a narrowed message-type index"
+        );
+        // SAFETY: we created `stream_ptr` and it was not consumed.
+        unsafe { hew_tls_close(stream_ptr) };
+    }
+
+    #[test]
     fn attach_on_closed_stream_read_returns_none() {
         // Verify that after close, the stream mutex yields None.
         let shared = Arc::new(TlsShared {
@@ -1691,8 +1752,8 @@ mod tests {
             hew_tls_attach(
                 stream_ptr,
                 (&raw mut actor_ref).cast(),
-                TLS_ON_DATA_TYPE,
-                TLS_ON_CLOSE_TYPE,
+                TLS_ON_DATA_TYPE.into(),
+                TLS_ON_CLOSE_TYPE.into(),
             );
         }
 
@@ -1966,8 +2027,8 @@ mod tests {
             hew_tls_attach(
                 stream_ptr,
                 (&raw mut actor_ref).cast(),
-                TLS_ON_DATA_TYPE,
-                TLS_ON_CLOSE_TYPE,
+                TLS_ON_DATA_TYPE.into(),
+                TLS_ON_CLOSE_TYPE.into(),
             );
         }
 

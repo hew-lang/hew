@@ -571,13 +571,26 @@ pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), net.NetError> {
     }
 }
 
+/// Validate a QUIC per-call deadline before the C ABI narrows it to `i32`.
+///
+/// A non-positive deadline disables the deadline and is passed through as-is;
+/// a positive one must be representable, so `2^32 + 500` is rejected rather
+/// than narrowed into a 500 ms deadline.
+fn try_quic_deadline_ms(context: string, deadline_ms: i64) -> Result<i64, net.NetError> {
+    if deadline_ms <= 0 {
+        return Ok(0);
+    }
+    net.try_duration_ms(context, deadline_ms)
+}
+
 /// Send bytes on a QUIC stream with a per-call deadline.
 ///
 /// `deadline_ms <= 0` disables the deadline. Returns `Err(NetError::TimedOut(0))`
 /// on deadline expiry, `Err(NetError::Other(0))` on transport error.
 pub fn stream_send_timeout(strm: QUICStream, data: bytes, deadline_ms: i64) -> Result<(), net.NetError> {
-    let status: i32 = unsafe { // INTERNAL-ABI: 0=ok, -1=error, -2=timeout
-        hew_quic_stream_send_timeout_hew(strm, data, deadline_ms as i32)
+    let deadline = try_quic_deadline_ms("quic.stream_send_timeout", deadline_ms)?;
+    let status: i32 = unsafe { // INTERNAL-ABI: 0=ok, -1=error, -2=timeout; deadline range-checked above
+        hew_quic_stream_send_timeout_hew(strm, data, deadline as i32)
     };
     if status == -2 {
         Err(net.net_error_timed_out())
@@ -593,8 +606,9 @@ pub fn stream_send_timeout(strm: QUICStream, data: bytes, deadline_ms: i64) -> R
 /// `deadline_ms <= 0` disables the deadline. Returns `Err(NetError::TimedOut(0))`
 /// on deadline expiry. On success returns the bytes (may be empty for EOF).
 pub fn stream_recv_timeout(strm: QUICStream, deadline_ms: i64) -> Result<bytes, net.NetError> {
-    let payload: bytes = unsafe {
-        hew_quic_stream_recv_timeout_hew(strm, deadline_ms as i32)
+    let deadline = try_quic_deadline_ms("quic.stream_recv_timeout", deadline_ms)?;
+    let payload: bytes = unsafe { // INTERNAL-ABI: deadline range-checked above
+        hew_quic_stream_recv_timeout_hew(strm, deadline as i32)
     };
     let status: i32 = unsafe { // INTERNAL-ABI: 0=ok-or-EOF, -1=transport error, -2=timeout
         hew_quic_stream_last_recv_status()

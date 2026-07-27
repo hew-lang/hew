@@ -1256,8 +1256,8 @@ pub unsafe extern "C" fn hew_ws_message_free(msg: *mut HewWsMessage) {
 pub unsafe extern "C" fn hew_ws_attach(
     ws: *mut HewWsConn,
     actor: *mut std::ffi::c_void,
-    on_message_type: i32,
-    on_close_type: i32,
+    on_message_type: i64,
+    on_close_type: i64,
 ) {
     if ws.is_null() || actor.is_null() {
         eprintln!(
@@ -1267,6 +1267,25 @@ pub unsafe extern "C" fn hew_ws_attach(
         );
         return;
     }
+    // The indices cross as `i64` and are range-checked here: narrowing them on
+    // the Hew side would turn `2^32 + 1` into index `1` and attach the reader
+    // to a different message than the caller named.
+    let (Ok(on_message_type), Ok(on_close_type)) =
+        (i32::try_from(on_message_type), i32::try_from(on_close_type))
+    else {
+        hew_cabi::sink::set_last_error_with_errno(
+            format!(
+                "hew_ws_attach: message-type index out of range \
+                 (on_message_type={on_message_type}, on_close_type={on_close_type})"
+            ),
+            22, // EINVAL: Invalid argument
+        );
+        eprintln!(
+            "[attach] message-type index out of range: on_message_type={on_message_type} \
+             on_close_type={on_close_type}"
+        );
+        return;
+    };
     // SAFETY: nulls are rejected above and `ws` remains valid for this call.
     let conn = unsafe { &*ws };
     spawn_attach_reader(conn, actor, on_message_type, on_close_type, ws);
@@ -1842,8 +1861,8 @@ mod tests {
             hew_ws_attach(
                 conn,
                 (&raw mut actor_ref).cast(),
-                TEST_MSG_TYPE,
-                TEST_CLOSE_TYPE,
+                TEST_MSG_TYPE.into(),
+                TEST_CLOSE_TYPE.into(),
             );
         };
         (actor, test_id, rx)
@@ -1859,6 +1878,38 @@ mod tests {
         unsafe { actor::hew_actor_stop(actor) };
         assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
         unregister_actor_events(test_id);
+        unsafe { hew_ws_server_close(server) };
+    }
+
+    #[test]
+    fn attach_wrapped_message_type_index_is_refused_not_narrowed() {
+        // `2^32 + 1` narrows to message-type index 1. Attaching under that
+        // index would deliver frames to a different `receive fn` than the
+        // caller named, so the attach is refused and no reader is spawned.
+        let (server, conn, client) = attach_test_conn();
+        let mut actor_slot: usize = 0;
+        let actor_ptr = std::ptr::from_mut(&mut actor_slot).cast::<c_void>();
+        let _ = hew_cabi::sink::hew_stream_last_errno();
+
+        // SAFETY: `conn` is a live connection and `actor_ptr` is a valid slot.
+        unsafe { hew_ws_attach(conn, actor_ptr, 4_294_967_297, 1) };
+
+        assert_eq!(
+            hew_cabi::sink::hew_stream_last_errno(),
+            22,
+            "an unrepresentable message-type index must be reported, not narrowed"
+        );
+        // SAFETY: `conn` is live for the duration of this borrow.
+        let attached = { lock_or_recover(&unsafe { &*conn }.inner.reader).is_some() };
+        assert!(
+            !attached,
+            "no reader may be attached under a narrowed message-type index"
+        );
+
+        drop(client);
+        // SAFETY: `conn` and `server` were produced by `attach_test_conn`.
+        unsafe { hew_ws_close(conn) };
+        // SAFETY: `server` is live and not yet closed.
         unsafe { hew_ws_server_close(server) };
     }
 

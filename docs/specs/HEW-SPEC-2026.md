@@ -833,7 +833,7 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 | `std::fs`          | `fs.read`, `fs.write`, `fs.append`, `fs.exists`, `fs.delete`, `fs.size`                                                                                      |
 | `std::io`          | `io.read_line`, `io.write`, `io.write_err`, `io.read_all`                                                                                                    |
 | `std::os`          | `os.args_count`, `os.args`, `os.env`, `os.set_env`, `os.has_env`, `os.cwd`, `os.home_dir`, `os.hostname`, `os.pid`                                           |
-| `std::net`         | `net.listen`, `net.accept`, `net.connect`, `net.read`, `net.write`, `net.close`                                                                              |
+| `std::net`         | `net.listen`, `net.accept`, `net.connect`, `net.try_connect_timeout`, `net.try_parse_endpoint`, `net.read`, `net.try_read`, `net.write`, `net.close`          |
 | `std::text::regex` | `regex.new`, `regex.is_match`, `regex.find`, `regex.replace`                                                                                                 |
 | `std::net::mime`   | `mime.from_path`, `mime.from_ext`, `mime.is_text`                                                                                                            |
 | `std::process`     | `process.run`, `process.try_run`, `process.run_argv`, `process.try_run_argv`, `process.start`, `process.try_start`, `process.try_start_argv`                 |
@@ -2507,7 +2507,7 @@ implementation.
 | `http.Server`    | `http.listen(addr)`                        | `.accept()` → `http.Request`, `.close()`                                                                                              |
 | `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)`, `.close()` |
 | `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `await ln.accept() \| after d` → `Result<net.Connection, IoError>`, `.close()`                        |
-| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `bytes`, `.read_string()` → `string`, `await conn.read_string() \| after d` → `Result<string, IoError>`, `.write(data)`, `.write_string(data)`, `.close()` |
+| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `bytes`, `.try_read()` → `Result<bytes, net.NetError>`, `.read_string()` → `string`, `.try_read_string()` → `Result<string, net.NetError>`, `await conn.read_string() \| after d` → `Result<string, IoError>`, `.write(data)`, `.write_string(data)`, `.close()` |
 | `process.Child`  | `process.start(cmd)`, `process.try_start(cmd)`, `process.try_start_argv(cmd, argv)` | `.wait()`, `.kill()`                                                                                 |
 
 Handle types are opaque — their internal representation is not accessible.

@@ -162,14 +162,18 @@ impl TlsStreamMethods for TlsStream {
         })
     }
     fn read(stream: TlsStream, size: i64) -> Result<bytes, net.NetError> {
+        let checked = net.try_size_arg("tls.TlsStream.read", size)?;
         tls_read_result(unsafe {
-            hew_tls_read_result(stream, size as i32)
+            hew_tls_read_result(stream, checked as i32) // INTERNAL-ABI: range-checked above
         })
     }
     fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64) {
+        // The indices are passed at full width: narrowing them here would turn
+        // `2^32 + 1` into index `1` and attach the reader to a different
+        // message. `hew_tls_attach` range-checks them and refuses to attach.
         unsafe {
-            hew_tls_attach(stream, handler, on_data_type as i32, on_close_type as i32)
-        }; // INTERNAL-ABI: C ABI takes i32 type indices
+            hew_tls_attach(stream, handler, on_data_type, on_close_type)
+        };
     }
     fn close(stream: TlsStream) {
         unsafe {
@@ -190,8 +194,15 @@ impl TlsStreamMethods for TlsStream {
 /// let stream = tls.connect("example.com", 443);
 /// ```
 pub fn connect(host: string, port: i64) -> TlsStream {
+    let checked = match net.try_port_arg("tls.connect", port) {
+        Ok(value) => value,
+        Err(err) => {
+            panic(f"tls.connect failed: {net.net_error_message(err)}");
+            0
+        },
+    };
     unsafe {
-        hew_tls_connect(host, port as i32)
+        hew_tls_connect(host, checked as i32) // INTERNAL-ABI: range-checked above
     }
 }
 
@@ -239,7 +250,7 @@ extern "C" {
     fn hew_tls_last_error() -> string;
     fn hew_tls_write_result(stream: TlsStream, data: bytes) -> TlsWriteFfiResult;
     fn hew_tls_read_result(stream: TlsStream, size: i32) -> TlsReadFfiResult;
-    fn hew_tls_attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i32, on_close_type: i32);
+    fn hew_tls_attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64);
     fn hew_tls_close(stream: TlsStream);
 }
 

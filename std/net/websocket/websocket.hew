@@ -113,8 +113,9 @@ impl ConnMethods for Conn {
         }
     }
     fn recv_timeout(conn: Conn, deadline_ms: i64) -> Result<Message, net.NetError> {
-        let handle = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI
-            hew_ws_recv_timeout(conn, deadline_ms as i32)
+        let deadline = net.try_duration_ms("websocket.Conn.recv_timeout", deadline_ms)?;
+        let handle = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI, range-checked above
+            hew_ws_recv_timeout(conn, deadline as i32)
         };
         let msg = Message { handle: handle };
         let valid: bool = unsafe {
@@ -137,9 +138,12 @@ impl ConnMethods for Conn {
         };
     }
     fn attach(conn: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64) {
+        // The indices are passed at full width: narrowing them here would turn
+        // `2^32 + 1` into index `1` and attach the reader to a different
+        // message. `hew_ws_attach` range-checks them and refuses to attach.
         unsafe {
-            hew_ws_attach(conn, handler, on_message_type as i32, on_close_type as i32)
-        }; // INTERNAL-ABI: C ABI takes i32 type indices
+            hew_ws_attach(conn, handler, on_message_type, on_close_type)
+        };
     }
 }
 
@@ -280,5 +284,5 @@ extern "C" {
     fn hew_ws_server_port(server: Server) -> i32;
     fn hew_ws_server_accept(server: Server) -> Conn;
     fn hew_ws_server_close(server: Server);
-    fn hew_ws_attach(ws: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i32, on_close_type: i32);
+    fn hew_ws_attach(ws: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64);
 }

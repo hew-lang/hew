@@ -129,3 +129,70 @@ fn test_net_error_windows_cancelled_variants() {
         _ => panic("expected NetError::Cancelled for 10103"),
     }
 }
+
+// ── try_read: EOF is a valid empty read, a read failure is not ────────
+extern "C" {
+    fn hew_tcp_listener_local_port(listener: net.Listener) -> i32;
+}
+
+#[test]
+fn test_try_read_reports_an_orderly_eof_as_an_empty_success() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    let client = net.connect(f"127.0.0.1:{port as i64}");
+    let server = listener.accept();
+    // Seed a failure in the shared status slot: an orderly EOF must not
+    // report an earlier operation's errno as this read's error.
+    match net.try_connect("127.0.0.1:1") {
+        Ok(_) => {},
+        Err(_) => {},
+    }
+    client.close();
+    match server.try_read() {
+        Ok(data) => testing.assert_eq(data.len(), 0),
+        Err(err) => panic(f"expected EOF to be an empty success, got {net.net_error_message(err)}"),
+    }
+    server.close();
+    listener.close();
+}
+
+#[test]
+fn test_try_read_reports_a_closed_handle_as_a_failure_not_an_empty_success() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    let client = net.connect(f"127.0.0.1:{port as i64}");
+    let server = listener.accept();
+    server.close();
+    match server.try_read() {
+        Ok(data) => panic(f"expected a closed connection to fail, got {data.len()} bytes"),
+        Err(_) => {},
+    }
+    match server.try_read_string() {
+        Ok(_) => panic("expected a closed connection to fail"),
+        Err(_) => {},
+    }
+    client.close();
+    listener.close();
+}
+
+#[test]
+fn test_try_read_delivers_payload_bytes_unchanged() {
+    let listener = net.listen("127.0.0.1:0");
+    let port = unsafe {
+        hew_tcp_listener_local_port(listener)
+    };
+    let client = net.connect(f"127.0.0.1:{port as i64}");
+    let server = listener.accept();
+    let _ = client.write_string("ping");
+    match server.try_read_string() {
+        Ok(text) => testing.assert_eq_str(text, "ping"),
+        Err(err) => panic(f"expected a payload read to succeed: {net.net_error_message(err)}"),
+    }
+    client.close();
+    server.close();
+    listener.close();
+}

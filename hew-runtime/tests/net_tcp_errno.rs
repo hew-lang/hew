@@ -3,7 +3,7 @@
 use hew_cabi::sink::hew_stream_last_errno;
 use hew_runtime::bytes::BytesTriple;
 use hew_runtime::transport::{
-    hew_tcp_broadcast_except, hew_tcp_set_read_timeout, hew_tcp_set_write_timeout,
+    hew_tcp_broadcast_except, hew_tcp_read, hew_tcp_set_read_timeout, hew_tcp_set_write_timeout,
 };
 
 fn clear_errno() {
@@ -59,4 +59,15 @@ fn tcp_broadcast_except_bad_utf8_sets_einval() {
 
     assert_eq!(status, -1);
     assert_eq!(hew_stream_last_errno(), 22);
+}
+
+#[test]
+fn tcp_read_invalid_handle_sets_ebadf_not_an_empty_success() {
+    clear_errno();
+
+    let data = hew_tcp_read(99_999);
+
+    assert_eq!(data.len, 0);
+    assert!(data.ptr.is_null());
+    assert_eq!(hew_stream_last_errno(), 9);
 }

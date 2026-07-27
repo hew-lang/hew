@@ -72,6 +72,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -230,58 +232,6 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and
-/// return `Some(leak_count)` when `leaks` produced a usable report.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-             summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
 /// Build the shape at `low_frames` and `high_frames`, measure leak NODE
 /// counts, and assert the delta stays within `SLOPE_TOLERANCE`.
 fn assert_frame_slope_below_tolerance(
@@ -290,18 +240,7 @@ fn assert_frame_slope_below_tolerance(
     low_frames: usize,
     high_frames: usize,
 ) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 
@@ -321,12 +260,8 @@ fn assert_frame_slope_below_tolerance(
         &format!("{shape_name}_high"),
     );
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "{shape_name}: low_frames={low_frames} low_leaks={low_leaks} \
@@ -356,6 +291,10 @@ fn assert_frame_slope_below_tolerance(
 /// per-iteration handle and buffer are released on every back-edge. Reverting
 /// the `ty_is_direct_enum_element(elem) && !named_elem_owns_heap(elem)`
 /// disjunct in `is_plain_vec_element` fails this by ~94 nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_colour_local_loop_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -372,6 +311,10 @@ fn vec_colour_local_loop_no_per_frame_leak_slope() {
 /// direct enums) and does not over-drop. A mis-route to plain would leak the
 /// per-element `string` payloads; an over-drop would crash under the scribble
 /// triple that `leaks` runs with.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_payload_enum_local_loop_stays_on_owned_route() {
     assert_frame_slope_below_tolerance(
@@ -388,6 +331,10 @@ fn vec_payload_enum_local_loop_stays_on_owned_route() {
 /// handle would free memory the new owner also frees — under
 /// `MallocScribble`/`MallocGuardEdges` that aborts (or scribbles the values)
 /// before the checksum is printed.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_enum_escape_shapes_run_clean_under_malloc_scribble() {
     require_codegen();

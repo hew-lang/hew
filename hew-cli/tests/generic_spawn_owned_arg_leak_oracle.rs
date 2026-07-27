@@ -28,6 +28,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -117,48 +119,6 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and
-/// return `Some(leak_count)` when the report is parseable.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    let report = String::from_utf8_lossy(&output.stdout);
-    if !report.contains(" leaks for ") && !report.contains(" leak for ") {
-        eprintln!(
-            "skip: leaks did not emit a usable summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        return Some(n);
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Run `bin` under the poisoned-allocator triple (no `leaks`) and assert it
 /// exits cleanly. A callee-side drop of a borrowed string buffer (the
 /// known-catastrophic fix) would cause `MallocScribble` to scribble the
@@ -182,24 +142,17 @@ fn assert_no_poisoned_allocator_abort(bin: &std::path::Path, label: &str) {
     );
 }
 
-fn leaks_available() -> bool {
-    cfg!(target_os = "macos")
-        && Command::new("which")
-            .arg("leaks")
-            .output()
-            .is_ok_and(|o| o.status.success())
-}
-
 // ── oracles ───────────────────────────────────────────────────────────────
 
 /// The generic-fork shape must complete under the poisoned-allocator triple.
 /// A callee-side drop of the borrowed string buffer would crash here.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn generic_fork_owned_str_no_double_free() {
-    if !leaks_available() {
-        eprintln!("skip: generic_spawn_owned_arg oracle: leaks(1) is macOS-only / not on PATH");
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -217,12 +170,13 @@ fn generic_fork_owned_str_no_double_free() {
 
 /// The generic-fork environment must release its moved string once per
 /// invocation, keeping the low/high standalone leak slope flat.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn generic_fork_owned_str_leak_slope_is_flat() {
-    if !leaks_available() {
-        eprintln!("skip: generic_spawn_owned_arg oracle: leaks(1) is macOS-only / not on PATH");
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -240,12 +194,8 @@ fn generic_fork_owned_str_leak_slope_is_flat() {
         dir.path(),
         "generic_fork_str_high",
     );
-    let Some(fork_low_leaks) = measure_leaks(&fork_low) else {
-        return;
-    };
-    let Some(fork_high_leaks) = measure_leaks(&fork_high) else {
-        return;
-    };
+    let fork_low_leaks = measure_leaks(&fork_low);
+    let fork_high_leaks = measure_leaks(&fork_high);
     let fork_delta = fork_high_leaks.saturating_sub(fork_low_leaks);
 
     eprintln!(

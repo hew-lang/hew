@@ -247,6 +247,10 @@ fn assert_runs_clean(name: &str, source: &str, expected: &str) {
 /// No-double-free (teeth): a cursor coexisting with its live source frees a
 /// distinct clone, never the source's buffer. Must run clean and print `2OK`.
 /// Reverting the clone-retain fix double-frees the shared handle and aborts.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn iter_coexist_no_double_free_under_malloc_scribble() {
     assert_runs_clean("coexist_double_free", COEXIST_DOUBLE_FREE_SOURCE, "2OK");
@@ -256,6 +260,10 @@ fn iter_coexist_no_double_free_under_malloc_scribble() {
 /// change what the cursor yields — the cursor holds an independent clone, not a
 /// live view. Must print `2`. Pre-fix the shared cursor observes the appended
 /// elements and prints `5`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn iter_source_mutation_independence_under_malloc_scribble() {
     assert_runs_clean("mutation_independence", MUTATION_INDEPENDENCE_SOURCE, "2");
@@ -265,6 +273,10 @@ fn iter_source_mutation_independence_under_malloc_scribble() {
 /// under a live cursor must not dangle the cursor. Must run clean and print
 /// `42OK`. Pre-fix the cursor's handle dangles after the reassignment frees it
 /// and the consume faults on the scribbled buffer.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn iter_source_freed_under_cursor_no_uaf_under_malloc_scribble() {
     assert_runs_clean(
@@ -278,6 +290,10 @@ fn iter_source_freed_under_cursor_no_uaf_under_malloc_scribble() {
 /// frees its clone every frame while the source frees its own buffer — flat leak
 /// slope. Reverting the fix makes this shape double-free (the probe skips on the
 /// crash); the slope guards the clean path against a future per-frame leak.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn iter_coexist_cursor_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("iter_coexist_drop_loop", coexist_drop_loop_source);
@@ -285,6 +301,10 @@ fn iter_coexist_cursor_no_per_frame_leak_slope() {
 
 /// Escape — return (forward-looking): a cursor returned from a fn whose source
 /// is a local and consumed in the caller reads live memory. Must print `42OK`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn iter_escape_return_no_uaf_under_malloc_scribble() {
     assert_runs_clean("escape_return", ESCAPE_RETURN_SOURCE, "42OK");
@@ -292,6 +312,10 @@ fn iter_escape_return_no_uaf_under_malloc_scribble() {
 
 /// Escape — async (forward-looking): a cursor held across an `await` while its
 /// source block exits reads live memory after the suspension. Must print `42OK`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn iter_escape_async_no_uaf_under_malloc_scribble() {
     assert_runs_clean("escape_async", ESCAPE_ASYNC_SOURCE, "42OK");

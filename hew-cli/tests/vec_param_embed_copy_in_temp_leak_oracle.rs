@@ -724,31 +724,55 @@ fn llvm_function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
     &ir[byte_start..byte_end.min(ir.len())]
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn direct_push_param_embed_has_flat_leak_slope() {
     assert_clean_slope("vec_param_embed_push", push_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn direct_set_param_embed_has_flat_leak_slope() {
     assert_clean_slope("vec_param_embed_set", set_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn bound_first_copy_in_control_has_flat_leak_slope() {
     assert_clean_slope("vec_param_embed_bound_first", bound_first_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn no_param_embed_move_control_has_flat_leak_slope() {
     assert_clean_slope("vec_param_embed_move", move_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn tuple_param_embed_has_flat_leak_slope() {
     assert_clean_slope("vec_param_embed_tuple", tuple_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn arena_insert_remove_param_embed_has_flat_leak_slope() {
     // `arena_source(100)` is the explicit diagnostic form that reproduces the
@@ -756,16 +780,28 @@ fn arena_insert_remove_param_embed_has_flat_leak_slope() {
     assert_clean_slope("vec_param_embed_arena", arena_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn mixed_parameter_projection_embed_has_flat_leak_slope() {
     assert_clean_slope("vec_param_embed_mixed", mixed_param_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_record_projection_embed_has_flat_leak_slope() {
     assert_clean_slope("vec_param_embed_nested_record", nested_record_param_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn tuple_projection_embed_has_flat_leak_slope() {
     assert_clean_slope(
@@ -774,6 +810,10 @@ fn tuple_projection_embed_has_flat_leak_slope() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn resource_projection_direct_consume_preserves_the_poisoned_caller() {
     assert_source_succeeds_under_scribble(
@@ -782,6 +822,10 @@ fn resource_projection_direct_consume_preserves_the_poisoned_caller() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn resource_projection_direct_consume_has_flat_leak_slope() {
     assert_clean_slope(
@@ -932,6 +976,10 @@ fn hybrid_enum_text_transfer_drops_once_on_native_and_wasm() {
     }
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn hybrid_enum_text_transfer_has_flat_leak_slope() {
     assert_clean_slope("hybrid_enum_text_transfer", hybrid_enum_source);
@@ -975,6 +1023,10 @@ fn nested_and_tuple_projection_moves_neutralize_the_original_carrier_slots() {
     }
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn caller_parameter_survives_push_set_and_natural_drop() {
     require_codegen();
@@ -1001,6 +1053,10 @@ fn caller_parameter_survives_push_set_and_natural_drop() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn mixed_parameter_projection_survives_store_and_natural_drop() {
     require_codegen();
@@ -1180,6 +1236,10 @@ fn repeated_string_parameter_reads_stay_on_the_borrow_spine() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn repeated_owned_parameter_reads_survive_native_cleanup() {
     require_codegen();
@@ -1206,6 +1266,10 @@ fn repeated_owned_parameter_reads_survive_native_cleanup() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn borrowed_receiver_forward_releases_each_owner_exactly_once() {
     require_codegen();
@@ -1234,6 +1298,10 @@ fn borrowed_receiver_forward_releases_each_owner_exactly_once() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn template_if_range_survives_owned_key_carrier_reuse() {
     require_codegen();

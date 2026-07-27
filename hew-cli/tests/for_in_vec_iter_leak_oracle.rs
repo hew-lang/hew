@@ -63,6 +63,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -255,58 +257,6 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some(leak_count)` when `leaks` produced a usable report.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-             summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
 /// Build the shape at `low_frames` and `high_frames`, measure leak NODE counts,
 /// and assert the delta stays within `SLOPE_TOLERANCE`.
 fn assert_frame_slope_below_tolerance(
@@ -315,18 +265,7 @@ fn assert_frame_slope_below_tolerance(
     low_frames: usize,
     high_frames: usize,
 ) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 
@@ -346,12 +285,8 @@ fn assert_frame_slope_below_tolerance(
         &format!("{shape_name}_high"),
     );
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "{shape_name}: low_frames={low_frames} low_leaks={low_leaks} \
@@ -377,6 +312,10 @@ fn assert_frame_slope_below_tolerance(
 /// cursor is the sole owner of each fresh Vec and must free it on every outer
 /// iteration. Reverting the `emit_scope_vec_iter_drops` registration fails this
 /// by ~94 nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn for_in_rvalue_source_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -391,6 +330,10 @@ fn for_in_rvalue_source_no_per_frame_leak_slope() {
 /// leak. The source binding keeps its scope-exit drop while the cursor borrows.
 /// Reverting the `derive_local_collection_drop_allowed` cursor-ingress
 /// exemption (so the source loses its drop again) fails this by ~94 nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn for_in_place_source_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -404,6 +347,10 @@ fn for_in_place_source_no_per_frame_leak_slope() {
 /// Fixture C: per-iteration `for b in make_vec(i)` over a `Vec<bool>` must not
 /// leak — a second `BitCopy` element width confirms the cursor release is
 /// element-width agnostic.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn for_in_bool_rvalue_source_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -455,6 +402,10 @@ fn assert_runs_clean(shape_name: &str, source: &str, expected: &str) {
 /// double-free against the source binding's own scope-exit drop — under
 /// `MallocScribble`/`MallocGuardEdges` that aborts (or scribbles the values)
 /// before the checksum is printed.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn for_in_place_source_reuse_runs_clean_under_malloc_scribble() {
     assert_runs_clean("reuse_shape", REUSE_SHAPE_SOURCE, "86OK");
@@ -465,6 +416,10 @@ fn for_in_place_source_reuse_runs_clean_under_malloc_scribble() {
 /// shape the `BitCopy` gate protects — it is intentionally left undropped so the
 /// per-element release never collides with the value the map now owns. Must run
 /// clean and print `2OK`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn for_in_owned_element_consume_place_runs_clean_under_malloc_scribble() {
     assert_runs_clean("owned_place_consume", OWNED_PLACE_CONSUME_SOURCE, "2OK");
@@ -475,6 +430,10 @@ fn for_in_owned_element_consume_place_runs_clean_under_malloc_scribble() {
 /// sole handle owner but its owned elements escape into the map, so the cursor
 /// is NOT registered for the per-scope-exit release. Must run clean and print
 /// `2OK`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn for_in_owned_element_consume_rvalue_runs_clean_under_malloc_scribble() {
     assert_runs_clean("owned_rvalue_consume", OWNED_RVALUE_CONSUME_SOURCE, "2OK");

@@ -159,6 +159,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 /// PRIMARY #2725b regression: the for-in-over-matched-payload loop must hold a
 /// flat leak slope. Reverting the cursor-ingress exemption excludes the enum
 /// composite drop and strands the payload buffer (~2 nodes/frame).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn for_in_matched_payload_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -168,6 +172,10 @@ fn for_in_matched_payload_leak_slope_below_tolerance() {
 }
 
 /// INDEX-read canary: the sibling `items[j]` read stays flat.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn index_read_matched_payload_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -177,6 +185,10 @@ fn index_read_matched_payload_leak_slope_below_tolerance() {
 }
 
 /// Exact-contents / no-double-free pin under the poisoned allocator.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn for_in_matched_payload_exact_contents_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(

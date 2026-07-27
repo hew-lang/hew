@@ -51,16 +51,18 @@
 //!
 //! macOS-only (`leaks(1)` is Darwin's allocator inspector; Linux coverage is the
 //! ASan/LSan gate in `scripts/asan-fixture-check.sh`, which runs the same fixture
-//! as a clean probe). On other platforms the test logs `skip:` and returns.
+//! as a clean probe). On other platforms libtest records a counted skip.
 
 #![cfg(unix)]
 
 mod support;
 
+use support::leak_slope::{parse_leaks_summary, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, hew_binary, repo_root, require_codegen, run_bounded_command};
 
 /// Compile the named committed fixture to a native binary and return its path.
 fn compile_fixture(name: &str, dir: &std::path::Path) -> PathBuf {
@@ -69,16 +71,16 @@ fn compile_fixture(name: &str, dir: &std::path::Path) -> PathBuf {
         .join(format!("{name}.hew"));
     assert!(src.is_file(), "fixture not found: {}", src.display());
 
-    let output = Command::new(hew_binary())
+    let mut command = Command::new(hew_binary());
+    command
         .args([
             "compile",
             "--emit-dir",
             dir.to_str().expect("emit-dir utf-8"),
             src.to_str().expect("src utf-8"),
         ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
+        .current_dir(repo_root());
+    let output = run_bounded_command(command, format!("compile fixture {name}"));
 
     assert!(
         output.status.success(),
@@ -96,10 +98,11 @@ fn compile_fixture(name: &str, dir: &std::path::Path) -> PathBuf {
 }
 
 /// Run `bin` under `leaks --atExit` + the poisoned-allocator triple with
-/// `MallocStackLogging` so leak roots carry symbolised stacks. Returns the full
-/// report text, or `None` when `leaks` declined to attach.
-fn leaks_report(bin: &std::path::Path) -> Option<String> {
-    let output = Command::new("leaks")
+/// `MallocStackLogging` so leak roots carry symbolised stacks. A declined
+/// attachment is a provisioning failure, never a successful measurement.
+fn leaks_report(bin: &std::path::Path) -> String {
+    let mut command = Command::new("leaks");
+    command
         .arg("--atExit")
         .arg("--")
         .arg(bin)
@@ -107,49 +110,26 @@ fn leaks_report(bin: &std::path::Path) -> Option<String> {
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")
         .env("MallocGuardEdges", "1")
-        .env("HEW_WORKERS", "2")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-fn leak_summary(report: &str) -> Option<(usize, usize)> {
-    report.lines().find_map(|line| {
-        let rest = line.strip_prefix("Process ")?;
-        if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-            return None;
-        }
-        let summary = rest.split_once(": ")?.1;
-        let mut words = summary.split_whitespace();
-        let leaks = words.next()?.parse().ok()?;
-        let leak_word = words.next()?;
-        if leak_word != "leak" && leak_word != "leaks" {
-            return None;
-        }
-        if words.next()? != "for" {
-            return None;
-        }
-        let bytes = words.next()?.parse().ok()?;
-        Some((leaks, bytes))
-    })
+        .env("HEW_WORKERS", "2");
+    let output = run_bounded_command(command, format!("inspect {} with leaks(1)", bin.display()));
+    assert!(
+        output.status.success() || !output.stdout.is_empty(),
+        "leaks declined to attach to {}: {}. A leak oracle that cannot measure must not \
+         report success.",
+        bin.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 fn assert_plain_exit(bin: &std::path::Path, expected: i32, label: &str) {
-    let run = Command::new(bin)
+    let mut command = Command::new(bin);
+    command
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")
         .env("MallocGuardEdges", "1")
-        .env("HEW_WORKERS", "2")
-        .output()
-        .unwrap_or_else(|error| panic!("run {label} under guard malloc: {error}"));
+        .env("HEW_WORKERS", "2");
+    let run = run_bounded_command(command, format!("run {label} under guard malloc"));
     assert_eq!(
         run.status.code(),
         Some(expected),
@@ -158,22 +138,40 @@ fn assert_plain_exit(bin: &std::path::Path, expected: i32, label: &str) {
     );
 }
 
+fn assert_fixture_is_leak_free(
+    fixture: &str,
+    expected_exit: i32,
+    dir: &std::path::Path,
+    invariant: &str,
+) {
+    let bin = compile_fixture(fixture, dir);
+    assert_plain_exit(&bin, expected_exit, fixture);
+    let report = leaks_report(&bin);
+    let summary = parse_leaks_summary(&report).unwrap_or_else(|| {
+        panic!(
+            "leaks did not produce a usable summary for {fixture}; a double-free, OOB, \
+             or early abort may have prevented the snapshot. Report:\n{report}"
+        )
+    });
+    assert_eq!(
+        summary,
+        (0, 0),
+        "{fixture} {invariant}; observed {} leak(s) for {} byte(s). \
+         Report:\n{report}",
+        summary.0,
+        summary.1
+    );
+}
+
 /// Normal return, real-crash restart, and explicit stop must all converge on the
 /// canonical supervisor-root destructor path exactly once.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn supervisor_exit_paths_are_leak_free_under_guard_malloc() {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: leaks(1) is macOS-only (Linux coverage: scripts/asan-fixture-check.sh)");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 
@@ -187,24 +185,35 @@ fn supervisor_exit_paths_are_leak_free_under_guard_malloc() {
         ("on_crash_action_restart_real_crash", 42),
         ("supervisor_stop_basic", 0),
     ] {
-        let bin = compile_fixture(fixture, dir.path());
-        assert_plain_exit(&bin, expected_exit, fixture);
-        let Some(report) = leaks_report(&bin) else {
-            return;
-        };
-        let summary = leak_summary(&report).unwrap_or_else(|| {
-            panic!(
-                "leaks did not produce a usable summary for {fixture}; a double-free, OOB, \
-                 or early abort may have prevented the snapshot. Report:\n{report}"
-            )
-        });
-        assert_eq!(
-            summary,
-            (0, 0),
-            "{fixture} must free every registered supervisor root exactly once; \
-             observed {} leak(s) for {} byte(s). Report:\n{report}",
-            summary.0,
-            summary.1
+        assert_fixture_is_leak_free(
+            fixture,
+            expected_exit,
+            dir.path(),
+            "must free every registered supervisor root exactly once",
         );
     }
+}
+
+/// A config supervisor whose children all use literal init args must release
+/// the otherwise-unadopted config buffer at process exit.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn supervisor_literal_only_config_param_no_leak() {
+    require_leaks_tool();
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("supervisor-literal-config-leak-")
+        .tempdir()
+        .expect("tempdir");
+    assert_fixture_is_leak_free(
+        "supervisor_literal_only_config_param",
+        0,
+        dir.path(),
+        "must not leak the config buffer allocated without a runtime adopter \
+         (S1 fix regression)",
+    );
 }

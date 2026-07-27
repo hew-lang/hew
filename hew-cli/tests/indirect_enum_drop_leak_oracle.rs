@@ -104,7 +104,7 @@ mod support;
 use std::os::unix::process::ExitStatusExt;
 
 use support::leak_slope::{
-    assert_frame_slope_below_tolerance, compile_to_native, leaks_supported, measure_leaks,
+    assert_frame_slope_below_tolerance, compile_to_native, measure_leaks, require_leaks_tool,
     run_under_malloc_scribble, HIGH_FRAMES, LOW_FRAMES, SLOPE_TOLERANCE,
 };
 use support::{describe_output, require_codegen};
@@ -595,9 +595,7 @@ fn main() -> i64 {\n\
 /// noise; a per-frame excess means one or more three-node Tree payloads escaped.
 fn assert_actor_request_payload_slope_matches_scalar() {
     let shape = "indirect_enum_actor_request_carriers";
-    if !leaks_supported(shape) {
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -625,14 +623,12 @@ fn assert_actor_request_payload_slope_matches_scalar() {
         "request_scalar_high",
     );
 
-    let (Some(recursive_low), Some(recursive_high), Some(scalar_low), Some(scalar_high)) = (
+    let (recursive_low, recursive_high, scalar_low, scalar_high) = (
         measure_leaks(&recursive_low),
         measure_leaks(&recursive_high),
         measure_leaks(&scalar_low),
         measure_leaks(&scalar_high),
-    ) else {
-        return;
-    };
+    );
     let recursive_slope = recursive_high.saturating_sub(recursive_low);
     let scalar_slope = scalar_high.saturating_sub(scalar_low);
     eprintln!(
@@ -745,6 +741,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 
 /// Single-leaf node, looped: constructed-and-borrow-passed, freed exactly once at
 /// scope exit each iteration — flat leak slope. Pre-fix each cycle leaked 3 nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_single_leaf_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("single_leaf", single_leaf_loop_source);
@@ -752,6 +752,10 @@ fn indirect_enum_single_leaf_leak_slope_below_tolerance() {
 
 /// Depth-2 tree, looped: the recursive free reclaims every interior + leaf node
 /// each iteration — flat leak slope. Pre-fix each cycle leaked 19 nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_deep_tree_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("deep_tree", deep_tree_loop_source);
@@ -760,6 +764,10 @@ fn indirect_enum_deep_tree_leak_slope_below_tolerance() {
 /// Mutually-recursive `A` ↔ `B`, looped: the cross-thunk recursive free frees the
 /// whole chain every iteration — flat leak slope (and the synthesis does not loop
 /// forever).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_mutual_recursion_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("mutual", mutual_loop_source);
@@ -768,6 +776,10 @@ fn indirect_enum_mutual_recursion_leak_slope_below_tolerance() {
 /// Double-free landmine control: a named child nested into a parent must be freed
 /// by the parent's recursive free EXACTLY once. A regression that also admits the
 /// child's own free aborts under the poisoned allocator.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_named_child_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -782,6 +794,10 @@ fn indirect_enum_named_child_no_double_free_under_malloc_scribble() {
 /// the leak count must not grow with the iteration count (flat slope). A growing
 /// slope means the construction binding `t` was excluded from the drop allow-set
 /// (`derive_indirect_enum_drop_allowed`), orphaning each iteration's three nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_loop_build_consume_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("loop_build_consume", loop_build_consume_source);
@@ -793,6 +809,10 @@ fn indirect_enum_loop_build_consume_leak_slope_below_tolerance() {
 /// through the pointer the first iteration's scope-exit free had already
 /// reclaimed. The `ok` output (total `3 * 50 == 150`) plus the clean exit pin both
 /// directions.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_loop_build_consume_no_corruption_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -807,6 +827,10 @@ fn indirect_enum_loop_build_consume_no_corruption_under_malloc_scribble() {
 /// prior node must be released at the binding overwrite. A growing slope means the
 /// overwrite-release did not fire (the owner-set gate missed the binding, or
 /// construction-site allocation orphaned the prior node).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_var_overwrite_loop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("var_overwrite_loop", var_overwrite_loop_source);
@@ -816,6 +840,10 @@ fn indirect_enum_var_overwrite_loop_leak_slope_below_tolerance() {
 /// allocator. The overwrite-release frees the prior node exactly once; a stale
 /// per-iteration reuse (double-free) or a wild free of an uninitialised slot (the
 /// first reassignment, before the prologue null-init) aborts under `MallocScribble`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_var_overwrite_loop_no_corruption_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -832,6 +860,10 @@ fn indirect_enum_var_overwrite_loop_no_corruption_under_malloc_scribble() {
 /// payload fields and skipped the inline-enum field, orphaning the inner `Tree`
 /// node every iteration — a positive leak slope of one node/iteration. Post-fix
 /// the shared payload-teardown drops every owned field, so the slope is flat.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_inline_wrapped_child_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -846,6 +878,10 @@ fn indirect_enum_inline_wrapped_child_leak_slope_below_tolerance() {
 /// both `Wrap`'s drop and a spurious second path) aborts under `MallocScribble`;
 /// a missed free reads scribbled bytes. The `ok` output (total `3 * 50 == 150`)
 /// plus the clean exit pin both directions.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_inline_wrapped_child_no_corruption_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -865,6 +901,10 @@ fn indirect_enum_inline_wrapped_child_no_corruption_under_malloc_scribble() {
 /// reverted, the record drop routes the inline-enum field's heap-node child to
 /// the inline helper and traps (misreads the node pointer as a tag). Post-fix
 /// the slope is flat.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_record_of_inline_enum_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("record_of_inline_enum", record_of_inline_enum_loop_source);
@@ -874,6 +914,10 @@ fn indirect_enum_record_of_inline_enum_leak_slope_below_tolerance() {
 /// allocator: the nested `Tree` node is freed exactly once through the record →
 /// inline-enum → `__hew_indirect_enum_free_Tree` chain. The `ok` output
 /// (total `3 * 50 == 150`) plus the clean exit pin both a leak and a double-free.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_record_of_inline_enum_no_corruption_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -890,6 +934,10 @@ fn indirect_enum_record_of_inline_enum_no_corruption_under_malloc_scribble() {
 /// — the tuple leg of the container propagation. Same pre-fix story as the record
 /// leg (fail-closed depth guard, then a trap with routing reverted); post-fix the
 /// slope is flat.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_tuple_of_inline_enum_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("tuple_of_inline_enum", tuple_of_inline_enum_loop_source);
@@ -899,6 +947,10 @@ fn indirect_enum_tuple_of_inline_enum_leak_slope_below_tolerance() {
 /// allocator: the nested `Tree` node is freed exactly once through the tuple →
 /// inline-enum → `__hew_indirect_enum_free_Tree` chain. The `ok` output
 /// (total `3 * 50 == 150`) plus the clean exit pin both a leak and a double-free.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_tuple_of_inline_enum_no_corruption_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -912,6 +964,10 @@ fn indirect_enum_tuple_of_inline_enum_no_corruption_under_malloc_scribble() {
 /// destroyed from the mailbox when the supervisor stops. The leak count must
 /// remain flat as the number of queued recursive payloads grows; a missing or
 /// inline-layout message destructor leaks at least fourteen nodes per frame.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_actor_mailbox_teardown_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -924,6 +980,10 @@ fn indirect_enum_actor_mailbox_teardown_leak_slope_below_tolerance() {
 /// The exact sentinel proves `supervisor_stop` completed after draining the
 /// mailbox; an ABI mismatch, recursive double-free, or poisoned read aborts
 /// before it can print `ok`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_actor_mailbox_teardown_no_corruption_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -936,6 +996,10 @@ fn indirect_enum_actor_mailbox_teardown_no_corruption_under_malloc_scribble() {
 /// Every local actor-request producer consumes and releases its recursive Tree
 /// payload once per frame. A missed packed pointer field grows by at least three
 /// nodes per affected request and cannot hide inside the constant runtime floor.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_actor_request_carriers_leak_slope_below_tolerance() {
     assert_actor_request_payload_slope_matches_scalar();
@@ -943,6 +1007,10 @@ fn indirect_enum_actor_request_carriers_leak_slope_below_tolerance() {
 
 /// The same request matrix runs under poisoned allocation. An ABI mismatch,
 /// double-free, or use-after-free aborts before the exact aggregate prints `ok`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_actor_request_carriers_no_corruption_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -955,6 +1023,10 @@ fn indirect_enum_actor_request_carriers_no_corruption_under_malloc_scribble() {
 /// A failed select enqueue leaves ownership with the caller. Growing the number
 /// of failed arms must not grow the process leak count: each prepared recursive
 /// carrier is released on `select_setup_recover` before its channel is retired.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_dead_actor_select_request_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -966,6 +1038,10 @@ fn indirect_enum_dead_actor_select_request_leak_slope_below_tolerance() {
 /// The same dead-actor select recovery runs clean under poisoned allocation and
 /// reaches the exact `after`-arm aggregate. A double release or poisoned read
 /// aborts before `ok`; a missing cleanup is caught by the companion slope test.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_dead_actor_select_request_no_corruption_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -979,6 +1055,10 @@ fn indirect_enum_dead_actor_select_request_no_corruption_under_malloc_scribble()
 /// expose a post-exit leak slope. Its exact IR drop oracle is paired with this
 /// runtime poisoned-allocator pin: the prepared carrier cleanup must finish and
 /// reach the intended LLVM trap, not abort with allocator corruption first.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn indirect_enum_dead_actor_join_request_cleans_before_intentional_trap() {
     require_codegen();

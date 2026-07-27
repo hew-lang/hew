@@ -346,6 +346,10 @@ fn aggregate_payload_move_out_single_free() {
 }
 
 /// (Leak-slope) The neutralize must not invert the UAF into a per-frame leak.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn fresh_scrutinee_move_reassign_flat_leak_slope() {
     assert_frame_slope_below_tolerance("payload_reassign_fresh", fresh_scrutinee_loop_source);

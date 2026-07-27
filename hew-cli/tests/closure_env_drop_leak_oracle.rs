@@ -46,6 +46,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -223,58 +225,6 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some(leak_count)` when `leaks` produced a usable report.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-             summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
 /// Build the shape at `low_frames` and `high_frames`, measure leak NODE counts,
 /// and assert the delta stays within `SLOPE_TOLERANCE`.
 fn assert_frame_slope_below_tolerance(
@@ -283,18 +233,7 @@ fn assert_frame_slope_below_tolerance(
     low_frames: usize,
     high_frames: usize,
 ) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-        return;
-    }
+    require_leaks_tool();
 
     require_codegen();
 
@@ -314,12 +253,8 @@ fn assert_frame_slope_below_tolerance(
         &format!("{shape_name}_high"),
     );
 
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "{shape_name}: low_frames={low_frames} low_leaks={low_leaks} \
@@ -341,6 +276,10 @@ fn assert_frame_slope_below_tolerance(
 
 /// Nested env-of-env (#4b heap): the outer escaping env's free thunk must
 /// recurse into the captured inner closure's env free thunk every frame.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn closure_env_of_env_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -354,6 +293,10 @@ fn closure_env_of_env_no_per_frame_leak_slope() {
 /// Type-parameterised owned capture (#6): a `string` captured through a generic
 /// `T` is released by the escaping env free thunk after monomorphisation
 /// substitutes the env field to its concrete owned type.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn closure_owned_type_param_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -366,6 +309,10 @@ fn closure_owned_type_param_no_per_frame_leak_slope() {
 
 /// `BorrowMut` counter factory (#1′): the heap env box of an invoked-and-mutated
 /// escaping closure is released every frame.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn closure_counter_factory_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -379,6 +326,10 @@ fn closure_counter_factory_no_per_frame_leak_slope() {
 /// Flat owned capture baseline: a single concrete-`string` capture field is
 /// released by the env free thunk, isolating the owned-field drop from nesting
 /// and generics.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn closure_flat_owned_capture_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -393,6 +344,10 @@ fn closure_flat_owned_capture_no_per_frame_leak_slope() {
 /// to completion under the poisoned-allocator triple and prints the `125`
 /// checksum. A double-drop of any env box (or a captured field the inner free
 /// thunk also releases) aborts or scribbles the value before it prints.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn closure_env_shapes_run_clean_under_malloc_scribble() {
     require_codegen();

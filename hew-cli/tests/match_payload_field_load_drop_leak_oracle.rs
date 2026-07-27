@@ -145,11 +145,19 @@ fn assert_clean_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 /// looped at LOW vs HIGH iteration counts holds the leak-node count flat — the
 /// fresh owner drops on the scope-close edge every iteration. A stranded release
 /// (empty-`locals` taint) grows the count with the iteration count.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn match_payload_field_clone_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("g64_match_field_clone", match_field_clone_loop_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn match_payload_field_clone_no_double_free_under_malloc_scribble() {
     assert_clean_under_malloc_scribble(
@@ -161,6 +169,10 @@ fn match_payload_field_clone_no_double_free_under_malloc_scribble() {
 
 /// Bare field-load binder (`let name = r.name`): the field share drops exactly
 /// once — never double-freed against the composite's recursive record drop.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn match_payload_bare_field_load_no_double_free_under_malloc_scribble() {
     assert_clean_under_malloc_scribble(

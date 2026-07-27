@@ -112,6 +112,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool, require_macos_poisoned_allocator};
+
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -684,89 +686,17 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some(leak_count)` when `leaks` produced a usable report. Parses the
-/// canonical `Process <pid>: N leak(s) for B total leaked bytes.` summary.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-             summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
-/// True when this host can run the `leaks(1)` oracle.
-fn leaks_available(shape_name: &str) -> bool {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return false;
-    }
-    let on_path = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !on_path {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-    }
-    on_path
-}
-
 /// Compile `source_fn` at `low_frames` and `high_frames` and return the leak
 /// NODE counts `(low_leaks, high_leaks)` measured under `leaks --atExit` + the
-/// poisoned-allocator triple. Returns `None` when the host cannot run the
-/// `leaks(1)` oracle (logs `skip:` and the caller returns without failing).
+/// poisoned-allocator triple. Fails closed — never skips — when the host cannot
+/// run the `leaks(1)` oracle; see `support::leak_slope::require_leaks_tool`.
 fn frame_leak_counts(
     shape_name: &str,
     source_fn: fn(usize) -> String,
     low_frames: usize,
     high_frames: usize,
-) -> Option<(usize, usize)> {
-    if !leaks_available(shape_name) {
-        return None;
-    }
-
+) -> (usize, usize) {
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -785,14 +715,14 @@ fn frame_leak_counts(
         &format!("{shape_name}_high"),
     );
 
-    let low_leaks = measure_leaks(&bin_low)?;
-    let high_leaks = measure_leaks(&bin_high)?;
+    let low_leaks = measure_leaks(&bin_low);
+    let high_leaks = measure_leaks(&bin_high);
 
     eprintln!(
         "{shape_name}: low_frames={low_frames} low_leaks={low_leaks} \
          high_frames={high_frames} high_leaks={high_leaks} tolerance={SLOPE_TOLERANCE}"
     );
-    Some((low_leaks, high_leaks))
+    (low_leaks, high_leaks)
 }
 
 /// Build the shape at `low_frames` and `high_frames`, measure leak NODE counts,
@@ -803,11 +733,7 @@ fn assert_frame_slope_below_tolerance(
     low_frames: usize,
     high_frames: usize,
 ) {
-    let Some((low_leaks, high_leaks)) =
-        frame_leak_counts(shape_name, source_fn, low_frames, high_frames)
-    else {
-        return;
-    };
+    let (low_leaks, high_leaks) = frame_leak_counts(shape_name, source_fn, low_frames, high_frames);
     assert!(
         high_leaks <= low_leaks + SLOPE_TOLERANCE,
         "{shape_name}: per-frame leak SLOPE — low_frames={low_frames} low_leaks={low_leaks}, \
@@ -831,11 +757,7 @@ fn assert_frame_leaks_exactly_zero(
     low_frames: usize,
     high_frames: usize,
 ) {
-    let Some((low_leaks, high_leaks)) =
-        frame_leak_counts(shape_name, source_fn, low_frames, high_frames)
-    else {
-        return;
-    };
+    let (low_leaks, high_leaks) = frame_leak_counts(shape_name, source_fn, low_frames, high_frames);
     assert_eq!(
         (low_leaks, high_leaks),
         (0, 0),
@@ -865,16 +787,10 @@ fn assert_decode_failure_no_underfree_slope(
     base_shape: &str,
     base_source_fn: fn(usize) -> String,
 ) {
-    let Some((fail_low, fail_high)) =
-        frame_leak_counts(fail_shape, fail_source_fn, LOW_FRAMES, HIGH_FRAMES)
-    else {
-        return;
-    };
-    let Some((base_low, base_high)) =
-        frame_leak_counts(base_shape, base_source_fn, LOW_FRAMES, HIGH_FRAMES)
-    else {
-        return;
-    };
+    let (fail_low, fail_high) =
+        frame_leak_counts(fail_shape, fail_source_fn, LOW_FRAMES, HIGH_FRAMES);
+    let (base_low, base_high) =
+        frame_leak_counts(base_shape, base_source_fn, LOW_FRAMES, HIGH_FRAMES);
 
     let fail_slope = fail_high.saturating_sub(fail_low);
     let base_slope = base_high.saturating_sub(base_low);
@@ -901,6 +817,10 @@ fn assert_decode_failure_no_underfree_slope(
 /// count across frames. Dropping the Vec element drop, the nested record drop,
 /// or the top-level string drop from the decoded-value glue fails this by ~47
 /// nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn owned_field_round_trip_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -916,6 +836,10 @@ fn owned_field_round_trip_no_per_frame_leak_slope() {
 /// a layout-aware `BitCopy` vec (matching `Vec::new`'s construction), freed by the
 /// record value drop via `hew_vec_free`. A wrong-ABI free or a per-element decode
 /// over-allocation would show up as a per-frame slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_struct_round_trip_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -931,6 +855,10 @@ fn vec_struct_round_trip_no_per_frame_leak_slope() {
 /// is a bare temporary released once after the borrowing decode. Probe B leaked
 /// exactly one buffer per frame here before the fresh-temp-drop admission; the
 /// named-binding control measured 0, so this asserts an exact `== 0`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn anonymous_encode_temp_round_trip_leaks_exactly_zero() {
     assert_frame_leaks_exactly_zero(
@@ -944,6 +872,10 @@ fn anonymous_encode_temp_round_trip_leaks_exactly_zero() {
 /// Anchor 2 — the `mk()` call-producer encode temporary round-trips with
 /// EXACTLY zero leaks. `Packet.decode(mk(i))`: the anonymous `Terminator::Call`
 /// bytes result is borrowed by the decode and released once after it.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn call_producer_encode_temp_round_trip_leaks_exactly_zero() {
     assert_frame_leaks_exactly_zero(
@@ -958,6 +890,10 @@ fn call_producer_encode_temp_round_trip_leaks_exactly_zero() {
 /// EXACTLY zero leaks. `Packet.from_json(p.to_json())`: the fresh JSON string is
 /// borrowed by the parse and released once after it. Pins the string collector's
 /// `WireCodec` extension (the JSON codec's C-heap allocs are `leaks`-visible).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn anonymous_to_json_temp_round_trip_leaks_exactly_zero() {
     assert_frame_leaks_exactly_zero(
@@ -973,14 +909,15 @@ fn anonymous_to_json_temp_round_trip_leaks_exactly_zero() {
 /// SIGTRAP=5) rather than exiting 0 with a silent partial, and (b) does NOT
 /// fire the cabi `free_cstring` / `double-free` guard — proving every partial
 /// owned field decoded before the failure is freed exactly once on the error
-/// path. Skips on non-macOS (the poisoned-allocator triple is a Darwin tool).
+/// path.
+///
+/// macOS-only: the poisoned-allocator triple is a Darwin libmalloc facility, so
+/// the gate is the compile-time `#[cfg_attr(not(target_os = "macos"), ignore)]`
+/// on each caller, which the runner RECORDS as a skip. Reaching this function
+/// off macOS means that attribute is missing and
+/// `require_macos_poisoned_allocator` panics rather than returning success.
 fn assert_decode_failure_traps_no_double_free(shape_name: &str, source: &str) {
-    if !cfg!(target_os = "macos") {
-        eprintln!(
-            "skip: {shape_name}: poisoned-allocator triple is exercised via macOS leaks tooling"
-        );
-        return;
-    }
+    require_macos_poisoned_allocator();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -1034,6 +971,10 @@ fn assert_decode_failure_traps_no_double_free(shape_name: &str, source: &str) {
 /// free race. (The under-free half is structural — the `fail_bb` walks every
 /// field via the same null-safe drop helpers the slope oracle proves leak-free
 /// — because the trap precludes a `leaks --atExit` snapshot.)
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn decode_failure_frees_partials_no_double_free() {
     assert_decode_failure_traps_no_double_free("wire_cbor_decode_failure", DECODE_FAILURE_SOURCE);
@@ -1045,6 +986,10 @@ fn decode_failure_frees_partials_no_double_free() {
 /// (via `get_or_declare_enum_drop_inplace`) releases every owned variant field
 /// on each frame. A missing variant-field drop is a ~47-node excess at the
 /// `50 - 3` frame delta. (Measured post-fix: 0 leaks at both LOW and HIGH.)
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_owned_payload_round_trip_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -1060,6 +1005,10 @@ fn enum_owned_payload_round_trip_no_per_frame_leak_slope() {
 /// Inner)` layout allocates the first owned string, then latches failure on the
 /// `i64`-where-array field, driving the enum-variant `fail_bb`. Must trap
 /// fail-closed with no double-free of the partial owned string.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_owned_payload_decode_failure_frees_partials_no_double_free() {
     assert_decode_failure_traps_no_double_free(
@@ -1076,6 +1025,10 @@ fn enum_owned_payload_decode_failure_frees_partials_no_double_free() {
 /// already-decoded owned element — proving the owned Vec (and its per-element
 /// strings) is dropped exactly once before the shell free. This is the headline
 /// owned-Vec-element error path the CBOR Vec codec change admits.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_owned_struct_decode_failure_frees_partials_no_double_free() {
     assert_decode_failure_traps_no_double_free(
@@ -1089,6 +1042,10 @@ fn vec_owned_struct_decode_failure_frees_partials_no_double_free() {
 /// element allocating its owned string) before the `i64`-where-text tail latches
 /// failure. The `fail_bb` must drop the owned enum Vec exactly once — each
 /// element's variant drop releasing its owned string — with no cabi double-free.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_owned_enum_decode_failure_frees_partials_no_double_free() {
     assert_decode_failure_traps_no_double_free(
@@ -1104,6 +1061,10 @@ fn vec_owned_enum_decode_failure_frees_partials_no_double_free() {
 /// at the in-range baseline. Removing `emit_de_drop_owned` from the deserialize
 /// thunk's `fail_bb` leaks the owned Vec + element strings per frame and fails
 /// this — the direction the `no_double_free` oracle cannot see.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_owned_struct_decode_failure_frees_partials_no_under_free() {
     assert_decode_failure_no_underfree_slope(
@@ -1119,6 +1080,10 @@ fn vec_owned_struct_decode_failure_frees_partials_no_under_free() {
 /// already-decoded `Full` element owns a `string`; a `fail_bb` that skips the
 /// owned enum Vec drop leaks those strings per malformed message, which the
 /// actor-survived differential slope catches.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_owned_enum_decode_failure_frees_partials_no_under_free() {
     assert_decode_failure_no_underfree_slope(
@@ -1156,24 +1121,24 @@ fn vec_owned_enum_decode_failure_frees_partials_no_under_free() {
 /// deserialize thunk backs both the local `.decode()` call site exercised here
 /// and that remote path, so this fixture pins the thunk's free discipline that
 /// both callers depend on.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn actor_oob_enum_tag_decode_frees_reader_and_shell_no_excess_slope() {
-    let Some((oob_low, oob_high)) = frame_leak_counts(
+    let (oob_low, oob_high) = frame_leak_counts(
         "wire_cbor_actor_oob_enum",
         actor_oob_enum_decode_source,
         LOW_FRAMES,
         HIGH_FRAMES,
-    ) else {
-        return;
-    };
-    let Some((base_low, base_high)) = frame_leak_counts(
+    );
+    let (base_low, base_high) = frame_leak_counts(
         "wire_cbor_actor_in_range_enum",
         actor_in_range_enum_decode_source,
         LOW_FRAMES,
         HIGH_FRAMES,
-    ) else {
-        return;
-    };
+    );
 
     let oob_slope = oob_high.saturating_sub(oob_low);
     let base_slope = base_high.saturating_sub(base_low);

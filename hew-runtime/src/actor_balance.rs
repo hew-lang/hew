@@ -71,6 +71,15 @@ static ACTOR_BOXES_ALLOCATED: AtomicU64 = AtomicU64::new(0);
 /// Actor boxes reclaimed by `free_actor_resources_with_options`.
 static ACTOR_BOXES_FREED: AtomicU64 = AtomicU64::new(0);
 
+/// Test-only, process-local counterpart of `HEW_ACTOR_LEAK_SELFTEST=skip-free`.
+///
+/// WASI unit tests cannot rely on mutating their inherited environment after
+/// startup, so the actual-target WASM oracle arms this one-shot and drives the
+/// same omission branch at the real shutdown sweep.
+#[cfg(all(test, target_arch = "wasm32"))]
+static OMIT_NEXT_SHUTDOWN_FREE_FOR_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Count one actor box handed out. Called at the `Box::into_raw` itself.
 pub(crate) fn record_actor_box_alloc() {
     ACTOR_BOXES_ALLOCATED.fetch_add(1, Ordering::Relaxed);
@@ -99,10 +108,23 @@ pub fn leak_check_armed() -> bool {
 /// Counterfactual knob: should the shutdown sweep omit one actor's free?
 ///
 /// Only honoured when the check is armed, so it cannot change the behaviour of
-/// a program that is not running the oracle against itself.
+/// a program that is not running the oracle against itself. The wasm32 unit
+/// test below has a separate one-shot in-process override because its target
+/// cannot set environment variables through the host runner.
 #[must_use]
 pub fn leak_selftest_skips_free() -> bool {
+    #[cfg(all(test, target_arch = "wasm32"))]
+    if OMIT_NEXT_SHUTDOWN_FREE_FOR_TEST.swap(false, Ordering::AcqRel) {
+        return true;
+    }
     leak_check_armed() && std::env::var(LEAK_SELFTEST_VAR).is_ok_and(|v| v == "skip-free")
+}
+
+/// Arm one real shutdown-sweep free omission for the allocation-oracle
+/// self-test. The runtime test guard serialises its sole caller.
+#[cfg(all(test, target_arch = "wasm32"))]
+pub(crate) fn omit_next_shutdown_free_for_test() {
+    OMIT_NEXT_SHUTDOWN_FREE_FOR_TEST.store(true, Ordering::Release);
 }
 
 /// Read the balance once runtime cleanup has finished and publish the verdict.

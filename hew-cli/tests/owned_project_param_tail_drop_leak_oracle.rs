@@ -132,11 +132,19 @@ fn partitioned_consume_source(frames: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn owned_project_param_tail_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_project_param_tail", param_tail_project_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn owned_project_param_tail_is_clean_under_malloc_scribble() {
     require_codegen();
@@ -163,6 +171,10 @@ fn owned_project_param_tail_is_clean_under_malloc_scribble() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn guard_branch_around_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -171,6 +183,10 @@ fn guard_branch_around_leak_slope_below_tolerance() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn guard_branch_around_is_clean_under_malloc_scribble() {
     require_codegen();
@@ -198,6 +214,10 @@ fn guard_branch_around_is_clean_under_malloc_scribble() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn partitioned_consume_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -206,6 +226,10 @@ fn partitioned_consume_leak_slope_below_tolerance() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn partitioned_consume_closes_each_resource_exactly_once() {
     require_codegen();

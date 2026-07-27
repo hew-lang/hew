@@ -220,6 +220,10 @@ fn resource_record_explicit_close_single_no_double() {
 /// Double-free pin: the field-bearing `#[resource]` loop (200 iterations) runs
 /// clean under the poisoned allocator — the thunk frees the `Vec<i64>` field
 /// exactly once after the user close. A per-iteration double-free aborts.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn resource_record_heap_field_no_double_free_under_malloc_scribble() {
     assert_no_double_free_under_malloc_scribble("heap_field", &heap_field_loop_source(200));
@@ -229,6 +233,10 @@ fn resource_record_heap_field_no_double_free_under_malloc_scribble() {
 /// flat across LOW vs HIGH iteration counts — the drop thunk frees the `Vec<i64>`
 /// field every iteration after running the user `close`. A skipped teardown leaks
 /// the buffer per iteration (positive slope).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn resource_record_heap_field_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("resource_record_heap_field", heap_field_loop_source);

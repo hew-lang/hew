@@ -2957,6 +2957,13 @@ pub struct Checker {
     pub(super) local_trait_defs: HashSet<String>,
     /// The type name and args of the current impl block target (for resolving `Self`).
     pub(super) current_self_type: Option<(String, Vec<Ty>)>,
+    /// Source-resolved type of the current impl target.
+    ///
+    /// Unlike `current_self_type`, this retains the resolver's nominal identity
+    /// decision, including whether a generic named type is a builtin or a
+    /// source declaration shadowing a builtin spelling. Receiver parameters
+    /// consume this value instead of rebuilding their type from a name.
+    pub(super) current_self_binding_ty: Option<Ty>,
     /// The actor type currently being checked (for `this` keyword resolution).
     pub(super) current_actor_type: Option<Ty>,
     /// State fields of the current actor: name, declared mutability, and
@@ -3375,6 +3382,7 @@ impl Checker {
             source_type_defs: HashSet::new(),
             local_trait_defs: HashSet::new(),
             current_self_type: None,
+            current_self_binding_ty: None,
             current_actor_type: None,
             current_actor_fields: Vec::new(),
             actor_protocol_descriptors: HashMap::new(),

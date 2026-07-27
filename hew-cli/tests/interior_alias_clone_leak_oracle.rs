@@ -205,6 +205,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 /// it back. Must print `"INTERIOR-CLONE-OK"` and exit clean under the poisoned
 /// allocator. A regression that double-frees the shared buffer aborts; a UAF read
 /// garbles the output.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn interior_alias_clone_exact_contents_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -218,6 +222,10 @@ fn interior_alias_clone_exact_contents_under_malloc_scribble() {
 /// the leak-node count flat. Pre-fix this leaked the payload composite, the
 /// field-load retain, and the arm-scoped `copied` string — a positive slope of
 /// three nodes per iteration.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn interior_alias_clone_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("interior_clone", interior_clone_loop_source);
@@ -226,6 +234,10 @@ fn interior_alias_clone_leak_slope_below_tolerance() {
 /// Negative control under the poisoned allocator: a true interior-alias rebind
 /// with NO clone-out must stay clean (no double-free). The composite's single
 /// `EnumInPlace` drop owns the payload; the alias earns no second release.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn interior_alias_true_alias_no_double_free_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -238,6 +250,10 @@ fn interior_alias_true_alias_no_double_free_under_malloc_scribble() {
 /// Slope oracle for the negative control: a true interior-alias rebind must also
 /// hold a flat leak-node slope (the Vec's free is the single owner — no leak, no
 /// double-free).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn interior_alias_true_alias_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(

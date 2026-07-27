@@ -202,6 +202,10 @@ const EXACTLY_ONCE_PIN_EXPECTED: &str = "6230301OK";
 // ── oracles ──────────────────────────────────────────────────────────────────
 
 /// Whole-value `string` return, guard-return path: no per-call leak.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn whole_value_string_guard_return_no_per_call_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -212,6 +216,10 @@ fn whole_value_string_guard_return_no_per_call_leak_slope() {
 
 /// Whole-value `bytes` return (the `base64::decode` shape), reject path: no
 /// per-call leak.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn whole_value_bytes_guard_return_no_per_call_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -222,6 +230,10 @@ fn whole_value_bytes_guard_return_no_per_call_leak_slope() {
 
 /// Returned-record member (the `semver::try_parse` shape), bail path: no
 /// per-call leak of the owned string fields.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn returned_record_member_guard_return_no_per_call_leak_slope() {
     assert_frame_slope_below_tolerance(
@@ -234,6 +246,10 @@ fn returned_record_member_guard_return_no_per_call_leak_slope() {
 /// run to completion under the poisoned-allocator triple and print the exact
 /// checksums. A double-free — the re-admitted drop firing on the tail path
 /// where the value escaped to the caller — aborts or scribbles before `OK`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn branch_around_return_shapes_run_clean_under_malloc_scribble() {
     require_codegen();

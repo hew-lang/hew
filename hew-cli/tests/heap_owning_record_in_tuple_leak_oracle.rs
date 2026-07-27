@@ -42,6 +42,8 @@
 
 mod support;
 
+use support::leak_slope::{measure_leaks, require_leaks_tool};
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -273,72 +275,11 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
-/// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some(leak_count)` when `leaks` produced a usable report.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
-    let output = Command::new("leaks")
-        .arg("--atExit")
-        .arg("--")
-        .arg(bin)
-        .env("MallocScribble", "1")
-        .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() && output.stdout.is_empty() {
-        eprintln!(
-            "skip: leaks declined to attach to {}: {}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return None;
-    }
-    let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
-    for line in report.lines() {
-        if !line.contains(" leaks for ") && !line.contains(" leak for ") {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    parsed
-}
-
-/// macOS + `leaks(1)` availability guard.
-fn leaks_available(shape_name: &str) -> bool {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return false;
-    }
-    let avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-    }
-    avail
-}
-
 /// Compile + measure `fixture` against the Vec-in-tuple control and assert the
 /// fixture sits at the control's floor. A pre-fix record-in-tuple leak puts the
 /// fixture >= `ITERATIONS` nodes above.
 fn assert_no_leak_over_control(shape_name: &str, fixture_source: &str) {
-    if !leaks_available(shape_name) {
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -349,12 +290,8 @@ fn assert_no_leak_over_control(shape_name: &str, fixture_source: &str) {
     let control_bin = compile_to_native(&control_vec_in_tuple_source(), dir.path(), "control");
     let fixture_bin = compile_to_native(fixture_source, dir.path(), shape_name);
 
-    let Some(control_leaks) = measure_leaks(&control_bin) else {
-        return;
-    };
-    let Some(fixture_leaks) = measure_leaks(&fixture_bin) else {
-        return;
-    };
+    let control_leaks = measure_leaks(&control_bin);
+    let fixture_leaks = measure_leaks(&fixture_bin);
 
     eprintln!(
         "{shape_name}: control_leaks={control_leaks} fixture_leaks={fixture_leaks} \
@@ -381,6 +318,10 @@ fn assert_no_leak_over_control(shape_name: &str, fixture_source: &str) {
 /// shape. Pre-fix the inner Vec leaked once per helper call; post-fix it sits
 /// at the Vec-in-tuple control floor. Reverting the record-aware authority
 /// fails this by >= `ITERATIONS` nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_in_tuple_no_leak() {
     assert_no_leak_over_control("record_in_tuple", &record_in_tuple_source());
@@ -388,6 +329,10 @@ fn record_in_tuple_no_leak() {
 
 /// `(Outer, i64)` where `Outer { inner: Inner { payload: Vec<i64> } }` -- the
 /// heap leaf is two record layers deep; the authority must recurse through both.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_record_in_tuple_no_leak() {
     assert_no_leak_over_control("nested_record_in_tuple", &nested_record_in_tuple_source());
@@ -402,6 +347,10 @@ fn nested_record_in_tuple_no_leak() {
 /// (correctly keyed) classified it owning -- the MIR<->codegen adapter
 /// divergence DIV-1 closes. Reverting the adapter key fails this by
 /// >= `ITERATIONS` nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn generic_record_in_tuple_no_leak() {
     assert_no_leak_over_control("generic_record_in_tuple", &generic_record_in_tuple_source());
@@ -415,6 +364,10 @@ fn generic_record_in_tuple_no_leak() {
 /// `ty_owns_heap_mir` authority sees `Boxed`'s `payload: Vec<i64>` field and
 /// emits the in-place drop. Reverting the routing fails this by >= `ITERATIONS`
 /// nodes.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_composite_record_payload_no_leak() {
     assert_no_leak_over_control(
@@ -426,6 +379,10 @@ fn enum_composite_record_payload_no_leak() {
 /// No-double-free pin: the `(Boxed, i64)` member-drop must run EXACTLY once and
 /// free the inner Vec; the co-resident scalar Vec stays clean. A double-free or
 /// wrong-ABI free crashes under `MallocScribble` before the sentinel. Any unix.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_in_tuple_release_is_exactly_once_under_malloc_scribble() {
     require_codegen();

@@ -229,6 +229,10 @@ fn main() {
 /// `[Person; 3]` (string-field record). RED on base (double-free abort), GREEN
 /// post HIR fix. Neutering the fix (restoring the aliasing temp) returns the
 /// rc-134 abort here.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_field_record_array_repeat_no_double_free() {
     assert_scribble_clean_exact(
@@ -241,12 +245,20 @@ fn string_field_record_array_repeat_no_double_free() {
 /// `[Bag; 3]` (Vec-field record). Requires the checker gate lift to compile;
 /// GREEN post lift. A double-free of the Vec buffer SIGABRTs under the poisoned
 /// allocator.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn vec_field_record_array_repeat_no_double_free() {
     assert_scribble_clean_exact("bag_vec_field", &vec_field_record_repeat_source(), "24OK");
 }
 
 /// Each repeat slot is an independent deep clone and the source stays live.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn array_repeat_slots_are_independent_owners() {
     assert_scribble_clean_exact("slot_independence", &slot_independence_source(), "42OK");
@@ -254,6 +266,10 @@ fn array_repeat_slots_are_independent_owners() {
 
 /// `[f(); 0]` value-producing source: evaluated + dropped exactly once even at
 /// zero iterations; empty Vec.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn array_repeat_zero_count_value_source_drops_once() {
     assert_scribble_clean_exact("zero_count_value", &zero_count_value_source(), "0OK");

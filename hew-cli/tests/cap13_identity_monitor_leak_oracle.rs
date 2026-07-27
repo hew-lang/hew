@@ -11,7 +11,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use support::leak_slope::leaks_supported;
+use support::leak_slope::require_leaks_tool;
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(45);
@@ -236,11 +236,13 @@ fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
     })
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn cross_process_monitor_close_has_zero_leak_slope_and_no_poisoned_allocator_failure() {
-    if !leaks_supported("cap13_identity_monitor") {
-        return;
-    }
+    require_leaks_tool();
     require_codegen();
     let emit_dir = tempfile::tempdir().expect("create CAP-13 compile directory");
     let binary = compile_fixture(emit_dir.path());

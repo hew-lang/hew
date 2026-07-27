@@ -217,71 +217,127 @@ fn payload_forward_source(frames: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn payload_forward_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("enum_callee_payload_forward", payload_forward_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn payload_forward_does_not_double_free() {
     assert_no_double_free("payload_forward_df", &payload_forward_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn result_named_consume_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("enum_callee_result_named", result_named_consume_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn result_temp_consume_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("enum_callee_result_temp", result_temp_consume_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn user_enum_consume_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("enum_callee_user_enum", user_enum_consume_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn move_out_arm_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("enum_callee_move_out", move_out_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn result_named_consume_does_not_double_free() {
     assert_no_double_free("result_named_df", &result_named_consume_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn result_temp_consume_does_not_double_free() {
     assert_no_double_free("result_temp_df", &result_temp_consume_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn user_enum_consume_does_not_double_free() {
     assert_no_double_free("user_enum_df", &user_enum_consume_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn move_out_arm_does_not_double_free() {
     assert_no_double_free("move_out_df", &move_out_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn mixed_move_out_and_read_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("enum_callee_mixed_arms", mixed_move_out_and_read_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn mixed_move_out_and_read_does_not_double_free() {
     assert_no_double_free("mixed_arms_df", &mixed_move_out_and_read_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn move_out_via_let_share_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("enum_callee_let_share", move_out_via_let_share_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn move_out_via_let_share_does_not_double_free() {
     assert_no_double_free("let_share_df", &move_out_via_let_share_source(50));

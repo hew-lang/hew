@@ -271,6 +271,10 @@ fn assert_clean_under_malloc_scribble(shape_name: &str, source: &str, expected_s
 /// two `insert`s while the parent `Row` lives in a `Vec<Row>`. Pre-fix this
 /// double/triple-frees the field buffer (the two maps AND the Vec each free it).
 /// Post-fix each insert gets an independent retained `+1` and the run is clean.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn field_load_into_consume_no_double_free() {
     assert_clean_under_malloc_scribble(
@@ -284,6 +288,10 @@ fn field_load_into_consume_no_double_free() {
 /// `scanner.next_line` shape, here `(parts[0], _).0` keyed into two maps).
 /// Pre-fix the same buffer was aliased into both inserts and double-freed.
 /// Post-fix each read is an independent retained `+1`.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn dup_field_read_into_return_no_double_free() {
     assert_clean_under_malloc_scribble(
@@ -300,6 +308,10 @@ fn dup_field_read_into_return_no_double_free() {
 /// (sentinel abort) or scribbles the live string (corrupted checksum). See the
 /// module doc for why a `leaks` floor probe cannot isolate this shape (the
 /// parent-field-drop leak is refcount-shared and out of scope).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn transient_field_read_no_over_drop() {
     // total = FIELD_LOAD_COUNT * len("key" = 3) + sum(0..FIELD_LOAD_COUNT)

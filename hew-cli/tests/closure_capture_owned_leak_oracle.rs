@@ -451,6 +451,10 @@ fn assert_compile_fails(shape_name: &str, source: &str, expected: &str) {
 /// `string` frees the captured handle every iteration — flat leak slope.
 /// Pre-keystone the free thunk freed only the box and this leaked the captured
 /// string per iteration (positive slope).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn return_closure_captures_string_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("captures_string", captures_string_loop_source);
@@ -458,6 +462,10 @@ fn return_closure_captures_string_leak_slope_below_tolerance() {
 
 /// Slope oracle (Vec): a returned closure capturing an owned `Vec<i64>` frees
 /// the captured buffer every iteration — flat leak slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn return_closure_captures_vec_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("captures_vec", captures_vec_loop_source);
@@ -466,6 +474,10 @@ fn return_closure_captures_vec_leak_slope_below_tolerance() {
 /// Slope oracle (record, #2419): a returned closure capturing a heap-owning
 /// record frees the record's owned Vec every iteration through the synthesised
 /// `__hew_record_drop_inplace_Holder` — flat leak slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn return_closure_captures_record_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("captures_record", captures_record_loop_source);
@@ -474,6 +486,10 @@ fn return_closure_captures_record_leak_slope_below_tolerance() {
 /// Slope oracle (enum, #2419 twin): a returned closure capturing an enum with
 /// an owned string payload frees the payload every iteration through the
 /// synthesised `__hew_enum_drop_inplace_Tag` — flat leak slope.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn return_closure_captures_enum_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("captures_enum", captures_enum_loop_source);
@@ -482,6 +498,10 @@ fn return_closure_captures_enum_leak_slope_below_tolerance() {
 /// Stack-env oracle (#2433 shape 1): a direct-call-only closure borrows its
 /// stack env; the source record remains the sole owner and must drop once per
 /// loop iteration.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn stack_env_capture_record_field_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -492,6 +512,10 @@ fn stack_env_capture_record_field_leak_slope_below_tolerance() {
 
 /// Parameter aggregate oracle (#2433 shape 3): env-loaded record string fields
 /// in the closure invoke shim are retained temporaries and need balancing drops.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn parameter_record_capture_one_field_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -502,6 +526,10 @@ fn parameter_record_capture_one_field_leak_slope_below_tolerance() {
 
 /// Parameter aggregate oracle with two owned field reads: catches one-drop-per-
 /// field gaps in the closure invoke shim.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn parameter_record_capture_both_fields_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -512,6 +540,10 @@ fn parameter_record_capture_both_fields_leak_slope_below_tolerance() {
 
 /// Narrowed-scope control: direct string parameter capture already had a flat
 /// slope; keep it compiling and leak-free.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_parameter_capture_control_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -522,6 +554,10 @@ fn string_parameter_capture_control_leak_slope_below_tolerance() {
 
 /// Narrowed-scope control: nested closure-parameter capture remains in scope for
 /// closure-pair ownership and must not be rejected by aggregate capture guards.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn nested_closure_parameter_control_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance(
@@ -533,6 +569,10 @@ fn nested_closure_parameter_control_leak_slope_below_tolerance() {
 /// No-double-free pin (string): the escaping capture frees the owned `string`
 /// EXACTLY once across 200 iterations. A second owner aborts under the poisoned
 /// allocator. Runs on any unix host.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn return_closure_captures_string_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free("captures_string_df", &captures_string_loop_source(200));
@@ -540,6 +580,10 @@ fn return_closure_captures_string_freed_exactly_once_under_malloc_scribble() {
 
 /// No-double-free pin (Vec): the escaping capture frees the owned `Vec` EXACTLY
 /// once across 200 iterations. Runs on any unix host.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn return_closure_captures_vec_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free("captures_vec_df", &captures_vec_loop_source(200));
@@ -549,6 +593,10 @@ fn return_closure_captures_vec_freed_exactly_once_under_malloc_scribble() {
 /// record's owned Vec EXACTLY once across 200 iterations — the caller binding's
 /// drop is suppressed (the env is the sole owner), so a second release aborts
 /// under the poisoned allocator. Runs on any unix host.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn return_closure_captures_record_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free("captures_record_df", &captures_record_loop_source(200));
@@ -557,11 +605,19 @@ fn return_closure_captures_record_freed_exactly_once_under_malloc_scribble() {
 /// No-double-free pin (enum, #2419 twin): the escaping enum capture frees the
 /// owned string payload EXACTLY once across 200 iterations. Runs on any unix
 /// host.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn return_closure_captures_enum_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free("captures_enum_df", &captures_enum_loop_source(200));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn stack_env_capture_record_field_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(
@@ -570,6 +626,10 @@ fn stack_env_capture_record_field_freed_exactly_once_under_malloc_scribble() {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn parameter_record_capture_both_fields_freed_exactly_once_under_malloc_scribble() {
     assert_no_double_free(

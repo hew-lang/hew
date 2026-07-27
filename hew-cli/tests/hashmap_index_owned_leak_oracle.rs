@@ -151,6 +151,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 /// trapping read to alias the table's slot (so `m[k]` borrows while
 /// `hew_hashmap_remove_layout` also releases it) fails this with either an abort
 /// (double-free) or garbled output (UAF read).
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn hashmap_index_owned_value_exact_contents_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(
@@ -167,6 +171,10 @@ fn hashmap_index_owned_value_exact_contents_under_malloc_scribble() {
 /// zero per-iteration retention. A regression that leaks the clone (a retain
 /// with no matching drop) grows the count with the iteration count and trips the
 /// slope assertion.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn hashmap_index_owned_value_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("hashmap_index_owned", index_roundtrip_loop_source);

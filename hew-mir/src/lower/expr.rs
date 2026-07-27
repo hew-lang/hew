@@ -3457,15 +3457,15 @@ impl Builder {
                 //
                 // For OVERRIDDEN fields with heap-owning types (string / bytes /
                 // Vec<T> / HashMap / HashSet / Generator), destructively release
-                // the OLD base value at the construction site: single-pointer COW
-                // fields via `RecordFieldDrop`, the fat `bytes` triple via
-                // `RecordFieldLoad` + inline `Instr::Drop` (see the per-field
-                // routing comment below). Without this release the overwritten
-                // allocation is orphaned — the functional-update
-                // overridden-owned-field LEAK (the bug the leak oracle pins).
-                // The release is now correct for single-pointer COW leaf fields;
-                // owned-aggregate overrides (record / tuple / enum) remain a
-                // follow-on guarded by the fail-closed pre-flight below.
+                // the OLD base value at the construction site via
+                // `RecordFieldDrop`. Single-pointer leaves release their live
+                // slot directly; `bytes` reaches field 0 of its fat
+                // `{ ptr, offset, len }` slot for both release and poison.
+                // Without this release the overwritten allocation is orphaned —
+                // the functional-update overridden-owned-field LEAK (the bug the
+                // leak oracle pins). Owned-aggregate overrides (record / tuple /
+                // enum) remain a follow-on guarded by the fail-closed pre-flight
+                // below.
                 //
                 // SOUNDNESS depends on `..base` consuming the base: the base is
                 // marked consumed (above), so the move-checker rejects any later
@@ -3808,12 +3808,16 @@ impl Builder {
                                 // or it leaks (the functional-update
                                 // overridden-owned-field leak the oracle pins).
                                 //
-                                // SINGLE MECHANISM for single-pointer COW fields
+                                // SINGLE MECHANISM for COW fields
                                 // (`string` / `Vec<T>` / `HashMap` / `HashSet` /
-                                // `Generator`): `RecordFieldDrop` (raw load → release
-                                // → null-store). It is the purpose-built op for an
-                                // in-place field destructor and gives three things
-                                // the old `RecordFieldLoad` + `Drop` split did not:
+                                // `Generator`, plus `bytes`):
+                                // `RecordFieldDrop` (raw owning-word load →
+                                // release → null-store). For `bytes`, codegen
+                                // reaches the data-pointer word at field 0 of the
+                                // `{ ptr, offset, len }` triple. It is the
+                                // purpose-built op for an in-place field
+                                // destructor and gives three things the old
+                                // `RecordFieldLoad` + `Drop` split did not:
                                 //   * it bypasses `RecordFieldLoad`'s `string` retain
                                 //     (a retain+drop no-op that LEAVES the original
                                 //     un-freed — the original string-vs-rest split
@@ -3826,15 +3830,6 @@ impl Builder {
                                 //   * it null-stores the freed slot, so the exotic
                                 //     residual-alias path frees `null` (a no-op for
                                 //     every COW release symbol) instead of a dangle.
-                                //
-                                // `bytes` is the ONE exception: it is a fat
-                                // `{ ptr, len, cap }` triple, not a single pointer,
-                                // so its destructor takes the whole by-value triple
-                                // and must be reached through `RecordFieldLoad` +
-                                // `Instr::Drop` (which materialises the fat value).
-                                // `field_override_uses_record_field_drop` mirrors
-                                // codegen's `resolved_ty_cow_heap_release` single-ptr set
-                                // so the `RecordFieldDrop` congruence assert agrees.
                                 if field_override_uses_record_field_drop(&subst_fty) {
                                     self.push_instr(Instr::RecordFieldDrop {
                                         record: base_rec,
@@ -7626,6 +7621,20 @@ impl Builder {
         site: SiteId,
         receiver_ty: &ResolvedTy,
     ) -> Option<String> {
+        // HIR is authoritative when it already emitted a directly callable
+        // symbol. In particular, a concrete-specialised impl method is named
+        // with its self-type arguments (`Vec$$i64::bump`) and appears in
+        // `module_fn_names` exactly as emitted. Trying the parameterised
+        // receiver fallback first would feed that already-mangled symbol back
+        // into `monomorph::mangle`, violating the origin-name invariant and
+        // panicking at `hew check`.
+        //
+        // Generic impl/method origins are deliberately absent from
+        // `module_fn_names`; they therefore continue through the two
+        // monomorphisation probes below.
+        if self.module_fn_names.contains(callee) {
+            return Some(callee.to_string());
+        }
         if let Some(type_args) = self.call_site_type_args.get(&site).cloned() {
             let substituted: Vec<ResolvedTy> = type_args.iter().map(|t| self.subst_ty(t)).collect();
             let mangled = hew_hir::monomorph::mangle(callee, &substituted);
@@ -7641,9 +7650,6 @@ impl Builder {
                     return Some(mangled);
                 }
             }
-        }
-        if self.module_fn_names.contains(callee) {
-            return Some(callee.to_string());
         }
         self.diagnostics.push(MirDiagnostic {
             kind: MirDiagnosticKind::NotYetImplemented {

@@ -164,61 +164,109 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
     );
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_temp_arg_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_composite_temp_record", record_temp_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn tuple_temp_arg_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_composite_temp_tuple", tuple_temp_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_temp_arg_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_composite_temp_enum", enum_temp_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_temp_arg_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_composite_temp_string", string_temp_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_temp_arg_does_not_double_free() {
     assert_no_double_free("record_temp_df", &record_temp_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn tuple_temp_arg_does_not_double_free() {
     assert_no_double_free("tuple_temp_df", &tuple_temp_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn enum_temp_arg_does_not_double_free() {
     assert_no_double_free("enum_temp_df", &enum_temp_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_temp_arg_does_not_double_free() {
     assert_no_double_free("string_temp_df", &string_temp_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_named_canary_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_composite_named_record", record_named_canary_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_named_canary_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_composite_named_string", string_named_canary_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn record_named_canary_does_not_double_free() {
     assert_no_double_free("record_named_df", &record_named_canary_source(50));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn string_named_canary_does_not_double_free() {
     assert_no_double_free("string_named_df", &string_named_canary_source(50));

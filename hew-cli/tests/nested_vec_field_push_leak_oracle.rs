@@ -128,6 +128,10 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
 /// PRIMARY #2721 regression: the field-push build-drop loop must hold a flat
 /// leak slope. Reverting the copy-in field-binder exemption strands the record's
 /// original field buffer (~2 nodes/frame) and this fails.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn field_push_drop_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("nested_vec_field_push", field_push_drop_loop_source);
@@ -136,6 +140,10 @@ fn field_push_drop_leak_slope_below_tolerance() {
 /// Exact-contents / no-double-free pin: the deep-cloned element in `xs` and the
 /// record's retained original are disjoint owners; both read back 60 and neither
 /// double-frees under the poisoned allocator.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn field_push_exact_contents_under_malloc_scribble() {
     assert_exact_under_malloc_scribble(

@@ -15403,6 +15403,91 @@ fn lower_record_field_load(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RecordFieldDropSlotShape<'ctx> {
+    SinglePointer,
+    BytesTriple(StructType<'ctx>),
+}
+
+/// Validate the one type/symbol congruence whose ABI shape differs.
+///
+/// MIR's `project_field_inline_drop_symbol` is the symbol authority for
+/// `RecordFieldDrop`; codegen deliberately does not rebuild its full
+/// same-pointer release table. Bytes is the narrow exception that must be
+/// checked independently because `hew_bytes_drop` consumes field 0 of a fat
+/// slot rather than the value of a single-pointer slot.
+fn validate_record_field_drop_bytes_contract(
+    ty: &ResolvedTy,
+    symbol: &str,
+    idx: u32,
+) -> CodegenResult<()> {
+    let ty_is_bytes = matches!(ty, ResolvedTy::Bytes);
+    let symbol_is_bytes = symbol == "hew_bytes_drop";
+    if ty_is_bytes == symbol_is_bytes {
+        return Ok(());
+    }
+    Err(CodegenError::FailClosed(format!(
+        "RecordFieldDrop @ field[{idx}]: type {ty:?} and \
+         drop_fn=Release({symbol:?}) violate the exact Bytes contract: \
+         ResolvedTy::Bytes must use hew_bytes_drop, and hew_bytes_drop is \
+         reserved for ResolvedTy::Bytes. The MIR \
+         project_field_inline_drop_symbol authority disagreed with its carried \
+         type; refusing to emit (LESSONS: boundary-fail-closed, \
+         dedup-semantic-boundary)"
+    )))
+}
+
+/// Validate the slot shape that [`lower_record_field_drop`] will raw-load.
+///
+/// Pointer-shaped COW values expose their owning word directly. The only
+/// aggregate admission is the exact Bytes ABI paired with its exact destructor:
+/// `Release(hew_bytes_drop)` over `{ ptr, i32 offset, i32 len }`. Keeping the
+/// symbol and layout checks together prevents an unrelated three-field struct
+/// from being treated as bytes merely because field 0 happens to be a pointer,
+/// and prevents `hew_bytes_drop` from being called on a single-pointer slot.
+fn record_field_drop_slot_shape<'ctx>(
+    symbol: &str,
+    slot_ty: BasicTypeEnum<'ctx>,
+    idx: u32,
+) -> CodegenResult<RecordFieldDropSlotShape<'ctx>> {
+    if symbol == "hew_bytes_drop" {
+        let BasicTypeEnum::StructType(st) = slot_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "RecordFieldDrop @ field[{idx}]: hew_bytes_drop requires the \
+                 exact `{{ ptr, i32 offset, i32 len }}` Bytes slot, got \
+                 {slot_ty:?}; refusing to treat a single-pointer/non-aggregate \
+                 slot as Bytes (LESSONS: boundary-fail-closed)"
+            )));
+        };
+        let fields = st.get_field_types();
+        let is_bytes_triple = fields.len() == 3
+            && matches!(fields[0], BasicTypeEnum::PointerType(_))
+            && matches!(fields[1], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32)
+            && matches!(fields[2], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32);
+        if is_bytes_triple {
+            return Ok(RecordFieldDropSlotShape::BytesTriple(st));
+        }
+        return Err(CodegenError::FailClosed(format!(
+            "RecordFieldDrop @ field[{idx}]: hew_bytes_drop requires the exact \
+             `{{ ptr, i32 offset, i32 len }}` Bytes slot, got {slot_ty:?}; \
+             refusing to load field 0 as an owning pointer \
+             (LESSONS: boundary-fail-closed)"
+        )));
+    }
+
+    if slot_ty.is_pointer_type() {
+        return Ok(RecordFieldDropSlotShape::SinglePointer);
+    }
+
+    Err(CodegenError::FailClosed(format!(
+        "RecordFieldDrop @ field[{idx}]: slot type {slot_ty:?} with \
+         drop_fn=Release({symbol:?}) is neither a single-pointer COW slot nor \
+         the exact bytes contract. Aggregate slots require \
+         Release(hew_bytes_drop) over `{{ ptr, i32 offset, i32 len }}`; refusing \
+         to load field 0 as an owning pointer (LESSONS: boundary-fail-closed)"
+    )))
+}
+
 /// Release an owned record field in-place without retaining it first.
 ///
 /// Emits: GEP to the field slot → raw load (no `hew_string_clone` retain) →
@@ -15424,11 +15509,14 @@ fn lower_record_field_load(
 ///
 /// ## Supported field types
 ///
-/// Only `DropFnSpec::Release` COW-heap scalar fields (string, Vec, HashMap,
-/// HashSet, Generator) are handled here.  `bytes` fields use the
-/// `RecordFieldLoad` + `Instr::Drop` path (which doesn't retain for bytes)
-/// and are not dispatched to this function.  Arriving with an unsupported
-/// `drop_fn` variant fails closed.
+/// `DropFnSpec::Release` COW-heap fields: the single-pointer ones (string, Vec,
+/// HashMap, HashSet, Generator) and the fat `bytes` `{ ptr, offset, len }` triple,
+/// whose owning word is its field 0. Both shapes release through the LIVE field
+/// slot and poison that slot, which is the whole point of this op — see
+/// `field_override_uses_record_field_drop` in `hew-mir` for why the copying
+/// `RecordFieldLoad` + `Instr::Drop` alternative double-frees a functional
+/// update's overridden field. Arriving with an unsupported `drop_fn` variant
+/// fails closed.
 fn lower_record_field_drop(
     fn_ctx: &FnCtx<'_, '_>,
     record: Place,
@@ -15443,13 +15531,10 @@ fn lower_record_field_drop(
              for COW-heap scalar fields (LESSONS: boundary-fail-closed)"
         )));
     };
-    // Fail closed on an unknown release symbol before emitting any call: a
-    // `RecordFieldDrop` carries its `Release` symbol as a MIR literal, so a
-    // symbol outside the closed copy-on-write release set is producer drift
-    // and must not reach a call to an unvalidated runtime entry
-    // (LESSONS: boundary-fail-closed). The per-type congruence re-derivation
-    // is retired with the Row-C dual-derivation seam — codegen no longer keeps
-    // its own `(type, symbol)` table to double-check the MIR pick against.
+    // MIR's `project_field_inline_drop_symbol` chooses the literal from the
+    // substituted field type. Codegen validates the closed symbol set without
+    // rebuilding that same-pointer table. It additionally checks the one
+    // type/symbol boundary with a distinct ABI: Bytes iff hew_bytes_drop.
     if !is_known_cow_heap_drop_symbol(symbol) {
         return Err(CodegenError::FailClosed(format!(
             "RecordFieldDrop @ field[{idx}] (type {ty:?}): drop_fn=Release({symbol:?}) \
@@ -15458,6 +15543,7 @@ fn lower_record_field_drop(
             idx = field_offset.0,
         )));
     }
+    validate_record_field_drop_bytes_contract(ty, symbol, field_offset.0)?;
     let (record_ptr, record_slot_ty) = place_pointer(fn_ctx, record)?;
     let struct_ty = match record_slot_ty {
         BasicTypeEnum::StructType(st) => st,
@@ -15481,30 +15567,36 @@ fn lower_record_field_drop(
             element_tys.len()
         )));
     }
-    // Field-slot-is-pointer guard. The raw load below reads the slot as a single
-    // pointer (`ptr_ty` → `into_pointer_value`) and hands it to a COW-heap
-    // release symbol. That is only valid when the field slot IS one pointer.
-    // The MIR emitter routes exactly the single-pointer COW types here
-    // (`field_override_uses_record_field_drop`: string / Vec / HashMap / HashSet
-    // / Generator) and keeps the fat `bytes` `{ptr,len,cap}` triple on the
-    // `RecordFieldLoad` + `Drop` path. If a future emitter change ever steered a
-    // non-pointer field (a BitCopy scalar, or the fat triple) into this op, the
-    // load would type-confuse the slot. Fail closed instead of mis-loading
-    // (LESSONS: boundary-fail-closed, dedup-semantic-boundary).
-    if !element_tys[idx_usize].is_pointer_type() {
-        return Err(CodegenError::FailClosed(format!(
-            "RecordFieldDrop @ field[{idx}]: slot type {slot:?} is not a single \
-             pointer; RecordFieldDrop is emitted only for single-pointer COW-heap \
-             fields (string / Vec / HashMap / HashSet / Generator). A fat or \
-             BitCopy field reached this op — refusing to load the slot as a \
-             pointer (LESSONS: boundary-fail-closed)",
-            slot = element_tys[idx_usize],
-        )));
-    }
-    let field_ptr = fn_ctx
+    // Field-slot-shape guard. The raw load below reads ONE pointer and hands it
+    // to a COW-heap release symbol, so the slot must expose exactly one owning
+    // pointer word. Two shapes qualify, and the MIR emitter
+    // (`field_override_uses_record_field_drop`) routes exactly these:
+    //
+    //   * a single-pointer slot — string / Vec / HashMap / HashSet / Generator;
+    //   * the fat `bytes` `{ ptr, i32 offset, i32 len }` triple, whose field 0
+    //     is the sole owning word (`hew_bytes_drop` takes that pointer and
+    //     nothing else). No other aggregate shape/symbol pair is admitted.
+    //
+    // For the triple, `owning_word_ptr` below steps through to field 0 so both
+    // the release argument AND the post-drop null-store address the LIVE record,
+    // not a copy. Anything else (a BitCopy scalar, some other aggregate) would
+    // type-confuse the slot, so fail closed instead of mis-loading (LESSONS:
+    // boundary-fail-closed, dedup-semantic-boundary).
+    let slot_ty = element_tys[idx_usize];
+    let slot_shape = record_field_drop_slot_shape(symbol, slot_ty, idx)?;
+    let slot_ptr = fn_ctx
         .builder
         .build_struct_gep(struct_ty, record_ptr, idx, &format!("rfd_{idx}_gep"))
         .llvm_ctx_with(|| format!("RecordFieldDrop struct_gep field {idx}"))?;
+    // Step through the fat triple to its owning pointer word. For a
+    // single-pointer slot the slot IS the owning word.
+    let field_ptr = match slot_shape {
+        RecordFieldDropSlotShape::BytesTriple(triple_ty) => fn_ctx
+            .builder
+            .build_struct_gep(triple_ty, slot_ptr, 0, &format!("rfd_{idx}_triple_gep"))
+            .llvm_ctx_with(|| format!("RecordFieldDrop bytes triple gep field {idx}"))?,
+        RecordFieldDropSlotShape::SinglePointer => slot_ptr,
+    };
     // Raw load: NO hew_string_clone retain. This is intentional — the field is
     // the sole owner (rc == 1) and we want to drive rc to zero via the release
     // symbol. A retain here would produce a clone+immediate-drop no-op (the
@@ -21466,6 +21558,9 @@ fn is_known_cow_heap_drop_symbol(symbol: &str) -> bool {
     matches!(
         symbol,
         "hew_string_drop"
+            // Fat `bytes` triple released through its owning field-0 pointer;
+            // null-tolerant, so a second structurally-reachable drop is a no-op.
+            | "hew_bytes_drop"
             | "hew_vec_free"
             // W5.016: owned-element Vec release (per-element descriptor drop_fn
             // then buffer free).

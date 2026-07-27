@@ -158,16 +158,28 @@ fn affected_release_sites_emit_owned_symbol() {
 }
 
 // The malloc-slope teeth require a runtime+picker neuter; the IR-symbol assertion is the live fail-without-fix teeth today.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn generator_yield_owned_vec_payload_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_vec_generator_yield", generator_yield_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn field_reassignment_owned_vec_payload_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("owned_vec_field_reassignment", field_reassignment_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
 fn affected_release_paths_do_not_double_free() {
     assert_no_double_free("generator_yield_df", &generator_yield_source(50));

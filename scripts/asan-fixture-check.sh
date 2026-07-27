@@ -75,6 +75,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/lib/corpus-floor.sh"
 
 # ── Platform guard ────────────────────────────────────────────────────────
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -633,3 +636,9 @@ echo "=== asan-fixture-check: ${pass} passed, ${fail} failed ==="
 if [[ "${fail}" -ne 0 ]]; then
   exit 1
 fi
+
+# Every verdict above is spelled out by hand, so this gate cannot enumerate an
+# empty corpus — but it CAN shrink one deleted block at a time, and "0 passed,
+# 0 failed" is a clean exit. The tracked count means dropping a leak oracle
+# takes an admission in scripts/corpus-floors.tsv rather than a quiet deletion.
+corpus_floor_assert "asan-fixture-gates" "$(( pass + fail ))"

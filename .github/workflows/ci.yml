@@ -226,6 +226,9 @@ jobs:
 
       - name: Verify gate reachability and documented make targets
         run: make check-gate-reachability
+
+      - name: Verify every corpus floor has a live call site
+        run: make corpus-floor-check
       # <<< CI-PARITY-STEPS
 
       # Format-check std/ and examples/ .hew sources with the in-tree hew

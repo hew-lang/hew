@@ -49,6 +49,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/line-set.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/line-set.sh"
+# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
 
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/doc-test-expected-failures.txt"
 OUTDIR="$REPO_ROOT/.tmp/doc-fences"
@@ -200,6 +203,12 @@ done
 
 total_fences="${#FENCE_IDS[@]}"
 echo "  Extracted: $total_fences fences total"
+
+# The ratchet below compares the failing-fence set against the expected list.
+# An extraction that produced nothing (a renamed doc, a fence-marker change)
+# would make both sets trivially agree once the expected list is empty, so the
+# extracted count is floored before anything is compared.
+corpus_floor_assert "doc-hew-fences" "$total_fences" || exit 1
 
 # ── Read expected-failures list ────────────────────────────────────────────────
 EXPECTED_STR=""

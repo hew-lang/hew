@@ -68,7 +68,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure
+.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -444,9 +444,10 @@ fuzz-oracle: hew-native runtime $(LIBHEW_READY)
 		python3 scripts/fuzz/run-oracle.py --timeout 30; \
 	fi
 
-# Oracle self-tests: three independently-failable checks that prove the
-# harness has teeth (flags real crashes) and honours the ratchet contract
-# (unexpected-pass and unexpected-fail both fail closed).
+# Oracle self-tests: four independently-failable checks that prove the
+# harness has teeth (flags real crashes), honours the ratchet contract
+# (unexpected-pass and unexpected-fail both fail closed), and refuses to
+# report PASS over a candidate set below its floor.
 fuzz-oracle-selftest: hew-native runtime $(LIBHEW_READY)
 	bash scripts/fuzz/oracle-selftest.sh
 
@@ -904,6 +905,7 @@ test-ux-examples: hew-native runtime $(LIBHEW_READY)
 	  done; \
 	done; \
 	echo "  $$pass passed, $$fail failed"; \
+	bash scripts/lib/corpus-floor.sh ux-example-expectations "$$((pass + fail))" || exit 1; \
 	if [ $$fail -gt 0 ]; then \
 	  echo "ERROR: $$fail tutorial(s) failed — run \`hew run <file>\` to reproduce"; \
 	  exit 1; \
@@ -986,6 +988,7 @@ test-surface-examples: hew-native runtime $(LIBHEW_READY)
 	  fi; \
 	done; \
 	echo "  $$pass passed, $$fail failed"; \
+	bash scripts/lib/corpus-floor.sh surface-example-expectations "$$((pass + fail))" || exit 1; \
 	if [ $$fail -gt 0 ]; then \
 	  echo "ERROR: $$fail surface example(s) failed — run \`hew run <file>\` to reproduce"; \
 	  exit 1; \
@@ -1152,8 +1155,18 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate verify-ffi verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check
+lint: runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate verify-ffi verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check corpus-floor-check
 	cargo clippy --workspace --tests -- -D warnings
+
+# Keep the corpus-floor registry honest: every declared floor is well formed
+# and still has a live call site, the registry's own row count is floored, and
+# both helper implementations agree on every row's verdict. A gate that
+# enumerates a corpus and then compares over it proves nothing when the
+# enumeration is empty; scripts/corpus-floors.tsv is where each such gate
+# records the size it expects to find.
+corpus-floor-check:
+	bash scripts/tests/test_corpus_floor.sh
+	bash scripts/check-corpus-floors.sh
 
 # Keep nightly FreeBSD coverage and both release-gate legs on one exact
 # nextest/provisioning contract. The required Clippy & format job runs this
@@ -1201,9 +1214,11 @@ leak-scan:
 # Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
 hew-fmt-check: hew
 	@echo "==> hew-fmt-check: checking std/ and examples/ .hew sources"
-	@find std examples -name "*.hew" -print0 \
+	@total=$$(find std examples -name "*.hew" | wc -l | tr -d ' '); \
+	bash scripts/lib/corpus-floor.sh hew-fmt-check-files "$$total" || exit 1; \
+	find std examples -name "*.hew" -print0 \
 	    | xargs -0 $(DEBUG_DIR)/hew fmt --check \
-	    && echo "hew-fmt-check passed: all .hew sources are formatted." \
+	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
 
 # Repo-wide hew check sweep over all tracked .hew files (excluding intentional

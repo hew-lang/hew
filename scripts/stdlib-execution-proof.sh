@@ -3,6 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/lib/corpus-floor.sh"
 INDEX="${ROOT}/std/README.md"
 MANIFEST="${ROOT}/scripts/stdlib-execution-proofs.tsv"
 RUNNER="${ROOT}/tests/vertical-slice/run.sh"
@@ -352,4 +355,9 @@ if [[ "${failures}" -ne 0 ]]; then
 fi
 
 count="$(wc -l < "${mapped}" | tr -d ' ')"
+# Both directions of this check are set comparisons: manifest rows must appear
+# in the index, index rows must appear in the manifest. Two empty sides agree
+# with each other, so a README whose table format drifted would map zero
+# modules and still exit 0. Floor the mapped count.
+corpus_floor_assert "stdlib-proof-modules" "${count}" || exit 1
 echo "stdlib execution proofs: ${count} public modules mapped to executable fixtures"

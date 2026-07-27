@@ -66,16 +66,6 @@ pick_tool() {
 LLVM_PROFDATA="$(pick_tool llvm-profdata)"
 LLVM_COV="$(pick_tool llvm-cov)"
 
-echo "==> Phase 1: build instrumented libhew.a"
-RUSTFLAGS="-C instrument-coverage" cargo build -p hew-lib
-
-echo "==> Phase 2: build the hew CLI (uninstrumented; just needs to drive the link)"
-cargo build -p hew-cli --bin hew
-
-echo "==> Phase 3: compile + run self-contained example programs (HEW_COVERAGE=1)"
-rm -rf "$RT_DIR"
-mkdir -p "$BIN_DIR" "$PROFRAW_DIR"
-
 # Discover top-level example programs with a `main`, skipping two classes:
 #  - peer/port programs (network/server/service/distributed) — they hang or
 #    fail closed waiting for a peer;
@@ -84,6 +74,12 @@ mkdir -p "$BIN_DIR" "$PROFRAW_DIR"
 # Each kept program still has a hard timeout, so an unexpected long-runner only
 # costs PER_PROG_TIMEOUT, never a hang. (Plain array append, not `mapfile` —
 # macOS ships bash 3.2.)
+#
+# Enumerated up front, before the two builds below: the report's meaning is
+# exactly "what this program set exercised", so a filter that stops matching or
+# a rename that drops half the examples turns a runtime-coverage number into a
+# much narrower one with nothing to say so. Better to hear about it in a second
+# than after an instrumented rebuild.
 PROGRAMS=()
 for f in examples/*.hew; do
   b="$(basename "$f" .hew)"
@@ -95,6 +91,20 @@ for f in examples/*.hew; do
     PROGRAMS+=("$f")
   fi
 done
+# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+corpus_floor_assert "coverage-e2e-programs" "${#PROGRAMS[@]}" || exit 1
+
+echo "==> Phase 1: build instrumented libhew.a"
+RUSTFLAGS="-C instrument-coverage" cargo build -p hew-lib
+
+echo "==> Phase 2: build the hew CLI (uninstrumented; just needs to drive the link)"
+cargo build -p hew-cli --bin hew
+
+echo "==> Phase 3: compile + run self-contained example programs (HEW_COVERAGE=1)"
+rm -rf "$RT_DIR"
+mkdir -p "$BIN_DIR" "$PROFRAW_DIR"
 
 built=0; build_fail=0; ran=0; run_fail=0
 for f in "${PROGRAMS[@]}"; do

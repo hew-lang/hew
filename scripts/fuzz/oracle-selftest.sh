@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# oracle-selftest.sh — Three independently-failable validation tests for
+# oracle-selftest.sh — Four independently-failable validation tests for
 # scripts/fuzz/run-oracle.py.
 #
 # Test 1 (oracle-flags-a-known-crash):
@@ -16,7 +16,12 @@
 #   A program with // EXPECT: 7 must exit 0 with verdict clean.  Mutating
 #   EXPECT to 8 must exit 1 with verdict wrong-output.
 #
-# All three must pass for the self-test to succeed.
+# Test 4 (oracle-refuses-an-empty-candidate-set):
+#   A run that collected no candidates must exit 1 rather than reporting PASS
+#   over nothing, and a corpus override with no declared minimum must be
+#   refused outright rather than defaulting to a floor of zero.
+#
+# All four must pass for the self-test to succeed.
 
 set -euo pipefail
 
@@ -73,6 +78,7 @@ python3 "${ORACLE}" \
     --regressions-dir "${T1_DIR}" \
     --expected-failures "${T1_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
+    --min-candidates 1 \
     2>&1 || rc=$?
 if [[ "${rc}" -ne 1 ]]; then
     fail "oracle-flags-a-known-crash" "expected oracle exit 1, got ${rc}"
@@ -87,6 +93,7 @@ python3 "${ORACLE}" \
     --regressions-dir "${T1_DIR}" \
     --expected-failures "${T1_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
+    --min-candidates 1 \
     --report "${T1_REPORT}" \
     2>&1 || rc=$?
 
@@ -126,6 +133,7 @@ python3 "${ORACLE}" \
     --regressions-dir "${T2_DIR}" \
     --expected-failures "${T2_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
+    --min-candidates 1 \
     2>&1 || rc=$?
 if [[ "${rc}" -ne 0 ]]; then
     fail "oracle-honours-expected-failure (2a: listed crash tolerated)" \
@@ -144,6 +152,7 @@ output="$(python3 "${ORACLE}" \
     --regressions-dir "${T2_DIR}" \
     --expected-failures "${T2_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
+    --min-candidates 1 \
     2>&1)" || rc=$?
 if [[ "${rc}" -ne 1 ]]; then
     fail "oracle-honours-expected-failure (2b: missing-but-listed fails gate)" \
@@ -176,6 +185,7 @@ python3 "${ORACLE}" \
     --regressions-dir "${T3_DIR}" \
     --expected-failures "${T3_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
+    --min-candidates 1 \
     2>&1 || rc=$?
 if [[ "${rc}" -ne 0 ]]; then
     fail "oracle-passes-clean-program (3a: clean program passes)" \
@@ -193,6 +203,7 @@ output="$(python3 "${ORACLE}" \
     --regressions-dir "${T3_DIR}" \
     --expected-failures "${T3_EF}" \
     --vertical-slice-dir "${EMPTY_DIR}" \
+    --min-candidates 1 \
     2>&1)" || rc=$?
 if [[ "${rc}" -ne 1 ]]; then
     fail "oracle-passes-clean-program (3b: wrong EXPECT fails gate)" \
@@ -206,5 +217,55 @@ fi
 pass "oracle-passes-clean-program"
 
 # ---------------------------------------------------------------------------
+echo "--- Test 4: oracle-refuses-an-empty-candidate-set ---"
+# Both gate conditions are searches over the collected candidates, so a run
+# that collected none finds no unexpected failures and no unexpected passes
+# and prints PASS. 4a: an empty corpus below the declared minimum must fail.
+T4_DIR="${TMPDIR_BASE}/t4"
+T4_EF="${TMPDIR_BASE}/t4_expected_failures.txt"
+mkdir -p "${T4_DIR}"
+printf '# empty\n' > "${T4_EF}"
+
+rc=0
+output=""
+output="$(python3 "${ORACLE}" \
+    --hew "${HEW}" \
+    --repo-root "${ROOT}" \
+    --regressions-dir "${T4_DIR}" \
+    --expected-failures "${T4_EF}" \
+    --vertical-slice-dir "${EMPTY_DIR}" \
+    --min-candidates 1 \
+    2>&1)" || rc=$?
+if [[ "${rc}" -ne 1 ]]; then
+    fail "oracle-refuses-an-empty-candidate-set (4a: empty corpus fails gate)" \
+         "expected oracle exit 1, got ${rc}; output: ${output}"
+fi
+if ! echo "${output}" | grep -q "CORPUS FLOOR"; then
+    fail "oracle-refuses-an-empty-candidate-set (4a: empty corpus fails gate)" \
+         "expected 'CORPUS FLOOR' in output; got: ${output}"
+fi
+
+# 4b: a corpus override with no declared minimum must be refused outright,
+# rather than defaulting to a floor of zero.
+rc=0
+output=""
+output="$(python3 "${ORACLE}" \
+    --hew "${HEW}" \
+    --repo-root "${ROOT}" \
+    --regressions-dir "${T4_DIR}" \
+    --expected-failures "${T4_EF}" \
+    2>&1)" || rc=$?
+if [[ "${rc}" -ne 1 ]]; then
+    fail "oracle-refuses-an-empty-candidate-set (4b: undeclared corpus refused)" \
+         "expected oracle exit 1, got ${rc}; output: ${output}"
+fi
+if ! echo "${output}" | grep -q -- "--min-candidates"; then
+    fail "oracle-refuses-an-empty-candidate-set (4b: undeclared corpus refused)" \
+         "expected '--min-candidates' in output; got: ${output}"
+fi
+
+pass "oracle-refuses-an-empty-candidate-set"
+
+# ---------------------------------------------------------------------------
 echo ""
-echo "oracle-selftest: all 3 tests PASS"
+echo "oracle-selftest: all 4 tests PASS"

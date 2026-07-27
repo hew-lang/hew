@@ -20,18 +20,30 @@
 # means the change is NOT a pure relocation — stop and revert.
 #
 # Usage:
-#   scripts/ll-byte-identity.sh <baseline-dir> <head-dir>
+#   scripts/ll-byte-identity.sh <baseline-dir> <head-dir> [min-compared]
 #
 #   <baseline-dir>  directory containing the golden .ll files (one per fixture)
 #   <head-dir>      directory containing the head .ll files to compare against
+#   [min-compared]  the number of fixtures the CALLER expects to be compared
+#                   (default 1)
 #
 # Both directories must contain .ll files with matching base names.  Extra .ll
 # files in either directory are reported as missing-counterpart warnings (not
 # failures), so adding a new fixture does not break the oracle.
 #
+# CORPUS FLOOR: this oracle owns no corpus — it compares two directories its
+# caller chose — so it cannot know the size to expect and does not guess one.
+# What it CAN refuse is to report success having compared nothing: every head
+# file missing, or every file yielding no function bodies, used to leave
+# matched=0 and print "OK (0 fixtures byte-identical)". The intrinsic floor is
+# one comparison; the tracked floor belongs to the caller that owns the corpus
+# and is passed in as [min-compared] (scripts/ll-corpus.sh passes its own
+# floored fixture count from scripts/corpus-floors.tsv).
+#
 # Exit codes:
 #   0  all matched function bodies are byte-identical
-#   1  one or more function bodies differ (diff printed to stdout)
+#   1  one or more function bodies differ (diff printed to stdout), or fewer
+#      than [min-compared] fixtures were actually compared
 #   2  usage error or no .ll files found in baseline-dir
 #
 # Env:
@@ -40,9 +52,14 @@ set -uo pipefail
 
 BASELINE_DIR="${1:-}"
 HEAD_DIR="${2:-}"
+MIN_COMPARED="${3:-1}"
 
 if [[ -z "$BASELINE_DIR" || -z "$HEAD_DIR" ]]; then
-  echo "usage: $(basename "$0") <baseline-dir> <head-dir>" >&2
+  echo "usage: $(basename "$0") <baseline-dir> <head-dir> [min-compared]" >&2
+  exit 2
+fi
+if [[ ! "$MIN_COMPARED" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ll-byte-identity: min-compared must be a positive integer, got '$MIN_COMPARED'" >&2
   exit 2
 fi
 if [[ ! -d "$BASELINE_DIR" ]]; then
@@ -265,6 +282,14 @@ done
 
 if [[ $fail -ne 0 ]]; then
   echo "ll-byte-identity: FAILED ($matched fixture(s) compared; $missing missing)" >&2
+  exit 1
+fi
+
+if [[ $matched -lt $MIN_COMPARED ]]; then
+  echo "ll-byte-identity: FAILED — compared $matched fixture(s), caller expected at least $MIN_COMPARED" >&2
+  echo "  ($missing head file(s) missing, and any file with no function bodies is skipped)." >&2
+  echo "  Byte identity over nothing is not byte identity: this run proved less than" >&2
+  echo "  it claims. Check that the head build actually emitted .ll for every fixture." >&2
   exit 1
 fi
 

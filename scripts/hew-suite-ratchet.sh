@@ -40,6 +40,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib/line-set.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/line-set.sh"
+# shellcheck source=scripts/lib/corpus-floor.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/hew-suite-expected-failures.txt"
 # HEW_BIN is overridable for parser tests (point it at a stub that replays
 # captured runner output); production callers use the default.
@@ -157,6 +160,24 @@ if [[ -n "$EMIT_O0_OUTCOMES_FILE" ]]; then
     printf '%s\n' "$CLEAN_OUTPUT" \
         | grep -E "^test .* \.\.\. (ok|PASSED|FAILED|ignored)" \
         | sort > "$EMIT_O0_OUTCOMES_FILE"
+fi
+
+# Floor the size of the run itself. The ratchet compares a failing-test set
+# against the expected list; a run that executed no tests at all reports an
+# empty failing set, which agrees with an empty expected list and would ratchet
+# green over nothing. The outcome lines are the same ones the O2 differential
+# gate consumes.
+total_outcomes=0
+while IFS= read -r line; do
+    case "$line" in
+        "test "*"... ok"*|"test "*"... PASSED"*|"test "*"... FAILED"*|"test "*"... ignored"*)
+            total_outcomes=$(( total_outcomes + 1 ))
+            ;;
+    esac
+done <<< "$CLEAN_OUTPUT"
+if ! corpus_floor_assert "hew-suite-tests" "$total_outcomes"; then
+    printf '%s\n' "$RAW_OUTPUT"
+    exit 1
 fi
 
 # Extract names of failing tests from lines matching "test <name> ... FAILED".

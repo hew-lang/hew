@@ -100,6 +100,7 @@ run_case() {
     log="$TMPDIR_BASE/$name.log"
     echo "--- Case: $name ---"
     PREFLIGHT_PARITY_DISPATCHER="$disp" PREFLIGHT_PARITY_CI_YML="$CI_YML" \
+        PREFLIGHT_PARITY_MIN_CHECKS=1 PREFLIGHT_PARITY_MIN_STEPS=1 \
         bash "$CHECKER" > "$log" 2>&1 || rc=$?
     if [[ "$rc" -eq "$expected_rc" ]]; then
         pass "$name"
@@ -109,10 +110,30 @@ run_case() {
     fi
 }
 
+# A caller that substitutes its own fixtures owns a corpus the floor registry
+# cannot size. The checker must refuse to run rather than assume the stub set
+# is complete.
+run_undeclared_case() {
+    local name="undeclared-stub-corpus-refused"
+    local disp log rc=0
+    disp="$(make_dispatcher full)"
+    log="$TMPDIR_BASE/$name.log"
+    echo "--- Case: $name ---"
+    PREFLIGHT_PARITY_DISPATCHER="$disp" PREFLIGHT_PARITY_CI_YML="$CI_YML" \
+        bash "$CHECKER" > "$log" 2>&1 || rc=$?
+    if [[ "$rc" -eq 1 ]] && grep -q "PREFLIGHT_PARITY_MIN_CHECKS" "$log"; then
+        pass "$name"
+    else
+        sed 's/^/  /' "$log" >&2
+        fail "$name" "checker exited $rc without demanding a declared minimum"
+    fi
+}
+
 run_case "mirrored-parity-passes"          full      0
 run_case "dropped-fallback-command-caught" drop-fb   1
 run_case "dropped-required-and-lane-caught" drop-both 1
 run_case "substring-superstring-not-absorbed" substring 1
+run_undeclared_case
 
 echo ""
-echo "preflight-parity-selftest: all 4 cases PASS"
+echo "preflight-parity-selftest: all 5 cases PASS"

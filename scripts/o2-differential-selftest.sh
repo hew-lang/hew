@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # o2-differential-selftest.sh - Self-proof for scripts/o2-differential.sh.
 #
-# Six independently-failable cases prove: the differential gate distinguishes
+# Eight independently-failable cases prove: the differential gate distinguishes
 # O0/O2 outcome sets, accepts identical outcome sets, fails closed when a test
-# runner does not produce a summary; and (C1, the ratchet->differential
-# handoff) the --o0-outcomes pre-captured-file path is behaviourally
+# runner does not produce a summary, refuses to report success over an outcome
+# set smaller than the declared floor (two EMPTY sets compare identical), and
+# refuses to run at all over a non-default corpus whose size nobody declared;
+# and (C1, the ratchet->differential handoff) the --o0-outcomes pre-captured-file path is behaviourally
 # EQUIVALENT to a fresh self-run O0 pass on both the identical-outcomes case
 # and the divergence-caught case, and fails closed when the handoff file is
 # missing or empty.
@@ -79,9 +81,16 @@ run_case() {
   fi
 }
 
-run_case "divergence-caught" 1 "divergence-caught"
-run_case "baseline-identical" 0 "baseline-identical"
-run_case "no-summary-fail-closed" 1 "no-summary-fail-closed"
+run_case "divergence-caught" 1 "divergence-caught" --min-outcomes 2
+run_case "baseline-identical" 0 "baseline-identical" --min-outcomes 2
+run_case "no-summary-fail-closed" 1 "no-summary-fail-closed" --min-outcomes 2
+
+# ── Corpus-floor cases ───────────────────────────────────────────────────────
+# The identical-outcomes comparison is satisfied by two EMPTY sets, so the gate
+# must refuse to report success over a corpus smaller than the caller declared,
+# and must refuse to run at all over a non-default corpus with no declared size.
+run_case "floor-below-declared-minimum" 1 "baseline-identical" --min-outcomes 3
+run_case "floor-required-for-custom-corpus" 1 "baseline-identical"
 
 # ── C1 handoff-path equivalence cases ────────────────────────────────────────
 # The stub's O0 output (unset/HEW_OPT_LEVEL=0) for each existing case is the
@@ -104,11 +113,11 @@ capture_o0_outcomes "baseline-identical" "$BASELINE_O0_FILE"
 capture_o0_outcomes "divergence-caught" "$DIVERGENCE_O0_FILE"
 
 run_case "outcomes-handoff-identical" 0 "baseline-identical" \
-  --o0-outcomes "$BASELINE_O0_FILE"
+  --min-outcomes 2 --o0-outcomes "$BASELINE_O0_FILE"
 run_case "outcomes-handoff-divergence-caught" 1 "divergence-caught" \
-  --o0-outcomes "$DIVERGENCE_O0_FILE"
+  --min-outcomes 2 --o0-outcomes "$DIVERGENCE_O0_FILE"
 run_case "outcomes-handoff-missing-file-fails-closed" 1 "baseline-identical" \
-  --o0-outcomes "$TMPDIR_BASE/does-not-exist.txt"
+  --min-outcomes 2 --o0-outcomes "$TMPDIR_BASE/does-not-exist.txt"
 
 echo ""
-echo "o2-differential-selftest: all 6 cases PASS"
+echo "o2-differential-selftest: all 8 cases PASS"

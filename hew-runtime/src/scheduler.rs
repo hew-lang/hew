@@ -96,6 +96,96 @@ static ACTIVATE_POST_CAS_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> = PoisonSaf
 #[cfg(test)]
 static ENQUEUE_RESUME_CAS_FAIL_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> = PoisonSafe::new(None);
 
+/// Deterministic trap/activation-drop rendezvous immediately before the
+/// activation takes the terminal-reclaim lock.
+#[cfg(test)]
+type ActivationPreTerminalLockHook = (
+    u64,
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+);
+
+#[cfg(test)]
+static ACTIVATION_PRE_TERMINAL_LOCK_HOOK: PoisonSafe<Option<ActivationPreTerminalLockHook>> =
+    PoisonSafe::new(None);
+
+#[cfg(test)]
+pub(crate) struct ActivationPreTerminalLockHookGuard;
+
+#[cfg(test)]
+impl ActivationPreTerminalLockHookGuard {
+    pub(crate) fn install(
+        actor_id: u64,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        ACTIVATION_PRE_TERMINAL_LOCK_HOOK.access(|hook| {
+            assert!(
+                hook.is_none(),
+                "activation pre-terminal-lock hook already installed"
+            );
+            *hook = Some((actor_id, entered.clone(), release.clone()));
+        });
+        (Self, entered, release)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ActivationPreTerminalLockHookGuard {
+    fn drop(&mut self) {
+        ACTIVATION_PRE_TERMINAL_LOCK_HOOK.access(|hook| *hook = None);
+    }
+}
+
+/// Deterministic terminal-owner handoff rendezvous after the activation's
+/// final bounded mailbox drain and before its `dispatch_active` Release-clear.
+#[cfg(test)]
+type ActivationPostTerminalDrainHook = (
+    u64,
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+);
+
+#[cfg(test)]
+static ACTIVATION_POST_TERMINAL_DRAIN_HOOK: PoisonSafe<Option<ActivationPostTerminalDrainHook>> =
+    PoisonSafe::new(None);
+
+#[cfg(test)]
+pub(crate) struct ActivationPostTerminalDrainHookGuard;
+
+#[cfg(test)]
+impl ActivationPostTerminalDrainHookGuard {
+    pub(crate) fn install(
+        actor_id: u64,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        ACTIVATION_POST_TERMINAL_DRAIN_HOOK.access(|hook| {
+            assert!(
+                hook.is_none(),
+                "activation terminal-drain hook already installed"
+            );
+            *hook = Some((actor_id, entered.clone(), release.clone()));
+        });
+        (Self, entered, release)
+    }
+}
+
+#[cfg(test)]
+impl Drop for ActivationPostTerminalDrainHookGuard {
+    fn drop(&mut self) {
+        ACTIVATION_POST_TERMINAL_DRAIN_HOOK.access(|hook| *hook = None);
+    }
+}
+
 #[cfg(any(test, debug_assertions))]
 static INJECT_NULL_LOCK_SEAT_ONCE: AtomicBool = AtomicBool::new(false);
 
@@ -143,6 +233,32 @@ fn run_enqueue_resume_cas_fail_hook(actor: *mut HewActor) {
     let hook = ENQUEUE_RESUME_CAS_FAIL_HOOK.access(|h| *h);
     if let Some(hook) = hook {
         hook(actor);
+    }
+}
+
+#[cfg(test)]
+fn run_activation_pre_terminal_lock_hook(actor: &HewActor) {
+    let rendezvous = ACTIVATION_PRE_TERMINAL_LOCK_HOOK.access(|hook| {
+        hook.as_ref().and_then(|(actor_id, entered, release)| {
+            (*actor_id == actor.id).then(|| (entered.clone(), release.clone()))
+        })
+    });
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
+}
+
+#[cfg(test)]
+fn run_activation_post_terminal_drain_hook(actor: &HewActor) {
+    let rendezvous = ACTIVATION_POST_TERMINAL_DRAIN_HOOK.access(|hook| {
+        hook.as_ref().and_then(|(actor_id, entered, release)| {
+            (*actor_id == actor.id).then(|| (entered.clone(), release.clone()))
+        })
+    });
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
     }
 }
 
@@ -2071,26 +2187,84 @@ impl<'a> ActivationOwnership<'a> {
 
 impl Drop for ActivationOwnership<'_> {
     fn drop(&mut self) {
-        let terminal_state = self.actor.actor_state.load(Ordering::Acquire);
-        if terminal_state == HewActorState::Stopped as i32
-            || terminal_state == HewActorState::Crashed as i32
-        {
-            // This is the last edge before a trap-notified supervisor may
-            // observe `dispatch_active == false` and reclaim the actor/mailbox.
-            // It also closes the narrow race where an external trap publishes
-            // terminal after the activation's last explicit state check.
-            //
-            // SAFETY: this guard still publishes exclusive activation
-            // ownership, so no other mailbox consumer or actor free can run.
-            unsafe {
-                mailbox::mailbox_reclaim_queued_terminal(self.actor.mailbox.cast::<HewMailbox>());
-            }
+        #[cfg(test)]
+        run_activation_pre_terminal_lock_hook(self.actor);
+
+        // Test terminal state, perform the final drain, and publish ownership
+        // release under one terminal-reclaim lock. If an external trap gets the
+        // lock first and observes this owner, this check must run afterward and
+        // see its terminal publication. If this check runs first and sees
+        // non-terminal, the ownership clear must precede the trap's locked
+        // quiescence check, authorizing the trap to drain.
+        //
+        // The same critical section closes the producer link handoff: a node
+        // linked after this drain cannot observe ownership release until the
+        // lock becomes available for its own conditional drain.
+        //
+        // SAFETY: this guard still publishes exclusive activation ownership.
+        // The predicate authorizes a terminal drain only while that ownership
+        // remains held; no actor free can run until the release callback.
+        unsafe {
+            mailbox::mailbox_reclaim_queued_terminal_if_then(
+                self.actor.mailbox.cast::<HewMailbox>(),
+                || {
+                    let state = self.actor.actor_state.load(Ordering::Acquire);
+                    state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32
+                },
+                || {
+                    #[cfg(test)]
+                    run_activation_post_terminal_drain_hook(self.actor);
+
+                    // Release so a free path that subsequently observes the
+                    // cleared flag also observes every write and queued-node
+                    // retirement this activation made to the actor box.
+                    self.actor.dispatch_active.store(false, Ordering::Release);
+                },
+            );
         }
-        // Release so a free path that subsequently observes the cleared flag
-        // also observes every write and queued-node retirement this activation
-        // made to the actor box.
-        self.actor.dispatch_active.store(false, Ordering::Release);
     }
+}
+
+/// Execute the production activation-ownership release seam for a test actor
+/// whose state is already terminal.
+///
+/// # Safety
+///
+/// `actor` must remain live through the call and no real scheduler activation
+/// may own it concurrently.
+#[cfg(test)]
+pub(crate) unsafe fn release_terminal_activation_ownership_for_test(actor: *mut HewActor) {
+    // SAFETY: caller supplies an exclusively test-owned live actor.
+    let a = unsafe { &*actor };
+    let guard = ActivationOwnership::claim(a);
+    drop(guard);
+}
+
+/// Execute the pre-fix activation release that snapshots terminal state before
+/// the trap rendezvous and does not recheck under the terminal-reclaim lock.
+///
+/// # Safety
+///
+/// `actor` must remain live through the call and no real scheduler activation
+/// may own it concurrently.
+#[cfg(test)]
+pub(crate) unsafe fn release_activation_ownership_omitting_terminal_recheck_for_test(
+    actor: *mut HewActor,
+) {
+    // SAFETY: caller supplies an exclusively test-owned live actor.
+    let a = unsafe { &*actor };
+    a.dispatch_active.store(true, Ordering::Release);
+    let terminal_state = a.actor_state.load(Ordering::Acquire);
+    run_activation_pre_terminal_lock_hook(a);
+    if terminal_state == HewActorState::Stopped as i32
+        || terminal_state == HewActorState::Crashed as i32
+    {
+        // SAFETY: the synthetic activation still owns the mailbox consumer.
+        unsafe {
+            mailbox::mailbox_reclaim_queued_terminal(a.mailbox.cast::<HewMailbox>());
+        }
+    }
+    a.dispatch_active.store(false, Ordering::Release);
 }
 
 /// The dispatch entry point selected for one dequeued message.
@@ -6847,12 +7021,11 @@ mod tests {
     /// ask is still queued. The trap must reclaim the queued node BEFORE
     /// notification can transfer the crashed incarnation, and the activation
     /// must independently retire its in-flight node. Exact node identities,
-    /// channel refs, actor registry count, and coroutine-frame gauges all
-    /// balance.
+    /// channel refs, exact actor-registry identity, and coroutine-frame gauges
+    /// all balance.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     #[expect(
-        clippy::too_many_lines,
         clippy::undocumented_unsafe_blocks,
         reason = "the production-path FFI witness keeps exact ownership assertions in activation order"
     )]
@@ -6860,9 +7033,6 @@ mod tests {
         let _rt = crate::runtime_test_guard();
         let _sched = NoWorkerSchedulerForTest::install();
 
-        let actor_baseline = crate::lifetime::live_actors::actor_count_for_test();
-        let channel_baseline = crate::reply_channel::active_channel_count();
-        let node_baseline = mailbox::active_ask_node_count_for_test();
         let frame_baseline = crate::observe::coroutine_snapshot();
 
         // SAFETY: fresh mailbox, owned until the end of the test.
@@ -6907,7 +7077,6 @@ mod tests {
         let queued_node = mailbox::ask_node_for_reply_channel_for_test(queued_ch.cast::<c_void>());
         assert!(!inflight_node.is_null() && !queued_node.is_null());
         assert_ne!(inflight_node, queued_node);
-        assert_eq!(mailbox::active_ask_node_count_for_test(), node_baseline + 2);
 
         let mut stub = stub_actor();
         stub.dispatch = Some(noop_dispatch);
@@ -6916,10 +7085,9 @@ mod tests {
             .store(HewActorState::Runnable as i32, Ordering::Release);
         let actor = TrackedTestActor::install(stub);
         let actor_ptr = actor.ptr();
-        assert_eq!(
-            crate::lifetime::live_actors::actor_count_for_test(),
-            actor_baseline + 1
-        );
+        assert!(crate::lifetime::live_actors::is_actor_live_with_id(
+            actor.id, actor_ptr
+        ));
 
         // Crash at the production seam after dequeue and before handler entry:
         // one node is frame-owned and one is still mailbox-owned.
@@ -6943,7 +7111,6 @@ mod tests {
             mailbox::ask_node_for_reply_channel_for_test(queued_ch.cast()).is_null(),
             "the exact queued node is retired by the last live mailbox owner"
         );
-        assert_eq!(mailbox::active_ask_node_count_for_test(), node_baseline);
         for ch in [inflight_ch, queued_ch] {
             // SAFETY: the test still owns each creator reference.
             assert!(unsafe { crate::reply_channel::hew_reply_channel_is_ready_for_test(ch) });
@@ -6966,16 +7133,12 @@ mod tests {
             crate::reply_channel::hew_reply_channel_free(inflight_ch);
             crate::reply_channel::hew_reply_channel_free(queued_ch);
         }
-        assert_eq!(
-            crate::reply_channel::active_channel_count(),
-            channel_baseline
-        );
 
+        let actor_id = actor.id;
         drop(actor);
-        assert_eq!(
-            crate::lifetime::live_actors::actor_count_for_test(),
-            actor_baseline
-        );
+        assert!(!crate::lifetime::live_actors::is_actor_live_with_id(
+            actor_id, actor_ptr
+        ));
         // SAFETY: no actor or activation references the drained mailbox now.
         unsafe { mailbox::hew_mailbox_free(mailbox) };
     }

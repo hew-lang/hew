@@ -303,7 +303,8 @@ fn array_repeat_string_clone_no_leak() {
 /// No-double-free pin: the index-into-compare temp must be released EXACTLY
 /// once. A double-free of the retained temp (or a free of the Vec's own
 /// element) crashes under the poisoned-allocator triple; the `println(xs[i])`
-/// and scalar `[7;3]` paths must stay clean (no over-drop). Runs on any unix.
+/// and scalar `[7;3]` paths must stay clean (no over-drop). Runs on macOS,
+/// whose allocator honors this Darwin-specific poisoned-allocator triple.
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"

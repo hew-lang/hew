@@ -200,8 +200,9 @@ fn parked_destroy_frees_owned_local_zero_leaks() {
 }
 
 /// The moved-out wall: a value moved across the suspend must not be double-freed
-/// on the abandon edge. Runs under the poisoned-allocator triple on any unix; a
-/// double-free of the shared buffer aborts. Also asserts zero leaks on macOS.
+/// on the abandon edge. Runs under the Darwin poisoned-allocator triple on
+/// macOS, where a double-free of the shared buffer aborts, and also asserts zero
+/// leaks there.
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"

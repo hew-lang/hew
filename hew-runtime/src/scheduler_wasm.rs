@@ -410,8 +410,8 @@ static mut ACTIVATING: bool = false;
 /// retirement because `coro.destroy` cleanup may cancel timer registrations.
 /// Keeping the allocation alive must not keep the wheel ACTIVE, though:
 /// cooperate-driven nested ticks would otherwise fire due sleep/periodic work
-/// during the run-queue drain, and retiring an orphaned ask could re-enqueue
-/// the very continuation the retirement pass is abandoning.
+/// items during the run-queue drain, and retiring an orphaned ask could
+/// re-enqueue the very continuation the retirement pass is abandoning.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WasmShutdownPhase {
     /// Normal host-driven or standalone execution.

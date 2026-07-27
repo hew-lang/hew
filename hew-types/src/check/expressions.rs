@@ -4381,7 +4381,7 @@ impl Checker {
         let Some(binding) = self.env.lookup_ref(name) else {
             return;
         };
-        let is_parameter = binding.def_span.is_none() && binding.shadow_span.is_some();
+        let is_parameter = binding.is_param();
         let ty = self.subst.resolve(&binding.ty);
         if !is_parameter || self.registry.implements_marker(&ty, MarkerTrait::Copy) {
             return;

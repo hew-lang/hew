@@ -1,0 +1,18 @@
+// #2810: the help text that created the trap. Assigning through an immutable
+// by-value aggregate parameter must NOT be answered with "consider changing
+// this to `var acc`" — following that advice used to produce a program that
+// compiled clean and silently debited a throwaway copy, and now produces a
+// different hard error.
+type Account {
+    balance: i64
+}
+
+fn withdraw(acc: Account, amount: i64) -> i64 {
+    acc.balance = acc.balance - amount;
+    return acc.balance;
+}
+
+fn main() -> i64 {
+    let acc = Account { balance: 100 };
+    return withdraw(acc, 40);
+}

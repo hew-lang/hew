@@ -42,6 +42,37 @@ pub struct Binding {
     /// "shadows a user-visible outer binding" (warning) rather than
     /// "shadows a synthetic binding" (hard error) — see `define_param_with_span`.
     pub shadow_span: Option<Span>,
+    /// Where this binding came from: a parameter, a user-written local, or a
+    /// compiler-synthesised binding.
+    ///
+    /// Diagnostics that offer "declare it `var`" as a fix must consult this:
+    /// on a by-value aggregate parameter `var` is itself rejected (see
+    /// `reject_ineffective_mutable_value_param`), so suggesting it there
+    /// routes the user into a construct the compiler refuses.
+    pub origin: BindingOrigin,
+}
+
+/// What produced a [`Binding`].
+///
+/// Previously inferred from the `def_span` / `shadow_span` combination each
+/// constructor happened to leave behind; that encoded two unrelated lint
+/// exemptions rather than the binding's provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingOrigin {
+    /// A compiler-synthesised binding with no source declaration.
+    Synthetic,
+    /// A user-written `let` / `var` local, or a pattern-bound name.
+    Local,
+    /// A function / method / init / hook / closure parameter.
+    Parameter,
+}
+
+impl Binding {
+    /// Whether this binding is a function parameter.
+    #[must_use]
+    pub fn is_param(&self) -> bool {
+        self.origin == BindingOrigin::Parameter
+    }
 }
 
 /// A diagnostic about a binding discovered at scope exit.
@@ -125,6 +156,7 @@ impl TypeEnv {
                     is_written: false,
                     def_span: None,
                     shadow_span: None,
+                    origin: BindingOrigin::Synthetic,
                 },
             );
         }
@@ -146,6 +178,7 @@ impl TypeEnv {
                     is_written: false,
                     def_span: Some(span.clone()),
                     shadow_span: Some(span),
+                    origin: BindingOrigin::Local,
                 },
             );
         }
@@ -176,6 +209,7 @@ impl TypeEnv {
                     is_written: false,
                     def_span: None,
                     shadow_span: Some(span),
+                    origin: BindingOrigin::Parameter,
                 },
             );
         }

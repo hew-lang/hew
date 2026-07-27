@@ -735,21 +735,6 @@ fn mutable_field_assignment_root_counts_as_mutation() {
 }
 
 #[test]
-fn mutable_param_field_assignment_root_counts_as_mutation() {
-    let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64; }\n",
-        "fn bump(var p: Point) { p.x = 2; println(p.x); }\n",
-    ));
-    assert!(errors.is_empty(), "errors: {errors:?}");
-    assert!(
-        !warnings
-            .iter()
-            .any(|w| w.message.contains("never reassigned")),
-        "parameter field assignment should count as a mutation of the root binding, got: {warnings:?}"
-    );
-}
-
-#[test]
 fn immutable_index_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check("fn main() { let xs = [1, 2]; xs[0] = 3; }\n");
     assert!(

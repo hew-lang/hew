@@ -410,6 +410,12 @@ fn test_receiver_param_rejects_mismatched_generics() {
 
 /// A non-first parameter whose type matches the impl target must not be
 /// flagged as a mutable receiver. Only the first parameter can be the receiver.
+///
+/// `var other: Box` is itself rejected — a `var` by-value aggregate parameter
+/// has no caller-visible effect (#2810) — and that rejection is the proof this
+/// test wants: `reject_ineffective_mutable_value_param` exempts receivers, so
+/// its firing on `other` shows `other` was not classified as one. No *other*
+/// error may appear.
 #[test]
 fn test_non_receiver_param_same_type_not_flagged() {
     let output = typecheck(
@@ -425,9 +431,20 @@ fn test_non_receiver_param_same_type_not_flagged() {
         }
     ",
     );
+    let unrelated: Vec<&str> = output
+        .errors
+        .iter()
+        .map(|e| e.message.as_str())
+        .filter(|m| !m.contains("has no caller-visible effect"))
+        .collect();
     assert!(
-        output.errors.is_empty(),
-        "non-receiver param of same type should not trigger receiver warning: {:?}",
+        unrelated.is_empty(),
+        "non-receiver param of same type should not trigger receiver warning: {unrelated:?}"
+    );
+    assert!(
+        output.errors.iter().any(|e| e.message
+            == "`var other` on a by-value parameter of type `Box` has no caller-visible effect"),
+        "expected the ineffective-var rejection on the non-receiver param, got: {:?}",
         output.errors
     );
 }

@@ -170,8 +170,8 @@ pub(crate) fn compute_copy_record_layout(
 ///
 /// This is the hash-key counterpart of [`primitive_copy_layout`] and must NOT be
 /// confused with it: `primitive_copy_layout` is the **Copy authority** (`None`
-/// for `string`) consulted by `vec_element_has_copy_layout` and the by-value
-/// aggregate-param check, where a `string` field makes a type non-Copy. Here we
+/// for `string`) consulted by `vec_element_has_copy_layout`, where a `string`
+/// field makes a type non-Copy. Here we
 /// answer a different question — "what is the byte layout of this leaf when it
 /// sits in a `HashMap` key slot?" — for which a `string` is a pointer-width blob
 /// (its heap payload is hashed by descent and freed by the per-record key drop

@@ -2423,7 +2423,7 @@ impl Checker {
         let resolved_param_ty = self.subst.resolve(ty);
         if !param.is_mutable
             || is_receiver
-            || !self.is_non_copy_aggregate_param_type(&resolved_param_ty)
+            || !self.param_var_has_no_caller_visible_effect(&resolved_param_ty)
         {
             return;
         }
@@ -2442,14 +2442,51 @@ impl Checker {
         );
     }
 
-    fn is_non_copy_aggregate_param_type(&self, ty: &Ty) -> bool {
+    /// Whether `var` on a by-value parameter of this type is invisible to the
+    /// caller — i.e. whether the parameter binding owns a **private copy** of
+    /// the whole aggregate, so every assignment rooted at that binding lands on
+    /// storage the caller does not share.
+    ///
+    /// Admitted (mutation is caller-invisible, so `var` is a trap):
+    /// - user-defined nominal aggregates — records/structs, `record` types,
+    ///   enums with payloads, actor and machine value types — at any
+    ///   instantiation: `Pair<T>`, `Pair<i64>` and a plain `Account` are the
+    ///   same case, because the parameter carries the aggregate's own storage
+    ///   either way;
+    /// - structural aggregates: tuples and fixed-size arrays.
+    ///
+    /// A type alias never reaches here as an alias: `resolve_type_expr` has
+    /// already collapsed it to the underlying `Ty`, so an alias of a record is
+    /// admitted exactly like the record it names.
+    ///
+    /// Rejected, because mutation through them *is* caller-visible and
+    /// flagging them would refuse correct code:
+    /// - every `builtin: Some(..)` container or handle — `Vec`, `HashMap`,
+    ///   `HashSet`, `Rc`, `Weak`, `Sender`/`Receiver`, `LocalPid`, and friends.
+    ///   The parameter carries a handle to storage the caller still references,
+    ///   so `v[i] = x` or `m.insert(..)` through it does reach the caller and
+    ///   `var` is the correct — and required — declaration.
+    ///
+    /// Rejected because they are not aggregates whose storage this predicate
+    /// can classify: bare type parameters with no in-scope definition, trait
+    /// objects, slices, pointers and borrows, functions and closures, and
+    /// scalars (`var n: i64` is an ordinary local accumulator).
+    ///
+    /// Copy-ness is deliberately **not** consulted. The predicate this replaced
+    /// admitted only *non*-`Copy`-layout aggregates, which is backwards: a
+    /// `Copy` aggregate is more certainly a private copy, not less. That is why
+    /// `fn withdraw(var acc: Account, ..)` — a record of one `i64`, so a
+    /// computable `Copy` layout — compiled clean and silently debited a
+    /// throwaway copy, while the very same shape behind a type parameter was a
+    /// hard error (#2810).
+    pub(super) fn param_var_has_no_caller_visible_effect(&self, ty: &Ty) -> bool {
         match ty {
             Ty::Named {
                 builtin: None,
                 name,
                 ..
-            } => self.lookup_type_def(name).is_some() && !self.vec_element_has_copy_layout(ty),
-            Ty::Tuple(_) | Ty::Array(_, _) => !ty.is_copy(),
+            } => self.lookup_type_def(name).is_some(),
+            Ty::Tuple(_) | Ty::Array(_, _) => true,
             _ => false,
         }
     }

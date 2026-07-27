@@ -14,7 +14,7 @@
 //!   a leak.
 //!
 //! `bytes` used to take the copying path because its slot is a fat
-//! `{ ptr, len, cap }` triple rather than a single pointer. Fatness is not the
+//! `{ ptr, offset, len }` triple rather than a single pointer. Fatness is not the
 //! property that matters: only field 0 carries ownership, `hew_bytes_drop` takes
 //! exactly that pointer, and it is null-tolerant, so the triple can be poisoned
 //! in place like any single-pointer field. The double free it produced was

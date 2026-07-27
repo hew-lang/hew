@@ -11186,6 +11186,57 @@ fn deserialize_thunk_malloc_uses_target_size_t_width() {
     );
 }
 
+// ── RecordFieldDrop Bytes slot/symbol contract ────────────────────────
+
+#[test]
+fn record_field_drop_admits_exact_bytes_symbol_and_shape() {
+    let ctx = Context::create();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let bytes_ty = ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+
+    let shape = record_field_drop_slot_shape("hew_bytes_drop", bytes_ty.into(), 0)
+        .expect("exact bytes symbol/layout contract must be admitted");
+    assert!(matches!(shape, RecordFieldDropSlotShape::BytesTriple(_)));
+}
+
+#[test]
+fn record_field_drop_fails_closed_on_bytes_shape_with_wrong_symbol() {
+    let ctx = Context::create();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let bytes_ty = ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+
+    let err = record_field_drop_slot_shape("hew_string_drop", bytes_ty.into(), 2)
+        .expect_err("an aggregate BytesTriple must require its exact destructor");
+    match err {
+        CodegenError::FailClosed(msg) => {
+            assert!(msg.contains("hew_string_drop"), "message: {msg}");
+            assert!(msg.contains("hew_bytes_drop"), "message: {msg}");
+        }
+        other => panic!("wrong symbol must fail closed, got {other:?}"),
+    }
+}
+
+#[test]
+fn record_field_drop_fails_closed_on_bytes_wrong_tail_width() {
+    let ctx = Context::create();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let wrong_tail = ctx.struct_type(&[ptr_ty.into(), i64_ty.into(), i32_ty.into()], false);
+
+    let err = record_field_drop_slot_shape("hew_bytes_drop", wrong_tail.into(), 3)
+        .expect_err("BytesTriple offset/len fields must both be i32/u32 ABI words");
+    match err {
+        CodegenError::FailClosed(msg) => {
+            assert!(msg.contains("i32 offset"), "message: {msg}");
+            assert!(msg.contains("i32 len"), "message: {msg}");
+        }
+        other => panic!("wrong tail width must fail closed, got {other:?}"),
+    }
+}
+
 // ── emit_field_drop_step Bytes-field layout validation ────────────────
 //
 // `StateFieldCloneKind::Bytes` field drop hard-codes a triple-field-0

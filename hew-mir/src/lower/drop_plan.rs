@@ -4858,7 +4858,7 @@ pub(super) fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str
 /// path is released TWICE — the second release on a live pointer. That is a
 /// double free, not a leak.
 ///
-/// `bytes` is included even though it is a fat `{ ptr, len, cap }` triple: only
+/// `bytes` is included even though it is a fat `{ ptr, offset, len }` triple: only
 /// the data pointer participates in ownership, `hew_bytes_drop` takes exactly
 /// that pointer, and it is null-tolerant, so nulling the triple's pointer
 /// sub-field in place gives the same idempotency the single-pointer fields get.

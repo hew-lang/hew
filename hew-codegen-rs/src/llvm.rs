@@ -15401,6 +15401,49 @@ fn lower_record_field_load(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RecordFieldDropSlotShape<'ctx> {
+    SinglePointer,
+    BytesTriple(StructType<'ctx>),
+}
+
+/// Validate the slot shape that [`lower_record_field_drop`] will raw-load.
+///
+/// Pointer-shaped COW values expose their owning word directly. The only
+/// aggregate admission is the exact Bytes ABI paired with its exact destructor:
+/// `Release(hew_bytes_drop)` over `{ ptr, i32 offset, i32 len }`. Keeping the
+/// symbol and layout checks together prevents an unrelated three-field struct
+/// from being treated as bytes merely because field 0 happens to be a pointer.
+fn record_field_drop_slot_shape<'ctx>(
+    symbol: &str,
+    slot_ty: BasicTypeEnum<'ctx>,
+    idx: u32,
+) -> CodegenResult<RecordFieldDropSlotShape<'ctx>> {
+    if slot_ty.is_pointer_type() {
+        return Ok(RecordFieldDropSlotShape::SinglePointer);
+    }
+
+    if let BasicTypeEnum::StructType(st) = slot_ty {
+        let fields = st.get_field_types();
+        let is_bytes_triple = symbol == "hew_bytes_drop"
+            && fields.len() == 3
+            && matches!(fields[0], BasicTypeEnum::PointerType(_))
+            && matches!(fields[1], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32)
+            && matches!(fields[2], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32);
+        if is_bytes_triple {
+            return Ok(RecordFieldDropSlotShape::BytesTriple(st));
+        }
+    }
+
+    Err(CodegenError::FailClosed(format!(
+        "RecordFieldDrop @ field[{idx}]: slot type {slot_ty:?} with \
+         drop_fn=Release({symbol:?}) is neither a single-pointer COW slot nor \
+         the exact bytes contract. Aggregate slots require \
+         Release(hew_bytes_drop) over `{{ ptr, i32 offset, i32 len }}`; refusing \
+         to load field 0 as an owning pointer (LESSONS: boundary-fail-closed)"
+    )))
+}
+
 /// Release an owned record field in-place without retaining it first.
 ///
 /// Emits: GEP to the field slot → raw load (no `hew_string_clone` retain) →
@@ -15423,7 +15466,7 @@ fn lower_record_field_load(
 /// ## Supported field types
 ///
 /// `DropFnSpec::Release` COW-heap fields: the single-pointer ones (string, Vec,
-/// HashMap, HashSet, Generator) and the fat `bytes` `{ ptr, len, cap }` triple,
+/// HashMap, HashSet, Generator) and the fat `bytes` `{ ptr, offset, len }` triple,
 /// whose owning word is its field 0. Both shapes release through the LIVE field
 /// slot and poison that slot, which is the whole point of this op — see
 /// `field_override_uses_record_field_drop` in `hew-mir` for why the copying
@@ -15488,8 +15531,9 @@ fn lower_record_field_drop(
     // (`field_override_uses_record_field_drop`) routes exactly these:
     //
     //   * a single-pointer slot — string / Vec / HashMap / HashSet / Generator;
-    //   * the fat `bytes` `{ ptr, i32, i32 }` triple, whose field 0 is the sole
-    //     owning word (`hew_bytes_drop` takes that pointer and nothing else).
+    //   * the fat `bytes` `{ ptr, i32 offset, i32 len }` triple, whose field 0
+    //     is the sole owning word (`hew_bytes_drop` takes that pointer and
+    //     nothing else). No other aggregate shape/symbol pair is admitted.
     //
     // For the triple, `owning_word_ptr` below steps through to field 0 so both
     // the release argument AND the post-drop null-store address the LIVE record,
@@ -15497,33 +15541,19 @@ fn lower_record_field_drop(
     // type-confuse the slot, so fail closed instead of mis-loading (LESSONS:
     // boundary-fail-closed, dedup-semantic-boundary).
     let slot_ty = element_tys[idx_usize];
-    let slot_is_bytes_triple = matches!(slot_ty, BasicTypeEnum::StructType(st)
-        if st.count_fields() == 3
-            && st
-                .get_field_type_at_index(0)
-                .is_some_and(|f| f.is_pointer_type()));
-    if !slot_ty.is_pointer_type() && !slot_is_bytes_triple {
-        return Err(CodegenError::FailClosed(format!(
-            "RecordFieldDrop @ field[{idx}]: slot type {slot_ty:?} exposes no single \
-             owning pointer word; RecordFieldDrop is emitted only for COW-heap \
-             fields that do (string / Vec / HashMap / HashSet / Generator, and the \
-             `bytes` {{ptr,len,cap}} triple). Refusing to load the slot as a pointer \
-             (LESSONS: boundary-fail-closed)"
-        )));
-    }
+    let slot_shape = record_field_drop_slot_shape(symbol, slot_ty, idx)?;
     let slot_ptr = fn_ctx
         .builder
         .build_struct_gep(struct_ty, record_ptr, idx, &format!("rfd_{idx}_gep"))
         .llvm_ctx_with(|| format!("RecordFieldDrop struct_gep field {idx}"))?;
     // Step through the fat triple to its owning pointer word. For a
     // single-pointer slot the slot IS the owning word.
-    let field_ptr = if let BasicTypeEnum::StructType(triple_ty) = slot_ty {
-        fn_ctx
+    let field_ptr = match slot_shape {
+        RecordFieldDropSlotShape::BytesTriple(triple_ty) => fn_ctx
             .builder
             .build_struct_gep(triple_ty, slot_ptr, 0, &format!("rfd_{idx}_triple_gep"))
-            .llvm_ctx_with(|| format!("RecordFieldDrop bytes triple gep field {idx}"))?
-    } else {
-        slot_ptr
+            .llvm_ctx_with(|| format!("RecordFieldDrop bytes triple gep field {idx}"))?,
+        RecordFieldDropSlotShape::SinglePointer => slot_ptr,
     };
     // Raw load: NO hew_string_clone retain. This is intentional — the field is
     // the sole owner (rc == 1) and we want to drive rc to zero via the release

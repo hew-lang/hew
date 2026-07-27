@@ -34,6 +34,11 @@ import std::string;
 pub type ProcessResultHandle {
 }
 
+/// The runtime-owned child-process handle behind a `Child`.
+#[opaque]
+type ChildHandle {
+}
+
 /// A handle to a running child process.
 ///
 /// Created by `process.start(cmd)`. Use `wait()` to block until
@@ -41,8 +46,8 @@ pub type ProcessResultHandle {
 /// handle reaps it automatically; a still-running child is killed
 /// and waited on at scope exit.
 #[resource]
-#[opaque]
 pub type Child {
+    handle: ChildHandle;
 }
 
 /// Captured output from a completed command.
@@ -75,13 +80,13 @@ impl ChildMethods for Child {
     /// Block until the child process exits and return its exit code.
     fn wait(child: Child) -> i64 {
         unsafe {
-            hew_process_wait(child) as i64
+            hew_process_wait(child.handle) as i64
         }
     }
     /// Terminate the child process.
     fn kill(child: Child) -> i64 {
         unsafe {
-            hew_process_kill(child) as i64
+            hew_process_kill(child.handle) as i64
         }
     }
 }
@@ -94,7 +99,7 @@ impl Child {
     /// `Child` values do not leave OS processes or zombie handles behind.
     fn close(child: Child) {
         unsafe {
-            hew_process_drop(child)
+            hew_process_drop(child.handle)
         };
     }
 }
@@ -238,15 +243,54 @@ pub fn run_args(command: string, args: string, arg_count: i64) -> string {
     }
 }
 
-/// Start a child process without blocking.
+/// Start a child process through the system shell without blocking.
 ///
-/// Returns a `Child` handle that can be waited on or killed.
+/// Returns a `Child` handle that can be waited on or killed. Panics when the
+/// child cannot be launched; use `try_start` to observe the failure instead.
 ///
 /// Note: This function is called `start` rather than `spawn` because
 /// `spawn` is a reserved keyword in Hew (used for spawning actors).
 pub fn start(command: string) -> Child {
     unsafe {
-        hew_process_spawn(command)
+        hew_clear_error();
+        let child = Child { handle: hew_process_spawn(command) };
+        if !hew_process_is_valid(child.handle) {
+            panic(f"process.start failed: {process_error_message(last_process_error("process.start: command launch failed"))}");
+        }
+        child
+    }
+}
+
+/// Start a child process through the system shell without blocking.
+///
+/// Returns `Err(ProcessError::LaunchFailed)` when the child could not be
+/// launched, rather than a handle that is not backed by a running process.
+pub fn try_start(command: string) -> Result<Child, ProcessError> {
+    unsafe {
+        hew_clear_error();
+        let child = Child { handle: hew_process_spawn(command) };
+        if hew_process_is_valid(child.handle) {
+            Ok(child)
+        } else {
+            Err(last_process_error("process.try_start: command launch failed"))
+        }
+    }
+}
+
+/// Start a child process without the shell using a `Vec<string>` argv surface.
+///
+/// Returns `Err(ProcessError::LaunchFailed)` when the executable cannot be
+/// launched — a missing command is reported here rather than surfacing as a
+/// handle that never referred to a process.
+pub fn try_start_argv(command: string, args: Vec<string>) -> Result<Child, ProcessError> {
+    unsafe {
+        hew_clear_error();
+        let child = Child { handle: hew_process_spawn_argv(command, args) };
+        if hew_process_is_valid(child.handle) {
+            Ok(child)
+        } else {
+            Err(last_process_error("process.try_start_argv: command launch failed"))
+        }
     }
 }
 
@@ -259,10 +303,12 @@ extern "C" {
     fn hew_process_result_stdout(result: ProcessResultHandle) -> string;
     fn hew_process_result_stderr(result: ProcessResultHandle) -> string;
     fn hew_process_result_free(result: ProcessResultHandle);
-    fn hew_process_spawn(command: string) -> Child;
-    fn hew_process_wait(consume handle: Child) -> i32;
-    fn hew_process_kill(consume handle: Child) -> i32;
-    fn hew_process_drop(consume handle: Child);
+    fn hew_process_spawn(command: string) -> ChildHandle;
+    fn hew_process_spawn_argv(command: string, args: Vec<string>) -> ChildHandle;
+    fn hew_process_is_valid(child: ChildHandle) -> bool;
+    fn hew_process_wait(handle: ChildHandle) -> i32;
+    fn hew_process_kill(handle: ChildHandle) -> i32;
+    fn hew_process_drop(handle: ChildHandle);
     fn hew_process_last_error() -> string;
     fn hew_clear_error();
 }

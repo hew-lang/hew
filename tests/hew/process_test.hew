@@ -137,3 +137,47 @@ fn test_child_drop_reaps_running_process() {
     cleanup_file(pid_path);
     testing.assert_true(reaped);
 }
+
+// ── launch failure truth ────────────────────────────────────────────────
+//
+// #16: `process.start` handed back the raw spawn handle, so a failed launch
+// became a `Child` that was never backed by a process. Waiting on it or
+// killing it reported -1 forever with no way to tell that apart from a real
+// child that failed.
+
+#[test]
+fn test_try_start_argv_reports_a_missing_executable_as_launch_failed() {
+    let args: Vec<string> = Vec::new();
+    args.push("--version");
+    match process.try_start_argv("hew-process-executable-that-does-not-exist", args) {
+        Ok(child) => {
+            child.kill();
+            panic("expected a missing executable to fail to launch");
+        },
+        Err(err) => match err {
+            ProcessError::LaunchFailed(message) => {
+                testing.assert_true(message.contains("failed to execute"));
+                testing.assert_true(message.contains("hew-process-executable-that-does-not-exist"));
+            },
+            _ => panic("expected ProcessError::LaunchFailed"),
+        },
+    }
+}
+
+#[test]
+fn test_try_start_argv_returns_a_live_child_for_a_real_executable() {
+    let args: Vec<string> = Vec::new();
+    args.push("hew-process-start-argv-live");
+    match process.try_start_argv("echo", args) {
+        Ok(child) => testing.assert_true(child.wait() == 0),
+        Err(_) => panic("expected echo to launch"),
+    }
+}
+
+#[test]
+fn test_try_start_returns_a_live_child_for_a_shell_command() {
+    match process.try_start("exit 7") {
+        Ok(child) => testing.assert_true(child.wait() == 7),
+        Err(_) => panic("expected the shell command to launch"),
+    }
+}

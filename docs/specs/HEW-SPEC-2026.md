@@ -836,7 +836,7 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 | `std::net`         | `net.listen`, `net.accept`, `net.connect`, `net.read`, `net.write`, `net.close`                                                                              |
 | `std::text::regex` | `regex.new`, `regex.is_match`, `regex.find`, `regex.replace`                                                                                                 |
 | `std::net::mime`   | `mime.from_path`, `mime.from_ext`, `mime.is_text`                                                                                                            |
-| `std::process`     | `process.run`, `process.try_run`, `process.run_argv`, `process.try_run_argv`, `process.start`                                                               |
+| `std::process`     | `process.run`, `process.try_run`, `process.run_argv`, `process.try_run_argv`, `process.start`, `process.try_start`, `process.try_start_argv`                 |
 
 Predicate functions (`fs.exists`, `path.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`) return `bool`.
 
@@ -2508,7 +2508,7 @@ implementation.
 | `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)`, `.respond_text(status, body)`, `.respond_json(status, body)`, `.close()` |
 | `net.Listener`   | `net.listen(addr)`                         | `.accept()` → `net.Connection`, `await ln.accept() \| after d` → `Result<net.Connection, IoError>`, `.close()`                        |
 | `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `bytes`, `.read_string()` → `string`, `await conn.read_string() \| after d` → `Result<string, IoError>`, `.write(data)`, `.write_string(data)`, `.close()` |
-| `process.Child`  | `process.start(cmd)`                       | `.wait()`, `.kill()`                                                                                                                  |
+| `process.Child`  | `process.start(cmd)`, `process.try_start(cmd)`, `process.try_start_argv(cmd, argv)` | `.wait()`, `.kill()`                                                                                 |
 
 Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and

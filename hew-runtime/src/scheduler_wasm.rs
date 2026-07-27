@@ -1024,6 +1024,14 @@ unsafe fn step_one_actor() -> bool {
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn hew_sched_run() {
     loop {
+        // A nested standalone drain cannot make timer progress once shutdown
+        // owns the scheduler. In particular, `drain_timed_work` deliberately
+        // goes inert while Draining; without this guard a pending timer count
+        // could keep a re-entrant `hew_sched_run` spinning forever.
+        if shutdown_phase() != WasmShutdownPhase::Running {
+            break;
+        }
+
         // SAFETY: hew_now_ms is safe on all targets; drain is single-threaded.
         let now = unsafe { hew_now_ms() };
         // SAFETY: Single-threaded; timer wheel is owned by the cooperative scheduler.
@@ -1328,6 +1336,7 @@ pub(crate) fn retire_suspended_reply_channel_wasm(a: &crate::actor::HewActor) {
 /// # Safety
 ///
 /// `actor` is owned by the calling activation and is being driven terminal.
+#[must_use = "a refused stop cancellation leaves the parked activation live and must be handled fail-closed"]
 #[cfg(any(target_arch = "wasm32", test))]
 unsafe fn cancel_parked_activation_for_stop_wasm(actor: *mut HewActor) -> bool {
     let a = as_native_actor(actor);
@@ -1358,6 +1367,60 @@ unsafe fn cancel_parked_activation_for_stop_wasm(actor: *mut HewActor) -> bool {
     // SAFETY: the actor just went terminal and is not being dispatched.
     unsafe { crate::actor::call_terminate_fn(actor.cast()) };
     true
+}
+
+/// The three stop-latch consultations around a resumed WASM activation.
+///
+/// Keeping the site in the diagnostic makes a counterfactual refusal
+/// actionable without changing the shared cancellation primitive.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Clone, Copy)]
+enum StopCancelSite {
+    BeforeRepark,
+    AfterSuspendedPublish,
+    BeforeResume,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl StopCancelSite {
+    const fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::BeforeRepark => "before re-parking a pending resume",
+            Self::AfterSuspendedPublish => "after publishing Suspended",
+            Self::BeforeResume => "before resuming a parked activation",
+        }
+    }
+}
+
+/// Run stop cancellation at one latch consultation and preserve a refused
+/// activation in its only honest scheduler state.
+///
+/// # Safety
+///
+/// `actor` is the live activation owned by the calling scheduler frame.
+#[cfg(any(target_arch = "wasm32", test))]
+#[must_use = "callers must stop activation settlement when cancellation is refused"]
+unsafe fn cancel_parked_activation_for_stop_at(actor: *mut HewActor, site: StopCancelSite) -> bool {
+    // SAFETY: caller owns this activation and forwards that ownership.
+    if unsafe { cancel_parked_activation_for_stop_wasm(actor) } {
+        return true;
+    }
+
+    let a = as_native_actor(actor);
+    // The frame/debts remain live. `Running` would claim an activation is
+    // still executing after this scheduler frame returns; terminal would
+    // permit destructive cleanup. Suspended is the fail-closed owner state.
+    a.actor_state
+        .store(HewActorState::Suspended as i32, Ordering::Release);
+    let message = format!(
+        "WASM actor stop cancellation refused: actor {:#x} retained its parked \
+         activation {}; actor left Suspended fail-closed",
+        a.id,
+        site.diagnostic_name()
+    );
+    crate::set_last_error(&message);
+    eprintln!("hew: runtime error: {message}");
+    false
 }
 
 /// The SUSPEND edge (wasm): park the current continuation and publish
@@ -1543,7 +1606,11 @@ unsafe fn resume_suspended_activation_wasm(actor: *mut HewActor) {
             // SAFETY: the mailbox pointer is valid for the actor's lifetime.
             if unsafe { crate::mailbox_wasm::mailbox_stop_requested(a.mailbox.cast()) } {
                 // SAFETY: this frame owns the activation.
-                let _ = unsafe { cancel_parked_activation_for_stop_wasm(actor) };
+                if !unsafe {
+                    cancel_parked_activation_for_stop_at(actor, StopCancelSite::BeforeRepark)
+                } {
+                    return;
+                }
                 return;
             }
 
@@ -1564,18 +1631,26 @@ unsafe fn resume_suspended_activation_wasm(actor: *mut HewActor) {
                 }
                 return;
             }
-            // Latch re-check AFTER publishing `Suspended`, mirroring the wake
-            // drain above and native's third consultation. On wasm the stopper
-            // cannot interleave with this function, but a nested activation can:
-            // the resumed body may itself have driven the cooperative scheduler
-            // (`hew_actor_ask` -> `hew_wasm_sched_tick`) and a handler running
-            // there can call `hew_actor_stop` on this actor. That stop saw a
-            // `Running` actor, so it only latched -- it did not wake anything --
-            // and this is the last point that looks.
+            // Latch re-check AFTER publishing `Suspended`, mirroring native's
+            // third consultation. Today WASM has no interleaving point between
+            // the pre-repark check and this load (nested activation happens
+            // inside the resumed body, before both); retain the check as
+            // defensive parity for any future hook added to this settle window.
             // SAFETY: the mailbox pointer is valid for the actor's lifetime.
             if unsafe { crate::mailbox_wasm::mailbox_stop_requested(a.mailbox.cast()) } {
                 // SAFETY: this frame owns the activation.
-                let _ = unsafe { cancel_parked_activation_for_stop_wasm(actor) };
+                if !unsafe {
+                    cancel_parked_activation_for_stop_at(
+                        actor,
+                        StopCancelSite::AfterSuspendedPublish,
+                    )
+                } {
+                    debug_assert_eq!(
+                        a.actor_state.load(Ordering::Acquire),
+                        HewActorState::Suspended as i32,
+                        "refused stop cancellation must preserve Suspended ownership"
+                    );
+                }
             }
         }
         Some(crate::cont::ResumePoll::Ready) | None => {
@@ -1678,7 +1753,10 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
         // (null-tolerant).
         if unsafe { crate::mailbox_wasm::mailbox_stop_requested(a.mailbox.cast()) } {
             // SAFETY: this frame owns the activation (state is Running).
-            let _ = unsafe { cancel_parked_activation_for_stop_wasm(actor) };
+            if !unsafe { cancel_parked_activation_for_stop_at(actor, StopCancelSite::BeforeResume) }
+            {
+                return;
+            }
             return;
         }
         // SAFETY: actor is Running and exclusively owned on this single thread;
@@ -2548,7 +2626,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
     fn assert_last_error_eq(expected: &str) {
         let error = crate::hew_last_error();
         assert!(!error.is_null(), "runtime refusal must set hew_last_error");
@@ -4098,6 +4175,118 @@ mod tests {
         hew_sched_shutdown();
     }
 
+    /// Every stop-cancel consultation must treat `false` as a live ownership
+    /// refusal, not as permission to continue settling the activation.
+    ///
+    /// Native tests force the executor's `Resuming` refusal; actual wasm32
+    /// tests use the target's impossible non-null generator-sink sentinel.
+    /// Both counterfactuals leave the same frame and reply debt untouched.
+    #[test]
+    fn wasm_stop_cancel_refusal_is_handled_fail_closed_at_all_three_call_sites() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+        let replies_before = crate::reply_channel_wasm::active_channel_count();
+
+        let cases = [
+            (
+                StopCancelSite::BeforeRepark,
+                HewActorState::Running,
+                "before re-parking a pending resume",
+            ),
+            (
+                StopCancelSite::AfterSuspendedPublish,
+                HewActorState::Suspended,
+                "after publishing Suspended",
+            ),
+            (
+                StopCancelSite::BeforeResume,
+                HewActorState::Running,
+                "before resuming a parked activation",
+            ),
+        ];
+
+        for (site, initial_state, site_name) in cases {
+            let mut actor = stub_actor();
+            let actor_ptr = std::ptr::from_mut(&mut actor);
+            let a = as_native_actor(actor_ptr);
+            // SAFETY: this test creates and exclusively owns the mailbox.
+            actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
+            let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
+            let handle = (&raw mut *frame).cast::<c_void>();
+            assert!(crate::coro_exec::begin_park(a).is_ok());
+            // SAFETY: frame stays live until the successful cleanup below.
+            unsafe { crate::coro_exec::finish_park(a, handle) };
+            #[cfg(not(target_arch = "wasm32"))]
+            assert!(
+                crate::coro_exec::begin_resume(a).is_ok(),
+                "native counterfactual must force destroy refusal"
+            );
+            #[cfg(target_arch = "wasm32")]
+            a.gen_sink.store(
+                std::ptr::NonNull::<u8>::dangling()
+                    .as_ptr()
+                    .cast::<c_void>(),
+                Ordering::Release,
+            );
+
+            let reply = crate::reply_channel_wasm::hew_reply_channel_new();
+            a.suspended_reply_channel
+                .store(reply.cast(), Ordering::Release);
+            actor
+                .actor_state
+                .store(initial_state as i32, Ordering::Release);
+            // SAFETY: mailbox is live and exclusively owned.
+            unsafe { crate::mailbox_wasm::mailbox_request_stop(actor.mailbox.cast()) };
+            crate::hew_clear_error();
+
+            // SAFETY: this is the exact wrapper called at `site`; the test owns
+            // the actor activation and forces its cancellation primitive false.
+            assert!(!unsafe { cancel_parked_activation_for_stop_at(actor_ptr, site) });
+
+            assert_eq!(
+                actor.actor_state.load(Ordering::Acquire),
+                HewActorState::Suspended as i32,
+                "{site_name}: refusal must leave the live frame Suspended"
+            );
+            assert_eq!(a.suspended_cont.load(Ordering::Acquire), handle);
+            assert_eq!(frame.destroyed.load(Ordering::Acquire), 0);
+            assert_eq!(
+                a.suspended_reply_channel.load(Ordering::Acquire),
+                reply.cast(),
+                "{site_name}: refusal must preserve reply debt"
+            );
+            // SAFETY: mailbox remains live and refusal must retain its latch.
+            assert!(unsafe { crate::mailbox_wasm::mailbox_stop_requested(actor.mailbox.cast()) });
+            assert_last_error_eq(&format!(
+                "WASM actor stop cancellation refused: actor {:#x} retained its \
+                 parked activation {site_name}; actor left Suspended fail-closed",
+                actor.id
+            ));
+
+            // Repair only the injected refusal and prove the preserved frame
+            // and debt remain reclaimable exactly once.
+            #[cfg(not(target_arch = "wasm32"))]
+            assert!(crate::coro_exec::settle_pending(a).is_ok());
+            #[cfg(target_arch = "wasm32")]
+            a.gen_sink.store(ptr::null_mut(), Ordering::Release);
+            // SAFETY: actor is Parked, live, and exclusively owned.
+            assert!(unsafe { cancel_parked_activation_for_stop_wasm(actor_ptr) });
+            assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
+            assert!(a.suspended_reply_channel.load(Ordering::Acquire).is_null());
+            // SAFETY: successful cancellation no longer uses the mailbox.
+            unsafe { crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast()) };
+        }
+
+        assert_eq!(
+            crate::reply_channel_wasm::active_channel_count(),
+            replies_before,
+            "all three preserved reply debts must be retired exactly once"
+        );
+        hew_sched_shutdown();
+    }
+
     /// WASM has no legal producer for `HewActor::gen_sink`. If invariant
     /// corruption nevertheless makes the slot non-null, all three lifecycle
     /// cleanup sites must refuse before touching the frame or actor box.
@@ -4167,8 +4356,9 @@ mod tests {
         unsafe { crate::actor::cancel_parked_activation_for_free_wasm(a) };
         assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
 
-        // Resource-free site: use a real tracked box so a successful refusal
-        // can prove the allocation and registry entry both remain intact.
+        // Resource-free and complete-free sites: use a real tracked box so
+        // both choke points prove they refuse before untracking, and so the
+        // complete path's exact C result is observable.
         // SAFETY: zero-state spawn is supported and returns a runtime-owned box.
         let boxed_actor = unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
         assert!(!boxed_actor.is_null());
@@ -4194,6 +4384,24 @@ mod tests {
             crate::actor_balance::actor_box_counts(),
             box_counts_before,
             "resource cleanup refusal must preserve the actor box"
+        );
+
+        crate::hew_clear_error();
+        // SAFETY: resource refusal preserved the complete tracked actor.
+        let free_result = unsafe { crate::actor::actor_free_wasm_impl(boxed_actor) };
+        assert_eq!(
+            free_result, -2,
+            "generator-sink corruption must be reported as a failed free"
+        );
+        assert_last_error_eq(&expected(boxed_id));
+        assert!(
+            crate::actor::is_actor_live(boxed_actor),
+            "free refusal must preserve live tracking"
+        );
+        assert_eq!(
+            crate::actor_balance::actor_box_counts(),
+            box_counts_before,
+            "free refusal must preserve the actor box"
         );
 
         // Remove only the synthetic corruption, then use the complete free
@@ -4282,6 +4490,37 @@ mod tests {
             crate::reply_channel_wasm::active_channel_count(),
             replies_before
         );
+        hew_sched_shutdown();
+    }
+
+    #[test]
+    fn wasm_sched_run_returns_when_shutdown_phase_makes_pending_timers_inert() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        // Model the re-entrant drain window directly: shutdown deliberately
+        // keeps timer ownership alive but makes timer dispatch inert.
+        // SAFETY: single-threaded test owns these scheduler statics.
+        unsafe {
+            ptr::addr_of_mut!(SHUTDOWN_PHASE).write(WasmShutdownPhase::Draining);
+            ptr::addr_of_mut!(WASM_SLEEP_COUNT).write(1);
+        }
+        let start = std::time::Instant::now();
+        hew_sched_run();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "standalone run must not spin on timed work shutdown cannot dispatch, took {elapsed:?}"
+        );
+
+        // Restore only the synthetic state, then use ordinary shutdown.
+        // SAFETY: the test still exclusively owns scheduler state.
+        unsafe {
+            ptr::addr_of_mut!(WASM_SLEEP_COUNT).write(0);
+            ptr::addr_of_mut!(SHUTDOWN_PHASE).write(WasmShutdownPhase::Running);
+        }
         hew_sched_shutdown();
     }
 
@@ -6282,6 +6521,13 @@ mod tests {
             let timer = crate::timer_periodic_wasm::hew_actor_schedule_periodic(periodic, 7, 1);
             assert!(!timer.is_null());
         }
+        // Sleeping is a host/timer ownership state, never a coroutine-frame
+        // ownership state. Retirement relies on this before taking its exact
+        // Sleeping -> Stopped transition.
+        assert!(
+            !crate::coro_exec::has_live_parked_cont(unsafe { &*sleeper }),
+            "Sleeping actors must not carry a live continuation"
+        );
         assert_eq!(hew_wasm_sleeping_count(), 2);
         // SAFETY: the shared wheel was created by the registrations above.
         let earliest = unsafe {

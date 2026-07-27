@@ -7440,6 +7440,14 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
+    // WASM has no legal generator-sink producer. Refuse before continuation
+    // cancellation (which is intentionally destructive for an ordinary
+    // parked frame) or any quiescent-cleanup preparation.
+    #[cfg(target_arch = "wasm32")]
+    if refuse_wasm_lifecycle_cleanup_with_gen_sink(a) {
+        return -2;
+    }
+
     // C1 abandonment teardown, parity with `hew_actor_free_inner`. `Suspended`
     // is not quiescent, so without this the wait below spins to the two-second
     // deadline and returns `-2`: the free FAILS, the frame and the actor box
@@ -7448,6 +7456,22 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     // SAFETY: `a` is the actor being freed; no dispatch or resume is in progress
     // on this single cooperative thread.
     unsafe { cancel_parked_activation_for_free_wasm(a) };
+
+    // A refused continuation destroy (notably `Resuming -> Destroyed`) leaves
+    // the complete activation owned by the actor. Return while the live-actor
+    // registry still owns the box: reaching `untrack_actor` and relying on the
+    // resource-free choke point to refuse would make the preserved allocation
+    // unreachable while falsely reporting success.
+    if crate::coro_exec::has_live_parked_cont(a) {
+        let message = format!(
+            "hew_actor_free: actor {:#x} retained a live parked continuation; \
+             actor preserved fail-closed",
+            a.id
+        );
+        crate::set_last_error(&message);
+        eprintln!("hew: runtime error: {message}");
+        return -2;
+    }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
@@ -12957,6 +12981,70 @@ mod tests {
                 .store(HewActorState::Stopped as i32, Ordering::Release);
             assert_eq!(actor_free_wasm_impl(actor), 0);
         }
+    }
+
+    #[test]
+    fn wasm_free_refused_resuming_continuation_stays_tracked_and_returns_failure_immediately() {
+        let _guard = crate::runtime_test_guard();
+        let actor = make_tracked_wasm_free_test_actor(HewActorState::Stopped);
+        // SAFETY: this test exclusively owns the tracked actor.
+        let a = unsafe { &*actor };
+        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
+        let handle = (&raw mut *frame).cast::<c_void>();
+        assert!(crate::coro_exec::begin_park(a).is_ok());
+        // SAFETY: `frame` stays live through both free attempts.
+        unsafe { crate::coro_exec::finish_park(a, handle) };
+        assert!(
+            crate::coro_exec::begin_resume(a).is_ok(),
+            "counterfactual precondition: destroy must refuse the Resuming tag"
+        );
+
+        let box_counts_before = crate::actor_balance::actor_box_counts();
+        crate::hew_clear_error();
+        let start = std::time::Instant::now();
+        // SAFETY: actor is tracked, quiescent at the lifecycle latch, and owned
+        // by this test; the corrupt live-continuation state is intentional.
+        let rc = unsafe { actor_free_wasm_impl(actor) };
+        let elapsed = start.elapsed();
+
+        assert_eq!(
+            rc, -2,
+            "a refused continuation destroy must be visible to the C caller"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "known corrupt ownership must refuse before the two-second quiescence wait, took {elapsed:?}"
+        );
+        assert!(
+            is_actor_live(actor),
+            "refusal must leave the actor tracked so its box remains reachable"
+        );
+        assert_eq!(
+            crate::actor_balance::actor_box_counts(),
+            box_counts_before,
+            "refusal must not reclaim or lose the actor box"
+        );
+        assert_eq!(a.suspended_cont.load(Ordering::Acquire), handle);
+        assert_eq!(frame.destroyed.load(Ordering::Acquire), 0);
+        let error = crate::hew_last_error();
+        assert!(!error.is_null(), "refusal must set hew_last_error");
+        // SAFETY: `hew_last_error` returned a live NUL-terminated string.
+        let message = unsafe { std::ffi::CStr::from_ptr(error) }.to_string_lossy();
+        assert_eq!(
+            message,
+            format!(
+                "hew_actor_free: actor {:#x} retained a live parked continuation; \
+                 actor preserved fail-closed",
+                a.id
+            )
+        );
+
+        // Repair only the injected tag corruption, then prove the preserved
+        // tracked box remains reclaimable through the same public body.
+        assert!(crate::coro_exec::settle_pending(a).is_ok());
+        // SAFETY: Parked now grants the free path exclusive destroy ownership.
+        assert_eq!(unsafe { actor_free_wasm_impl(actor) }, 0);
+        assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
     }
 
     #[test]

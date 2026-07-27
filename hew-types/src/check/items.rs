@@ -2460,19 +2460,23 @@ impl Checker {
     /// This closes the one-wrapper-deep form of the #2810 trap: replacing an
     /// `Option<Account>` or `Result<Account, E>` mutates only the callee's copy.
     ///
-    /// A proven collection handle (`Vec`, `HashMap`, or `HashSet`) is a shared
-    /// storage boundary. A value aggregate containing one is therefore not
+    /// A compiler-proven caller-visible handle is a shared storage or process
+    /// boundary. The exact authority is
+    /// [`crate::BuiltinType::is_caller_visible_shared_handle`]: collections,
+    /// `Rc`/`Weak`, channel and stream handles, actor handles, and
+    /// `SupervisorPool`. A value aggregate containing one is therefore not
     /// rejected wholesale: `holder.items[0] = value` reaches storage the caller
-    /// still references. The assignment checker separately validates the
-    /// concrete projection, so `holder.count = value` and replacing
-    /// `holder.items` are still diagnosed as private-copy writes.
+    /// still references, and `holder.pid.send(value)` reaches actor state. The
+    /// assignment checker separately validates the concrete projection, so
+    /// `holder.count = value` and replacing `holder.items` are still diagnosed
+    /// as private-copy writes.
     ///
     /// Unknown leaves, opaque builtins, bare type parameters, pointers,
     /// functions, and scalars are not guessed to be aggregates or shared
     /// storage. This is deliberately fail-closed when descending through a
-    /// value wrapper: only a compiler-known collection proves a caller-visible
-    /// projection. Recursive nominal types are cycle-broken by definition
-    /// identity; other fields and variants are still inspected.
+    /// value wrapper: only the compiler-known shared-handle authority proves a
+    /// caller-visible projection. Recursive nominal types are cycle-broken by
+    /// definition identity; other fields and variants are still inspected.
     ///
     /// Copy-ness remains irrelevant. A `Copy` aggregate is more certainly a
     /// private copy, not less (#2810).
@@ -2519,7 +2523,7 @@ impl Checker {
                 builtin: Some(builtin),
                 args: _,
                 ..
-            } if builtin.is_collection() => true,
+            } if builtin.is_caller_visible_shared_handle() => true,
             Ty::Named {
                 builtin: Some(crate::BuiltinType::Option | crate::BuiltinType::Result),
                 args,

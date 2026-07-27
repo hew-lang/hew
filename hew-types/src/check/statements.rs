@@ -62,14 +62,17 @@ impl Checker {
         }
     }
 
-    /// Whether an assignment target crosses a collection-handle boundary
-    /// before reaching the storage it writes.
+    /// Whether an assignment target crosses a compiler-proven caller-visible
+    /// shared-handle boundary before reaching the storage it writes.
     ///
     /// `holder.items[0]` is caller-visible because the `Index` receiver has
     /// type `Vec<_>`. `holder.items = replacement` is not: its receiver is the
     /// private `Holder` copy, even though the field being replaced happens to
     /// contain a handle. Recursing through the target also covers projections
     /// such as `holders[0].count`, whose write starts inside shared Vec storage.
+    /// The builtin boundary test shares the declaration-time authority in
+    /// `BuiltinType::is_caller_visible_shared_handle`, so nested actor, channel,
+    /// stream, and reference handles cannot drift from aggregate admission.
     fn mutation_projection_reaches_caller_visible_storage(&self, target: &Expr) -> bool {
         match target {
             Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
@@ -83,7 +86,7 @@ impl Checker {
                         Ty::Named {
                             builtin: Some(builtin),
                             ..
-                        } if builtin.is_collection()
+                        } if builtin.is_caller_visible_shared_handle()
                     )
                 }) || self.mutation_projection_reaches_caller_visible_storage(&object.0)
             }

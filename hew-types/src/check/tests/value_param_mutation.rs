@@ -253,6 +253,34 @@ fn actor_handle_param_is_not_flagged() {
 }
 
 #[test]
+fn record_local_pid_field_projection_is_not_flagged() {
+    assert_check_clean(concat!(
+        "actor Probe {\n",
+        "    var n: i64 = 0;\n",
+        "    receive fn bump() { n = n + 1; }\n",
+        "}\n",
+        "type Holder { pid: LocalPid<Probe>; }\n",
+        "fn poke(var holder: Holder) { holder.pid.bump(); }\n",
+    ));
+}
+
+#[test]
+fn record_sender_field_projection_is_not_flagged() {
+    assert_check_clean(concat!(
+        "type Holder { tx: channel.Sender<i64>; }\n",
+        "fn send(var holder: Holder) { holder.tx.send(7); }\n",
+    ));
+}
+
+#[test]
+fn record_receiver_field_projection_is_not_flagged() {
+    assert_check_clean(concat!(
+        "type Holder { rx: channel.Receiver<i64>; }\n",
+        "fn poll(var holder: Holder) { let _ = holder.rx.try_recv(); }\n",
+    ));
+}
+
+#[test]
 fn record_vec_field_index_projection_is_not_flagged() {
     assert_check_clean(concat!(
         "type Holder { items: Vec<i64>; }\n",

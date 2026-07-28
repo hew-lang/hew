@@ -1,7 +1,8 @@
 use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
-    callee_returns_fresh_owner, callee_returns_retained_string_owner, machine_layout_name_matches,
-    mangle_layout_key, monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
+    callee_returns_fresh_owner, callee_returns_retained_string_owner,
+    hir_expr_contains_synthetic_vec_get_clone, machine_layout_name_matches, mangle_layout_key,
+    monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
     ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
@@ -250,17 +251,13 @@ impl Builder {
             } => None,
             _ => return None,
         };
-        // Recv-next / vec-string-iter-next scrutinees already carry their own
-        // per-iteration release discipline (`Disposition::BodyEndReleased` on
-        // the Some-arm payload binder); their codegen-materialised `Option`
-        // shell owns no heap beyond that payload. Registering a second owner
-        // here would double-release the payload. (A generator `.next()`
-        // scrutinee is `HirExprKind::GeneratorNext`, not `Call`, so the shape
-        // gate above already excludes it.)
-        if callee.is_some()
-            && (Self::is_recv_next_scrutinee(scrutinee)
-                || self.is_vec_string_iter_next_scrutinee(scrutinee))
-        {
+        // Recv-next scrutinees already carry their own per-iteration release
+        // discipline (`Disposition::BodyEndReleased` on the Some-arm payload
+        // binder); their codegen-materialised `Option` shell owns no heap beyond
+        // that payload. Registering a second owner here would double-release
+        // it. VecIter clone-out is a `ResolvedImplCall`, and generator `.next()`
+        // is `GeneratorNext`, so the shape gate above already excludes both.
+        if callee.is_some() && Self::is_recv_next_scrutinee(scrutinee) {
             return None;
         }
         // Runtime-symbol / builtin producers have per-symbol ownership
@@ -424,13 +421,14 @@ impl Builder {
             // `mk(i)`'s result passed straight into the `Display::fmt` shim, a
             // fresh rc==1 buffer nobody owned. The composite arm below already
             // consults the module freshness fixpoint for exactly this question;
-            // `user_call_produces_fresh_owned_string` gives the string arm the
-            // same authority, with the runtime contract keeping its veto so a
-            // catalogued borrowed/interior-alias result can never be minted.
+            // `user_call_produces_owned_string_carrier` gives the string arm a
+            // distinct return-carrier authority. It admits both fresh results
+            // and parameter-derived results whose callee retained exactly one
+            // return share, without claiming that the pointer is fresh.
             HirExprKind::Call { callee, .. } => {
                 if matches!(ty, ResolvedTy::String) {
                     Self::call_produces_fresh_owned_string(callee)
-                        || self.user_call_produces_fresh_owned_string(callee)
+                        || self.user_call_produces_owned_string_carrier(callee)
                 } else {
                     // A composite (record/tuple/enum) result: admit a PROVEN-fresh
                     // producer, gated by the SAME authority every other
@@ -580,7 +578,8 @@ impl Builder {
         }
     }
     /// Whether a `string`-returning direct-`Call` callee is a USER function the
-    /// module freshness fixpoint proves hands back a fresh sole owner.
+    /// module return-carrier authority proves hands back exactly one
+    /// independently releasable share.
     ///
     /// The runtime `produces_fresh_owned_string` contract only covers catalogued
     /// symbols; a user function (`fn mk(i: i64) -> string { f"tok{i}" }`, a
@@ -610,20 +609,26 @@ impl Builder {
     ///   is not a proof of freshness and reads `false`. So a Hew wrapper
     ///   (`fn w() -> string { unsafe { host_string() } }`), a wrapper of a
     ///   wrapper, a generic wrapper and a recursive-looking wrapper all stay
-    ///   rejected, and a callee that forwards, projects, or launders a by-value
-    ///   parameter on ANY return path (`fn passthru(s: string) -> string { s }`)
-    ///   is `false` and stays unminted — a leak, never a caller-side
-    ///   double-free.
+    ///   rejected.
+    ///
+    /// Unlike the fresh-owner query, the return-carrier query admits a
+    /// `ParamsOnly` body. String lowering turns each admitted parameter-derived
+    /// path into exactly one caller-owned share: a whole by-value parameter is
+    /// retained before the return-slot write, and a record/tuple string
+    /// projection is retained by its field load. A mixed function is admitted
+    /// only when every path has this same one-share postcondition. The authority
+    /// is string-specific and does not widen global fresh/non-alias facts.
     ///
     /// Registration alone still never forces a release: the minted local flows
     /// through `derive_cow_sole_owner` / `derive_cow_fresh_borrowed_owner`,
     /// which drop it only when it is a proven fresh, untainted owner whose every
     /// use is a verified borrow.
-    fn user_call_produces_fresh_owned_string(&self, callee: &HirExpr) -> bool {
+    fn user_call_produces_owned_string_carrier(&self, callee: &HirExpr) -> bool {
         if crate::runtime_symbols::is_known_runtime_symbol(Self::callee_symbol_name(callee)) {
             return false;
         }
-        callee_returns_fresh_owner(callee, &self.call_scrutinee_provenance.fresh_owner_verdicts)
+        self.call_scrutinee_provenance
+            .callee_returns_owned_string_carrier(callee)
             || callee_returns_retained_string_owner(
                 callee,
                 &self.call_scrutinee_provenance.fresh_owner_verdicts,
@@ -1046,6 +1051,17 @@ impl Builder {
             )
         );
         if !caller_owned {
+            return None;
+        }
+        let ty = self.subst_ty(&expr.ty);
+        ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts)
+            .then_some(ty)
+    }
+    /// The discarded result of the synthetic `VecIter::next` state machine,
+    /// when its `Option<T>` payload owns heap and therefore needs an immediate
+    /// recursive in-place drop before the reusable result slot is forgotten.
+    pub(crate) fn discarded_vec_iter_next_owned_ty(&self, expr: &HirExpr) -> Option<ResolvedTy> {
+        if !hir_expr_contains_synthetic_vec_get_clone(expr) {
             return None;
         }
         let ty = self.subst_ty(&expr.ty);
@@ -1764,6 +1780,21 @@ impl Builder {
             }
         }
     }
+    fn prepass_note_actor_message_args<'a>(&mut self, args: impl IntoIterator<Item = &'a HirExpr>) {
+        for arg in args {
+            if !matches!(self.subst_ty(&arg.ty), ResolvedTy::Bytes) {
+                continue;
+            }
+            if let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding),
+                ..
+            } = &arg.kind
+            {
+                self.prepass_actor_message_transfer_bindings
+                    .insert(*binding);
+            }
+        }
+    }
     /// Harvest owned-Vec element keys from an expression's type and recurse into
     /// the structural child expressions that may carry a `Vec<owned>` value.
     /// Every visited expr contributes its own `.ty` (so a `Vec<Header>`
@@ -1847,8 +1878,14 @@ impl Builder {
             }
             HirExprKind::ActorSend { receiver, args, .. }
             | HirExprKind::ActorAsk { receiver, args, .. }
-            | HirExprKind::ActorGenStream { receiver, args, .. }
-            | HirExprKind::SpawnedCall {
+            | HirExprKind::ActorGenStream { receiver, args, .. } => {
+                self.prepass_note_actor_message_args(args);
+                self.collect_vec_owned_element_keys_from_expr(receiver);
+                for a in args {
+                    self.collect_vec_owned_element_keys_from_expr(a);
+                }
+            }
+            HirExprKind::SpawnedCall {
                 callee: receiver,
                 args,
                 ..
@@ -1868,6 +1905,7 @@ impl Builder {
                 timeout_ms,
                 ..
             } => {
+                self.prepass_note_actor_message_args(std::iter::once(msg.as_ref()));
                 self.collect_vec_owned_element_keys_from_expr(receiver);
                 self.collect_vec_owned_element_keys_from_expr(msg);
                 self.collect_vec_owned_element_keys_from_expr(timeout_ms);
@@ -1961,6 +1999,7 @@ impl Builder {
                             self.collect_vec_owned_element_keys_from_expr(stream);
                         }
                         hew_hir::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                            self.prepass_note_actor_message_args(args);
                             self.collect_vec_owned_element_keys_from_expr(actor);
                             for arg in args {
                                 self.collect_vec_owned_element_keys_from_expr(arg);
@@ -1981,6 +2020,7 @@ impl Builder {
             }
             HirExprKind::Join(join) => {
                 for branch in &join.branches {
+                    self.prepass_note_actor_message_args(&branch.args);
                     self.collect_vec_owned_element_keys_from_expr(&branch.actor);
                     for arg in &branch.args {
                         self.collect_vec_owned_element_keys_from_expr(arg);
@@ -2434,8 +2474,20 @@ impl Builder {
         binding: BindingId,
         ty: &ResolvedTy,
     ) {
-        if !self.prepass_consumed_bindings.contains(&binding)
-            || super::cow_value_leaf_drop_symbol(ty).is_none()
+        // `string` and `bytes` intentionally have separate sole-owner
+        // admission authorities, but both use the same actor-message transfer
+        // protocol. `cow_value_leaf_drop_symbol` admits only `string`; accept
+        // `bytes` explicitly here so its dedicated BytesTriple drop can carry
+        // the same path-sensitive guard without creating a second drop class.
+        let is_actor_message_cow_leaf =
+            super::cow_value_leaf_drop_symbol(ty).is_some() || matches!(ty, ResolvedTy::Bytes);
+        let may_transfer = self.prepass_consumed_bindings.contains(&binding)
+            || (matches!(ty, ResolvedTy::Bytes)
+                && self
+                    .prepass_actor_message_transfer_bindings
+                    .contains(&binding));
+        if !may_transfer
+            || !is_actor_message_cow_leaf
             || !self.owned_locals.iter().any(|entry| {
                 entry.binding == binding && entry.disposition == Disposition::ScopeExit
             })
@@ -3453,9 +3505,9 @@ impl Builder {
     /// # The predicate MIRRORS `lower_params`, it does not approximate it
     ///
     /// The only thing this function needs to detect is "the callee will mint a
-    /// scope-exit owner over this parameter". `lower_params` has exactly four
-    /// such mints and this is the free-call half of them, condition for
-    /// condition:
+    /// scope-exit owner over this parameter". `lower_params` has exactly six
+    /// such mints and this is the free-call half of three of them, condition
+    /// for condition:
     ///
     /// * `param_consume == Some(true)` — the affine `#[resource]` CONSUME
     ///   parameter, minted at any type;
@@ -3466,8 +3518,13 @@ impl Builder {
     ///   `ty_is_heap_owning_enum_composite` — the #2732 enum-composite callee
     ///   drop.
     ///
-    /// The remaining two mints are `ActorHandler`-convention only, so their
-    /// caller is the mailbox hand-off in `lower_actor_send`, not a direct call.
+    /// The remaining three mints are `ActorHandler`-convention only, so their
+    /// caller is the mailbox hand-off in `lower_actor_send`
+    /// (`actor_handler_mints_an_owner_for_message`), not a direct call: the
+    /// #2747 owned-aggregate record message, the indirect-enum message, and
+    /// the bare `bytes` message (the copy-mode mailbox transfers its one
+    /// refcount into the delivered `BytesTriple`, so `lower_params` registers
+    /// a scope-exit owner for it exactly like the other two).
     ///
     /// The conjunction in the third bullet is load-bearing and was measured:
     /// `call_param_consume` is a body-escape summary, not a mint predicate. The

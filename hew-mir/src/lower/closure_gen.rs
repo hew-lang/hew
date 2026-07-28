@@ -637,6 +637,9 @@ impl Builder {
             &builder.suspend_kinds,
             &builder.locals,
             &builder.binding_locals,
+            &builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
             &mut builder.instr_spans,
         );
         // #2542 — mirror the closure-shim ramp's string splice for the bytes
@@ -1772,8 +1775,10 @@ impl Builder {
         //
         // SCOPE / FAIL-CLOSED: `gen_env_capture_admissible` governs what may be
         // snapshotted into the heap env. `Terminator::MakeGenerator` shallow-
-        // seeds the record, replaces every owned field with a semantic clone,
-        // and plants the reverse-order payload-drop thunk. Admitted shapes:
+        // seeds the record, replaces borrowed owned fields with semantic
+        // clones, preserves a mailbox-delivered receive-handler parameter as
+        // a transferred owner, and plants the reverse-order payload-drop
+        // thunk. Admitted shapes:
         //   * clone-total structural values (String/Bytes/Rc/Weak, supported
         //     collections, tuples/arrays, records, and enums);
         //   * `BitCopy` scalars;
@@ -1786,6 +1791,7 @@ impl Builder {
         let mut env_ty: Option<ResolvedTy> = None;
         let mut env_capture_field_tys: Vec<ResolvedTy> = Vec::new();
         let mut env_field_plans: Vec<GeneratorEnvFieldPlan> = Vec::new();
+        let mut env_moved_bindings: Vec<BindingId> = Vec::new();
         // Capture bindings rejected below as inadmissible to the owned env. Each
         // gets a root `NotYetImplemented`; the body sub-builder reads this set
         // to suppress the downstream `InitialisedBeforeUse`/`UnresolvedPlace`
@@ -1858,9 +1864,64 @@ impl Builder {
                             && capture_field_plan.is_some() =>
                     {
                         init_fields.push((offset, src));
-                        field_tys.push(ty);
-                        env_field_plans
-                            .push(capture_field_plan.expect("generator env plan guard checked"));
+                        field_tys.push(ty.clone());
+                        let mut field_plan =
+                            capture_field_plan.expect("generator env plan guard checked");
+                        // A receive-generator shell owns each mailbox-delivered
+                        // user parameter. Its body exists only in the generated
+                        // coroutine, so construction may move that owner into
+                        // the heap environment instead of cloning it and
+                        // stranding the original in the shell. Ordinary `gen
+                        // fn` parameters and anonymous-generator captures stay
+                        // borrowed sources and retain the clone plan.
+                        let transfers_mailbox_owner = self.stream_producer_pump.is_some()
+                            && capture.source == hew_hir::HirGenCaptureSource::Local
+                            && src
+                                != self
+                                    .stream_producer_pump
+                                    .as_ref()
+                                    .expect("receive-generator pump checked")
+                                    .sink
+                            && base_local(src)
+                                .is_some_and(|local| self.parameter_locals.contains(&local));
+                        if transfers_mailbox_owner {
+                            if let GeneratorEnvFieldPlan::Owned(plan) = field_plan {
+                                field_plan = GeneratorEnvFieldPlan::OwnedMove(plan);
+                                env_moved_bindings.push(capture.binding);
+                            }
+                        }
+                        // Generator environments store each capture in its value-ABI
+                        // representation. An indirect enum is therefore a heap-node
+                        // pointer, but the only enum snapshot helper clones an INLINE
+                        // tagged union. `OwnedMove` needs no clone and is sound; an
+                        // ordinary borrowed/source snapshot must fail closed until a
+                        // pointer-backed indirect-enum deep-clone helper exists.
+                        if matches!(field_plan, GeneratorEnvFieldPlan::Owned(_))
+                            && crate::lower::drop_plan::ty_is_indirect_enum(&ty, &self.enum_layouts)
+                        {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "the cloned capture of indirect enum `{}` into a generator",
+                                        capture.name
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: format!(
+                                    "cannot snapshot `{}` (type `{}`) into a generator: its \
+                                     value-ABI slot is a heap-node pointer, and no total \
+                                     pointer-backed indirect-enum clone helper exists. A \
+                                     receive-generator mailbox owner may move the value into the \
+                                     environment, but borrowed captures must remain fail-closed.",
+                                    capture.name,
+                                    ty.user_facing()
+                                ),
+                            });
+                            poisoned_captures.insert(capture.binding);
+                            all_materialisable = false;
+                            continue;
+                        }
+                        env_field_plans.push(field_plan);
                     }
                     (Some(_), Some(ty)) => {
                         // Not admissible to the owned generator env. Name the
@@ -1988,6 +2049,16 @@ impl Builder {
                     fields: init_fields,
                     dest,
                 });
+                // `OwnedMove` is a genuine whole-value escape from the
+                // receive-handler shell into the heap environment. Record the
+                // transfer in the ownership ledger after the all-or-nothing
+                // environment construction succeeds so no shell-side
+                // scope-exit authority can release the same payload. `Owned`
+                // snapshot sources are deliberately absent: they retain their
+                // own drop while codegen constructs an independent clone.
+                for binding in env_moved_bindings {
+                    self.mark_binding_moved(binding);
+                }
                 env_place = Some(dest);
                 env_ty = Some(env_resolved_ty);
             }
@@ -2140,6 +2211,9 @@ impl Builder {
             &body_builder.suspend_kinds,
             &body_builder.locals,
             &body_builder.binding_locals,
+            &body_builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
             &mut body_builder.instr_spans,
         );
         // #2542 — the gen-body ramp needs the identical bytes user-call-result
@@ -2451,6 +2525,9 @@ impl Builder {
         let drop_kind = match kind {
             crate::ownership::InPlaceReleaseKind::Record => DropKind::RecordInPlace,
             crate::ownership::InPlaceReleaseKind::Enum => DropKind::EnumInPlace,
+            crate::ownership::InPlaceReleaseKind::AggregateRecursive => {
+                DropKind::AggregateRecursive
+            }
         };
         self.suspend_abandon_extra_drops
             .entry(suspend_block)

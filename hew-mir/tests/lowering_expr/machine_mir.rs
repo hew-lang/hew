@@ -538,6 +538,7 @@ fn resource_field_transition_out_drops() {
         name: "FileHandle".to_string(),
         defining_module: None,
         type_params: Vec::new(),
+        positional_field_tys: Vec::new(),
         fields: vec![HirField {
             name: "raw".to_string(),
             ty: ResolvedTy::I64,

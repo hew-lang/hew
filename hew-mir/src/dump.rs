@@ -344,6 +344,9 @@ fn render_terminator(term: &Terminator) -> String {
                         crate::model::GeneratorEnvFieldPlan::Owned(snapshot) => {
                             format!("owned({:?})", snapshot.root())
                         }
+                        crate::model::GeneratorEnvFieldPlan::OwnedMove(snapshot) => {
+                            format!("owned-move({:?})", snapshot.root())
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -962,10 +965,11 @@ fn render_instr(instr: &Instr) -> String {
             root,
             fields,
             transferee,
+            ..
         } => format!(
             "aggregate_projection_neutralize {} fields={fields:?} -> {}",
             render_place(root),
-            render_place(transferee)
+            render_place(transferee),
         ),
 
         // Actor spawn

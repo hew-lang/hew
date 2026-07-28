@@ -3672,7 +3672,7 @@ fn generator_env_clone_emits_ordered_clones_rollback_and_payload_drop() {
         .builder
         .build_memcpy(dst, 1, src, 1, env_struct.size_of().expect("env size"))
         .expect("shallow seed memcpy");
-    let thunk = emit_generator_env_owned_clones(
+    let thunk = emit_generator_env_owned_fields(
         &fn_ctx,
         "__hew_gen_body_owned_test",
         &plan,
@@ -3721,6 +3721,168 @@ fn generator_env_clone_emits_ordered_clones_rollback_and_payload_drop() {
     assert!(rc_drop < vec_drop && vec_drop < string_drop);
     assert!(!ir.contains("__hew_record_drop_inplace___hew_gen_env_owned_test"));
     assert!(module.verify().is_ok(), "generator env clone IR:\n{ir}");
+}
+
+#[test]
+fn generator_env_move_skips_clone_but_keeps_drop_and_rollback() {
+    let env_ty = ResolvedTy::named_user("__hew_gen_env_move_test", vec![]);
+    let field_tys = vec![ResolvedTy::String, ResolvedTy::String];
+    let env_layout = MirRecordLayout {
+        name: "__hew_gen_env_move_test".to_string(),
+        field_tys: field_tys.clone(),
+        field_names: vec![],
+    };
+    let ctx = Context::create();
+    let mut harness = build_harness(&ctx, std::slice::from_ref(&env_layout), &[]);
+    harness
+        .record_field_resolved_tys
+        .insert("__hew_gen_env_move_test".to_string(), field_tys);
+    let module = ctx.create_module("generator_env_move_test");
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    alloc_local(&mut fn_ctx, 0, env_ty.clone());
+    let (src, src_ty) = fn_ctx.locals[&0];
+    let BasicTypeEnum::StructType(env_struct) = src_ty else {
+        panic!("generator env move test local must lower to a struct");
+    };
+    let dst = fn_ctx
+        .builder
+        .build_alloca(env_struct, "heap_env")
+        .expect("env destination alloca");
+    let companion = fn_ctx
+        .builder
+        .build_alloca(ctx.i8_type().array_type(64), "companion")
+        .expect("companion storage");
+    let record_layouts = codegen_record_layouts(&fn_ctx);
+    let string_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        &ResolvedTy::String,
+        &record_layouts,
+        &[],
+        &[],
+        &[],
+    )
+    .expect("string generator field must classify");
+    let plan = hew_mir::GeneratorEnvPlan {
+        place: Place::Local(0),
+        ty: env_ty,
+        fields: vec![
+            hew_mir::GeneratorEnvFieldPlan::OwnedMove(string_plan.clone()),
+            hew_mir::GeneratorEnvFieldPlan::Owned(string_plan),
+        ],
+    };
+    fn_ctx
+        .builder
+        .build_memcpy(dst, 1, src, 1, env_struct.size_of().expect("env size"))
+        .expect("shallow seed memcpy");
+    emit_generator_env_owned_fields(
+        &fn_ctx,
+        "__hew_gen_body_move_test",
+        &plan,
+        env_struct,
+        src,
+        dst,
+        companion,
+    )
+    .expect("generator env owned fields must emit")
+    .expect("owned environment must produce a drop thunk");
+    finish_test_fn(&fn_ctx);
+
+    let ir = module.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call ptr @hew_string_clone").count(),
+        1,
+        "only the borrowed capture may be cloned:\n{ir}"
+    );
+    let thunk_start = ir
+        .find("define private void @__hew_generator_env_drop___hew_gen_body_move_test")
+        .expect("env drop thunk definition");
+    let thunk_ir = &ir[thunk_start..];
+    let thunk_ir = &thunk_ir[..thunk_ir.find("\n}").expect("env thunk end")];
+    assert_eq!(
+        thunk_ir.matches("call void @hew_string_drop").count(),
+        2,
+        "both the moved and cloned fields must be released by the env thunk"
+    );
+    let rollback_start = ir
+        .find("gen_env_clone_0_rollback:")
+        .expect("clone rollback block");
+    let rollback_ir = &ir[rollback_start..];
+    let rollback_ir = &rollback_ir[..rollback_ir.find("\n\n").unwrap_or(rollback_ir.len())];
+    assert_eq!(
+        rollback_ir.matches("call void @hew_string_drop").count(),
+        1,
+        "clone failure must release the already-moved field exactly once"
+    );
+    assert!(module.verify().is_ok(), "generator env move IR:\n{ir}");
+}
+
+#[test]
+fn generator_env_pointer_backed_indirect_enum_clone_fails_closed() {
+    let enum_layout = fixture_indirect_node_layout();
+    let env_name = "__hew_gen_env_indirect_clone_backstop";
+    let env_ty = ResolvedTy::named_user(env_name, vec![]);
+    let tree_ty = ResolvedTy::named_user("Node", vec![]);
+    let ctx = Context::create();
+    let mut harness = build_harness(&ctx, &[], std::slice::from_ref(&enum_layout));
+    let env_struct = ctx.opaque_struct_type(env_name);
+    env_struct.set_body(&[ctx.ptr_type(AddressSpace::default()).into()], false);
+    harness
+        .record_layouts
+        .insert(env_name.to_string(), env_struct);
+    harness
+        .record_field_resolved_tys
+        .insert(env_name.to_string(), vec![tree_ty]);
+
+    let module = ctx.create_module("generator_env_indirect_clone_backstop");
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.enum_layouts = std::slice::from_ref(&enum_layout);
+    alloc_local(&mut fn_ctx, 0, env_ty.clone());
+    let (src, _) = fn_ctx.locals[&0];
+    let dst = fn_ctx
+        .builder
+        .build_alloca(env_struct, "heap_env")
+        .expect("env destination alloca");
+    let companion = fn_ctx
+        .builder
+        .build_alloca(ctx.i8_type().array_type(64), "companion")
+        .expect("companion storage");
+    fn_ctx
+        .builder
+        .build_memcpy(dst, 1, src, 1, env_struct.size_of().expect("env size"))
+        .expect("shallow seed memcpy");
+    let record_layouts = codegen_record_layouts(&fn_ctx);
+    let tree_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        &ResolvedTy::named_user("Node", vec![]),
+        &record_layouts,
+        std::slice::from_ref(&enum_layout),
+        &[],
+        &[],
+    )
+    .expect("indirect enum must classify as an owned snapshot");
+    let plan = hew_mir::GeneratorEnvPlan {
+        place: Place::Local(0),
+        ty: env_ty,
+        fields: vec![hew_mir::GeneratorEnvFieldPlan::Owned(tree_plan)],
+    };
+
+    let err = emit_generator_env_owned_fields(
+        &fn_ctx,
+        "__hew_gen_body_indirect_clone_backstop",
+        &plan,
+        env_struct,
+        src,
+        dst,
+        companion,
+    )
+    .expect_err("pointer-backed indirect-enum snapshot must fail closed");
+    assert!(
+        matches!(
+            err,
+            CodegenError::FailClosed(ref message)
+                if message.contains("pointer-backed")
+                    && message.contains("no indirect-enum deep-clone helper")
+        ),
+        "unexpected clone backstop diagnostic: {err:?}"
+    );
 }
 
 #[test]
@@ -10896,6 +11058,111 @@ fn main() {
         hew_hir::TargetArch::host(),
     );
     hew_mir::lower_hir_module(&output.module)
+}
+
+#[test]
+fn generator_env_indirect_enum_field_uses_value_abi_pointer_layout() {
+    let source = r#"
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+actor Streamer {
+    receive gen fn emit(tree: Tree) -> i64 {
+        yield 1;
+        match tree {
+            Leaf(value) => yield value,
+            Node(_, _) => yield 2,
+        }
+    }
+}
+
+fn main() {
+    let streamer = spawn Streamer();
+    let tree = Node(Leaf(1), Leaf(2));
+    let _stream = streamer.emit(tree);
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &tc_output,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&tc_output);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "receive-generator indirect-enum pipeline must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let env_name = pipeline
+        .raw_mir
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .find_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => match &env.ty {
+                ResolvedTy::Named { name, .. } => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("receive generator must carry a named environment");
+    let value_abi_records =
+        value_abi_record_names(&pipeline).expect("value-ABI record discovery must succeed");
+    assert!(
+        value_abi_records.contains(env_name),
+        "generator environment `{env_name}` must be classified as a value-ABI record"
+    );
+    let env_layout = pipeline
+        .record_layouts
+        .iter()
+        .find(|layout| layout.name == env_name)
+        .expect("generator environment record layout");
+    let tree_field = env_layout
+        .field_tys
+        .iter()
+        .position(|ty| matches!(ty, ResolvedTy::Named { name, .. } if name == "Tree"))
+        .expect("generator environment must contain the captured Tree");
+
+    let ctx = Context::create();
+    let target_data = host_target_data();
+    let layouts = crate::layout::predeclare_named_layouts(
+        &ctx,
+        &pipeline.record_layouts,
+        &pipeline.enum_layouts,
+        &pipeline.machine_layouts,
+        &pipeline.opaque_handle_names,
+    )
+    .expect("named layouts must predeclare");
+    crate::layout::fill_record_layout_bodies(
+        &ctx,
+        &pipeline.record_layouts,
+        &layouts,
+        &target_data,
+        &pipeline.enum_layouts,
+        &value_abi_records,
+    )
+    .expect("generator environment body must use value-ABI field lowering");
+    let tree_field = u32::try_from(tree_field).expect("field index fits u32");
+    assert!(
+        matches!(
+            layouts[env_name].get_field_type_at_index(tree_field),
+            Some(BasicTypeEnum::PointerType(_))
+        ),
+        "captured indirect enum must occupy a pointer field in the generator environment"
+    );
 }
 
 /// S2/E9: a real `SuspendingAsk` carrier (the `await` in `Coordinator.run`)

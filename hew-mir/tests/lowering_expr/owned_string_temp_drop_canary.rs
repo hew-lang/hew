@@ -115,6 +115,17 @@ fn total_string_drops(pl: &IrPipeline, fn_name: &str) -> usize {
     inline_string_drops(pl, fn_name) + return_exit_string_drops(pl, fn_name)
 }
 
+/// Callee-side `+1` mints for a returned borrowed string parameter.
+fn string_retains(pl: &IrPipeline, fn_name: &str) -> usize {
+    pl.raw_mir
+        .iter()
+        .filter(|f| f.name == fn_name)
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.instructions.iter())
+        .filter(|i| matches!(i, Instr::StringRetain { .. }))
+        .count()
+}
+
 /// Per-Panic-path (bounds-check / OOB trap) elaborated `hew_string_drop`
 /// `CowHeap` drops in one function — the max over panic exits. A binding that is
 /// `Uninit` at the trap edge (e.g. `let y = xs[i];` traps in the bounds check
@@ -324,6 +335,159 @@ fn canary4b_string_call_temp_arg_releases_once() {
 }
 
 // ---------------------------------------------------------------------------
+// Return carriers — pointer aliasing does not imply a borrowed return.
+//
+// A whole by-value string parameter is retained before the return-slot move.
+// A string projection is retained by the field load. Both therefore hand the
+// caller exactly one independently releasable share even though the returned
+// pointer can alias input storage. A direct borrowing consumer must give that
+// anonymous call-result carrier exactly one caller-side release.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parameter_and_projection_return_carriers_release_once_at_direct_consumer() {
+    let pl = pipeline_with_tc(
+        "record Holder { value: string }\n\
+         fn passthru(value: string) -> string { value }\n\
+         fn choose(holder: Holder, fallback: string, project: bool) -> string {\n\
+         \x20   if project { holder.value } else { fallback }\n\
+         }\n\
+         fn repeated(value: string, first: bool) -> string {\n\
+         \x20   if first { value } else { value }\n\
+         }\n\
+         fn nested(value: string, through_call: bool) -> string {\n\
+         \x20   if through_call { passthru(value) } else { value }\n\
+         }\n\
+         fn early(value: string, return_value: bool) -> string {\n\
+         \x20   if return_value { return value; }\n\
+         \x20   \"static-control\"\n\
+         }\n\
+         fn return_join_twice(holder: Holder, fallback: string, project: bool, early: bool) -> string {\n\
+         \x20   let joined = if project { holder.value } else { fallback };\n\
+         \x20   if early { return joined; }\n\
+         \x20   joined\n\
+         }\n\
+         fn identity<T>(value: T) -> T { value }\n\
+         fn borrow_len(value: string) -> i64 { value.len() }\n\
+         fn direct(value: string) -> i64 { borrow_len(passthru(value)) }\n\
+         fn mixed(holder: Holder, fallback: string, project: bool) -> i64 {\n\
+         \x20   borrow_len(choose(holder, fallback, project))\n\
+         }\n\
+         fn repeat_call(value: string, first: bool) -> i64 {\n\
+         \x20   borrow_len(repeated(value, first))\n\
+         }\n\
+         fn nested_call(value: string, through_call: bool) -> i64 {\n\
+         \x20   borrow_len(nested(value, through_call))\n\
+         }\n\
+         fn early_call(value: string, return_value: bool) -> i64 {\n\
+         \x20   borrow_len(early(value, return_value))\n\
+         }\n\
+         fn return_join_twice_call(holder: Holder, fallback: string, project: bool, early: bool) -> i64 {\n\
+         \x20   borrow_len(return_join_twice(holder, fallback, project, early))\n\
+         }\n\
+         fn generic_call(value: string) -> i64 {\n\
+         \x20   borrow_len(identity<string>(value))\n\
+         }\n\
+         fn return_again(value: string) -> string {\n\
+         \x20   passthru(value)\n\
+         }\n",
+    );
+    assert_no_nyi(&pl);
+
+    assert_eq!(
+        string_retains(&pl, "passthru"),
+        1,
+        "the forwarded parameter must gain exactly one return share"
+    );
+    assert_eq!(
+        string_retains(&pl, "choose"),
+        1,
+        "only the forwarded branch needs an explicit retain; the projection \
+         branch is retained by its field load"
+    );
+    assert_eq!(
+        string_retains(&pl, "return_join_twice"),
+        1,
+        "multiple return slots for one mixed join must not duplicate its \
+         path-specific retain"
+    );
+    assert_eq!(
+        string_retains(&pl, "nested"),
+        1,
+        "a nested carrier already owns its share; only the directly forwarded \
+         sibling arm needs a retain"
+    );
+    for caller in [
+        "direct",
+        "mixed",
+        "repeat_call",
+        "nested_call",
+        "early_call",
+        "return_join_twice_call",
+        "generic_call",
+    ] {
+        assert_eq!(
+            return_exit_string_drops(&pl, caller),
+            1,
+            "{caller}: the anonymous returned carrier borrowed by the consumer \
+             must have one caller-side scope-exit release"
+        );
+        assert_eq!(
+            inline_string_drops(&pl, caller),
+            0,
+            "{caller}: the carrier is owned by the synthetic binding path, not \
+             by the nested runtime-temp path"
+        );
+    }
+    assert_eq!(
+        total_string_drops(&pl, "return_again"),
+        0,
+        "a returned carrier transferred onward is not a borrowing consumer and \
+         must not gain a caller-side drop"
+    );
+}
+
+#[test]
+fn bound_return_carrier_keeps_one_release_without_a_second_temp_owner() {
+    let pl = pipeline_with_tc(
+        "fn passthru(value: string) -> string { value }\n\
+         fn bound(value: string) -> i64 {\n\
+         \x20   let returned = passthru(value);\n\
+         \x20   returned.len()\n\
+         }\n",
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        total_string_drops(&pl, "bound"),
+        1,
+        "binding the returned carrier must preserve the existing exactly-once \
+         release path"
+    );
+}
+
+#[test]
+fn opaque_return_path_does_not_mint_a_string_carrier_owner() {
+    let pl = pipeline_with_tc(
+        "fn opaque(make: fn() -> string) -> string { make() }\n\
+         fn borrow_len(value: string) -> i64 { value.len() }\n\
+         fn caller(make: fn() -> string) -> i64 { borrow_len(opaque(make)) }\n",
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        return_exit_string_drops(&pl, "caller"),
+        0,
+        "an indirect return path is ownership-opaque and must not gain a \
+         caller-side return-carrier owner"
+    );
+    assert_eq!(
+        inline_string_drops(&pl, "caller"),
+        0,
+        "the nested-temp derivation must consult the same return-carrier \
+         authority; a non-runtime symbol is not by itself proof of a `+1`"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Canary 5 — DISCARD compatibility: a discarded fresh producer (`a + b;`) is
 // released by exactly one inline drop, producer-agnostically (this folds the
 // vec-branch's Vec-specific discard fix into the general substrate).
@@ -345,6 +509,31 @@ fn canary5_discarded_producer_releases_once() {
         1,
         "a discarded Vec<string> getter (retained owner) must be released by one inline drop"
     );
+}
+
+#[test]
+fn discarded_audited_runtime_string_result_releases_once() {
+    let pl = pipeline_with_tc(
+        r#"
+extern "C" {
+    fn hew_stream_last_error() -> string;
+}
+
+fn drain_error() {
+    unsafe {
+        let _ = hew_stream_last_error();
+    }
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        inline_string_drops(&pl, "drain_error"),
+        1,
+        "an audited runtime extern with a measured transferred string result \
+         still needs one caller-side drop when discarded"
+    );
+    assert_eq!(return_exit_string_drops(&pl, "drain_error"), 0);
 }
 
 // ---------------------------------------------------------------------------

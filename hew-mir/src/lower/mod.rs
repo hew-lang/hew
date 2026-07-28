@@ -73,6 +73,7 @@ mod split_consume;
 mod suspend_places;
 mod task;
 mod temp_drop;
+mod vec_index;
 
 use self::pattern::{project_match_ownership_mode, ProjectMatchOwnershipMode};
 
@@ -156,9 +157,8 @@ pub use self::suspend_places::terminator_source_places;
 #[cfg(not(test))]
 use self::suspend_places::{
     generator_yield_instr_escapes, generator_yield_terminator_escapes,
-    hir_expr_contains_synthetic_vec_index, hir_expr_contains_synthetic_vec_string_index,
-    instr_escape_places, option_payload_ty, place_refs_local, retained_string_terminator_drop_safe,
-    terminator_escape_places,
+    hir_expr_contains_synthetic_vec_get_clone, instr_escape_places, option_payload_ty,
+    place_refs_local, retained_string_terminator_drop_safe, terminator_escape_places,
 };
 #[cfg(not(test))]
 use self::temp_drop::{
@@ -166,9 +166,10 @@ use self::temp_drop::{
     apply_nested_fresh_string_temp_drops, bytes_interior_producer_dest, bytes_place_is_typed,
     bytes_runtime_arg_is_borrow, bytes_share_sink_places, classify_actor_state_load_modes,
     compute_collection_interior_alias_taint, compute_projection_alias_taint,
-    derive_cow_fresh_borrowed_owner, derive_cow_sole_owner, finalize_bytes_ownership,
-    finalize_string_local_share_intents, finalize_string_ownership, forward_move_closure,
-    readmit_retained_bytes_tuple_roots, string_call_borrows, string_field_load_producer_dest,
+    derive_bytes_actor_transfer_blocks, derive_cow_fresh_borrowed_owner, derive_cow_sole_owner,
+    finalize_bytes_ownership, finalize_string_local_share_intents, finalize_string_ownership,
+    forward_move_closure, readmit_retained_bytes_tuple_roots, string_call_borrows,
+    string_field_load_producer_dest,
 };
 
 /// Maps each original (unsanitized) callee symbol to the adapter symbol
@@ -354,6 +355,7 @@ struct PendingOutboundArg {
 struct ResolvedOutboundArg {
     source: Place,
     ty: ResolvedTy,
+    site: SiteId,
     mode: SendAliasMode,
 }
 
@@ -388,7 +390,15 @@ struct PendingOwnedCallSite {
 #[derive(Debug, Clone)]
 enum OwnedCarrierNeutralizeTarget {
     Whole(Place),
-    Projection { root: Place, fields: Vec<u32> },
+    ScopeExitTuple {
+        root: Place,
+        owner: (BindingId, String, SiteId),
+    },
+    Projection {
+        root: Place,
+        fields: Vec<u32>,
+        scope_exit_owner: Option<(BindingId, String, SiteId)>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -472,6 +482,11 @@ struct Builder {
     /// Raw byte-copy sources that must be neutralized if their loaded value is
     /// moved onward by the callee.
     owned_carrier_neutralize: HashMap<Place, OwnedCarrierNeutralizeTarget>,
+    /// Basic blocks that have consumed each carrier authority. Lowering walks
+    /// sibling CFG arms sequentially, so the authority registry itself remains
+    /// stable; a transfer is rejected only when an earlier transfer can reach
+    /// the current block on the same runtime path.
+    owned_carrier_transferred_at: HashMap<Place, Vec<u32>>,
     /// Parameter slots this function does NOT own: by-value params that are
     /// neither consume-classified, nor registered owned carriers, nor
     /// mailbox-delivered (`ActorHandler`), nor #2732 enum-composite consumes.
@@ -734,21 +749,54 @@ struct Builder {
     /// the scope-exit drop is emitted so the function-exit pass cannot
     /// double-free (the drop also null-stores the slot as defence-in-depth).
     pub(crate) scope_generator_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
-    /// Sole-owner `for x in …` cursor (`VecIter<T>`) bindings tagged with the
-    /// for-in block scope they were declared in, so a per-scope-exit
-    /// `__hew_record_drop_inplace_VecIter$$T` (freeing the cursor's `vec` field
-    /// via `hew_vec_free`) fires when the scope closes — releasing the handle on
-    /// every outer iteration of an enclosing loop, the case the function-exit
-    /// LIFO drop misses. Mirrors `scope_generator_bindings`. Registered ONLY for
-    /// cursors that solely own their handle (rvalue / `to_vec()` / consumed
-    /// `into_iter()` source — see `vec_iter_let_cursor_owns_handle`); a `CowShare`
-    /// place source (`for x in v`) is NOT registered because the source binding
-    /// keeps its own drop and the cursor only borrows (freeing here would
-    /// double-free and dangle a post-loop `v` read). Entries are removed from
-    /// `owned_locals` once the scope-exit drop is emitted so the function-exit
-    /// pass cannot double-free; the inline `Instr::Drop` null-stores the slot as
-    /// defence in depth (`raii-null-after-move`).
+    /// First-class and synthetic `VecIter<T>` bindings tagged with their
+    /// declaration scope. Every entry has a parallel runtime bit in
+    /// `vec_iter_drop_flags`; the scope/exit edge releases `cursor.vec` only
+    /// when that bit says the binding is the current owner. Borrowing
+    /// topologies remain in the lexical ledger with a moved bit, while rvalue
+    /// snapshots start owned. Keeping both sides of a transfer registered is
+    /// essential: only the executed branch updates their bits.
+    ///
+    /// `VecIter` bindings are deliberately excluded from `owned_locals`; this
+    /// guarded inline-field mechanism is their sole drop authority, so no
+    /// unconditional `RecordInPlace` exit-plan drop can compete.
     pub(crate) scope_vec_iter_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// Runtime ownership bit for every first-class `VecIter<T>` local.
+    ///
+    /// `0` means this binding currently owns its `vec` snapshot and must release
+    /// it; `1` means ownership moved elsewhere (or the cursor was born as a
+    /// borrowing topology). Unlike the declaration ledger above, these bits are
+    /// mutated by instructions on the actual CFG path, so a transfer in one
+    /// branch cannot erase the source obligation on an untaken sibling path.
+    /// A consuming `BindingRef` marks the source moved on that path; a let/var or
+    /// assignment destination then starts owned. Fresh cursor reassignment
+    /// likewise re-arms the destination after releasing its old snapshot.
+    pub(crate) vec_iter_drop_flags: HashMap<hew_hir::BindingId, Place>,
+    /// Runtime ownership sidecar currently receiving a `VecIter<T>` expression
+    /// result.
+    ///
+    /// The outer ownership boundary allocates the bit; recursively lowered
+    /// if/match arms and block tails reuse it, so each executed value-producing
+    /// path writes whether its result owns the cursor snapshot. Unrelated reads
+    /// never write it because only `lower_value_for_move` result expressions
+    /// participate.
+    pub(crate) vec_iter_move_result_flags: Vec<Place>,
+    /// Whether the parallel result-sidecar frame crosses a proven ownership
+    /// sink. `true` is reserved for let/assignment/return or another explicit
+    /// owning destination. Composite value-security lowering and unknown
+    /// closure/borrow calls use `false`, preserving a binding source while
+    /// still describing whether a fresh expression result owns a snapshot.
+    pub(crate) vec_iter_move_result_transfers: Vec<bool>,
+    /// Direct binding-reference sites currently crossing a `VecIter<T>`
+    /// ownership boundary. HIR may retain `Read` intent for a match arm even
+    /// though its value moves; this exact-site stack distinguishes that result
+    /// transfer from unrelated cursor reads nested in a composite expression.
+    pub(crate) vec_iter_direct_move_sites: Vec<hew_hir::SiteId>,
+    /// Ownership sidecar produced for each lowered `VecIter<T>` expression.
+    /// Let/var and assignment destinations copy this bit after moving the value
+    /// bytes, preserving both owning and borrowing topologies through composite
+    /// if/match/block results.
+    pub(crate) vec_iter_value_drop_flags: HashMap<hew_hir::SiteId, Place>,
     /// `Stream<T>` / `Receiver<T>` for-await cursor bindings tagged with the
     /// block scope they were declared in, so a per-scope-exit close
     /// (`hew_stream_close` / `hew_channel_receiver_close`) fires when that scope
@@ -968,9 +1016,11 @@ struct Builder {
     /// Built from `HirItem::Record` items in `lower_hir_module` and threaded
     /// through to the builder.
     ///
-    /// Tuple records have an empty field list by design (`HirRecordDecl.fields`
-    /// is empty for tuple records — their constructor is a `Call`, not a
-    /// `StructInit`). They will never be looked up here.
+    /// Tuple records use synthetic ordinal field names paired with the
+    /// authoritative `HirRecordDecl.positional_field_tys`. Their constructor
+    /// remains a `Call`, not a `StructInit`, and the checker still exposes no
+    /// named/indexed field access; the entries support structural ownership
+    /// classification only.
     pub(crate) record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>>,
     pub(crate) actor_layouts: HashMap<String, ActorLayout>,
     /// Supervisor-layout map, mirroring `actor_layouts` for supervisor types.
@@ -1424,11 +1474,17 @@ struct Builder {
     /// `MaybeConsumed`; the flag preserves its scope-exit drop on the live
     /// path and suppresses it after a state/send transfer.
     ///
-    /// Admission is structural: only types for which
-    /// `cow_value_leaf_drop_symbol` supplies the existing drop ritual enter
-    /// this map. The consume hook and `build_lifo_drops` consult this same map,
-    /// so allocation, move marking, and guarded release cannot drift.
+    /// Admission is structural: leaf `string` values use
+    /// `cow_value_leaf_drop_symbol`, while `bytes` uses its dedicated
+    /// `BytesTriple` admission/drop authority. The consume hook and
+    /// `build_lifo_drops` consult this same map, so allocation, move marking,
+    /// and guarded release cannot drift.
     pub(crate) actor_message_cow_drop_flags: HashMap<BindingId, Place>,
+    /// Direct actor-call argument bindings whose finalized outbound mode may
+    /// become `TransferLastUse` even when HIR intent remains borrow-like until
+    /// CFG analysis. This pre-pass fact lets `ActorHandler` `bytes` allocate its
+    /// path flag in the dominating parameter prologue.
+    pub(crate) prepass_actor_message_transfer_bindings: HashSet<BindingId>,
     /// Path-sensitive drop flags for fresh monomorphic records whose admitted
     /// fields are String/BitCopy and which are consumed on at least one body
     /// path. W60.108 makes every String field in such a construction an
@@ -1729,8 +1785,8 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // declaration order. Used by StructInit and FieldAccess lowering to resolve
     // a field name to its 0-based FieldOffset and to look up field types for
     // intermediate place allocation during functional-update desugaring. Tuple
-    // records have an empty field list and their constructor is a Call, not a
-    // StructInit, so they never appear here.
+    // records contribute synthetic ordinal names for structural ownership
+    // classification; their constructor remains a Call, not a StructInit.
     let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
     let mut record_layouts: Vec<crate::model::RecordLayout> = Vec::new();
     let mut actor_layouts: Vec<crate::model::ActorLayout> = Vec::new();
@@ -1818,20 +1874,23 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                 if !decl.type_params.is_empty() {
                     continue;
                 }
-                let fields: Vec<(String, ResolvedTy)> = decl
-                    .fields
-                    .iter()
-                    .map(|f| (f.name.clone(), f.ty.clone()))
-                    .collect();
-                // Named-form records have a non-empty `fields` list;
-                // tuple-form records have an empty list (their positional
-                // layout lives on the parser's `RecordKind::Tuple`
-                // discriminator and is not promoted into HIR fields). Tuple
-                // records construct via `Expr::Call`, never via
-                // `StructInit`, so they need no layout descriptor in this
-                // slice — codegen will fail-closed on any
-                // `ResolvedTy::Named` reach-through that names a tuple
-                // record.
+                let fields: Vec<(String, ResolvedTy)> = if decl.fields.is_empty() {
+                    // Tuple records deliberately expose no named fields in
+                    // HIR, but their positional payload is real stored value
+                    // state. Synthetic numeric names preserve declaration
+                    // order for layout/classification without enabling field
+                    // access (the checker continues to reject `.0`/`.1`).
+                    decl.positional_field_tys
+                        .iter()
+                        .enumerate()
+                        .map(|(index, ty)| (index.to_string(), ty.clone()))
+                        .collect()
+                } else {
+                    decl.fields
+                        .iter()
+                        .map(|f| (f.name.clone(), f.ty.clone()))
+                        .collect()
+                };
                 let layout_key = type_layout_key(&decl.name, decl.qualified_name());
                 if !fields.is_empty() {
                     record_layouts.push(crate::model::RecordLayout {
@@ -4540,6 +4599,7 @@ fn resolve_outbound_actor_modes(
                 .map(|(arg, mode)| ResolvedOutboundArg {
                     source: arg.source,
                     ty: arg.ty.clone(),
+                    site: arg.site,
                     mode,
                 })
                 .collect();
@@ -4669,6 +4729,64 @@ fn prepare_outbound_actor_payloads(
                 match arg.mode {
                     SendAliasMode::SnapshotBitCopy => prepared.push(arg.source),
                     SendAliasMode::TransferLastUse => {
+                        // Outbound mode resolution can discover a physical
+                        // last-use transfer after HIR lowering stamped the
+                        // source read-only. If this is a guarded actor-message
+                        // leaf, mark the same path-local hand-off here, at the
+                        // authority that selected `TransferLastUse`, before
+                        // moving and neutralising the source slot.
+                        let guarded_transfer = builder
+                            .actor_message_cow_drop_flags
+                            .iter()
+                            .find_map(|(binding, flag)| {
+                                if builder.binding_locals.get(binding) != Some(&arg.source) {
+                                    return None;
+                                }
+                                builder
+                                    .owned_locals
+                                    .iter()
+                                    .find(|entry| entry.binding == *binding)
+                                    .map(|entry| {
+                                        (*binding, *flag, entry.name.clone(), entry.ty.clone())
+                                    })
+                            });
+                        if let Some((binding, flag, name, ty)) = guarded_transfer {
+                            let already_set = block.instructions.iter().any(|instr| {
+                                matches!(
+                                    instr,
+                                    Instr::ConstI64 {
+                                        dest,
+                                        value: 1
+                                    } if *dest == flag
+                                )
+                            });
+                            if !already_set {
+                                prep.push(Instr::ConstI64 {
+                                    dest: flag,
+                                    value: 1,
+                                });
+                            }
+                            let already_consumed = block.statements.iter().any(|statement| {
+                                matches!(
+                                    statement,
+                                    MirStatement::Use {
+                                        binding: seen_binding,
+                                        site,
+                                        intent: IntentKind::Consume,
+                                        ..
+                                    } if *seen_binding == binding && *site == arg.site
+                                )
+                            });
+                            if !already_consumed {
+                                block.statements.push(MirStatement::Use {
+                                    binding,
+                                    name,
+                                    site: arg.site,
+                                    ty,
+                                    intent: IntentKind::Consume,
+                                });
+                            }
+                        }
                         let dest = builder.alloc_local(arg.ty.clone());
                         prep.push(Instr::Move {
                             dest,
@@ -5090,6 +5208,9 @@ pub(crate) fn lower_function(
         &builder.suspend_kinds,
         &builder.locals,
         &builder.binding_locals,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
         &mut builder.instr_spans,
     );
     // #2542 — release nested fresh-owned `bytes` user-call-result temporaries
@@ -5257,6 +5378,10 @@ pub(crate) fn lower_function(
         .iter()
         .filter_map(check_to_diagnostic)
         .collect();
+    diagnostics.extend(move_value::ordinary_projection_transfer_diagnostics(
+        &raw.blocks,
+        &builder.suspend_kinds,
+    ));
 
     // Collect diagnostics emitted by the builder (e.g., Unsupported HIR nodes).
     diagnostics.append(&mut builder.diagnostics);
@@ -6069,6 +6194,14 @@ impl Builder {
                 && !param_is_consumed
                 && !param_is_owned_carrier
             {
+                // Record every by-value `bytes` parameter for return/share
+                // retain derivation. Ordinary calls borrow the caller's
+                // reference. Actor handlers own the mailbox reference through
+                // the generic `actor_message_param` registration below, but a
+                // byte-copy returned from one branch still needs a fresh
+                // reference because the guarded source slot drops on that
+                // branch. This alias registry supplies that retain; it does not
+                // itself register a scope-exit owner.
                 if let Place::Local(local) = slot {
                     self.borrowed_bytes_param_locals.insert(local);
                 }
@@ -6619,6 +6752,13 @@ impl Builder {
             self.stmt(stmt);
         }
         if let Some(tail) = &func.body.tail {
+            let returned_binding = match &tail.kind {
+                HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(binding),
+                    ..
+                } => Some(*binding),
+                _ => None,
+            };
             // Stage 2 (gdb `-g`): attribute the tail expression's instructions
             // (including the `Move` into the return slot below) to its own line
             // so a tail value-expression is a distinct step.
@@ -6665,6 +6805,9 @@ impl Builder {
                 }
             }
             self.emit_pending_defers(func.body.scope);
+            if !self.cursor_unreachable {
+                self.emit_vec_iter_drops_for_exit_edge_except(0, returned_binding);
+            }
             self.statements.push(MirStatement::Return {
                 site: Some(tail.site),
                 ty: self.subst_ty(&tail.ty),
@@ -6700,6 +6843,7 @@ impl Builder {
             // covers every other implicit-unit-return shape.
             if !self.cursor_unreachable {
                 self.emit_pending_defers(func.body.scope);
+                self.emit_vec_iter_drops_for_exit_edge(0);
             }
         }
         self.active_scopes.pop();

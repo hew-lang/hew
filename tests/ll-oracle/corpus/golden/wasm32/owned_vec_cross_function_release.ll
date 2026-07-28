@@ -929,12 +929,10 @@ bb5:                                              ; preds = %bb2
   store i64 %field_1_load, ptr %local_22, align 8
   %move_load12 = load i64, ptr %local_22, align 8
   store i64 %move_load12, ptr %return_slot, align 8
-  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
   %ret_val = load i64, ptr %return_slot, align 8
   ret i64 %ret_val
 
 bb6:                                              ; preds = %bb1
-  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
   call void @hew_trap_with_code(i32 202)
   call void @llvm.trap()
   unreachable
@@ -964,7 +962,6 @@ bb8:                                              ; preds = %bb3
   br i1 %cond_nz26, label %bb9, label %bb10
 
 bb9:                                              ; preds = %bb8
-  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
@@ -998,7 +995,6 @@ bb11:                                             ; preds = %bb10
   br i1 %hew_cooperate_is_cancel39, label %cancel_exit40, label %after_cooperate41
 
 bb12:                                             ; preds = %bb4
-  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
   call void @hew_trap_with_code(i32 201)
   call void @llvm.trap()
   unreachable
@@ -1010,14 +1006,12 @@ after_cooperate:                                  ; preds = %entry
   br label %bb0
 
 cancel_exit17:                                    ; preds = %bb7
-  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
   ret i64 0
 
 after_cooperate18:                                ; preds = %bb7
   br label %bb2
 
 cancel_exit40:                                    ; preds = %bb11
-  call void @__hew_record_drop_inplace_Holder(ptr %local_5)
   ret i64 0
 
 after_cooperate41:                                ; preds = %bb11
@@ -1765,49 +1759,6 @@ done:                                             ; preds = %do_drop, %entry
 
 declare void @hew_vec_free_owned(ptr)
 
-define internal i32 @__hew_record_clone_inplace_Holder(ptr %0, ptr %1) {
-entry:
-  br label %step_0_clone
-
-success:                                          ; preds = %step_0_store
-  ret i32 0
-
-fail:                                             ; preds = %rb_step_0
-  ret i32 1
-
-rb_step_0:                                        ; preds = %step_0_clone
-  br label %fail
-
-step_0_store:                                     ; preds = %step_0_clone
-  %dst_f0_ptr = getelementptr inbounds nuw %Holder, ptr %1, i32 0, i32 0
-  store ptr %clone_helper_f0, ptr %dst_f0_ptr, align 4
-  br label %success
-
-step_0_clone:                                     ; preds = %entry
-  %src_f0_ptr = getelementptr inbounds nuw %Holder, ptr %0, i32 0, i32 0
-  %src_f0 = load ptr, ptr %src_f0_ptr, align 4
-  %clone_helper_f0 = call ptr @hew_vec_clone_owned(ptr %src_f0)
-  %cloned_f0_int = ptrtoint ptr %clone_helper_f0 to i64
-  %cloned_f0_null = icmp eq i64 %cloned_f0_int, 0
-  br i1 %cloned_f0_null, label %rb_step_0, label %step_0_store
-}
-
-define internal void @__hew_record_drop_inplace_Holder(ptr %0) {
-entry:
-  %rec_int = ptrtoint ptr %0 to i64
-  %rec_is_null = icmp eq i64 %rec_int, 0
-  br i1 %rec_is_null, label %done, label %do_drop
-
-do_drop:                                          ; preds = %entry
-  %drop_f0_ptr = getelementptr inbounds nuw %Holder, ptr %0, i32 0, i32 0
-  %drop_f0 = load ptr, ptr %drop_f0_ptr, align 4
-  call void @hew_vec_free_owned(ptr %drop_f0)
-  br label %done
-
-done:                                             ; preds = %do_drop, %entry
-  ret void
-}
-
 define internal i32 @__hew_record_clone_inplace_CrashInfo(ptr %0, ptr %1) {
 entry:
   br label %step_0_clone
@@ -1873,26 +1824,6 @@ entry:
   ret void
 }
 
-define internal void @__hew_record_overwrite_release_Holder(ptr %0, ptr %1) {
-entry:
-  %ow_slot_0 = alloca ptr, align 4
-  store ptr null, ptr %ow_slot_0, align 4
-  %ow_new_d0_f0_ptr = getelementptr inbounds nuw %Holder, ptr %1, i32 0, i32 0
-  %ow_new_d0_f0_leaf = load ptr, ptr %ow_new_d0_f0_ptr, align 4
-  store ptr %ow_new_d0_f0_leaf, ptr %ow_slot_0, align 4
-  %ow_old_d0_f0_ptr = getelementptr inbounds nuw %Holder, ptr %0, i32 0, i32 0
-  %ow_old_d0_f0_val = load ptr, ptr %ow_old_d0_f0_ptr, align 4
-  %ow_old_d0_f0_int = ptrtoint ptr %ow_old_d0_f0_val to i64
-  %ow_old_d0_f0_cmp0_leaf = load ptr, ptr %ow_slot_0, align 4
-  %ow_old_d0_f0_cmp0_int = ptrtoint ptr %ow_old_d0_f0_cmp0_leaf to i64
-  %ow_old_d0_f0_cmp0_eq = icmp eq i64 %ow_old_d0_f0_int, %ow_old_d0_f0_cmp0_int
-  %ow_old_d0_f0_matched0 = or i1 false, %ow_old_d0_f0_cmp0_eq
-  %ow_old_d0_f0_neutralized = select i1 %ow_old_d0_f0_matched0, ptr null, ptr %ow_old_d0_f0_val
-  store ptr %ow_old_d0_f0_neutralized, ptr %ow_old_d0_f0_ptr, align 4
-  call void @__hew_record_drop_inplace_Holder(ptr %0)
-  ret void
-}
-
 define internal void @__hew_record_overwrite_release_CrashInfo(ptr %0, ptr %1) {
 entry:
   %ow_slot_0 = alloca ptr, align 4
@@ -1900,6 +1831,15 @@ entry:
   %ow_new_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
   %ow_new_d0_f1_leaf = load ptr, ptr %ow_new_d0_f1_ptr, align 4
   store ptr %ow_new_d0_f1_leaf, ptr %ow_slot_0, align 4
+  %ow_old_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
+  %ow_old_d0_f1_val = load ptr, ptr %ow_old_d0_f1_ptr, align 4
+  %ow_old_d0_f1_int = ptrtoint ptr %ow_old_d0_f1_val to i64
+  %ow_old_d0_f1_cmp0_leaf = load ptr, ptr %ow_slot_0, align 4
+  %ow_old_d0_f1_cmp0_int = ptrtoint ptr %ow_old_d0_f1_cmp0_leaf to i64
+  %ow_old_d0_f1_cmp0_eq = icmp eq i64 %ow_old_d0_f1_int, %ow_old_d0_f1_cmp0_int
+  %ow_old_d0_f1_matched0 = or i1 false, %ow_old_d0_f1_cmp0_eq
+  %ow_old_d0_f1_neutralized = select i1 %ow_old_d0_f1_matched0, ptr null, ptr %ow_old_d0_f1_val
+  store ptr %ow_old_d0_f1_neutralized, ptr %ow_old_d0_f1_ptr, align 4
   call void @__hew_record_drop_inplace_CrashInfo(ptr %0)
   ret void
 }
@@ -2016,6 +1956,22 @@ after_frame:                                      ; preds = %destroy_frame, %do_
 out_drop_invoke:                                  ; preds = %out_drop_call
   call void %gen_destroy_thunk(ptr %0)
   br label %free_companion
+}
+
+define internal void @__hew_record_drop_inplace_Holder(ptr %0) {
+entry:
+  %rec_int = ptrtoint ptr %0 to i64
+  %rec_is_null = icmp eq i64 %rec_int, 0
+  br i1 %rec_is_null, label %done, label %do_drop
+
+do_drop:                                          ; preds = %entry
+  %drop_f0_ptr = getelementptr inbounds nuw %Holder, ptr %0, i32 0, i32 0
+  %drop_f0 = load ptr, ptr %drop_f0_ptr, align 4
+  call void @hew_vec_free_owned(ptr %drop_f0)
+  br label %done
+
+done:                                             ; preds = %do_drop, %entry
+  ret void
 }
 
 ; Function Attrs: nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none)

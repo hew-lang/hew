@@ -1064,6 +1064,15 @@ entry:
   %ow_new_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
   %ow_new_d0_f1_leaf = load ptr, ptr %ow_new_d0_f1_ptr, align 4
   store ptr %ow_new_d0_f1_leaf, ptr %ow_slot_0, align 4
+  %ow_old_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
+  %ow_old_d0_f1_val = load ptr, ptr %ow_old_d0_f1_ptr, align 4
+  %ow_old_d0_f1_int = ptrtoint ptr %ow_old_d0_f1_val to i64
+  %ow_old_d0_f1_cmp0_leaf = load ptr, ptr %ow_slot_0, align 4
+  %ow_old_d0_f1_cmp0_int = ptrtoint ptr %ow_old_d0_f1_cmp0_leaf to i64
+  %ow_old_d0_f1_cmp0_eq = icmp eq i64 %ow_old_d0_f1_int, %ow_old_d0_f1_cmp0_int
+  %ow_old_d0_f1_matched0 = or i1 false, %ow_old_d0_f1_cmp0_eq
+  %ow_old_d0_f1_neutralized = select i1 %ow_old_d0_f1_matched0, ptr null, ptr %ow_old_d0_f1_val
+  store ptr %ow_old_d0_f1_neutralized, ptr %ow_old_d0_f1_ptr, align 4
   call void @__hew_record_drop_inplace_CrashInfo(ptr %0)
   ret void
 }

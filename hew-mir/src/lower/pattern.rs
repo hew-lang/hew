@@ -1,15 +1,14 @@
 use super::{
     base_local, callee_is_resolved_item, callee_returns_fresh_owner,
     field_override_uses_record_field_drop, float_width, generator_yield_instr_escapes,
-    generator_yield_terminator_escapes, hir_expr_contains_synthetic_vec_index,
-    hir_expr_contains_synthetic_vec_string_index, literal_match_scrutinee_ty, mangle_layout_key,
-    place_is_interior_projection, short_name, ty_is_generator_handle, ty_is_indirect_enum,
-    user_record_layout_key, BindingId, Builder, CmpPred, Disposition, FailClosedReason,
-    FieldOffset, FloatWidth, HashMap, HashSet, HirExpr, HirExprKind, HirLiteral, Instr, IntentKind,
-    MirDiagnostic, MirDiagnosticKind, MirStatement, Place, ProjectedPayloadOrigin,
-    ProjectedPayloadProvenance, ProjectedPayloadRejectReason, ProjectedScrutinee,
-    ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SiteId, Terminator, TrapKind, ValueClass,
-    VecElementRelease, SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
+    generator_yield_terminator_escapes, hir_expr_contains_synthetic_vec_get_clone,
+    literal_match_scrutinee_ty, mangle_layout_key, place_is_interior_projection, short_name,
+    ty_is_generator_handle, ty_is_indirect_enum, user_record_layout_key, BindingId, Builder,
+    CmpPred, Disposition, FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr,
+    HirExprKind, HirLiteral, Instr, IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement,
+    Place, ProjectedPayloadOrigin, ProjectedPayloadProvenance, ProjectedPayloadRejectReason,
+    ProjectedScrutinee, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SiteId, Terminator,
+    TrapKind, ValueClass, VecElementRelease, SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
 };
 
 /// Chain-wide ownership mode for record/tuple project matches.
@@ -249,29 +248,10 @@ impl Builder {
         }
     }
 
-    pub(crate) fn is_vec_string_iter_next_scrutinee(&self, scrutinee: &HirExpr) -> bool {
-        matches!(
-            &self.subst_ty(&scrutinee.ty),
-            ResolvedTy::Named {
-                name,
-                args,
-                builtin: None,
-                ..
-            } if name == "Option" && matches!(args.as_slice(), [ResolvedTy::String])
-        ) && hir_expr_contains_synthetic_vec_string_index(scrutinee)
-    }
-
-    /// #2523 provenance-skip predicate: true when the match scrutinee is the
-    /// `for x in <vec>` desugar's synthetic `Option<T>` next-producer for ANY
-    /// element type (`Vec<string>`, `Vec<(string, string)>`, `Vec<Person>`, …).
-    /// Each `Some(x)` payload is a FRESH, solely-owned per-frame element the
-    /// iteration handed the body — never a projection of a re-readable
-    /// aggregate that retains the bits — so its move-out (`let (k, val) = pair`,
-    /// `return pair`) is a legitimate ownership transfer that must NOT route
-    /// through the default-deny consume hook. The narrower
-    /// `is_vec_string_iter_next_scrutinee` still drives the `string`-specific
-    /// per-iteration release disposition; this one only gates the provenance
-    /// skip so no element type is falsely rejected as a re-readable-place move.
+    /// True when the match scrutinee is the `VecIter::next` desugar's
+    /// synthetic `Option<T>` clone-out producer. Every `Some(x)` payload is a
+    /// fresh, solely-owned per-frame value, so it follows the same body/edge
+    /// release-or-transfer lifecycle as a generator or receiver yield.
     fn is_vec_iter_next_scrutinee(&self, scrutinee: &HirExpr) -> bool {
         matches!(
             &self.subst_ty(&scrutinee.ty),
@@ -281,7 +261,7 @@ impl Builder {
                 builtin: None,
                 ..
             } if name == "Option" && args.len() == 1
-        ) && hir_expr_contains_synthetic_vec_index(scrutinee)
+        ) && hir_expr_contains_synthetic_vec_get_clone(scrutinee)
     }
 
     /// True when the match scrutinee is a generator `.next()` consumption node
@@ -351,108 +331,17 @@ impl Builder {
         )
     }
 
-    /// Emit the per-iteration release for a `for line in vec_of_strings` binding.
-    ///
-    /// `hew_vec_get_str` returns a FRESH, solely-owned retained owner of the
-    /// element (`hew_string_clone` — a header-aware refcount bump that returns
-    /// the caller its OWN reference; NOT a borrow of the Vec's live buffer slot,
-    /// which is what the owned-element getter `hew_vec_get_owned` does). The Vec
-    /// keeps its own reference and releases every element through its `destroy`
-    /// descriptor independently. So the iteration binding owns exactly one
-    /// reference that must be released with `hew_string_drop` on EVERY path out of
-    /// the body — exactly the ownership shape of a generator-yielded `string`.
-    ///
-    /// The drop is placed per-path, not at a single post-body point:
-    ///   - the fall-through (loop back-edge) path gets the body-end `Drop` emitted
-    ///     here (this instruction lands at the end of the body's current block);
-    ///   - `break`/`continue` edges free the current iteration's binding via
-    ///     `emit_generator_yield_value_drops_for_break_continue` (the binding is
-    ///     registered on `active_generator_yield_values` before the body lowers),
-    ///     so an iteration that breaks/continues releases before jumping past the
-    ///     body-end drop;
-    ///   - an early `return` inside the body moves the element to the caller (an
-    ///     ownership escape — see below), so no extra drop is owed on that path.
-    ///
-    /// Every structurally-reachable second free is a no-op: the inline drop
-    /// null-stores the slot (codegen `emit_cow_heap_drop`) and the runtime
-    /// `hew_string_drop` header-guards (`raii-null-after-move`).
-    ///
-    /// Ownership-escape handling: a body that genuinely transfers the binding's
-    /// single retained reference out — a `Move`/`WitnessMove` into a surviving
-    /// local, a store into a record/tuple/closure-env/actor-state aggregate, a
-    /// spawn capture, or a consuming terminator (`return`/re-yield/send/ask) —
-    /// hands ownership to a longer-lived owner that will release it. On those
-    /// paths the body-end drop is SUPPRESSED (leak-not-double-free; the move
-    /// checker / function-scope drop machinery owns the escaped reference). A
-    /// borrowing read — string concat (`out + line`), `line.len()`,
-    /// `print(line)`, any runtime-ABI/arithmetic operand — does NOT transfer the
-    /// reference, so the per-iteration drop is still owed and is emitted. This is
-    /// the SAME escape classification the generator-yield path uses
-    /// (`generator_yield_binding_drop_safe`), reused here because the ownership
-    /// shapes are identical.
-    fn emit_vec_string_iter_binding_drop(
-        &mut self,
-        binding: BindingId,
-        place: Place,
-        ty: &ResolvedTy,
-        body_start_block_id: u32,
-        body_start_instr_len: usize,
-        site: hew_hir::SiteId,
-    ) {
-        if !matches!(ty, ResolvedTy::String) {
-            return;
-        }
-        let Some(local) = base_local(place) else {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "Vec<String> for-in retained binding drop".to_string(),
-                    site,
-                },
-                note: format!(
-                    "for-in binding {binding:?} must lower to a Place::Local-backed string \
-                     owner so the retained hew_vec_get_str result can be balanced with \
-                     hew_string_drop; got {place:?}"
-                ),
-            });
-            return;
-        };
-        // Per-path escape scan: emit the body-end drop unless the binding's single
-        // retained reference escapes the body on every reachable path. Borrowing
-        // reads (concat, getters, print) are non-escaping; only an
-        // ownership-transferring use suppresses the drop. Shared with the
-        // generator-yield path — identical fresh-solely-owned-reference shape.
-        if self.generator_yield_binding_drop_safe(body_start_block_id, body_start_instr_len, local)
-        {
-            self.push_instr(Instr::Drop {
-                place,
-                ty: ty.clone(),
-                drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
-            });
-        }
-        // else: the retained element escapes the body (moved/stored/returned).
-        // Leak-not-double-free — the consumer that received the reference owns it;
-        // emitting another `hew_string_drop` here would over-release. No
-        // diagnostic: an escaping element is a legitimate program shape, and the
-        // function-scope drop machinery / move checker releases the escaped
-        // reference where it lands.
-    }
-
     /// The classified release verdict for a generator-yielded (or
     /// channel-received) `Some(x)` payload of type `ty`:
     /// [`ReleaseSymbolVerdict::Wired`] carries the C-ABI symbol the
     /// consumer-body drop emits, restricted to the proven leak shapes — a
     /// heap-owning `string`, `bytes`, and any builtin `Vec<T>` whose element
     /// release is wired. [`ReleaseSymbolVerdict::WiredInPlace`] covers a
-    /// registered heap-owning record/enum composite (the `LayoutManaged`
-    /// stream-element shapes): the release is the synthesised
-    /// `__hew_record_drop_inplace_<R>` / `__hew_enum_drop_inplace_<E>` thunk,
-    /// admitted by the same `elem_is_owned_abi_releasable` authority the
-    /// layout-witness (send-side deep clone) mirrors, so the drop is wired
-    /// exactly where the witness already clones. A `BitCopy` record/enum owns
-    /// no heap and never earns it. [`ReleaseSymbolVerdict::NoDropPath`]
-    /// covers shapes with no validated consumer-drop path (HashMap/HashSet
-    /// yields — they leak as before rather than risk a double-free, matching
-    /// the conservative posture of the function-scope `CoW` drop allow-set).
+    /// registered heap-owning record/enum composite or structural tuple/array.
+    /// Named composites use their synthesised in-place thunk; structural
+    /// aggregates use the recursive field walker. A `BitCopy` composite owns
+    /// no heap and never earns a release. Rc/Weak use their retain-balancing
+    /// drops, and HashMap/HashSet use their layout-aware releases.
     /// [`ReleaseSymbolVerdict::Unwired`] is the fail-closed refusal: the
     /// value owns heap the buffer-only free cannot reach (a `Vec` of `bytes`
     /// or of an indirect-enum element), so the consulting site must reject
@@ -517,6 +406,25 @@ impl Builder {
                         self.vec_release_symbol_verdict(elem)
                     })
             }
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::HashMap),
+                ..
+            } => ReleaseSymbolVerdict::Wired("hew_hashmap_free_layout"),
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::HashSet),
+                ..
+            } => ReleaseSymbolVerdict::Wired("hew_hashset_free_layout"),
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Rc),
+                ..
+            } => ReleaseSymbolVerdict::Wired("hew_rc_drop"),
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Weak),
+                ..
+            } => ReleaseSymbolVerdict::Wired("hew_weak_drop_rc"),
+            ResolvedTy::Tuple(_) | ResolvedTy::Array(_, _) => ReleaseSymbolVerdict::WiredInPlace(
+                crate::ownership::InPlaceReleaseKind::AggregateRecursive,
+            ),
             // A registered heap-owning record/enum composite: release through
             // the synthesised in-place drop thunk. `owned_composite_release_kind`
             // (→ `elem_is_owned_abi_releasable`) is the SAME admission the
@@ -623,11 +531,11 @@ impl Builder {
         }
     }
 
-    /// Emit a body-end release for a generator-yielded `Some(x)` binding. The
-    /// yielded value is a fresh, solely-owned heap value the coro `.next()`
-    /// drive handed the consumer; releasing it here (per-iteration for a
-    /// `for`-in loop) is what frees the otherwise-leaked yield. Gated on the
-    /// same body-shape drop-safety scan the `Vec<String>` iterator path uses:
+    /// Emit a body-end release for a fresh `Some(x)` binding from a `VecIter`
+    /// clone-out, generator drive, or receiver read. The consumer owns the
+    /// value solely; releasing it here (per iteration for a `for` loop) frees
+    /// the otherwise-overwritten frame. Gated on the shared body-shape
+    /// drop-safety scan:
     /// if the binding's pointer escapes the consuming body (read as a
     /// non-print source operand, returned, re-yielded), MIR refuses to emit
     /// the drop and the value leaks rather than risking a use-after-free
@@ -1708,7 +1616,7 @@ impl Builder {
             }
 
             // Arm body.
-            let value = self.lower_value_for_move(&arm.body);
+            let value = self.lower_composite_result_value(&arm.body);
             if let Some(src) = value {
                 self.push_instr(Instr::Move {
                     dest: result_place,
@@ -2069,7 +1977,7 @@ impl Builder {
             self.mark_binding_moved(scrutinee_id);
         }
 
-        let value = self.lower_value_for_move(&arm.body);
+        let value = self.lower_composite_result_value(&arm.body);
         for (binding, previous, keep_for_drop_elab) in overwritten_bindings.into_iter().rev() {
             if keep_for_drop_elab {
                 continue;
@@ -2123,9 +2031,9 @@ impl Builder {
     ) -> Option<u32> {
         let raw_place = self.lower_value(scrutinee)?;
         let place = if consume_owned {
-            match self.owned_carrier_neutralize.get(&raw_place) {
-                Some(super::OwnedCarrierNeutralizeTarget::Whole(root)) if *root == raw_place => {
-                    self.owned_carrier_neutralize.remove(&raw_place);
+            match self.owned_carrier_authority(raw_place) {
+                Some(super::OwnedCarrierNeutralizeTarget::Whole(root)) if root == raw_place => {
+                    self.record_owned_carrier_transfer(raw_place);
                     self.owned_carrier_consumed
                         .entry(raw_place)
                         .or_default()
@@ -2137,18 +2045,10 @@ impl Builder {
                     self.transfer_owned_carrier_place(raw_place, &scrutinee_ty)
                 }
                 None => {
-                    // A consuming match on a PARTITIONED sibling path already
-                    // took this whole carrier's authority (the first recording
-                    // removed the funnel entry above, so this arm sees `None`).
-                    // This match consumes on ITS path and must be recorded too:
-                    // an unrecorded site leaves its exit outside the consume
-                    // set, so the exit keeps the terminal snapshot drop over
-                    // fields the arm discharge already released — a double
-                    // release. Non-carrier scrutinees have no consumed entry
-                    // and pass through unrecorded, as before.
-                    if let Some(sites) = self.owned_carrier_consumed.get_mut(&raw_place) {
-                        sites.push((self.current_block_id, scrutinee.site));
-                    }
+                    // Either this is not a carrier or an earlier consume can
+                    // reach the current block. A mutually-exclusive sibling
+                    // remains available through the CFG reachability query
+                    // above and records its own consume site.
                     raw_place
                 }
             }
@@ -2605,7 +2505,7 @@ impl Builder {
             }
 
             // Arm body: produce the result and jump to the join.
-            if let Some(src) = self.lower_value_for_move(&arm.body) {
+            if let Some(src) = self.lower_composite_result_value(&arm.body) {
                 self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
@@ -3212,7 +3112,7 @@ impl Builder {
                 }
             }
 
-            let value = self.lower_value_for_move(&arm.body);
+            let value = self.lower_composite_result_value(&arm.body);
             if let Some(src) = value {
                 self.push_instr(Instr::Move {
                     dest: result_place,
@@ -3684,13 +3584,11 @@ impl Builder {
                 }
             }
         }
-        let vec_string_iter_next_scrutinee = self.is_vec_string_iter_next_scrutinee(scrutinee);
         let generator_next_scrutinee = Self::is_generator_next_scrutinee(scrutinee);
         let recv_next_scrutinee = Self::is_recv_next_scrutinee(scrutinee);
-        // #2523 — element-type-agnostic fresh-owned vec-element iteration
-        // (`for pair in v` over `Vec<(string, string)>`, `Vec<Person>`, …).
-        // Gates ONLY the provenance skip below; disposition still keys off the
-        // narrower string/generator/recv markers.
+        // Iterator clone-out is element-type agnostic: the synthetic Vec/Get
+        // call returns a fresh owner for scalar, retained, and descriptor-backed
+        // element classes alike.
         let vec_iter_next_scrutinee = self.is_vec_iter_next_scrutinee(scrutinee);
 
         // An enum projected out of a tuple owner can transfer that field's
@@ -3783,6 +3681,7 @@ impl Builder {
                         root: source_root,
                         fields: vec![field],
                         transferee: scrutinee_place,
+                        scope_exit_owner: None,
                     });
                     self.statements.push(MirStatement::AggregateAlias {
                         binding: owner.binding,
@@ -4021,7 +3920,6 @@ impl Builder {
                 } if variant_match.type_name == "Option"
                     && variant_match.variant_name == "Some"
             );
-            let arm_is_vec_iter_some = vec_string_iter_next_scrutinee && arm_is_some;
             let arm_is_generator_some = generator_next_scrutinee && arm_is_some;
             let arm_is_fresh_owned_vec_iter_some = vec_iter_next_scrutinee && arm_is_some;
             // Recv-call scrutinee `Some` arm: the runtime hands the consumer a
@@ -4036,11 +3934,10 @@ impl Builder {
             // `match stream.recv() { ... }`.
             let arm_is_recv_some = recv_next_scrutinee && arm_is_some;
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
-            let mut retained_vec_string_iter_bindings = Vec::new();
-            // Generator-yielded `Some(x)` bindings whose payload owns heap. The
-            // yielded value is a fresh, solely-owned heap value the coro
-            // `.next()` drive handed the consumer; it is released at the end
-            // of the consuming body (per-iteration for a `for`-in loop).
+            // Fresh `Some(x)` bindings whose payload owns heap. VecIter clone
+            // reads, generator drives, and receiver reads all hand the body a
+            // fresh sole owner, so one shared lifecycle releases it at
+            // body/edge exit or records its ownership transfer.
             // Removed from `owned_locals` below so the function-scope drop
             // pass does not also fire (which would double-free).
             let mut generator_yield_drop_bindings = Vec::new();
@@ -4108,11 +4005,10 @@ impl Builder {
                 // payload binder so its `Consume`-intent move-out routes through
                 // the default-deny consume hook.
                 //
-                // EXCEPTION — the vec-string-iter / generator / recv `Some(x)`
+                // EXCEPTION — the VecIter / generator / recv `Some(x)`
                 // arms carry a FRESH, solely-owned per-frame payload (the
-                // synthetic `Option` shell holds a value the runtime just
-                // handed the consumer: `hew_vec_get_str`'s refcount-bumped
-                // owner, a coro yield, a received frame). Its release is already
+                // synthetic `Option` shell holds a clone-out value, a coro
+                // yield, or a received frame). Its release is already
                 // owned by the arm's own `Disposition::BodyEndReleased` +
                 // escape-suppression discipline (registered below). It is NOT a
                 // projection of a re-readable aggregate that retains the bits,
@@ -4135,36 +4031,7 @@ impl Builder {
                         keep_for_drop_elab,
                     );
                 }
-                if arm_is_vec_iter_some && matches!(binding_ty, ResolvedTy::String) {
-                    // `hew_vec_get_str` returns a FRESH, solely-owned retained
-                    // owner (refcount bump via `hew_string_clone` — NOT a borrow
-                    // of the Vec's buffer slot, unlike the owned-element getter).
-                    // Its ownership shape is therefore identical to a
-                    // generator-yielded `string`: a per-iteration heap reference
-                    // the body must release with `hew_string_drop` on every exit
-                    // edge. Take it out of `owned_locals` so the function-scope
-                    // LIFO drop pass cannot ALSO fire on the binding's final slot
-                    // value (double-free guard) — the per-iteration body-end drop
-                    // and the break/continue edge drops (registered below) own the
-                    // release. The body-shape escape scan in
-                    // `emit_vec_string_iter_binding_drop` suppresses the body-end
-                    // drop only when the binding's single retained reference
-                    // genuinely escapes the body (a `Move`/store/return that hands
-                    // the reference to a longer-lived owner), matching the
-                    // generator-yield posture.
-                    if keep_for_drop_elab {
-                        self.set_owned_local_disposition(
-                            binding.binding,
-                            Disposition::BodyEndReleased,
-                        );
-                    }
-                    retained_vec_string_iter_bindings.push((
-                        binding.binding,
-                        dest,
-                        binding_ty,
-                        arm.body.site,
-                    ));
-                } else if arm_is_generator_some || arm_is_recv_some {
+                if arm_is_fresh_owned_vec_iter_some || arm_is_generator_some || arm_is_recv_some {
                     // The picker verdict is consulted HERE, before this
                     // binding can be retracted from `owned_locals` — the
                     // fail-closed check therefore covers every binding that
@@ -4205,11 +4072,12 @@ impl Builder {
                             ));
                         }
                         ReleaseSymbolVerdict::NoDropPath => {
-                            // No validated consumer-drop path (HashMap /
-                            // HashSet yields): the binding keeps its
-                            // `owned_locals` entry and the function-scope
-                            // machinery decides, leak-as-before rather than
-                            // risking a double-free.
+                            // No validated consumer-drop path: the binding
+                            // keeps its `owned_locals` entry and the
+                            // function-scope machinery decides, leak-as-before
+                            // rather than risking a double-free. Concrete
+                            // VecIter elements reaching this class are rejected
+                            // by the checker's clone-totality gate.
                         }
                         ReleaseSymbolVerdict::Unwired(_) => {
                             // Fail closed: the frame owns heap (a `Vec` of
@@ -4364,31 +4232,7 @@ impl Builder {
                     ));
                 }
             }
-            // The retained `Vec<String>` iteration binding is a per-iteration
-            // heap reference with the same lifecycle as a yielded value: register
-            // it on the same active-value stack so a `break`/`continue` inside the
-            // body frees THIS iteration's retained string on its edge (the
-            // body-end drop is emitted after the body lowers, so a break/continue
-            // jumps past it and would otherwise leak the breaking iteration's
-            // element). `hew_string_drop` is the release symbol; the inline drop's
-            // null-after-free (codegen `emit_cow_heap_drop` + runtime header
-            // guard) makes the mutually-exclusive fall-through body-end drop a
-            // no-op on the break/continue path.
-            for (_binding, place, ty, _site) in &retained_vec_string_iter_bindings {
-                if matches!(ty, ResolvedTy::String) {
-                    let depth = self.active_scopes.len();
-                    self.active_generator_yield_values.push((
-                        depth,
-                        *place,
-                        ty.clone(),
-                        crate::model::DropFnSpec::Release("hew_string_drop"),
-                        body_start_block_id,
-                        body_start_instr_len,
-                    ));
-                }
-            }
-
-            let value = self.lower_value_for_move(&arm.body);
+            let value = self.lower_composite_result_value(&arm.body);
 
             // Drain the entries this arm registered; break/continue inside the
             // body has already cloned-freed them on its edges.
@@ -4413,16 +4257,6 @@ impl Builder {
                     dest: result_place,
                     src,
                 });
-            }
-            for (binding, place, ty, site) in retained_vec_string_iter_bindings {
-                self.emit_vec_string_iter_binding_drop(
-                    binding,
-                    place,
-                    &ty,
-                    body_start_block_id,
-                    body_start_instr_len,
-                    site,
-                );
             }
             for (binding, place, ty, site) in generator_yield_drop_bindings {
                 self.emit_generator_yield_binding_drop(

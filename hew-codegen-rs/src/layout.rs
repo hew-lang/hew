@@ -5039,10 +5039,13 @@ pub(crate) fn lower_vec_get_clone_call(
     };
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
     let dest_is_option = match &dest_ty {
-        ResolvedTy::Named { args: ty_args, .. }
-            if dest_ty.is_builtin(BuiltinType::Option)
-                && ty_args.len() == 1
-                && ty_args[0] == elem_resolved =>
+        ResolvedTy::Named {
+            name,
+            args: ty_args,
+            ..
+        } if (dest_ty.is_builtin(BuiltinType::Option) || name == "Option")
+            && ty_args.len() == 1
+            && ty_args[0] == elem_resolved =>
         {
             true
         }

@@ -131,29 +131,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $toolchainRepo = "hew-lang/llvm-toolchain"
-          $toolchainTag  = "llvm-22.1.0-windows-msvc-v1"
-          $asset         = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+          $toolchainTag = "toolchain/llvm-22.1.0-windows-msvc-v3"
+          $asset        = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
 
           # Fail fast if the toolchain release is not published yet.
-          # Run prebuild-llvm.yml in hew-lang/llvm-toolchain to publish it
-          # before retrying the release.
+          # Run prebuild-llvm.yml to publish it before retrying the release.
           $info = gh release view $toolchainTag `
-            --repo $toolchainRepo --json assets 2>$null
+            --repo "$env:GITHUB_REPOSITORY" --json assets 2>$null
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::Toolchain release $toolchainTag not found in $toolchainRepo. Dispatch prebuild-llvm.yml there to publish it first."
+            Write-Host "::error::Toolchain release $toolchainTag not found in $env:GITHUB_REPOSITORY. Dispatch prebuild-llvm.yml to publish it first."
             exit 1
           }
           $names = ($info | ConvertFrom-Json).assets.name
-          $required = @($asset, "$asset.sha256")
-          $missing = $required | Where-Object { $names -notcontains $_ }
-          if ($missing) {
-            Write-Host "::error::Missing asset(s) from toolchain release ${toolchainTag}: $($missing -join ', '). Dispatch prebuild-llvm.yml in $toolchainRepo to publish them first."
+          if ($names -notcontains $asset) {
+            Write-Host "::error::Asset $asset missing from toolchain release $toolchainTag. Dispatch prebuild-llvm.yml to publish it first."
             exit 1
           }
 
           gh release download $toolchainTag `
-            --repo $toolchainRepo `
+            --repo "$env:GITHUB_REPOSITORY" `
             --pattern $asset `
             --pattern "$asset.sha256" `
             --dir .
@@ -173,9 +169,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $toolchainRepo = "hew-lang/llvm-toolchain"
-          $asset         = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
-          gh attestation verify $asset --repo $toolchainRepo
+          $asset = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
+          gh attestation verify $asset --repo "$env:GITHUB_REPOSITORY"
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Provenance attestation verification failed for $asset"
             exit 1
@@ -186,7 +181,7 @@ jobs:
         if: startsWith(matrix.target, 'windows')
         shell: pwsh
         run: |
-          $asset = "hew-llvm-22.1.0-windows-msvc-v1.tar.gz"
+          $asset = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
           # Archive root is llvm-22/; extracting to C:\ gives C:\llvm-22.
           tar -xzf $asset -C C:\
           Remove-Item -Force $asset, "$asset.sha256"

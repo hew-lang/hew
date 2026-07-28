@@ -3,7 +3,7 @@ use super::*;
 #[cfg(not(test))]
 use super::{
     base_local, binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator,
-    block_by_id, call_terminator_next, cow_value_leaf_drop_symbol, dataflow,
+    block_by_id, blocks_reachable_from, call_terminator_next, cow_value_leaf_drop_symbol, dataflow,
     derive_local_bytes_drop_allowed, generator_yield_instr_escapes,
     generator_yield_terminator_escapes, instr_source_places, local_is_used_after,
     place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
@@ -11,9 +11,13 @@ use super::{
     ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
     BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, FieldOffset, HashMap, HashSet,
     Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
-    ResolvedTy, SiteId, StringDropDerivation, StringRetainCondition, StringRetainSite, SuspendKind,
-    Terminator,
+    ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
+    StringRetainSite, SuspendKind, Terminator,
 };
+
+const STRING_RETURN_SOURCE_BORROWED: u8 = 0b001;
+const STRING_RETURN_SOURCE_OWNED: u8 = 0b010;
+const STRING_RETURN_SOURCE_UNKNOWN: u8 = 0b100;
 
 pub(super) fn finalize_string_local_share_intents(
     blocks: &mut [BasicBlock],
@@ -233,6 +237,135 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
 fn string_place_is_typed(place: Place, local_tys: &[ResolvedTy]) -> bool {
     base_local(place)
         .is_some_and(|local| matches!(local_tys.get(local as usize), Some(ResolvedTy::String)))
+}
+/// String-sharing moves whose destination is proven to receive one independent
+/// retained owner.
+///
+/// `finalize_string_ownership` inserts an unconditional
+/// `StringRetain { value: src, .. }`
+/// immediately before the `Move { dest, src }` that materialises a co-owner.
+/// The pair severs projection-alias provenance: the source still aliases and is
+/// released by its parent composite, while the destination owns the explicit
+/// `+1` and must balance it independently.
+///
+/// Admission is deliberately generation- and cycle-safe:
+///
+/// - retain and move must be adjacent and name the exact same string place;
+/// - the destination must be a different string local with exactly one static
+///   defining write in the function; and
+/// - the move's block must not be on a CFG cycle, so the one static retain
+///   cannot mint multiple dynamic generations for one destination slot.
+///
+/// Any mismatch, reuse, terminator overwrite, or cyclic site keeps the ordinary
+/// projection taint and escape treatment (leak-not-double-free).
+#[must_use]
+pub(super) fn corroborated_retained_string_move_sites(
+    blocks: &[BasicBlock],
+    local_tys: &[ResolvedTy],
+) -> HashSet<(u32, usize)> {
+    let mut write_counts: HashMap<u32, usize> = HashMap::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            let (_, writes) = dataflow::instr_reads_writes(instr);
+            for place in writes {
+                if let Some(local) = base_local(place) {
+                    *write_counts.entry(local).or_default() += 1;
+                }
+            }
+        }
+        for place in dataflow::terminator_write_places(&block.terminator) {
+            if let Some(local) = base_local(place) {
+                *write_counts.entry(local).or_default() += 1;
+            }
+        }
+    }
+
+    let cyclic_blocks: HashSet<u32> = blocks
+        .iter()
+        .filter(|block| blocks_reachable_from(blocks, block.id).contains(&block.id))
+        .map(|block| block.id)
+        .collect();
+    let mut sites = HashSet::new();
+    for block in blocks {
+        if cyclic_blocks.contains(&block.id) {
+            continue;
+        }
+        for move_index in 1..block.instructions.len() {
+            let (
+                Instr::StringRetain {
+                    value,
+                    condition: StringRetainCondition::Always,
+                },
+                Instr::Move {
+                    dest: Place::Local(dest),
+                    src,
+                },
+            ) = (
+                &block.instructions[move_index - 1],
+                &block.instructions[move_index],
+            )
+            else {
+                continue;
+            };
+            let Some(source) = base_local(*src) else {
+                continue;
+            };
+            if *value == *src
+                && source != *dest
+                && string_place_is_typed(*src, local_tys)
+                && string_place_is_typed(Place::Local(*dest), local_tys)
+                && write_counts.get(dest).copied() == Some(1)
+            {
+                sites.insert((block.id, move_index));
+            }
+        }
+    }
+    sites
+}
+fn corroborated_retained_string_move_dest(
+    instr: &Instr,
+    block: u32,
+    instr_index: usize,
+    sites: &HashSet<(u32, usize)>,
+) -> Option<u32> {
+    if !sites.contains(&(block, instr_index)) {
+        return None;
+    }
+    match instr {
+        Instr::Move { dest, .. } => base_local(*dest),
+        _ => None,
+    }
+}
+fn seed_fresh_string_instruction_locals(
+    blocks: &[BasicBlock],
+    locals: &[ResolvedTy],
+    retained_string_moves: &HashSet<(u32, usize)>,
+) -> HashSet<u32> {
+    let mut fresh = HashSet::new();
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            for dest in [
+                fresh_string_producer_dest(instr),
+                string_field_load_producer_dest(instr, locals),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Some(local) = base_local(dest) {
+                    fresh.insert(local);
+                }
+            }
+            if let Some(local) = corroborated_retained_string_move_dest(
+                instr,
+                block.id,
+                instr_index,
+                retained_string_moves,
+            ) {
+                fresh.insert(local);
+            }
+        }
+    }
+    fresh
 }
 fn string_share_sink_places(instr: &Instr) -> Vec<Place> {
     match instr {
@@ -655,6 +788,7 @@ pub(super) fn derive_cow_sole_owner(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     extern_contracts: &crate::return_provenance::ExternContractTable,
+    owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> StringDropDerivation {
     let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
     for (binding, _name, ty) in owned_locals {
@@ -1121,7 +1255,164 @@ pub(super) fn derive_cow_sole_owner(
 
     retain_sites.extend(state_ingress_share_sites);
 
-    // Returning a by-value parameter duplicates the caller's live reference.
+    // Classify each string local's possible source shares. Pointer provenance
+    // and ownership are deliberately separate here:
+    //
+    //   BORROWED — aliases a by-value parameter and still needs a +1 retain;
+    //   OWNED    — already carries one independently releasable share (fresh
+    //              producer, retained field load, or static string);
+    //   UNKNOWN  — no proof; preserve the old fail-closed retain-at-return.
+    //
+    // A join may be BORROWED|OWNED. Retaining once at the join is wrong: it is
+    // necessary on the borrowed arm but over-retains the already-retained
+    // projection arm. For such a join, push the retain back to the incoming
+    // borrowed Move(s), so every selected path establishes the same one-share
+    // postcondition before the values merge.
+    let mut return_source_bits = vec![0_u8; locals.len()];
+    for &local in borrowed_param_locals {
+        if let Some(bits) = return_source_bits.get_mut(local as usize) {
+            *bits |= STRING_RETURN_SOURCE_BORROWED;
+        }
+    }
+    for block in blocks {
+        for instr in &block.instructions {
+            let owned_dest = fresh_string_producer_dest(instr)
+                .or_else(|| string_field_load_producer_dest(instr, locals))
+                .or_else(|| wire_codec_string_producer_dest(instr, locals))
+                .or(match instr {
+                    Instr::StringLit { dest, .. } => Some(*dest),
+                    _ => None,
+                });
+            if let Some(local) = owned_dest.and_then(base_local) {
+                if let Some(bits) = return_source_bits.get_mut(local as usize) {
+                    *bits |= STRING_RETURN_SOURCE_OWNED;
+                }
+            }
+        }
+        if let Some(local) =
+            fresh_string_producer_term_dest(&block.terminator, owned_string_return_carrier_symbols)
+                .and_then(base_local)
+        {
+            if let Some(bits) = return_source_bits.get_mut(local as usize) {
+                *bits |= STRING_RETURN_SOURCE_OWNED;
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                let Instr::Move { dest, src } = instr else {
+                    continue;
+                };
+                let (Some(dest_local), Some(src_local)) = (base_local(*dest), base_local(*src))
+                else {
+                    continue;
+                };
+                if !string_place_is_typed(*dest, locals) {
+                    continue;
+                }
+                let src_bits = return_source_bits
+                    .get(src_local as usize)
+                    .copied()
+                    .unwrap_or(STRING_RETURN_SOURCE_UNKNOWN);
+                let Some(dest_bits) = return_source_bits.get_mut(dest_local as usize) else {
+                    continue;
+                };
+                let next = *dest_bits | src_bits;
+                changed |= next != *dest_bits;
+                *dest_bits = next;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Push a mixed return's retain onto exactly the borrowed incoming writes.
+    // Returns false when the backward slice encounters an unclassified writer
+    // or a cycle; the caller then preserves the old retain-at-return posture.
+    let push_mixed_return_retains =
+        |return_local: u32, retain_sites: &mut Vec<StringRetainSite>| {
+            let mut work = vec![return_local];
+            let mut seen = HashSet::new();
+            let mut additions = Vec::new();
+            while let Some(local) = work.pop() {
+                if !seen.insert(local) {
+                    continue;
+                }
+                // A by-value parameter's borrowed entry definition has no MIR
+                // writer. If this same slot is conditionally overwritten, the
+                // flow-insensitive writer scan below sees only the owned
+                // reassignment and cannot place a path-specific retain for the
+                // still-borrowed entry path. Refuse the split proof so the
+                // caller falls back to a retain at the ReturnSlot. That may
+                // conservatively over-retain an overwritten arm, but it can
+                // never hand the caller an unowned alias.
+                if borrowed_param_locals.contains(&local) {
+                    return false;
+                }
+                let mut saw_definition = false;
+                for block in blocks {
+                    for (instr_index, instr) in block.instructions.iter().enumerate() {
+                        let Instr::Move { dest, src } = instr else {
+                            continue;
+                        };
+                        if base_local(*dest) != Some(local) {
+                            continue;
+                        }
+                        saw_definition = true;
+                        let Some(src_local) = base_local(*src) else {
+                            return false;
+                        };
+                        let bits = return_source_bits
+                            .get(src_local as usize)
+                            .copied()
+                            .unwrap_or(STRING_RETURN_SOURCE_UNKNOWN);
+                        if bits & STRING_RETURN_SOURCE_UNKNOWN != 0 || bits == 0 {
+                            return false;
+                        }
+                        match bits {
+                            STRING_RETURN_SOURCE_BORROWED => additions.push(StringRetainSite {
+                                block: block.id,
+                                instr_index,
+                                value: *src,
+                                condition: StringRetainCondition::Always,
+                                required_bindings: Vec::new(),
+                            }),
+                            STRING_RETURN_SOURCE_OWNED => {}
+                            _ => work.push(src_local),
+                        }
+                    }
+                    if let Terminator::Call {
+                        dest: Some(dest), ..
+                    } = &block.terminator
+                    {
+                        if base_local(*dest) == Some(local) {
+                            saw_definition = true;
+                            if fresh_string_producer_term_dest(
+                                &block.terminator,
+                                owned_string_return_carrier_symbols,
+                            )
+                            .is_none()
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                if !saw_definition {
+                    return false;
+                }
+            }
+            retain_sites.extend(additions);
+            true
+        };
+
+    // Returning a pure by-value parameter duplicates the caller's live
+    // reference. A mixed borrowed/owned join gets path-specific retains as
+    // above; never retain the already-owned arm a second time.
+    let mut path_split_return_locals = HashSet::new();
     for block in blocks {
         for (instr_index, instr) in block.instructions.iter().enumerate() {
             let Instr::Move {
@@ -1131,7 +1422,30 @@ pub(super) fn derive_cow_sole_owner(
             else {
                 continue;
             };
-            if base_local(*src).is_some_and(|local| borrowed_alias_of.contains_key(&local)) {
+            let Some(src_local) = base_local(*src) else {
+                continue;
+            };
+            let bits = return_source_bits
+                .get(src_local as usize)
+                .copied()
+                .unwrap_or(STRING_RETURN_SOURCE_UNKNOWN);
+            let borrowed_and_owned = bits
+                & (STRING_RETURN_SOURCE_BORROWED | STRING_RETURN_SOURCE_OWNED)
+                == STRING_RETURN_SOURCE_BORROWED | STRING_RETURN_SOURCE_OWNED;
+            if borrowed_and_owned && bits & STRING_RETURN_SOURCE_UNKNOWN == 0 {
+                // Multiple explicit return sites may write the same joined
+                // local into `ReturnSlot`. Its incoming branch retains are
+                // properties of that local's definitions, so insert them once.
+                if path_split_return_locals.contains(&src_local)
+                    || push_mixed_return_retains(src_local, &mut retain_sites)
+                {
+                    path_split_return_locals.insert(src_local);
+                    continue;
+                }
+            }
+            if bits & STRING_RETURN_SOURCE_BORROWED != 0
+                || borrowed_alias_of.contains_key(&src_local)
+            {
                 retain_sites.push(StringRetainSite {
                     block: block.id,
                     instr_index,
@@ -1716,6 +2030,8 @@ pub(super) fn compute_projection_alias_taint(
         })
         .collect();
     let transferred_projection_dests = aggregate_projection_transfer_dests(blocks);
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, locals);
+    let retained_bytes_moves = corroborated_retained_bytes_move_sites(blocks, locals);
     let mut tainted: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
@@ -1754,10 +2070,14 @@ pub(super) fn compute_projection_alias_taint(
     loop {
         let mut changed = false;
         for block in blocks {
-            for instr in &block.instructions {
+            for (instr_index, instr) in block.instructions.iter().enumerate() {
                 if let Instr::Move { dest, src } = instr {
                     if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
-                        if tainted.contains(&sl) && tainted.insert(dl) {
+                        if !retained_string_moves.contains(&(block.id, instr_index))
+                            && !retained_bytes_moves.contains(&(block.id, instr_index))
+                            && tainted.contains(&sl)
+                            && tainted.insert(dl)
+                        {
                             changed = true;
                         }
                     }
@@ -1813,6 +2133,7 @@ pub(super) fn aggregate_projection_transfer_dests(blocks: &[BasicBlock]) -> Hash
                 root,
                 fields,
                 transferee,
+                ..
             } if !fields.is_empty() => {
                 let mut cursor = *transferee;
                 for expected_field in fields.iter().rev().copied() {
@@ -1925,6 +2246,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0, 2],
                     transferee: Place::Local(12),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -1958,6 +2280,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0, 2],
                     transferee: Place::Local(11),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -1994,6 +2317,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0, 1],
                     transferee: Place::Local(12),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -2025,6 +2349,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -2046,6 +2371,7 @@ mod aggregate_projection_transfer_dest_tests {
                 root: Place::Local(10),
                 fields: vec![],
                 transferee: Place::Local(10),
+                scope_exit_owner: None,
             }],
             terminator: Terminator::Return,
         }];
@@ -2071,6 +2397,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(2),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -2097,6 +2424,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(20),
@@ -2150,6 +2478,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(20),
@@ -2185,6 +2514,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(20),
@@ -2211,6 +2541,7 @@ mod aggregate_projection_transfer_dest_tests {
                         root: Place::Local(1),
                         fields: vec![0],
                         transferee: Place::Local(10),
+                        scope_exit_owner: None,
                     },
                 ],
                 terminator: Terminator::Goto { target: 1 },
@@ -2340,24 +2671,31 @@ fn fresh_string_producer_dest(instr: &Instr) -> Option<Place> {
 /// W5.011 P3 — the `Terminator::Call` analogue of [`fresh_string_producer_dest`]
 /// (string transforms like `to_uppercase` / `slice` and the `Vec<string>`
 /// getter `hew_vec_get_str` lower to block-terminating calls, not `Instr`s).
-fn fresh_string_producer_term_dest(term: &Terminator) -> Option<Place> {
+fn fresh_string_producer_term_dest(
+    term: &Terminator,
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> Option<Place> {
     match term {
         Terminator::Call {
             callee,
             builtin: None,
             dest,
             ..
-        } if fresh_string_producer_term_admissible(callee) => *dest,
+        } if fresh_string_producer_term_admissible(callee, owned_string_return_carrier_symbols) => {
+            *dest
+        }
         _ => None,
     }
 }
-fn fresh_string_producer_term_admissible(callee: &str) -> bool {
+fn fresh_string_producer_term_admissible(
+    callee: &str,
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> bool {
     let contract = crate::runtime_symbols::callee_ownership_contract(callee);
     if contract.returns_receiver_interior_alias() {
         return false;
     }
-    !crate::runtime_symbols::is_known_runtime_symbol(callee)
-        || contract.produces_fresh_owned_string()
+    contract.produces_fresh_owned_string() || owned_string_return_carrier_symbols.contains(callee)
 }
 /// The dest of a `string`-typed record/tuple/closure-env field load — a fresh
 /// `+1` owner once codegen retains it (`retain_string_field_load`,
@@ -2447,6 +2785,7 @@ fn is_fresh_string_producer_def(
     blocks: &[BasicBlock],
     locals: &[ResolvedTy],
     t: u32,
+    owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> bool {
     let dest = match def {
         NestedDefSite::Instr { block, idx } => block_by_id(blocks, block)
@@ -2455,9 +2794,9 @@ fn is_fresh_string_producer_def(
                 fresh_string_producer_dest(instr)
                     .or_else(|| string_field_load_producer_dest(instr, locals))
             }),
-        NestedDefSite::Term { block } => {
-            block_by_id(blocks, block).and_then(|b| fresh_string_producer_term_dest(&b.terminator))
-        }
+        NestedDefSite::Term { block } => block_by_id(blocks, block).and_then(|b| {
+            fresh_string_producer_term_dest(&b.terminator, owned_string_return_carrier_symbols)
+        }),
     };
     dest.and_then(base_local) == Some(t)
 }
@@ -2536,6 +2875,24 @@ fn cow_owned_string_instr_escapes(instr: &Instr, local: u32) -> bool {
         Instr::CallClosure { .. } | Instr::CallTraitMethod { .. } => false,
         _ => generator_yield_instr_escapes(instr, local),
     }
+}
+fn cow_owned_string_instr_is_borrow(
+    instr: &Instr,
+    block: u32,
+    instr_index: usize,
+    local: u32,
+    retained_string_moves: &HashSet<(u32, usize)>,
+) -> bool {
+    // A corroborated retain+move is a share, not a transfer: the source
+    // keeps its existing drop obligation and the destination balances the
+    // newly minted `+1`. This is load-bearing for retained handoff chains
+    // (`a = s; b = a`) where every intermediate owner must release.
+    let retained_share_from_local = retained_string_moves.contains(&(block, instr_index))
+        && matches!(
+            instr,
+            Instr::Move { src, .. } if base_local(*src) == Some(local)
+        );
+    retained_share_from_local || !cow_owned_string_instr_escapes(instr, local)
 }
 /// W5.011 P3 — the `Terminator` analogue of [`cow_owned_string_instr_escapes`].
 /// [`generator_yield_terminator_escapes`] is the exhaustive base (it catches
@@ -2678,6 +3035,7 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     extern_contracts: &crate::return_provenance::ExternContractTable,
+    owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> HashSet<BindingId> {
     // 1. Fresh-owner locals: the dest of a known fresh `string` producer,
     //    propagated forward through `Move` (a `let y = <producer temp>` rebind
@@ -2687,21 +3045,12 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     //    interior-load shape as `hew_vec_get_str` (`xs.get(i)`), so it earns the
     //    same one balancing drop. The companion taint exclusion below keeps it
     //    admissible (a string field-load dest is no longer projection-tainted).
-    let mut fresh: HashSet<u32> = HashSet::new();
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, locals);
+    let mut fresh = seed_fresh_string_instruction_locals(blocks, locals, &retained_string_moves);
     for block in blocks {
-        for instr in &block.instructions {
-            if let Some(dest) = fresh_string_producer_dest(instr) {
-                if let Some(l) = base_local(dest) {
-                    fresh.insert(l);
-                }
-            }
-            if let Some(dest) = string_field_load_producer_dest(instr, locals) {
-                if let Some(l) = base_local(dest) {
-                    fresh.insert(l);
-                }
-            }
-        }
-        if let Some(dest) = fresh_string_producer_term_dest(&block.terminator) {
+        if let Some(dest) =
+            fresh_string_producer_term_dest(&block.terminator, owned_string_return_carrier_symbols)
+        {
             if let Some(l) = base_local(dest) {
                 fresh.insert(l);
             }
@@ -2773,7 +3122,16 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
             block
                 .instructions
                 .iter()
-                .all(|instr| !cow_owned_string_instr_escapes(instr, local))
+                .enumerate()
+                .all(|(instr_index, instr)| {
+                    cow_owned_string_instr_is_borrow(
+                        instr,
+                        block.id,
+                        instr_index,
+                        local,
+                        &retained_string_moves,
+                    )
+                })
                 && !cow_owned_string_terminator_escapes(
                     &block.terminator,
                     suspend_kinds.get(&block.id),
@@ -2808,6 +3166,9 @@ pub(super) fn finalize_string_ownership(
         &builder.module_fn_names,
         &builder.module_generic_fn_names,
         &builder.call_scrutinee_provenance.extern_table,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
     );
     derivation.allowed.extend(derive_cow_fresh_borrowed_owner(
         &raw.blocks,
@@ -2818,6 +3179,9 @@ pub(super) fn finalize_string_ownership(
         &builder.module_fn_names,
         &builder.module_generic_fn_names,
         &builder.call_scrutinee_provenance.extern_table,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
     ));
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
@@ -2840,6 +3204,35 @@ pub(super) fn finalize_string_ownership(
         &mut raw.instr_spans,
         &derivation.retain_sites,
     );
+    // Retains are explicit MIR only after the splice above. Re-run the fresh,
+    // borrow-only admission over that final instruction stream so a uniquely
+    // defined acyclic `StringRetain(src); Move(dst, src)` destination earns the
+    // balancing drop for its independent `+1`. The pre-splice run remains
+    // necessary for all established fresh producers and for retain-site gating.
+    derivation.allowed.extend(derive_cow_fresh_borrowed_owner(
+        &raw.blocks,
+        &builder.suspend_kinds,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+        &builder.locals,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
+    ));
+    for states in dataflow_result.exit_states.values() {
+        for (binding, state) in states {
+            if matches!(
+                state,
+                dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
+            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
+            {
+                derivation.allowed.remove(binding);
+            }
+        }
+    }
     derivation
 }
 /// W5.011 P3 — nested fresh-`string` temporary release. The bare-temp analogue
@@ -2911,6 +3304,7 @@ fn collect_nested_fresh_string_temp_drops(
     suspend_kinds: &HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
     binding_locals: &HashMap<BindingId, Place>,
+    owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> Vec<(u32, usize, Place, ResolvedTy)> {
     // A drop spliced at the FRONT of a block is sound only if that block is
     // entered from exactly one place — otherwise it could fire on a path where
@@ -3037,10 +3431,11 @@ fn collect_nested_fresh_string_temp_drops(
                 }
             }
         }
-        if let Some(dest) = fresh_string_producer_term_dest(&block.terminator) {
-            if let Some(t) = base_local(dest) {
-                defs.push((t, NestedDefSite::Term { block: block.id }));
-            }
+        if let Some(t) =
+            fresh_string_producer_term_dest(&block.terminator, owned_string_return_carrier_symbols)
+                .and_then(base_local)
+        {
+            defs.push((t, NestedDefSite::Term { block: block.id }));
         }
         for (t, def) in defs {
             if !seen.insert(t) {
@@ -3055,6 +3450,7 @@ fn collect_nested_fresh_string_temp_drops(
                 &binding_local_ids,
                 &instr_writers,
                 &source_uses,
+                owned_string_return_carrier_symbols,
             ) {
                 result.push(ins);
             }
@@ -3082,6 +3478,7 @@ fn nested_fresh_string_temp_drop(
     binding_local_ids: &HashSet<u32>,
     instr_writers: &HashMap<u32, Vec<(u32, usize)>>,
     source_uses: &HashMap<u32, Vec<NestedUseSite>>,
+    owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> Option<(u32, usize, Place, ResolvedTy)> {
     // 1. leaf `string` — bail unless this resolves to a leaf drop symbol.
     let ty = locals.get(t as usize)?;
@@ -3180,8 +3577,13 @@ fn nested_fresh_string_temp_drop(
             let use_instr = block_by_id(blocks, ub)?.instructions.get(*ui)?;
             let borrowing_use = is_borrowing_string_cmp_instr(use_instr, t)
                 || is_wire_codec_borrowing_string_use(use_instr, t)
-                || (is_fresh_string_producer_def(def, blocks, locals, t)
-                    && is_borrowing_string_concat_instr_use(use_instr, t));
+                || (is_fresh_string_producer_def(
+                    def,
+                    blocks,
+                    locals,
+                    t,
+                    owned_string_return_carrier_symbols,
+                ) && is_borrowing_string_concat_instr_use(use_instr, t));
             if !borrowing_use {
                 return None;
             }
@@ -3237,10 +3639,16 @@ pub(super) fn apply_nested_fresh_string_temp_drops(
     suspend_kinds: &HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
     binding_locals: &HashMap<BindingId, Place>,
+    owned_string_return_carrier_symbols: &HashSet<String>,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
-    let insertions =
-        collect_nested_fresh_string_temp_drops(blocks, suspend_kinds, locals, binding_locals);
+    let insertions = collect_nested_fresh_string_temp_drops(
+        blocks,
+        suspend_kinds,
+        locals,
+        binding_locals,
+        owned_string_return_carrier_symbols,
+    );
     if insertions.is_empty() {
         return;
     }
@@ -3341,7 +3749,13 @@ mod nested_fresh_string_temp_drop_admission {
         locals: &[ResolvedTy],
         binding_locals: &HashMap<BindingId, Place>,
     ) -> Vec<(u32, usize, Place, ResolvedTy)> {
-        collect_nested_fresh_string_temp_drops(blocks, &HashMap::new(), locals, binding_locals)
+        collect_nested_fresh_string_temp_drops(
+            blocks,
+            &HashMap::new(),
+            locals,
+            binding_locals,
+            &HashSet::new(),
+        )
     }
 
     fn nested_concat_blocks() -> Vec<BasicBlock> {
@@ -4846,6 +5260,74 @@ pub(super) fn bytes_place_is_typed(place: Place, local_tys: &[ResolvedTy]) -> bo
     base_local(place)
         .is_some_and(|local| matches!(local_tys.get(local as usize), Some(ResolvedTy::Bytes)))
 }
+/// Final-MIR retain/move pairs that prove the destination owns an independent
+/// bytes reference.
+///
+/// `finalize_bytes_ownership` inserts `BytesRetain(source)` immediately before
+/// the local copy that materialises a co-owner. The pair severs
+/// projection-alias provenance only when it is exact, the destination is a
+/// distinct bytes local with one static write, and the block cannot re-execute
+/// on a CFG cycle. Any mismatch, reuse, terminator overwrite, or cyclic site
+/// preserves ordinary projection taint (leak, never double-free).
+#[must_use]
+pub(super) fn corroborated_retained_bytes_move_sites(
+    blocks: &[BasicBlock],
+    local_tys: &[ResolvedTy],
+) -> HashSet<(u32, usize)> {
+    let mut write_counts: HashMap<u32, usize> = HashMap::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            for place in dataflow::instr_reads_writes(instr).1 {
+                if let Some(local) = base_local(place) {
+                    *write_counts.entry(local).or_default() += 1;
+                }
+            }
+        }
+        for place in dataflow::terminator_write_places(&block.terminator) {
+            if let Some(local) = base_local(place) {
+                *write_counts.entry(local).or_default() += 1;
+            }
+        }
+    }
+
+    let cyclic_blocks: HashSet<u32> = blocks
+        .iter()
+        .filter(|block| blocks_reachable_from(blocks, block.id).contains(&block.id))
+        .map(|block| block.id)
+        .collect();
+    let mut sites = HashSet::new();
+    for block in blocks {
+        if cyclic_blocks.contains(&block.id) {
+            continue;
+        }
+        for move_index in 1..block.instructions.len() {
+            let (
+                Instr::BytesRetain {
+                    value: Place::Local(retained_source),
+                },
+                Instr::Move {
+                    dest: Place::Local(dest),
+                    src: Place::Local(move_source),
+                },
+            ) = (
+                &block.instructions[move_index - 1],
+                &block.instructions[move_index],
+            )
+            else {
+                continue;
+            };
+            if retained_source == move_source
+                && retained_source != dest
+                && bytes_place_is_typed(Place::Local(*retained_source), local_tys)
+                && bytes_place_is_typed(Place::Local(*dest), local_tys)
+                && write_counts.get(dest).copied() == Some(1)
+            {
+                sites.insert((block.id, move_index));
+            }
+        }
+    }
+    sites
+}
 pub(super) fn bytes_interior_producer_dest(
     instr: &Instr,
     local_tys: &[ResolvedTy],
@@ -5042,6 +5524,90 @@ fn apply_bytes_retain_sites(
     }
     *instr_spans = new_spans;
 }
+
+/// Per-binding map from an owned local `bytes` candidate to the block(s)
+/// whose terminator hands its triple to an actor mailbox (`Send` / `Ask` /
+/// `RemoteAsk`, actor-ask arms in `Select` / `SuspendingSelect`, `Join`
+/// branches, and collapsed suspending Ask/RemoteAsk carriers recovered from
+/// `suspend_kinds`) — the forwarding transfer
+/// [`derive_local_bytes_drop_allowed`]'s escape scan already excludes from
+/// `allowed`, whole-function, the moment any block reads it there.
+///
+/// That exclusion is sound for every exit reachable from the transfer block,
+/// but not for a cancellation branch taken before the handler reaches the
+/// transfer. The elaborator uses this map to distinguish those regions.
+///
+/// Fail-closed: an unlocated transfer maps to nothing and stays under the
+/// path-insensitive exclusion. Over-recording only narrows re-admission;
+/// every actor-mailbox carrier and collapsed-suspend side-table entry is
+/// scanned to prevent under-recording.
+pub(super) fn derive_bytes_actor_transfer_blocks(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> HashMap<BindingId, HashSet<u32>> {
+    let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !matches!(ty, ResolvedTy::Bytes) {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        candidate_local_to_binding.insert(local, *binding);
+    }
+    if candidate_local_to_binding.is_empty() {
+        return HashMap::new();
+    }
+    let alias_of =
+        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
+    let mut transfer_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+    for block in blocks {
+        let values: Vec<Place> = match &block.terminator {
+            Terminator::Send { value, .. }
+            | Terminator::Ask { value, .. }
+            | Terminator::RemoteAsk { value, .. } => vec![*value],
+            Terminator::Suspend { .. } => match suspend_kinds.get(&block.id) {
+                Some(SuspendKind::Ask { value, .. } | SuspendKind::RemoteAsk { value, .. }) => {
+                    vec![*value]
+                }
+                _ => continue,
+            },
+            Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => arms
+                .iter()
+                .filter_map(|arm| match &arm.kind {
+                    SelectArmKind::ActorAsk { value, .. } => Some(*value),
+                    SelectArmKind::StreamNext { .. }
+                    | SelectArmKind::TaskAwait { .. }
+                    | SelectArmKind::ChannelRecv { .. }
+                    | SelectArmKind::AfterTimer { .. } => None,
+                })
+                .collect(),
+            Terminator::Join { branches, .. } => {
+                branches.iter().map(|branch| branch.value).collect()
+            }
+            _ => continue,
+        };
+        for value in values {
+            let Some(local) = base_local(value) else {
+                continue;
+            };
+            let Some(&root) = alias_of.get(&local) else {
+                continue;
+            };
+            let Some(&binding) = candidate_local_to_binding.get(&root) else {
+                continue;
+            };
+            transfer_blocks.entry(binding).or_default().insert(block.id);
+        }
+    }
+    transfer_blocks
+}
+
 pub(super) fn finalize_bytes_ownership(
     raw: &mut RawMirFunction,
     builder: &Builder,
@@ -5056,20 +5622,41 @@ pub(super) fn finalize_bytes_ownership(
         &builder.locals,
         &builder.borrowed_bytes_param_locals,
     );
+    // A mailbox-owned `bytes` parameter conditionally transferred on one CFG
+    // path is deliberately visible to the path-insensitive escape scan, which
+    // excludes its whole alias root. Its actor-message runtime flag is the
+    // stronger path-sensitive authority: the source remains a drop candidate,
+    // the consume edge sets the flag to one, and the sibling live edge observes
+    // zero. Re-admit only exact registered Bytes bindings carrying that flag;
+    // ordinary locals and unguarded actor parameters remain under the
+    // fail-closed escape scan.
+    derivation.allowed.extend(
+        owned_locals_snapshot
+            .iter()
+            .filter(|(binding, _, ty)| {
+                matches!(ty, ResolvedTy::Bytes)
+                    && builder.actor_message_cow_drop_flags.contains_key(binding)
+            })
+            .map(|(binding, _, _)| *binding),
+    );
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
             if matches!(
                 state,
                 dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) {
+            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
+            {
                 derivation.allowed.remove(binding);
             }
         }
     }
     derivation.retain_sites.retain(|site| {
-        site.required_bindings
-            .iter()
-            .all(|binding| derivation.allowed.contains(binding))
+        bytes_retain_site_is_required(
+            &raw.blocks,
+            &builder.actor_message_cow_drop_flags,
+            &derivation.allowed,
+            site,
+        )
     });
     apply_bytes_retain_sites(
         &mut raw.blocks,
@@ -5078,6 +5665,36 @@ pub(super) fn finalize_bytes_ownership(
     );
     derivation
 }
+
+fn bytes_retain_site_is_required(
+    blocks: &[BasicBlock],
+    actor_message_cow_drop_flags: &HashMap<BindingId, Place>,
+    allowed: &HashSet<BindingId>,
+    site: &BytesRetainSite,
+) -> bool {
+    // Once an actor-message COW flag is armed, the mailbox reference is being
+    // handed off to the sink and the guarded handler-frame drop is suppressed.
+    // Retaining that same handoff would leave an extra reference with no
+    // matching release.
+    let armed_handoff = site.required_bindings.iter().any(|binding| {
+        actor_message_cow_drop_flags
+            .get(binding)
+            .is_some_and(|flag| {
+                blocks
+                    .iter()
+                    .find(|block| block.id == site.block)
+                    .is_some_and(|block| {
+                        actor_message_cow_flag_armed_before(block, site.instr_index, *flag)
+                    })
+            })
+    });
+    !armed_handoff
+        && site
+            .required_bindings
+            .iter()
+            .all(|binding| allowed.contains(binding))
+}
+
 #[cfg(test)]
 mod cow_sole_owner_derivation {
     //! Direct structural tests for `derive_cow_sole_owner` — the fail-closed
@@ -5097,6 +5714,80 @@ mod cow_sole_owner_derivation {
             instructions,
             terminator: Terminator::Return,
         }
+    }
+
+    fn bytes_retain_site(binding: BindingId, instr_index: usize) -> BytesRetainSite {
+        BytesRetainSite {
+            block: 0,
+            instr_index,
+            placement: BytesRetainPlacement::Before,
+            value: Place::Local(7),
+            required_bindings: vec![binding],
+        }
+    }
+
+    #[test]
+    fn actor_message_bytes_retain_site_is_removed_only_after_handoff_flag_arms() {
+        let binding = BindingId(1);
+        let flag = Place::Local(90);
+        let actor_flags = HashMap::from([(binding, flag)]);
+        let allowed = HashSet::from([binding]);
+        let sink = Instr::Move {
+            dest: Place::Local(8),
+            src: Place::Local(7),
+        };
+
+        let flag_after_site = block(vec![
+            sink.clone(),
+            Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            },
+        ]);
+        assert!(
+            bytes_retain_site_is_required(
+                &[flag_after_site],
+                &actor_flags,
+                &allowed,
+                &bytes_retain_site(binding, 0),
+            ),
+            "an actor-message bytes share still needs its retain before the handoff flag arms"
+        );
+
+        let flag_before_site = block(vec![
+            Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            },
+            sink,
+        ]);
+        assert!(
+            !bytes_retain_site_is_required(
+                &[flag_before_site],
+                &actor_flags,
+                &allowed,
+                &bytes_retain_site(binding, 1),
+            ),
+            "an armed actor-message handoff suppresses the source drop, so its extra retain must be removed"
+        );
+    }
+
+    #[test]
+    fn ordinary_bytes_retain_site_survives_without_actor_handoff_authority() {
+        let binding = BindingId(1);
+        let blocks = [block(vec![Instr::Move {
+            dest: Place::Local(8),
+            src: Place::Local(7),
+        }])];
+        assert!(
+            bytes_retain_site_is_required(
+                &blocks,
+                &HashMap::new(),
+                &HashSet::from([binding]),
+                &bytes_retain_site(binding, 0),
+            ),
+            "a non-actor bytes overwrite/share still needs an independent retained reference"
+        );
     }
 
     /// A `string` owned local whose backing local is never touched by any
@@ -5121,6 +5812,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         )
         .allowed;
         assert!(
@@ -5178,6 +5870,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         )
         .allowed;
         assert!(
@@ -5232,12 +5925,281 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         )
         .allowed;
         assert!(
             allowed.is_empty(),
             "the enum-variant binder and the local it is moved into both alias \
              parent storage and must be excluded; got {allowed:?}"
+        );
+    }
+
+    #[test]
+    fn retained_payload_handoff_severs_only_the_destination_alias() {
+        let blocks = vec![block(vec![
+            Instr::Move {
+                dest: Place::Local(40),
+                src: Place::EnumVariant {
+                    local: 3,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+            },
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::Always,
+            },
+            Instr::Move {
+                dest: Place::Local(41),
+                src: Place::Local(40),
+            },
+        ])];
+        let local_tys = vec![ResolvedTy::String; 42];
+
+        assert_eq!(
+            corroborated_retained_string_move_sites(&blocks, &local_tys),
+            HashSet::from([(0, 2)]),
+            "the exact retain+move pair mints one independent destination owner"
+        );
+        let tainted = compute_projection_alias_taint(&blocks, &HashSet::new(), &local_tys);
+        assert!(
+            tainted.contains(&40) && !tainted.contains(&41),
+            "the payload binder stays parent-owned while its retained copy is independent; \
+             got {tainted:?}"
+        );
+    }
+
+    #[test]
+    fn retained_payload_handoff_chain_admits_every_minted_owner() {
+        let first = BindingId(42);
+        let second = BindingId(43);
+        let blocks = vec![block(vec![
+            Instr::Move {
+                dest: Place::Local(40),
+                src: Place::EnumVariant {
+                    local: 3,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+            },
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::Always,
+            },
+            Instr::Move {
+                dest: Place::Local(41),
+                src: Place::Local(40),
+            },
+            Instr::StringRetain {
+                value: Place::Local(41),
+                condition: StringRetainCondition::Always,
+            },
+            Instr::Move {
+                dest: Place::Local(42),
+                src: Place::Local(41),
+            },
+            Instr::IntCmp {
+                dest: Place::Local(43),
+                pred: CmpPred::Eq,
+                lhs: Place::Local(41),
+                rhs: Place::Local(42),
+            },
+        ])];
+        let mut local_tys = vec![ResolvedTy::String; 43];
+        local_tys.push(ResolvedTy::Bool);
+        let allowed = derive_cow_fresh_borrowed_owner(
+            &blocks,
+            &HashMap::new(),
+            &[
+                (first, "first".to_string(), ResolvedTy::String),
+                (second, "second".to_string(), ResolvedTy::String),
+            ],
+            &HashMap::from([(first, Place::Local(41)), (second, Place::Local(42))]),
+            &local_tys,
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            allowed,
+            HashSet::from([first, second]),
+            "each explicit retain in the chain needs one balancing local drop"
+        );
+    }
+
+    #[test]
+    fn retained_payload_handoff_rejects_mismatch_rewrite_and_cycle() {
+        let seed = Instr::Move {
+            dest: Place::Local(40),
+            src: Place::EnumVariant {
+                local: 3,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        };
+        let handoff = Instr::Move {
+            dest: Place::Local(41),
+            src: Place::Local(40),
+        };
+        let mut local_tys = vec![ResolvedTy::String; 42];
+        local_tys[39] = ResolvedTy::Bool;
+        let mismatched = vec![block(vec![
+            seed.clone(),
+            Instr::StringRetain {
+                value: Place::Local(39),
+                condition: StringRetainCondition::Always,
+            },
+            handoff.clone(),
+        ])];
+        let nonadjacent = vec![block(vec![
+            seed.clone(),
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::Always,
+            },
+            Instr::IntCmp {
+                dest: Place::Local(39),
+                pred: CmpPred::Eq,
+                lhs: Place::Local(40),
+                rhs: Place::Local(40),
+            },
+            handoff.clone(),
+        ])];
+        let conditional = vec![block(vec![
+            seed.clone(),
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::ActorStateRecordBorrowedIngress {
+                    state_field: FieldOffset(0),
+                    record_path: vec![FieldOffset(0)],
+                },
+            },
+            handoff.clone(),
+        ])];
+        let rewritten = vec![block(vec![
+            seed.clone(),
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::Always,
+            },
+            handoff.clone(),
+            Instr::Move {
+                dest: Place::Local(41),
+                src: Place::Local(40),
+            },
+        ])];
+        let cyclic = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                seed,
+                Instr::StringRetain {
+                    value: Place::Local(40),
+                    condition: StringRetainCondition::Always,
+                },
+                handoff,
+            ],
+            terminator: Terminator::Goto { target: 0 },
+        }];
+        for (label, blocks) in [
+            ("mismatched retain", mismatched),
+            ("nonadjacent retain", nonadjacent),
+            ("runtime-conditional retain", conditional),
+            ("multiply-written destination", rewritten),
+            ("cyclic generation", cyclic),
+        ] {
+            assert!(
+                corroborated_retained_string_move_sites(&blocks, &local_tys).is_empty(),
+                "{label} must not mint independent ownership"
+            );
+            let tainted = compute_projection_alias_taint(&blocks, &HashSet::new(), &local_tys);
+            assert!(
+                tainted.contains(&41),
+                "{label} must preserve fail-closed projection taint; got {tainted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn retained_payload_handoff_rejects_terminator_overwrite() {
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::Move {
+                        dest: Place::Local(40),
+                        src: Place::EnumVariant {
+                            local: 3,
+                            variant_idx: 0,
+                            field_idx: 0,
+                        },
+                    },
+                    Instr::StringRetain {
+                        value: Place::Local(40),
+                        condition: StringRetainCondition::Always,
+                    },
+                    Instr::Move {
+                        dest: Place::Local(41),
+                        src: Place::Local(40),
+                    },
+                ],
+                terminator: Terminator::Call {
+                    callee: "produce".to_string(),
+                    builtin: None,
+                    args: vec![],
+                    dest: Some(Place::Local(41)),
+                    next: 1,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+        let local_tys = vec![ResolvedTy::String; 42];
+        assert!(
+            corroborated_retained_string_move_sites(&blocks, &local_tys).is_empty(),
+            "a terminator-overwritten destination cannot hold one stable generation"
+        );
+        assert!(
+            compute_projection_alias_taint(&blocks, &HashSet::new(), &local_tys).contains(&41),
+            "a terminator-overwritten destination must retain projection taint"
+        );
+    }
+
+    #[test]
+    fn retained_payload_handoff_rejects_wrong_type() {
+        let wrong_type = vec![block(vec![
+            Instr::Move {
+                dest: Place::Local(40),
+                src: Place::EnumVariant {
+                    local: 3,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+            },
+            Instr::StringRetain {
+                value: Place::Local(40),
+                condition: StringRetainCondition::Always,
+            },
+            Instr::Move {
+                dest: Place::Local(41),
+                src: Place::Local(40),
+            },
+        ])];
+        let bytes_tys = vec![ResolvedTy::Bytes; 42];
+        assert!(
+            corroborated_retained_string_move_sites(&wrong_type, &bytes_tys).is_empty(),
+            "a string opcode cannot grant retained ownership to bytes or another aggregate"
+        );
+        assert!(
+            compute_projection_alias_taint(&wrong_type, &HashSet::new(), &bytes_tys).contains(&41),
+            "the wrong-type destination must retain projection taint"
         );
     }
 
@@ -5280,6 +6242,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         );
         assert!(
             derivation.allowed.contains(&src) && derivation.allowed.contains(&dst),
@@ -5332,6 +6295,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         );
         assert!(derivation.allowed.contains(&source));
         assert_eq!(
@@ -5368,6 +6332,7 @@ mod cow_sole_owner_derivation {
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         );
         assert_eq!(
             derivation.retain_sites,
@@ -5378,6 +6343,89 @@ mod cow_sole_owner_derivation {
                 condition: StringRetainCondition::Always,
                 required_bindings: Vec::new(),
             }]
+        );
+    }
+
+    /// A mutable by-value parameter has a borrowed entry definition that is
+    /// represented only by the ABI parameter slot, not by an MIR writer. A
+    /// conditional reassignment therefore makes the slot BORROWED|OWNED, but
+    /// the backward writer slice must not mistake the owned `Move` for complete
+    /// definition coverage and skip the entry-path retain.
+    #[test]
+    fn conditionally_reassigned_string_param_falls_back_to_return_retain() {
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Branch {
+                    cond: Place::Local(1),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![
+                    Instr::StringLit {
+                        bytes: b"replacement".to_vec(),
+                        dest: Place::Local(3),
+                    },
+                    Instr::Move {
+                        dest: Place::Local(0),
+                        src: Place::Local(3),
+                    },
+                ],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 3,
+                statements: vec![],
+                instructions: vec![Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(0),
+                }],
+                terminator: Terminator::Return,
+            },
+        ];
+        let derivation = derive_cow_sole_owner(
+            &blocks,
+            &HashMap::new(),
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+            &[
+                ResolvedTy::String,
+                ResolvedTy::Bool,
+                ResolvedTy::Unit,
+                ResolvedTy::String,
+            ],
+            &HashSet::from([0]),
+            &HashSet::from([0, 1]),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            derivation.retain_sites,
+            vec![StringRetainSite {
+                block: 3,
+                instr_index: 0,
+                value: Place::Local(0),
+                condition: StringRetainCondition::Always,
+                required_bindings: Vec::new(),
+            }],
+            "an unrepresented borrowed entry definition must force the safe \
+             ReturnSlot retain instead of accepting an incomplete writer slice"
         );
     }
 
@@ -5414,6 +6462,7 @@ mod cow_sole_owner_derivation {
             &HashSet::from(["hew_string_drop".to_string()]),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
         );
         assert!(
             !derivation.allowed.contains(&binding),

@@ -1385,8 +1385,14 @@ pub fn method_return_provenance(emitted_symbol: &str) -> AliasBits {
     }
     match callee_ownership_contract(emitted_symbol).result {
         ResultOwnership::FreshOwnedString | ResultOwnership::FreshOwnedBytes => AliasBits::EMPTY,
+        // `IndependentValue` stays OPAQUE here. It answers the OWNERSHIP
+        // question (the caller may keep this value after the receiver dies),
+        // which is weaker than the ALIAS question this function asks; the
+        // proved-owner symbols above already carve out the cases that have been
+        // audited for provenance. Tightening this arm is a separate proof.
         ResultOwnership::Borrowed
         | ResultOwnership::InteriorAliasOfReceiver
+        | ResultOwnership::IndependentValue
         | ResultOwnership::Untracked => AliasBits::OPAQUE,
     }
 }
@@ -2678,6 +2684,26 @@ pub(crate) struct CallScrutineeProvenance {
     ///
     /// [`compute_fn_return_launders_opaque_extern`]: crate::return_provenance::compute_fn_return_launders_opaque_extern
     pub fresh_owner_verdicts: FreshOwnerVerdicts,
+    /// User functions whose return is safe to treat as one independently
+    /// releasable `string` carrier even when it aliases an input buffer.
+    ///
+    /// This is deliberately separate from `fresh_owner_verdicts`: a function
+    /// such as `fn passthru(s: string) -> string { s }` is NOT pointer-fresh,
+    /// but lowering retains the selected parameter before writing the return
+    /// slot, so the caller receives a real `+1` share. String field projections
+    /// have the same postcondition because codegen retains every string field
+    /// load. The precise return-provenance fixpoint proves that every path is
+    /// either fresh or parameter-derived; any `OPAQUE` path, unanalysed item,
+    /// indirect callee, or ownership-opaque extern remains denied.
+    pub(crate) owned_string_return_carriers: HashSet<hew_hir::ItemId>,
+    /// Emitted MIR symbols for [`Self::owned_string_return_carriers`].
+    ///
+    /// MIR `Terminator::Call` has already erased the HIR `ItemId`, so the
+    /// string-temp/drop derivation must query this emitted-symbol projection
+    /// instead of guessing that every non-runtime callee returns a `+1`.
+    /// Monomorphisations are keyed by their origin verdict and recorded under
+    /// the concrete mangled symbol that reaches MIR.
+    pub(crate) owned_string_return_carrier_symbols: HashSet<String>,
 }
 
 impl Default for CallScrutineeProvenance {
@@ -2688,7 +2714,32 @@ impl Default for CallScrutineeProvenance {
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
             fresh_owner_verdicts: FreshOwnerVerdicts::denying_all(),
+            owned_string_return_carriers: HashSet::new(),
+            owned_string_return_carrier_symbols: HashSet::new(),
         }
+    }
+}
+
+impl CallScrutineeProvenance {
+    /// Whether `callee` is an analysed Hew body whose every return path
+    /// produces one independently releasable string share.
+    ///
+    /// The call expression's resolved result type is checked by the sole
+    /// consumer before this query, so generic origins (`fn id<T>(x: T) -> T`)
+    /// can be admitted when instantiated at `string`. This query grants no
+    /// general freshness: `ParamsOnly` rows are accepted only for the string
+    /// return-carrier protocol.
+    #[must_use]
+    pub(crate) fn callee_returns_owned_string_carrier(&self, callee: &HirExpr) -> bool {
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Item(item_id),
+        } = &callee.kind
+        else {
+            return false;
+        };
+        !self.extern_table.is_extern_name(name)
+            && self.owned_string_return_carriers.contains(item_id)
     }
 }
 
@@ -2740,12 +2791,55 @@ pub(crate) fn build_call_scrutinee_provenance(
         &extern_table,
         &declared_release,
     );
+    // A string return needs one independently releasable share, not necessarily
+    // a pointer-distinct allocation. `Fresh(∅)` already has that postcondition.
+    // `ParamsOnly({PARAM})` has it too for a Hew body: returning a whole string
+    // parameter inserts `StringRetain`, while returning a string field/tuple
+    // projection goes through a retained field load. Calls propagate the same
+    // postcondition through this fixpoint. An OPAQUE bit is never rescuable.
+    //
+    // Do not filter on the origin's declared return type here: a generic origin
+    // may declare `T` and be instantiated at `string`; the consumer checks the
+    // concrete call-result type before consulting this set.
+    let owned_string_return_carriers = provenance
+        .iter()
+        .filter_map(|(&id, bits)| {
+            (!bits.is_opaque() && !launders_opaque_extern.contains(&id)).then_some(id)
+        })
+        .collect::<HashSet<_>>();
+    let owned_string_return_carrier_symbols = origin_fns
+        .iter()
+        .filter(|entry| {
+            entry.1.type_params.is_empty() && owned_string_return_carriers.contains(entry.0)
+        })
+        .map(|entry| entry.1.name.clone())
+        .chain(
+            module
+                .monomorphisations
+                .iter()
+                .filter(|mono| owned_string_return_carriers.contains(&mono.key.origin))
+                .map(|mono| mono.mangled_name.clone()),
+        )
+        // Audited extern transfers carry the same caller-side one-share
+        // postcondition. They have no Hew body and therefore no `origin_fns`
+        // row, so include their declared symbols explicitly; otherwise the
+        // fail-closed terminator classifier drops the established authority
+        // for measured producers such as `hew_stream_last_error`.
+        .chain(
+            extern_names
+                .iter()
+                .filter(|name| extern_table.extern_return_is_audited_fresh_owner(name))
+                .cloned(),
+        )
+        .collect();
     CallScrutineeProvenance {
         provenance,
         extern_names,
         extern_table,
         may_mutate,
         fresh_owner_verdicts,
+        owned_string_return_carriers,
+        owned_string_return_carrier_symbols,
     }
 }
 

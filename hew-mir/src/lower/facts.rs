@@ -2758,58 +2758,6 @@ pub(super) fn vec_iter_record_layout_key(ty: &ResolvedTy) -> Option<String> {
     let key = user_record_layout_key(ty)?;
     (key == "VecIter" || key.starts_with("VecIter$$")).then_some(key)
 }
-/// `true` when a `for x in vec`/`VecIter<T>` cursor whose element type is `elem`
-/// can have its `vec` handle freed at loop/scope exit WITHOUT risking a
-/// double-free of a shared element (#1949).
-///
-/// The for-in body extracts each element through `hew_vec_get_*`. For an OWNED
-/// element type — `string` (`hew_vec_get_str` RETAINS a refcounted reference),
-/// or any heap-owning element (`hew_vec_get_owned` clones via the descriptor) —
-/// that extracted reference can be MOVED into another owner inside the body
-/// (e.g. `for w in words { map.insert(w, …) }`). Freeing the source vec then
-/// runs `free_string_elements` / the per-element descriptor drop over slots that
-/// alias the value the downstream owner also frees: a double-free. The
-/// element-escape accounting needed to free the source safely in that case is
-/// not modelled here, so the cursor/source vec drop is restricted to elements
-/// the body can only COPY, never retain-and-consume: the `BitCopy` scalars. For
-/// every other element type the source vec is left undropped (leak, as before
-/// this fix — fail-closed, never double-free).
-///
-/// Tuple / array / named-aggregate elements are excluded too: even an
-/// all-`BitCopy` tuple element is read out by value with no retain, but the
-/// `hew_vec_free` element walk for those layouts is descriptor-driven and shares
-/// the same element-escape hazard surface, so they stay conservative here.
-fn vec_iter_elem_drop_safe(elem: &ResolvedTy) -> bool {
-    matches!(
-        elem,
-        ResolvedTy::I8
-            | ResolvedTy::I16
-            | ResolvedTy::I32
-            | ResolvedTy::I64
-            | ResolvedTy::U8
-            | ResolvedTy::U16
-            | ResolvedTy::U32
-            | ResolvedTy::U64
-            | ResolvedTy::Isize
-            | ResolvedTy::Usize
-            | ResolvedTy::F32
-            | ResolvedTy::F64
-            | ResolvedTy::Bool
-            | ResolvedTy::Char
-            | ResolvedTy::Duration
-    )
-}
-/// `true` when `ty` is a `VecIter<T>` cursor whose element `T` is drop-safe at
-/// loop/scope exit (see [`vec_iter_elem_drop_safe`]).
-pub(super) fn vec_iter_ty_drop_safe(ty: &ResolvedTy) -> bool {
-    let ResolvedTy::Named { name, args, .. } = ty else {
-        return false;
-    };
-    if vec_iter_record_layout_key(ty).is_none() && name != "VecIter" {
-        return false;
-    }
-    args.first().is_some_and(vec_iter_elem_drop_safe)
-}
 /// The `vec`-field (`.0`) source place of a `record_init VecIter { vec, idx }`,
 /// or `None` for any other instruction.
 ///

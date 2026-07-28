@@ -829,6 +829,62 @@ fn run_generic_vec_for_in_count_across_element_abis() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
+/// A generic Vec iteration body is admitted before its `T` is known, then the
+/// concrete monomorphisation must discharge clone totality.  A resource handle
+/// has an inverse drop but no semantic clone, so `count<Handle>` fails at the
+/// MIR boundary instead of sending a shallow handle copy to
+/// `hew_vec_get_clone`.
+#[test]
+fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = repo_root()
+        .join("tests/vertical-slice/reject/for_in_generic_vec_resource_instantiation.hew");
+    let output = Command::new(hew_binary())
+        .args([
+            "compile",
+            "--emit-dir",
+            dir.path().to_str().expect("emit-dir utf-8"),
+            source.to_str().expect("source utf-8"),
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew compile");
+
+    assert!(
+        !output.status.success(),
+        "a resource-valued VecIter monomorphisation must fail closed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("VecIter<Handle>")
+            && combined.contains("resource `Handle` has an affine close contract"),
+        "expected the direct resource-record clone-totality diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("VecIter<Wrapper>")
+            && combined.contains("resource `Handle` has an affine close contract"),
+        "expected the nested resource-record clone-totality diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("VecIter<PositionalWrapper>")
+            && combined.contains("resource `Handle` has an affine close contract"),
+        "expected the positional resource-record clone-totality diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("VecIter<link_monitor.MonitorRef>")
+            && combined.contains("resource `link_monitor.MonitorRef` has an affine close contract"),
+        "expected the builtin resource-record clone-totality diagnostic; got: {combined}"
+    );
+}
+
 /// Compile `tests/vertical-slice/accept/<fixture>.hew` to a native binary via
 /// `hew compile --emit-dir` and return the binary path `hew compile` reports.
 /// Bypasses `hew run`'s interpreter path entirely, so a scope-exit double
@@ -2561,14 +2617,14 @@ fn check_carrier_conditional_consume_shared_exit_fails_closed() {
     );
 }
 
-/// A last-use string sent to an actor moves into the prepared outbound carrier
-/// and neutralizes the sender slot. The fixture's handler consumes that string
-/// into actor state; a FIFO ask verifies its exact length, and final actor
-/// teardown releases the receiver-owned buffer. If the sender also releases the
-/// prepared carrier after enqueue, teardown trips the runtime's `free_cstring`
-/// sentinel (SIGABRT). One transfer exercises the ownership edge completely;
-/// repeating it only amplifies runtime work under the shared subprocess
-/// deadline.
+/// The mailbox takes ownership of the buffer (no retain-on-send on the M-COW
+/// spine), so a sender that also scope-dropped it would free a buffer the live
+/// mailbox still owns — a use-after-free on the receiving side or a double-free
+/// when the handler later releases it. The fail-closed sole-owner derivation
+/// excludes the sent string because the send surfaces its backing local as a
+/// terminator/instr source operand (`terminator_source_places` /
+/// `instr_source_places`). A double-free trips the runtime's `free_cstring`
+/// sentinel (SIGABRT); a clean exit across many sends is the behavioural proof.
 #[test]
 fn run_actor_sent_string_not_double_freed() {
     require_codegen();
@@ -2582,8 +2638,8 @@ fn run_actor_sent_string_not_double_freed() {
 
     let output = run_bounded_hew_run(&source, repo_root());
 
-    // Wrong length returns non-zero; a double-free aborts via `free_cstring`.
-    // `success()` therefore preserves both the value and release oracles.
+    // A double-free aborts the process (SIGABRT) via the runtime's
+    // `free_cstring` sentinel check, so `success()` is itself the proof.
     assert!(
         output.status.success(),
         "actor_sent_string_not_double_freed should run cleanly (a double-free \

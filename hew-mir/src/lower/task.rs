@@ -1425,6 +1425,9 @@ impl Builder {
                         });
                         return None;
                     }
+                    if self.reject_proven_foreign_actor_message_args(args) {
+                        return None;
+                    }
                     let actor_place = self.lower_value(actor)?;
                     let stable_role =
                         self.fungible_child_ref_of(actor_place)
@@ -1783,6 +1786,9 @@ impl Builder {
                         branch.args.len()
                     ),
                 });
+                return None;
+            }
+            if self.reject_proven_foreign_actor_message_args(&branch.args) {
                 return None;
             }
             let actor_place = self.lower_value(&branch.actor)?;

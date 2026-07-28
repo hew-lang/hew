@@ -169,7 +169,15 @@ pub enum ResultOwnership {
     Borrowed,
     /// Result borrows storage owned by arg[0].
     InteriorAliasOfReceiver,
-    /// No drop obligation is tracked by this contract.
+    /// Result is a SELF-CONTAINED value: a bit-copy of a heap-free element, or
+    /// a deep clone. It shares no storage with the receiver, so releasing the
+    /// receiver cannot invalidate it. Distinct from [`Self::Untracked`], which
+    /// is the ABSENCE of a claim (and what an unknown callee gets): callers
+    /// asking "may I own this independently of the receiver?" must be able to
+    /// tell a positive answer from a missing one.
+    IndependentValue,
+    /// No drop obligation is tracked by this contract. Also the unknown-callee
+    /// answer — treat it as "this contract makes no claim", never as a licence.
     Untracked,
 }
 
@@ -275,6 +283,35 @@ impl CalleeOwnershipContract {
             ResultOwnership::Borrowed | ResultOwnership::InteriorAliasOfReceiver
         )
     }
+
+    /// `true` only for result classes KNOWN to hand the caller an owner that is
+    /// independent of the receiver's storage — so the caller may release the
+    /// receiver without invalidating the result, and may hand the result to
+    /// another owner without creating a second owner of one leaf.
+    ///
+    /// POSITIVE membership, deliberately. The negation of
+    /// [`Self::returns_receiver_interior_alias`] is NOT the same question: an
+    /// unknown callee's fail-closed contract carries
+    /// [`ResultOwnership::Untracked`], which is not an alias, so a negated
+    /// alias test admits every unregistered symbol. That is fail-OPEN for this
+    /// query — the caller acts on the admission by RELEASING storage, and a
+    /// wrong admission over an unrecognised borrow is a double-free. Asking
+    /// positively makes a missing contract row degrade to a refused admission:
+    /// a leak, which is visible and safe.
+    ///
+    /// The match is exhaustive on purpose: a new [`ResultOwnership`] variant
+    /// must state its answer here rather than inherit one.
+    #[must_use]
+    pub const fn yields_independent_owner(self) -> bool {
+        match self.result {
+            ResultOwnership::FreshOwnedString
+            | ResultOwnership::FreshOwnedBytes
+            | ResultOwnership::IndependentValue => true,
+            ResultOwnership::Borrowed
+            | ResultOwnership::InteriorAliasOfReceiver
+            | ResultOwnership::Untracked => false,
+        }
+    }
 }
 
 impl Default for CalleeOwnershipContract {
@@ -294,7 +331,9 @@ impl Default for CalleeOwnershipContract {
 #[must_use]
 pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
     use ReceiverOwnership::{BorrowsReceiver, BytesAllArgsBorrow, Escapes, VecCopyInElementStore};
-    use ResultOwnership::{Borrowed, FreshOwnedBytes, FreshOwnedString, Untracked};
+    use ResultOwnership::{
+        Borrowed, FreshOwnedBytes, FreshOwnedString, IndependentValue, Untracked,
+    };
     use StringArgsOwnership::{BorrowingUse, Escaping, PrintSink};
 
     match callee {
@@ -431,6 +470,40 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
             Borrowed,
         ),
 
+        // Vec element getters that hand back a SELF-CONTAINED value. Every
+        // spelling `vec_element_get_symbol` can produce is classified — this row
+        // plus `hew_vec_get_str` (fresh owned string) and
+        // `hew_vec_get_owned` / `hew_vec_get_ptr` (receiver-interior aliases)
+        // exhaust the ordinary element-load ABI and let alias/temporary
+        // analyses ask `yields_independent_owner` POSITIVELY.
+        //
+        // - The scalar getters copy a register-width value out of the buffer;
+        //   there is no interior to alias.
+        // - `hew_vec_get_layout` copies a BitCopy record, a tuple, or a DIRECT
+        //   enum out at the layout descriptor's stride. Its arms are only
+        //   reachable for a heap-free element: `vec_element_get_symbol` routes
+        //   every heap-owning aggregate to `hew_vec_get_clone` (value elements)
+        //   or `hew_vec_get_owned` (nested collection handles) BEFORE the
+        //   layout arms, via `is_owned_vec_element`. So the bit-copy copies no
+        //   handle the receiver still owns.
+        // - `hew_vec_get_clone` deep-clones an owned value element
+        //   (`hew-runtime/src/vec.rs`, `hew_vec_get_clone`), which is an
+        //   independent owner by construction.
+        //
+        // The receiver is still borrowed in place and operands still escape —
+        // only the RESULT class is stated more precisely than `Untracked`.
+        "hew_vec_get_bool" | "hew_vec_get_clone" | "hew_vec_get_f32" | "hew_vec_get_f64"
+        | "hew_vec_get_i16" | "hew_vec_get_i32" | "hew_vec_get_i64" | "hew_vec_get_i8"
+        | "hew_vec_get_layout" | "hew_vec_get_u16" | "hew_vec_get_u8" => {
+            CalleeOwnershipContract::new(
+                BorrowsReceiver {
+                    scans: ReceiverScanSet::VEC,
+                },
+                Escaping,
+                IndependentValue,
+            )
+        }
+
         // Vec receivers are borrowed in place; element and range operands keep
         // the default escaping behaviour unless a narrower row above applies.
         "hew_vec_append"
@@ -446,17 +519,6 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_vec_contains_owned"
         | "hew_vec_contains_str"
         | "hew_vec_contains_thunk"
-        | "hew_vec_get_bool"
-        | "hew_vec_get_clone"
-        | "hew_vec_get_f32"
-        | "hew_vec_get_f64"
-        | "hew_vec_get_i16"
-        | "hew_vec_get_i32"
-        | "hew_vec_get_i64"
-        | "hew_vec_get_i8"
-        | "hew_vec_get_layout"
-        | "hew_vec_get_u16"
-        | "hew_vec_get_u8"
         | "hew_vec_is_empty"
         | "hew_vec_join_str"
         | "hew_vec_pop_bool"
@@ -614,7 +676,15 @@ const TOML_RESULT_CONSISTENCY: &[(&str, &str, ResultOwnership)] = &[
         "fresh",
         ResultOwnership::FreshOwnedString,
     ),
-    ("hew_vec_get_clone", "fresh", ResultOwnership::Untracked),
+    // The TOML has always called this result "fresh" while the hand table could
+    // only say `Untracked` — there was no class for "self-contained value that
+    // is not a string/bytes allocation". `IndependentValue` closes that gap, so
+    // the two tables now agree rather than diverging by documented exception.
+    (
+        "hew_vec_get_clone",
+        "fresh",
+        ResultOwnership::IndependentValue,
+    ),
     ("hew_vec_get_owned", "borrowed", ResultOwnership::Borrowed),
     (
         "hew_vec_get_str",

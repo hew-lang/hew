@@ -762,7 +762,9 @@ fn collect_generator_env_clone_seeds(raw_mir: &[RawMirFunction]) -> (Vec<String>
                 continue;
             };
             for field in &env.fields {
-                if let crate::GeneratorEnvFieldPlan::Owned(plan) = field {
+                if let crate::GeneratorEnvFieldPlan::Owned(plan)
+                | crate::GeneratorEnvFieldPlan::OwnedMove(plan) = field
+                {
                     add_kind(
                         plan.root(),
                         &mut record_seeds,
@@ -847,6 +849,7 @@ fn collect_inline_inplace_drop_seeds(
                         };
                         (true, key)
                     }
+                    crate::InPlaceReleaseKind::AggregateRecursive => (false, None),
                 };
                 if let Some(key) = key {
                     if seen.insert((is_enum, key.clone())) {

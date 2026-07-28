@@ -1375,13 +1375,38 @@ impl Checker {
                             );
                         }
                         if let Some(elem) = args.first().cloned() {
-                            elem
+                            if self.validate_vec_iter_element_clone_type(&elem, &iterable.1) {
+                                elem
+                            } else {
+                                Ty::Error
+                            }
                         } else {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
                                 &iterable.1,
                                 "`for` over a Vec requires a resolved element type".to_string(),
                             );
+                            Ty::Error
+                        }
+                    }
+                    Ty::Named {
+                        name,
+                        args,
+                        builtin: None,
+                    } if crate::short_name(name) == "VecIter" && !args.is_empty() => {
+                        if *is_await {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for await` is not valid over a VecIter; \
+                                 use a plain `for` loop"
+                                    .to_string(),
+                            );
+                        }
+                        let elem = args[0].clone();
+                        if self.validate_vec_iter_element_clone_type(&elem, &iterable.1) {
+                            elem
+                        } else {
                             Ty::Error
                         }
                     }
@@ -1469,12 +1494,16 @@ impl Checker {
                         // a zero-length Vec).
                         let elem_ty = args[0].clone();
                         let to_vec_span = Self::hashset_for_in_to_vec_span(&iterable.1);
-                        if self.validate_hashset_element_type(&elem_ty, &to_vec_span) {
+                        if self.validate_vec_iter_element_clone_type(&elem_ty, &iterable.1)
+                            && self.validate_hashset_element_type(&elem_ty, &to_vec_span)
+                        {
                             let elem_vec = self.make_vec_type(elem_ty.clone(), &to_vec_span);
                             self.record_type(&to_vec_span, &elem_vec);
                             self.record_resolved_hashset_call("to_vec", &elem_ty, &to_vec_span);
+                            elem_ty
+                        } else {
+                            Ty::Error
                         }
-                        elem_ty
                     }
                     Ty::Named {
                         builtin: Some(BuiltinType::Receiver),

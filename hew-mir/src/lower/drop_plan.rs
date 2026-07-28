@@ -4,20 +4,22 @@ use super::*;
 use super::{
     base_local, blocks_reachable_from, check_duplex_split_state,
     compute_collection_interior_alias_taint, compute_projection_alias_taint, dataflow,
-    derive_consumed_local_aggregate_member_bindings, derive_cow_fresh_borrowed_owner,
-    derive_cow_sole_owner, derive_enum_composite_drop_allowed, derive_local_bytes_drop_allowed,
-    derive_local_collection_drop_allowed, derive_owned_record_drop_allowed,
-    derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
-    derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
-    instr_source_places, mangle_layout_key, place_is_interior_projection, place_refs_local,
+    derive_bytes_actor_transfer_blocks, derive_consumed_local_aggregate_member_bindings,
+    derive_cow_fresh_borrowed_owner, derive_cow_sole_owner, derive_enum_composite_drop_allowed,
+    derive_local_bytes_drop_allowed, derive_local_collection_drop_allowed,
+    derive_owned_record_drop_allowed, derive_returned_aggregate_member_bindings,
+    derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
+    derive_tuple_composite_drop_allowed, instr_source_places, mangle_layout_key,
+    place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
     retained_string_terminator_drop_safe, short_name, string_call_borrows,
     terminator_is_suspend_carrier, terminator_source_places, user_record_layout_key,
     vec_iter_record_init_vec_source, BTreeMap, BasicBlock, BindingId, BlockKind, Builder,
-    BuiltinType, CheckedMirFunction, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock,
-    ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr,
-    IntentKind, LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
-    RawMirFunction, ResolvedRef, ResolvedTy, ResourceMarker, ScopeId, SuspendKind, Terminator,
-    TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
+    BuiltinType, CheckedMirFunction, ClosureEnvFieldOwnership, ClosurePairRhs, Disposition,
+    DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet,
+    HirExpr, HirExprKind, Instr, IntentKind, LambdaCapture, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, ResolvedRef, ResolvedTy,
+    ResourceMarker, ScopeId, SuspendKind, Terminator, TraitObjectStorage, ValueClass,
+    ENTRY_BLOCK_ID,
 };
 
 /// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
@@ -367,6 +369,9 @@ pub(super) fn elaborate(
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
             &builder.call_scrutinee_provenance.extern_table,
+            &builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
         )
         .allowed;
         derived.extend(derive_cow_fresh_borrowed_owner(
@@ -378,6 +383,9 @@ pub(super) fn elaborate(
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
             &builder.call_scrutinee_provenance.extern_table,
+            &builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
         ));
         for states in dataflow_result.exit_states.values() {
             for (binding, state) in states {
@@ -406,6 +414,7 @@ pub(super) fn elaborate(
         &builder.binding_locals,
         &builder.binding_scope,
         &builder.transient_local_scopes,
+        &builder.scope_info,
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,
@@ -599,12 +608,22 @@ pub(super) fn elaborate(
             &builder.borrowed_bytes_param_locals,
         )
         .allowed;
+        derived.extend(
+            owned_locals_snapshot
+                .iter()
+                .filter(|(binding, _, ty)| {
+                    matches!(ty, ResolvedTy::Bytes)
+                        && builder.actor_message_cow_drop_flags.contains_key(binding)
+                })
+                .map(|(binding, _, _)| *binding),
+        );
         for states in dataflow_result.exit_states.values() {
             for (binding, state) in states {
                 if matches!(
                     state,
                     dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-                ) {
+                ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
+                {
                     derived.remove(binding);
                 }
             }
@@ -1034,6 +1053,292 @@ pub(super) fn elaborate(
                     ty: ty.clone(),
                     drop_fn: None,
                     kind: drop_kind_for(place, ty, None),
+                    guard: None,
+                });
+            }
+        }
+    }
+
+    // W60.114 — path-sensitive re-admission of a handler-owned `bytes` local
+    // excluded from `local_bytes_drop_allowed` by a forwarding actor `Send` /
+    // `Ask` / `RemoteAsk`. `derive_local_bytes_drop_allowed`'s escape scan
+    // treats any such read as an unconditional, WHOLE-FUNCTION exclusion (its
+    // own doc: "excluded twice over") — sound for every exit the transfer can
+    // reach, but wrong for one it cannot: a `CooperateKind::FunctionEntry`
+    // cancellation branch fires in the prologue, strictly before the rest of
+    // the handler body runs, so a receive handler that cooperates and THEN
+    // forwards its `bytes` parameter leaked it on cancellation-before-transfer
+    // (the exclusion suppressed the drop on every exit, including the one
+    // reached before the mailbox hand-off ever executed).
+    //
+    // Mirrors the returned-aggregate-member re-admission immediately above,
+    // but only at a REAL release boundary. `emit_elab_drops` fires a
+    // `Call`/`Branch`/ordinary `Goto` plan while normal execution continues;
+    // `BindingState::Live` means definitely initialised, NOT "past last use".
+    // Re-admitting at such a checkpoint can therefore free `data` before a
+    // later `data.len()` on a non-forwarding branch. The safe boundary set is:
+    //
+    // * terminal Return/Panic;
+    // * alternate Cancel/Yield/Suspend abandon edges (never the resume edge);
+    // * a forward Goto crossing the exact CFG frontier from outside the
+    //   transfer's downstream region into it. This includes the F-04 not-live
+    //   recover edge and a conditional non-transfer arm's final join edge,
+    //   while excluding nested Gotos and loop back-edges before that frontier.
+    //   Because transfer reach is forward-closed, one execution can cross the
+    //   frontier at most once.
+    //
+    // A `Cancel` exit at the function-entry block reads the block's ENTRY
+    // state (the cancel branch precedes that block's own `Bind` statements —
+    // see `drops_for_entry_cancel`); every other exit reads its EXIT state.
+    // Both are the SAME dataflow `enumerate_exits` already threads through, so
+    // this pass adds no new liveness authority — only a wider reach over
+    // where the existing one is consulted.
+    let bytes_mailbox_transfer_blocks = derive_bytes_actor_transfer_blocks(
+        &checked.blocks,
+        &builder.suspend_kinds,
+        &owned_locals_snapshot,
+        &builder.binding_locals,
+    );
+    if !bytes_mailbox_transfer_blocks.is_empty() {
+        let mut transfer_reach: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, transfer_blocks) in &bytes_mailbox_transfer_blocks {
+            let mut reach: HashSet<u32> = HashSet::new();
+            for &transfer_block in transfer_blocks {
+                reach.insert(transfer_block);
+                reach.extend(blocks_reachable_from(&checked.blocks, transfer_block));
+            }
+            transfer_reach.insert(*binding, reach);
+        }
+        // Reverse CFG once, then walk backwards from each binding's transfer
+        // sites. This is the exact "can normally reach the transfer itself"
+        // set (not its downstream reach) in O(B+E) per binding.
+        let mut reverse_cfg: HashMap<u32, Vec<u32>> = HashMap::new();
+        for block in &checked.blocks {
+            for successor in block.successors() {
+                reverse_cfg.entry(successor).or_default().push(block.id);
+            }
+        }
+        let bytes_predecessor_of_transfer = |transfer_blocks: &HashSet<u32>| -> HashSet<u32> {
+            let mut predecessors = transfer_blocks.clone();
+            let mut worklist: Vec<u32> = transfer_blocks.iter().copied().collect();
+            while let Some(block) = worklist.pop() {
+                for predecessor in reverse_cfg.get(&block).into_iter().flatten() {
+                    if predecessors.insert(*predecessor) {
+                        worklist.push(*predecessor);
+                    }
+                }
+            }
+            predecessors
+        };
+        let mut transfer_predecessors: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, transfer_blocks) in &bytes_mailbox_transfer_blocks {
+            transfer_predecessors.insert(*binding, bytes_predecessor_of_transfer(transfer_blocks));
+        }
+
+        // Blocks that can reach a later READ of each candidate (through any
+        // whole-value alias). A non-terminal Goto may release only when its
+        // target is outside this set: that is the exact last-use condition
+        // missing from a mere `BindingState::Live` check.
+        let candidate_roots: HashMap<u32, BindingId> = owned_locals_snapshot
+            .iter()
+            .filter(|(_, _, ty)| matches!(ty, ResolvedTy::Bytes))
+            .filter_map(|(binding, _, _)| {
+                builder
+                    .binding_locals
+                    .get(binding)
+                    .and_then(|place| base_local(*place))
+                    .map(|local| (local, *binding))
+            })
+            .collect();
+        let alias_roots =
+            propagate_whole_value_alias_roots(&checked.blocks, candidate_roots.keys().copied());
+        let mut read_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        let mut aggregate_owner_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for block in &checked.blocks {
+            for instr in &block.instructions {
+                let owning_sources: Vec<Place> = match instr {
+                    Instr::RecordInit { fields, .. } => {
+                        fields.iter().map(|(_, source)| *source).collect()
+                    }
+                    Instr::TupleConstruct { elements, .. } => elements.clone(),
+                    Instr::ClosureEnvInit { fields, .. } => fields
+                        .iter()
+                        .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
+                        .map(|field| field.src)
+                        .collect(),
+                    Instr::Move {
+                        dest: Place::MachineVariant { .. } | Place::EnumVariant { .. },
+                        src,
+                    } => vec![*src],
+                    _ => Vec::new(),
+                };
+                for source in owning_sources {
+                    let Some(local) = base_local(source) else {
+                        continue;
+                    };
+                    let Some(root) = alias_roots.get(&local) else {
+                        continue;
+                    };
+                    let Some(binding) = candidate_roots.get(root) else {
+                        continue;
+                    };
+                    aggregate_owner_blocks
+                        .entry(*binding)
+                        .or_default()
+                        .insert(block.id);
+                }
+            }
+            let sources = block
+                .instructions
+                .iter()
+                .flat_map(instr_source_places)
+                .chain(terminator_source_places(
+                    &block.terminator,
+                    builder.suspend_kinds.get(&block.id),
+                ));
+            for source in sources {
+                let Some(local) = base_local(source) else {
+                    continue;
+                };
+                let Some(root) = alias_roots.get(&local) else {
+                    continue;
+                };
+                let Some(binding) = candidate_roots.get(root) else {
+                    continue;
+                };
+                read_blocks.entry(*binding).or_default().insert(block.id);
+            }
+        }
+        let mut read_predecessors: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, blocks) in &read_blocks {
+            read_predecessors.insert(*binding, bytes_predecessor_of_transfer(blocks));
+        }
+        // A local aggregate construction is another owner sink. Once reached,
+        // its Record/Tuple/Closure drop owns the member release; the mailbox
+        // transfer is not the sole reason the source binding was excluded.
+        // Track its forward reach separately so pre-construction cancellation
+        // and disjoint non-aggregate paths can still recover their own release.
+        let mut aggregate_owner_reach: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, owner_blocks) in &aggregate_owner_blocks {
+            let mut reach = owner_blocks.clone();
+            for owner_block in owner_blocks {
+                reach.extend(blocks_reachable_from(&checked.blocks, *owner_block));
+            }
+            aggregate_owner_reach.insert(*binding, reach);
+        }
+
+        for (exit, plan) in &mut drop_plans {
+            let block = exit_block_id(exit);
+            let is_cancel = matches!(exit, ExitPath::Cancel { .. });
+            let is_entry_cancel = block == ENTRY_BLOCK_ID && is_cancel;
+            let is_release_boundary = match exit {
+                ExitPath::Return { .. }
+                | ExitPath::Panic { .. }
+                | ExitPath::Cancel { .. }
+                | ExitPath::Yield { .. }
+                | ExitPath::Suspend { .. }
+                // A Goto's per-binding last-use decision is completed below.
+                | ExitPath::Goto { .. } => true,
+                ExitPath::Branch { .. }
+                | ExitPath::Call { .. }
+                | ExitPath::Send { .. }
+                | ExitPath::Ask { .. }
+                | ExitPath::Select { .. }
+                | ExitPath::Join { .. } => false,
+            };
+            if !is_release_boundary {
+                continue;
+            }
+            let state_map = if is_entry_cancel {
+                dataflow_result.entry_states.get(&block)
+            } else {
+                dataflow_result.exit_states.get(&block)
+            };
+            let Some(state_map) = state_map else {
+                continue;
+            };
+            for (binding, reach) in &transfer_reach {
+                // A guarded actor-message Bytes binding already remains in the
+                // LIFO template across a `MaybeConsumed` join. Its shared exit
+                // drop is the sole release on the live path; adding the legacy
+                // frontier re-admission as well would release once at the
+                // non-transfer Goto and again at the shared exit while the
+                // flag is still zero. The only exception is function-entry
+                // cancellation, which precedes flag initialisation and is
+                // converted to an unconditional drop below.
+                if builder.actor_message_cow_drop_flags.contains_key(binding) && !is_entry_cancel {
+                    continue;
+                }
+                // This exit is at or downstream of the transfer: the
+                // receiving actor owns the buffer there — no re-admission.
+                if reach.contains(&block) {
+                    continue;
+                }
+                // An owning local aggregate already carries the same reference
+                // on this path and releases it through its in-place drop. The
+                // function-entry cancel branch runs before entry instructions,
+                // so a construction later in block 0 cannot suppress that
+                // pre-construction release.
+                if !is_entry_cancel
+                    && aggregate_owner_reach
+                        .get(binding)
+                        .is_some_and(|owner_reach| owner_reach.contains(&block))
+                {
+                    continue;
+                }
+                // A Goto releases only on the single frontier where a
+                // non-transfer path joins the transfer's downstream region.
+                // Nested scope Gotos and loop back-edges remain outside the
+                // forward-closed region and therefore cannot accumulate drops.
+                if let ExitPath::Goto { target, .. } = exit {
+                    if !reach.contains(target) {
+                        continue;
+                    }
+                    if read_predecessors
+                        .get(binding)
+                        .is_some_and(|predecessors| predecessors.contains(target))
+                    {
+                        continue;
+                    }
+                }
+                // Every non-`Cancel` exit kind is a sequential checkpoint,
+                // not an alternate outcome: if its own block can still
+                // normally reach the transfer, this execution goes on to
+                // transfer ownership later — never drop here first. A
+                // `Cancel` branch diverts BEFORE its block's own terminator
+                // runs, so this predecessor fact does not apply to it.
+                if !is_cancel
+                    && transfer_predecessors
+                        .get(binding)
+                        .is_some_and(|predecessors| predecessors.contains(&block))
+                {
+                    continue;
+                }
+                if !matches!(
+                    state_map.get(binding).copied(),
+                    Some(dataflow::BindingState::Live)
+                ) {
+                    continue;
+                }
+                let Some(&place) = builder.binding_locals.get(binding) else {
+                    continue;
+                };
+                if let Some(existing) = plan.drops.iter_mut().find(|drop| drop.place == place) {
+                    if is_entry_cancel {
+                        // The function-entry cancellation branch precedes the
+                        // entry block's flag zero-initialisation. Dataflow
+                        // proves the mailbox parameter itself Live there, so
+                        // this is an unconditional release; reading the
+                        // not-yet-initialised runtime flag would be undefined.
+                        existing.guard = None;
+                    }
+                    continue;
+                }
+                plan.drops.push(ElabDrop {
+                    place,
+                    ty: ResolvedTy::Bytes,
+                    drop_fn: None,
+                    kind: drop_kind_for(place, &ResolvedTy::Bytes, None),
                     guard: None,
                 });
             }
@@ -4455,7 +4760,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: drop_kind_for(place, ty, None),
-                guard: None,
+                guard: actor_message_cow_drop_flags.get(binding).copied(),
             });
             continue;
         }
@@ -6824,19 +7129,20 @@ mod drop_admission_type_shape_pins {
                 Wired("hew_bytes_drop"),
                 Wired("hew_bytes_drop"),
             ),
-            // HashMap/HashSet yields have no validated consumer-drop path —
-            // they leak-as-before (a frozen NoDropPath), never risk a
-            // double-free.
+            // VecIter clone-out and the existing generator/receiver frame
+            // contracts hand these collection values to the body as sole
+            // owners. Their layout-aware releases close the common per-yield
+            // lifecycle.
             (
-                "HashMap (yield leak-as-before)",
+                "HashMap",
                 hashmap_str_i64(),
-                NoDropPath,
+                Wired("hew_hashmap_free_layout"),
                 Wired("hew_hashmap_free_layout"),
             ),
             (
-                "HashSet (yield leak-as-before)",
+                "HashSet",
                 hashset_i64(),
-                NoDropPath,
+                Wired("hew_hashset_free_layout"),
                 Wired("hew_hashset_free_layout"),
             ),
             (

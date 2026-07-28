@@ -18,6 +18,49 @@ fn count<T>(items: Vec<T>) -> i64 {
     c
 }
 
+record Pair(i64, string);
+record Slot<T>(T);
+
+// Positional records keep their payload shape outside named-field access.
+// Both direct and generic VecIter paths must accept this clone-total layout.
+fn positional_direct(items: Vec<Pair>) -> i64 {
+    var c: i64 = 0;
+    for _item in items {
+        c = c + 1;
+    }
+    c
+}
+
+fn positional_generic(items: Vec<Pair>) -> i64 {
+    count(items)
+}
+
+// The post-function-mono layout walk must also substitute positional payloads
+// declared on a generic record before the concrete VecIter proof runs.
+fn generic_positional_record_direct(items: Vec<Slot<string>>) -> i64 {
+    var c: i64 = 0;
+    for _item in items {
+        c = c + 1;
+    }
+    c
+}
+
+fn generic_positional_record_via_count(items: Vec<Slot<string>>) -> i64 {
+    count(items)
+}
+
+// Rc/Weak are terminal retainable owners: VecIter clone-out retains the outer
+// shared allocation and does not recursively clone its payload. These
+// compile-only wrappers force concrete monomorphisations without changing the
+// fixture's stdout.
+fn count_rc_strings(items: Vec<Rc<string>>) -> i64 {
+    count(items)
+}
+
+fn count_weak_strings(items: Vec<Weak<string>>) -> i64 {
+    count(items)
+}
+
 fn main() {
     let a: Vec<i64> = Vec::new();
     a.push(1);

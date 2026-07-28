@@ -119,6 +119,14 @@ static SCHED_ENQUEUE_PRE_PUBLISH_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHo
 static ACTIVATE_PRE_CLAIM_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHook>> =
     PoisonSafe::new(None);
 
+/// Rendezvous after a dequeued actor observes a still-active prior activation
+/// while the actor is already `Runnable`. This is the self-reenqueue handoff:
+/// the prior activation published the queue entry before releasing
+/// `dispatch_active`.
+#[cfg(test)]
+static ACTIVATE_CLAIM_BUSY_HOOK: PoisonSafe<Option<SchedulerQueueHandoffHook>> =
+    PoisonSafe::new(None);
+
 #[cfg(test)]
 pub(crate) struct SchedulerQueueHandoffHookGuard {
     hook: &'static PoisonSafe<Option<SchedulerQueueHandoffHook>>,
@@ -164,6 +172,16 @@ impl SchedulerQueueHandoffHookGuard {
         std::sync::Arc<std::sync::Barrier>,
     ) {
         Self::install_on(&ACTIVATE_PRE_CLAIM_HOOK, actor_id)
+    }
+
+    pub(crate) fn install_activate_claim_busy(
+        actor_id: u64,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        Self::install_on(&ACTIVATE_CLAIM_BUSY_HOOK, actor_id)
     }
 }
 
@@ -2300,9 +2318,11 @@ unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewEx
         // crash-reply) has already run.
         unsafe { crate::signal::handle_crash_recovery() };
     } else {
-        // An external trap already published a terminal state during the resume;
-        // do not re-run `handle_crash_recovery` (it would walk a possibly-freed
-        // `current_actor`). Just invalidate the jmp_buf.
+        // An external trap already published the terminal state and performed
+        // propagation during the resume. Do not re-enter recovery with the
+        // dispatch-recovery state already consumed; just invalidate the
+        // jmp_buf. Activation ownership still pins the actor until the
+        // enclosing activation returns.
         crate::signal::clear_dispatch_recovery();
     }
 }
@@ -2472,15 +2492,17 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
 /// worker sets the flag and continues reading the (now freed) box — UAF.
 /// Claiming the flag *before* the CAS guarantees it is already `true` the
 /// instant the actor can become `Running`, so the trap-stealable window is
-/// never flag-`false`. On a lost CAS the worker is not the owner, so the guard
-/// is dropped on the early-return path, clearing the flag.
+/// never flag-`false`. Once claimed, a lost state CAS drops this worker's own
+/// guard on the early-return path. A dequeuer that finds the flag already owned
+/// must not discard a `Runnable` entry: the prior activation publishes its
+/// self-reenqueue before its guard drops, so that overlap is the legitimate
+/// activation handoff rather than a duplicate.
 ///
-/// No-clobber: a single actor is enqueued at most once per `Runnable` epoch
-/// (every `X -> Runnable` transition is CAS-gated and only the winner
-/// `sched_enqueue`s) and the Chase-Lev deque hands each queued pointer to
-/// exactly one worker, so at most one `activate_actor` frame runs per actor at a
-/// time. A worker that loses the `Runnable -> Running` CAS therefore has no
-/// concurrent winner whose flag its clear could erase.
+/// Queue-epoch invariant: every transition into `Runnable` is CAS-gated and
+/// only its winner publishes a scheduler entry. A busy claim with state still
+/// `Runnable` therefore denotes the prior owner's publish-before-release tail
+/// (or a duplicate entry whose winner is about to leave `Runnable`), never
+/// authority to discard the last runnable entry.
 struct ActivationOwnership<'a> {
     actor: &'a HewActor,
 }
@@ -2494,6 +2516,47 @@ impl<'a> ActivationOwnership<'a> {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()
             .map(|_| Self { actor })
+    }
+
+    /// Transfer a popped `Runnable` queue entry to exclusive activation
+    /// ownership.
+    ///
+    /// A budget-exhausted activation performs `Running -> Runnable`, publishes
+    /// the replacement queue entry, and only then drops its ownership guard.
+    /// Another worker may dequeue in that short interval. It must retain the
+    /// queue reference and wait for the old guard to release; dropping the
+    /// entry would strand a Runnable actor with pending messages and no
+    /// scheduler entry. If state leaves Runnable, another consumer or a
+    /// terminal transition won the race and this entry is redundant.
+    ///
+    /// The retry intentionally has no fail-open timeout: abandoning this sole
+    /// queue reference would recreate the strand. Every path that publishes
+    /// `Runnable` while holding activation ownership proceeds directly to guard
+    /// release; after a short spin, yielding lets that owner finish.
+    fn claim_dequeued(
+        actor: &'a HewActor,
+        #[cfg(test)] actor_ptr: *mut HewActor,
+        #[cfg(not(test))] _actor_ptr: *mut HewActor,
+    ) -> Option<Self> {
+        let mut attempts = 0_u32;
+        loop {
+            if let Some(ownership) = Self::claim(actor) {
+                return Some(ownership);
+            }
+            if actor.actor_state.load(Ordering::Acquire) != HewActorState::Runnable as i32 {
+                return None;
+            }
+
+            #[cfg(test)]
+            run_scheduler_queue_handoff_hook(&ACTIVATE_CLAIM_BUSY_HOOK, actor_ptr);
+
+            attempts = attempts.saturating_add(1);
+            if attempts < 64 {
+                std::hint::spin_loop();
+            } else {
+                std::thread::yield_now();
+            }
+        }
     }
 }
 
@@ -2622,11 +2685,12 @@ fn activate_queued_actor(actor: *mut HewActor) {
 
     // Transfer the popped queue entry's lifetime reference to activation
     // ownership before releasing it. A terminal trap/free can run at either
-    // side of this handoff: before the CAS the queue reference keeps the box
-    // live; afterward `dispatch_active` does. CAS rather than store also makes
-    // an accidental duplicate queue entry fail closed without clearing another
-    // worker's ownership.
-    let Some(activation_ownership) = ActivationOwnership::claim(a) else {
+    // side of this handoff: before the claim the queue reference keeps the box
+    // live; afterward `dispatch_active` does. A self-reenqueue can be consumed
+    // before its prior owner drops, so the claim waits while state remains
+    // Runnable; duplicates that have already been claimed or terminalized fail
+    // closed without clearing another worker's ownership.
+    let Some(activation_ownership) = ActivationOwnership::claim_dequeued(a, actor) else {
         // SAFETY: this popped entry still owns exactly one queue reference.
         unsafe { release_scheduler_queue_ref(actor) };
         return;
@@ -3414,13 +3478,13 @@ fn activate_queued_actor(actor: *mut HewActor) {
                         // crash-reply) has already run above.
                         unsafe { crate::signal::handle_crash_recovery() };
                     } else {
-                        // External trap already published a terminal state
-                        // during dispatch; do not call
-                        // `handle_crash_recovery` again (it would walk a
-                        // potentially-freed `state.current_actor`).  The
-                        // external trap already performed the propagation
-                        // and `clear_dispatch_recovery` invalidates the
-                        // jmp_buf.
+                        // The external trap already published the terminal
+                        // state and performed propagation during dispatch. Do
+                        // not re-enter recovery with the dispatch-recovery
+                        // state already consumed; `clear_dispatch_recovery`
+                        // invalidates the jmp_buf. Activation ownership still
+                        // pins `a` for the terminal-state read and deferred
+                        // mailbox drain before the crash return below.
                         crate::signal::clear_dispatch_recovery();
                     }
 
@@ -3626,6 +3690,35 @@ pub(crate) fn activate_actor_for_test(actor: *mut HewActor) {
 pub(crate) unsafe fn release_scheduler_queue_ref_for_test(actor: *mut HewActor) {
     // SAFETY: caller guarantees one scheduler queue reference is owned.
     unsafe { release_scheduler_queue_ref(actor) };
+}
+
+/// Execute the pre-fix dequeue decision that discarded a queue entry whenever
+/// the activation marker was busy, without recognizing the self-reenqueue
+/// handoff.
+///
+/// Returns `true` when the entry was discarded.
+///
+/// # Safety
+///
+/// `actor` must be live and this call must own exactly one scheduler queue
+/// reference.
+#[cfg(test)]
+unsafe fn discard_dequeued_if_busy_omitting_handoff_retry_for_test(actor: *mut HewActor) -> bool {
+    // SAFETY: caller guarantees a live actor through the queue reference.
+    let a = unsafe { &*actor };
+    let discarded = a
+        .dispatch_active
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err();
+    if !discarded {
+        // This helper models only the old dequeue decision, not a full
+        // activation. Undo a successful synthetic claim directly so a failed
+        // test precondition cannot enter the production Drop rendezvous.
+        a.dispatch_active.store(false, Ordering::Release);
+    }
+    // SAFETY: caller transferred exactly one queue reference to this call.
+    unsafe { release_scheduler_queue_ref(actor) };
+    discarded
 }
 
 /// Remove one queued entry for `actor` from a worker-less test scheduler.
@@ -7431,6 +7524,153 @@ mod tests {
 
         take_default_runtime_for_test();
         ACTIVE_WORKERS.store(0, Ordering::Release);
+    }
+
+    #[test]
+    fn dequeued_self_reenqueue_waits_for_prior_activation_release() {
+        let sched = NoWorkerSchedulerForTest::install();
+
+        // SAFETY: fresh mailbox, owned through the end of the test.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        for msg_type in [1, 2] {
+            // SAFETY: `mailbox` is live and the empty payload has no ownership.
+            let sent = unsafe { mailbox::hew_mailbox_send(mailbox, msg_type, ptr::null_mut(), 0) };
+            assert_eq!(sent, 0);
+        }
+
+        let mut actor = stub_actor();
+        actor.id = 0x2848;
+        actor.dispatch = Some(noop_dispatch);
+        actor.mailbox = mailbox.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        actor.budget.store(1, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+        let actor_addr = actor_ptr as usize;
+
+        // Hold the first activation after it has consumed one message,
+        // transitioned Running -> Runnable, and published its self-reenqueue,
+        // but before its ownership guard can clear `dispatch_active`.
+        let (owner_hook, owner_entered, owner_release) =
+            ActivationPreTerminalLockHookGuard::install(actor.id);
+        let owner = std::thread::spawn(move || activate_actor(actor_addr as *mut HewActor));
+        owner_entered.wait();
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32
+        );
+        assert!(actor.dispatch_active.load(Ordering::Acquire));
+        // SAFETY: the first activation consumed exactly one of the two nodes.
+        assert_eq!(unsafe { mailbox::hew_mailbox_len(mailbox) }, 1);
+
+        let queued = sched
+            .take_global_with_queue_ref()
+            .expect("budget exhaustion must publish the self-reenqueue");
+        assert_eq!(queued, actor_ptr);
+
+        // Drive the real production dequeue path until it observes the busy
+        // ownership marker. The retained queue reference keeps the actor live
+        // across this handoff.
+        let (busy_hook, busy_entered, busy_release) =
+            SchedulerQueueHandoffHookGuard::install_activate_claim_busy(actor.id);
+        let queued_addr = queued as usize;
+        let consumer =
+            std::thread::spawn(move || activate_queued_actor(queued_addr as *mut HewActor));
+        busy_entered.wait();
+
+        // Let the old activation release ownership, then let the dequeuer
+        // finish the claim handoff and consume the remaining message.
+        owner_release.wait();
+        owner.join().expect("first activation must return");
+        drop(owner_hook);
+        busy_release.wait();
+        consumer.join().expect("second activation must return");
+        drop(busy_hook);
+
+        // SAFETY: both production activations have joined.
+        assert_eq!(unsafe { mailbox::hew_mailbox_len(mailbox) }, 0);
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Idle as i32
+        );
+        assert!(!actor.dispatch_active.load(Ordering::Acquire));
+        assert_eq!(actor.send_pin_count.load(Ordering::Acquire), 0);
+        assert!(
+            sched.take_global_with_queue_ref().is_none(),
+            "completed handoff must not leave a duplicate queue entry"
+        );
+
+        // SAFETY: both threads joined and the actor will no longer use its
+        // test-owned mailbox.
+        unsafe { mailbox::hew_mailbox_free(mailbox) };
+    }
+
+    #[test]
+    fn omitting_busy_handoff_retry_strands_self_reenqueue() {
+        let sched = NoWorkerSchedulerForTest::install();
+
+        // SAFETY: fresh mailbox, owned through the end of the test.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        for msg_type in [1, 2] {
+            // SAFETY: `mailbox` is live and the empty payload has no ownership.
+            let sent = unsafe { mailbox::hew_mailbox_send(mailbox, msg_type, ptr::null_mut(), 0) };
+            assert_eq!(sent, 0);
+        }
+
+        let mut actor = stub_actor();
+        actor.id = 0x2848_0001;
+        actor.dispatch = Some(noop_dispatch);
+        actor.mailbox = mailbox.cast();
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        actor.budget.store(1, Ordering::Release);
+        let actor_ptr: *mut HewActor = (&raw mut actor).cast();
+        let actor_addr = actor_ptr as usize;
+
+        let (owner_hook, owner_entered, owner_release) =
+            ActivationPreTerminalLockHookGuard::install(actor.id);
+        let owner = std::thread::spawn(move || activate_actor(actor_addr as *mut HewActor));
+        owner_entered.wait();
+
+        let queued = sched
+            .take_global_with_queue_ref()
+            .expect("budget exhaustion must publish the self-reenqueue");
+        assert_eq!(queued, actor_ptr);
+        // SAFETY: `queued` transfers the real self-reenqueue reference, and
+        // the owner rendezvous keeps `dispatch_active` busy.
+        assert!(unsafe { discard_dequeued_if_busy_omitting_handoff_retry_for_test(queued) });
+
+        owner_release.wait();
+        owner.join().expect("first activation must return");
+        drop(owner_hook);
+
+        assert_eq!(
+            actor.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32
+        );
+        assert!(!actor.dispatch_active.load(Ordering::Acquire));
+        // SAFETY: only the first production activation consumed a node.
+        assert_eq!(unsafe { mailbox::hew_mailbox_len(mailbox) }, 1);
+        assert_eq!(actor.send_pin_count.load(Ordering::Acquire), 0);
+        assert!(
+            sched.take_global_with_queue_ref().is_none(),
+            "pre-fix discard leaves no scheduler entry for the Runnable actor"
+        );
+
+        // Retire the deliberately stranded node before freeing the test-owned
+        // mailbox.
+        // SAFETY: both threads joined and this test is now the sole consumer.
+        unsafe {
+            let msg = mailbox::hew_mailbox_try_recv(mailbox);
+            assert!(!msg.is_null());
+            hew_msg_node_free(msg);
+            mailbox::hew_mailbox_free(mailbox);
+        }
     }
 
     #[test]

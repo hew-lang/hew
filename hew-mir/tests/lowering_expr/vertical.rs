@@ -1926,9 +1926,9 @@ fn recv_handler_loop_carried_record_ingress_retains_only_when_state_leaf_differs
                 value: Place::Local(0),
                 condition: hew_mir::StringRetainCondition::ActorStateRecordFieldDiffers {
                     state_field: hew_mir::FieldOffset(1),
-                    record_field: hew_mir::FieldOffset(0),
+                    record_path,
                 },
-            })
+            }) if record_path.as_slice() == [hew_mir::FieldOffset(0)]
         ),
         "loop-carried ingress must compare the existing held.name leaf before \
          retaining the mailbox string: {:?}",
@@ -1963,6 +1963,89 @@ fn recv_handler_loop_carried_record_ingress_retains_only_when_state_leaf_differs
          handler-exit drop: {:?}",
         handler.drop_plans
     );
+}
+
+/// The cyclic state-leaf proof follows the constructed record through
+/// whole-value moves and through enclosing `RecordInit`s. These are the two
+/// minimal shapes that defeated the original adjacent-instruction match and
+/// leaked one string per delivered message.
+#[test]
+fn recv_handler_loop_record_ingress_tracks_move_chains_and_nested_leaf_paths() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        type Inner { name: string }
+        type Outer { inner: Inner }
+        actor Fan {
+            var seen: i64;
+            var flat: Wrap;
+            var nested: Outer;
+            receive fn route_move(label: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    let next = Wrap { name: label };
+                    flat = next;
+                    i = i + 1;
+                }
+                seen = seen + 1;
+            }
+            receive fn route_nested(label: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    nested = Outer { inner: Inner { name: label } };
+                    i = i + 1;
+                }
+                seen = seen + 1;
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+
+    for (handler_name, state_field, expected_path) in [
+        (
+            "Fan__recv__route_move",
+            hew_mir::FieldOffset(1),
+            vec![hew_mir::FieldOffset(0)],
+        ),
+        (
+            "Fan__recv__route_nested",
+            hew_mir::FieldOffset(2),
+            vec![hew_mir::FieldOffset(0), hew_mir::FieldOffset(0)],
+        ),
+    ] {
+        let handler = pipeline
+            .raw_mir
+            .iter()
+            .find(|function| function.name == handler_name)
+            .unwrap_or_else(|| panic!("{handler_name} raw MIR present"));
+        let conditions = handler
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instr| match instr {
+                Instr::StringRetain { condition, .. } => Some(condition),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            conditions.iter().any(|condition| matches!(
+                condition,
+                hew_mir::StringRetainCondition::ActorStateRecordFieldDiffers {
+                    state_field: actual_state,
+                    record_path,
+                } if *actual_state == state_field && *record_path == expected_path
+            )),
+            "{handler_name} must carry the exact actor-state leaf path: {conditions:?}"
+        );
+        assert!(
+            conditions
+                .iter()
+                .all(|condition| !matches!(condition, hew_mir::StringRetainCondition::Always)),
+            "{handler_name} must not retain unconditionally in its cyclic ingress: \
+             {conditions:?}"
+        );
+    }
 }
 
 /// #2747 — a by-value owned-aggregate RECORD message param delivered to an actor

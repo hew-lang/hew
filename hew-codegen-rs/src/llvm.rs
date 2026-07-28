@@ -13601,13 +13601,13 @@ fn lower_instruction_with_cancel_drops(
                 }
                 StringRetainCondition::ActorStateRecordFieldDiffers {
                     state_field,
-                    record_field,
+                    record_path,
                 } => {
                     retain_string_if_actor_state_record_field_differs(
                         fn_ctx,
                         *value,
                         *state_field,
-                        *record_field,
+                        record_path,
                     )?;
                 }
             }
@@ -15794,7 +15794,7 @@ fn retain_string_if_actor_state_record_field_differs(
     fn_ctx: &FnCtx<'_, '_>,
     value: Place,
     state_field: FieldOffset,
-    record_field: FieldOffset,
+    record_path: &[FieldOffset],
 ) -> CodegenResult<()> {
     if !is_string_const_ty(place_resolved_ty(fn_ctx, value)?) {
         return Err(CodegenError::FailClosed(format!(
@@ -15836,22 +15836,16 @@ fn retain_string_if_actor_state_record_field_differs(
         )));
     }
 
-    let record_idx = record_field.0;
-    let record_element_tys = record_ty.get_field_types();
-    let old_field_ty = *record_element_tys.get(record_idx as usize).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "conditional StringRetain record field {record_idx} is out of bounds for record \
-                 with {} fields",
-            record_element_tys.len()
-        ))
-    })?;
-    let BasicTypeEnum::PointerType(_) = old_field_ty else {
-        return Err(CodegenError::FailClosed(format!(
-            "conditional StringRetain record field {record_idx} is not pointer-typed: \
-             {old_field_ty:?}"
-        )));
-    };
-
+    if record_path.is_empty() {
+        return Err(CodegenError::FailClosed(
+            "conditional StringRetain record path is empty".into(),
+        ));
+    }
+    let path_label = record_path
+        .iter()
+        .map(|field| field.0.to_string())
+        .collect::<Vec<_>>()
+        .join("_");
     let state_ptr = current_actor_state_ptr(fn_ctx)?;
     let state_field_ptr = fn_ctx
         .builder
@@ -15862,21 +15856,57 @@ fn retain_string_if_actor_state_record_field_differs(
             &format!("string_share_state_f{state_idx}_ptr"),
         )
         .llvm_ctx("conditional StringRetain state-field gep")?;
-    let old_field_ptr = fn_ctx
-        .builder
-        .build_struct_gep(
-            record_ty,
-            state_field_ptr,
-            record_idx,
-            &format!("string_share_state_f{state_idx}_record_f{record_idx}_ptr"),
-        )
-        .llvm_ctx("conditional StringRetain record-field gep")?;
+
+    let mut aggregate_ty = record_ty;
+    let mut aggregate_ptr = state_field_ptr;
+    let mut leaf = None;
+    for (depth, field) in record_path.iter().enumerate() {
+        let field_idx = field.0;
+        let element_tys = aggregate_ty.get_field_types();
+        let field_ty = *element_tys.get(field_idx as usize).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "conditional StringRetain record path field {field_idx} at depth {depth} is out \
+                 of bounds for record with {} fields",
+                element_tys.len()
+            ))
+        })?;
+        let field_ptr = fn_ctx
+            .builder
+            .build_struct_gep(
+                aggregate_ty,
+                aggregate_ptr,
+                field_idx,
+                &format!("string_share_state_f{state_idx}_record_path_{path_label}_d{depth}_ptr"),
+            )
+            .llvm_ctx("conditional StringRetain record-path gep")?;
+        if depth + 1 == record_path.len() {
+            if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "conditional StringRetain record path leaf {field_idx} is not \
+                     pointer-typed: {field_ty:?}"
+                )));
+            }
+            leaf = Some((field_ptr, field_ty));
+            break;
+        }
+        let BasicTypeEnum::StructType(nested_ty) = field_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "conditional StringRetain record path field {field_idx} at depth {depth} is not \
+                 an embedded record: {field_ty:?}"
+            )));
+        };
+        aggregate_ty = nested_ty;
+        aggregate_ptr = field_ptr;
+    }
+    let (old_field_ptr, old_field_ty) = leaf.ok_or_else(|| {
+        CodegenError::FailClosed("conditional StringRetain record path has no leaf".into())
+    })?;
     let old_value = fn_ctx
         .builder
         .build_load(
             old_field_ty,
             old_field_ptr,
-            &format!("string_share_state_f{state_idx}_record_f{record_idx}_old"),
+            &format!("string_share_state_f{state_idx}_record_path_{path_label}_old"),
         )
         .llvm_ctx("conditional StringRetain old-field load")?
         .into_pointer_value();
@@ -15892,7 +15922,7 @@ fn retain_string_if_actor_state_record_field_differs(
         .build_load(
             value_ty,
             value_ptr,
-            &format!("string_share_state_f{state_idx}_record_f{record_idx}_new"),
+            &format!("string_share_state_f{state_idx}_record_path_{path_label}_new"),
         )
         .llvm_ctx("conditional StringRetain new-value load")?
         .into_pointer_value();
@@ -15905,7 +15935,7 @@ fn retain_string_if_actor_state_record_field_differs(
                 .build_ptr_to_int(
                     old_value,
                     fn_ctx.ctx.i64_type(),
-                    &format!("string_share_state_f{state_idx}_record_f{record_idx}_old_int"),
+                    &format!("string_share_state_f{state_idx}_record_path_{path_label}_old_int"),
                 )
                 .llvm_ctx("conditional StringRetain old ptr-to-int")?,
             fn_ctx
@@ -15913,10 +15943,10 @@ fn retain_string_if_actor_state_record_field_differs(
                 .build_ptr_to_int(
                     new_value,
                     fn_ctx.ctx.i64_type(),
-                    &format!("string_share_state_f{state_idx}_record_f{record_idx}_new_int"),
+                    &format!("string_share_state_f{state_idx}_record_path_{path_label}_new_int"),
                 )
                 .llvm_ctx("conditional StringRetain new ptr-to-int")?,
-            &format!("string_share_state_f{state_idx}_record_f{record_idx}_differs"),
+            &format!("string_share_state_f{state_idx}_record_path_{path_label}_differs"),
         )
         .llvm_ctx("conditional StringRetain old/new compare")?;
 
@@ -15928,11 +15958,11 @@ fn retain_string_if_actor_state_record_field_differs(
     })?;
     let retain_bb = fn_ctx.ctx.append_basic_block(
         parent,
-        &format!("string_share_state_f{state_idx}_record_f{record_idx}_retain"),
+        &format!("string_share_state_f{state_idx}_record_path_{path_label}_retain"),
     );
     let continue_bb = fn_ctx.ctx.append_basic_block(
         parent,
-        &format!("string_share_state_f{state_idx}_record_f{record_idx}_continue"),
+        &format!("string_share_state_f{state_idx}_record_path_{path_label}_continue"),
     );
     fn_ctx
         .builder
@@ -15943,7 +15973,7 @@ fn retain_string_if_actor_state_record_field_differs(
     retain_string_value(
         fn_ctx,
         value,
-        &format!("state_f{state_idx}_record_f{record_idx}_share"),
+        &format!("state_f{state_idx}_record_path_{path_label}_share"),
     )?;
     fn_ctx
         .builder

@@ -27,7 +27,7 @@
 //! out of band with `leaks --atExit` (record String/Vec/enum-payload
 //! buffers all reach 0 leaked bytes).
 //!
-//! WASM-TODO(#1451): the dyn trait-object ABI (vtable size/align prefix,
+//! WASM-TODO(dyn-trait-objects): the dyn trait-object ABI (vtable size/align prefix,
 //! `hew_dyn_box_*`) is native-64-bit only today — `emit_dyn_trait_*`
 //! sources size/align as host-pointer-width and the WASM32 width path is
 //! unbuilt (see `emit_dyn_trait_vtable_definitions`). Add an

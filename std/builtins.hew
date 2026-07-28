@@ -284,7 +284,7 @@ impl<T: ActorMsg> RemotePid<T> {
     /// only for type-check seeding (so the trait surface matches `LocalPid`)
     /// and as a fail-closed fallback on targets without the codegen
     /// interception (notably WASM, where remote routing is not wired —
-    /// WASM-TODO(#1451)).
+    /// WASM-TODO(distributed): add authenticated remote routing on wasm32).
     fn send(pid: RemotePid<T>, msg: T::Msg) -> Result<(), SendError> {
         Err(SendError::NodeRoutingNotWired)
     }

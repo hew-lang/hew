@@ -68,7 +68,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
+.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1266,11 +1266,14 @@ runtime-poison-safe-lint: runtime-poison-safe-lint-self-test
 runtime-poison-safe-lint-self-test:
 	bash scripts/lint-runtime-poison-safe.sh --self-test
 
-# Reject WASM-TODO comments that do not carry an issue reference.
-# Every actionable WASM-TODO must use: WASM-TODO(#NNN): <description>
-# Umbrella issue: https://github.com/hew-lang/hew/issues/1451
-lint-wasm-todo:
+# Validate the repository-owned WASM backlog authority and every actionable
+# WASM-TODO(<stable-backlog-id>): marker. The self-test pins fail-closed
+# behaviour independently of the live corpus.
+lint-wasm-todo: lint-wasm-todo-self-test
 	bash scripts/lint-wasm-todo-issue-ref.sh
+
+lint-wasm-todo-self-test:
+	bash scripts/lint-wasm-todo-issue-ref.sh --self-test
 
 # ── Coverage ───────────────────────────────────────────────────────────────
 #

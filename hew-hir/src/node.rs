@@ -2011,7 +2011,7 @@ pub enum HirExprKind {
     /// The parent [`HirExpr::ty`] is the record type — the cloned value has the
     /// same type as the source.
     ///
-    /// WASM-TODO(#1451): record clone is not yet lowered in the sandbox-wasm emitter;
+    /// WASM-TODO(sandbox-clone): record clone is not yet lowered in the sandbox-wasm emitter;
     /// the sandbox falls through to its fail-closed `emit_unsupported` marker
     /// (see `hew-sandbox-wasm/src/emit.rs` `lower_method_call` default arm), so
     /// a playground record `.clone()` traps rather than silently aliasing.

@@ -1923,7 +1923,7 @@ vec_remove_primitive!(hew_vec_remove_ptr, *mut c_void);
 /// - `layout` must point to a `HewTypeLayout` whose `size`, `align`, and
 ///   `ownership_kind` match those stored in the vec.
 ///
-/// # WASM-TODO
+/// # WASM-TODO(layout-width): target-width layout descriptor
 ///
 /// `HewTypeLayout.size` is host `usize`-width. On wasm32 `usize = u32`, so
 /// the `elem_size` arithmetic and the descriptor struct shape below must

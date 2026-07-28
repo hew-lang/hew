@@ -64,10 +64,6 @@ fn trace_actor_stop_lifecycle(
     // WASM-R37-S2: WASM stop/on(stop) paths must be observable through the
     // same lifecycle trace event as native before invoking terminate_fn.
     //
-    // WASM-TODO(#1451) / WASM-R37-S9: drain-time actor_type_id remains zero on
-    // WASM until codegen emits handler-name/type registration. Keep the stop
-    // lifecycle event itself observable now; the actor_type_id regression flips
-    // with Slice 5.
     let installed_trace_context =
         crate::execution_context::current_context().is_null() && !trace_context.is_null();
     let prev_context = if installed_trace_context {
@@ -2006,7 +2002,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                             msg_ref.data,
                             msg_ref.data_size,
                             // P5-RX sub-stage 1: copy-mode receipt only.
-                            // WASM-TODO(#1451): envelope-mode (aliased) receive
+                            // WASM-TODO(alias-messaging): envelope-mode (aliased) receive
                             // routing on the WASM scheduler is deferred to the
                             // WASM send gate; this path stays copy-mode (0).
                             0,
@@ -2452,7 +2448,7 @@ pub use crate::execution_context::hew_get_reply_channel;
 /// while still allowing wait-loop callers (ask/await/reply) to drive the
 /// scheduler to completion.
 ///
-/// WASM-TODO(#1451): native `hew_actor_cooperate` yields to the OS scheduler instead
+/// WASM-TODO(cooperative-yield): native `hew_actor_cooperate` yields to the OS scheduler instead
 /// of suppressing progress. Replace this depth cap with a stack-safe,
 /// non-recursive cooperative driver so yielding never returns `1` without a
 /// scheduler tick.
@@ -2502,7 +2498,7 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
 
     #[cfg(target_arch = "wasm32")]
     {
-        // WASM-TODO(#1451): cross-task cancel_token / task_scope are
+        // WASM-TODO(scope): cross-task cancel_token / task_scope are
         // native-only until the WASI task-scope follow-on lands. The actor
         // task-state observation below covers the in-handler cancel source
         // that does exist on WASM (handler calls `hew_actor_stop_self`,

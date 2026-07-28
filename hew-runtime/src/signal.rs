@@ -1494,9 +1494,6 @@ mod platform {
     /// No-op on WASM: wasm32 has no POSIX signals, so there is no `SIGPIPE` to
     /// ignore. A broken-pipe / reset condition on the simulated transport
     /// surfaces as a typed error through the normal fallible send path.
-    // WASM-TODO(#1451): revisit if a future wasm target grows a signal-like
-    // disposition for pipe/socket teardown; today the process-wide SIGPIPE
-    // ignore is native-only (the real impl lives in the `#[cfg(unix)]` module).
     pub(crate) fn ignore_sigpipe() {}
 
     /// # Safety

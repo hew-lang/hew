@@ -12,10 +12,11 @@
 //!
 //! 3. `CodegenError::WasmUnsupportedSubstrate` diagnostics keep the category
 //!    selected by the codegen display path: lambda-actor surfaces `lambda_actor`
-//!    + `#1451`; duplex surfaces `duplex` + `#1451`.
+//!    + `WASM-TODO(lambda-actors):`; duplex surfaces `duplex` +
+//!      `WASM-TODO(duplex):`.
 //!      (Generators are now fully supported on wasm32 — see `wasm_generator_exec.rs`.)
 //!
-//! 4. WASM-TODO(#1451): `hew_duplex_*` symbols are excluded from wasm32
+//! 4. WASM-TODO(duplex): `hew_duplex_*` symbols are excluded from wasm32
 //!    builds via `hew-runtime/src/duplex.rs:54`. The codegen layer returns
 //!    `CodegenError::WasmUnsupportedSubstrate` before invoking `wasm-ld`,
 //!    so the CLI surfaces a structured diagnostic pointing to the WASM target
@@ -152,7 +153,7 @@ fn wasm_unsupported_substrate_diagnostics_preserve_symbol_category() {
     require_codegen();
 
     // `gen_block_outside_receive.hew` was previously asserted to fail on wasm32
-    // (the generator fence, WASM-TODO(#1758)). Generators are now supported on
+    // by the former generator fence. Generators are now supported on
     // wasm32 via the in-module `hew_gen_coro_destroy` override emitted by
     // `emit_wasm_coro_runtime_overrides`; that fixture compiles and produces a
     // `.wasm` artefact on this target.  The generator-parity classification path
@@ -167,7 +168,7 @@ fn wasm_unsupported_substrate_diagnostics_preserve_symbol_category() {
         // underlying `hew_duplex_*` symbols are native-only on wasm32; the test's
         // intent is to assert the diagnostic preserves the symbol category in the
         // first surface, and "lambda_actor" satisfies that for this fixture.
-        &["lambda_actor", "#1451"],
+        &["lambda_actor", "WASM-TODO(lambda-actors):"],
         &[],
     );
 }

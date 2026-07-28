@@ -315,20 +315,23 @@ impl std::fmt::Display for CodegenError {
             Self::Io(e) => write!(f, "io: {e}"),
             Self::WasmUnsupportedSubstrate { symbol } => {
                 // Map the offending symbol prefix to a user-facing construct label
-                // and tracking-issue note. Defence in depth — typecheck rejects
+                // and stable backlog note. Defence in depth — typecheck rejects
                 // most cases earlier (see `hew-types/src/check/expressions.rs`),
                 // but this codegen-level diagnostic must still be specific.
                 let (construct, tracking) = if symbol.starts_with("hew_duplex_") {
-                    ("the `Duplex` channel substrate", "WASM-TODO(#1451)")
+                    ("the `Duplex` channel substrate", "WASM-TODO(duplex):")
                 } else if symbol.starts_with("hew_supervisor_") {
-                    ("the supervisor restart machinery", "WASM-TODO(#1475)")
+                    (
+                        "the supervisor restart machinery",
+                        "WASM-TODO(supervision):",
+                    )
                 } else if symbol.starts_with("hew_task_scope_") || symbol.starts_with("hew_task_") {
                     (
                         "the `scope {}` structured-concurrency substrate",
-                        "WASM-TODO(#1451)",
+                        "WASM-TODO(scope):",
                     )
                 } else if symbol == "hew_tcp_stream_from_conn" {
-                    ("the TCP transport substrate", "WASM-TODO(#1451)")
+                    ("the TCP transport substrate", "WASM-TODO(tcp-networking):")
                 } else if symbol == "hew_channel_poll" || symbol == "hew_channel_await_recv" {
                     // NEW-4 suspending channel receive: the `select{}` channel-recv
                     // arm (`hew_channel_poll`) and the worker-free `await rx.recv()`
@@ -336,10 +339,24 @@ impl std::fmt::Display for CodegenError {
                     // channel core (`cfg(not(target_arch = "wasm32"))`).
                     (
                         "the suspending channel-receive substrate",
-                        "WASM-TODO(#1451)",
+                        "WASM-TODO(channels):",
+                    )
+                } else if symbol.starts_with("hew_stream_") {
+                    ("the stream substrate", "WASM-TODO(streams):")
+                } else if symbol.starts_with("hew_lambda_actor_") {
+                    ("the lambda-actor substrate", "WASM-TODO(lambda-actors):")
+                } else if symbol == "hew_actor_demonitor" {
+                    ("the link/monitor substrate", "WASM-TODO(link-monitor):")
+                } else if symbol == "hew_await_cancel_schedule_deadline_ms" {
+                    (
+                        "the suspending deadline substrate",
+                        "WASM-TODO(suspension-deadline):",
                     )
                 } else {
-                    ("a native-only runtime substrate", "WASM-TODO(#1451)")
+                    (
+                        "a native-only runtime substrate",
+                        "WASM-TODO(runtime-substrate-classification):",
+                    )
                 };
                 write!(
                     f,
@@ -835,14 +852,14 @@ fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) ->
 /// Excluded symbols:
 /// - `hew_duplex_*` — excluded from wasm32 builds via
 ///   `hew-runtime/src/duplex.rs:54` (`#![cfg(not(target_arch = "wasm32"))]`).
-///   WASM-TODO(#1451).
+///   WASM-TODO(duplex): add the native dual-queue substrate to WASM.
 /// - `hew_supervisor_*` — requires the native preemptive scheduler's
 ///   supervisor restart machinery; WASM builds use a cooperative executor that
-///   does not support it.  WASM-TODO(#1475).
+///   does not support it. WASM-TODO(supervision): add cooperative restart machinery.
 /// - `hew_tcp_stream_from_conn` — TCP transport is unavailable on wasm32.
 ///   The runtime stub returns null; codegen surfaces a structured diagnostic
 ///   when a MIR `CallRuntimeAbi` refers to this symbol on a wasm target.
-///   WASM-TODO(#1451): TCP transport gap.
+///   WASM-TODO(tcp-networking): add a WASM TCP transport.
 ///   Note: calls from the Hew stdlib `extern "C"` block in `std/net/net.hew`
 ///   bypass this scan (they produce direct LLVM calls, not `CallRuntimeAbi`
 ///   instructions); the wasm32 runtime stub is the safety net for those.
@@ -856,7 +873,7 @@ fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) ->
 ///   via `WasmUnsupportedFeature::StructuredConcurrency`; this scan catches
 ///   direct-MIR paths that bypass the type-checker gate. The alternative —
 ///   letting the program reach `wasm-ld` — produces a confusing linker error.
-///   WASM-TODO(#1451): task-scope WASM parity sub-task.
+///   WASM-TODO(scope): add the cooperative task-scope runtime.
 ///
 /// This scan detects them in the MIR before the `wasm-ld` step so the caller
 /// can return `CodegenError::WasmUnsupportedSubstrate` instead of a confusing
@@ -877,21 +894,21 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                 let excluded = match instr {
                     // Excluded families (see `wasm_excluded_call_family`): the
                     // Duplex group (`hew-runtime/src/duplex.rs:54`,
-                    // `#![cfg(not(target_arch = "wasm32"))]`, WASM-TODO(#1451)),
+                    // `#![cfg(not(target_arch = "wasm32"))]`, WASM-TODO(duplex): add parity),
                     // the Supervisor group (requires the native preemptive
                     // scheduler; WASM builds use a cooperative single-threaded
-                    // executor — WASM-TODO(#1475)), and the Task/TaskScope
+                    // executor — WASM-TODO(supervision): add parity), and the Task/TaskScope
                     // groups (`hew-runtime/src/task_scope.rs` is native-only;
                     // the type checker already rejects `scope {}` on WASM
                     // targets, this scan is the defence-in-depth catch for
-                    // direct-MIR paths — WASM-TODO(#1451)).
+                    // direct-MIR paths — WASM-TODO(scope): add parity).
                     //
                     // `hew_tcp_stream_from_conn` is unreachable through
                     // `Instr::CallRuntimeAbi`: no non-pre-staged
                     // `RuntimeCallFamily` maps to it, so `RuntimeCall::new`
                     // refuses it at construction. std/net's extern-block calls
                     // bypass this scan entirely and rely on the wasm32 runtime
-                    // stub. WASM-TODO(#1451): TCP transport gap.
+                    // stub. WASM-TODO(tcp-networking): add a WASM TCP transport.
                     Instr::CallRuntimeAbi(call) => {
                         wasm_excluded_call_family(call.family()).then(|| call.symbol().to_string())
                     }
@@ -921,7 +938,8 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                 // (`hew-runtime/src/lib.rs` gates `pub mod channel`). The HIR gate
                 // (`check_wasm_blocking_recv_gate`) rejects syntactic `.recv()`
                 // first; this is the defence-in-depth codegen catch for any
-                // direct-MIR select-arm path that bypasses it. WASM-TODO(#1451).
+                // direct-MIR select-arm path that bypasses it.
+                // WASM-TODO(channels): add cooperative channel-receive suspension.
                 if arms
                     .iter()
                     .any(|arm| matches!(arm.kind, hew_mir::SelectArmKind::ChannelRecv { .. }))
@@ -946,7 +964,7 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
             // `hew_select_first`) is preserved on the contextless path, and the
             // MIR producer keeps a wasm execution-context select on the blocking
             // `Terminator::Select` until the wasm coro substrate lands.
-            // WASM-TODO(#1758).
+            // WASM-TODO(suspending-select): add a WASM execution-context waitset.
             if let Terminator::SuspendingSelect { .. } = &block.terminator {
                 return Some("hew_await_cancel_schedule_deadline_ms".to_string());
             }
@@ -956,14 +974,14 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
             // others use wasm-available symbols). Map the kind to its native-only
             // symbol so wasm-ld never discovers a dangling reference:
             //   - StreamNext → `hew_stream_await_next` (native stream substrate;
-            //     WASM-TODO(#1451)).
+            //     WASM-TODO(streams): add a cooperative stream continuation).
             //   - ChannelRecv → `hew_channel_await_recv` (native channel core;
-            //     WASM-TODO(#1451)).
+            //     WASM-TODO(channels): add a cooperative channel continuation).
             //   - TaskAwait → `hew_task_await_suspend` (native read-slot /
-            //     `enqueue_resume` substrate; WASM-TODO(#1758)).
+            //     `enqueue_resume` substrate; WASM-TODO(scope): add cooperative task resume).
             //   - Sleep → `hew_await_cancel_schedule_deadline_ms` (native global
             //     timer-wheel ticker; the wasm sleep keep path parks at the
-            //     message boundary instead; WASM-TODO(#1758)).
+            //     message boundary instead; WASM-TODO(timer-suspension): add mid-handler resume).
             if let Terminator::Suspend { .. } = &block.terminator {
                 if let Some(sym) = func
                     .suspend_kinds
@@ -977,7 +995,7 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
             // after(...) body suspends on the native-only timer wheel + join
             // arbiter. Refused at compile on wasm32 for the same reason; today the
             // MIR producer keeps non-empty after bodies fail-closed, so this is
-            // belt-and-braces. WASM-TODO(#1758).
+            // belt-and-braces. WASM-TODO(scope): add cooperative scope deadlines.
             if let Terminator::SuspendingScopeDeadline { .. } = &block.terminator {
                 return Some("hew_await_cancel_schedule_deadline_ms".to_string());
             }
@@ -1051,7 +1069,7 @@ fn wasm_excluded_suspend_kind_symbol(kind: &SuspendKind) -> Option<&'static str>
 
 /// WASM-excluded drop rituals: the Duplex close family rides the
 /// native-only duplex substrate (`hew-runtime/src/duplex.rs:54`,
-/// WASM-TODO(#1451)). Keyed on the typed descriptor — exhaustive over
+/// WASM-TODO(duplex): add the dual-queue substrate to WASM). Keyed on the typed descriptor — exhaustive over
 /// [`RuntimeDropDescriptor`], NO wildcard, so a new close ritual cannot
 /// land without an explicit wasm32 decision. `Release` symbols come from
 /// the closed cow-heap set (none duplex-backed) and `UserClose` bodies
@@ -1098,7 +1116,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
     use hew_types::runtime_call::RuntimeCallFamily as F;
     match family {
         // Duplex dual-queue substrate: hew-runtime/src/duplex.rs:54 is
-        // `#![cfg(not(target_arch = "wasm32"))]`. WASM-TODO(#1451).
+        // `#![cfg(not(target_arch = "wasm32"))]`. WASM-TODO(duplex): add parity.
         F::DuplexClone
         | F::DuplexClose
         | F::DuplexCloseHalf
@@ -1111,7 +1129,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::DuplexTryRecv
         | F::DuplexTrySend
         // Supervisor restart machinery requires the native preemptive
-        // scheduler. WASM-TODO(#1475).
+        // scheduler. WASM-TODO(supervision): add cooperative restart machinery.
         | F::SupervisorDirectId
         | F::SupervisorChildGet
         | F::LocalPidSupervisorChildGet
@@ -1123,7 +1141,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         // Structured-concurrency task scopes and task handles are implemented
         // only by the native thread/condvar runtime. wasm32 has no cooperative
         // task work queue or non-blocking join/wakeup path yet.
-        // WASM-TODO(#1451).
+        // WASM-TODO(scope): add a cooperative task executor and join path.
         | F::TaskAwaitBlocking
         | F::TaskCompleteThreaded
         | F::TaskCompletionObserve
@@ -33507,7 +33525,7 @@ fn link_wasm_module(obj: &Path, out: &Path) -> CodegenResult<()> {
             // resolves these against the hew-runtime static archive in
             // `hew-cli/src/link.rs`; the codegen-internal wasm link in this
             // helper does not pull in the runtime, so the symbols must be
-            // host-imports instead of hard link errors. WASM-TODO(#1451):
+            // host-imports instead of hard link errors. WASM-TODO(runtime-traps):
             // a follow-up wires per-kind trap reporting into a real wasm
             // runtime stub.
             .arg("--import-undefined")

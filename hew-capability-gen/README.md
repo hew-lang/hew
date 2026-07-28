@@ -2,9 +2,11 @@
 
 Generator scaffolding for the Hew WASM capability manifest.
 
-Reads `wasm-capability-manifest.toml` at the repository root — the source of
-truth for which Hew features are supported on each WASM target tier — and is
-intended to emit, in subsequent stages:
+Reads `wasm-capability-manifest.toml` at the repository root. Its `[[backlog]]`
+rows are the offline tracking authority for actionable
+`WASM-TODO(<stable-backlog-id>):` markers; its capability tables are the source
+for generated WASM surfaces. The crate is intended to emit, in subsequent
+stages:
 
 - the `WasmUnsupportedFeature` enum consumed by the type checker,
 - the `_WASM_CAPABILITY_*` CMake lists consumed by the codegen e2e harness,

@@ -272,10 +272,10 @@ jobs:
       - name: Runtime poison-safe lint
         run: make runtime-poison-safe-lint
 
-      - name: WASM-TODO issue-reference lint
-        # Reject WASM-TODO comments with no issue reference. Part of `make lint`
-        # locally, but nothing ran it in CI, so an unreferenced WASM-TODO could
-        # merge and only surface on the next local lint.
+      - name: WASM-TODO backlog-authority lint
+        # Parse the offline manifest authority, exercise the synthetic teeth,
+        # then validate every actionable source marker against a stable backlog
+        # id. No GitHub/API state is needed.
         run: make lint-wasm-todo
 
       - name: Codegen carried-identity gate

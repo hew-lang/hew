@@ -349,7 +349,7 @@ pub(crate) fn actor_ref_local_ptr(actor_ref: &HewActorRef) -> *mut c_void {
 // TCP transport
 // ===========================================================================
 
-// WASM-TODO(#1451): TcpCounters always returns zeros on WASM; no TCP transport
+// WASM-TODO(tcp-networking): TcpCounters always returns zeros on WASM; no TCP transport.
 #[derive(Debug, Default)]
 struct TcpCounters {
     bytes_read: AtomicU64,

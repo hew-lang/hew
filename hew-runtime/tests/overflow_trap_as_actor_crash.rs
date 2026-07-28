@@ -17,7 +17,7 @@
 //!
 //! WASM: signal-based crash recovery is not available. The test is gated on
 //! `any(unix, windows)`. A full WASM-side overflow-trap path is tracked as
-//! WASM-TODO(#1451) (existing parity umbrella).
+//! WASM-TODO(runtime-traps): implement WASM actor-trap recovery without native signals.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(

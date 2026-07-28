@@ -3839,7 +3839,7 @@ pub unsafe extern "C" fn hew_actor_send_aliased(
 
 /// WASM stub for [`hew_actor_send_aliased`] — **fail-closed**.
 ///
-// WASM-TODO(#1451): alias-send WASM routing deferred to the WASM send gate (the gate covers it).
+// WASM-TODO(alias-messaging): wire alias-send routing through the WASM envelope path.
 /// The native entry above delivers aliased sends via the envelope-mode
 /// enqueue, but the WASM mailbox routing for the alias path is not yet
 /// wired. Until then this stub releases the caller-transferred envelope
@@ -4881,7 +4881,7 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
     drain_outcome_from_lists(still_live, crashed)
 }
 
-/// WASM-TODO(#1451): drain_actors primitive pending WASM scheduler integration.
+/// WASM-TODO(actor-drain): integrate actor-set draining with the WASM scheduler.
 #[cfg(target_arch = "wasm32")]
 #[must_use]
 pub fn drain_actors(ids: &[ActorId], _deadline: std::time::Instant) -> DrainOutcome {
@@ -7561,8 +7561,6 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
     {
         // WASM-R37-S2: direct close of an idle actor mirrors native
         // `hew_actor_close` observability before invoking terminate_fn.
-        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero at trace
-        // drain time until WASM codegen emits handler-name/type registration.
         crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped; not being dispatched.
         unsafe { call_terminate_fn(actor) };
@@ -7584,8 +7582,6 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
         // SAFETY: actor is valid; cancel is safe from the scheduler thread.
         unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
         // WASM-R37-S2: mirror native stop lifecycle observability.
-        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero until
-        // WASM handler registration lands.
         crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped.
         unsafe { call_terminate_fn(actor) };
@@ -7636,8 +7632,6 @@ pub(crate) unsafe fn actor_stop_wasm_impl(actor: *mut HewActor) {
     {
         // WASM-R37-S2: direct stop of an idle actor mirrors native
         // `hew_actor_stop` observability before invoking terminate_fn.
-        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero at trace
-        // drain time until WASM codegen emits handler-name/type registration.
         crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped; not being dispatched.
         unsafe { call_terminate_fn(actor) };
@@ -7657,8 +7651,6 @@ pub(crate) unsafe fn actor_stop_wasm_impl(actor: *mut HewActor) {
         // SAFETY: actor is valid; cancel is safe from the scheduler thread.
         unsafe { crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor.cast()) };
         // WASM-R37-S2: mirror native stop lifecycle observability.
-        // WASM-TODO(#1451) / WASM-R37-S9: actor_type_id remains zero until
-        // WASM handler registration lands.
         crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
         // SAFETY: actor just transitioned to Stopped.
         unsafe { call_terminate_fn(actor) };

@@ -26863,7 +26863,7 @@ fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut V
                     iterable.1.clone(),
                     "Blocking channel receive / stream receive operations via \
                      `for await` lower to native-only suspending recv substrate \
-                     on wasm32. WASM-TODO(#1451)."
+                     on wasm32. WASM-TODO(suspending-receive): add the cooperative receive continuation."
                         .to_string(),
                 ));
             }

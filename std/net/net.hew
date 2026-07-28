@@ -86,7 +86,7 @@ pub enum NetError {
     Other(i64);
 }
 
-// WASM-TODO(#1451): WASI uses wasi_errno codes; needs a WASI branch or separate mapping
+// WASM-TODO(wasi-errno): WASI uses wasi_errno codes; add a target-aware mapping.
 /// Map an OS errno integer to a structured `NetError` variant.
 ///
 /// The i64 payload carried in each variant is the raw OS errno so callers
@@ -539,7 +539,7 @@ trait ConnectionMethods {
     ///
     /// On `wasm32` targets this method is unavailable; the type checker
     /// rejects calls to `Connection` methods with
-    /// `WasmUnsupportedFeature::TcpNetworking` before codegen (`WASM-TODO(#1451)`).
+    /// `WasmUnsupportedFeature::TcpNetworking` before codegen (`WASM-TODO(tcp-networking):`).
     fn attach(self, handler: LocalPid<ConnectionHandler>);
 
     /// Consume the connection and produce a `(Stream<bytes>, Sink<bytes>)` pair
@@ -570,7 +570,7 @@ trait ConnectionMethods {
     ///
     /// On `wasm32` targets this method is unavailable; the type checker rejects
     /// calls to `Connection` methods with `WasmUnsupportedFeature::TcpNetworking`
-    /// before any codegen is reached (`WASM-TODO(#1451)`).
+    /// before any codegen is reached (`WASM-TODO(tcp-networking):`).
     fn into_stream_sink(self) -> (Stream<bytes>, Sink<bytes>);
 }
 
@@ -965,7 +965,7 @@ extern "C" {
     // connection is fully closed and released and a null StreamPair is returned
     // (check with is_valid); the last-error errno is EBADF for an unknown
     // handle, otherwise the real dup(2) errno.  Not available on wasm32;
-    // WASM-TODO(#1451).
+    // WASM-TODO(tcp-networking): add the TCP-to-stream bridge to the WASM transport.
     fn hew_tcp_stream_from_conn(conn: Connection) -> StreamPair;
     fn hew_stream_pair_stream_bytes(pair: StreamPair) -> Stream<bytes>;
     fn hew_stream_pair_sink_bytes(pair: StreamPair) -> Sink<bytes>;

@@ -1,11 +1,10 @@
 //! Leak oracle for `std::arena::Arena<T>` with a heap-owning composite value.
 //!
-//! Each cycle creates a fresh arena, inserts a `Holder` whose `Vec<string>`
-//! owns dynamically allocated strings, removes it, and consumes the returned
-//! value. A leaked COPY-IN source temporary in `Arena::insert` therefore grows
-//! the leak-node count with the cycle count. The shared slope harness compares
-//! low and high cycle counts under the poisoned allocator so the clean path
-//! stays flat while that regression scales.
+//! Each cycle creates a fresh arena, inserts and removes a `Holder` whose
+//! `Vec<string>` owns dynamically allocated strings, then reuses the freed slot
+//! for a second Holder and removes that too. This covers both COPY-IN ownership
+//! and the sharp `Vec<Slot<T>>::set` reuse path. The shared slope harness
+//! compares low and high cycle counts under the poisoned allocator.
 
 #![cfg(unix)]
 
@@ -27,10 +26,18 @@ fn arena_holder_insert_remove_source(cycles: usize) -> String {
          \x20   let key = store.insert(Holder {{\n\
          \x20       items: [f\"item-{{i}}\", f\"value-{{i}}\"],\n\
          \x20   }});\n\
-         \x20   match store.remove(key) {{\n\
+         \x20   let first = match store.remove(key) {{\n\
          \x20       Some(holder) => holder.items[0].len() + holder.items[1].len(),\n\
          \x20       None => -1000,\n\
-         \x20   }}\n\
+         \x20   }};\n\
+         \x20   let reused = store.insert(Holder {{\n\
+         \x20       items: [f\"again-{{i}}\", f\"next-{{i}}\"],\n\
+         \x20   }});\n\
+         \x20   let second = match store.remove(reused) {{\n\
+         \x20       Some(holder) => holder.items[0].len() + holder.items[1].len(),\n\
+         \x20       None => -1000,\n\
+         \x20   }};\n\
+         \x20   first + second\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -38,6 +45,7 @@ fn arena_holder_insert_remove_source(cycles: usize) -> String {
          \x20   for i in 0..{cycles} {{\n\
          \x20       total = total + runCycle(i);\n\
          \x20   }}\n\
+         \x20   println(total);\n\
          \x20   if total <= 0 {{ return 61; }}\n\
          \x20   0\n\
          }}\n"

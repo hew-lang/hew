@@ -1,0 +1,7 @@
+// Prefix clone follows the same non-cloneable authority as `.clone()`.
+import std::arena::{ Arena };
+
+fn main() {
+    let store: Arena<string> = arena.new();
+    let _copy = clone store;
+}

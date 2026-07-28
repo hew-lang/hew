@@ -71,7 +71,7 @@ Every shipped module under `std/` should appear here.
 | Module | Import | Use for |
 | --- | --- | --- |
 | [`vec`](vec.hew) | `std::vec` | Utility helpers for `Vec<T>` |
-| [`arena`](arena.hew) | `std::arena` | Affine generational slotmap with stable value keys |
+| [`arena`](arena.hew) | `std::arena` | Single-owner generational slotmap with stable value keys |
 | [`deque`](deque.hew) | `std::deque` | Double-ended queue operations |
 | [`iter`](iter.hew) | `std::iter` | Map/filter/fold-style helpers for `Vec<T>` |
 | [`sort`](sort/sort.hew) | `std::sort` | Sorting and reversing vector helpers |

@@ -133,7 +133,6 @@ stable = [
   "hew_arena_free",
   "hew_arena_free_all",
   "hew_arena_instance_id_new",
-  "hew_arena_key_generation_new",
   "hew_arena_malloc",
   "hew_arena_new",
   "hew_arena_new_with_cap",
@@ -1836,13 +1835,6 @@ stops the call site from being read as an independent lane operation."""
 # the boundary.
 [[ownership.contracts]]
 symbol = "hew_arena_instance_id_new"
-result = "none"
-params = []
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_arena_key_generation_new"
 result = "none"
 params = []
 release-symbol = ""

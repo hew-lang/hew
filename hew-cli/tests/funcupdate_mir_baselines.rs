@@ -8,7 +8,7 @@
 //! boolean verdicts byte-identical; this harness proves the EMITTED elaborated
 //! MIR (including drop plans) of the fixtures that exercise those consumers is
 //! identical to baselines generated at the scanner-ownership implementation
-//! revision (`d776454e`,
+//! revision (`a77136f95`,
 //! `hew compile --dump-mir elab`) under ONE normalization rule: the dump's
 //! FUNCTION ORDER is nondeterministic (map iteration), so both sides are
 //! split into per-function chunks and sorted by signature line before the
@@ -113,7 +113,7 @@ fn funcupdate_reassign_elab_mir_matches_committed_baselines() {
         assert!(
             live_norm == expected_norm,
             "elaborated MIR for `{fixture}` diverged from the committed baseline \
-             `{baseline}` (generated at d776454e). A funcupdate/reassign consumer's \
+             `{baseline}` (generated at a77136f95). A funcupdate/reassign consumer's \
              lowering or drop plan CHANGED — this is the Coarse-drift signal the boolean \
              differential cannot see. If the change is intended and reviewed, regenerate \
              the baseline per the manifest header. First differing line (after \

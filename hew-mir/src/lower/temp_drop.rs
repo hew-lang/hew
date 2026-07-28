@@ -1487,12 +1487,12 @@ mod aggregate_projection_transfer_dest_tests {
             statements: vec![],
             instructions: vec![
                 Instr::TupleFieldLoad {
-                    tuple: Place::Local(1),
+                    tuple: Place::Local(2),
                     field_index: 0,
                     dest: Place::Local(10),
                 },
                 Instr::TupleFieldLoad {
-                    tuple: Place::Local(2),
+                    tuple: Place::Local(1),
                     field_index: 0,
                     dest: Place::Local(10),
                 },
@@ -1507,7 +1507,53 @@ mod aggregate_projection_transfer_dest_tests {
 
         assert!(
             aggregate_projection_transfer_dests(&blocks).is_empty(),
-            "a multiply-defined transferee cannot be corroborated to one aggregate root"
+            "a multiply-defined transferee cannot be corroborated to one aggregate root, \
+             even when its last definition happens to match the neutralize authority"
+        );
+    }
+
+    #[test]
+    fn empty_projection_path_earns_no_transfer_authority() {
+        let blocks = [BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::AggregateProjectionNeutralize {
+                root: Place::Local(10),
+                fields: vec![],
+                transferee: Place::Local(10),
+            }],
+            terminator: Terminator::Return,
+        }];
+
+        assert!(
+            aggregate_projection_transfer_dests(&blocks).is_empty(),
+            "an empty projection path cannot turn its unchanged root into a transferred field"
+        );
+    }
+
+    #[test]
+    fn mismatched_projection_root_earns_no_transfer_authority() {
+        let blocks = [BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::TupleFieldLoad {
+                    tuple: Place::Local(1),
+                    field_index: 0,
+                    dest: Place::Local(10),
+                },
+                Instr::AggregateProjectionNeutralize {
+                    root: Place::Local(2),
+                    fields: vec![0],
+                    transferee: Place::Local(10),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        assert!(
+            aggregate_projection_transfer_dests(&blocks).is_empty(),
+            "a matching field path from a different aggregate root cannot transfer ownership"
         );
     }
 

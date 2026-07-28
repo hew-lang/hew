@@ -1,6 +1,6 @@
 # Funcupdate / reassign elaborated-MIR golden baselines (#2648 interface pin, MIR half).
 #
-# generating-revision: d776454e79a490573c218d884ff7be65fb048e4d
+# generating-revision: a77136f9584b52b22a7d9a87cbaa2aa84a898df0
 #   (rebased forward from 3683c2ac5; the closure/gen-fn string fixtures were
 #   regenerated to carry the A240 string copy-on-write drop plan — string shares
 #   are now Read/retain, so the source binding keeps a scope-exit drop and every
@@ -46,7 +46,7 @@
 #   and exits cleanly under the same poisoned allocator, so the added drop is
 #   exactly-once rather than a second release. The baseline was stale; the MIR
 #   is right.
-#   Refreshed for scanner-token call-carrier ownership at d776454e: terminal
+#   Refreshed for scanner-token call-carrier ownership at a77136f95: terminal
 #   transferred/rebound record values now carry their `record_in_place` drops
 #   on panic, cancel, and return edges. Only
 #   funcupdate_owned_field_drop_test.elab.mir shifted, purely additively: 13

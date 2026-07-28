@@ -1,5 +1,8 @@
 #[cfg(not(test))]
-use super::temp_drop::corroborated_retained_string_move_sites;
+use super::temp_drop::{
+    corroborated_retained_bytes_move_sites, corroborated_retained_string_move_sites,
+};
+mod bytes_payload_handoff;
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
@@ -23,6 +26,9 @@ use super::{
     FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement, Place,
     ResolvedTy, RootScan, ScopeId, SuspendKind, Terminator, FOR_ITER_CURSOR_NAME_PREFIX,
 };
+use bytes_payload_handoff::provable_bytes_payload_handoff_sites;
+#[cfg(test)]
+use bytes_payload_handoff::BytesPayloadHandoff;
 
 fn generator_env_snapshot_init_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
     blocks
@@ -1280,6 +1286,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
             .map(|(local, scope)| (*local, *scope)),
     );
     let retained_string_moves = corroborated_retained_string_move_sites(blocks, local_tys);
+    let retained_bytes_moves = corroborated_retained_bytes_move_sites(blocks, local_tys);
 
     // Payload-binder set: destinations of `Move { dest, src: interior
     // projection of an alias-set local }` — the match/while-let destructure
@@ -1336,12 +1343,13 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         let Some(&src_scope) = payload_binders.get(&sl) else {
                             continue;
                         };
-                        // The exact preceding `StringRetain(src)` gives `dl`
-                        // an independent `+1`; it is no longer a byte-alias of
-                        // the parent's payload slot. Do not propagate payload
-                        // provenance across that corroborated edge. The helper
-                        // rejects mismatches, repeated writes, and CFG cycles.
-                        if retained_string_moves.contains(&(block.id, instr_index)) {
+                        // An exact preceding retain gives `dl` an independent
+                        // `+1`, so it no longer aliases the parent's payload
+                        // slot. The type-specific generation/cycle proofs
+                        // reject mismatches and ambiguous sites.
+                        if retained_string_moves.contains(&(block.id, instr_index))
+                            || retained_bytes_moves.contains(&(block.id, instr_index))
+                        {
                             continue;
                         }
                         if payload_binders.contains_key(&dl) {
@@ -1659,6 +1667,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
             // its own analysis rather than the blanket source scan below.
             if let Instr::Move { dest, src } = instr {
                 let retained_string_move = retained_string_moves.contains(&(block.id, instr_index));
+                let retained_bytes_move = retained_bytes_moves.contains(&(block.id, instr_index));
                 let src_local = base_local(*src);
                 let dest_local = base_local(*dest);
                 // (a) Whole-composite escape: an alias-set member read as a
@@ -1696,6 +1705,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     if payload_binders.contains_key(&sl)
                         && !place_is_tag_read(*src)
                         && !retained_string_move
+                        && !retained_bytes_move
                     {
                         let benign_handoff = dest_local
                             .is_some_and(|dl| payload_binders.contains_key(&dl))
@@ -2888,6 +2898,16 @@ pub(super) fn derive_local_bytes_drop_allowed(
         candidate_local_to_binding.insert(local, *binding);
     }
     let candidate_locals: HashSet<u32> = candidate_local_to_binding.keys().copied().collect();
+    let binding_local_bases: HashSet<u32> = binding_locals
+        .values()
+        .filter_map(|place| base_local(*place))
+        .collect();
+    let payload_handoff_sites = provable_bytes_payload_handoff_sites(
+        blocks,
+        local_tys,
+        &candidate_local_to_binding,
+        &binding_local_bases,
+    );
 
     // Interior producers start as raw aliases. They become retained fresh owners
     // only when their result is bound to an owned bytes local, dropped inline, or
@@ -2973,6 +2993,9 @@ pub(super) fn derive_local_bytes_drop_allowed(
     // record/tuple/closure-env/actor-state field-load aliases.
     let mut tainted = compute_collection_interior_alias_taint(blocks);
     tainted.retain(|local| !retained_producer_aliases.contains(local));
+    for handoff in payload_handoff_sites.values() {
+        tainted.remove(&handoff.dest_local);
+    }
 
     // Whole-value alias set: each candidate plus every local reachable through
     // forward-propagated whole-value `Move { dest: Local, src: Local }` copies.
@@ -3145,6 +3168,15 @@ pub(super) fn derive_local_bytes_drop_allowed(
             required_bindings,
         });
     }
+    for (&(block, instr_index), handoff) in &payload_handoff_sites {
+        retain_sites.push(BytesRetainSite {
+            block,
+            instr_index,
+            placement: BytesRetainPlacement::Before,
+            value: handoff.source,
+            required_bindings: vec![handoff.dest_binding],
+        });
+    }
 
     // A by-value bytes parameter is a borrow from the caller. Returning it
     // duplicates that live external owner, so retain immediately before the
@@ -3194,10 +3226,6 @@ pub(super) fn derive_local_bytes_drop_allowed(
     //   initialiser move (`let a = <fresh producer temp>`) or a projection temp
     //   — neither a `let b = a` co-own share — cannot mint a spurious owner.
     //   LESSONS: raii-null-after-move (S171: a by-value heap param is a borrow).
-    let binding_local_bases: HashSet<u32> = binding_locals
-        .values()
-        .filter_map(|place| base_local(*place))
-        .collect();
     for block in blocks {
         for (instr_index, instr) in block.instructions.iter().enumerate() {
             let Instr::Move {
@@ -3213,6 +3241,9 @@ pub(super) fn derive_local_bytes_drop_allowed(
             let Some(&dest_binding) = candidate_local_to_binding.get(dest_local) else {
                 continue;
             };
+            if payload_handoff_sites.contains_key(&(block.id, instr_index)) {
+                continue;
+            }
             if let Some(&root) = alias_of.get(&src_local) {
                 // Source is itself an owned bytes candidate (or its alias): both
                 // ends are locals that drop at scope exit, so retain once, gated

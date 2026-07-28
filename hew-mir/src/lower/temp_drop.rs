@@ -1846,6 +1846,7 @@ pub(super) fn compute_projection_alias_taint(
         .collect();
     let transferred_projection_dests = aggregate_projection_transfer_dests(blocks);
     let retained_string_moves = corroborated_retained_string_move_sites(blocks, locals);
+    let retained_bytes_moves = corroborated_retained_bytes_move_sites(blocks, locals);
     let mut tainted: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
@@ -1888,6 +1889,7 @@ pub(super) fn compute_projection_alias_taint(
                 if let Instr::Move { dest, src } = instr {
                     if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
                         if !retained_string_moves.contains(&(block.id, instr_index))
+                            && !retained_bytes_moves.contains(&(block.id, instr_index))
                             && tainted.contains(&sl)
                             && tainted.insert(dl)
                         {
@@ -5020,6 +5022,74 @@ mod nested_fresh_bytes_temp_drop_admission {
 pub(super) fn bytes_place_is_typed(place: Place, local_tys: &[ResolvedTy]) -> bool {
     base_local(place)
         .is_some_and(|local| matches!(local_tys.get(local as usize), Some(ResolvedTy::Bytes)))
+}
+/// Final-MIR retain/move pairs that prove the destination owns an independent
+/// bytes reference.
+///
+/// `finalize_bytes_ownership` inserts `BytesRetain(source)` immediately before
+/// the local copy that materialises a co-owner. The pair severs
+/// projection-alias provenance only when it is exact, the destination is a
+/// distinct bytes local with one static write, and the block cannot re-execute
+/// on a CFG cycle. Any mismatch, reuse, terminator overwrite, or cyclic site
+/// preserves ordinary projection taint (leak, never double-free).
+#[must_use]
+pub(super) fn corroborated_retained_bytes_move_sites(
+    blocks: &[BasicBlock],
+    local_tys: &[ResolvedTy],
+) -> HashSet<(u32, usize)> {
+    let mut write_counts: HashMap<u32, usize> = HashMap::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            for place in dataflow::instr_reads_writes(instr).1 {
+                if let Some(local) = base_local(place) {
+                    *write_counts.entry(local).or_default() += 1;
+                }
+            }
+        }
+        for place in dataflow::terminator_write_places(&block.terminator) {
+            if let Some(local) = base_local(place) {
+                *write_counts.entry(local).or_default() += 1;
+            }
+        }
+    }
+
+    let cyclic_blocks: HashSet<u32> = blocks
+        .iter()
+        .filter(|block| blocks_reachable_from(blocks, block.id).contains(&block.id))
+        .map(|block| block.id)
+        .collect();
+    let mut sites = HashSet::new();
+    for block in blocks {
+        if cyclic_blocks.contains(&block.id) {
+            continue;
+        }
+        for move_index in 1..block.instructions.len() {
+            let (
+                Instr::BytesRetain {
+                    value: Place::Local(retained_source),
+                },
+                Instr::Move {
+                    dest: Place::Local(dest),
+                    src: Place::Local(move_source),
+                },
+            ) = (
+                &block.instructions[move_index - 1],
+                &block.instructions[move_index],
+            )
+            else {
+                continue;
+            };
+            if retained_source == move_source
+                && retained_source != dest
+                && bytes_place_is_typed(Place::Local(*retained_source), local_tys)
+                && bytes_place_is_typed(Place::Local(*dest), local_tys)
+                && write_counts.get(dest).copied() == Some(1)
+            {
+                sites.insert((block.id, move_index));
+            }
+        }
+    }
+    sites
 }
 pub(super) fn bytes_interior_producer_dest(
     instr: &Instr,

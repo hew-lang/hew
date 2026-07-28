@@ -1555,6 +1555,61 @@ mod f1_suspending_escape_poison {
     }
 
     #[test]
+    fn derive_local_bytes_drop_allowed_retains_enum_payload_handoff() {
+        let payload = BindingId(351);
+        let copy = BindingId(352);
+        let owned_locals = vec![(copy, "copy".to_string(), ResolvedTy::Bytes)];
+        let binding_locals = HashMap::from([(payload, Place::Local(1)), (copy, Place::Local(2))]);
+        let block = BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::Move {
+                    dest: Place::Local(1),
+                    src: Place::EnumVariant {
+                        local: 0,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                },
+            ],
+            terminator: Terminator::Return,
+        };
+        let derivation = derive_local_bytes_drop_allowed(
+            &[block],
+            &HashMap::new(),
+            &owned_locals,
+            &binding_locals,
+            &[
+                ResolvedTy::named_user("BytesBox", vec![]),
+                ResolvedTy::Bytes,
+                ResolvedTy::Bytes,
+            ],
+            &HashSet::new(),
+        );
+        assert_eq!(
+            derivation.allowed,
+            HashSet::from([copy]),
+            "the retained destination must balance its independent +1"
+        );
+        assert_eq!(
+            derivation.retain_sites,
+            vec![BytesRetainSite {
+                block: 0,
+                instr_index: 1,
+                placement: BytesRetainPlacement::Before,
+                value: Place::Local(1),
+                required_bindings: vec![copy],
+            }],
+            "the exact payload-binder copy must mint one retain immediately before the move"
+        );
+    }
+
+    #[test]
     fn derive_local_bytes_drop_allowed_skips_borrow_only_field_temp_retain() {
         let local_tys = vec![ResolvedTy::Unit, ResolvedTy::Bytes, ResolvedTy::I64];
         let len_call = crate::model::RuntimeCall::new(

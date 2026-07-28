@@ -390,7 +390,15 @@ struct PendingOwnedCallSite {
 #[derive(Debug, Clone)]
 enum OwnedCarrierNeutralizeTarget {
     Whole(Place),
-    Projection { root: Place, fields: Vec<u32> },
+    ScopeExitTuple {
+        root: Place,
+        owner: (BindingId, String, SiteId),
+    },
+    Projection {
+        root: Place,
+        fields: Vec<u32>,
+        scope_exit_owner: Option<(BindingId, String, SiteId)>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -5332,6 +5340,10 @@ pub(crate) fn lower_function(
         .iter()
         .filter_map(check_to_diagnostic)
         .collect();
+    diagnostics.extend(move_value::ordinary_projection_transfer_diagnostics(
+        &raw.blocks,
+        &builder.suspend_kinds,
+    ));
 
     // Collect diagnostics emitted by the builder (e.g., Unsupported HIR nodes).
     diagnostics.append(&mut builder.diagnostics);

@@ -1883,6 +1883,7 @@ impl Builder {
                                         root: source_root,
                                         fields: vec![field],
                                         transferee: src,
+                                        scope_exit_owner: None,
                                     });
                                 }
                             }
@@ -4176,7 +4177,13 @@ impl Builder {
                     dest,
                 });
                 let field_ty = self.subst_ty(&expr.ty);
-                self.note_carrier_projection(record_place, field_offset.0, dest, &field_ty);
+                self.note_carrier_projection(
+                    record_place,
+                    field_offset.0,
+                    dest,
+                    &field_ty,
+                    expr.site,
+                );
                 Some(dest)
             }
             HirExprKind::Scope { body } => Some(self.lower_task_scope(body)),
@@ -4301,7 +4308,7 @@ impl Builder {
                     dest,
                 });
                 let field_ty = self.subst_ty(&expr.ty);
-                self.note_carrier_projection(inner_place, field_index, dest, &field_ty);
+                self.note_carrier_projection(inner_place, field_index, dest, &field_ty, expr.site);
                 Some(dest)
             }
             HirExprKind::Index { container, index } => {

@@ -2133,6 +2133,7 @@ pub(super) fn aggregate_projection_transfer_dests(blocks: &[BasicBlock]) -> Hash
                 root,
                 fields,
                 transferee,
+                ..
             } if !fields.is_empty() => {
                 let mut cursor = *transferee;
                 for expected_field in fields.iter().rev().copied() {
@@ -2245,6 +2246,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0, 2],
                     transferee: Place::Local(12),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -2278,6 +2280,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0, 2],
                     transferee: Place::Local(11),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -2314,6 +2317,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0, 1],
                     transferee: Place::Local(12),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -2345,6 +2349,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -2366,6 +2371,7 @@ mod aggregate_projection_transfer_dest_tests {
                 root: Place::Local(10),
                 fields: vec![],
                 transferee: Place::Local(10),
+                scope_exit_owner: None,
             }],
             terminator: Terminator::Return,
         }];
@@ -2391,6 +2397,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(2),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,
@@ -2417,6 +2424,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(20),
@@ -2470,6 +2478,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(20),
@@ -2505,6 +2514,7 @@ mod aggregate_projection_transfer_dest_tests {
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(10),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(20),
@@ -2531,6 +2541,7 @@ mod aggregate_projection_transfer_dest_tests {
                         root: Place::Local(1),
                         fields: vec![0],
                         transferee: Place::Local(10),
+                        scope_exit_owner: None,
                     },
                 ],
                 terminator: Terminator::Goto { target: 1 },

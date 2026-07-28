@@ -965,10 +965,11 @@ fn render_instr(instr: &Instr) -> String {
             root,
             fields,
             transferee,
+            ..
         } => format!(
             "aggregate_projection_neutralize {} fields={fields:?} -> {}",
             render_place(root),
-            render_place(transferee)
+            render_place(transferee),
         ),
 
         // Actor spawn

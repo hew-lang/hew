@@ -1120,6 +1120,7 @@ fn nested_enum_tuple_field_transfer_requires_ancestor_and_field_neutralization()
                     root: Place::Local(1),
                     fields: vec![0],
                     transferee: Place::Local(2),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(4),
@@ -1134,6 +1135,7 @@ fn nested_enum_tuple_field_transfer_requires_ancestor_and_field_neutralization()
                     root: Place::Local(4),
                     fields: vec![0],
                     transferee: Place::Local(5),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Return,

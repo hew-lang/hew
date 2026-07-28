@@ -4598,6 +4598,10 @@ pub enum Instr {
         /// the root-relative path, while ownership passes corroborate that the
         /// recorded destination is the actual end of that projection chain.
         transferee: Place,
+        /// Source identity for transfers seeded from an ordinary scope-exit
+        /// tuple. The post-lowering verifier rejects later whole-tuple or
+        /// moved-field reads; unmoved sibling projections remain valid.
+        scope_exit_owner: Option<(BindingId, String, SiteId)>,
     },
     /// Increment the refcount of a `bytes` value before a genuine co-owner is
     /// minted. This marker is emitted only by the MIR bytes ownership prover;

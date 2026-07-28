@@ -3775,6 +3775,7 @@ impl Builder {
                         root: source_root,
                         fields: vec![field],
                         transferee: scrutinee_place,
+                        scope_exit_owner: None,
                     });
                     self.statements.push(MirStatement::AggregateAlias {
                         binding: owner.binding,

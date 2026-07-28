@@ -1,8 +1,10 @@
 use super::{
-    outbound_record_layouts, ty_is_indirect_enum, BindingId, Builder, CaptureEnvOwnedLoad, HashSet,
-    HirBinding, HirExpr, HirExprKind, Instr, MirDiagnostic, MirDiagnosticKind,
-    OwnedCarrierNeutralizeTarget, OwnedCarrierParam, PendingOwnedCallArg, PendingOwnedCallSite,
-    Place, SiteId, SnapshotFieldKind,
+    base_local, instr_source_places, outbound_record_layouts, terminator_source_places,
+    ty_is_indirect_enum, BasicBlock, BindingId, Builder, CaptureEnvOwnedLoad, Disposition,
+    FieldLoadClass, HashMap, HashSet, HirBinding, HirExpr, HirExprKind, Instr, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedCarrierParam,
+    PendingOwnedCallArg, PendingOwnedCallSite, Place, ResolvedTy, SiteId, SnapshotFieldKind,
+    SuspendKind,
 };
 
 impl Builder {
@@ -38,17 +40,44 @@ impl Builder {
         )
     }
 
-    /// Propagate the original carrier authority through one aggregate field
-    /// load. Non-string owned fields are byte-copy aliases, so a later move
-    /// must neutralize the root-relative source path before terminal cleanup.
+    /// Propagate release authority through one aggregate field load.
+    ///
+    /// Registered call carriers already name their root in
+    /// `owned_carrier_neutralize`. An ordinary scope-exit tuple owner also
+    /// seeds a root-relative transfer for a `HandleTransfer` leaf: the load
+    /// byte-copies the one owned pointer, so a later ownership boundary must
+    /// clear the tuple slot before the loaded value can become a sole owner.
+    /// Inline aggregate aliases, retained strings, and `bytes` (whose MIR
+    /// ownership pass inserts an explicit retain for field loads) do not seed
+    /// this route.
     pub(crate) fn note_carrier_projection(
         &mut self,
         aggregate: Place,
         field_index: u32,
         dest: Place,
         field_ty: &hew_types::ResolvedTy,
+        site: SiteId,
     ) {
-        let Some(authority) = self.owned_carrier_authority(aggregate) else {
+        let authority = self.owned_carrier_authority(aggregate).or_else(|| {
+            let field_ty = self.subst_ty(field_ty);
+            if field_ty == ResolvedTy::Bytes
+                || self.classify_field_load(&field_ty) != Some(FieldLoadClass::HandleTransfer)
+            {
+                return None;
+            }
+            self.owned_locals
+                .iter()
+                .find(|entry| {
+                    entry.disposition == Disposition::ScopeExit
+                        && matches!(entry.ty, ResolvedTy::Tuple(_))
+                        && self.binding_locals.get(&entry.binding).copied() == Some(aggregate)
+                })
+                .map(|entry| OwnedCarrierNeutralizeTarget::ScopeExitTuple {
+                    root: aggregate,
+                    owner: (entry.binding, entry.name.clone(), site),
+                })
+        });
+        let Some(authority) = authority else {
             return;
         };
         let record_layouts = outbound_record_layouts(self);
@@ -67,14 +96,25 @@ impl Builder {
         ) {
             return;
         }
-        let (root, mut fields) = match authority {
-            OwnedCarrierNeutralizeTarget::Whole(root) => (root, Vec::new()),
-            OwnedCarrierNeutralizeTarget::Projection { root, fields } => (root, fields),
+        let (root, mut fields, scope_exit_owner) = match authority {
+            OwnedCarrierNeutralizeTarget::Whole(root) => (root, Vec::new(), None),
+            OwnedCarrierNeutralizeTarget::ScopeExitTuple { root, owner } => {
+                (root, Vec::new(), Some(owner))
+            }
+            OwnedCarrierNeutralizeTarget::Projection {
+                root,
+                fields,
+                scope_exit_owner,
+            } => (root, fields, scope_exit_owner),
         };
         fields.push(field_index);
         self.owned_carrier_neutralize.insert(
             dest,
-            OwnedCarrierNeutralizeTarget::Projection { root, fields },
+            OwnedCarrierNeutralizeTarget::Projection {
+                root,
+                fields,
+                scope_exit_owner,
+            },
         );
     }
 
@@ -366,14 +406,22 @@ impl Builder {
                 });
                 dest
             }
-            OwnedCarrierNeutralizeTarget::Projection { root, fields } => {
+            OwnedCarrierNeutralizeTarget::Projection {
+                root,
+                fields,
+                scope_exit_owner,
+            } => {
                 self.push_instr(Instr::AggregateProjectionNeutralize {
                     root,
                     fields,
                     transferee: value,
+                    scope_exit_owner,
                 });
                 self.prepared_owned_call_sources.insert(value);
                 value
+            }
+            OwnedCarrierNeutralizeTarget::ScopeExitTuple { .. } => {
+                unreachable!("scope-exit tuple authority must project before transfer")
             }
         }
     }
@@ -542,5 +590,161 @@ impl Builder {
                 }
             })
             .collect()
+    }
+}
+
+/// Reject a whole-tuple (or already-transferred field) read after an ordinary
+/// tuple projection has physically cleared its source slot.
+///
+/// Hew's checker stream currently tracks ownership at binding granularity, so
+/// consume-marking the tuple would also reject valid reads of unmoved siblings.
+/// The backend stream retains the needed field precision: sibling
+/// `TupleFieldLoad`s remain valid, while a whole-root source or another load of
+/// the cleared field would expose a partially moved value. Fail closed on the
+/// latter before codegen instead of emitting a null-bearing tuple that can
+/// escape and fault in its caller.
+pub(super) fn ordinary_projection_transfer_diagnostics(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+) -> Vec<MirDiagnostic> {
+    let mut diagnostics = Vec::new();
+    let mut emitted = HashSet::new();
+
+    for block in blocks {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            let Instr::AggregateProjectionNeutralize {
+                root,
+                fields,
+                scope_exit_owner: Some((binding, name, transfer_site)),
+                ..
+            } = instr
+            else {
+                continue;
+            };
+
+            let violating_block = first_invalid_projection_root_use(
+                blocks,
+                suspend_kinds,
+                block.id,
+                instr_index.saturating_add(1),
+                *root,
+                fields,
+            );
+            let Some(violating_block) = violating_block else {
+                continue;
+            };
+
+            let used_at = violating_block
+                .statements
+                .iter()
+                .rev()
+                .find_map(|statement| match statement {
+                    MirStatement::Use {
+                        binding: used_binding,
+                        site,
+                        ..
+                    } if used_binding == binding => Some(*site),
+                    _ => None,
+                })
+                .unwrap_or(*transfer_site);
+            if emitted.insert((*binding, used_at)) {
+                diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UseAfterConsume {
+                        binding: *binding,
+                        name: name.clone(),
+                        consumed_at: *transfer_site,
+                        used_at,
+                    },
+                    note: format!(
+                        "tuple field ownership transferred at site {transfer_site:?}; only unmoved sibling \
+                         projections remain readable afterward, so using or returning the whole \
+                         tuple `{name}` would expose the cleared field"
+                    ),
+                });
+            }
+        }
+    }
+
+    diagnostics
+}
+
+fn first_invalid_projection_root_use<'a>(
+    blocks: &'a [BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    start_block: u32,
+    start_index: usize,
+    root: Place,
+    fields: &[u32],
+) -> Option<&'a BasicBlock> {
+    let mut frontier = vec![(start_block, start_index)];
+    let mut visited = HashSet::new();
+    while let Some((block_id, first_index)) = frontier.pop() {
+        if !visited.insert((block_id, first_index)) {
+            continue;
+        }
+        let Some(block) = blocks.iter().find(|block| block.id == block_id) else {
+            continue;
+        };
+        let mut overwritten = false;
+        for instr in &block.instructions[first_index..] {
+            if projection_root_use_is_invalid(instr, root, fields) {
+                return Some(block);
+            }
+            if crate::dataflow::instr_reads_writes(instr)
+                .1
+                .into_iter()
+                .any(|place| place == root)
+            {
+                overwritten = true;
+                break;
+            }
+        }
+        if overwritten {
+            continue;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .into_iter()
+            .any(|place| same_base_local(place, root))
+        {
+            return Some(block);
+        }
+        if crate::dataflow::terminator_write_places(&block.terminator)
+            .into_iter()
+            .any(|place| place == root)
+        {
+            continue;
+        }
+        frontier.extend(
+            block
+                .successors()
+                .into_iter()
+                .map(|successor| (successor, 0)),
+        );
+    }
+    None
+}
+
+fn same_base_local(place: Place, root: Place) -> bool {
+    base_local(place).is_some() && base_local(place) == base_local(root)
+}
+
+fn projection_root_use_is_invalid(instr: &Instr, root: Place, fields: &[u32]) -> bool {
+    match instr {
+        // A distinct sibling remains live after the projected slot is cleared.
+        Instr::TupleFieldLoad {
+            tuple, field_index, ..
+        } if same_base_local(*tuple, root) => fields.first() == Some(field_index),
+        // Structural cleanup is precisely why the source slot was cleared; all
+        // supported drop paths are null-safe for the transferred handle leaf.
+        Instr::Drop { place, .. } if same_base_local(*place, root) => false,
+        Instr::RecordFieldDrop { record, .. } if same_base_local(*record, root) => false,
+        Instr::FieldDropInPlace { base, .. } if same_base_local(*base, root) => false,
+        Instr::ValueSnapshotDrop { value, .. } if same_base_local(*value, root) => false,
+        Instr::WitnessDropGlue { place, .. } if same_base_local(*place, root) => false,
+        // Further disjoint field transfers on the same tuple are valid.
+        Instr::AggregateProjectionNeutralize { .. } => false,
+        _ => instr_source_places(instr)
+            .into_iter()
+            .any(|place| same_base_local(place, root)),
     }
 }

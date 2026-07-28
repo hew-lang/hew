@@ -27,6 +27,7 @@ fn blocks() -> Vec<BasicBlock> {
                     root: Place::Local(0),
                     fields: vec![0],
                     transferee: Place::Local(1),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Branch {
@@ -148,6 +149,7 @@ fn empty_enum_carrier_blocks() -> Vec<BasicBlock> {
                     root: Place::Local(0),
                     fields: vec![0],
                     transferee: Place::Local(1),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Branch {
@@ -732,6 +734,7 @@ fn nested_blocks() -> Vec<BasicBlock> {
                     root: Place::Local(0),
                     fields: vec![0, 1],
                     transferee: Place::Local(3),
+                    scope_exit_owner: None,
                 },
             ],
             terminator: Terminator::Branch {
@@ -888,6 +891,7 @@ fn ordinary_unique_same_block_forwarding_remains_admitted() {
                     root: Place::Local(0),
                     fields: vec![0],
                     transferee: Place::Local(1),
+                    scope_exit_owner: None,
                 },
                 Instr::Move {
                     dest: Place::Local(2),

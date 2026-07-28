@@ -451,7 +451,7 @@ tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(crypto-sign):"
 
 # ---------------------------------------------------------------------------
-# WASM-TODO backlog (41 rows; mirror of the backlog table).
+# WASM-TODO backlog (39 rows; mirror of the backlog table).
 # ---------------------------------------------------------------------------
 
 [[backlog]]
@@ -611,10 +611,10 @@ blocker = "A cooperative WASM implementation of the native dual-queue Duplex run
 tracking_label = "WASM-TODO(duplex):"
 
 [[backlog]]
-id = "dyn-trait-objects"
-gap = "Owned dynamic trait-object lowering on wasm32"
-blocker = "Target-width vtable layout and wasm32 dyn-box allocation/drop lowering"
-tracking_label = "WASM-TODO(dyn-trait-objects):"
+id = "dyn-trait-returns"
+gap = "Returned dynamic trait objects across function boundaries"
+blocker = "Heap-promotion of coercion-site concrete storage before the fat pointer escapes its defining frame; return signatures fail closed until that lowering exists"
+tracking_label = "WASM-TODO(dyn-trait-returns):"
 
 [[backlog]]
 id = "http-client"
@@ -627,12 +627,6 @@ id = "lambda-actors"
 gap = "Lambda-actor construction parity"
 blocker = "A cooperative WASM implementation of the native lambda-actor runtime"
 tracking_label = "WASM-TODO(lambda-actors):"
-
-[[backlog]]
-id = "layout-width"
-gap = "Target-width runtime layout descriptors"
-blocker = "wasm32-correct descriptor shape and element-size arithmetic for layout-aware collection operations"
-tracking_label = "WASM-TODO(layout-width):"
 
 [[backlog]]
 id = "profiler"
@@ -651,12 +645,6 @@ id = "runtime-traps"
 gap = "WASM actor-trap reporting parity"
 blocker = "Per-kind trap reporting and actor-crash recovery without native POSIX or SEH signal recovery"
 tracking_label = "WASM-TODO(runtime-traps):"
-
-[[backlog]]
-id = "sandbox-clone"
-gap = "Record and enum deep-clone lowering in sandbox bytecode"
-blocker = "Sandbox VM clone opcodes and structural rollback/drop parity for owned fields"
-tracking_label = "WASM-TODO(sandbox-clone):"
 
 [[backlog]]
 id = "smtp"

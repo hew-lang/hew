@@ -4642,6 +4642,17 @@ run_accept_expect_stdout record_clone_string_field
 # User-defined record `.clone()`: original stays live and usable after the clone.
 run_accept_expect_stdout record_clone_independence
 
+# A returned dyn value would retain a pointer into the callee's dead frame.
+# Reject the signature before MIR/codegen until the return bridge promotes the
+# concrete storage and transfers drop authority to the caller.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/dyn_trait_return.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected dyn_trait_return fixture to fail" >&2
+  exit 1
+fi
+grep -q 'heap-promoted before its fat pointer can escape' "${reject_output}"
+
 # User-defined record `.clone()` on a record containing an opaque handle must be rejected.
 if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/record_clone_unclonable_field.hew" \

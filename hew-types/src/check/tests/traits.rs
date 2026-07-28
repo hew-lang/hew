@@ -105,6 +105,44 @@ fn module_local_dyn_trait_method_records_vtable_call() {
 }
 
 #[test]
+fn dyn_trait_return_signature_fails_closed_before_codegen() {
+    let source = r#"
+        trait Named {
+            fn name(val: Self) -> string;
+        }
+
+        type Person {
+            name: string;
+        }
+
+        impl Named for Person {
+            fn name(person: Person) -> string { person.name }
+        }
+
+        fn make_person() -> dyn Named {
+            Person { name: "Ada" }
+        }
+    "#;
+
+    let (errors, _) = parse_and_check(source);
+    let boundary_errors: Vec<_> = errors
+        .iter()
+        .filter(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error
+                    .message
+                    .contains("heap-promoted before its fat pointer can escape")
+        })
+        .collect();
+    assert_eq!(
+        boundary_errors.len(),
+        1,
+        "a dyn-returning signature must fail closed exactly once at the return \
+         annotation; got: {errors:#?}"
+    );
+}
+
+#[test]
 fn structural_satisfies_e1_guard_associated_types() {
     let mut checker = make_checker_with_trait("Indexed", &["get"], true, false);
     assert!(

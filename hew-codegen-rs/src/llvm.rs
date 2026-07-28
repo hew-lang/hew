@@ -31846,7 +31846,7 @@ fn build_module_for_target<'ctx>(
     // method_decl_order`). All three symbol families are guaranteed
     // present by the two emission passes immediately above (drop fns
     // and thunks); the size/align values are sourced from the LLVM
-    // ABI layout of `inst.concrete_type` against the host target
+    // ABI layout of `inst.concrete_type` against the active target
     // data, the same authority the drop-SITE `hew_dyn_box_free(ptr,
     // size, align)` call uses (`lower_dyn_trait_vtable_drop`, the
     // HeapBoxed arm) so the dealloc layout cannot drift from the

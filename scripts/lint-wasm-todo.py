@@ -34,9 +34,28 @@ EXCLUDED_PREFIXES = (
     ".github/",
     ".tmp/",
     "docs/",
-    "hew-capability-gen/src/",
-    "hew-capability-gen/tests/",
 )
+
+# Exact descriptive occurrences inside otherwise actionable source trees.
+#
+# The whole files must remain scannable: adding an actionable marker beside
+# this prose must still require an authority row. Matching the complete
+# stripped line makes this allowlist narrow and reviewable without coupling it
+# to line numbers that move during ordinary edits.
+DESCRIPTIVE_LINES = {
+    "hew-capability-gen/src/lib.rs": frozenset(
+        {
+            "/// WASM-TODO backlog rows — one per row of the backlog table.",
+            "/// A WASM-TODO backlog row.",
+        }
+    ),
+    "hew-capability-gen/tests/row_count.rs": frozenset(
+        {
+            '"## WASM-TODO backlog",',
+            '"TOML backlog count ({}) does not match prose WASM-TODO backlog rows ({}).",',
+        }
+    ),
+}
 
 
 class LintError(Exception):
@@ -65,8 +84,11 @@ def parse_authority(path: Path) -> frozenset[str]:
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as err:
         raise LintError(f"cannot parse {path}: {err}") from err
 
-    if data.get("manifest_version") != 1:
-        raise LintError("wasm capability manifest must declare `manifest_version = 1`")
+    manifest_version = data.get("manifest_version")
+    if type(manifest_version) is not int or manifest_version != 1:
+        raise LintError(
+            "wasm capability manifest `manifest_version` must be the integer 1"
+        )
 
     backlog = data.get("backlog")
     if not isinstance(backlog, list) or not backlog:
@@ -138,6 +160,8 @@ def scan_markers(
             continue
 
         for line_number, line in enumerate(text.splitlines(), start=1):
+            if line.strip() in DESCRIPTIVE_LINES.get(relative, frozenset()):
+                continue
             offset = 0
             while True:
                 token_offset = line.find(TOKEN, offset)
@@ -195,68 +219,147 @@ def _manifest(*ids: str) -> str:
     return "manifest_version = 1\n\n" + "\n\n".join(rows) + "\n"
 
 
+@dataclass(frozen=True)
+class SelfTestCase:
+    name: str
+    manifest_src: str
+    source_src: str
+    expected_error: str | None
+    source_path: str = "source.rs"
+    expected_markers: int = 1
+
+
 def self_test() -> None:
     cases = (
-        ("good", _manifest("channels"), "WASM-TODO(channels): live gap\n", True),
-        (
-            "malformed",
+        SelfTestCase(
+            "good",
             _manifest("channels"),
-            "WASM-TODO(channels) missing colon\n",
-            False,
+            "WASM-TODO(channels): live gap\n",
+            None,
         ),
-        (
+        SelfTestCase(
+            "manifest-version-bool",
+            _manifest("channels").replace(
+                "manifest_version = 1", "manifest_version = true"
+            ),
+            "WASM-TODO(channels): gap\n",
+            "manifest_version` must be the integer 1",
+        ),
+        SelfTestCase(
+            "manifest-version-float",
+            _manifest("channels").replace(
+                "manifest_version = 1", "manifest_version = 1.0"
+            ),
+            "WASM-TODO(channels): gap\n",
+            "manifest_version` must be the integer 1",
+        ),
+        SelfTestCase(
+            "manifest-version-wrong-integer",
+            _manifest("channels").replace(
+                "manifest_version = 1", "manifest_version = 2"
+            ),
+            "WASM-TODO(channels): gap\n",
+            "manifest_version` must be the integer 1",
+        ),
+        SelfTestCase(
             "malformed-manifest",
             "manifest_version = [\n",
             "WASM-TODO(channels): gap\n",
-            False,
+            "cannot parse",
         ),
-        (
-            "legacy-issue",
+        SelfTestCase(
+            "malformed-mixed-corpus",
             _manifest("channels"),
-            "WASM-TODO(#1451): closed issue\n",
-            False,
+            "WASM-TODO(channels): live gap\nWASM-TODO(channels) missing colon\n",
+            "malformed marker",
         ),
-        (
+        SelfTestCase(
+            "legacy-issue-mixed-corpus",
+            _manifest("channels"),
+            "WASM-TODO(channels): live gap\nWASM-TODO(#1451): closed issue\n",
+            "malformed marker",
+        ),
+        SelfTestCase(
             "unknown-id",
             _manifest("channels"),
             "WASM-TODO(not-authoritative): gap\n",
-            False,
+            "unknown WASM backlog id `not-authoritative`",
         ),
-        (
+        SelfTestCase(
             "duplicate-id",
             _manifest("channels", "channels"),
             "WASM-TODO(channels): gap\n",
-            False,
+            "duplicate backlog id `channels`",
         ),
-        (
+        SelfTestCase(
             "empty-authority",
             "manifest_version = 1\n",
             "WASM-TODO(channels): gap\n",
-            False,
+            "must contain at least one [[backlog]] row",
         ),
-        ("empty-corpus", _manifest("channels"), "no markers here\n", False),
+        SelfTestCase(
+            "empty-corpus",
+            _manifest("channels"),
+            "no markers here\n",
+            "actionable WASM-TODO corpus is empty",
+            expected_markers=0,
+        ),
+        SelfTestCase(
+            "generator-description-is-non-actionable",
+            _manifest("channels"),
+            "/// A WASM-TODO backlog row.\nWASM-TODO(channels): live gap\n",
+            None,
+            source_path="hew-capability-gen/src/lib.rs",
+        ),
+        SelfTestCase(
+            "generator-hidden-marker-counterfactual",
+            _manifest("channels"),
+            "WASM-TODO(not-authoritative): hidden generator gap\n",
+            "unknown WASM backlog id `not-authoritative`",
+            source_path="hew-capability-gen/src/hidden.rs",
+        ),
     )
 
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="hew-wasm-todo-selftest-") as temp:
         root = Path(temp)
         manifest_path = root / "wasm-capability-manifest.toml"
-        source_path = root / "source.rs"
-        for name, manifest_src, source_src, expected_ok in cases:
-            manifest_path.write_text(manifest_src, encoding="utf-8")
-            source_path.write_text(source_src, encoding="utf-8")
+        for case in cases:
+            manifest_path.write_text(case.manifest_src, encoding="utf-8")
+            source_path = root / case.source_path
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text(case.source_src, encoding="utf-8")
             try:
-                lint(root, manifest_path, ["source.rs"])
-                actual_ok = True
-            except LintError:
-                actual_ok = False
-            if actual_ok != expected_ok:
-                failures.append(
-                    f"{name}: expected {'pass' if expected_ok else 'failure'}, "
-                    f"got {'pass' if actual_ok else 'failure'}"
-                )
+                markers = lint(root, manifest_path, [case.source_path])
+            except LintError as err:
+                if case.expected_error is None:
+                    failures.append(f"{case.name}: unexpected failure: {err}")
+                elif case.expected_error not in str(err):
+                    failures.append(
+                        f"{case.name}: expected diagnostic containing "
+                        f"{case.expected_error!r}, got {str(err)!r}"
+                    )
+                else:
+                    print(
+                        f"lint-wasm-todo self-test: {case.name}: ok",
+                        file=sys.stderr,
+                    )
             else:
-                print(f"lint-wasm-todo self-test: {name}: ok", file=sys.stderr)
+                if case.expected_error is not None:
+                    failures.append(
+                        f"{case.name}: expected failure containing "
+                        f"{case.expected_error!r}, got pass"
+                    )
+                elif len(markers) != case.expected_markers:
+                    failures.append(
+                        f"{case.name}: expected {case.expected_markers} marker(s), "
+                        f"got {len(markers)}"
+                    )
+                else:
+                    print(
+                        f"lint-wasm-todo self-test: {case.name}: ok",
+                        file=sys.stderr,
+                    )
     if failures:
         raise LintError("\n".join(failures))
 

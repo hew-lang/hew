@@ -45,7 +45,7 @@ hew-suite-tests	min	1169	200	tests executed by hew test tests/hew under the suit
 ll-oracle-fixtures	exact	15	-	ll-oracle corpus fixtures under tests/ll-oracle/corpus
 o2-differential-outcomes	min	1169	200	per-test outcomes compared by the O0-vs-O2 differential gate
 sandbox-vm-binaries	exact	4	-	VM-dependent hew-sandbox-wasm test binaries requiring whole-binary exclusion
-stdlib-int-surface-files	exact	73	-	tracked std/ .hew files scanned for removed int/uint aliases
+stdlib-int-surface-files	exact	74	-	tracked std/ .hew files scanned for removed int/uint aliases
 stdlib-proof-modules	exact	69	-	public stdlib modules mapped to executable proof fixtures
 stdlib-ratchet-files	exact	73	-	std/ .hew files type-checked by scripts/stdlib-ratchet.sh
 surface-example-expectations	exact	14	-	v0.5 surface examples compared against a paired .expected

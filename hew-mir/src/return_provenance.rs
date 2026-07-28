@@ -2690,6 +2690,14 @@ pub(crate) struct CallScrutineeProvenance {
     /// either fresh or parameter-derived; any `OPAQUE` path, unanalysed item,
     /// indirect callee, or ownership-opaque extern remains denied.
     pub(crate) owned_string_return_carriers: HashSet<hew_hir::ItemId>,
+    /// Emitted MIR symbols for [`Self::owned_string_return_carriers`].
+    ///
+    /// MIR `Terminator::Call` has already erased the HIR `ItemId`, so the
+    /// string-temp/drop derivation must query this emitted-symbol projection
+    /// instead of guessing that every non-runtime callee returns a `+1`.
+    /// Monomorphisations are keyed by their origin verdict and recorded under
+    /// the concrete mangled symbol that reaches MIR.
+    pub(crate) owned_string_return_carrier_symbols: HashSet<String>,
 }
 
 impl Default for CallScrutineeProvenance {
@@ -2701,6 +2709,7 @@ impl Default for CallScrutineeProvenance {
             may_mutate: HashMap::new(),
             fresh_owner_verdicts: FreshOwnerVerdicts::denying_all(),
             owned_string_return_carriers: HashSet::new(),
+            owned_string_return_carrier_symbols: HashSet::new(),
         }
     }
 }
@@ -2791,6 +2800,20 @@ pub(crate) fn build_call_scrutinee_provenance(
         .filter_map(|(&id, bits)| {
             (!bits.is_opaque() && !launders_opaque_extern.contains(&id)).then_some(id)
         })
+        .collect::<HashSet<_>>();
+    let owned_string_return_carrier_symbols = origin_fns
+        .iter()
+        .filter(|entry| {
+            entry.1.type_params.is_empty() && owned_string_return_carriers.contains(entry.0)
+        })
+        .map(|entry| entry.1.name.clone())
+        .chain(
+            module
+                .monomorphisations
+                .iter()
+                .filter(|mono| owned_string_return_carriers.contains(&mono.key.origin))
+                .map(|mono| mono.mangled_name.clone()),
+        )
         .collect();
     CallScrutineeProvenance {
         provenance,
@@ -2799,6 +2822,7 @@ pub(crate) fn build_call_scrutinee_provenance(
         may_mutate,
         fresh_owner_verdicts,
         owned_string_return_carriers,
+        owned_string_return_carrier_symbols,
     }
 }
 

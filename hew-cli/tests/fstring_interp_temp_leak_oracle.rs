@@ -310,6 +310,37 @@ fn fstring_mixed_projection_forward_return_loop_source(frames: usize) -> String 
     )
 }
 
+/// A mutable string parameter has an implicit borrowed entry definition plus
+/// the explicit owned reassignment definition. The false branch returns the
+/// entry alias, so the callee must retain it even though the MIR writer scan
+/// also sees the sibling owned `Move`.
+///
+/// Before the fail-closed coverage check, the caller released an unretained
+/// alias and then the still-live `owned` binding released the same buffer:
+/// allocator poisoning reported a missing C-string header sentinel.
+fn fstring_conditional_var_param_return_loop_source(frames: usize) -> String {
+    let expected_total: usize = (0..frames).sum::<usize>() * 2;
+    format!(
+        "fn pick(var value: string, replace: bool) -> string {{\n\
+         \x20   if replace {{ value = \"replacement\"; }}\n\
+         \x20   value\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let owned = f\"live-token-{{i}}\";\n\
+         \x20       println(f\"carrier={{pick(owned, false)}}\");\n\
+         \x20       if owned.len() < 12 {{ return 80; }}\n\
+         \x20       total = total + i + i;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total != {expected_total} {{ return 79; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 /// Match-payload variant: an `Option<string>` payload binder interpolated
 /// directly. `f"v={s}"` lowers the binder through the stdlib `impl Display
 /// for string` (`string::fmt`), a Hew-bodied callee — which the enum
@@ -753,6 +784,21 @@ fn fstring_mixed_projection_forward_return_freed_exactly_once_under_malloc_scrib
     assert_no_double_free(
         "fstring_mixed_projection_forward_return_df",
         &fstring_mixed_projection_forward_return_loop_source(200),
+    );
+}
+
+/// Regression for the borrowed parameter entry definition that has no MIR
+/// writer. The false branch must return a retained share; otherwise the direct
+/// consumer frees `owned` and its later read/drop trips the poisoned allocator.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn fstring_conditional_var_param_return_survives_malloc_scribble() {
+    assert_no_double_free(
+        "fstring_conditional_var_param_return_df",
+        &fstring_conditional_var_param_return_loop_source(200),
     );
 }
 

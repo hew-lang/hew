@@ -479,6 +479,12 @@ fn opaque_return_path_does_not_mint_a_string_carrier_owner() {
         "an indirect return path is ownership-opaque and must not gain a \
          caller-side return-carrier owner"
     );
+    assert_eq!(
+        inline_string_drops(&pl, "caller"),
+        0,
+        "the nested-temp derivation must consult the same return-carrier \
+         authority; a non-runtime symbol is not by itself proof of a `+1`"
+    );
 }
 
 // ---------------------------------------------------------------------------

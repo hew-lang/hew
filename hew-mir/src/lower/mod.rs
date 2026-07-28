@@ -5162,6 +5162,9 @@ pub(crate) fn lower_function(
         &builder.suspend_kinds,
         &builder.locals,
         &builder.binding_locals,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
         &mut builder.instr_spans,
     );
     // #2542 — release nested fresh-owned `bytes` user-call-result temporaries

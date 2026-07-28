@@ -369,6 +369,9 @@ pub(super) fn elaborate(
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
             &builder.call_scrutinee_provenance.extern_table,
+            &builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
         )
         .allowed;
         derived.extend(derive_cow_fresh_borrowed_owner(
@@ -380,6 +383,9 @@ pub(super) fn elaborate(
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
             &builder.call_scrutinee_provenance.extern_table,
+            &builder
+                .call_scrutinee_provenance
+                .owned_string_return_carrier_symbols,
         ));
         for states in dataflow_result.exit_states.values() {
             for (binding, state) in states {

@@ -1873,14 +1873,12 @@ fn recv_handler_conditional_record_ingress_retains_before_guarded_drop() {
     );
 }
 
-/// A cyclic record ingress cannot retain on every execution: the actor-state
-/// overwrite helper neutralizes an equal old/new string leaf, so a second
-/// unconditional retain would have no balancing release. The MIR marker
-/// therefore carries the exact destination leaf and codegen retains only when
-/// that leaf differs. This leaves the acyclic conditional-branch case above on
-/// its unconditional retain.
+/// A cyclic record ingress carries the exact actor-state leaf path while
+/// retaining each borrowed incoming string. The overwrite helper releases the
+/// old String owner even on equal-pointer replacement, balancing one mint
+/// against one release on every iteration.
 #[test]
-fn recv_handler_loop_carried_record_ingress_retains_only_when_state_leaf_differs() {
+fn recv_handler_loop_carried_record_ingress_retains_borrowed_owner() {
     let pipeline = lower_source(
         r"
         type Wrap { name: string }
@@ -1924,26 +1922,29 @@ fn recv_handler_loop_carried_record_ingress_retains_only_when_state_leaf_differs
             record_block.instructions[..record_index].last(),
             Some(Instr::StringRetain {
                 value: Place::Local(0),
-                condition: hew_mir::StringRetainCondition::ActorStateRecordFieldDiffers {
+                condition: hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress {
                     state_field: hew_mir::FieldOffset(1),
                     record_path,
+                    ..
                 },
             }) if record_path.as_slice() == [hew_mir::FieldOffset(0)]
         ),
-        "loop-carried ingress must compare the existing held.name leaf before \
-         retaining the mailbox string: {:?}",
+        "loop-carried ingress must retain the mailbox string at held.name: {:?}",
         record_block.instructions
     );
     assert!(
-        !record_block.instructions.iter().any(|instr| matches!(
-            instr,
-            Instr::StringRetain {
-                condition: hew_mir::StringRetainCondition::Always,
-                ..
-            }
-        )),
-        "the cyclic ingress must not also mint an unconditional owner: {:?}",
-        record_block.instructions
+        !raw.blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::StringRetain {
+                    condition: hew_mir::StringRetainCondition::Always,
+                    ..
+                }
+            )),
+        "the cyclic ingress must use the actor-state ingress witness: {:?}",
+        raw.blocks
     );
 
     let handler = pipeline
@@ -1975,7 +1976,6 @@ fn recv_handler_loop_record_ingress_tracks_move_chains_and_nested_leaf_paths() {
         r"
         type Wrap { name: string }
         type Inner { name: string }
-        type Outer { inner: Inner }
         actor Fan {
             var seen: i64;
             var flat: Wrap;
@@ -2031,9 +2031,10 @@ fn recv_handler_loop_record_ingress_tracks_move_chains_and_nested_leaf_paths() {
         assert!(
             conditions.iter().any(|condition| matches!(
                 condition,
-                hew_mir::StringRetainCondition::ActorStateRecordFieldDiffers {
+                hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress {
                     state_field: actual_state,
                     record_path,
+                    ..
                 } if *actual_state == state_field && *record_path == expected_path
             )),
             "{handler_name} must carry the exact actor-state leaf path: {conditions:?}"
@@ -2042,10 +2043,322 @@ fn recv_handler_loop_record_ingress_tracks_move_chains_and_nested_leaf_paths() {
             conditions
                 .iter()
                 .all(|condition| !matches!(condition, hew_mir::StringRetainCondition::Always)),
-            "{handler_name} must not retain unconditionally in its cyclic ingress: \
+            "{handler_name} must use the actor-state ingress witness: \
              {conditions:?}"
         );
     }
+}
+
+/// The loop-carried state sink may land in a successor block when a branch
+/// separates construction from assignment. The lineage proof must cross the
+/// split/join while keeping the ingress retain on the path-defining
+/// construction.
+#[test]
+fn recv_handler_loop_record_ingress_tracks_cfg_split_to_state_sink() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var seen: i64;
+            var held: Wrap;
+            receive fn route(label: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    let next = Wrap { name: label };
+                    if i > 0 { seen = seen + 1; }
+                    held = next;
+                    i = i + 1;
+                }
+                seen = seen + 1;
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("split-ingress handler raw MIR present");
+    let record_block = handler
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .instructions
+                .iter()
+                .any(|instr| matches!(instr, Instr::RecordInit { .. }))
+        })
+        .expect("record construction block");
+    let retain_block = handler
+        .blocks
+        .iter()
+        .find(|block| {
+            block.instructions.windows(2).any(|pair| {
+                matches!(
+                    pair,
+                    [
+                        Instr::StringRetain {
+                            condition:
+                                hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress {
+                                    state_field: hew_mir::FieldOffset(1),
+                                    record_path,
+                                    ..
+                                },
+                            ..
+                        },
+                        Instr::RecordInit { .. }
+                    ] if record_path.as_slice() == [hew_mir::FieldOffset(0)]
+                )
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "ingress retain immediately before split-ingress construction: {:?}",
+                handler.blocks
+            )
+        });
+    assert_eq!(
+        record_block.id, retain_block.id,
+        "the ingress retain must stay on the path-defining construction"
+    );
+    assert!(
+        handler.blocks.iter().any(|block| {
+            block.id != retain_block.id
+                && block
+                    .instructions
+                    .iter()
+                    .any(|instr| matches!(instr, Instr::ActorStateFieldStore { .. }))
+        }),
+        "the regression witness must keep construction and state store in different blocks: {:?}",
+        handler.blocks
+    );
+    assert!(
+        handler
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .all(|instr| !matches!(
+                instr,
+                Instr::StringRetain {
+                    condition: hew_mir::StringRetainCondition::Always,
+                    ..
+                }
+            )),
+        "the split cyclic ingress must use the actor-state ingress witness: {:?}",
+        handler.blocks
+    );
+}
+
+/// Alternative constructors and alternative nested leaf paths must keep their
+/// ingress retains on the branch that actually selected that value. Moving
+/// every retain to the shared state store would execute all alternatives.
+#[test]
+fn recv_handler_loop_record_ingress_keeps_branch_selected_paths_exclusive() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        type Inner { name: string }
+        type Pair { left: Inner; right: Inner }
+        type Outer { inner: Inner }
+        actor Fan {
+            var seen: i64;
+            var flat: Wrap;
+            var pair: Pair;
+            var repeated: Pair;
+            receive fn route(label: string, other: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    let next = if i % 2 == 0 {
+                        Wrap { name: label }
+                    } else {
+                        Wrap { name: label }
+                    };
+                    flat = next;
+                    let named = Inner { name: label };
+                    let alternate = Inner { name: other };
+                    let nested = if i % 2 == 0 {
+                        Pair { left: named, right: alternate }
+                    } else {
+                        Pair { left: alternate, right: named }
+                    };
+                    pair = nested;
+                    repeated = Pair {
+                        left: Inner { name: label },
+                        right: Inner { name: label }
+                    };
+                    i = i + 1;
+                }
+                seen = seen + 1;
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("branch-selected handler raw MIR present");
+    let mut conditional = Vec::new();
+    for block in &handler.blocks {
+        for instr in &block.instructions {
+            if let Instr::StringRetain {
+                condition:
+                    hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress {
+                        state_field,
+                        record_path,
+                    },
+                ..
+            } = instr
+            {
+                conditional.push((block.id, state_field.0, record_path.clone()));
+            }
+        }
+    }
+    assert_eq!(
+        conditional
+            .iter()
+            .filter(|(_, field, path)| {
+                *field == 1 && path.as_slice() == [hew_mir::FieldOffset(0)]
+            })
+            .count(),
+        2,
+        "each alternative flat constructor needs one exclusive retain: {conditional:?}"
+    );
+    for path in [
+        vec![hew_mir::FieldOffset(0), hew_mir::FieldOffset(0)],
+        vec![hew_mir::FieldOffset(1), hew_mir::FieldOffset(0)],
+    ] {
+        assert_eq!(
+            conditional
+                .iter()
+                .filter(|(_, field, actual)| *field == 2 && **actual == path)
+                .count(),
+            2,
+            "each nested path must retain only on its selecting branch: {conditional:?}"
+        );
+    }
+    assert_eq!(
+        conditional
+            .iter()
+            .filter(|(_, field, _)| *field == 3)
+            .count(),
+        2,
+        "the two repeated-source occurrences each need a retain site: {conditional:?}"
+    );
+}
+
+#[test]
+fn recv_handler_nested_branch_ingress_retains_before_join() {
+    let pipeline = lower_source(
+        r"
+        type Inner { name: string }
+        type Outer { inner: Inner }
+        actor Fan {
+            var held: Outer;
+            receive fn route(label: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    let selected = if i % 2 == 0 {
+                        Inner { name: label }
+                    } else {
+                        Inner { name: label }
+                    };
+                    held = Outer { inner: selected };
+                    i = i + 1;
+                }
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("nested branch handler raw MIR present");
+    let retain_blocks = handler
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            block.instructions.iter().any(|instr| matches!(
+                instr,
+                Instr::StringRetain {
+                    condition: hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress {
+                        state_field: hew_mir::FieldOffset(0),
+                        record_path,
+                    },
+                    ..
+                } if record_path.as_slice()
+                    == [hew_mir::FieldOffset(0), hew_mir::FieldOffset(0)]
+            ))
+            .then_some(block.id)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retain_blocks.len(),
+        2,
+        "both nested alternatives need a branch-local retain: {:?}",
+        handler.blocks
+    );
+    assert_ne!(
+        retain_blocks[0], retain_blocks[1],
+        "nested alternatives must not be hoisted together at the common Outer constructor"
+    );
+}
+
+/// A constructed local that can leave the handler without reaching actor state
+/// still needs an ordinary owner for its scope-exit record drop. The CFG proof
+/// must reject the state-ingress witness on that path.
+#[test]
+fn recv_handler_record_ingress_with_non_store_exit_retains_unconditionally() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var held: Wrap;
+            receive fn route(label: string, store: bool, count: i64) {
+                var i = 0;
+                while i < count {
+                    let next = Wrap { name: label };
+                    if !store { return; }
+                    held = next;
+                    i = i + 1;
+                }
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("early-exit handler raw MIR present");
+    let conditions = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::StringRetain { condition, .. } => Some(condition),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        conditions
+            .iter()
+            .any(|condition| matches!(condition, hew_mir::StringRetainCondition::Always)),
+        "the non-store exit must keep an owner for the local record drop: {conditions:?}"
+    );
+    assert!(
+        conditions.iter().all(|condition| !matches!(
+            condition,
+            hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress { .. }
+        )),
+        "a state-ingress owner is unsound when another path drops the local record: \
+         {conditions:?}"
+    );
 }
 
 /// #2747 — a by-value owned-aggregate RECORD message param delivered to an actor

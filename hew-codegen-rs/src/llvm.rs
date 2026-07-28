@@ -5388,10 +5388,11 @@ pub(crate) fn get_or_declare_enum_drop_inplace<'ctx>(
 /// Lookup-or-declare the synthesised per-record overwrite-release helper
 /// `fn(*mut old, *const new)`. Called by `lower_actor_state_field_store`
 /// before a record-typed state field is overwritten: the body neutralises
-/// (nulls) every old heap leaf whose pointer reappears anywhere in the
-/// incoming value, then runs `__hew_record_drop_inplace_<Record>` over
-/// what remains. See `emit_record_overwrite_release_body` for the alias
-/// model and the leak-over-UAF posture.
+/// (nulls) aliasing old non-String heap leaves, leaves old String owners for
+/// the drop spine to release, then runs
+/// `__hew_record_drop_inplace_<Record>` over what remains. See
+/// `emit_record_overwrite_release_body` for the alias model and the
+/// leak-over-UAF posture.
 fn get_or_declare_record_overwrite_release<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -9467,8 +9468,9 @@ fn emit_overwrite_neutralize_slot<'ctx>(
 }
 
 /// NEUTRALISE step: walk the OLD value rooted at `base`, nulling every
-/// owned heap leaf that reappears in the collected new-leaf `slots`, plus
-/// the unconditional no-release kinds (IoHandle, ClosurePair).
+/// aliasing non-String heap leaf plus the unconditional no-release kinds
+/// (IoHandle, ClosurePair). String ingress is retained in MIR, so old String
+/// owners remain live for the drop spine to release.
 #[allow(clippy::too_many_arguments)]
 fn emit_overwrite_neutralize_leaves<'ctx>(
     cx: &OverwriteReleaseCx<'_, 'ctx>,
@@ -9492,8 +9494,13 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
         })?;
         let label = format!("ow_old_d{depth}_f{idx}");
         match kind {
-            StateFieldCloneKind::String
-            | StateFieldCloneKind::Rc
+            StateFieldCloneKind::String => {
+                // MIR retains every borrowed string entering an actor-state
+                // record before this helper runs. Leave the old string slot
+                // intact so the drop spine releases its owner even when the
+                // same pointer reappears in the incoming record.
+            }
+            StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
             | StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
@@ -13599,11 +13606,11 @@ fn lower_instruction_with_cancel_drops(
                 StringRetainCondition::Always => {
                     retain_string_value(fn_ctx, *value, "mir_share")?;
                 }
-                StringRetainCondition::ActorStateRecordFieldDiffers {
+                StringRetainCondition::ActorStateRecordBorrowedIngress {
                     state_field,
                     record_path,
                 } => {
-                    retain_string_if_actor_state_record_field_differs(
+                    retain_string_for_actor_state_record_borrowed_ingress(
                         fn_ctx,
                         *value,
                         *state_field,
@@ -15782,15 +15789,69 @@ fn retain_string_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> Cod
     Ok(())
 }
 
-/// Retain a loop-carried message string only when the actor-state record leaf
-/// receiving it does not already hold the same handle.
+/// Retain a borrowed loop-carried message string entering actor-state.
 ///
-/// `ActorStateFieldStore`'s record overwrite helper releases a differing old
-/// leaf and neutralizes an equal old/new alias. Pairing that helper with this
-/// conditional retain keeps the owner count balanced across zero, one, or
-/// arbitrarily many loop iterations: the first/differing store mints the
-/// state's owner, while repeated equal stores mint nothing.
-fn retain_string_if_actor_state_record_field_differs(
+/// String leaves are deliberately not alias-neutralised by the record
+/// overwrite helper: the old record releases its owners after this ingress
+/// site has minted an independent owner for the borrowed incoming value.
+fn actor_state_record_string_leaf_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    state_idx: u32,
+    record_ty: StructType<'ctx>,
+    state_field_ptr: PointerValue<'ctx>,
+    record_path: &[FieldOffset],
+    label: &str,
+) -> CodegenResult<(PointerValue<'ctx>, BasicTypeEnum<'ctx>)> {
+    if record_path.is_empty() {
+        return Err(CodegenError::FailClosed(
+            "borrowed-ingress StringRetain record path is empty".into(),
+        ));
+    }
+    let mut aggregate_ty = record_ty;
+    let mut aggregate_ptr = state_field_ptr;
+    for (depth, field) in record_path.iter().enumerate() {
+        let field_idx = field.0;
+        let element_tys = aggregate_ty.get_field_types();
+        let field_ty = *element_tys.get(field_idx as usize).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "borrowed-ingress StringRetain record path field {field_idx} at depth {depth} is out \
+                 of bounds for record with {} fields",
+                element_tys.len()
+            ))
+        })?;
+        let field_ptr = fn_ctx
+            .builder
+            .build_struct_gep(
+                aggregate_ty,
+                aggregate_ptr,
+                field_idx,
+                &format!("string_share_state_f{state_idx}_{label}_d{depth}_ptr"),
+            )
+            .llvm_ctx("borrowed-ingress StringRetain record-path gep")?;
+        if depth + 1 == record_path.len() {
+            if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "borrowed-ingress StringRetain record path leaf {field_idx} is not \
+                     pointer-typed: {field_ty:?}"
+                )));
+            }
+            return Ok((field_ptr, field_ty));
+        }
+        let BasicTypeEnum::StructType(nested_ty) = field_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "borrowed-ingress StringRetain record path field {field_idx} at depth {depth} is not \
+                 an embedded record: {field_ty:?}"
+            )));
+        };
+        aggregate_ty = nested_ty;
+        aggregate_ptr = field_ptr;
+    }
+    Err(CodegenError::FailClosed(
+        "borrowed-ingress StringRetain record path has no leaf".into(),
+    ))
+}
+
+fn retain_string_for_actor_state_record_borrowed_ingress(
     fn_ctx: &FnCtx<'_, '_>,
     value: Place,
     state_field: FieldOffset,
@@ -15798,48 +15859,90 @@ fn retain_string_if_actor_state_record_field_differs(
 ) -> CodegenResult<()> {
     if !is_string_const_ty(place_resolved_ty(fn_ctx, value)?) {
         return Err(CodegenError::FailClosed(format!(
-            "conditional StringRetain value is not string-typed: {value:?}"
+            "borrowed-ingress StringRetain value is not string-typed: {value:?}"
         )));
     }
 
     let state_ty = fn_ctx.actor_state_ty.ok_or_else(|| {
         CodegenError::FailClosed(
-            "conditional StringRetain has no registered actor state type".into(),
+            "borrowed-ingress StringRetain has no registered actor state type".into(),
         )
     })?;
     let state_idx = state_field.0;
     let state_element_tys = state_ty.get_field_types();
     let state_field_ty = *state_element_tys.get(state_idx as usize).ok_or_else(|| {
         CodegenError::FailClosed(format!(
-            "conditional StringRetain state field {state_idx} is out of bounds for state \
+            "borrowed-ingress StringRetain state field {state_idx} is out of bounds for state \
                  with {} fields",
             state_element_tys.len()
         ))
     })?;
     let BasicTypeEnum::StructType(record_ty) = state_field_ty else {
         return Err(CodegenError::FailClosed(format!(
-            "conditional StringRetain state field {state_idx} is not a record: \
+            "borrowed-ingress StringRetain state field {state_idx} is not a record: \
              {state_field_ty:?}"
         )));
     };
     let state_kinds = fn_ctx.actor_state_field_kinds.ok_or_else(|| {
         CodegenError::FailClosed(
-            "conditional StringRetain has no actor state field-kind table".into(),
+            "borrowed-ingress StringRetain has no actor state field-kind table".into(),
         )
     })?;
-    if !matches!(
-        state_kinds.get(state_idx as usize),
-        Some(StateFieldCloneKind::UserRecord { .. })
-    ) {
+    let Some(StateFieldCloneKind::UserRecord {
+        name: mut record_name,
+    }) = state_kinds.get(state_idx as usize).cloned()
+    else {
         return Err(CodegenError::FailClosed(format!(
-            "conditional StringRetain state field {state_idx} is not classified as a user record"
+            "borrowed-ingress StringRetain state field {state_idx} is not classified as a user record"
         )));
-    }
+    };
 
     if record_path.is_empty() {
         return Err(CodegenError::FailClosed(
-            "conditional StringRetain record path is empty".into(),
+            "borrowed-ingress StringRetain record path is empty".into(),
         ));
+    }
+    for (depth, field) in record_path.iter().enumerate() {
+        let field_tys = fn_ctx
+            .record_field_resolved_tys
+            .get(&record_name)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "borrowed-ingress StringRetain record `{record_name}` has no resolved field table"
+                ))
+            })?;
+        let field_ty = field_tys.get(field.0 as usize).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "borrowed-ingress StringRetain record `{record_name}` field {} at depth {depth} \
+                 is out of bounds for {} fields",
+                field.0,
+                field_tys.len()
+            ))
+        })?;
+        if depth + 1 == record_path.len() {
+            if !matches!(field_ty, ResolvedTy::String) {
+                return Err(CodegenError::FailClosed(format!(
+                    "borrowed-ingress StringRetain leaf `{record_name}`.{} is not string-typed: \
+                     {field_ty:?}",
+                    field.0
+                )));
+            }
+            break;
+        }
+        let ResolvedTy::Named {
+            name: nested_name,
+            builtin: None,
+            is_opaque: false,
+            ..
+        } = field_ty
+        else {
+            return Err(CodegenError::FailClosed(format!(
+                "borrowed-ingress StringRetain path `{record_name}`.{} at depth {depth} is not \
+                 an embedded user record: {field_ty:?}",
+                field.0
+            )));
+        };
+        record_name.clone_from(nested_name);
     }
     let path_label = record_path
         .iter()
@@ -15855,132 +15958,28 @@ fn retain_string_if_actor_state_record_field_differs(
             state_idx,
             &format!("string_share_state_f{state_idx}_ptr"),
         )
-        .llvm_ctx("conditional StringRetain state-field gep")?;
-
-    let mut aggregate_ty = record_ty;
-    let mut aggregate_ptr = state_field_ptr;
-    let mut leaf = None;
-    for (depth, field) in record_path.iter().enumerate() {
-        let field_idx = field.0;
-        let element_tys = aggregate_ty.get_field_types();
-        let field_ty = *element_tys.get(field_idx as usize).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "conditional StringRetain record path field {field_idx} at depth {depth} is out \
-                 of bounds for record with {} fields",
-                element_tys.len()
-            ))
-        })?;
-        let field_ptr = fn_ctx
-            .builder
-            .build_struct_gep(
-                aggregate_ty,
-                aggregate_ptr,
-                field_idx,
-                &format!("string_share_state_f{state_idx}_record_path_{path_label}_d{depth}_ptr"),
-            )
-            .llvm_ctx("conditional StringRetain record-path gep")?;
-        if depth + 1 == record_path.len() {
-            if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
-                return Err(CodegenError::FailClosed(format!(
-                    "conditional StringRetain record path leaf {field_idx} is not \
-                     pointer-typed: {field_ty:?}"
-                )));
-            }
-            leaf = Some((field_ptr, field_ty));
-            break;
-        }
-        let BasicTypeEnum::StructType(nested_ty) = field_ty else {
-            return Err(CodegenError::FailClosed(format!(
-                "conditional StringRetain record path field {field_idx} at depth {depth} is not \
-                 an embedded record: {field_ty:?}"
-            )));
-        };
-        aggregate_ty = nested_ty;
-        aggregate_ptr = field_ptr;
-    }
-    let (old_field_ptr, old_field_ty) = leaf.ok_or_else(|| {
-        CodegenError::FailClosed("conditional StringRetain record path has no leaf".into())
-    })?;
-    let old_value = fn_ctx
-        .builder
-        .build_load(
-            old_field_ty,
-            old_field_ptr,
-            &format!("string_share_state_f{state_idx}_record_path_{path_label}_old"),
-        )
-        .llvm_ctx("conditional StringRetain old-field load")?
-        .into_pointer_value();
-    let (value_ptr, value_ty) = place_pointer(fn_ctx, value)?;
-    if value_ty != old_field_ty {
+        .llvm_ctx("borrowed-ingress StringRetain state-field gep")?;
+    let (_, record_leaf_ty) = actor_state_record_string_leaf_ptr(
+        fn_ctx,
+        state_idx,
+        record_ty,
+        state_field_ptr,
+        record_path,
+        &path_label,
+    )?;
+    let (_, value_slot_ty) = place_pointer(fn_ctx, value)?;
+    if record_leaf_ty != value_slot_ty {
         return Err(CodegenError::FailClosed(format!(
-            "conditional StringRetain value type {value_ty:?} does not match actor-state record \
-             leaf type {old_field_ty:?}"
+            "borrowed-ingress StringRetain record leaf type {record_leaf_ty:?} does not match \
+             string value slot type {value_slot_ty:?}"
         )));
     }
-    let new_value = fn_ctx
-        .builder
-        .build_load(
-            value_ty,
-            value_ptr,
-            &format!("string_share_state_f{state_idx}_record_path_{path_label}_new"),
-        )
-        .llvm_ctx("conditional StringRetain new-value load")?
-        .into_pointer_value();
-    let differs = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::NE,
-            fn_ctx
-                .builder
-                .build_ptr_to_int(
-                    old_value,
-                    fn_ctx.ctx.i64_type(),
-                    &format!("string_share_state_f{state_idx}_record_path_{path_label}_old_int"),
-                )
-                .llvm_ctx("conditional StringRetain old ptr-to-int")?,
-            fn_ctx
-                .builder
-                .build_ptr_to_int(
-                    new_value,
-                    fn_ctx.ctx.i64_type(),
-                    &format!("string_share_state_f{state_idx}_record_path_{path_label}_new_int"),
-                )
-                .llvm_ctx("conditional StringRetain new ptr-to-int")?,
-            &format!("string_share_state_f{state_idx}_record_path_{path_label}_differs"),
-        )
-        .llvm_ctx("conditional StringRetain old/new compare")?;
 
-    let current = fn_ctx.builder.get_insert_block().ok_or_else(|| {
-        CodegenError::FailClosed("conditional StringRetain has no insertion block".into())
-    })?;
-    let parent = current.get_parent().ok_or_else(|| {
-        CodegenError::FailClosed("conditional StringRetain block has no parent function".into())
-    })?;
-    let retain_bb = fn_ctx.ctx.append_basic_block(
-        parent,
-        &format!("string_share_state_f{state_idx}_record_path_{path_label}_retain"),
-    );
-    let continue_bb = fn_ctx.ctx.append_basic_block(
-        parent,
-        &format!("string_share_state_f{state_idx}_record_path_{path_label}_continue"),
-    );
-    fn_ctx
-        .builder
-        .build_conditional_branch(differs, retain_bb, continue_bb)
-        .llvm_ctx("conditional StringRetain branch")?;
-
-    fn_ctx.builder.position_at_end(retain_bb);
     retain_string_value(
         fn_ctx,
         value,
         &format!("state_f{state_idx}_record_path_{path_label}_share"),
-    )?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(continue_bb)
-        .llvm_ctx("conditional StringRetain join")?;
-    fn_ctx.builder.position_at_end(continue_bb);
-    Ok(())
+    )
 }
 
 /// Lower `Instr::RecordFieldStore { record, field_offset, src }` to a

@@ -282,78 +282,315 @@ fn actor_message_cow_flag_armed_before(
         .unwrap_or(false)
 }
 
-/// Follow one freshly-constructed record owner through a unique same-block
-/// value path to an actor-state field, returning the complete string-leaf path.
-///
-/// The path may cross whole-value `Move`s and enclosing `RecordInit`s. Any
-/// fan-out, unknown read, second sink, or terminator use refuses the
-/// optimisation so the caller keeps the ordinary unconditional retain
-/// (leak-over-UAF). This is deliberately a proof of one linear ownership
-/// transfer, not a search for a convenient later store.
-fn actor_state_record_leaf_sink(
-    block: &BasicBlock,
-    record_init_index: usize,
-    record_dest: Place,
-    leaf_field: FieldOffset,
-) -> Option<(FieldOffset, Vec<FieldOffset>)> {
-    let mut current = record_dest;
-    let mut retired = Vec::new();
-    let mut path = vec![leaf_field];
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ActorStateRecordLeafSink {
+    block: u32,
+    instr_index: usize,
+    state_field: FieldOffset,
+    record_path: Vec<FieldOffset>,
+}
 
-    for (offset, instr) in block.instructions[record_init_index + 1..]
-        .iter()
-        .enumerate()
-    {
-        let sources = instr_source_places(instr);
-        if sources.iter().any(|source| retired.contains(source)) {
-            return None;
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ActorStateRecordTraceState {
+    block: u32,
+    instr_index: usize,
+    current: Place,
+    retired: Vec<Place>,
+    record_path: Vec<FieldOffset>,
+    retain_block: u32,
+    retain_instr_index: usize,
+    state_writes_since_retain: Vec<FieldOffset>,
+}
+
+enum ActorStateRecordTraceStep {
+    Continue,
+    Killed,
+    Sink { state_field: FieldOffset },
+}
+
+fn actor_state_record_trace_instr(
+    state: &mut ActorStateRecordTraceState,
+    block_id: u32,
+    instr_index: usize,
+    retain_can_move_here: bool,
+    instr: &Instr,
+    leaf_value: Place,
+) -> Option<ActorStateRecordTraceStep> {
+    let (reads, writes) = crate::dataflow::instr_reads_writes(instr);
+    if reads.iter().any(|place| state.retired.contains(place)) {
+        return None;
+    }
+    let reads_leaf = reads.contains(&leaf_value);
+    let leaf_read_is_sibling_record_share = matches!(
+        instr,
+        Instr::RecordInit { fields, .. }
+            if fields.iter().any(|(_, value)| *value == leaf_value)
+    );
+    if reads_leaf && !leaf_read_is_sibling_record_share {
+        return None;
+    }
+
+    let mut transferred = false;
+    let step = match instr {
+        Instr::Move { dest, src } if *src == state.current => {
+            if !matches!(dest, Place::Local(_)) || writes.contains(&leaf_value) {
+                return None;
+            }
+            state.retired.push(state.current);
+            state.current = *dest;
+            transferred = true;
+            ActorStateRecordTraceStep::Continue
         }
+        Instr::RecordInit { fields, dest, .. } => {
+            let mut ingress_fields = fields
+                .iter()
+                .filter(|(_, source)| *source == state.current)
+                .map(|(field, _)| *field);
+            if let Some(enclosing_field) = ingress_fields.next() {
+                if ingress_fields.next().is_some()
+                    || !matches!(dest, Place::Local(_))
+                    || writes.contains(&leaf_value)
+                {
+                    return None;
+                }
+                state.record_path.insert(0, enclosing_field);
+                state.retired.push(state.current);
+                state.current = *dest;
+                if retain_can_move_here {
+                    state.retain_block = block_id;
+                    state.retain_instr_index = instr_index;
+                    state.state_writes_since_retain.clear();
+                }
+                transferred = true;
+            } else if reads.contains(&state.current) {
+                return None;
+            }
+            ActorStateRecordTraceStep::Continue
+        }
+        Instr::ActorStateFieldStore { field_offset, src } if *src == state.current => {
+            ActorStateRecordTraceStep::Sink {
+                state_field: *field_offset,
+            }
+        }
+        Instr::ActorStateFieldStore { field_offset, .. } => {
+            if !state.state_writes_since_retain.contains(field_offset) {
+                state.state_writes_since_retain.push(*field_offset);
+            }
+            ActorStateRecordTraceStep::Continue
+        }
+        _ if reads.contains(&state.current) => return None,
+        _ => ActorStateRecordTraceStep::Continue,
+    };
 
-        match instr {
-            Instr::Move { dest, src } if *src == current => {
-                if !matches!(dest, Place::Local(_)) {
-                    return None;
-                }
-                retired.push(current);
-                current = *dest;
+    if writes.contains(&leaf_value) {
+        return None;
+    }
+    state.retired.retain(|place| !writes.contains(place));
+    if !transferred && writes.contains(&state.current) {
+        return Some(ActorStateRecordTraceStep::Killed);
+    }
+    Some(step)
+}
+
+/// Whether a consumed aggregate lineage is read again before each Place is
+/// redefined. The checker should already reject this, but keeping the proof
+/// local prevents a future checker/lowering drift from turning a state-ingress
+/// retain into a use-after-transfer.
+fn actor_state_record_lineage_is_reused(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    block_id: u32,
+    instr_index: usize,
+    lineage: Vec<Place>,
+) -> bool {
+    let mut worklist = vec![(block_id, instr_index, lineage)];
+    let mut visited = HashSet::new();
+    while let Some((block_id, instr_index, mut live)) = worklist.pop() {
+        if !visited.insert((block_id, instr_index, live.clone())) {
+            continue;
+        }
+        let Some(block) = block_by_id(blocks, block_id) else {
+            return true;
+        };
+        for instr in &block.instructions[instr_index..] {
+            let (reads, writes) = crate::dataflow::instr_reads_writes(instr);
+            if reads.iter().any(|place| live.contains(place)) {
+                return true;
             }
-            Instr::RecordInit { fields, dest, .. } => {
-                let mut ingress_fields = fields
-                    .iter()
-                    .filter(|(_, source)| *source == current)
-                    .map(|(field, _)| *field);
-                let Some(enclosing_field) = ingress_fields.next() else {
-                    if sources.contains(&current) {
-                        return None;
-                    }
-                    continue;
-                };
-                if ingress_fields.next().is_some() {
-                    return None;
-                }
-                path.insert(0, enclosing_field);
-                retired.push(current);
-                current = *dest;
+            live.retain(|place| !writes.contains(place));
+            if live.is_empty() {
+                break;
             }
-            Instr::ActorStateFieldStore { field_offset, src } if *src == current => {
-                let absolute_index = record_init_index + 1 + offset;
-                let lineage_is_reused = block.instructions[absolute_index + 1..]
-                    .iter()
-                    .flat_map(instr_source_places)
-                    .any(|source| source == current || retired.contains(&source))
-                    || terminator_source_places(&block.terminator, None)
-                        .into_iter()
-                        .any(|source| source == current || retired.contains(&source));
-                if lineage_is_reused {
-                    return None;
-                }
-                return Some((*field_offset, path));
-            }
-            _ if sources.contains(&current) => return None,
-            _ => {}
+        }
+        if live.is_empty() {
+            continue;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .iter()
+            .any(|place| live.contains(place))
+        {
+            return true;
+        }
+        let writes = crate::dataflow::terminator_write_places(&block.terminator);
+        live.retain(|place| !writes.contains(place));
+        if live.is_empty() {
+            continue;
+        }
+        for successor in block.successors() {
+            worklist.push((successor, 0, live.clone()));
         }
     }
-    None
+    false
+}
+
+fn enqueue_actor_state_record_trace_successors(
+    block: &BasicBlock,
+    suspend_kind: Option<&SuspendKind>,
+    state: &ActorStateRecordTraceState,
+    leaf_value: Place,
+    worklist: &mut Vec<ActorStateRecordTraceState>,
+) -> Option<()> {
+    let terminator_sources = terminator_source_places(&block.terminator, suspend_kind);
+    if terminator_sources
+        .iter()
+        .any(|place| *place == state.current || state.retired.contains(place))
+        || terminator_sources.contains(&leaf_value)
+    {
+        return None;
+    }
+    let terminator_writes = crate::dataflow::terminator_write_places(&block.terminator);
+    if terminator_writes.contains(&leaf_value)
+        || terminator_writes.contains(&state.current)
+        || terminator_writes
+            .iter()
+            .any(|place| state.retired.contains(place))
+    {
+        return None;
+    }
+    let successors = block.successors();
+    if successors.is_empty() {
+        return matches!(block.terminator, Terminator::Trap { .. }).then_some(());
+    }
+    for successor in successors {
+        let mut next = state.clone();
+        next.block = successor;
+        next.instr_index = 0;
+        worklist.push(next);
+    }
+    Some(())
+}
+
+/// Follow one freshly-constructed record owner through all safe CFG paths to
+/// actor-state fields, returning each path-specific retain site and complete
+/// string-leaf path.
+///
+/// The path may cross whole-value `Move`s, enclosing `RecordInit`s, calls, and
+/// control-flow splits/joins. The retain stays at the first leaf-bearing
+/// `RecordInit` before a CFG join: branch-local constructors therefore remain
+/// branch-local instead of becoming duplicate retains after a join. Every path
+/// from that construction must reach a compatible state sink, and the target
+/// state field must remain unchanged between the retain and sink. Any unknown
+/// read, killed/escaping path, source redefinition, or post-sink reuse refuses
+/// the optimisation so the caller keeps the ordinary unconditional retain
+/// (leak-over-UAF).
+fn actor_state_record_leaf_sinks(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    block_id: u32,
+    record_init_index: usize,
+    record_dest: Place,
+    leaf_value: Place,
+    leaf_field: FieldOffset,
+) -> Option<Vec<ActorStateRecordLeafSink>> {
+    if !matches!(record_dest, Place::Local(_)) || !matches!(leaf_value, Place::Local(_)) {
+        return None;
+    }
+
+    let mut worklist = vec![ActorStateRecordTraceState {
+        block: block_id,
+        instr_index: record_init_index + 1,
+        current: record_dest,
+        retired: Vec::new(),
+        record_path: vec![leaf_field],
+        retain_block: block_id,
+        retain_instr_index: record_init_index,
+        state_writes_since_retain: Vec::new(),
+    }];
+    let mut visited = HashSet::new();
+    let mut sinks = Vec::new();
+
+    while let Some(mut state) = worklist.pop() {
+        if !visited.insert(state.clone()) {
+            continue;
+        }
+        let block = block_by_id(blocks, state.block)?;
+        let retain_can_move_here = blocks
+            .iter()
+            .flat_map(BasicBlock::successors)
+            .filter(|successor| *successor == block.id)
+            .count()
+            <= 1;
+        let mut lineage_live = true;
+        for (instr_index, instr) in block
+            .instructions
+            .iter()
+            .enumerate()
+            .skip(state.instr_index)
+        {
+            match actor_state_record_trace_instr(
+                &mut state,
+                block.id,
+                instr_index,
+                retain_can_move_here,
+                instr,
+                leaf_value,
+            )? {
+                ActorStateRecordTraceStep::Continue => {}
+                ActorStateRecordTraceStep::Killed => return None,
+                ActorStateRecordTraceStep::Sink { state_field } => {
+                    if state.state_writes_since_retain.contains(&state_field) {
+                        return None;
+                    }
+                    let mut lineage = state.retired.clone();
+                    lineage.push(state.current);
+                    if actor_state_record_lineage_is_reused(
+                        blocks,
+                        suspend_kinds,
+                        state.block,
+                        instr_index + 1,
+                        lineage,
+                    ) {
+                        return None;
+                    }
+                    let sink = ActorStateRecordLeafSink {
+                        block: state.retain_block,
+                        instr_index: state.retain_instr_index,
+                        state_field,
+                        record_path: state.record_path.clone(),
+                    };
+                    if !sinks.contains(&sink) {
+                        sinks.push(sink);
+                    }
+                    lineage_live = false;
+                    break;
+                }
+            }
+            state.instr_index = instr_index + 1;
+        }
+        if !lineage_live {
+            continue;
+        }
+
+        enqueue_actor_state_record_trace_successors(
+            block,
+            suspend_kinds.get(&block.id),
+            &state,
+            leaf_value,
+            &mut worklist,
+        )?;
+    }
+
+    (!sinks.is_empty()).then_some(sinks)
 }
 
 fn apply_string_retain_sites(
@@ -551,7 +788,7 @@ pub(super) fn derive_cow_sole_owner(
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
     let mut pending_share_sites: Vec<(u32, usize, Place, Vec<BindingId>)> = Vec::new();
-    let mut conditional_share_sites: Vec<StringRetainSite> = Vec::new();
+    let mut state_ingress_share_sites: Vec<StringRetainSite> = Vec::new();
     let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
         if let Some(&root) = alias_of.get(&local) {
             excluded.insert(root);
@@ -717,19 +954,13 @@ pub(super) fn derive_cow_sole_owner(
                     };
                     let source_local = base_local(values[0]).unwrap_or(root);
                     if share_needs_retain(source_local, block.id, instr_index) {
-                        // A loop-carried message string copied into the same
-                        // actor-state record field needs a retain only when the
-                        // destination leaf changes. The record overwrite helper
-                        // neutralizes equal old/new aliases instead of dropping
-                        // them, so an unconditional retain here leaks one
-                        // reference on every repeated equal store.
-                        //
-                        // Follow a unique chain of whole-value moves and
-                        // enclosing records to the state leaf. Acyclic ingress
-                        // retains unconditionally, preserving the
-                        // conditional-branch owner fix; every unproved cyclic
-                        // shape also retains unconditionally (leak-over-UAF).
-                        let conditional_record_ingress = if cyclic_blocks.contains(&block.id) {
+                        // Follow whole-value moves and enclosing records to the
+                        // state leaf so the borrowed owner mint executes at the
+                        // last path-local constructor before a CFG join. The
+                        // overwrite helper releases the old String owner even
+                        // on equal-pointer replacement; every admitted incoming
+                        // borrow therefore mints exactly one replacement owner.
+                        let state_record_ingress = if cyclic_blocks.contains(&block.id) {
                             match instr {
                                 Instr::RecordInit { fields, dest, .. } => fields
                                     .iter()
@@ -739,17 +970,16 @@ pub(super) fn derive_cow_sole_owner(
                                             .then_some((*record_field, *value))
                                     })
                                     .map(|(record_field, value)| {
-                                        actor_state_record_leaf_sink(
-                                            block,
+                                        actor_state_record_leaf_sinks(
+                                            blocks,
+                                            suspend_kinds,
+                                            block.id,
                                             instr_index,
                                             *dest,
+                                            value,
                                             record_field,
                                         )
-                                        .map(
-                                            |(state_field, record_path)| {
-                                                (value, state_field, record_path)
-                                            },
-                                        )
+                                        .map(|sinks| (value, sinks))
                                     })
                                     .collect::<Option<Vec<_>>>(),
                                 _ => None,
@@ -757,21 +987,23 @@ pub(super) fn derive_cow_sole_owner(
                         } else {
                             None
                         };
-                        if let Some(sites) = conditional_record_ingress
+                        if let Some(sites) = state_record_ingress
                             .filter(|sites| !sites.is_empty() && sites.len() == values.len())
                         {
-                            for (value, state_field, record_path) in sites {
-                                conditional_share_sites.push(StringRetainSite {
-                                    block: block.id,
-                                    instr_index,
-                                    value,
-                                    condition:
-                                        StringRetainCondition::ActorStateRecordFieldDiffers {
-                                            state_field,
-                                            record_path,
-                                        },
-                                    required_bindings: Vec::new(),
-                                });
+                            for (value, sinks) in sites {
+                                for sink in sinks {
+                                    state_ingress_share_sites.push(StringRetainSite {
+                                        block: sink.block,
+                                        instr_index: sink.instr_index,
+                                        value,
+                                        condition:
+                                            StringRetainCondition::ActorStateRecordBorrowedIngress {
+                                                state_field: sink.state_field,
+                                                record_path: sink.record_path,
+                                            },
+                                        required_bindings: Vec::new(),
+                                    });
+                                }
                             }
                             continue;
                         }
@@ -903,7 +1135,8 @@ pub(super) fn derive_cow_sole_owner(
             },
         )
         .collect::<Vec<_>>();
-    retain_sites.extend(conditional_share_sites);
+
+    retain_sites.extend(state_ingress_share_sites);
 
     // Returning a by-value parameter duplicates the caller's live reference.
     for block in blocks {

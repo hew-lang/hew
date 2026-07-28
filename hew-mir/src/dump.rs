@@ -507,7 +507,7 @@ fn render_instr(instr: &Instr) -> String {
             StringRetainCondition::Always => {
                 format!("string.retain {}", render_place(value))
             }
-            StringRetainCondition::ActorStateRecordFieldDiffers {
+            StringRetainCondition::ActorStateRecordBorrowedIngress {
                 state_field,
                 record_path,
             } => {
@@ -516,7 +516,7 @@ fn render_instr(instr: &Instr) -> String {
                     let _ = write!(&mut path, ".field[{}]", field.0);
                 }
                 format!(
-                    "string.retain_if_state_differs {} state[{}]{path}",
+                    "string.retain_state_ingress {} state[{}]{path}",
                     render_place(value),
                     state_field.0,
                 )

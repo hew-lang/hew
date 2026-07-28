@@ -15,6 +15,10 @@ use super::{
     StringRetainSite, SuspendKind, Terminator,
 };
 
+const STRING_RETURN_SOURCE_BORROWED: u8 = 0b001;
+const STRING_RETURN_SOURCE_OWNED: u8 = 0b010;
+const STRING_RETURN_SOURCE_UNKNOWN: u8 = 0b100;
+
 pub(super) fn finalize_string_local_share_intents(
     blocks: &mut [BasicBlock],
     builder: &mut Builder,
@@ -1250,7 +1254,146 @@ pub(super) fn derive_cow_sole_owner(
 
     retain_sites.extend(state_ingress_share_sites);
 
-    // Returning a by-value parameter duplicates the caller's live reference.
+    // Classify each string local's possible source shares. Pointer provenance
+    // and ownership are deliberately separate here:
+    //
+    //   BORROWED — aliases a by-value parameter and still needs a +1 retain;
+    //   OWNED    — already carries one independently releasable share (fresh
+    //              producer, retained field load, or static string);
+    //   UNKNOWN  — no proof; preserve the old fail-closed retain-at-return.
+    //
+    // A join may be BORROWED|OWNED. Retaining once at the join is wrong: it is
+    // necessary on the borrowed arm but over-retains the already-retained
+    // projection arm. For such a join, push the retain back to the incoming
+    // borrowed Move(s), so every selected path establishes the same one-share
+    // postcondition before the values merge.
+    let mut return_source_bits = vec![0_u8; locals.len()];
+    for &local in borrowed_param_locals {
+        if let Some(bits) = return_source_bits.get_mut(local as usize) {
+            *bits |= STRING_RETURN_SOURCE_BORROWED;
+        }
+    }
+    for block in blocks {
+        for instr in &block.instructions {
+            let owned_dest = fresh_string_producer_dest(instr)
+                .or_else(|| string_field_load_producer_dest(instr, locals))
+                .or_else(|| wire_codec_string_producer_dest(instr, locals))
+                .or(match instr {
+                    Instr::StringLit { dest, .. } => Some(*dest),
+                    _ => None,
+                });
+            if let Some(local) = owned_dest.and_then(base_local) {
+                if let Some(bits) = return_source_bits.get_mut(local as usize) {
+                    *bits |= STRING_RETURN_SOURCE_OWNED;
+                }
+            }
+        }
+        if let Some(local) = fresh_string_producer_term_dest(&block.terminator).and_then(base_local)
+        {
+            if let Some(bits) = return_source_bits.get_mut(local as usize) {
+                *bits |= STRING_RETURN_SOURCE_OWNED;
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for instr in &block.instructions {
+                let Instr::Move { dest, src } = instr else {
+                    continue;
+                };
+                let (Some(dest_local), Some(src_local)) = (base_local(*dest), base_local(*src))
+                else {
+                    continue;
+                };
+                if !string_place_is_typed(*dest, locals) {
+                    continue;
+                }
+                let src_bits = return_source_bits
+                    .get(src_local as usize)
+                    .copied()
+                    .unwrap_or(STRING_RETURN_SOURCE_UNKNOWN);
+                let Some(dest_bits) = return_source_bits.get_mut(dest_local as usize) else {
+                    continue;
+                };
+                let next = *dest_bits | src_bits;
+                changed |= next != *dest_bits;
+                *dest_bits = next;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Push a mixed return's retain onto exactly the borrowed incoming writes.
+    // Returns false when the backward slice encounters an unclassified writer
+    // or a cycle; the caller then preserves the old retain-at-return posture.
+    let push_mixed_return_retains =
+        |return_local: u32, retain_sites: &mut Vec<StringRetainSite>| {
+            let mut work = vec![return_local];
+            let mut seen = HashSet::new();
+            let mut additions = Vec::new();
+            while let Some(local) = work.pop() {
+                if !seen.insert(local) {
+                    continue;
+                }
+                let mut saw_definition = false;
+                for block in blocks {
+                    for (instr_index, instr) in block.instructions.iter().enumerate() {
+                        let Instr::Move { dest, src } = instr else {
+                            continue;
+                        };
+                        if base_local(*dest) != Some(local) {
+                            continue;
+                        }
+                        saw_definition = true;
+                        let Some(src_local) = base_local(*src) else {
+                            return false;
+                        };
+                        let bits = return_source_bits
+                            .get(src_local as usize)
+                            .copied()
+                            .unwrap_or(STRING_RETURN_SOURCE_UNKNOWN);
+                        if bits & STRING_RETURN_SOURCE_UNKNOWN != 0 || bits == 0 {
+                            return false;
+                        }
+                        match bits {
+                            STRING_RETURN_SOURCE_BORROWED => additions.push(StringRetainSite {
+                                block: block.id,
+                                instr_index,
+                                value: *src,
+                                condition: StringRetainCondition::Always,
+                                required_bindings: Vec::new(),
+                            }),
+                            STRING_RETURN_SOURCE_OWNED => {}
+                            _ => work.push(src_local),
+                        }
+                    }
+                    if let Terminator::Call {
+                        dest: Some(dest), ..
+                    } = &block.terminator
+                    {
+                        if base_local(*dest) == Some(local) {
+                            saw_definition = true;
+                            if fresh_string_producer_term_dest(&block.terminator).is_none() {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                if !saw_definition {
+                    return false;
+                }
+            }
+            retain_sites.extend(additions);
+            true
+        };
+
+    // Returning a pure by-value parameter duplicates the caller's live
+    // reference. A mixed borrowed/owned join gets path-specific retains as
+    // above; never retain the already-owned arm a second time.
+    let mut path_split_return_locals = HashSet::new();
     for block in blocks {
         for (instr_index, instr) in block.instructions.iter().enumerate() {
             let Instr::Move {
@@ -1260,7 +1403,30 @@ pub(super) fn derive_cow_sole_owner(
             else {
                 continue;
             };
-            if base_local(*src).is_some_and(|local| borrowed_alias_of.contains_key(&local)) {
+            let Some(src_local) = base_local(*src) else {
+                continue;
+            };
+            let bits = return_source_bits
+                .get(src_local as usize)
+                .copied()
+                .unwrap_or(STRING_RETURN_SOURCE_UNKNOWN);
+            let borrowed_and_owned = bits
+                & (STRING_RETURN_SOURCE_BORROWED | STRING_RETURN_SOURCE_OWNED)
+                == STRING_RETURN_SOURCE_BORROWED | STRING_RETURN_SOURCE_OWNED;
+            if borrowed_and_owned && bits & STRING_RETURN_SOURCE_UNKNOWN == 0 {
+                // Multiple explicit return sites may write the same joined
+                // local into `ReturnSlot`. Its incoming branch retains are
+                // properties of that local's definitions, so insert them once.
+                if path_split_return_locals.contains(&src_local)
+                    || push_mixed_return_retains(src_local, &mut retain_sites)
+                {
+                    path_split_return_locals.insert(src_local);
+                    continue;
+                }
+            }
+            if bits & STRING_RETURN_SOURCE_BORROWED != 0
+                || borrowed_alias_of.contains_key(&src_local)
+            {
                 retain_sites.push(StringRetainSite {
                     block: block.id,
                     instr_index,

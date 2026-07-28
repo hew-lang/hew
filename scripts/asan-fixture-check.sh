@@ -398,6 +398,11 @@ RC_WEAK_SRC="${ROOT}/tests/vertical-slice/accept/rc_weak_lifecycle.hew"
 # output slots. Every retained owner must release exactly once at pass and
 # scope teardown; LSan catches missed releases and ASan catches underflow.
 SORT_STRINGS_MERGE_SRC="${ROOT}/tests/vertical-slice/accept/sort_strings_merge_asan.hew"
+# A by-value string forwarder and a mixed retained-projection/forward return,
+# both consumed directly by f-string interpolation. Each callee establishes
+# exactly one return share on every path and the anonymous caller carrier must
+# release exactly once. LSan catches a missing release; ASan catches over-release.
+OWNED_STRING_RETURN_CARRIER_SRC="${ROOT}/tests/vertical-slice/accept/owned_string_return_carrier_asan.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -464,6 +469,9 @@ compile_asan_fixture "Rc/Weak graph replacement lifecycle" "${RC_WEAK_SRC}" "${R
 
 SORT_STRINGS_MERGE_BIN="${WORK_DIR}/sort_strings_merge_asan"
 compile_asan_fixture "iterative string merge ownership" "${SORT_STRINGS_MERGE_SRC}" "${SORT_STRINGS_MERGE_BIN}"
+
+OWNED_STRING_RETURN_CARRIER_BIN="${WORK_DIR}/owned_string_return_carrier_asan"
+compile_asan_fixture "owned string return carrier" "${OWNED_STRING_RETURN_CARRIER_SRC}" "${OWNED_STRING_RETURN_CARRIER_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -625,6 +633,12 @@ else
 fi
 
 if run_asan_fixture "iterative string merge ownership" "${SORT_STRINGS_MERGE_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "owned string return carrier" "${OWNED_STRING_RETURN_CARRIER_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

@@ -2678,6 +2678,18 @@ pub(crate) struct CallScrutineeProvenance {
     ///
     /// [`compute_fn_return_launders_opaque_extern`]: crate::return_provenance::compute_fn_return_launders_opaque_extern
     pub fresh_owner_verdicts: FreshOwnerVerdicts,
+    /// User functions whose return is safe to treat as one independently
+    /// releasable `string` carrier even when it aliases an input buffer.
+    ///
+    /// This is deliberately separate from `fresh_owner_verdicts`: a function
+    /// such as `fn passthru(s: string) -> string { s }` is NOT pointer-fresh,
+    /// but lowering retains the selected parameter before writing the return
+    /// slot, so the caller receives a real `+1` share. String field projections
+    /// have the same postcondition because codegen retains every string field
+    /// load. The precise return-provenance fixpoint proves that every path is
+    /// either fresh or parameter-derived; any `OPAQUE` path, unanalysed item,
+    /// indirect callee, or ownership-opaque extern remains denied.
+    pub(crate) owned_string_return_carriers: HashSet<hew_hir::ItemId>,
 }
 
 impl Default for CallScrutineeProvenance {
@@ -2688,7 +2700,31 @@ impl Default for CallScrutineeProvenance {
             extern_table: ExternContractTable::default(),
             may_mutate: HashMap::new(),
             fresh_owner_verdicts: FreshOwnerVerdicts::denying_all(),
+            owned_string_return_carriers: HashSet::new(),
         }
+    }
+}
+
+impl CallScrutineeProvenance {
+    /// Whether `callee` is an analysed Hew body whose every return path
+    /// produces one independently releasable string share.
+    ///
+    /// The call expression's resolved result type is checked by the sole
+    /// consumer before this query, so generic origins (`fn id<T>(x: T) -> T`)
+    /// can be admitted when instantiated at `string`. This query grants no
+    /// general freshness: `ParamsOnly` rows are accepted only for the string
+    /// return-carrier protocol.
+    #[must_use]
+    pub(crate) fn callee_returns_owned_string_carrier(&self, callee: &HirExpr) -> bool {
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Item(item_id),
+        } = &callee.kind
+        else {
+            return false;
+        };
+        !self.extern_table.is_extern_name(name)
+            && self.owned_string_return_carriers.contains(item_id)
     }
 }
 
@@ -2740,12 +2776,29 @@ pub(crate) fn build_call_scrutinee_provenance(
         &extern_table,
         &declared_release,
     );
+    // A string return needs one independently releasable share, not necessarily
+    // a pointer-distinct allocation. `Fresh(∅)` already has that postcondition.
+    // `ParamsOnly({PARAM})` has it too for a Hew body: returning a whole string
+    // parameter inserts `StringRetain`, while returning a string field/tuple
+    // projection goes through a retained field load. Calls propagate the same
+    // postcondition through this fixpoint. An OPAQUE bit is never rescuable.
+    //
+    // Do not filter on the origin's declared return type here: a generic origin
+    // may declare `T` and be instantiated at `string`; the consumer checks the
+    // concrete call-result type before consulting this set.
+    let owned_string_return_carriers = provenance
+        .iter()
+        .filter_map(|(&id, bits)| {
+            (!bits.is_opaque() && !launders_opaque_extern.contains(&id)).then_some(id)
+        })
+        .collect();
     CallScrutineeProvenance {
         provenance,
         extern_names,
         extern_table,
         may_mutate,
         fresh_owner_verdicts,
+        owned_string_return_carriers,
     }
 }
 

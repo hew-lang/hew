@@ -424,13 +424,14 @@ impl Builder {
             // `mk(i)`'s result passed straight into the `Display::fmt` shim, a
             // fresh rc==1 buffer nobody owned. The composite arm below already
             // consults the module freshness fixpoint for exactly this question;
-            // `user_call_produces_fresh_owned_string` gives the string arm the
-            // same authority, with the runtime contract keeping its veto so a
-            // catalogued borrowed/interior-alias result can never be minted.
+            // `user_call_produces_owned_string_carrier` gives the string arm a
+            // distinct return-carrier authority. It admits both fresh results
+            // and parameter-derived results whose callee retained exactly one
+            // return share, without claiming that the pointer is fresh.
             HirExprKind::Call { callee, .. } => {
                 if matches!(ty, ResolvedTy::String) {
                     Self::call_produces_fresh_owned_string(callee)
-                        || self.user_call_produces_fresh_owned_string(callee)
+                        || self.user_call_produces_owned_string_carrier(callee)
                 } else {
                     // A composite (record/tuple/enum) result: admit a PROVEN-fresh
                     // producer, gated by the SAME authority every other
@@ -580,7 +581,8 @@ impl Builder {
         }
     }
     /// Whether a `string`-returning direct-`Call` callee is a USER function the
-    /// module freshness fixpoint proves hands back a fresh sole owner.
+    /// module return-carrier authority proves hands back exactly one
+    /// independently releasable share.
     ///
     /// The runtime `produces_fresh_owned_string` contract only covers catalogued
     /// symbols; a user function (`fn mk(i: i64) -> string { f"tok{i}" }`, a
@@ -610,20 +612,26 @@ impl Builder {
     ///   is not a proof of freshness and reads `false`. So a Hew wrapper
     ///   (`fn w() -> string { unsafe { host_string() } }`), a wrapper of a
     ///   wrapper, a generic wrapper and a recursive-looking wrapper all stay
-    ///   rejected, and a callee that forwards, projects, or launders a by-value
-    ///   parameter on ANY return path (`fn passthru(s: string) -> string { s }`)
-    ///   is `false` and stays unminted — a leak, never a caller-side
-    ///   double-free.
+    ///   rejected.
+    ///
+    /// Unlike the fresh-owner query, the return-carrier query admits a
+    /// `ParamsOnly` body. String lowering turns each admitted parameter-derived
+    /// path into exactly one caller-owned share: a whole by-value parameter is
+    /// retained before the return-slot write, and a record/tuple string
+    /// projection is retained by its field load. A mixed function is admitted
+    /// only when every path has this same one-share postcondition. The authority
+    /// is string-specific and does not widen global fresh/non-alias facts.
     ///
     /// Registration alone still never forces a release: the minted local flows
     /// through `derive_cow_sole_owner` / `derive_cow_fresh_borrowed_owner`,
     /// which drop it only when it is a proven fresh, untainted owner whose every
     /// use is a verified borrow.
-    fn user_call_produces_fresh_owned_string(&self, callee: &HirExpr) -> bool {
+    fn user_call_produces_owned_string_carrier(&self, callee: &HirExpr) -> bool {
         if crate::runtime_symbols::is_known_runtime_symbol(Self::callee_symbol_name(callee)) {
             return false;
         }
-        callee_returns_fresh_owner(callee, &self.call_scrutinee_provenance.fresh_owner_verdicts)
+        self.call_scrutinee_provenance
+            .callee_returns_owned_string_carrier(callee)
             || callee_returns_retained_string_owner(
                 callee,
                 &self.call_scrutinee_provenance.fresh_owner_verdicts,

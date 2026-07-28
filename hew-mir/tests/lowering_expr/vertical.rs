@@ -926,6 +926,70 @@ fn conditional_resource_close_keeps_flag_guarded_drop() {
     );
 }
 
+/// A heap-owning `#[resource]` is both a resource and structurally an owned
+/// record.  The resource close ritual must win that classification overlap:
+/// after a conditional by-value hand-off the source slot is neutralized, and
+/// only the resource drop flag can distinguish the consumed path from the live
+/// path.  Admitting an unguarded `RecordInPlace` drop here calls `close` on the
+/// neutralized record at the shared return (the #2853 Linux null-dereference).
+#[test]
+fn conditional_heap_resource_move_keeps_flag_guarded_resource_drop() {
+    let p = lower_source(
+        r"
+        #[resource]
+        type Buf { data: Vec<i64> }
+        impl Buf {
+            fn close(self) {
+                let _ = self.data.len();
+            }
+        }
+        fn make() -> Buf {
+            Buf { data: Vec::new() }
+        }
+        fn sink(b: Buf) {
+            b.close();
+        }
+        fn run(flag: bool) {
+            let b = make();
+            if flag {
+                sink(b);
+            }
+        }
+    ",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "a conditional heap-resource move must lower cleanly: {:?}",
+        p.diagnostics
+    );
+    let run = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "run")
+        .expect("run function present");
+    let drops: Vec<_> = run
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .collect();
+    assert!(
+        drops
+            .iter()
+            .any(|drop| drop.kind == hew_mir::DropKind::Resource && drop.guard.is_some()),
+        "the live side of a conditional heap-resource move must retain a \
+         flag-guarded resource close: {:?}",
+        run.drop_plans
+    );
+    assert!(
+        drops
+            .iter()
+            .all(|drop| drop.kind != hew_mir::DropKind::RecordInPlace),
+        "a heap-owning resource must not bypass its path-sensitive close ritual \
+         through an unguarded RecordInPlace drop: {:?}",
+        run.drop_plans
+    );
+}
+
 /// Control for the flag scoping: a `#[resource]` consumed UNCONDITIONALLY (a
 /// single straight-line `close()`) reaches its exit at `Consumed`, so the
 /// per-exit dataflow filter EXCLUDES it entirely — no scope-exit resource

@@ -4514,7 +4514,22 @@ fn build_lifo_drops(
         // exactly once on the owner and never on a moved-out record. A returned
         // record is excluded (the `ReturnSlot` owns it); a field-read-only
         // record stays in the set and is dropped here.
-        if owned_record_drop_allowed.contains(binding) {
+        // A user `#[resource]` record has a close ritual and must stay on the
+        // `AffineResource` arm below.  In particular, a conditional by-value
+        // hand-off keeps the binding in the record sole-owner allow-set on its
+        // live path, but its runtime drop flag is the only authority that can
+        // distinguish that path from the consumed one.  Letting it take this
+        // unguarded structural arm would call the record helper (and therefore
+        // the user close) on the neutralized source slot after the hand-off.
+        //
+        // `affine_release_flags` is populated by the single
+        // `affine_release_needs_drop_flag` predicate for user closes (and
+        // Rc/Weak, which are not record candidates), so excluding flagged
+        // records here restores the intended drop-class precedence without
+        // weakening ordinary owned-record admission.
+        if owned_record_drop_allowed.contains(binding)
+            && !affine_release_flags.contains_key(binding)
+        {
             let place = *binding_locals.get(binding).unwrap_or_else(|| {
                 panic!(
                     "build_lifo_drops invariant: owned record binding {binding:?} is in \

@@ -509,13 +509,18 @@ fn render_instr(instr: &Instr) -> String {
             }
             StringRetainCondition::ActorStateRecordFieldDiffers {
                 state_field,
-                record_field,
-            } => format!(
-                "string.retain_if_state_differs {} state[{}].field[{}]",
-                render_place(value),
-                state_field.0,
-                record_field.0
-            ),
+                record_path,
+            } => {
+                let mut path = String::new();
+                for field in record_path {
+                    let _ = write!(&mut path, ".field[{}]", field.0);
+                }
+                format!(
+                    "string.retain_if_state_differs {} state[{}]{path}",
+                    render_place(value),
+                    state_field.0,
+                )
+            }
         },
 
         // Integer constants

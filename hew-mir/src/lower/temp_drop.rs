@@ -9,9 +9,10 @@ use super::{
     place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
     shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_layout_key,
     ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
-    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, HashMap, HashSet, Instr,
-    IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction, ResolvedTy,
-    SiteId, StringDropDerivation, StringRetainCondition, StringRetainSite, SuspendKind, Terminator,
+    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, FieldOffset, HashMap, HashSet,
+    Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
+    ResolvedTy, SiteId, StringDropDerivation, StringRetainCondition, StringRetainSite, SuspendKind,
+    Terminator,
 };
 
 pub(super) fn finalize_string_local_share_intents(
@@ -280,6 +281,81 @@ fn actor_message_cow_flag_armed_before(
         })
         .unwrap_or(false)
 }
+
+/// Follow one freshly-constructed record owner through a unique same-block
+/// value path to an actor-state field, returning the complete string-leaf path.
+///
+/// The path may cross whole-value `Move`s and enclosing `RecordInit`s. Any
+/// fan-out, unknown read, second sink, or terminator use refuses the
+/// optimisation so the caller keeps the ordinary unconditional retain
+/// (leak-over-UAF). This is deliberately a proof of one linear ownership
+/// transfer, not a search for a convenient later store.
+fn actor_state_record_leaf_sink(
+    block: &BasicBlock,
+    record_init_index: usize,
+    record_dest: Place,
+    leaf_field: FieldOffset,
+) -> Option<(FieldOffset, Vec<FieldOffset>)> {
+    let mut current = record_dest;
+    let mut retired = Vec::new();
+    let mut path = vec![leaf_field];
+
+    for (offset, instr) in block.instructions[record_init_index + 1..]
+        .iter()
+        .enumerate()
+    {
+        let sources = instr_source_places(instr);
+        if sources.iter().any(|source| retired.contains(source)) {
+            return None;
+        }
+
+        match instr {
+            Instr::Move { dest, src } if *src == current => {
+                if !matches!(dest, Place::Local(_)) {
+                    return None;
+                }
+                retired.push(current);
+                current = *dest;
+            }
+            Instr::RecordInit { fields, dest, .. } => {
+                let mut ingress_fields = fields
+                    .iter()
+                    .filter(|(_, source)| *source == current)
+                    .map(|(field, _)| *field);
+                let Some(enclosing_field) = ingress_fields.next() else {
+                    if sources.contains(&current) {
+                        return None;
+                    }
+                    continue;
+                };
+                if ingress_fields.next().is_some() {
+                    return None;
+                }
+                path.insert(0, enclosing_field);
+                retired.push(current);
+                current = *dest;
+            }
+            Instr::ActorStateFieldStore { field_offset, src } if *src == current => {
+                let absolute_index = record_init_index + 1 + offset;
+                let lineage_is_reused = block.instructions[absolute_index + 1..]
+                    .iter()
+                    .flat_map(instr_source_places)
+                    .any(|source| source == current || retired.contains(&source))
+                    || terminator_source_places(&block.terminator, None)
+                        .into_iter()
+                        .any(|source| source == current || retired.contains(&source));
+                if lineage_is_reused {
+                    return None;
+                }
+                return Some((*field_offset, path));
+            }
+            _ if sources.contains(&current) => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
 fn apply_string_retain_sites(
     blocks: &mut [BasicBlock],
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
@@ -290,7 +366,7 @@ fn apply_string_retain_sites(
         before
             .entry((site.block, site.instr_index))
             .or_default()
-            .push((site.value, site.condition));
+            .push((site.value, site.condition.clone()));
     }
 
     let old_spans = std::mem::take(instr_spans);
@@ -308,7 +384,7 @@ fn apply_string_retain_sites(
                     let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
                     rewritten.push(Instr::StringRetain {
                         value: *value,
-                        condition: *condition,
+                        condition: condition.clone(),
                     });
                     if let Some(span) = span {
                         new_spans.insert((block.id, new_index), span);
@@ -648,43 +724,54 @@ pub(super) fn derive_cow_sole_owner(
                         // them, so an unconditional retain here leaks one
                         // reference on every repeated equal store.
                         //
-                        // Keep this narrowly on the direct adjacent
-                        // RecordInit→ActorStateFieldStore shape. Acyclic
-                        // ingress retains unconditionally, preserving the
+                        // Follow a unique chain of whole-value moves and
+                        // enclosing records to the state leaf. Acyclic ingress
+                        // retains unconditionally, preserving the
                         // conditional-branch owner fix; every unproved cyclic
                         // shape also retains unconditionally (leak-over-UAF).
                         let conditional_record_ingress = if cyclic_blocks.contains(&block.id) {
-                            match (instr, block.instructions.get(instr_index + 1)) {
-                                (
-                                    Instr::RecordInit { fields, dest, .. },
-                                    Some(Instr::ActorStateFieldStore {
-                                        field_offset: state_field,
-                                        src,
-                                    }),
-                                ) if src == dest => Some((fields, *state_field)),
+                            match instr {
+                                Instr::RecordInit { fields, dest, .. } => fields
+                                    .iter()
+                                    .filter_map(|(record_field, value)| {
+                                        let local = base_local(*value)?;
+                                        (alias_of.get(&local).copied() == Some(root))
+                                            .then_some((*record_field, *value))
+                                    })
+                                    .map(|(record_field, value)| {
+                                        actor_state_record_leaf_sink(
+                                            block,
+                                            instr_index,
+                                            *dest,
+                                            record_field,
+                                        )
+                                        .map(
+                                            |(state_field, record_path)| {
+                                                (value, state_field, record_path)
+                                            },
+                                        )
+                                    })
+                                    .collect::<Option<Vec<_>>>(),
                                 _ => None,
                             }
                         } else {
                             None
                         };
-                        if let Some((fields, state_field)) = conditional_record_ingress {
-                            for (record_field, value) in fields {
-                                let Some(local) = base_local(*value) else {
-                                    continue;
-                                };
-                                if alias_of.get(&local).copied() == Some(root) {
-                                    conditional_share_sites.push(StringRetainSite {
-                                        block: block.id,
-                                        instr_index,
-                                        value: *value,
-                                        condition:
-                                            StringRetainCondition::ActorStateRecordFieldDiffers {
-                                                state_field,
-                                                record_field: *record_field,
-                                            },
-                                        required_bindings: Vec::new(),
-                                    });
-                                }
+                        if let Some(sites) = conditional_record_ingress
+                            .filter(|sites| !sites.is_empty() && sites.len() == values.len())
+                        {
+                            for (value, state_field, record_path) in sites {
+                                conditional_share_sites.push(StringRetainSite {
+                                    block: block.id,
+                                    instr_index,
+                                    value,
+                                    condition:
+                                        StringRetainCondition::ActorStateRecordFieldDiffers {
+                                            state_field,
+                                            record_path,
+                                        },
+                                    required_bindings: Vec::new(),
+                                });
                             }
                             continue;
                         }

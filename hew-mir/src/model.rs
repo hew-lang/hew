@@ -5630,7 +5630,7 @@ impl WitnessOperand {
 pub struct FieldOffset(pub u32);
 
 /// Runtime condition attached to an explicit [`Instr::StringRetain`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StringRetainCondition {
     /// Always mint one additional string owner.
     Always,
@@ -5645,7 +5645,10 @@ pub enum StringRetainCondition {
     /// is released.
     ActorStateRecordFieldDiffers {
         state_field: FieldOffset,
-        record_field: FieldOffset,
+        /// Full field path from the actor-state record field to the string
+        /// leaf. A direct `Wrap.name` is `[0]`; nested record construction
+        /// prepends each enclosing field.
+        record_path: Vec<FieldOffset>,
     },
 }
 

@@ -134,7 +134,8 @@ fn loop_carried_record_ingress_source(frames: usize) -> String {
          \x20   receive fn route(label: string, count: i64) {{\n\
          \x20       var j: i64 = 0;\n\
          \x20       while j < count {{\n\
-         \x20           held = Wrap {{ name: label }};\n\
+         \x20           let next = Wrap {{ name: label }};\n\
+         \x20           held = next;\n\
          \x20           j = j + 1;\n\
          \x20       }}\n\
          \x20       seen = seen + 1;\n\
@@ -149,6 +150,35 @@ fn loop_carried_record_ingress_source(frames: usize) -> String {
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 85 }}, Err(_) => 86 }}\n\
+         }}\n"
+    )
+}
+
+fn nested_loop_carried_record_ingress_source(frames: usize) -> String {
+    format!(
+        "type Inner {{ name: string }}\n\
+         type Outer {{ inner: Inner }}\n\
+         actor Fan {{\n\
+         \x20   var seen: i64;\n\
+         \x20   var held: Outer;\n\
+         \x20   receive fn route(label: string, count: i64) {{\n\
+         \x20       var j: i64 = 0;\n\
+         \x20       while j < count {{\n\
+         \x20           held = Outer {{ inner: Inner {{ name: label }} }};\n\
+         \x20           j = j + 1;\n\
+         \x20       }}\n\
+         \x20       seen = seen + 1;\n\
+         \x20   }}\n\
+         \x20   receive fn total() -> i64 {{ seen + held.inner.name.len() }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let fan = spawn Fan(seen: 0, held: Outer {{ inner: Inner {{ name: \"seed\" }} }});\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       fan.route(\"nested\".to_upper(), i % 5);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 87 }}, Err(_) => 88 }}\n\
          }}\n"
     )
 }
@@ -249,6 +279,11 @@ macos_slope_test!(
     loop_carried_record_ingress_retains_once_per_distinct_state_owner,
     "actor_handler_loop_carried_record_ingress",
     loop_carried_record_ingress_source
+);
+macos_slope_test!(
+    nested_loop_carried_record_ingress_retains_once_per_distinct_state_owner,
+    "actor_handler_nested_loop_carried_record_ingress",
+    nested_loop_carried_record_ingress_source
 );
 
 #[cfg_attr(

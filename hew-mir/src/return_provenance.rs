@@ -6297,6 +6297,31 @@ fn main() {}
     }
 
     #[test]
+    fn measured_xml_string_results_are_minted() {
+        const SOURCE: &str = r#"extern "C" {
+    fn hew_xml_get_attribute(node: i64, name: string) -> string;
+    fn hew_xml_get_tag(node: i64) -> string;
+    fn hew_xml_get_text(node: i64) -> string;
+    fn hew_xml_to_string(node: i64) -> string;
+}
+fn main() {}
+"#;
+        let table = table_for(SOURCE);
+        for name in [
+            "hew_xml_get_attribute",
+            "hew_xml_get_tag",
+            "hew_xml_get_text",
+            "hew_xml_to_string",
+        ] {
+            assert!(
+                table.extern_return_is_audited_fresh_owner(name),
+                "`{name}` returns a measured transferred string whose one \
+                 caller-side `hew_string_drop` balances the allocation"
+            );
+        }
+    }
+
+    #[test]
     fn a_measured_record_return_is_minted_through_its_heap_field() {
         // `TlsReadFfiResult { data: bytes; status: i32 }` is not pointer-free,
         // so Clause B refuses it. Its whole discharge is one `hew_bytes_drop`,

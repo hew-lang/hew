@@ -536,6 +536,41 @@ fn drain_error() {
     assert_eq!(return_exit_string_drops(&pl, "drain_error"), 0);
 }
 
+#[test]
+fn audited_xml_string_result_and_forwarder_release_once() {
+    let pl = pipeline_with_tc(
+        r#"
+extern "C" {
+    fn hew_xml_to_string(node: i64) -> string;
+}
+
+fn xml_text(node: i64) -> string {
+    unsafe { hew_xml_to_string(node) }
+}
+
+fn borrow_len(value: string) -> i64 {
+    value.len()
+}
+
+fn forwarded(node: i64) -> i64 {
+    borrow_len(xml_text(node))
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        total_string_drops(&pl, "forwarded"),
+        1,
+        "the measured XML string transfer must carry exactly one caller-side \
+         release through its Hew forwarder"
+    );
+    assert_eq!(
+        total_string_drops(&pl, "xml_text"),
+        0,
+        "the forwarding function transfers the XML string owner to its caller"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Index-form canaries (`vec-generic-index` lane). `xs[i]` over `Vec<string>`
 // lowers to the same `hew_vec_get_str` retained owner as `.get(i)`, so the

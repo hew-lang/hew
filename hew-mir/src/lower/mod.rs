@@ -4136,13 +4136,32 @@ fn prepare_owned_call_carriers(
                     *slot = dest;
                 }
                 if let Some((binding, name, ty, Disposition::ScopeExit)) = transferred_binding {
-                    block.statements.push(MirStatement::Use {
-                        binding,
-                        name,
-                        site: arg.site,
-                        ty,
-                        intent: IntentKind::Consume,
+                    // The HIR use may already carry Consume intent (for an
+                    // ordinary consuming parameter). Do not author a second
+                    // transition at the same call site: the checker would
+                    // correctly read that as use-after-consume. Carrier
+                    // preparation only supplies the missing transition for
+                    // borrow-stamped calls whose physical last use transfers.
+                    let already_consumed = block.statements.iter().any(|statement| {
+                        matches!(
+                            statement,
+                            MirStatement::Use {
+                                binding: seen_binding,
+                                site,
+                                intent: IntentKind::Consume,
+                                ..
+                            } if *seen_binding == binding && *site == arg.site
+                        )
                     });
+                    if !already_consumed {
+                        block.statements.push(MirStatement::Use {
+                            binding,
+                            name,
+                            site: arg.site,
+                            ty,
+                            intent: IntentKind::Consume,
+                        });
+                    }
                 }
                 continue;
             }
@@ -5818,15 +5837,18 @@ enum ProjectedPayloadOrigin {
     EphemeralTemp,
     /// The FAIL-CLOSED default (#2523 F1/F1b/F2): the scrutinee is anything NOT
     /// proven a fresh sole owner — a re-readable *place* projection (`match h.b`,
-    /// `match pair.0`, `match arr[i]`, `match self.field`), a `Block`/`If`/
-    /// `Scope` wrapper whose value is a sub-expression (`match { h.b }`), a
-    /// closure-CAPTURED binding (read from the env by copy, not moved into the
-    /// temp), a NESTED-pattern binder (extracted through a transient copy the
-    /// move cannot neutralize), or any un-enumerated / future HIR shape. The
-    /// move-out is REJECTED before codegen; `reason` selects the precise
-    /// diagnostic. Rejecting a wrapper-hidden but otherwise-safe producer is
-    /// acceptable — the safe default is to reject rather than risk aliasing.
-    /// Borrow-only matches never reach this arm (they do not consume the binder).
+    /// `match arr[i]`, `match self.field`), a `Block`/`If`/`Scope` wrapper whose
+    /// value is a sub-expression (`match { h.b }`), a closure-CAPTURED binding
+    /// (read from the env by copy, not moved into the temp), a NESTED-pattern
+    /// binder (extracted through a transient copy the move cannot neutralize),
+    /// or any un-enumerated / future HIR shape. A direct projection from an
+    /// owned tuple (`match pair.0`) is the one explicit exception: enum-match
+    /// lowering can neutralize that exact tuple field, consume-mark the tuple,
+    /// and mint the match temp as its sole replacement owner. Other move-outs
+    /// are REJECTED before codegen; `reason` selects the precise diagnostic.
+    /// Rejecting a wrapper-hidden but otherwise-safe producer is acceptable —
+    /// the safe default is to reject rather than risk aliasing. Borrow-only
+    /// matches never reach this arm (they do not consume the binder).
     Reject(ProjectedPayloadRejectReason),
 }
 

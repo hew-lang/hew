@@ -1219,10 +1219,13 @@ impl Builder {
     /// emission for the partial-extraction case, and by record overwrite
     /// release to enumerate the leaves that must be discharged.
     ///
-    /// This deliberately uses the layout-aware heap-ownership authority, not
-    /// `ValueClass`: direct payload-free/scalar-payload enums are non-BitCopy
-    /// values but own no heap. Treating such an enum field as an owner makes
-    /// its absent release symbol veto the real owning siblings of a record.
+    /// The layout-aware heap-ownership authority excludes direct
+    /// payload-free/scalar-payload enums: they are non-BitCopy values but own
+    /// no heap, and treating one as an owner makes its absent release symbol
+    /// veto the real owning siblings of a record. A non-BitCopy shape that the
+    /// in-place dispatcher cannot discharge (notably a closure with a hidden
+    /// environment box) remains in the list so its caller fails closed rather
+    /// than silently skipping an unsupported owner.
     pub(crate) fn project_record_owned_field_list(
         &self,
         ty: &ResolvedTy,
@@ -1239,11 +1242,14 @@ impl Builder {
             .enumerate()
             .filter_map(|(idx, (_name, field_ty))| {
                 let substituted = self.subst_ty(field_ty);
-                if crate::model::ty_owns_heap_mir(
+                let owns_heap = crate::model::ty_owns_heap_mir(
                     &substituted,
                     &self.record_field_orders,
                     &self.enum_layouts,
-                ) {
+                );
+                let unsupported_non_bitcopy = self.binding_seeds_drop_elaboration(&substituted)
+                    && !self.field_drop_slot_dischargeable(&substituted, &mut HashSet::new());
+                if owns_heap || unsupported_non_bitcopy {
                     u32::try_from(idx).ok().map(|i| (i, substituted))
                 } else {
                     None

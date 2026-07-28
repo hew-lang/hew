@@ -16,6 +16,8 @@ mod binop_bitwise_logical;
 mod bytes_literal_lowering;
 #[path = "lowering_expr/closure_env_ownership.rs"]
 mod closure_env_ownership;
+#[path = "lowering_expr/conditional_ask_return_ownership.rs"]
+mod conditional_ask_return_ownership;
 #[path = "lowering_expr/conditional_move_drop.rs"]
 mod conditional_move_drop;
 #[path = "lowering_expr/cstring_container_domain_canary.rs"]

@@ -6293,14 +6293,16 @@ pub struct ElabDrop {
     /// `#[resource]` close (#1933 / #1941).
     ///
     /// `None` for every idempotent / null-tolerant drop (Duplex, lambda,
-    /// half-handle, `CowHeap`, record/enum/tuple in-place, dyn-trait) — those
-    /// either refcount or null-after-free at runtime and never double-free
-    /// on a shared (`MaybeConsumed`) control-flow join.
+    /// half-handle, `CowHeap`, ordinary record/enum/tuple in-place, dyn-trait)
+    /// — those either refcount or null-after-free at runtime and never
+    /// double-free on a shared (`MaybeConsumed`) control-flow join.
     ///
     /// `Some(flag)` for a `DropKind::Resource` whose `drop_fn` is a
-    /// `DropFnSpec::UserClose`: the user `close` ritual is NOT runtime
-    /// idempotent (`lower_drop_user_fn` unconditionally loads-calls-zeroes,
-    /// and a zero payload is a legitimate field value, not a closed flag).
+    /// `DropFnSpec::UserClose`, or for the `DropKind::RecordInPlace` helper of
+    /// a field-bearing user resource record: the user `close` ritual is NOT
+    /// runtime idempotent (`lower_drop_user_fn` unconditionally
+    /// loads-calls-zeroes, and a zero payload is a legitimate field value, not
+    /// a closed flag).
     /// `flag` is an `i64` local initialised to 0 at the binding's
     /// introduction and set to 1 at each `IntentKind::Consume` use site.
     /// Codegen gates the close on `flag == 0` so a resource reached at a

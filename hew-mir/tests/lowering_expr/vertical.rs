@@ -927,13 +927,13 @@ fn conditional_resource_close_keeps_flag_guarded_drop() {
 }
 
 /// A heap-owning `#[resource]` is both a resource and structurally an owned
-/// record.  The resource close ritual must win that classification overlap:
-/// after a conditional by-value hand-off the source slot is neutralized, and
-/// only the resource drop flag can distinguish the consumed path from the live
-/// path.  Admitting an unguarded `RecordInPlace` drop here calls `close` on the
-/// neutralized record at the shared return (the #2853 Linux null-dereference).
+/// record. Its recursive `RecordInPlace` helper is the complete ritual: user
+/// `close(self)` first, then owned fields in reverse order. After a conditional
+/// by-value hand-off the source slot is neutralized, so the whole helper must
+/// retain the resource drop flag that distinguishes the consumed path from the
+/// live path.
 #[test]
-fn conditional_heap_resource_move_keeps_flag_guarded_resource_drop() {
+fn conditional_heap_resource_move_keeps_flag_guarded_record_drop() {
     let p = lower_source(
         r"
         #[resource]
@@ -975,17 +975,17 @@ fn conditional_heap_resource_move_keeps_flag_guarded_resource_drop() {
     assert!(
         drops
             .iter()
-            .any(|drop| drop.kind == hew_mir::DropKind::Resource && drop.guard.is_some()),
+            .any(|drop| drop.kind == hew_mir::DropKind::RecordInPlace && drop.guard.is_some()),
         "the live side of a conditional heap-resource move must retain a \
-         flag-guarded resource close: {:?}",
+         flag-guarded recursive record drop: {:?}",
         run.drop_plans
     );
     assert!(
         drops
             .iter()
-            .all(|drop| drop.kind != hew_mir::DropKind::RecordInPlace),
-        "a heap-owning resource must not bypass its path-sensitive close ritual \
-         through an unguarded RecordInPlace drop: {:?}",
+            .all(|drop| drop.kind != hew_mir::DropKind::Resource),
+        "a heap-owning resource must not bypass recursive field teardown through \
+         the scalar Resource close path: {:?}",
         run.drop_plans
     );
 }

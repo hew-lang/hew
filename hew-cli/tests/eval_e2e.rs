@@ -709,7 +709,7 @@ fn statement_replay_repl_does_not_repeat_one_shot_statement() {
 
 #[cfg(unix)]
 #[test]
-fn repl_suppresses_startup_banner_when_only_stdout_is_a_terminal() {
+fn repl_suppresses_interactive_chrome_when_only_stdout_is_a_terminal() {
     let output = run_eval_with_piped_stdin_and_pty_stdout(&["eval"], ":quit\n");
 
     assert!(
@@ -727,6 +727,10 @@ fn repl_suppresses_startup_banner_when_only_stdout_is_a_terminal() {
     assert!(
         !stdout.contains("Type :help for commands"),
         "piped stdin must suppress the startup help even when stdout is a terminal; stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("hew>"),
+        "piped stdin must suppress the primary prompt even when stdout is a terminal; stdout: {stdout}"
     );
 }
 
@@ -2693,7 +2697,7 @@ fn eval_repl_piped_stdout_flushes_per_submission() {
 /// output. Regression test for the boilerplate leaking into piped/redirected
 /// consumption of `hew eval`.
 #[test]
-fn eval_repl_non_tty_suppresses_startup_boilerplate() {
+fn eval_repl_non_tty_suppresses_interactive_chrome() {
     require_codegen();
 
     let output = run_eval_with_stdin(&["eval"], ":quit\n");
@@ -2706,6 +2710,34 @@ fn eval_repl_non_tty_suppresses_startup_boilerplate() {
     assert!(
         !stdout.contains("Type :help"),
         "piped hew eval must not print the startup help line: {stdout}"
+    );
+    assert!(
+        !stdout.contains("hew>"),
+        "piped hew eval must not print the primary prompt: {stdout}"
+    );
+}
+
+/// Scripted multi-line input must not leak either interactive prompt into
+/// captured stdout. The continuation prompt needs the same terminal gate as
+/// the primary prompt.
+#[test]
+fn eval_repl_non_tty_suppresses_primary_and_continuation_prompts() {
+    require_codegen();
+
+    let output = run_eval_with_stdin(
+        &["eval"],
+        "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\nadd(20, 22)\n:quit\n",
+    );
+
+    assert_repl_emits_line(&output, "42");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("hew>"),
+        "piped hew eval must not print the primary prompt: {stdout}"
+    );
+    assert!(
+        !stdout.contains("... "),
+        "piped hew eval must not print the continuation prompt: {stdout}"
     );
 }
 

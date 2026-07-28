@@ -4599,7 +4599,14 @@ pub enum Instr {
     /// Increment the refcount of a `string` value before a genuine co-owner is
     /// minted. Existing retained producers (field loads and `Vec<string>` gets)
     /// already return `+1`; this marker covers the remaining share points.
-    StringRetain { value: Place },
+    StringRetain {
+        value: Place,
+        /// Whether the retain is unconditional or depends on an existing
+        /// actor-state aggregate leaf. Loop-carried record ingress uses the
+        /// conditional form so re-storing the same leaf does not mint an
+        /// orphaned reference on every iteration.
+        condition: StringRetainCondition,
+    },
     /// Explicit checker-admitted numeric `as` cast.
     ///
     /// `from_ty` and `to_ty` are carried from HIR so codegen can choose the
@@ -5621,6 +5628,26 @@ impl WitnessOperand {
 /// rather than silently truncate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FieldOffset(pub u32);
+
+/// Runtime condition attached to an explicit [`Instr::StringRetain`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StringRetainCondition {
+    /// Always mint one additional string owner.
+    Always,
+    /// Mint an owner only when the current actor-state record leaf differs
+    /// from `value`.
+    ///
+    /// This is the count-balanced loop-carried `RecordInit` →
+    /// `ActorStateFieldStore` form. The aggregate overwrite helper drops a
+    /// non-alias old leaf and neutralizes an equal old/new alias. Suppressing
+    /// the retain on equality therefore leaves exactly one owner in state,
+    /// while a differing pointer retains the incoming leaf before the old one
+    /// is released.
+    ActorStateRecordFieldDiffers {
+        state_field: FieldOffset,
+        record_field: FieldOffset,
+    },
+}
 
 /// P0 #2432 — own/borrow discriminator for [`Instr::ActorStateFieldLoad`].
 ///

@@ -35,7 +35,7 @@ use crate::model::{
     ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, FunctionCallConv, Instr, IntArithOp,
     IntSignedness, IrPipeline, JoinBranch, LambdaEnvFieldDrop, MirCheck, MirDiagnostic,
     MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm, SelectArmKind,
-    SpawnEnvFieldOwnership, SuspendKind, Terminator, TrapKind,
+    SpawnEnvFieldOwnership, StringRetainCondition, SuspendKind, Terminator, TrapKind,
 };
 
 /// Which stage of the pipeline to render.
@@ -503,7 +503,20 @@ fn render_instr(instr: &Instr) -> String {
             format!("{} = context_field[{offset}]", render_place(dest))
         }
         Instr::BytesRetain { value } => format!("bytes.retain {}", render_place(value)),
-        Instr::StringRetain { value } => format!("string.retain {}", render_place(value)),
+        Instr::StringRetain { value, condition } => match condition {
+            StringRetainCondition::Always => {
+                format!("string.retain {}", render_place(value))
+            }
+            StringRetainCondition::ActorStateRecordFieldDiffers {
+                state_field,
+                record_field,
+            } => format!(
+                "string.retain_if_state_differs {} state[{}].field[{}]",
+                render_place(value),
+                state_field.0,
+                record_field.0
+            ),
+        },
 
         // Integer constants
         Instr::ConstI64 { dest, value } => format!("{} = const.i64 {value}", render_place(dest)),

@@ -6442,6 +6442,65 @@ fn main() {}
     }
 
     #[test]
+    fn measured_os_io_string_transfers_are_minted_only_from_their_rows() {
+        // Every name here has a direct R1/R2/R3 ownership witness: the runtime
+        // exports are measured in `hew-runtime/tests/os_io_string_result_retention.rs`,
+        // and DNS/compression in `hew-std/src/os_io_string_retention.rs`.
+        // Parameter *types* are intentionally irrelevant to this table test;
+        // C1 binds the emitted identity by exact arity, while C2/C3 require the
+        // recorded measured retention and the `string` drop-plan release.
+        const SOURCE: &str = r#"extern "C" {
+    fn hew_args_get(arg: i64) -> string;
+    fn hew_cwd() -> string;
+    fn hew_env_get(name: string) -> string;
+    fn hew_home_dir() -> string;
+    fn hew_hostname() -> string;
+    fn hew_temp_dir() -> string;
+    fn hew_io_read_all() -> string;
+    fn hew_io_read_line() -> string;
+    fn hew_stream_collect_string(stream: i64) -> string;
+    fn hew_process_result_stderr(result: i64) -> string;
+    fn hew_process_result_stdout(result: i64) -> string;
+    fn hew_file_read(path: string) -> string;
+    fn hew_glob_error(result: i64) -> string;
+    fn hew_glob_get(result: i64, index: i64) -> string;
+    fn hew_path_absolute(path: string) -> string;
+    fn hew_dns_lookup_host(host: string) -> string;
+    fn hew_dns_lookup_host_timed(host: string, deadline_ms: i64) -> string;
+    fn hew_compress_last_error() -> string;
+}
+fn main() {}
+"#;
+        let table = table_for(SOURCE);
+        for name in [
+            "hew_args_get",
+            "hew_cwd",
+            "hew_env_get",
+            "hew_home_dir",
+            "hew_hostname",
+            "hew_temp_dir",
+            "hew_io_read_all",
+            "hew_io_read_line",
+            "hew_stream_collect_string",
+            "hew_process_result_stderr",
+            "hew_process_result_stdout",
+            "hew_file_read",
+            "hew_glob_error",
+            "hew_glob_get",
+            "hew_path_absolute",
+            "hew_dns_lookup_host",
+            "hew_dns_lookup_host_timed",
+            "hew_compress_last_error",
+        ] {
+            assert!(
+                table.extern_return_is_audited_fresh_owner(name),
+                "{name} must mint only because its contract carries a measured \
+                 result-retention transfer and its `string` release is exact"
+            );
+        }
+    }
+
+    #[test]
     fn a_measured_record_return_is_minted_through_its_heap_field() {
         // `TlsReadFfiResult { data: bytes; status: i32 }` is not pointer-free,
         // so Clause B refuses it. Its whole discharge is one `hew_bytes_drop`,

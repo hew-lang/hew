@@ -9,7 +9,7 @@ use crate::check::admissibility::{
 };
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
-use crate::check::types::BareActorResolution;
+use crate::check::types::{BareActorResolution, DeferredBuiltinCloneAdmission};
 use crate::hash_eligibility::{ty_is_hash_eligible, HashEligibility};
 use crate::lowering_facts::{
     hashmap_layout_key_fact, hashmap_layout_key_layout_value_fact, hashset_layout_fact,
@@ -1010,6 +1010,44 @@ impl Checker {
             }
 
             let _ = self.validate_resolved_vec_element_type(&resolved, &check.span);
+        }
+
+        self.errors.extend(new_errors);
+    }
+
+    /// Recheck built-in value-container clones after inference has settled.
+    ///
+    /// A call can be visited while its payload is still `Ty::Var`, then become
+    /// affine through a later source branch even though that branch executes
+    /// before the clone at runtime. Inline admission alone is therefore
+    /// source-order dependent. This finalizer closes that gap using the same
+    /// transitive affine authority as the immediate clone gate.
+    pub(super) fn finalize_builtin_clone_admission(&mut self) {
+        let checks = std::mem::take(&mut self.deferred_builtin_clone_admission);
+        let mut new_errors = Vec::new();
+
+        for (_span_key, check) in checks {
+            let resolved = self
+                .subst
+                .resolve(&check.receiver_ty)
+                .materialize_literal_defaults();
+            if resolved.contains_error() || resolved.has_inference_var() {
+                continue;
+            }
+            let Some((type_name, marker)) = self
+                .ty_clone_contains_affine_value(&resolved, &mut std::collections::HashSet::new())
+            else {
+                continue;
+            };
+            let receiver_name = resolved.user_facing().to_string();
+            let message =
+                Self::affine_record_clone_error_message(&receiver_name, &type_name, marker);
+            let mut err =
+                crate::error::TypeError::new(TypeErrorKind::InvalidOperation, check.span, message);
+            if let Some(module) = check.source_module {
+                err = err.with_source_module(module);
+            }
+            new_errors.push(err);
         }
 
         self.errors.extend(new_errors);
@@ -2826,6 +2864,15 @@ impl Checker {
         marker: hew_parser::ast::ResourceMarker,
         span: &Span,
     ) {
+        let message = Self::affine_record_clone_error_message(receiver_name, affine_name, marker);
+        self.report_error(TypeErrorKind::InvalidOperation, span, message);
+    }
+
+    fn affine_record_clone_error_message(
+        receiver_name: &str,
+        affine_name: &str,
+        marker: hew_parser::ast::ResourceMarker,
+    ) -> String {
         let (attribute, contract) = match marker {
             hew_parser::ast::ResourceMarker::Resource => (
                 "#[resource]",
@@ -2844,11 +2891,7 @@ impl Checker {
         } else {
             format!("type `{receiver_name}` contains `{attribute}` value `{affine_name}`")
         };
-        self.report_error(
-            TypeErrorKind::InvalidOperation,
-            span,
-            format!("{subject} and cannot be cloned: `{affine_name}` {contract}"),
-        );
+        format!("{subject} and cannot be cloned: `{affine_name}` {contract}")
     }
 
     /// Return the first `#[resource]` / `#[linear]` value reachable from a
@@ -6761,6 +6804,15 @@ impl Checker {
                 }
             )
         {
+            if resolved.has_inference_var() {
+                self.deferred_builtin_clone_admission
+                    .entry(SpanKey::in_module(span, self.current_module_idx))
+                    .or_insert_with(|| DeferredBuiltinCloneAdmission {
+                        span: span.clone(),
+                        receiver_ty: resolved.clone(),
+                        source_module: self.current_module.clone(),
+                    });
+            }
             if let Some((type_name, marker)) = self
                 .ty_clone_contains_affine_value(&resolved, &mut std::collections::HashSet::new())
             {

@@ -2059,7 +2059,7 @@ pub unsafe extern "C" fn hew_task_scope_cancel_after_ns(
 /// - `scope` must be a valid pointer returned by [`hew_task_scope_new`].
 /// - `task` must be a valid pointer to a task spawned into that scope.
 ///
-/// WASM-TODO(#1451): `task_scope` is native-only; this function is excluded
+/// WASM-TODO(scope): `task_scope` is native-only; this function is excluded
 /// from the WASM build by the same module-level cfg guard as the rest of
 /// `task_scope.rs`.
 #[no_mangle]
@@ -2252,7 +2252,7 @@ pub unsafe extern "C" fn hew_task_scope_destroy(scope: *mut HewTaskScope) {
         return;
     }
 
-    // WASM-TODO(#1451): task_scope uses OS threads throughout and has no WASM target;
+    // WASM-TODO(scope): task_scope uses OS threads throughout and has no WASM target;
     // the reaper thread below is likewise native-only.
     #[cfg(test)]
     if should_fail_task_reaper_spawn() {

@@ -970,7 +970,7 @@ fn channel_sink_close(core: &mut Arc<crate::channel_core::ChannelCore>) {
 /// # Platform
 ///
 /// Not available on `wasm32` targets; TCP transport is unavailable there.
-/// See `WASM-TODO(#1451)`.  The `wasm32` stub returns `null` so the symbol
+/// See `WASM-TODO(tcp-networking):`. The `wasm32` stub returns `null` so the symbol
 /// resolves at link time, but every call returns `null` without side-effects.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
@@ -1082,7 +1082,7 @@ pub unsafe extern "C" fn hew_tcp_stream_from_conn(conn: c_int) -> *mut HewStream
 /// `net.Connection`, including `into_stream_sink`.  This stub is never
 /// reachable through valid Hew code compiled for wasm32.
 ///
-/// WASM-TODO(#1451): TCP transport gap.
+/// WASM-TODO(tcp-networking): add a WASM TCP-to-stream bridge.
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_tcp_stream_from_conn(_conn: c_int) -> *mut HewStreamPair {

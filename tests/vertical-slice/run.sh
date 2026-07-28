@@ -3747,7 +3747,7 @@ fi
 grep -q 'is ambiguous' "${reject_output}"
 grep -q 'Rename or remove one' "${reject_output}"
 
-# WASM parity: must either succeed or emit a named WASM-TODO(#1451) diagnostic — never silent failure.
+# WASM parity: must either succeed or emit a structured WASM diagnostic — never silent failure.
 # Matches hew-cli/src/main.rs CodegenError::WasmUnsupportedSubstrate ("WASM target does not support").
 if ! "${HEW}" compile --target wasm32-unknown-unknown \
     "${ROOT}/tests/vertical-slice/accept/directory_module_call.hew" \

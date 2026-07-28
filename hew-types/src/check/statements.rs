@@ -1321,7 +1321,7 @@ impl Checker {
                                         // Stream runtime is native-only in v0.5. Method-call
                                         // `.recv()` already rejects on wasm; `for await` must
                                         // mirror that checker gate before HIR desugars it.
-                                        // WASM-TODO(#1451): port stream suspend substrate.
+                                        // WASM-TODO(suspending-receive): port the shared stream/channel suspend carrier.
                                         self.reject_wasm_feature(
                                             &iterable.1,
                                             WasmUnsupportedFeature::Streams,

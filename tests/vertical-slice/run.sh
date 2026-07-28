@@ -4688,8 +4688,8 @@ if "${HEW}" check \
   echo "expected affine_record_clone_transitive fixture to fail" >&2
   exit 1
 fi
-if [[ "$(grep -c "cannot be cloned" "${reject_output}")" -ne 6 ]]; then
-  echo "expected six transitive affine record-clone diagnostics" >&2
+if [[ "$(grep -c "cannot be cloned" "${reject_output}")" -ne 8 ]]; then
+  echo "expected eight transitive affine record-clone diagnostics" >&2
   cat "${reject_output}" >&2
   exit 1
 fi
@@ -4699,6 +4699,8 @@ grep -q 'GenericWrapper<LinearTicket>.*LinearTicket' "${reject_output}"
 grep -q 'ResourceEnvelope.*ResourceToken' "${reject_output}"
 grep -q 'TupleWrapper.*ResourceToken' "${reject_output}"
 grep -q 'ArrayWrapper.*LinearTicket' "${reject_output}"
+grep -q 'Vec<ResourceToken>.*ResourceToken' "${reject_output}"
+grep -q 'HashMap<string, LinearTicket>.*LinearTicket' "${reject_output}"
 
 # User-defined GENERIC record `clone` on an instantiation whose type parameter
 # resolves to an opaque handle (`Box<Handle>`) must be rejected too — the

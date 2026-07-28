@@ -310,9 +310,6 @@ enum ActorStateRecordTraceStep {
 
 fn actor_state_record_trace_instr(
     state: &mut ActorStateRecordTraceState,
-    block_id: u32,
-    instr_index: usize,
-    retain_can_move_here: bool,
     instr: &Instr,
     leaf_value: Place,
 ) -> Option<ActorStateRecordTraceStep> {
@@ -356,11 +353,6 @@ fn actor_state_record_trace_instr(
                 state.record_path.insert(0, enclosing_field);
                 state.retired.push(state.current);
                 state.current = *dest;
-                if retain_can_move_here {
-                    state.retain_block = block_id;
-                    state.retain_instr_index = instr_index;
-                    state.state_writes_since_retain.clear();
-                }
                 transferred = true;
             } else if reads.contains(&state.current) {
                 return None;
@@ -486,13 +478,12 @@ fn enqueue_actor_state_record_trace_successors(
 ///
 /// The path may cross whole-value `Move`s, enclosing `RecordInit`s, calls, and
 /// control-flow splits/joins. The retain stays at the first leaf-bearing
-/// `RecordInit` before a CFG join: branch-local constructors therefore remain
-/// branch-local instead of becoming duplicate retains after a join. Every path
-/// from that construction must reach a compatible state sink, and the target
+/// `RecordInit`, where `leaf_value` is path-defined and still live. Every path
+/// from that construction must reach one compatible state sink, and the target
 /// state field must remain unchanged between the retain and sink. Any unknown
-/// read, killed/escaping path, source redefinition, or post-sink reuse refuses
-/// the optimisation so the caller keeps the ordinary unconditional retain
-/// (leak-over-UAF).
+/// read, killed/escaping path, source redefinition, divergent sink, or post-sink
+/// reuse refuses the state-ingress witness so the caller keeps the ordinary
+/// retain.
 fn actor_state_record_leaf_sinks(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
@@ -524,12 +515,6 @@ fn actor_state_record_leaf_sinks(
             continue;
         }
         let block = block_by_id(blocks, state.block)?;
-        let retain_can_move_here = blocks
-            .iter()
-            .flat_map(BasicBlock::successors)
-            .filter(|successor| *successor == block.id)
-            .count()
-            <= 1;
         let mut lineage_live = true;
         for (instr_index, instr) in block
             .instructions
@@ -537,14 +522,7 @@ fn actor_state_record_leaf_sinks(
             .enumerate()
             .skip(state.instr_index)
         {
-            match actor_state_record_trace_instr(
-                &mut state,
-                block.id,
-                instr_index,
-                retain_can_move_here,
-                instr,
-                leaf_value,
-            )? {
+            match actor_state_record_trace_instr(&mut state, instr, leaf_value)? {
                 ActorStateRecordTraceStep::Continue => {}
                 ActorStateRecordTraceStep::Killed => return None,
                 ActorStateRecordTraceStep::Sink { state_field } => {
@@ -955,8 +933,9 @@ pub(super) fn derive_cow_sole_owner(
                     let source_local = base_local(values[0]).unwrap_or(root);
                     if share_needs_retain(source_local, block.id, instr_index) {
                         // Follow whole-value moves and enclosing records to the
-                        // state leaf so the borrowed owner mint executes at the
-                        // last path-local constructor before a CFG join. The
+                        // state leaf while keeping the borrowed owner mint at
+                        // the first leaf-bearing constructor, where the source
+                        // remains path-defined and live. The
                         // overwrite helper releases the old String owner even
                         // on equal-pointer replacement; every admitted incoming
                         // borrow therefore mints exactly one replacement owner.
@@ -987,23 +966,27 @@ pub(super) fn derive_cow_sole_owner(
                         } else {
                             None
                         };
-                        if let Some(sites) = state_record_ingress
-                            .filter(|sites| !sites.is_empty() && sites.len() == values.len())
-                        {
+                        if let Some(sites) = state_record_ingress.filter(|sites| {
+                            !sites.is_empty()
+                                && sites.len() == values.len()
+                                && sites.iter().all(|(_, sinks)| sinks.len() == 1)
+                        }) {
                             for (value, sinks) in sites {
-                                for sink in sinks {
-                                    state_ingress_share_sites.push(StringRetainSite {
-                                        block: sink.block,
-                                        instr_index: sink.instr_index,
-                                        value,
-                                        condition:
-                                            StringRetainCondition::ActorStateRecordBorrowedIngress {
-                                                state_field: sink.state_field,
-                                                record_path: sink.record_path,
-                                            },
-                                        required_bindings: Vec::new(),
-                                    });
-                                }
+                                let sink = sinks
+                                    .into_iter()
+                                    .next()
+                                    .expect("single-sink ingress was checked above");
+                                state_ingress_share_sites.push(StringRetainSite {
+                                    block: sink.block,
+                                    instr_index: sink.instr_index,
+                                    value,
+                                    condition:
+                                        StringRetainCondition::ActorStateRecordBorrowedIngress {
+                                            state_field: sink.state_field,
+                                            record_path: sink.record_path,
+                                        },
+                                    required_bindings: Vec::new(),
+                                });
                             }
                             continue;
                         }

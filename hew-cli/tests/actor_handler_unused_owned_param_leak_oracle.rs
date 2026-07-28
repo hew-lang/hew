@@ -344,6 +344,36 @@ fn shifted_repeated_record_ingress_source(frames: usize) -> String {
     )
 }
 
+fn branch_to_two_state_fields_source(frames: usize) -> String {
+    format!(
+        "type Wrap {{ name: string }}\n\
+         actor Fan {{\n\
+         \x20   var seen: i64;\n\
+         \x20   var one: Wrap;\n\
+         \x20   var two: Wrap;\n\
+         \x20   receive fn route(label: string, choose_one: bool) {{\n\
+         \x20       let next = Wrap {{ name: label }};\n\
+         \x20       if choose_one {{ one = next; }} else {{ two = next; }}\n\
+         \x20       seen = seen + 1;\n\
+         \x20   }}\n\
+         \x20   receive fn total() -> i64 {{ seen + one.name.len() + two.name.len() }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let fan = spawn Fan(\n\
+         \x20       seen: 0,\n\
+         \x20       one: Wrap {{ name: \"one\" }},\n\
+         \x20       two: Wrap {{ name: \"two\" }}\n\
+         \x20   );\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       fan.route(\"either\".to_upper(), i % 2 == 0);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 95 }}, Err(_) => 96 }}\n\
+         }}\n"
+    )
+}
+
 const FORWARDED_POISON_SOURCE: &str = "\
 actor Consumer {\n\
 \x20   var seen: i64;\n\
@@ -396,6 +426,35 @@ fn main() -> i64 {\n\
 \x20       i = i + 1;\n\
 \x20   }\n\
 \x20   match await fan.total() { Ok(n) => if n > 40 { 0 } else { 83 }, Err(_) => 84 }\n\
+}\n";
+
+const BRANCH_LOCAL_FRESH_NESTED_POISON_SOURCE: &str = "\
+type Inner { name: string }\n\
+type Outer { inner: Inner }\n\
+actor Fan {\n\
+\x20   var seen: i64;\n\
+\x20   var held: Outer;\n\
+\x20   receive fn route(flag: bool, other: bool) {\n\
+\x20       let selected = if flag {\n\
+\x20           let fresh = \"hot\".to_upper();\n\
+\x20           Inner { name: fresh }\n\
+\x20       } else {\n\
+\x20           Inner { name: \"cold\" }\n\
+\x20       };\n\
+\x20       if other { held = Outer { inner: selected }; }\n\
+\x20       else { held = Outer { inner: selected }; }\n\
+\x20       seen = seen + 1;\n\
+\x20   }\n\
+\x20   receive fn total() -> i64 { seen + held.inner.name.len() }\n\
+}\n\
+fn main() -> i64 {\n\
+\x20   let fan = spawn Fan(seen: 0, held: Outer { inner: Inner { name: \"seed\" } });\n\
+\x20   var i: i64 = 0;\n\
+\x20   while i < 12 {\n\
+\x20       fan.route(i % 2 == 0, i % 3 == 0);\n\
+\x20       i = i + 1;\n\
+\x20   }\n\
+\x20   match await fan.total() { Ok(n) => if n > 12 { 0 } else { 97 }, Err(_) => 98 }\n\
 }\n";
 
 macro_rules! macos_slope_test {
@@ -466,6 +525,11 @@ macos_slope_test!(
     "actor_handler_shifted_repeated_record_ingress",
     shifted_repeated_record_ingress_source
 );
+macos_slope_test!(
+    branch_to_two_state_fields_mints_one_source_owner,
+    "actor_handler_branch_to_two_state_fields",
+    branch_to_two_state_fields_source
+);
 
 #[cfg_attr(
     not(target_os = "macos"),
@@ -512,6 +576,32 @@ fn conditional_record_ingress_retains_before_handler_drop() {
         "record ingress on the unconsumed branch must retain before the \
          handler's guarded source drop; otherwise actor state observes a \
          double-free or corrupted string:\n{}",
+        describe_output(&output)
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator control uses the Darwin malloc diagnostics"
+)]
+#[test]
+fn branch_local_fresh_ingress_is_never_hoisted_past_join() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("actor-handler-branch-local-fresh-ingress-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        BRANCH_LOCAL_FRESH_NESTED_POISON_SOURCE,
+        dir.path(),
+        "branch_local_fresh_ingress",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a branch-local fresh leaf must be retained while path-defined and live; \
+         hoisting after the join reads an uninitialised or already-dropped slot:\n{}",
         describe_output(&output)
     );
 }

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +12,15 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "scripts/example-expectations.py"
+
+
+def load_runner_module():
+    spec = importlib.util.spec_from_file_location("example_expectations", RUNNER)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"could not load runner module from {RUNNER}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def write(path: Path, text: str) -> None:
@@ -59,7 +69,55 @@ def expect_status(
         )
 
 
+def assert_timeout_exit_race_is_classified() -> None:
+    module = load_runner_module()
+
+    class ExitedProcess:
+        pid = 424242
+        returncode = 0
+
+        def __init__(self) -> None:
+            self.communicate_calls = 0
+
+        def communicate(self, *, timeout=None):
+            self.communicate_calls += 1
+            if self.communicate_calls == 1:
+                raise subprocess.TimeoutExpired(["fake-hew"], timeout)
+            return b"finished during timeout cleanup\n", None
+
+        def kill(self) -> None:
+            raise ProcessLookupError("already exited")
+
+        def poll(self) -> int:
+            return 0
+
+    process = ExitedProcess()
+    original_popen = module.subprocess.Popen
+    original_killpg = getattr(module.os, "killpg", None)
+    try:
+        module.subprocess.Popen = lambda *_args, **_kwargs: process
+
+        def already_exited(*_args, **_kwargs) -> None:
+            raise ProcessLookupError("already exited")
+
+        if module.os.name != "nt":
+            module.os.killpg = already_exited
+        status, output = module.run_process(["fake-hew"], 0.001)
+    finally:
+        module.subprocess.Popen = original_popen
+        if original_killpg is not None:
+            module.os.killpg = original_killpg
+
+    if status is not None or output != b"finished during timeout cleanup\n":
+        raise AssertionError(
+            "timeout/exit race must remain a clean timeout classification; "
+            f"got status={status!r}, output={output!r}"
+        )
+
+
 def main() -> None:
+    assert_timeout_exit_race_is_classified()
+
     with tempfile.TemporaryDirectory(prefix="hew-example-expectations-") as temp:
         root = Path(temp)
         compiler = root / "fake-hew"
@@ -91,6 +149,8 @@ if not pathlib.Path(sys.argv[4]).is_file():
 
 if source == "hang":
     time.sleep(10)
+elif source == "crlf_output":
+    sys.stdout.buffer.write(b"expected\\r\\n")
 elif source == "nonzero":
     print("expected")
     raise SystemExit(7)
@@ -106,6 +166,19 @@ else:
         write(good / "ok.hew", "fn main() {}\n")
         write(good / "ok.expected", "expected\n")
         expect_status(0, compiler, "--source-root", str(good), contains="1 passed")
+
+        crlf = root / "crlf"
+        write(crlf / "crlf_output.hew", "fn main() {}\n")
+        write(crlf / "crlf_output.expected", "expected\n")
+        write(crlf / "crlf_expectation.hew", "fn main() {}\n")
+        (crlf / "crlf_expectation.expected").write_bytes(b"expected\r\n")
+        expect_status(
+            0,
+            compiler,
+            "--source-root",
+            str(crlf),
+            contains="2 passed",
+        )
 
         fractional = root / "fractional.hew"
         write(fractional, "fn main() {}\n")
@@ -237,7 +310,7 @@ else:
                 contains="must be finite and greater than zero",
             )
 
-    print("example-expectations selftest: 15/15 counterfactuals PASS")
+    print("example-expectations selftest: 18/18 counterfactuals PASS")
 
 
 if __name__ == "__main__":

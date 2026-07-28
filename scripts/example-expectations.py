@@ -88,7 +88,7 @@ def collect_sources(
             )
         unique[resolved_source] = source
 
-    ordered = sorted(unique.values(), key=lambda path: str(path))
+    ordered = sorted(unique.values(), key=str)
     for source in ordered:
         expectation = source.with_suffix(".expected")
         if not expectation.is_file():
@@ -111,17 +111,25 @@ def run_process(command: list[str], timeout_seconds: float) -> tuple[int | None,
         output, _ = process.communicate(timeout=timeout_seconds)
         return process.returncode, output
     except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            process.kill()
-        else:
-            os.killpg(process.pid, signal.SIGKILL)
+        try:
+            if os.name == "nt":
+                process.kill()
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            # The process may exit in the interval between TimeoutExpired and
+            # group termination. Suppress only that completed-process race;
+            # a failure to terminate a still-running process remains fatal
+            # instead of letting the following communicate() wait unbounded.
+            if process.poll() is None:
+                raise
         output, _ = process.communicate()
         return None, output
 
 
 def normalized_text(data: bytes, *, source: str) -> str:
     try:
-        return data.decode("utf-8").rstrip("\n")
+        return data.decode("utf-8").replace("\r\n", "\n").rstrip("\n")
     except UnicodeDecodeError as error:
         fail(f"{source} is not UTF-8: {error}")
 

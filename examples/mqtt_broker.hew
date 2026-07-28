@@ -18,6 +18,15 @@ import std::net::{Connection};
 
 import std::os;
 
+extern "C" {
+    fn hew_actor_self_stop();
+}
+
+// Bound buffering for peers that advertise a very large Remaining Length and
+// then dribble bytes indefinitely. This example intentionally implements a
+// compact MQTT subset; one MiB is ample for its demonstrations.
+const MAX_PACKET_BYTES: i64 = 1048576;
+
 // ── Bytes helpers ─────────────────────────────────────────────────────────────
 fn bytes_slice(data: bytes, start: i64, end: i64) -> bytes {
     let result = bytes::new();
@@ -27,7 +36,11 @@ fn bytes_slice(data: bytes, start: i64, end: i64) -> bytes {
     result
 }
 
-// Read big-endian uint16 at offset.
+fn has_bytes(limit: i64, offset: i64, count: i64) -> bool {
+    offset >= 0 && count >= 0 && offset <= limit && count <= limit - offset
+}
+
+// Read big-endian uint16 at an offset already proven in range.
 fn read_u16(data: bytes, offset: i64) -> i32 {
     data[offset] as i32 * 256 + data[offset + 1] as i32
 }
@@ -93,7 +106,20 @@ fn push_mqtt_str(buf: bytes, s: string) {
     }
 }
 
-// Read length-prefixed MQTT string at offset.
+// Return the complete wire width of a length-prefixed MQTT string, or -1 when
+// its prefix or payload would cross the current packet boundary.
+fn mqtt_str_wire_len(data: bytes, offset: i64, limit: i64) -> i64 {
+    if !has_bytes(limit, offset, 2) {
+        return -1;
+    }
+    let wire_len: i64 = 2 + read_u16(data, offset) as i64;
+    if !has_bytes(limit, offset, wire_len) {
+        return -1;
+    }
+    wire_len
+}
+
+// Read a length-prefixed MQTT string whose wire width was already validated.
 fn read_mqtt_str(data: bytes, offset: i64) -> string {
     let len: i64 = read_u16(data, offset) as i64;
     let s = bytes::new();
@@ -202,6 +228,11 @@ actor ClientHandler {
                 break;
             }
             let remaining_len: i64 = read_varint_value(buf, 1) as i64;
+            if remaining_len > MAX_PACKET_BYTES {
+                connected = false;
+                println(f"[mqtt] packet exceeds size limit for {client_id}");
+                break;
+            }
             let total: i64 = 1 + vl + remaining_len;
             if buf_len < total {
                 break;
@@ -209,81 +240,156 @@ actor ClientHandler {
             let ptype = buf[0] as i64 / 16;
             let pflags = buf[0] as i64 % 16;
             let var_off: i64 = 1 + vl;
+            let packet_end: i64 = var_off + remaining_len;
             match ptype {
                 1 => {
                     // CONNECT
-                    let proto_name_len: i64 = read_u16(buf, var_off) as i64;
-                    let payload_off: i64 = var_off + proto_name_len + 6;
-                    let new_client_id = read_mqtt_str(buf, payload_off);
-                    if new_client_id != "" {
-                        router.rename_client(client_id.clone(), new_client_id.clone());
-                        client_id = new_client_id;
+                    let proto_wire_len = mqtt_str_wire_len(buf, var_off, packet_end);
+                    if pflags != 0 || proto_wire_len < 0 {
+                        connected = false;
+                    } else {
+                        let protocol_name = read_mqtt_str(buf, var_off);
+                        let header_off: i64 = var_off + proto_wire_len;
+                        if protocol_name != "MQTT" || !has_bytes(packet_end, header_off, 4) {
+                            connected = false;
+                        } else {
+                            let protocol_level = buf[header_off] as i32;
+                            let payload_off: i64 = header_off + 4;
+                            let client_id_wire_len =
+                                mqtt_str_wire_len(buf, payload_off, packet_end);
+                            if protocol_level != 4 || client_id_wire_len < 0 {
+                                connected = false;
+                            } else {
+                                let new_client_id = read_mqtt_str(buf, payload_off);
+                                if new_client_id != "" {
+                                    router.rename_client(
+                                        client_id.clone(),
+                                        new_client_id.clone(),
+                                    );
+                                    client_id = new_client_id;
+                                }
+                                println(f"[mqtt] CONNECT client_id={client_id}");
+                                let _ = conn.send(build_connack(0, 0));
+                            }
+                        }
                     }
-                    println(f"[mqtt] CONNECT client_id={client_id}");
-                    let _ = conn.send(build_connack(0, 0));
+                    if !connected {
+                        println(f"[mqtt] malformed CONNECT for {client_id}");
+                    }
                 },
                 3 => {
                     // PUBLISH
                     let qos = pflags / 2 % 4;
-                    let topic_wire_len: i64 = 2 + read_u16(buf, var_off) as i64;
-                    let topic = read_mqtt_str(buf, var_off);
-                    var pid_off: i64 = var_off + topic_wire_len;
-                    var packet_id: i32 = 0;
-                    if qos > 0 {
-                        packet_id = read_u16(buf, pid_off);
-                        pid_off = pid_off + 2;
-                        let _ = conn.send(build_puback(packet_id));
+                    let topic_wire_len = mqtt_str_wire_len(buf, var_off, packet_end);
+                    if qos == 3 || topic_wire_len <= 2 {
+                        connected = false;
+                    } else {
+                        let topic = read_mqtt_str(buf, var_off);
+                        var payload_off: i64 = var_off + topic_wire_len;
+                        var packet_id: i32 = 0;
+                        if qos > 0 {
+                            if has_bytes(packet_end, payload_off, 2) {
+                                packet_id = read_u16(buf, payload_off);
+                                payload_off = payload_off + 2;
+                                let _ = conn.send(build_puback(packet_id));
+                            } else {
+                                connected = false;
+                            }
+                        }
+                        if connected {
+                            let payload_bytes = bytes_slice(buf, payload_off, packet_end);
+                            println(f"[mqtt] PUBLISH topic={topic} qos={qos}");
+                            router.publish(topic, payload_bytes, qos as i32, packet_id);
+                        }
                     }
-                    let payload_bytes = bytes_slice(buf, pid_off, var_off + remaining_len);
-                    println(f"[mqtt] PUBLISH topic={topic} qos={qos}");
-                    router.publish(topic, payload_bytes, qos as i32, packet_id);
+                    if !connected {
+                        println(f"[mqtt] malformed PUBLISH for {client_id}");
+                    }
                 },
                 8 => {
                     // SUBSCRIBE
-                    let sub_packet_id = read_u16(buf, var_off);
-                    let payload_end: i64 = var_off + remaining_len;
-                    var topic_off: i64 = var_off + 2;
-                    let return_codes: bytes = bytes::new();
-                    while topic_off < payload_end {
-                        let tw: i64 = 2 + read_u16(buf, topic_off) as i64;
-                        let stopic = read_mqtt_str(buf, topic_off);
-                        let req_qos: i32 = buf[topic_off + tw] as i32;
-                        let granted: i32 = if req_qos > 1 {
-                            1
-                        } else {
-                            req_qos
-                        };
-                        router.subscribe(stopic, client_id.clone(), granted);
-                        return_codes.push(granted as u8);
-                        topic_off = topic_off + tw + 1;
+                    if pflags != 2 || !has_bytes(packet_end, var_off, 3) {
+                        connected = false;
+                    } else {
+                        let sub_packet_id = read_u16(buf, var_off);
+                        var topic_off: i64 = var_off + 2;
+                        let return_codes: bytes = bytes::new();
+                        while connected && topic_off < packet_end {
+                            let tw = mqtt_str_wire_len(buf, topic_off, packet_end);
+                            if tw <= 2 || !has_bytes(packet_end, topic_off + tw, 1) {
+                                connected = false;
+                                break;
+                            }
+                            let stopic = read_mqtt_str(buf, topic_off);
+                            let req_qos: i32 = buf[topic_off + tw] as i32;
+                            if req_qos > 1 || stopic.contains("#") || stopic.contains("+") {
+                                // This compact broker implements exact-topic
+                                // matching only; reject filters it cannot honor.
+                                return_codes.push(0x80 as u8);
+                            } else {
+                                router.subscribe(stopic, client_id.clone(), req_qos);
+                                return_codes.push(req_qos as u8);
+                            }
+                            topic_off = topic_off + tw + 1;
+                        }
+                        if connected {
+                            let _ = conn.send(build_suback(sub_packet_id, return_codes));
+                            println("[mqtt] SUBSCRIBE processed");
+                        }
                     }
-                    let _ = conn.send(build_suback(sub_packet_id, return_codes));
-                    println("[mqtt] SUBSCRIBE processed");
+                    if !connected {
+                        println(f"[mqtt] malformed SUBSCRIBE for {client_id}");
+                    }
                 },
                 10 => {
                     // UNSUBSCRIBE
-                    let unsub_packet_id = read_u16(buf, var_off);
-                    let payload_end: i64 = var_off + remaining_len;
-                    var topic_off: i64 = var_off + 2;
-                    while topic_off < payload_end {
-                        let tw: i64 = 2 + read_u16(buf, topic_off) as i64;
-                        let utopic = read_mqtt_str(buf, topic_off);
-                        router.unsubscribe(utopic, client_id.clone());
-                        topic_off = topic_off + tw;
+                    if pflags != 2 || !has_bytes(packet_end, var_off, 3) {
+                        connected = false;
+                    } else {
+                        let unsub_packet_id = read_u16(buf, var_off);
+                        var topic_off: i64 = var_off + 2;
+                        while connected && topic_off < packet_end {
+                            let tw = mqtt_str_wire_len(buf, topic_off, packet_end);
+                            if tw <= 2 {
+                                connected = false;
+                                break;
+                            }
+                            let utopic = read_mqtt_str(buf, topic_off);
+                            router.unsubscribe(utopic, client_id.clone());
+                            topic_off = topic_off + tw;
+                        }
+                        if connected {
+                            let _ = conn.send(build_unsuback(unsub_packet_id));
+                            println(f"[mqtt] UNSUBSCRIBE {client_id}");
+                        }
                     }
-                    let _ = conn.send(build_unsuback(unsub_packet_id));
-                    println(f"[mqtt] UNSUBSCRIBE {client_id}");
+                    if !connected {
+                        println(f"[mqtt] malformed UNSUBSCRIBE for {client_id}");
+                    }
                 },
                 12 => {
                     // PINGREQ
-                    let _ = conn.send(build_pingresp());
+                    if pflags == 0 && remaining_len == 0 {
+                        let _ = conn.send(build_pingresp());
+                    } else {
+                        connected = false;
+                        println(f"[mqtt] malformed PINGREQ for {client_id}");
+                    }
                 },
                 14 => {
                     // DISCONNECT
-                    connected = false;
-                    println(f"[mqtt] DISCONNECT {client_id}");
+                    if pflags == 0 && remaining_len == 0 {
+                        connected = false;
+                        println(f"[mqtt] DISCONNECT {client_id}");
+                    } else {
+                        connected = false;
+                        println(f"[mqtt] malformed DISCONNECT for {client_id}");
+                    }
                 },
-                _ => {},
+                _ => {
+                    connected = false;
+                    println(f"[mqtt] unsupported packet type {ptype} for {client_id}");
+                },
             }
             if connected {
                 buf = bytes_slice(buf, total, buf_len);
@@ -298,6 +404,9 @@ actor ClientHandler {
             }
             println(f"[mqtt] connection closed for {client_id}");
             conn.close();
+            unsafe {
+                hew_actor_self_stop()
+            };
         }
     }
     receive fn on_close() {
@@ -307,6 +416,9 @@ actor ClientHandler {
             println(f"[mqtt] connection closed for {client_id}");
         }
         conn.close();
+        unsafe {
+            hew_actor_self_stop()
+        };
     }
 }
 
@@ -321,10 +433,14 @@ actor Router {
     var sub_topics: Vec<string>;
     var sub_client_ids: Vec<string>;
     var sub_qos: Vec<i32>;
-    receive fn register_client(client_id: string, client: LocalPid<ClientHandler>) {
+    receive fn register_client(
+        client_id: string,
+        client: LocalPid<ClientHandler>,
+    ) -> bool {
         client_ids.push(client_id);
         clients.push(client);
         println("[router] client registered");
+        true
     }
     receive fn rename_client(old_client_id: string, new_client_id: string) {
         for i in 0 .. client_ids.len() {
@@ -421,7 +537,7 @@ actor Acceptor {
             let conn = await lst.accept();
             let cid = f"client-{next_id}";
             let handler = spawn ClientHandler(conn: conn, client_id: cid.clone(), router: router, buf: bytes::new(), registered: true);
-            router.register_client(cid, handler);
+            let _ = await router.register_client(cid, handler);
             handler.start();
             next_id = next_id + 1;
         }

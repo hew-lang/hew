@@ -2123,15 +2123,35 @@ impl Builder {
     /// parameter of this argument's type through owned-local registration.
     ///
     /// Mirrors the structural `actor_message_param` seed in `lower_params`.
-    /// Registration is intentionally broader than "will emit a destructor":
-    /// the downstream type-directed elaborator may classify a non-BitCopy
-    /// View/PersistentShare shape as having no release. The caller still asks
-    /// the identical seed fact so a structurally owned heap value cannot cross
-    /// the mailbox boundary without the provenance preflight that justifies
-    /// the receiver-side mint.
+    /// Registration includes bare `bytes` and is intentionally broader than
+    /// "will emit a destructor": the downstream type-directed elaborator may
+    /// classify a non-BitCopy View/PersistentShare shape as having no release.
+    /// The caller still asks the identical seed fact so a structurally owned
+    /// heap value cannot cross the mailbox boundary without the provenance
+    /// preflight that justifies the receiver-side mint.
     fn actor_handler_mints_an_owner_for_message(&self, arg: &HirExpr) -> bool {
         let ty = self.subst_ty(&arg.ty);
         self.binding_seeds_drop_elaboration(&ty)
+    }
+
+    /// Refuse a local actor-mailbox hand-off when the receiving handler will
+    /// mint a scope-exit owner from the parameter type but the argument is
+    /// proven to carry storage owned by foreign code.
+    ///
+    /// This is shared by tell, ask, receive-generator start, select, and join
+    /// lowering: all five construct the same local actor mailbox message, so
+    /// checking only the tell surface would leave the identical invalid-free
+    /// reachable through an ask-shaped carrier.
+    pub(crate) fn reject_proven_foreign_actor_message_args(&mut self, args: &[HirExpr]) -> bool {
+        for arg in args {
+            if !self.actor_handler_mints_an_owner_for_message(arg) {
+                continue;
+            }
+            if self.reject_opaque_foreign_ownership_transfer(arg, "an actor handler's mailbox") {
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn lower_actor_send(
@@ -2166,13 +2186,8 @@ impl Builder {
         // `FunctionCallConv::ActorHandler` arms). That frame cannot ask; this one
         // can. Preflighted before the receiver is lowered so a refusal leaves no
         // partial MIR.
-        for arg in args {
-            if !self.actor_handler_mints_an_owner_for_message(arg) {
-                continue;
-            }
-            if self.reject_opaque_foreign_ownership_transfer(arg, "an actor handler's mailbox") {
-                return None;
-            }
+        if self.reject_proven_foreign_actor_message_args(args) {
+            return None;
         }
         let actor = self.lower_value(receiver)?;
         let child_ref = self.fungible_child_ref_of(actor);
@@ -2321,6 +2336,9 @@ impl Builder {
                     args.len()
                 ),
             });
+            return None;
+        }
+        if self.reject_proven_foreign_actor_message_args(args) {
             return None;
         }
 
@@ -2487,6 +2505,9 @@ impl Builder {
                     args.len()
                 ),
             });
+            return None;
+        }
+        if self.reject_proven_foreign_actor_message_args(args) {
             return None;
         }
         let actor = self.lower_value(receiver)?;

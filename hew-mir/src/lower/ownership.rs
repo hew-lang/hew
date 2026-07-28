@@ -3453,9 +3453,9 @@ impl Builder {
     /// # The predicate MIRRORS `lower_params`, it does not approximate it
     ///
     /// The only thing this function needs to detect is "the callee will mint a
-    /// scope-exit owner over this parameter". `lower_params` has exactly four
-    /// such mints and this is the free-call half of them, condition for
-    /// condition:
+    /// scope-exit owner over this parameter". `lower_params` has exactly six
+    /// such mints and this is the free-call half of three of them, condition
+    /// for condition:
     ///
     /// * `param_consume == Some(true)` — the affine `#[resource]` CONSUME
     ///   parameter, minted at any type;
@@ -3466,8 +3466,13 @@ impl Builder {
     ///   `ty_is_heap_owning_enum_composite` — the #2732 enum-composite callee
     ///   drop.
     ///
-    /// The remaining two mints are `ActorHandler`-convention only, so their
-    /// caller is the mailbox hand-off in `lower_actor_send`, not a direct call.
+    /// The remaining three mints are `ActorHandler`-convention only, so their
+    /// caller is the mailbox hand-off in `lower_actor_send`
+    /// (`actor_handler_mints_an_owner_for_message`), not a direct call: the
+    /// #2747 owned-aggregate record message, the indirect-enum message, and
+    /// the bare `bytes` message (the copy-mode mailbox transfers its one
+    /// refcount into the delivered `BytesTriple`, so `lower_params` registers
+    /// a scope-exit owner for it exactly like the other two).
     ///
     /// The conjunction in the third bullet is load-bearing and was measured:
     /// `call_param_consume` is a body-escape summary, not a mint predicate. The

@@ -2,6 +2,8 @@
 // Add new lowering_expr-behaviour tests under `tests/lowering_expr/`, wire them into this
 // file via #[path] — do not create a new top-level tests/*.rs file.
 
+#[path = "lowering_expr/actor_handler_bytes_ownership_authority.rs"]
+mod actor_handler_bytes_ownership_authority;
 #[path = "lowering_expr/anonymous_owned_temp_drop.rs"]
 mod anonymous_owned_temp_drop;
 #[path = "lowering_expr/audited_extern_argument_provenance.rs"]

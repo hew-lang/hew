@@ -4583,7 +4583,15 @@ pub enum Instr {
     /// value has transferred into a new owner. The path traverses inline record
     /// and tuple fields from `root`; clearing only the terminal slot leaves the
     /// carrier's later structural drop responsible for every unmoved sibling.
-    AggregateProjectionNeutralize { root: Place, fields: Vec<u32> },
+    AggregateProjectionNeutralize {
+        root: Place,
+        fields: Vec<u32>,
+        /// The terminal field-load destination that receives ownership of the
+        /// zeroed slot. This is analysis authority only: codegen still clears
+        /// the root-relative path, while ownership passes corroborate that the
+        /// recorded destination is the actual end of that projection chain.
+        transferee: Place,
+    },
     /// Increment the refcount of a `bytes` value before a genuine co-owner is
     /// minted. This marker is emitted only by the MIR bytes ownership prover;
     /// codegen must not infer the retain from the LLVM storage type.

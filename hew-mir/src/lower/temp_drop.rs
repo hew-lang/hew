@@ -1316,31 +1316,56 @@ pub(super) fn compute_projection_alias_taint(
 /// load. The destination is then the sole owner of those bits, not an interior
 /// alias of the aggregate root.
 pub(super) fn aggregate_projection_transfer_dests(blocks: &[BasicBlock]) -> HashSet<u32> {
-    let neutralized: HashSet<(Place, u32)> = blocks
-        .iter()
-        .flat_map(|block| &block.instructions)
-        .filter_map(|instr| match instr {
-            Instr::AggregateProjectionNeutralize { root, fields } => {
-                Some((*root, fields.as_slice()))
-            }
-            _ => None,
-        })
-        .flat_map(|(root, fields)| fields.iter().copied().map(move |field| (root, field)))
-        .collect();
-    blocks
-        .iter()
-        .flat_map(|block| &block.instructions)
-        .filter_map(|instr| match instr {
+    // Projection paths are nested, not sibling field sets. Build the inverse
+    // edge map produced by the actual Record/TupleFieldLoad chain so each
+    // neutralize authority can be corroborated backwards from its recorded
+    // terminal transferee to its root. Any multiply-defined destination is
+    // ambiguous and therefore earns no ownership authority.
+    let mut projection_parent = HashMap::<Place, (Place, u32)>::new();
+    let mut ambiguous_dests = HashSet::<Place>::new();
+    for instr in blocks.iter().flat_map(|block| &block.instructions) {
+        let edge = match instr {
             Instr::RecordFieldLoad {
                 record,
                 field_offset,
                 dest,
-            } if neutralized.contains(&(*record, field_offset.0)) => base_local(*dest),
+            } => Some((*dest, (*record, field_offset.0))),
             Instr::TupleFieldLoad {
                 tuple,
                 field_index,
                 dest,
-            } if neutralized.contains(&(*tuple, *field_index)) => base_local(*dest),
+            } => Some((*dest, (*tuple, *field_index))),
+            _ => None,
+        };
+        if let Some((dest, parent)) = edge {
+            if projection_parent.insert(dest, parent).is_some() {
+                ambiguous_dests.insert(dest);
+            }
+        }
+    }
+
+    blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::AggregateProjectionNeutralize {
+                root,
+                fields,
+                transferee,
+            } if !fields.is_empty() => {
+                let mut cursor = *transferee;
+                for expected_field in fields.iter().rev().copied() {
+                    if ambiguous_dests.contains(&cursor) {
+                        return None;
+                    }
+                    let (parent, actual_field) = projection_parent.get(&cursor).copied()?;
+                    if actual_field != expected_field {
+                        return None;
+                    }
+                    cursor = parent;
+                }
+                (cursor == *root).then(|| base_local(*transferee)).flatten()
+            }
             _ => None,
         })
         .collect()
@@ -1351,7 +1376,7 @@ mod aggregate_projection_transfer_dest_tests {
     use super::*;
 
     #[test]
-    fn multi_field_neutralize_marks_each_loaded_destination() {
+    fn nested_neutralize_marks_only_the_terminal_transfer_destination() {
         let blocks = [BasicBlock {
             id: 0,
             statements: vec![],
@@ -1362,18 +1387,19 @@ mod aggregate_projection_transfer_dest_tests {
                     dest: Place::Local(10),
                 },
                 Instr::RecordFieldLoad {
-                    record: Place::Local(1),
+                    record: Place::Local(10),
                     field_offset: FieldOffset(1),
                     dest: Place::Local(11),
                 },
                 Instr::RecordFieldLoad {
-                    record: Place::Local(1),
+                    record: Place::Local(10),
                     field_offset: FieldOffset(2),
                     dest: Place::Local(12),
                 },
                 Instr::AggregateProjectionNeutralize {
                     root: Place::Local(1),
                     fields: vec![0, 2],
+                    transferee: Place::Local(12),
                 },
             ],
             terminator: Terminator::Return,
@@ -1381,9 +1407,40 @@ mod aggregate_projection_transfer_dest_tests {
 
         assert_eq!(
             aggregate_projection_transfer_dests(&blocks),
-            HashSet::from([10, 12]),
-            "every explicitly neutralized field load is a transferred owner, \
-             while an adjacent live field remains an interior alias"
+            HashSet::from([12]),
+            "only the terminal field of the genuine two-hop path transfers; \
+             the intermediate aggregate and its adjacent sibling stay aliases"
+        );
+    }
+
+    #[test]
+    fn mismatched_transferee_path_earns_no_transfer_authority() {
+        let blocks = [BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(1),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(10),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(10),
+                    field_offset: FieldOffset(1),
+                    dest: Place::Local(11),
+                },
+                Instr::AggregateProjectionNeutralize {
+                    root: Place::Local(1),
+                    fields: vec![0, 2],
+                    transferee: Place::Local(11),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        assert!(
+            aggregate_projection_transfer_dests(&blocks).is_empty(),
+            "a declared neutralize path that does not reach its transferee must fail closed"
         );
     }
 }

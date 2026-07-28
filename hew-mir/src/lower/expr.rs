@@ -1866,7 +1866,7 @@ impl Builder {
                             let already_neutralized = self.instructions.iter().any(|instr| {
                                 matches!(
                                     instr,
-                                    Instr::AggregateProjectionNeutralize { root, fields }
+                                    Instr::AggregateProjectionNeutralize { root, fields, .. }
                                         if *root == source_root && fields.as_slice() == [field]
                                 )
                             });
@@ -1874,6 +1874,7 @@ impl Builder {
                                 self.push_instr(Instr::AggregateProjectionNeutralize {
                                     root: source_root,
                                     fields: vec![field],
+                                    transferee: src,
                                 });
                             }
                         }

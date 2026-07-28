@@ -3782,6 +3782,7 @@ impl Builder {
                     self.push_instr(Instr::AggregateProjectionNeutralize {
                         root: source_root,
                         fields: vec![field],
+                        transferee: scrutinee_place,
                     });
                     self.statements.push(MirStatement::AggregateAlias {
                         binding: owner.binding,

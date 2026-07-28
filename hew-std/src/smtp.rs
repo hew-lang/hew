@@ -5,6 +5,7 @@
 //! / `Box` so callers can free them with the corresponding free function.
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use std::os::raw::c_char;
+use std::time::Duration;
 
 use lettre::message::{header::ContentType, Mailbox};
 use lettre::transport::smtp::authentication::Credentials;
@@ -92,16 +93,14 @@ where
     send(guard.conn())
 }
 
-/// Apply optional credentials and port to an SMTP transport builder.
 /// Upper bound on how long a connect probe may block.
 ///
 /// `connect` must prove the server is reachable and speaking SMTP before it
 /// hands back a connection, and proving that means a real round trip. The
 /// bound keeps an unreachable host from stalling the caller indefinitely.
-use std::time::Duration;
-
 const SMTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Apply optional credentials and port to an SMTP transport builder.
 fn configure_builder(
     builder: lettre::transport::smtp::SmtpTransportBuilder,
     port: u16,

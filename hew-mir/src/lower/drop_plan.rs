@@ -346,7 +346,7 @@ pub(super) fn elaborate(
     // treats `MaybeConsumed` as Live (the move-checker rejects that only for
     // `MustConsume`/Linear types, not CoW values) and would otherwise fire the
     // drop on a branch where the buffer was already moved out.
-    let cow_drop_allowed = if let Some(precomputed) = precomputed_cow_drop_allowed {
+    let mut cow_drop_allowed = if let Some(precomputed) = precomputed_cow_drop_allowed {
         precomputed.clone()
     } else {
         let mut derived = derive_cow_sole_owner(
@@ -378,13 +378,25 @@ pub(super) fn elaborate(
                 if matches!(
                     state,
                     dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-                ) {
+                ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
+                {
                     derived.remove(binding);
                 }
             }
         }
         derived
     };
+    // A conditionally-consumed mailbox CoW leaf has a runtime transfer flag.
+    // Re-admit it after the whole-function escape scan: every consuming sink
+    // sets the flag before taking ownership, so the guarded drop fires only on
+    // the path where the handler frame still owns the delivered value.
+    for (binding, _, ty) in &owned_locals_snapshot {
+        if builder.actor_message_cow_drop_flags.contains_key(binding)
+            && cow_value_leaf_drop_symbol(ty).is_some()
+        {
+            cow_drop_allowed.insert(*binding);
+        }
+    }
 
     // W5.020 — fail-closed sole-owner allow-set for heap-owning enum
     // composite bindings (`Result<T, string>` / `Option<string>` / user enums
@@ -896,6 +908,7 @@ pub(super) fn elaborate(
         &indirect_enum_drop_allowed,
         &builder.affine_release_flags,
         &builder.collection_drop_flags,
+        &builder.actor_message_cow_drop_flags,
         &projection_alias_tainted,
     );
     let ordinary_lifo_drops: Vec<ElabDrop> = lifo_drops
@@ -4223,6 +4236,7 @@ fn build_lifo_drops(
     indirect_enum_drop_allowed: &HashSet<BindingId>,
     affine_release_flags: &HashMap<BindingId, Place>,
     collection_drop_flags: &HashMap<BindingId, Place>,
+    actor_message_cow_drop_flags: &HashMap<BindingId, Place>,
     projection_alias_tainted: &HashSet<u32>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
@@ -4771,7 +4785,7 @@ fn build_lifo_drops(
                             ty: ty.clone(),
                             drop_fn: None,
                             kind: drop_kind_for(*place, ty, None),
-                            guard: None,
+                            guard: actor_message_cow_drop_flags.get(binding).copied(),
                         });
                     }
                 }

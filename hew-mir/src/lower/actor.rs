@@ -2122,21 +2122,13 @@ impl Builder {
     /// True iff an `ActorHandler`-convention `lower_params` will register a
     /// scope-exit owner for a message parameter of this argument's type.
     ///
-    /// Mirrors the two `FunctionCallConv::ActorHandler` mint arms — the #2747
-    /// owned-aggregate record message and the indirect-enum message — plus the
-    /// #2732 enum-composite arm, which an actor handler reaches on the same
-    /// terms as a free function. Every other message type leaves the handler
-    /// with no mint, so there is nothing at the far end to double-release and
-    /// nothing to refuse.
+    /// Mirrors the structural actor-message mint in `lower_params`. The sender
+    /// and receiver must ask the same value-class authority whether a mailbox
+    /// transfer creates a release obligation; otherwise a proven-foreign value
+    /// could acquire an invalid receiver-side owner.
     fn actor_handler_mints_an_owner_for_message(&self, arg: &HirExpr) -> bool {
         let ty = self.subst_ty(&arg.ty);
-        self.is_owned_aggregate_record_ty(&ty)
-            || crate::lower::drop_plan::ty_is_indirect_enum(&ty, &self.enum_layouts)
-            || crate::lower::ty_is_heap_owning_enum_composite(
-                &ty,
-                &self.record_field_orders,
-                &self.enum_layouts,
-            )
+        self.binding_seeds_drop_elaboration(&ty)
     }
 
     pub(crate) fn lower_actor_send(

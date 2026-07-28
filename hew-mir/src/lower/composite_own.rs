@@ -4473,24 +4473,6 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             break;
         }
     }
-    // A root-relative projection neutralize changes the loaded element from an
-    // interior alias into a sole owner. Remove its transferee and every
-    // whole-value Move alias from the tuple's element-binder escape set: the
-    // tuple slot is null before either owner can release, so the transferee's
-    // independent drop and the tuple's remaining structural drop are disjoint.
-    let transferred_elem_binders: HashSet<u32> = {
-        let seeds = blocks
-            .iter()
-            .flat_map(|block| block.instructions.iter())
-            .filter_map(|instr| match instr {
-                Instr::AggregateProjectionNeutralize { transferee, .. } => base_local(*transferee),
-                _ => None,
-            });
-        propagate_whole_value_alias_roots(blocks, seeds)
-            .into_keys()
-            .collect()
-    };
-    elem_binders.retain(|local| !transferred_elem_binders.contains(local));
     let predicate_string_temps = predicate_string_temp_drop_proof(blocks, local_tys);
     elem_binders.retain(|local| !predicate_string_temps.contains(local));
 

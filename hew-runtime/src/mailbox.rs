@@ -35,6 +35,254 @@ use crate::scheduler::{MESSAGES_RECEIVED, MESSAGES_SENT};
 use crate::set_last_error;
 use crate::tracing::HewTraceContext;
 
+// Exact ask-node identity ledger for ownership regressions. A queued ask moves
+// one retained reply-channel reference into its `HewMsgNode`; recording that
+// node-to-channel edge lets tests prove the SAME allocation stays live when a
+// terminal reclaim edge is omitted, rather than inferring a leak from time.
+// Test-only: no allocation, locking, or global state in production.
+#[cfg(test)]
+static ACTIVE_ASK_NODES: std::sync::LazyLock<
+    crate::lifetime::PoisonSafe<std::collections::HashMap<usize, usize>>,
+> = std::sync::LazyLock::new(|| crate::lifetime::PoisonSafe::new(std::collections::HashMap::new()));
+
+#[cfg(test)]
+fn track_ask_node_for_test(node: *mut HewMsgNode, reply_channel: *mut c_void) {
+    if reply_channel.is_null() {
+        return;
+    }
+    ACTIVE_ASK_NODES.access(|nodes| {
+        assert!(
+            nodes.insert(node.addr(), reply_channel.addr()).is_none(),
+            "new ask node address was already tracked"
+        );
+    });
+}
+
+#[cfg(test)]
+fn untrack_ask_node_for_test(node: *mut HewMsgNode) {
+    ACTIVE_ASK_NODES.access(|nodes| {
+        nodes.remove(&node.addr());
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn ask_node_for_reply_channel_for_test(reply_channel: *mut c_void) -> *mut HewMsgNode {
+    ACTIVE_ASK_NODES.access(|nodes| {
+        nodes
+            .iter()
+            .find_map(|(&node, &channel)| (channel == reply_channel.addr()).then_some(node))
+            .map_or(ptr::null_mut(), ptr::without_provenance_mut)
+    })
+}
+
+/// Deterministic producer rendezvous after the MPSC head swap but before the
+/// predecessor link is published.
+///
+/// The queue is deliberately inconsistent at this seam: a consumer observes
+/// the new head but cannot yet reach the node from its tail. Targeting the hook
+/// by reply-channel identity prevents unrelated concurrent mailbox tests from
+/// participating.
+#[cfg(test)]
+type MpscPostSwapPreLinkHook = (
+    usize,
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+);
+
+#[cfg(test)]
+static MPSC_POST_SWAP_PRE_LINK_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSwapPreLinkHook>> =
+    crate::lifetime::PoisonSafe::new(None);
+
+#[cfg(test)]
+static MPSC_SYS_POST_SWAP_PRE_LINK_HOOK: crate::lifetime::PoisonSafe<
+    Option<MpscPostSwapPreLinkHook>,
+> = crate::lifetime::PoisonSafe::new(None);
+
+#[cfg(test)]
+static SYS_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSwapPreLinkHook>> =
+    crate::lifetime::PoisonSafe::new(None);
+
+#[cfg(test)]
+static USER_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSwapPreLinkHook>> =
+    crate::lifetime::PoisonSafe::new(None);
+
+#[cfg(test)]
+pub(crate) struct SysCountPublicationHookGuard;
+
+#[cfg(test)]
+impl SysCountPublicationHookGuard {
+    pub(crate) fn install(
+        sys_msg: HewSysMsg,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        SYS_COUNT_PUBLICATION_HOOK.access(|hook| {
+            assert!(hook.is_none(), "system-count hook already installed");
+            *hook = Some((
+                usize::try_from(sys_msg.as_i32()).expect("system kind is non-negative"),
+                entered.clone(),
+                release.clone(),
+            ));
+        });
+        (Self, entered, release)
+    }
+}
+
+#[cfg(test)]
+impl Drop for SysCountPublicationHookGuard {
+    fn drop(&mut self) {
+        SYS_COUNT_PUBLICATION_HOOK.access(|hook| *hook = None);
+    }
+}
+
+#[cfg(test)]
+fn run_sys_count_publication_hook(node: *mut HewMsgNode) {
+    // SAFETY: producer exclusively owns the initialized node at either seam.
+    let msg_type = unsafe { (*node).msg_type };
+    let rendezvous = SYS_COUNT_PUBLICATION_HOOK.access(|hook| {
+        hook.as_ref().and_then(|(target, entered, release)| {
+            (i32::try_from(*target).ok() == Some(msg_type))
+                .then(|| (entered.clone(), release.clone()))
+        })
+    });
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct UserCountPublicationHookGuard;
+
+#[cfg(test)]
+impl UserCountPublicationHookGuard {
+    pub(crate) fn install(
+        node: *mut HewMsgNode,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        USER_COUNT_PUBLICATION_HOOK.access(|hook| {
+            assert!(hook.is_none(), "user-count hook already installed");
+            *hook = Some((node.addr(), entered.clone(), release.clone()));
+        });
+        (Self, entered, release)
+    }
+}
+
+#[cfg(test)]
+impl Drop for UserCountPublicationHookGuard {
+    fn drop(&mut self) {
+        USER_COUNT_PUBLICATION_HOOK.access(|hook| *hook = None);
+    }
+}
+
+#[cfg(test)]
+fn run_user_count_publication_hook(node: *mut HewMsgNode) {
+    let rendezvous = USER_COUNT_PUBLICATION_HOOK.access(|hook| {
+        hook.as_ref().and_then(|(target, entered, release)| {
+            (*target == node.addr()).then(|| (entered.clone(), release.clone()))
+        })
+    });
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct MpscPostSwapPreLinkHookGuard {
+    system: bool,
+}
+
+#[cfg(test)]
+impl MpscPostSwapPreLinkHookGuard {
+    pub(crate) fn install(
+        reply_channel: *mut c_void,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        MPSC_POST_SWAP_PRE_LINK_HOOK.access(|hook| {
+            assert!(hook.is_none(), "MPSC delayed-link hook already installed");
+            *hook = Some((reply_channel.addr(), entered.clone(), release.clone()));
+        });
+        (Self { system: false }, entered, release)
+    }
+
+    pub(crate) fn install_system(
+        sys_msg: HewSysMsg,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        MPSC_SYS_POST_SWAP_PRE_LINK_HOOK.access(|hook| {
+            assert!(
+                hook.is_none(),
+                "system MPSC delayed-link hook already installed"
+            );
+            *hook = Some((
+                usize::try_from(sys_msg.as_i32()).expect("system kind is non-negative"),
+                entered.clone(),
+                release.clone(),
+            ));
+        });
+        (Self { system: true }, entered, release)
+    }
+}
+
+#[cfg(test)]
+impl Drop for MpscPostSwapPreLinkHookGuard {
+    fn drop(&mut self) {
+        if self.system {
+            MPSC_SYS_POST_SWAP_PRE_LINK_HOOK.access(|hook| *hook = None);
+        } else {
+            MPSC_POST_SWAP_PRE_LINK_HOOK.access(|hook| *hook = None);
+        }
+    }
+}
+
+#[cfg(test)]
+fn run_mpsc_post_swap_pre_link_hook(node: *mut HewMsgNode) {
+    // SAFETY: enqueue owns `node` exclusively until it publishes the
+    // predecessor link, and the hook only reads the initialized channel field.
+    let reply_channel = unsafe { (*node).reply_channel };
+    let rendezvous = MPSC_POST_SWAP_PRE_LINK_HOOK.access(|hook| {
+        hook.as_ref().and_then(|(target, entered, release)| {
+            (*target == reply_channel.addr()).then(|| (entered.clone(), release.clone()))
+        })
+    });
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
+    // SAFETY: as above; msg_type is initialized before queue publication.
+    let msg_type = unsafe { (*node).msg_type };
+    let sys_rendezvous = MPSC_SYS_POST_SWAP_PRE_LINK_HOOK.access(|hook| {
+        hook.as_ref().and_then(|(target, entered, release)| {
+            (i32::try_from(*target).ok() == Some(msg_type))
+                .then(|| (entered.clone(), release.clone()))
+        })
+    });
+    if let Some((entered, release)) = sys_rendezvous {
+        entered.wait();
+        release.wait();
+    }
+}
+
 pub use crate::mailbox_header::HewSysMsg;
 pub use crate::mailbox_header::{
     HEW_MSG_ENVELOPE_ALIAS_ACTIVE, HEW_MSG_ENVELOPE_ARENA_BACKED,
@@ -588,6 +836,8 @@ unsafe fn msg_node_alloc_with_trace(
         }
     }
 
+    #[cfg(test)]
+    track_ask_node_for_test(node, reply_channel);
     node
 }
 
@@ -640,6 +890,8 @@ unsafe fn msg_node_alloc_aliased(
         (*node).cancel_token_handle = 0;
     }
 
+    #[cfg(test)]
+    track_ask_node_for_test(node, reply_channel);
     node
 }
 
@@ -673,51 +925,277 @@ unsafe fn retire_msg_node_ask_sender_ref(node: *mut HewMsgNode) {
     unsafe { retire_orphaned_ask_sender_ref(reply_channel) };
 }
 
-/// Reclaim every message still queued on the mailbox of an actor that is
-/// completing its terminal stop transition.
+/// Nodes detached from a terminal mailbox under its single-consumer lock.
 ///
-/// The system queue has dequeue priority over the user queue
-/// ([`mailbox_try_recv_with_origin`]), so `hew_actor_stop`'s shutdown sentinel
-/// is handed to the worker ahead of user messages that were enqueued BEFORE
-/// it. The worker breaks its message loop on the sentinel and finalizes the
-/// actor, leaving those user messages queued. A queued **ask** node owns a
-/// sender-side reply-channel reference, and that reference is what its caller
-/// is blocked on: until the node is freed, nothing marks the channel orphaned
-/// and nothing publishes the null reply that wakes the waiter. Left to
-/// `hew_mailbox_free` (which only runs at `hew_actor_free`) the caller blocks
-/// for its entire ask timeout — a stop that races a queued ask silently
-/// converts "actor stopped" into "caller hangs".
+/// The intrusive list deliberately reuses each exclusively-owned node's
+/// `next` field. This avoids allocating while the terminal lock is held and,
+/// more importantly, lets the lock protect only queue detachment. Payload drop
+/// glue, ask-reply retirement, resume enqueues, and their scheduler wakeups all
+/// run later in [`DetachedTerminalNodes::retire`], after the lock is released.
+struct DetachedTerminalNodes {
+    head: *mut HewMsgNode,
+    message_drop_fn: Option<HewMessageDropFn>,
+    notify_not_full: bool,
+}
+
+impl DetachedTerminalNodes {
+    fn new(message_drop_fn: Option<HewMessageDropFn>) -> Self {
+        Self {
+            head: ptr::null_mut(),
+            message_drop_fn,
+            notify_not_full: false,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.head.is_null()
+    }
+
+    /// Add one exclusively-owned dequeued node to the detached list.
+    ///
+    /// # Safety
+    ///
+    /// `node` must be non-null, exclusively owned, and no longer reachable
+    /// from either mailbox queue.
+    unsafe fn push(&mut self, node: *mut HewMsgNode) {
+        // SAFETY: caller owns `node`; its queue link is no longer observed.
+        unsafe { (*node).next.store(self.head, Ordering::Relaxed) };
+        self.head = node;
+    }
+
+    /// Retire every detached node after terminal serialization is released.
+    ///
+    /// `mailbox` is used only for the bounded-sender notification and must
+    /// remain live for this call. Node destruction itself is independent of
+    /// the mailbox because the typed drop callback was copied at detachment.
+    ///
+    /// # Safety
+    ///
+    /// Every node in this list must remain exclusively owned by the list.
+    unsafe fn retire(mut self, mailbox: &HewMailbox) {
+        if self.notify_not_full {
+            mailbox.not_full.notify_all();
+        }
+        while !self.head.is_null() {
+            let node = self.head;
+            // SAFETY: this list exclusively owns `node`.
+            self.head = unsafe { (*node).next.load(Ordering::Relaxed) };
+            // SAFETY: `node` was detached from the mailbox and is exclusively
+            // owned here. This is intentionally outside terminal_reclaiming:
+            // ask retirement and generated drops may wake/schedule actors.
+            unsafe { hew_msg_node_free_with_message_drop(node, self.message_drop_fn) };
+        }
+    }
+}
+
+/// Detach every currently reachable node while terminal serialization is held.
+///
+/// # Safety
+///
+/// `mb` must point to `mailbox`, which must remain live for the call. The
+/// caller must hold `mailbox.terminal_reclaiming` and satisfy the terminal
+/// single-consumer contract documented on [`mailbox_reclaim_queued_terminal`].
+unsafe fn detach_queued_terminal_locked(mailbox: &HewMailbox) -> DetachedTerminalNodes {
+    let mut detached = DetachedTerminalNodes::new(mailbox.message_drop_fn);
+
+    // Do not route terminal detachment through mailbox_try_recv_with_origin:
+    // its corruption fallback destroys an undecodable system node inline.
+    // Terminal serialization must contain no destructor or callback edge.
+    loop {
+        // SAFETY: terminal serialization provides the single consumer.
+        let node = unsafe { mailbox.sys_queue.try_dequeue() };
+        if node.is_null() {
+            break;
+        }
+        let previous = mailbox.sys_count.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "system queue count underflow");
+        MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: dequeue transferred exclusive ownership.
+        unsafe { detached.push(node) };
+    }
+
+    if mailbox.use_slow_path {
+        let mut queue = mailbox.slow_path.lock_or_recover();
+        while let Some(node) = queue.user_queue.pop_front() {
+            let previous = mailbox.count.fetch_sub(1, Ordering::Release);
+            debug_assert!(previous > 0, "slow user queue count underflow");
+            MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+            detached.notify_not_full = true;
+            // SAFETY: pop_front transferred exclusive ownership.
+            unsafe { detached.push(node) };
+        }
+    } else {
+        loop {
+            // SAFETY: terminal serialization provides the single consumer.
+            let node = unsafe { mailbox.user_fast.try_dequeue() };
+            if node.is_null() {
+                break;
+            }
+            let previous = mailbox.count.fetch_sub(1, Ordering::AcqRel);
+            debug_assert!(previous > 0, "fast user queue count underflow");
+            MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+            detached.notify_not_full = true;
+            // SAFETY: dequeue transferred exclusive ownership.
+            unsafe { detached.push(node) };
+        }
+    }
+
+    detached
+}
+
+/// Reclaim every message still queued when an actor becomes terminal.
+///
+/// There are three ways a live node can remain behind a terminal transition:
+///
+/// - a stop finalizes while user work remains queued;
+/// - an idle sender enqueues, then loses its `Idle -> Runnable` wake CAS to the
+///   stopper's `Idle -> Stopped` CAS;
+/// - a crashing activation owns one dequeued message while later messages stay
+///   queued behind it.
+///
+/// In every case a queued **ask** node owns a sender-side reply-channel
+/// reference, and that reference is what its caller is blocked on. Until the
+/// node is freed, nothing marks the channel orphaned and nothing publishes the
+/// null reply that wakes the waiter. Leaving the node for `hew_mailbox_free`
+/// (which may be deferred indefinitely, especially for a supervised crash)
+/// converts the terminal event into a full ask-timeout stall.
 ///
 /// [`hew_msg_node_free`] retires each node's ask sender reference
 /// ([`retire_msg_node_ask_sender_ref`]), so draining here IS the wake: every
 /// stranded waiter is unblocked with the orphaned classification
-/// (`HEW_REPLY_FAIL_ACTOR_STOPPED`) it would have received had the mailbox been
-/// torn down. Any leftover system message (a second sentinel) is reclaimed on
-/// the same pass.
+/// (`HEW_REPLY_FAIL_ACTOR_STOPPED`) it would have received during mailbox
+/// teardown. Non-ask user nodes and leftover system nodes are reclaimed on the
+/// same pass.
 ///
 /// # Safety
 ///
-/// `mb` must be null or a valid mailbox pointer, and the caller must be its
-/// SOLE consumer for the duration of the drain — the worker that owns the
-/// terminating activation, before it publishes the terminal state. `Stopping`
-/// is not quiescent (`actor_free_state_is_quiescent`), so a concurrent
-/// `hew_actor_free` cannot reach `hew_mailbox_free` while this runs.
-pub(crate) unsafe fn mailbox_reclaim_queued_on_stop(mb: *mut HewMailbox) {
+/// `mb` must be null or a valid mailbox pointer. The caller must still own a
+/// live actor/mailbox allocation and prove that no non-terminal activation can
+/// consume concurrently. The mailbox's terminal-reclaim lock serialises these
+/// eligible terminal consumers:
+///
+/// - the worker finalizing `Stopping -> Stopped`;
+/// - the direct idle stopper immediately after winning `Idle -> Stopped`; or
+/// - the crash/trap authority before link/monitor/supervisor notification can
+///   transfer reclamation ownership;
+/// - a producer whose enqueue completed but whose wake CAS observed terminal,
+///   after proving `dispatch_active == false`.
+pub(crate) unsafe fn mailbox_reclaim_queued_terminal(mb: *mut HewMailbox) {
     if mb.is_null() {
         return;
     }
     // SAFETY: caller guarantees `mb` is valid.
-    let message_drop_fn = unsafe { (*mb).message_drop_fn };
-    loop {
-        // SAFETY: caller guarantees `mb` is valid and the sole-consumer
-        // invariant holds for this drain.
-        let node = unsafe { mailbox_try_recv_with_origin(mb) }.node;
-        if node.is_null() {
-            break;
-        }
-        // SAFETY: `node` was just dequeued and is exclusively owned here.
-        unsafe { hew_msg_node_free_with_message_drop(node, message_drop_fn) };
+    let mailbox = unsafe { &*mb };
+
+    // A sender that passed the mailbox's open check before close can publish
+    // after the first terminal drain. Its failed wake CAS then helps with a
+    // second drain. Serialise those consumers so the lock-free MPSC queues
+    // retain their single-consumer contract; waiting (rather than try-locking)
+    // guarantees a producer whose enqueue already completed gets a pass after
+    // an earlier drainer that may just have observed the queue empty.
+    let detached = {
+        let _reclaim_guard = mailbox.terminal_reclaiming.lock_or_recover();
+        // SAFETY: the guard provides terminal single-consumer ownership.
+        unsafe { detach_queued_terminal_locked(mailbox) }
+    };
+    // SAFETY: caller keeps the mailbox live; detachment owns every node.
+    unsafe { detached.retire(mailbox) };
+}
+
+/// Conditionally reclaim queued terminal messages, then publish an ownership
+/// release while still holding the terminal-reclaim lock.
+///
+/// Testing `eligible`, draining, and calling `release` in one critical section
+/// closes both terminal handoffs:
+///
+/// - an external trap either observes the released activation and drains, or
+///   the activation observes the terminal state and drains before releasing;
+/// - a producer that finishes an MPSC predecessor link after the activation's
+///   last drain either precedes a later activation drain or observes the
+///   released owner and drains itself.
+///
+/// `release` is still called for a null mailbox; `eligible` is not, because
+/// there is no queue to reclaim.
+///
+/// # Safety
+///
+/// `mb` must be null or a valid mailbox pointer. For a non-null pointer, the
+/// caller must satisfy the safety contract of [`mailbox_reclaim_queued_terminal`]
+/// whenever `eligible` returns true. Neither callback may recursively acquire
+/// the mailbox's terminal-reclaim lock.
+pub(crate) unsafe fn mailbox_reclaim_queued_terminal_if_then<F, R>(
+    mb: *mut HewMailbox,
+    mut eligible: F,
+    release: R,
+) where
+    F: FnMut() -> bool,
+    R: FnOnce(),
+{
+    if mb.is_null() {
+        release();
+        return;
     }
+    // SAFETY: caller guarantees `mb` is valid.
+    let mailbox = unsafe { &*mb };
+    let mut release = Some(release);
+    loop {
+        let detached = {
+            let _reclaim_guard = mailbox.terminal_reclaiming.lock_or_recover();
+            if !eligible() {
+                release.take().expect("release callback called once")();
+                return;
+            }
+            // SAFETY: the guard provides terminal single-consumer ownership.
+            let detached = unsafe { detach_queued_terminal_locked(mailbox) };
+            if detached.is_empty() {
+                // Publish dispatch release only after an empty observation made
+                // under the same lock used by producer handoff. No callback or
+                // wake runs in this critical section.
+                release.take().expect("release callback called once")();
+                return;
+            }
+            detached
+        };
+        // Keep dispatch ownership across retirement. Generated drops may
+        // self-send; the next iteration catches those nodes before release.
+        // SAFETY: caller keeps the mailbox live; detachment owns every node.
+        unsafe { detached.retire(mailbox) };
+    }
+}
+
+/// Reclaim queued terminal messages when `eligible` holds under the
+/// terminal-reclaim lock.
+///
+/// Evaluating the ownership predicate under the same lock used by the final
+/// activation drain makes the two outcomes exhaustive: either the producer
+/// observes an owner that must drain afterward, or it observes the released
+/// owner and performs the drain itself.
+///
+/// # Safety
+///
+/// `mb` must be null or a valid mailbox pointer. If `eligible` returns true,
+/// the caller must satisfy the safety contract of
+/// [`mailbox_reclaim_queued_terminal`]. `eligible` must not recursively acquire
+/// the mailbox's terminal-reclaim lock.
+pub(crate) unsafe fn mailbox_reclaim_queued_terminal_if<F>(mb: *mut HewMailbox, eligible: F)
+where
+    F: FnOnce() -> bool,
+{
+    if mb.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `mb` is valid.
+    let mailbox = unsafe { &*mb };
+    let detached = {
+        let _reclaim_guard = mailbox.terminal_reclaiming.lock_or_recover();
+        if !eligible() {
+            return;
+        }
+        // SAFETY: the guard provides terminal single-consumer ownership.
+        unsafe { detach_queued_terminal_locked(mailbox) }
+    };
+    // SAFETY: caller keeps the mailbox live; detachment owns every node.
+    unsafe { detached.retire(mailbox) };
 }
 
 /// Free a [`HewMsgNode`] and its payload.
@@ -730,6 +1208,8 @@ pub(crate) unsafe fn mailbox_reclaim_queued_on_stop(mb: *mut HewMailbox) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
     cabi_guard!(node.is_null());
+    #[cfg(test)]
+    untrack_ask_node_for_test(node);
     // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
     unsafe {
         // Explicit orphaned-ask teardown: queued ask nodes own a sender-side
@@ -889,6 +1369,8 @@ impl MpscQueue {
         unsafe { (*node).next.store(ptr::null_mut(), Ordering::Relaxed) };
 
         let prev = self.head.swap(node, Ordering::AcqRel);
+        #[cfg(test)]
+        run_mpsc_post_swap_pre_link_hook(node);
         // SAFETY: `prev` is either the stable stub or a previously-enqueued
         // live node. Linking with Release publishes `node` to the consumer.
         unsafe {
@@ -1087,6 +1569,9 @@ pub struct HewMailbox {
     /// This flag IS the stop signal — there is no queued node. See
     /// [`mailbox_request_stop`].
     stop_requested: std::sync::atomic::AtomicBool,
+    /// Serialises terminal drains across the terminal publisher, an active
+    /// scheduler owner, and a producer helping after its wake CAS loses.
+    terminal_reclaiming: Mutex<()>,
     /// Condvar notified when a user message is consumed, waking blocked senders.
     not_full: Condvar,
     /// High-water mark: maximum `count` value observed.
@@ -1228,6 +1713,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminal_reclaiming: Mutex::new(()),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: false,
@@ -1266,6 +1752,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminal_reclaiming: Mutex::new(()),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -1313,6 +1800,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminal_reclaiming: Mutex::new(()),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -1352,6 +1840,7 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
         message_drop_fn: None,
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
+        terminal_reclaiming: Mutex::new(()),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: true,
@@ -1630,9 +2119,9 @@ unsafe fn send_with_overflow(
                     if node.is_null() {
                         return SendOutcome::Oom;
                     }
+                    mb.count.fetch_add(1, Ordering::Release);
                     q.user_queue.push_back(node);
                     drop(q);
-                    mb.count.fetch_add(1, Ordering::Release);
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                     return SendOutcome::Enqueued;
@@ -1713,9 +2202,9 @@ unsafe fn send_with_overflow(
                             if node.is_null() {
                                 return SendOutcome::Oom;
                             }
+                            mb.count.fetch_add(1, Ordering::Release);
                             q.user_queue.push_back(node);
                             drop(q);
-                            mb.count.fetch_add(1, Ordering::Release);
                             update_high_water_mark(mb);
                             MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                             return SendOutcome::Enqueued;
@@ -1759,6 +2248,7 @@ unsafe fn send_with_overflow(
                         if node.is_null() {
                             return SendOutcome::Oom;
                         }
+                        mb.count.fetch_add(1, Ordering::Release);
                         q.user_queue.push_back(node);
                     } else {
                         // hew_mailbox_try_push path: allocate first, then lock.
@@ -1774,9 +2264,9 @@ unsafe fn send_with_overflow(
                             unsafe { hew_msg_node_free_with_message_drop(old, mb.message_drop_fn) };
                             mb.count.fetch_sub(1, Ordering::Release);
                         }
+                        mb.count.fetch_add(1, Ordering::Release);
                         q.user_queue.push_back(node);
                     }
-                    mb.count.fetch_add(1, Ordering::Release);
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                     return SendOutcome::DroppedOld;
@@ -1801,8 +2291,9 @@ unsafe fn send_with_overflow(
 /// mailbox's user queue and update the shared counters.
 ///
 /// Routes to the slow-path mutex queue or the lock-free fast queue
-/// depending on `mb.use_slow_path`, then bumps `count`, the high-water
-/// mark, and the global sent counter. Used for unbounded sends and
+/// depending on `mb.use_slow_path`. The shared `count` reservation is
+/// published before the node becomes reachable, then the high-water mark and
+/// global sent counter are updated. Used for unbounded sends and
 /// mutex-backed sends below capacity; bounded lock-free sends use
 /// [`enqueue_reserved_fast_user_node`] because their CAS reservation has
 /// already incremented `count`.
@@ -1812,6 +2303,29 @@ unsafe fn send_with_overflow(
 /// `node` must be a valid, exclusively-owned [`HewMsgNode`] with
 /// `node.next == null`. Ownership of the node transfers into the queue.
 unsafe fn enqueue_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
+    #[cfg(test)]
+    // SAFETY: production publishes the count reservation before reachability.
+    unsafe {
+        enqueue_user_node_inner(mb, node, true);
+    }
+
+    #[cfg(not(test))]
+    {
+        mb.count.fetch_add(1, Ordering::Release);
+        // SAFETY: caller transfers an exclusively owned node.
+        unsafe { link_user_node(mb, node) };
+        update_high_water_mark(mb);
+        MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Link an exclusively owned node into the selected user queue.
+///
+/// # Safety
+///
+/// `node` must be a valid, exclusively-owned [`HewMsgNode`] with
+/// `node.next == null`. Ownership transfers into the queue.
+unsafe fn link_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
     if mb.use_slow_path {
         let mut q = mb.slow_path.lock_or_recover();
         q.user_queue.push_back(node);
@@ -1819,7 +2333,25 @@ unsafe fn enqueue_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
         // SAFETY: `node` was allocated with next == null.
         unsafe { mb.user_fast.enqueue(node) };
     }
-    mb.count.fetch_add(1, Ordering::Release);
+}
+
+#[cfg(test)]
+unsafe fn enqueue_user_node_inner(
+    mb: &HewMailbox,
+    node: *mut HewMsgNode,
+    publish_count_first: bool,
+) {
+    // SAFETY: production publishes the count reservation before reachability.
+    if publish_count_first {
+        mb.count.fetch_add(1, Ordering::Release);
+        run_user_count_publication_hook(node);
+    }
+    // SAFETY: caller transfers an exclusively owned node.
+    unsafe { link_user_node(mb, node) };
+    if !publish_count_first {
+        run_user_count_publication_hook(node);
+        mb.count.fetch_add(1, Ordering::Release);
+    }
     update_high_water_mark(mb);
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 }
@@ -1971,9 +2503,9 @@ unsafe fn send_aliased_with_overflow(
                         q = mb.not_full.wait_or_recover(q);
                     }
                     // EXIT(block-enqueued): capacity freed; node enqueued.
+                    mb.count.fetch_add(1, Ordering::Release);
                     q.user_queue.push_back(node);
                     drop(q);
-                    mb.count.fetch_add(1, Ordering::Release);
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                     return SendOutcome::Enqueued;
@@ -2021,9 +2553,9 @@ unsafe fn send_aliased_with_overflow(
                                 q = mb.not_full.wait_or_recover(q);
                             }
                             // EXIT(coalesce-fallback-block-enqueued).
+                            mb.count.fetch_add(1, Ordering::Release);
                             q.user_queue.push_back(node);
                             drop(q);
-                            mb.count.fetch_add(1, Ordering::Release);
                             update_high_water_mark(mb);
                             MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                             return SendOutcome::Enqueued;
@@ -2423,6 +2955,7 @@ pub(crate) unsafe fn mailbox_send_sys_checked(
 /// # Safety
 ///
 /// Same requirements as [`hew_mailbox_send`].
+#[cfg(test)]
 pub(crate) unsafe fn mailbox_send_sys(
     mb: *mut HewMailbox,
     sys_msg: HewSysMsg,
@@ -2434,9 +2967,37 @@ pub(crate) unsafe fn mailbox_send_sys(
 }
 
 unsafe fn enqueue_sys_node(mb: &HewMailbox, node: *mut HewMsgNode) {
+    // SAFETY: production publishes the count reservation before reachability.
+    unsafe { enqueue_sys_node_inner(mb, node, true) };
+}
+
+unsafe fn enqueue_sys_node_inner(
+    mb: &HewMailbox,
+    node: *mut HewMsgNode,
+    publish_count_first: bool,
+) {
+    // Publish the reservation before the node can become reachable. A running
+    // consumer may dequeue immediately after the predecessor link is stored;
+    // incrementing afterward lets its fetch_sub observe zero and wrap usize.
+    let sys_queue_len = if publish_count_first {
+        let len = mb.sys_count.fetch_add(1, Ordering::AcqRel) + 1;
+        #[cfg(test)]
+        run_sys_count_publication_hook(node);
+        len
+    } else {
+        0
+    };
     // SAFETY: `node` was just allocated with next == null.
     unsafe { mb.sys_queue.enqueue(node) };
-    let sys_queue_len = mb.sys_count.fetch_add(1, Ordering::AcqRel) + 1;
+    #[cfg(test)]
+    let sys_queue_len = if publish_count_first {
+        sys_queue_len
+    } else {
+        run_sys_count_publication_hook(node);
+        mb.sys_count.fetch_add(1, Ordering::AcqRel).wrapping_add(1)
+    };
+    #[cfg(not(test))]
+    debug_assert!(publish_count_first);
     if sys_queue_len > SYS_QUEUE_WARN_THRESHOLD {
         eprintln!("[mailbox] warning: system queue has {sys_queue_len} messages (mailbox {mb:p})");
     }
@@ -3814,6 +4375,184 @@ mod tests {
             assert!(node.is_null());
 
             hew_mailbox_free(mb);
+        }
+    }
+
+    /// The system count reservation must be visible before a node becomes
+    /// reachable. The counterfactual links first, lets the consumer dequeue
+    /// from zero, and deterministically observes `usize::MAX`; production
+    /// exposes the reservation first and never underflows.
+    #[test]
+    #[expect(
+        clippy::undocumented_unsafe_blocks,
+        reason = "the deterministic two-ordering fixture keeps raw mailbox/node operations compact inside its unsafe case helper"
+    )]
+    fn sys_count_is_published_before_consumer_reachability() {
+        unsafe fn run_case(publish_count_first: bool) {
+            let mb = unsafe { hew_mailbox_new() };
+            assert!(!mb.is_null());
+            let node = unsafe {
+                msg_node_alloc_sys(
+                    HewSysMsg::Exit.as_i32(),
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                )
+            };
+            assert!(!node.is_null());
+
+            let (hook, entered, release) = SysCountPublicationHookGuard::install(HewSysMsg::Exit);
+            let mb_addr = mb.addr();
+            let node_addr = node.addr();
+            let producer = std::thread::spawn(move || {
+                let mb = ptr::with_exposed_provenance_mut::<HewMailbox>(mb_addr);
+                let node = ptr::with_exposed_provenance_mut::<HewMsgNode>(node_addr);
+                // SAFETY: mailbox and node outlive this joined producer.
+                unsafe { enqueue_sys_node_inner(&*mb, node, publish_count_first) };
+            });
+            entered.wait();
+
+            if publish_count_first {
+                assert_eq!(
+                    unsafe { (*mb).sys_count.load(Ordering::Acquire) },
+                    1,
+                    "reservation is visible before queue publication"
+                );
+                assert!(
+                    unsafe { hew_mailbox_try_recv_sys(mb) }.is_null(),
+                    "count publication alone does not fabricate a reachable node"
+                );
+                assert_eq!(
+                    unsafe { (*mb).sys_count.load(Ordering::Acquire) },
+                    1,
+                    "an empty dequeue cannot consume the reservation"
+                );
+                release.wait();
+                producer.join().expect("system producer");
+                let received = unsafe { hew_mailbox_try_recv_sys(mb) };
+                assert_eq!(received, node);
+                assert_eq!(unsafe { (*mb).sys_count.load(Ordering::Acquire) }, 0);
+                unsafe { hew_msg_node_free(received) };
+            } else {
+                assert_eq!(
+                    unsafe { (*mb).sys_count.load(Ordering::Acquire) },
+                    0,
+                    "counterfactual pauses after link but before count"
+                );
+                let received = unsafe { hew_mailbox_try_recv_sys(mb) };
+                assert_eq!(received, node, "consumer wins before omitted publication");
+                assert_eq!(
+                    unsafe { (*mb).sys_count.load(Ordering::Acquire) },
+                    usize::MAX,
+                    "dequeue-before-increment wraps the unsigned system count"
+                );
+                release.wait();
+                producer.join().expect("counterfactual producer");
+                assert_eq!(
+                    unsafe { (*mb).sys_count.load(Ordering::Acquire) },
+                    0,
+                    "late increment merely wraps the corrupted count back"
+                );
+                unsafe { hew_msg_node_free(received) };
+            }
+
+            drop(hook);
+            unsafe { hew_mailbox_free(mb) };
+        }
+
+        // Red-first omission, then production.
+        unsafe {
+            run_case(false);
+            run_case(true);
+        }
+    }
+
+    /// The user count reservation follows the same publication rule as the
+    /// system queue: a reachable node must never race ahead of its count.
+    /// Linking first lets a consumer deterministically decrement zero to
+    /// `-1`; production reserves first and preserves the count.
+    #[test]
+    #[expect(
+        clippy::undocumented_unsafe_blocks,
+        reason = "the deterministic two-ordering fixture keeps raw mailbox/node operations compact inside its unsafe case helper"
+    )]
+    fn user_count_is_published_before_consumer_reachability() {
+        unsafe fn run_case(publish_count_first: bool, slow_path: bool) {
+            let mb = if slow_path {
+                unsafe { hew_mailbox_new_with_policy(1, OverflowPolicy::DropOld) }
+            } else {
+                unsafe { hew_mailbox_new() }
+            };
+            assert!(!mb.is_null());
+            let node = unsafe { msg_node_alloc(17, ptr::null_mut(), 0, ptr::null_mut()) };
+            assert!(!node.is_null());
+
+            let (hook, entered, release) = UserCountPublicationHookGuard::install(node);
+            let mb_addr = mb.addr();
+            let node_addr = node.addr();
+            let producer = std::thread::spawn(move || {
+                let mb = ptr::with_exposed_provenance_mut::<HewMailbox>(mb_addr);
+                let node = ptr::with_exposed_provenance_mut::<HewMsgNode>(node_addr);
+                // SAFETY: mailbox and node outlive this joined producer.
+                unsafe { enqueue_user_node_inner(&*mb, node, publish_count_first) };
+            });
+            entered.wait();
+
+            if publish_count_first {
+                assert_eq!(
+                    unsafe { (*mb).count.load(Ordering::Acquire) },
+                    1,
+                    "reservation is visible before queue publication"
+                );
+                assert!(
+                    unsafe { hew_mailbox_try_recv(mb) }.is_null(),
+                    "count publication alone does not fabricate a reachable node"
+                );
+                assert_eq!(
+                    unsafe { (*mb).count.load(Ordering::Acquire) },
+                    1,
+                    "an empty dequeue cannot consume the reservation"
+                );
+                release.wait();
+                producer.join().expect("user producer");
+                let received = unsafe { hew_mailbox_try_recv(mb) };
+                assert_eq!(received, node);
+                assert_eq!(unsafe { (*mb).count.load(Ordering::Acquire) }, 0);
+                drop(hook);
+                unsafe { hew_msg_node_free(received) };
+            } else {
+                assert_eq!(
+                    unsafe { (*mb).count.load(Ordering::Acquire) },
+                    0,
+                    "counterfactual pauses after link but before count"
+                );
+                let received = unsafe { hew_mailbox_try_recv(mb) };
+                assert_eq!(received, node, "consumer wins before omitted publication");
+                assert_eq!(
+                    unsafe { (*mb).count.load(Ordering::Acquire) },
+                    -1,
+                    "dequeue-before-increment makes the user count negative"
+                );
+                release.wait();
+                producer.join().expect("counterfactual producer");
+                assert_eq!(
+                    unsafe { (*mb).count.load(Ordering::Acquire) },
+                    0,
+                    "late increment merely hides the transiently corrupted count"
+                );
+                drop(hook);
+                unsafe { hew_msg_node_free(received) };
+            }
+
+            unsafe { hew_mailbox_free(mb) };
+        }
+
+        // Red-first omission, then production, on both queue implementations.
+        unsafe {
+            for slow_path in [false, true] {
+                run_case(false, slow_path);
+                run_case(true, slow_path);
+            }
         }
     }
 

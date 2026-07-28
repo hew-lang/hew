@@ -1929,36 +1929,36 @@ pub(super) enum WasmUnsupportedFeature {
     /// `stream.*` module constructors and `Stream<T>::*` methods: the stream
     /// runtime module is not compiled for wasm32
     /// (`#[cfg(not(target_arch = "wasm32"))]` in hew-runtime/src/lib.rs).
-    /// WASM-TODO(#1451): implement I/O-stream adapters over WASI fd/socket APIs.
+    /// WASM-TODO(streams): implement I/O-stream adapters over WASI fd/socket APIs.
     Streams,
     /// `http.listen` and `http.Server` / `http.Request` methods: the HTTP
     /// server runtime is backed by native sockets and `tiny_http`, and is not
     /// compiled for wasm32.
-    /// WASM-TODO(#1451): design a cooperative WASI-hosted HTTP server surface.
+    /// WASM-TODO(http-server): design a cooperative WASI-hosted HTTP server surface.
     HttpServer,
     /// `net.*` constructors and `net.Listener` / `net.Connection` methods: the
     /// TCP transport runtime module is not compiled for wasm32.
-    /// WASM-TODO(#1451): expose socket-backed listener/connection adapters over WASI.
+    /// WASM-TODO(tcp-networking): expose socket-backed listener/connection adapters over WASI.
     TcpNetworking,
     /// `process.*` helpers and `process.Child::*` methods: the process runtime
     /// module depends on the native OS process model and is not compiled for
     /// wasm32.
-    /// WASM-TODO(#1451): define a host capability model for subprocess execution.
+    /// WASM-TODO(process-execution): define a host capability model for subprocess execution.
     ProcessExecution,
     /// `tls.*` constructors and `tls.*Stream` methods: the TLS transport runtime
     /// is backed by `rustls` over native sockets and is not compiled for
-    /// wasm32. WASM-TODO(#1451): expose a WASI TLS bridge.
+    /// wasm32. WASM-TODO(tls): expose a WASI TLS bridge.
     Tls,
     /// `quic.*` endpoint/connection/stream/event constructors and methods: the
     /// QUIC transport is backed by `quinn` over native sockets and is not
-    /// compiled for wasm32. WASM-TODO(#1451): expose a WASI QUIC bridge.
+    /// compiled for wasm32. WASM-TODO(quic): expose a WASI QUIC bridge.
     Quic,
     /// `dns.resolve` / `dns.lookup_host`: the resolver is backed by the native
-    /// OS resolver and is not compiled for wasm32. WASM-TODO(#1451): probe whether
+    /// OS resolver and is not compiled for wasm32. WASM-TODO(dns): probe whether
     /// wasip1 `sock_addr_*` can cover the common case; relax to warn if so.
     Dns,
     /// `os.*` env / path / process helpers: the OS-env layer relies on native
-    /// POSIX APIs and is not compiled for wasm32. WASM-TODO(#1451): route through a
+    /// POSIX APIs and is not compiled for wasm32. WASM-TODO(os): route through a
     /// capability-scoped WASI surface.
     OsEnv,
     /// `Node::*` distributed cluster API (`start`, `shutdown`, `connect`,
@@ -1969,27 +1969,27 @@ pub(super) enum WasmUnsupportedFeature {
     /// from the wasm32 link set. Reject at check time so the caller sees a
     /// structured diagnostic rather than a wasm module importing an undefined
     /// `env::hew_node_api_*` symbol that fails at instantiation.
-    /// WASM-TODO(#1451): decide a wasm peer transport before exposing any
+    /// WASM-TODO(distributed): decide a wasm peer transport before exposing any
     /// distributed surface on wasm32.
     Distributed,
     // ── Crypto reject additions ─────────────────────────────────────────────
     /// `crypto.random_bytes`: the secure entropy source (`ring::SystemRandom`)
     /// is native-only and absent from the wasm32 link set. Reject so callers
     /// cannot accidentally generate key material without cryptographic entropy.
-    /// WASM-TODO(#1451): plumb host entropy through WASI `random_get`.
+    /// WASM-TODO(crypto-random): plumb host entropy through WASI `random_get`.
     CryptoRandom,
     /// `encrypt.*` (`std::crypto::encrypt`): AES-256-GCM seal/open helpers are
     /// provided by a native-only staticlib companion crate (`std/crypto/encrypt`)
     /// that is absent from the wasm32 link set. Reject so the caller sees a
     /// structured diagnostic at check time rather than a `wasm-ld` undefined-
-    /// symbol error. WASM-TODO(#1451): design a WASI-capable symmetric-
+    /// symbol error. WASM-TODO(crypto-encrypt): design a WASI-capable symmetric-
     /// encryption surface.
     CryptoEncrypt,
     /// `sign.*` (`std::crypto::sign`): Ed25519 key-pair generation, signing, and
     /// verification are provided by a native-only staticlib companion crate
     /// (`std/crypto/sign`) that is absent from the wasm32 link set. Reject so
     /// the caller sees a structured diagnostic at check time rather than a
-    /// `wasm-ld` undefined-symbol error. WASM-TODO(#1451): design a
+    /// `wasm-ld` undefined-symbol error. WASM-TODO(crypto-sign): design a
     /// WASI-capable signature surface.
     CryptoSign,
 }

@@ -47,6 +47,12 @@ inkwell = { version = "0.9", default-features = false, features = [
 
 [dev-dependencies]
 hew-testutil = { path = "../hew-testutil" }
+# The worker-free actor teardown seam is test-only. Keeping its feature on the
+# dev dependency prevents Cargo feature unification from putting the seam in
+# the compiler or the shipped `libhew.a`.
+hew-runtime = { path = "../hew-runtime", default-features = false, features = [
+  "composition-test",
+] }
 # libc::SIGABRT for the release-truth-table structural tests, which assert the
 # exact signal a double-release aborts with.
 libc.workspace = true

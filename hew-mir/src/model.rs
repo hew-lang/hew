@@ -4497,7 +4497,6 @@ pub enum Instr {
     /// `record_name` is the canonical unqualified record name (sans module
     /// prefix), used to build the thunk symbol and index the clone descriptor.
     ///
-    /// WASM-TODO(#2050): not yet lowered in sandbox emitter.
     RecordCloneInplace {
         dest: Place,
         src: Place,
@@ -4524,7 +4523,6 @@ pub enum Instr {
     /// clone helper (clone/drop seeded together per key), so the scope-exit drop
     /// of `dest` stays symmetric with the clone — no leak, no double-free.
     ///
-    /// WASM-TODO(#2050): not yet lowered in sandbox emitter (as `RecordCloneInplace`).
     EnumCloneInplace {
         dest: Place,
         src: Place,

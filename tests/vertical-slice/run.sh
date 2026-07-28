@@ -3747,7 +3747,7 @@ fi
 grep -q 'is ambiguous' "${reject_output}"
 grep -q 'Rename or remove one' "${reject_output}"
 
-# WASM parity: must either succeed or emit a named WASM-TODO(#1451) diagnostic — never silent failure.
+# WASM parity: must either succeed or emit a structured WASM diagnostic — never silent failure.
 # Matches hew-cli/src/main.rs CodegenError::WasmUnsupportedSubstrate ("WASM target does not support").
 if ! "${HEW}" compile --target wasm32-unknown-unknown \
     "${ROOT}/tests/vertical-slice/accept/directory_module_call.hew" \
@@ -4641,6 +4641,17 @@ run_accept_expect_stdout record_clone_string_field
 
 # User-defined record `.clone()`: original stays live and usable after the clone.
 run_accept_expect_stdout record_clone_independence
+
+# A returned dyn value would retain a pointer into the callee's dead frame.
+# Reject the signature before MIR/codegen until the return bridge promotes the
+# concrete storage and transfers drop authority to the caller.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/dyn_trait_return.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected dyn_trait_return fixture to fail" >&2
+  exit 1
+fi
+grep -q 'heap-promoted before its fat pointer can escape' "${reject_output}"
 
 # User-defined record `.clone()` on a record containing an opaque handle must be rejected.
 if "${HEW}" check \

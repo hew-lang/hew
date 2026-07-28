@@ -216,7 +216,8 @@ fn supervisor_child_get_declares_sret_abi_on_windows_msvc() {
 /// `uses_wasm_excluded_symbol` scan returns `Some("hew_supervisor_child_get")`.
 ///
 /// This is the mechanism by which codegen emits `WasmUnsupportedSubstrate`
-/// instead of reaching a linker error on WASM targets (WASM-TODO(#1475)).
+/// instead of reaching a linker error on WASM targets
+/// (WASM-TODO(supervision): add cooperative restart machinery).
 #[test]
 fn supervisor_child_get_classified_as_wasm_excluded() {
     let parsed = hew_parser::parse(STATIC_CHILD_ACCESS);

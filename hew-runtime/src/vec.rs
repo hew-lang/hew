@@ -1923,11 +1923,9 @@ vec_remove_primitive!(hew_vec_remove_ptr, *mut c_void);
 /// - `layout` must point to a `HewTypeLayout` whose `size`, `align`, and
 ///   `ownership_kind` match those stored in the vec.
 ///
-/// # WASM-TODO
-///
-/// `HewTypeLayout.size` is host `usize`-width. On wasm32 `usize = u32`, so
-/// the `elem_size` arithmetic and the descriptor struct shape below must
-/// become target-aware before WASM parity can be claimed for this symbol.
+/// `HewTypeLayout.size` and the arithmetic below use target-width `usize`;
+/// wasm32 therefore carries 32-bit descriptor fields and native 64-bit targets
+/// carry 64-bit fields without a host-width assumption in this ABI.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_remove_at_layout(
     v: *mut HewVec,

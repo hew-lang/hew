@@ -221,7 +221,7 @@ WASI_CAPABILITY: dict[str, str] = {
     "concurrency/actor_pipeline": "unsupported",
     "concurrency/async_await": "unsupported",
     "concurrency/counter_actor": "unsupported",
-    "concurrency/supervisor": "unsupported",  # supervision trees → WASM-TODO
+    "concurrency/supervisor": "unsupported",  # supervision trees → WASM backlog
     # traffic_light now has fn main() but the machine runtime is not yet wired
     # into the WASI/LLVM path; remains unsupported in WASI until that lands.
     "machines/traffic_light": "unsupported",

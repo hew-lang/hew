@@ -24,7 +24,7 @@
 //! WASM: `try_direct_longjmp_with_code` is a no-op on WASM; the signal-based
 //! crash recovery seam is absent. This test is gated on
 //! `#[cfg(not(target_arch = "wasm32"))]`. The WASM heap-exceeded path is tracked
-//! as WASM-TODO(#1451) (existing parity umbrella).
+//! as WASM-TODO(actor-heap-limits): implement a non-signal WASM crash path.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(

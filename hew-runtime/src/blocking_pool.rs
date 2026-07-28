@@ -204,7 +204,7 @@ where
 /// pool is never deadlocked — workers drain the queue as previous tasks
 /// complete.
 ///
-/// WASM-TODO(#1451): there is no blocking pool on WASM; until a
+/// WASM-TODO(blocking-pool): there is no blocking pool on WASM; until a
 /// WASM-compatible deadline primitive exists (web-sys + Promise
 /// integration, wasi-threads, or polled futures), transport callers on WASM
 /// keep their pre-existing unguarded blocking shape.
@@ -376,7 +376,7 @@ impl Drop for OwnedBlockingPool {
 /// Idempotent within a runtime: subsequent calls under the same runtime return
 /// the same pointer.
 ///
-/// WASM-TODO(#1451): there is no blocking pool on WASM; transport callers
+/// WASM-TODO(blocking-pool): there is no blocking pool on WASM; transport callers
 /// on WASM keep their pre-existing unguarded blocking shape until a
 /// WASM-compatible deadline primitive exists.
 #[must_use]

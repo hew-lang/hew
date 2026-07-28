@@ -1201,29 +1201,12 @@ fn escalate_to_parent(sup: &HewSupervisor) {
     };
     // SAFETY: parent.self_actor is valid.
     unsafe {
-        let mb = (*parent.self_actor)
-            .mailbox
-            .cast::<crate::mailbox::HewMailbox>();
-        mailbox::mailbox_send_sys(
-            mb,
+        let _ = actor::send_system_message(
+            parent.self_actor,
             HewSysMsg::ChildSupervisorEscalated,
             (&raw const event).cast::<c_void>().cast_mut(),
             std::mem::size_of::<ChildSupervisorEscalation>(),
         );
-        let current = (*parent.self_actor).actor_state.load(Ordering::Acquire);
-        if current == HewActorState::Idle as i32
-            && (*parent.self_actor)
-                .actor_state
-                .compare_exchange(
-                    HewActorState::Idle as i32,
-                    HewActorState::Runnable as i32,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-        {
-            scheduler::sched_enqueue(parent.self_actor);
-        }
     }
 
     // Observability (read-only side effect, AFTER the escalation decision and
@@ -2609,28 +2592,12 @@ unsafe fn apply_restart(
                     && !s.self_actor.is_null()
                 {
                     let event = DelayedRestartEvent { child_index: idx };
-                    let mb = (*s.self_actor).mailbox.cast::<crate::mailbox::HewMailbox>();
-                    mailbox::mailbox_send_sys(
-                        mb,
+                    let _ = actor::send_system_message(
+                        s.self_actor,
                         HewSysMsg::DelayedRestart,
                         (&raw const event).cast::<c_void>().cast_mut(),
                         std::mem::size_of::<DelayedRestartEvent>(),
                     );
-                    // Wake the supervisor actor if idle.
-                    let current = (*s.self_actor).actor_state.load(Ordering::Acquire);
-                    if current == HewActorState::Idle as i32
-                        && (*s.self_actor)
-                            .actor_state
-                            .compare_exchange(
-                                HewActorState::Idle as i32,
-                                HewActorState::Runnable as i32,
-                                Ordering::AcqRel,
-                                Ordering::Relaxed,
-                            )
-                            .is_ok()
-                    {
-                        scheduler::sched_enqueue(s.self_actor);
-                    }
                 }
                 (*sup_ptr)
                     .pending_restart_timers
@@ -3110,32 +3077,12 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_actor_event(
 
     // SAFETY: self_actor is valid, mailbox is valid.
     unsafe {
-        let mb = (*s.self_actor).mailbox.cast::<crate::mailbox::HewMailbox>();
-        mailbox::mailbox_send_sys(
-            mb,
+        let _ = actor::send_system_message(
+            s.self_actor,
             kind,
             (&raw const event).cast::<c_void>().cast_mut(),
             std::mem::size_of::<ChildEvent>(),
         );
-    }
-
-    // Wake up the supervisor actor.
-    // SAFETY: self_actor is valid.
-    unsafe {
-        let current = (*s.self_actor).actor_state.load(Ordering::Acquire);
-        if current == HewActorState::Idle as i32
-            && (*s.self_actor)
-                .actor_state
-                .compare_exchange(
-                    HewActorState::Idle as i32,
-                    HewActorState::Runnable as i32,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-        {
-            scheduler::sched_enqueue(s.self_actor);
-        }
     }
 }
 
@@ -3174,27 +3121,12 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_supervisor_escalation(
 
     // SAFETY: self_actor is valid, mailbox is valid.
     unsafe {
-        let mb = (*s.self_actor).mailbox.cast::<crate::mailbox::HewMailbox>();
-        mailbox::mailbox_send_sys(
-            mb,
+        let _ = actor::send_system_message(
+            s.self_actor,
             HewSysMsg::ChildSupervisorEscalated,
             (&raw const event).cast::<c_void>().cast_mut(),
             std::mem::size_of::<ChildSupervisorEscalation>(),
         );
-        let current = (*s.self_actor).actor_state.load(Ordering::Acquire);
-        if current == HewActorState::Idle as i32
-            && (*s.self_actor)
-                .actor_state
-                .compare_exchange(
-                    HewActorState::Idle as i32,
-                    HewActorState::Runnable as i32,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-        {
-            scheduler::sched_enqueue(s.self_actor);
-        }
     }
 }
 
@@ -4498,6 +4430,10 @@ mod tests {
             // free path retires the queued ask's sender ref).
             let retired = take_child_slot(&mut *sup, 0);
             assert_eq!(retired, replacement);
+            assert!(
+                scheduler::discard_queued_actor_for_test(retired),
+                "worker-less fixture must consume the accepted ask's wake entry"
+            );
             (*retired)
                 .actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Release);
@@ -4601,6 +4537,10 @@ mod tests {
             assert!(crate::reply_channel::hew_reply_wait(ch).is_null());
             crate::reply_channel::hew_reply_channel_free(ch);
 
+            assert!(
+                scheduler::discard_queued_actor_for_test(old_child),
+                "worker-less fixture must consume the accepted ask's wake entry"
+            );
             (*old_child)
                 .actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Release);

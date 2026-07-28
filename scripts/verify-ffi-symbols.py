@@ -51,8 +51,8 @@ DISCHARGE_DEPTHS = {"shallow", "deep", "none"}
 # owned result; the axis is absent by default because absent is the
 # fail-closed answer (no caller-side release is minted from an unanswered
 # row). A row may only claim "transferred" once an executable oracle has
-# established it for that symbol -- see hew-runtime/tests/
-# last_error_result_retention.rs and hew-std/src/last_error_retention.rs.
+# established it for that symbol -- see the `*_result_retention.rs` tests in
+# hew-runtime/tests/ and hew-std/src/.
 RESULT_RETENTIONS = {"transferred"}
 
 # Exact function names that are codegen-internal (intercepted/rewritten, never linked).

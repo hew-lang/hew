@@ -707,6 +707,48 @@ fn opaque_wrapped(make: fn() -> string) -> i64 {
     }
 }
 
+#[test]
+fn measured_markdown_result_releases_once_direct_and_through_wrapper() {
+    let pl = pipeline_with_tc(
+        r#"
+extern "C" {
+    fn hew_markdown_to_html(markdown: string) -> string;
+}
+
+fn to_html(markdown: string) -> string {
+    unsafe { hew_markdown_to_html(markdown) }
+}
+
+fn borrow_len(value: string) -> i64 {
+    value.len()
+}
+
+fn direct(markdown: string) -> i64 {
+    let html = unsafe { hew_markdown_to_html(markdown) };
+    html.len()
+}
+
+fn forwarded(markdown: string) -> i64 {
+    to_html(markdown).len()
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    for caller in ["direct", "forwarded"] {
+        assert_eq!(
+            total_string_drops(&pl, caller),
+            1,
+            "{caller}: a measured Markdown result borrowed by the caller must \
+             earn exactly one caller-side string drop"
+        );
+    }
+    assert_eq!(
+        total_string_drops(&pl, "to_html"),
+        0,
+        "the shipped-wrapper shape forwards its owner instead of releasing it"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Index-form canaries (`vec-generic-index` lane). `xs[i]` over `Vec<string>`
 // lowers to the same `hew_vec_get_str` retained owner as `.get(i)`, so the

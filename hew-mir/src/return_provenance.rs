@@ -6349,6 +6349,99 @@ fn main() {}
     }
 
     #[test]
+    fn measured_local_string_result_family_is_minted() {
+        // The declarations pin the audited arity as well as the string result.
+        // Parameter leaves are scalar placeholders because Clause C asks only
+        // whether the returned pointer's type-directed drop agrees with the
+        // audited release; the runtime R1/R2/R3 tests own producer semantics.
+        const SOURCE: &str = r#"extern "C" {
+    fn hew_bytes_to_string(a: i64) -> string;
+    fn hew_proto_msg_get_string(a: i64, b: i64) -> string;
+    fn hew_toml_last_serialize_error() -> string;
+    fn hew_toml_get_string(a: i64) -> string;
+    fn hew_toml_stringify(a: i64) -> string;
+    fn hew_markdown_to_html(a: i64) -> string;
+    fn hew_markdown_to_html_safe(a: i64) -> string;
+    fn hew_log_encode_field_value(a: i64) -> string;
+    fn hew_char_to_string(a: i64) -> string;
+    fn hew_cidr_broadcast(a: i64) -> string;
+    fn hew_cidr_network(a: i64) -> string;
+    fn hew_msgpack_to_json_hew(a: i64) -> string;
+    fn hew_encrypt_must_open_hew(a: i64, b: i64) -> string;
+    fn hew_encrypt_try_seal_base64_hew(a: i64, b: i64) -> string;
+    fn hew_encrypt_try_open_hew(a: i64, b: i64) -> string;
+    fn hew_jwt_decode_hew(a: i64, b: i64, c: i64) -> string;
+    fn hew_jwt_decode_insecure(a: i64) -> string;
+    fn hew_jwt_encode_hew(a: i64, b: i64, c: i64) -> string;
+    fn hew_password_hash(a: i64) -> string;
+    fn hew_password_hash_custom(a: i64, b: i64) -> string;
+    fn hew_uuid_v4() -> string;
+    fn hew_uuid_v7() -> string;
+    fn hew_datetime_format(a: i64, b: i64) -> string;
+    fn hew_cron_to_string(a: i64) -> string;
+    fn hew_url_fragment(a: i64) -> string;
+    fn hew_url_host(a: i64) -> string;
+    fn hew_url_path(a: i64) -> string;
+    fn hew_url_query(a: i64) -> string;
+    fn hew_url_scheme(a: i64) -> string;
+    fn hew_url_to_string(a: i64) -> string;
+    fn hew_json_get_string(a: i64) -> string;
+    fn hew_json_stringify(a: i64) -> string;
+    fn hew_yaml_get_string(a: i64) -> string;
+    fn hew_yaml_stringify(a: i64) -> string;
+    fn hew_regex_find(a: i64, b: i64) -> string;
+    fn hew_regex_replace(a: i64, b: i64, c: i64) -> string;
+}
+fn main() {}
+"#;
+        let table = table_for(SOURCE);
+        for name in [
+            "hew_bytes_to_string",
+            "hew_proto_msg_get_string",
+            "hew_toml_last_serialize_error",
+            "hew_toml_get_string",
+            "hew_toml_stringify",
+            "hew_markdown_to_html",
+            "hew_markdown_to_html_safe",
+            "hew_log_encode_field_value",
+            "hew_char_to_string",
+            "hew_cidr_broadcast",
+            "hew_cidr_network",
+            "hew_msgpack_to_json_hew",
+            "hew_encrypt_must_open_hew",
+            "hew_encrypt_try_seal_base64_hew",
+            "hew_encrypt_try_open_hew",
+            "hew_jwt_decode_hew",
+            "hew_jwt_decode_insecure",
+            "hew_jwt_encode_hew",
+            "hew_password_hash",
+            "hew_password_hash_custom",
+            "hew_uuid_v4",
+            "hew_uuid_v7",
+            "hew_datetime_format",
+            "hew_cron_to_string",
+            "hew_url_fragment",
+            "hew_url_host",
+            "hew_url_path",
+            "hew_url_query",
+            "hew_url_scheme",
+            "hew_url_to_string",
+            "hew_json_get_string",
+            "hew_json_stringify",
+            "hew_yaml_get_string",
+            "hew_yaml_stringify",
+            "hew_regex_find",
+            "hew_regex_replace",
+        ] {
+            assert!(
+                table.extern_return_is_audited_fresh_owner(name),
+                "`{name}` has an executable R1/R2/R3 transfer proof and must \
+                 mint one caller-side string owner"
+            );
+        }
+    }
+
+    #[test]
     fn a_measured_record_return_is_minted_through_its_heap_field() {
         // `TlsReadFfiResult { data: bytes; status: i32 }` is not pointer-free,
         // so Clause B refuses it. Its whole discharge is one `hew_bytes_drop`,
@@ -6373,20 +6466,20 @@ fn main() {}
 
     #[test]
     fn a_fresh_result_without_a_measured_retention_is_refused() {
-        // `hew_bytes_to_string` is audited `result = "fresh"`, released by
+        // `hew_file_read` is audited `result = "fresh"`, released by
         // `hew_string_drop`, shallow — identical on every axis Clause A reads.
         // It is refused for the one reason that matters: nobody has established
         // that the callee keeps no pointer into what it returned. Absence is
         // the answer "not established", and that costs a leak rather than a
         // double free.
         const SOURCE: &str = r#"extern "C" {
-    fn hew_bytes_to_string(b: bytes) -> string;
+    fn hew_file_read(path: string) -> string;
 }
 fn main() {}
 "#;
-        let contract = crate::ffi_contracts::extern_ownership_contract("hew_bytes_to_string")
+        let contract = crate::ffi_contracts::extern_ownership_contract("hew_file_read")
             .contract()
-            .expect("guard: hew_bytes_to_string must be audited, or this proves nothing");
+            .expect("guard: hew_file_read must be audited, or this proves nothing");
         assert_eq!(
             contract.result,
             crate::ffi_contracts::ExternResultOwnership::Fresh
@@ -6397,7 +6490,7 @@ fn main() {}
             crate::ffi_contracts::ExternResultRetention::Unspecified
         );
         assert!(
-            !table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_bytes_to_string"),
+            !table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_file_read"),
             "`fresh` says the allocation is new, not that the callee stopped \
              referring to it; only the retention axis answers that"
         );

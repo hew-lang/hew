@@ -552,6 +552,52 @@ fn gen_fn_owned_capture_carries_clone_plan_without_stack_env_drop() {
 }
 
 #[test]
+fn actor_receive_gen_owned_param_moves_into_environment() {
+    let pipeline = lower_checked(
+        r#"
+        actor Streamer {
+            receive gen fn emit(label: string, n: i64) -> i64 {
+                yield label.len() + n;
+            }
+        }
+        fn main() {
+            let streamer = spawn Streamer();
+            let _stream = streamer.emit("mailbox", 2);
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "receive-generator capture must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+    let shell = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Streamer__recv__emit")
+        .expect("receive-generator shell must exist");
+    let env = shell
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => Some(env),
+            _ => None,
+        })
+        .expect("receive-generator parameter captures must carry an env plan");
+    assert!(
+        matches!(
+            env.fields.as_slice(),
+            [
+                GeneratorEnvFieldPlan::OwnedMove(plan),
+                GeneratorEnvFieldPlan::TrivialCopy
+            ] if matches!(plan.root(), StateFieldCloneKind::String)
+        ),
+        "the mailbox-owned string must transfer while the scalar copies: {:?}",
+        env.fields
+    );
+}
+
+#[test]
 fn anonymous_owned_capture_preserves_caller_source_drop() {
     let pipeline = lower_checked(
         r#"

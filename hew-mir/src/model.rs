@@ -3396,6 +3396,13 @@ pub enum GeneratorEnvFieldPlan {
     TrivialCopy,
     /// The shallow seed must be replaced by a semantic structural clone.
     Owned(crate::state_clone::ValueSnapshotPlan),
+    /// The shallow seed is the sole owner transferred into the environment.
+    ///
+    /// This differs from [`Self::Owned`]: codegen must preserve the seed
+    /// instead of cloning it, but the environment's drop thunk must still
+    /// release it. A `receive gen fn` uses this for mailbox-delivered
+    /// parameters because its shell has no caller-side owner to preserve.
+    OwnedMove(crate::state_clone::ValueSnapshotPlan),
 }
 
 #[derive(Debug, Clone, PartialEq)]

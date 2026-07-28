@@ -8,7 +8,8 @@ use std::path::Path;
 use std::process::Command;
 
 use support::leak_slope::{
-    compile_to_native, measure_leaks, require_leaks_tool, run_under_malloc_scribble,
+    assert_frame_slope_below_tolerance, compile_to_native, measure_leaks, require_leaks_tool,
+    run_under_malloc_scribble,
 };
 use support::{describe_output, require_codegen};
 
@@ -369,6 +370,34 @@ fn main() {
 }
 "#;
 
+fn actor_param_source(frames: usize) -> String {
+    r#"
+actor Streamer {
+    receive gen fn emit(label: string, n: i64) -> i64 {
+        var i: i64 = 0;
+        while i < n {
+            yield i + label.len();
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let streamer = spawn Streamer();
+    var total: i64 = 0;
+    var frame: i64 = 0;
+    while frame < __FRAMES__ {
+        for await value in streamer.emit("streamlabel".to_upper(), 3) {
+            total = total + value;
+        }
+        frame = frame + 1;
+    }
+    print(f"{frame}:{total}:OK");
+}
+"#
+    .replace("__FRAMES__", &frames.to_string())
+}
+
 fn run_exact(bin: &Path, expected: &str) {
     let output = Command::new(bin).output().expect("run compiled oracle");
     assert!(
@@ -457,6 +486,15 @@ fn generator_actor_state_env_clone_has_zero_leaks() {
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
 )]
 #[test]
+fn generator_actor_param_transfer_has_zero_leak_slope() {
+    assert_frame_slope_below_tolerance("generator_actor_param_transfer", actor_param_source);
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
 fn generator_and_closure_env_clone_are_malloc_scribble_clean() {
     require_codegen();
     let dir = tempfile::Builder::new()
@@ -473,6 +511,11 @@ fn generator_and_closure_env_clone_are_malloc_scribble_clean() {
             "generator_closure_env_clone_scribble",
             with_frames(CLOSURE_SOURCE, 8),
             "8:8:8:8:OK",
+        ),
+        (
+            "generator_actor_param_transfer_scribble",
+            actor_param_source(8),
+            "8:288:OK",
         ),
     ] {
         let bin = compile_to_native(&source, dir.path(), name);

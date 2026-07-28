@@ -25301,7 +25301,7 @@ fn validate_generator_env_plan<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     plan: &hew_mir::GeneratorEnvPlan,
     env_struct: StructType<'ctx>,
-) -> CodegenResult<Vec<(u32, StateFieldCloneKind)>> {
+) -> CodegenResult<Vec<(u32, StateFieldCloneKind, bool)>> {
     let place_ty = place_resolved_ty(fn_ctx, plan.place)?;
     if place_ty != &plan.ty {
         return Err(CodegenError::FailClosed(format!(
@@ -25397,7 +25397,8 @@ fn validate_generator_env_plan<'ctx>(
                         .map(hew_mir::state_clone::ValueSnapshotPlan::root)
                 )));
             }
-            hew_mir::GeneratorEnvFieldPlan::Owned(snapshot) => {
+            hew_mir::GeneratorEnvFieldPlan::Owned(snapshot)
+            | hew_mir::GeneratorEnvFieldPlan::OwnedMove(snapshot) => {
                 if classified.as_ref() != Some(snapshot) {
                     return Err(CodegenError::FailClosed(format!(
                         "generator env `{name}` field {field_idx} snapshot plan drift: MIR \
@@ -25429,10 +25430,14 @@ fn validate_generator_env_plan<'ctx>(
                 }
                 if matches!(snapshot.root(), StateFieldCloneKind::BitCopy { .. }) {
                     return Err(CodegenError::FailClosed(format!(
-                        "generator env `{name}` field {field_idx} uses Owned for BitCopy"
+                        "generator env `{name}` field {field_idx} uses an owned plan for BitCopy"
                     )));
                 }
-                owned.push((field_idx, snapshot.root().clone()));
+                owned.push((
+                    field_idx,
+                    snapshot.root().clone(),
+                    matches!(field_plan, hew_mir::GeneratorEnvFieldPlan::Owned(_)),
+                ));
             }
         }
     }
@@ -25441,10 +25446,11 @@ fn validate_generator_env_plan<'ctx>(
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "generator env clone emission needs the typed plan, validated source/destination \
-              struct pointers, companion allocation, and body symbol in one ownership boundary"
+    reason = "generator env owned-field construction needs the typed plan, validated \
+              source/destination struct pointers, companion allocation, and body symbol \
+              in one ownership boundary"
 )]
-fn emit_generator_env_owned_clones<'ctx>(
+fn emit_generator_env_owned_fields<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     body_fn: &str,
     plan: &hew_mir::GeneratorEnvPlan,
@@ -25457,6 +25463,26 @@ fn emit_generator_env_owned_clones<'ctx>(
     if owned.is_empty() {
         return Ok(None);
     }
+    let cloned: Vec<(u32, StateFieldCloneKind)> = owned
+        .iter()
+        .filter(|(_, _, needs_clone)| *needs_clone)
+        .map(|(field_idx, kind, _)| (*field_idx, kind.clone()))
+        .collect();
+    let drop_fields: Vec<(u32, StateFieldCloneKind)> = owned
+        .iter()
+        .map(|(field_idx, kind, _)| (*field_idx, kind.clone()))
+        .collect();
+    // A transfer-only environment already owns every shallow seed after the
+    // memcpy. It still needs the typed teardown thunk, but no clone CFG.
+    if cloned.is_empty() {
+        let thunk = crate::thunks::get_or_emit_generator_env_drop_thunk(
+            fn_ctx,
+            body_fn,
+            env_struct,
+            &drop_fields,
+        )?;
+        return Ok(Some(thunk));
+    }
     let parent = fn_ctx
         .builder
         .get_insert_block()
@@ -25464,21 +25490,21 @@ fn emit_generator_env_owned_clones<'ctx>(
         .ok_or_else(|| {
             CodegenError::FailClosed("generator env clone has no parent function".into())
         })?;
-    let clone_bbs: Vec<_> = (0..owned.len())
+    let clone_bbs: Vec<_> = (0..cloned.len())
         .map(|idx| {
             fn_ctx
                 .ctx
                 .append_basic_block(parent, &format!("gen_env_clone_{idx}"))
         })
         .collect();
-    let store_bbs: Vec<_> = (0..owned.len())
+    let store_bbs: Vec<_> = (0..cloned.len())
         .map(|idx| {
             fn_ctx
                 .ctx
                 .append_basic_block(parent, &format!("gen_env_clone_{idx}_store"))
         })
         .collect();
-    let rollback_bbs: Vec<_> = (0..owned.len())
+    let rollback_bbs: Vec<_> = (0..cloned.len())
         .map(|idx| {
             fn_ctx
                 .ctx
@@ -25495,7 +25521,7 @@ fn emit_generator_env_owned_clones<'ctx>(
 
     let record_layouts = codegen_record_layouts(fn_ctx);
     let witnesses = fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
-    for (step_idx, (field_idx, kind)) in owned.iter().enumerate() {
+    for (step_idx, (field_idx, kind)) in cloned.iter().enumerate() {
         fn_ctx.builder.position_at_end(clone_bbs[step_idx]);
         let next_bb = clone_bbs.get(step_idx + 1).copied().unwrap_or(success_bb);
         emit_field_clone_step(
@@ -25532,14 +25558,29 @@ fn emit_generator_env_owned_clones<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
     for (step_idx, rollback_bb) in rollback_bbs.iter().enumerate() {
         fn_ctx.builder.position_at_end(*rollback_bb);
-        for (field_idx, kind) in owned[..step_idx].iter().rev() {
+        // The shallow memcpy made every moved field an owner before clone
+        // construction began. A failed clone must release all such moved
+        // fields plus only the clone fields whose stores already succeeded;
+        // unprocessed clone fields still alias their live sources.
+        let mut initialized: Vec<(u32, &StateFieldCloneKind)> = owned
+            .iter()
+            .filter(|(_, _, needs_clone)| !*needs_clone)
+            .map(|(field_idx, kind, _)| (*field_idx, kind))
+            .chain(
+                cloned[..step_idx]
+                    .iter()
+                    .map(|(field_idx, kind)| (*field_idx, kind)),
+            )
+            .collect();
+        initialized.sort_unstable_by_key(|(field_idx, _)| std::cmp::Reverse(*field_idx));
+        for (field_idx, kind) in initialized {
             emit_field_drop_step(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
                 &fn_ctx.builder,
                 Some(env_struct),
                 dst,
-                *field_idx,
+                field_idx,
                 kind,
                 &witnesses,
             )?;
@@ -25566,8 +25607,12 @@ fn emit_generator_env_owned_clones<'ctx>(
             .llvm_ctx("generator env clone unreachable")?;
     }
     fn_ctx.builder.position_at_end(success_bb);
-    let thunk =
-        crate::thunks::get_or_emit_generator_env_drop_thunk(fn_ctx, body_fn, env_struct, &owned)?;
+    let thunk = crate::thunks::get_or_emit_generator_env_drop_thunk(
+        fn_ctx,
+        body_fn,
+        env_struct,
+        &drop_fields,
+    )?;
     Ok(Some(thunk))
 }
 
@@ -27222,8 +27267,9 @@ fn lower_terminator<'ctx>(
             // env into a fresh block now (the caller's record is live HERE), store
             // its pointer in the companion (freed by `hew_gen_coro_destroy`), and
             // pass THAT to the ramp. The memcpy is only a shallow seed:
-            // `emit_generator_env_owned_clones` replaces every owned field with
-            // an independent semantic clone before the ramp can observe it.
+            // `emit_generator_env_owned_fields` replaces borrowed owned
+            // fields with independent semantic clones and preserves fields
+            // whose source owner transfers into the environment.
             let env_field_ptr = fn_ctx
                 .builder
                 .build_struct_gep(
@@ -27300,7 +27346,7 @@ fn lower_terminator<'ctx>(
                                 "MakeGenerator env memcpy failed: {e:?}"
                             ))
                         })?;
-                    let env_drop_thunk = emit_generator_env_owned_clones(
+                    let env_drop_thunk = emit_generator_env_owned_fields(
                         fn_ctx, body_fn, env_plan, env_struct, env_slot, heap_env, companion,
                     )?;
                     if let Some(thunk) = env_drop_thunk {

@@ -1775,8 +1775,10 @@ impl Builder {
         //
         // SCOPE / FAIL-CLOSED: `gen_env_capture_admissible` governs what may be
         // snapshotted into the heap env. `Terminator::MakeGenerator` shallow-
-        // seeds the record, replaces every owned field with a semantic clone,
-        // and plants the reverse-order payload-drop thunk. Admitted shapes:
+        // seeds the record, replaces borrowed owned fields with semantic
+        // clones, preserves a mailbox-delivered receive-handler parameter as
+        // a transferred owner, and plants the reverse-order payload-drop
+        // thunk. Admitted shapes:
         //   * clone-total structural values (String/Bytes/Rc/Weak, supported
         //     collections, tuples/arrays, records, and enums);
         //   * `BitCopy` scalars;
@@ -1862,8 +1864,31 @@ impl Builder {
                     {
                         init_fields.push((offset, src));
                         field_tys.push(ty);
-                        env_field_plans
-                            .push(capture_field_plan.expect("generator env plan guard checked"));
+                        let mut field_plan =
+                            capture_field_plan.expect("generator env plan guard checked");
+                        // A receive-generator shell owns each mailbox-delivered
+                        // user parameter. Its body exists only in the generated
+                        // coroutine, so construction may move that owner into
+                        // the heap environment instead of cloning it and
+                        // stranding the original in the shell. Ordinary `gen
+                        // fn` parameters and anonymous-generator captures stay
+                        // borrowed sources and retain the clone plan.
+                        let transfers_mailbox_owner = self.stream_producer_pump.is_some()
+                            && capture.source == hew_hir::HirGenCaptureSource::Local
+                            && src
+                                != self
+                                    .stream_producer_pump
+                                    .as_ref()
+                                    .expect("receive-generator pump checked")
+                                    .sink
+                            && base_local(src)
+                                .is_some_and(|local| self.parameter_locals.contains(&local));
+                        if transfers_mailbox_owner {
+                            if let GeneratorEnvFieldPlan::Owned(plan) = field_plan {
+                                field_plan = GeneratorEnvFieldPlan::OwnedMove(plan);
+                            }
+                        }
+                        env_field_plans.push(field_plan);
                     }
                     (Some(_), Some(ty)) => {
                         // Not admissible to the owned generator env. Name the

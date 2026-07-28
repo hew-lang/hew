@@ -1416,6 +1416,144 @@ pub(super) fn derive_enum_composite_drop_allowed(
             break;
         }
     }
+    // Track every heap payload alias that still points into an
+    // unneutralized parent slot. This is a second fixpoint because nested enum
+    // projections are discovered only after their intermediate payload binder
+    // joins `payload_binders`, and a whole-local forwarding chain remains an
+    // alias until a corroborating neutralize transfers ownership onward.
+    let source_slot_is_consumed =
+        |block: &BasicBlock, instr_index: usize, source: Place, dest: Place| -> bool {
+            block
+                .instructions
+                .get(instr_index + 1)
+                .is_some_and(|later| match later {
+                    Instr::NeutralizePayloadSlot {
+                        place,
+                        authority:
+                            crate::model::NeutralizeAuthority::MoveOutArmConsume
+                            | crate::model::NeutralizeAuthority::EphemeralTempConsume,
+                        ..
+                    } => *place == source,
+                    Instr::NeutralizePayloadSlot {
+                        place,
+                        transferee,
+                        authority:
+                            crate::model::NeutralizeAuthority::SendTransferLastUse
+                            | crate::model::NeutralizeAuthority::WholeCarrierConsume,
+                    } => *place == source && *transferee == Some(dest),
+                    _ => false,
+                })
+        };
+    let aggregate_field_is_consumed =
+        |block: &BasicBlock, instr_index: usize, root: Place, dest: Place, field: u32| -> bool {
+            matches!(
+                block.instructions.get(instr_index + 1),
+                Some(Instr::AggregateProjectionNeutralize {
+                    root: neutralized_root,
+                    fields,
+                    transferee,
+                }) if *neutralized_root == root
+                    && *transferee == dest
+                    && fields.as_slice() == [field]
+            )
+        };
+    let mut unneutralized_payload_aliases: HashSet<u32> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for (instr_index, instr) in block.instructions.iter().enumerate() {
+                match instr {
+                    Instr::Move { dest, src } => {
+                        let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) else {
+                            continue;
+                        };
+                        if !local_is_heap_owning(dl) {
+                            continue;
+                        }
+                        let aliases_parent_storage = if place_is_interior_projection(*src) {
+                            alias_of.contains_key(&sl) || payload_binders.contains_key(&sl)
+                        } else {
+                            matches!(src, Place::Local(_))
+                                && unneutralized_payload_aliases.contains(&sl)
+                        };
+                        if aliases_parent_storage
+                            && !source_slot_is_consumed(block, instr_index, *src, *dest)
+                        {
+                            changed |= unneutralized_payload_aliases.insert(dl);
+                        }
+                    }
+                    Instr::RecordFieldLoad {
+                        record,
+                        field_offset,
+                        dest,
+                    } => {
+                        let (Some(sl), Some(dl)) = (base_local(*record), base_local(*dest)) else {
+                            continue;
+                        };
+                        let source_is_unneutralized = unneutralized_payload_aliases.contains(&sl);
+                        let source_is_tracked = source_is_unneutralized
+                            || alias_of.contains_key(&sl)
+                            || payload_binders.contains_key(&sl);
+                        if local_is_heap_owning(dl)
+                            && source_is_tracked
+                            && (source_is_unneutralized
+                                || !aggregate_field_is_consumed(
+                                    block,
+                                    instr_index,
+                                    *record,
+                                    *dest,
+                                    field_offset.0,
+                                ))
+                        {
+                            changed |= unneutralized_payload_aliases.insert(dl);
+                        }
+                    }
+                    Instr::TupleFieldLoad {
+                        tuple,
+                        field_index,
+                        dest,
+                    } => {
+                        let (Some(sl), Some(dl)) = (base_local(*tuple), base_local(*dest)) else {
+                            continue;
+                        };
+                        let source_is_unneutralized = unneutralized_payload_aliases.contains(&sl);
+                        let source_is_tracked = source_is_unneutralized
+                            || alias_of.contains_key(&sl)
+                            || payload_binders.contains_key(&sl);
+                        if local_is_heap_owning(dl)
+                            && source_is_tracked
+                            && (source_is_unneutralized
+                                || !aggregate_field_is_consumed(
+                                    block,
+                                    instr_index,
+                                    *tuple,
+                                    *dest,
+                                    *field_index,
+                                ))
+                        {
+                            changed |= unneutralized_payload_aliases.insert(dl);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // A heap-enum binder derived from an UNNEUTRALIZED parent slot is a shallow
+    // interior alias, not a second owner. If both are lexical candidates,
+    // granting both EnumInPlace would walk the same active payload twice. A
+    // corroborating neutralize is the opposite case: it consumes the source
+    // slot and makes the destination the sole owner, so that destination must
+    // retain its drop. The fixpoint above carries this distinction through
+    // arbitrary nested projections and whole-local forwarding.
+    let interior_enum_candidate_locals: HashSet<u32> = candidate_local_to_binding
+        .keys()
+        .copied()
+        .filter(|local| unneutralized_payload_aliases.contains(local))
+        .collect();
     let retained_string_payload_aliases =
         uniquely_defined_retained_string_field_load_aliases(blocks, local_tys);
     payload_binders.retain(|local, _| !retained_string_payload_aliases.contains(local));
@@ -1738,7 +1876,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
 
     let mut allowed = HashSet::new();
     for (&local, &binding) in &candidate_local_to_binding {
-        if !excluded_roots.contains(&local) {
+        if !excluded_roots.contains(&local) && !interior_enum_candidate_locals.contains(&local) {
             allowed.insert(binding);
         }
     }
@@ -8240,1159 +8378,12 @@ mod tuple_composite_field_drop_exclusion {
         );
     }
 }
+// Split into a sibling file (not inlined here) to stay under the
+// `src/lower/` line-count ratchet (`hew-mir/tests/lower_module_size.rs`).
 #[cfg(test)]
-mod tuple_projection_forward_transfer_proof {
-    use super::*;
-
-    fn field_drop(base: u32, field: u32, ty: ResolvedTy) -> Instr {
-        Instr::FieldDropInPlace {
-            base: Place::Local(base),
-            field: crate::model::FieldAddr::Tuple(field),
-            ty,
-        }
-    }
-
-    fn blocks() -> Vec<BasicBlock> {
-        vec![
-            BasicBlock {
-                id: 0,
-                statements: vec![],
-                instructions: vec![
-                    Instr::TupleConstruct {
-                        elements: vec![],
-                        dest: Place::Local(2),
-                    },
-                    Instr::TupleFieldLoad {
-                        tuple: Place::Local(0),
-                        field_index: 0,
-                        dest: Place::Local(1),
-                    },
-                    Instr::AggregateProjectionNeutralize {
-                        root: Place::Local(0),
-                        fields: vec![0],
-                        transferee: Place::Local(1),
-                    },
-                ],
-                terminator: Terminator::Branch {
-                    cond: Place::Local(9),
-                    then_target: 1,
-                    else_target: 2,
-                },
-            },
-            BasicBlock {
-                id: 1,
-                statements: vec![],
-                instructions: vec![
-                    field_drop(2, 0, ResolvedTy::String),
-                    field_drop(2, 1, ResolvedTy::String),
-                ],
-                terminator: Terminator::Goto { target: 2 },
-            },
-            BasicBlock {
-                id: 2,
-                statements: vec![],
-                instructions: vec![
-                    Instr::Move {
-                        dest: Place::Local(2),
-                        src: Place::Local(1),
-                    },
-                    Instr::Move {
-                        dest: Place::Local(3),
-                        src: Place::Local(2),
-                    },
-                ],
-                terminator: Terminator::Return,
-            },
-        ]
-    }
-
-    fn proves(blocks: &[BasicBlock]) -> bool {
-        proves_with(
-            blocks,
-            &[
-                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
-                ResolvedTy::String,
-                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::String]),
-                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::String]),
-            ],
-            &HashMap::new(),
-        )
-    }
-
-    fn proves_with(
-        blocks: &[BasicBlock],
-        local_tys: &[ResolvedTy],
-        record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
-    ) -> bool {
-        derive_tuple_projection_forward_transfers(
-            blocks,
-            &HashMap::new(),
-            &[(0, 0)].into_iter().collect(),
-            local_tys,
-            record_field_orders,
-            &[],
-        )
-        .owner_exempt_roots
-        .get(&3)
-        .is_some_and(|roots| roots.contains(&0))
-    }
-
-    fn enum_carrier_ty() -> ResolvedTy {
-        ResolvedTy::named_user("Carrier", vec![])
-    }
-
-    fn enum_layouts() -> Vec<crate::model::EnumLayout> {
-        vec![crate::model::EnumLayout {
-            name: "Carrier".to_string(),
-            tag_width: 1,
-            variants: vec![
-                crate::model::MachineVariantLayout {
-                    name: "Full".to_string(),
-                    field_tys: vec![ResolvedTy::named_builtin(
-                        "Vec",
-                        hew_types::BuiltinType::Vec,
-                        vec![ResolvedTy::String],
-                    )],
-                    field_names: vec![],
-                },
-                crate::model::MachineVariantLayout {
-                    name: "Empty".to_string(),
-                    field_tys: vec![],
-                    field_names: vec![],
-                },
-            ],
-            is_indirect: false,
-        }]
-    }
-
-    fn empty_enum_carrier_blocks() -> Vec<BasicBlock> {
-        vec![
-            BasicBlock {
-                id: 0,
-                statements: vec![],
-                instructions: vec![
-                    Instr::ConstI64 {
-                        dest: Place::Local(5),
-                        value: 1,
-                    },
-                    Instr::Move {
-                        dest: Place::MachineTag(4),
-                        src: Place::Local(5),
-                    },
-                    Instr::Move {
-                        dest: Place::Local(2),
-                        src: Place::Local(4),
-                    },
-                    Instr::TupleFieldLoad {
-                        tuple: Place::Local(0),
-                        field_index: 0,
-                        dest: Place::Local(1),
-                    },
-                    Instr::AggregateProjectionNeutralize {
-                        root: Place::Local(0),
-                        fields: vec![0],
-                        transferee: Place::Local(1),
-                    },
-                ],
-                terminator: Terminator::Branch {
-                    cond: Place::Local(9),
-                    then_target: 1,
-                    else_target: 2,
-                },
-            },
-            BasicBlock {
-                id: 1,
-                statements: vec![],
-                instructions: vec![],
-                terminator: Terminator::Goto { target: 2 },
-            },
-            BasicBlock {
-                id: 2,
-                statements: vec![],
-                instructions: vec![
-                    Instr::Move {
-                        dest: Place::Local(2),
-                        src: Place::Local(1),
-                    },
-                    Instr::Move {
-                        dest: Place::Local(3),
-                        src: Place::Local(2),
-                    },
-                ],
-                terminator: Terminator::Return,
-            },
-        ]
-    }
-
-    fn empty_enum_carrier_proofs(
-        blocks: &[BasicBlock],
-        layouts: &[crate::model::EnumLayout],
-    ) -> TupleProjectionForwardProofs {
-        let carrier = enum_carrier_ty();
-        derive_tuple_projection_forward_transfers(
-            blocks,
-            &HashMap::new(),
-            &[(0, 0)].into_iter().collect(),
-            &[
-                ResolvedTy::Tuple(vec![carrier.clone(), ResolvedTy::I64]),
-                carrier.clone(),
-                carrier.clone(),
-                carrier.clone(),
-                carrier,
-                ResolvedTy::I64,
-            ],
-            &HashMap::new(),
-            layouts,
-        )
-    }
-
-    fn empty_enum_carrier_proves(blocks: &[BasicBlock]) -> bool {
-        empty_enum_carrier_proofs(blocks, &enum_layouts())
-            .owner_exempt_roots
-            .get(&3)
-            .is_some_and(|roots| roots.contains(&0))
-    }
-
-    #[test]
-    fn exact_tuple_projection_forwarding_is_proven() {
-        assert!(
-            proves(&blocks()),
-            "the exact branch-cleanup-join forwarding shape must earn its scoped proof"
-        );
-    }
-
-    #[test]
-    fn proven_empty_enum_carrier_allows_projection_forwarding() {
-        assert!(
-            empty_enum_carrier_proves(&empty_enum_carrier_blocks()),
-            "an empty cleanup is sound only when the exact initial enum generation has one \
-             constructor tag for a declared payload-free variant"
-        );
-    }
-
-    #[test]
-    fn owner_exemption_does_not_admit_an_unrelated_tuple_root() {
-        let alias_of = [(10, 0), (11, 1)].into_iter().collect();
-        let mut excluded = HashSet::new();
-        let exempt = [0].into_iter().collect();
-
-        exclude_tuple_roots_except(&alias_of, &mut excluded, Some(&exempt));
-
-        assert_eq!(
-            excluded,
-            [1].into_iter().collect(),
-            "a proven owner exemption must remain scoped to its proven tuple root"
-        );
-    }
-
-    #[test]
-    fn enum_carrier_requires_exact_empty_generation_evidence() {
-        let mut nonempty_tag = empty_enum_carrier_blocks();
-        let Instr::ConstI64 { value, .. } = &mut nonempty_tag[0].instructions[0] else {
-            panic!("fixture must initialize the enum tag");
-        };
-        *value = 0;
-        assert!(
-            !empty_enum_carrier_proves(&nonempty_tag),
-            "an empty cleanup cannot overwrite a generation tagged for a payload-bearing variant"
-        );
-
-        let mut payload_write = empty_enum_carrier_blocks();
-        payload_write[0].instructions.insert(
-            2,
-            Instr::Move {
-                dest: Place::MachineVariant {
-                    local: 4,
-                    variant_idx: 0,
-                    field_idx: 0,
-                },
-                src: Place::Local(1),
-            },
-        );
-        assert!(
-            !empty_enum_carrier_proves(&payload_write),
-            "a seed with any payload write must not earn an empty-cleanup exemption"
-        );
-
-        let mut reused_tag = empty_enum_carrier_blocks();
-        reused_tag[0].instructions.insert(
-            2,
-            Instr::IntAdd {
-                dest: Place::Local(8),
-                lhs: Place::Local(5),
-                rhs: Place::Local(9),
-            },
-        );
-        assert!(
-            !empty_enum_carrier_proves(&reused_tag),
-            "the constructor tag must be uniquely consumed by its exact enum-tag write"
-        );
-
-        let carrier = enum_carrier_ty();
-        let no_layout_proof = derive_tuple_projection_forward_transfers(
-            &empty_enum_carrier_blocks(),
-            &HashMap::new(),
-            &[(0, 0)].into_iter().collect(),
-            &[
-                ResolvedTy::Tuple(vec![carrier.clone(), ResolvedTy::I64]),
-                carrier.clone(),
-                carrier.clone(),
-                carrier.clone(),
-                carrier,
-                ResolvedTy::I64,
-            ],
-            &HashMap::new(),
-            &[],
-        );
-        assert!(
-            no_layout_proof.owner_exempt_roots.is_empty(),
-            "an unresolved enum layout must remain denied rather than treating an empty cleanup \
-            as type-only evidence"
-        );
-    }
-
-    #[test]
-    fn enum_carrier_rejects_ambiguous_tags_layouts_and_definitions() {
-        let mut duplicate_tag_write = empty_enum_carrier_blocks();
-        duplicate_tag_write[0].instructions.insert(
-            2,
-            Instr::Move {
-                dest: Place::MachineTag(4),
-                src: Place::Local(5),
-            },
-        );
-        assert!(
-            !empty_enum_carrier_proves(&duplicate_tag_write),
-            "two writes of the constructor tag cannot prove one exact empty generation"
-        );
-
-        let mut nonconstant_tag = empty_enum_carrier_blocks();
-        nonconstant_tag[0].instructions[0] = Instr::IntAdd {
-            dest: Place::Local(5),
-            lhs: Place::Local(6),
-            rhs: Place::Local(7),
-        };
-        assert!(
-            !empty_enum_carrier_proves(&nonconstant_tag),
-            "a computed tag source cannot prove the declared payload-free variant"
-        );
-
-        let mut active_definition_before_neutralize = empty_enum_carrier_blocks();
-        active_definition_before_neutralize[0].instructions.insert(
-            3,
-            Instr::Move {
-                dest: Place::Local(2),
-                src: Place::Local(3),
-            },
-        );
-        assert!(
-            !empty_enum_carrier_proves(&active_definition_before_neutralize),
-            "a second carrier generation reaching neutralization must not inherit empty cleanup"
-        );
-
-        let mut indirect_layouts = enum_layouts();
-        indirect_layouts[0].is_indirect = true;
-        assert!(
-            empty_enum_carrier_proofs(&empty_enum_carrier_blocks(), &indirect_layouts)
-                .owner_exempt_roots
-                .is_empty(),
-            "an indirect enum layout must remain outside the inline empty-generation proof"
-        );
-    }
-
-    #[test]
-    fn detached_owner_exemption_requires_one_dominating_destination_generation() {
-        let mut reused_dest = empty_enum_carrier_blocks();
-        reused_dest[2].instructions.extend([
-            Instr::Move {
-                dest: Place::Local(6),
-                src: Place::MachineVariant {
-                    local: 3,
-                    variant_idx: 0,
-                    field_idx: 0,
-                },
-            },
-            Instr::Move {
-                dest: Place::Local(6),
-                src: Place::Local(4),
-            },
-        ]);
-
-        let proofs = empty_enum_carrier_proofs(&reused_dest, &enum_layouts());
-        assert!(
-            proofs
-                .owner_exempt_roots
-                .get(&6)
-                .is_none_or(HashSet::is_empty),
-            "a reused destination must not apply one detached generation's exemption to another"
-        );
-    }
-
-    #[test]
-    fn empty_enum_constructor_tag_must_dominate_carrier_initialization() {
-        let blocks = vec![
-            BasicBlock {
-                id: 0,
-                statements: vec![],
-                instructions: vec![],
-                terminator: Terminator::Branch {
-                    cond: Place::Local(9),
-                    then_target: 1,
-                    else_target: 2,
-                },
-            },
-            BasicBlock {
-                id: 1,
-                statements: vec![],
-                instructions: vec![
-                    Instr::ConstI64 {
-                        dest: Place::Local(5),
-                        value: 1,
-                    },
-                    Instr::Move {
-                        dest: Place::MachineTag(4),
-                        src: Place::Local(5),
-                    },
-                ],
-                terminator: Terminator::Goto { target: 3 },
-            },
-            BasicBlock {
-                id: 2,
-                statements: vec![],
-                instructions: vec![],
-                terminator: Terminator::Goto { target: 3 },
-            },
-            BasicBlock {
-                id: 3,
-                statements: vec![],
-                instructions: vec![Instr::Move {
-                    dest: Place::Local(2),
-                    src: Place::Local(4),
-                }],
-                terminator: Terminator::Return,
-            },
-        ];
-        assert!(
-            !exact_empty_enum_carrier_initialization(
-                &blocks,
-                &block_dominators(&blocks),
-                InstrSite { block: 3, index: 0 },
-                2,
-                &[
-                    ResolvedTy::I64,
-                    ResolvedTy::I64,
-                    enum_carrier_ty(),
-                    ResolvedTy::I64,
-                    enum_carrier_ty(),
-                    ResolvedTy::I64,
-                ],
-                &enum_layouts(),
-            ),
-            "reachability from one predecessor is not proof that the empty tag reaches the \
-             constructor assignment on every path"
-        );
-    }
-
-    #[test]
-    fn partial_duplicate_mismatched_or_extra_cleanup_rejects() {
-        let mut partial = blocks();
-        partial[1].instructions.pop();
-        assert!(
-            !proves(&partial),
-            "a partial carrier cleanup must not grant a forwarding exemption"
-        );
-
-        let mut duplicate = blocks();
-        duplicate[1]
-            .instructions
-            .push(field_drop(2, 1, ResolvedTy::String));
-        assert!(
-            !proves(&duplicate),
-            "a duplicate carrier field cleanup must fail closed"
-        );
-
-        let mut wrong_address_kind = blocks();
-        let Instr::FieldDropInPlace { field, .. } = &mut wrong_address_kind[1].instructions[0]
-        else {
-            panic!("fixture cleanup must remain a field drop");
-        };
-        *field = crate::model::FieldAddr::Record(FieldOffset(0));
-        assert!(
-            !proves(&wrong_address_kind),
-            "a tuple carrier cleanup must use tuple field addresses"
-        );
-
-        let mut wrong_declared_type = blocks();
-        let Instr::FieldDropInPlace { ty, .. } = &mut wrong_declared_type[1].instructions[0] else {
-            panic!("fixture cleanup must remain a field drop");
-        };
-        *ty = ResolvedTy::I64;
-        assert!(
-            !proves(&wrong_declared_type),
-            "a cleanup declared type must exactly match its carrier field"
-        );
-
-        let mut extra = blocks();
-        extra[1]
-            .instructions
-            .push(field_drop(2, 2, ResolvedTy::String));
-        assert!(
-            !proves(&extra),
-            "an extra carrier cleanup field must fail closed"
-        );
-    }
-
-    #[test]
-    fn record_carrier_cleanup_uses_declared_order_and_leaf_contract() {
-        let mut cfg = blocks();
-        cfg[1].instructions = vec![
-            Instr::RecordFieldDrop {
-                record: Place::Local(2),
-                field_offset: FieldOffset(0),
-                ty: ResolvedTy::String,
-                drop_fn: crate::model::DropFnSpec::Release("hew_string_drop"),
-            },
-            Instr::FieldDropInPlace {
-                base: Place::Local(2),
-                field: crate::model::FieldAddr::Record(FieldOffset(1)),
-                ty: ResolvedTy::String,
-            },
-        ];
-        let record_ty = ResolvedTy::named_user("Carrier", vec![]);
-        let local_tys = vec![
-            ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
-            ResolvedTy::String,
-            record_ty.clone(),
-            record_ty,
-        ];
-        let record_field_orders = [(
-            "Carrier".to_string(),
-            vec![
-                ("first".to_string(), ResolvedTy::String),
-                ("second".to_string(), ResolvedTy::String),
-            ],
-        )]
-        .into_iter()
-        .collect();
-        assert!(
-            proves_with(&cfg, &local_tys, &record_field_orders),
-            "a record carrier must clean every declared heap-owning field exactly once"
-        );
-
-        let Instr::RecordFieldDrop { drop_fn, .. } = &mut cfg[1].instructions[0] else {
-            panic!("fixture cleanup must remain a RecordFieldDrop");
-        };
-        *drop_fn = crate::model::DropFnSpec::Release("hew_bytes_drop");
-        assert!(
-            !proves_with(&cfg, &local_tys, &record_field_orders),
-            "RecordFieldDrop must retain its Bytes leaf release-contract validation"
-        );
-    }
-
-    #[test]
-    fn record_field_drop_contract_requires_an_exact_leaf_symbol() {
-        let release = |symbol| crate::model::DropFnSpec::Release(symbol);
-        let vec_string =
-            ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::String]);
-
-        assert!(record_field_drop_contract_is_valid(
-            &ResolvedTy::String,
-            &release("hew_string_drop"),
-            &HashMap::new(),
-            &[],
-        ));
-        assert!(record_field_drop_contract_is_valid(
-            &ResolvedTy::Bytes,
-            &release("hew_bytes_drop"),
-            &HashMap::new(),
-            &[],
-        ));
-        assert!(!record_field_drop_contract_is_valid(
-            &ResolvedTy::String,
-            &release("hew_hashmap_free_layout"),
-            &HashMap::new(),
-            &[],
-        ));
-        assert!(!record_field_drop_contract_is_valid(
-            &ResolvedTy::String,
-            &release("hew_vec_free"),
-            &HashMap::new(),
-            &[],
-        ));
-        assert!(!record_field_drop_contract_is_valid(
-            &vec_string,
-            &release("hew_string_drop"),
-            &HashMap::new(),
-            &[],
-        ));
-        assert!(record_field_drop_contract_is_valid(
-            &vec_string,
-            &release("hew_vec_free"),
-            &HashMap::new(),
-            &[],
-        ));
-        assert!(!record_field_drop_contract_is_valid(
-            &ResolvedTy::Tuple(vec![ResolvedTy::String]),
-            &release("hew_string_drop"),
-            &HashMap::new(),
-            &[],
-        ));
-    }
-
-    #[test]
-    fn carrier_third_write_rejects() {
-        let mut cfg = blocks();
-        cfg[2].instructions.push(Instr::ConstI64 {
-            dest: Place::Local(2),
-            value: 0,
-        });
-        assert!(!proves(&cfg), "a third carrier definition must fail closed");
-    }
-
-    #[test]
-    fn final_owner_second_write_rejects() {
-        let mut cfg = blocks();
-        cfg[2].instructions.push(Instr::ConstI64 {
-            dest: Place::Local(3),
-            value: 0,
-        });
-        assert!(!proves(&cfg), "the final owner must be uniquely written");
-    }
-
-    #[test]
-    fn two_forward_destinations_reject() {
-        let mut cfg = blocks();
-        cfg[2].instructions.push(Instr::Move {
-            dest: Place::Local(4),
-            src: Place::Local(2),
-        });
-        assert!(!proves(&cfg), "a second carrier forward must fail closed");
-    }
-
-    #[test]
-    fn extra_cleanup_or_join_predecessor_rejects() {
-        let mut cleanup_pred = blocks();
-        cleanup_pred.push(BasicBlock {
-            id: 3,
-            statements: vec![],
-            instructions: vec![],
-            terminator: Terminator::Goto { target: 1 },
-        });
-        assert!(
-            !proves(&cleanup_pred),
-            "cleanup must have only the neutralize predecessor"
-        );
-
-        let mut join_pred = blocks();
-        join_pred.push(BasicBlock {
-            id: 3,
-            statements: vec![],
-            instructions: vec![],
-            terminator: Terminator::Goto { target: 2 },
-        });
-        assert!(
-            !proves(&join_pred),
-            "join must have only the neutralize and cleanup predecessors"
-        );
-    }
-
-    #[test]
-    fn cleanup_carrier_read_foreign_drop_or_unrecorded_access_rejects() {
-        let mut carrier_read = blocks();
-        carrier_read[1].instructions.push(Instr::IntAdd {
-            dest: Place::Local(8),
-            lhs: Place::Local(2),
-            rhs: Place::Local(9),
-        });
-        assert!(
-            !proves(&carrier_read),
-            "a cleanup carrier read outside FieldDropInPlace must fail closed"
-        );
-
-        let mut foreign_drop = blocks();
-        foreign_drop[1]
-            .instructions
-            .push(field_drop(8, 1, ResolvedTy::String));
-        assert!(
-            !proves(&foreign_drop),
-            "a cleanup drop through a foreign base must fail closed"
-        );
-
-        let mut cleanup_move = blocks();
-        cleanup_move[1].instructions.push(Instr::Move {
-            dest: Place::Local(8),
-            src: Place::Local(2),
-        });
-        assert!(
-            !proves(&cleanup_move),
-            "an unrecorded cleanup carrier move must fail closed"
-        );
-    }
-
-    #[test]
-    fn root_path_mismatch_or_multiply_defined_seed_rejects() {
-        let mut path_mismatch = blocks();
-        let Instr::AggregateProjectionNeutralize { fields, .. } =
-            &mut path_mismatch[0].instructions[2]
-        else {
-            panic!("fixture neutralize must remain at its recorded site");
-        };
-        *fields = vec![1];
-        assert!(
-            !proves(&path_mismatch),
-            "the neutralize path must exactly corroborate the TupleFieldLoad chain"
-        );
-
-        let mut multiple_seed_defs = blocks();
-        multiple_seed_defs[2].instructions.push(Instr::ConstI64 {
-            dest: Place::Local(1),
-            value: 0,
-        });
-        assert!(
-            !proves(&multiple_seed_defs),
-            "a multiply-defined projection seed must fail closed"
-        );
-    }
-
-    fn nested_blocks() -> Vec<BasicBlock> {
-        vec![
-            BasicBlock {
-                id: 0,
-                statements: vec![],
-                instructions: vec![
-                    Instr::TupleConstruct {
-                        elements: vec![],
-                        dest: Place::Local(2),
-                    },
-                    Instr::TupleFieldLoad {
-                        tuple: Place::Local(0),
-                        field_index: 0,
-                        dest: Place::Local(1),
-                    },
-                    Instr::TupleFieldLoad {
-                        tuple: Place::Local(1),
-                        field_index: 1,
-                        dest: Place::Local(3),
-                    },
-                    Instr::AggregateProjectionNeutralize {
-                        root: Place::Local(0),
-                        fields: vec![0, 1],
-                        transferee: Place::Local(3),
-                    },
-                ],
-                terminator: Terminator::Branch {
-                    cond: Place::Local(9),
-                    then_target: 1,
-                    else_target: 2,
-                },
-            },
-            BasicBlock {
-                id: 1,
-                statements: vec![],
-                instructions: vec![
-                    field_drop(2, 0, ResolvedTy::String),
-                    field_drop(2, 1, ResolvedTy::String),
-                ],
-                terminator: Terminator::Goto { target: 2 },
-            },
-            BasicBlock {
-                id: 2,
-                statements: vec![],
-                instructions: vec![
-                    Instr::Move {
-                        dest: Place::Local(2),
-                        src: Place::Local(3),
-                    },
-                    Instr::Move {
-                        dest: Place::Local(5),
-                        src: Place::Local(2),
-                    },
-                ],
-                terminator: Terminator::Return,
-            },
-        ]
-    }
-
-    fn nested_proves(blocks: &[BasicBlock]) -> bool {
-        let inner = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::String]);
-        let root = ResolvedTy::Tuple(vec![inner.clone(), ResolvedTy::I64]);
-        derive_tuple_projection_forward_transfers(
-            blocks,
-            &HashMap::new(),
-            &[(0, 0)].into_iter().collect(),
-            &[
-                root,
-                inner.clone(),
-                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::String]),
-                ResolvedTy::String,
-                inner,
-                ResolvedTy::String,
-            ],
-            &HashMap::new(),
-            &[],
-        )
-        .owner_exempt_roots
-        .get(&5)
-        .is_some_and(|roots| roots.contains(&0))
-    }
-
-    #[test]
-    fn clean_two_hop_projection_chain_is_proven() {
-        assert!(
-            nested_proves(&nested_blocks()),
-            "a unique, in-order root-to-intermediate-to-seed chain must earn its scoped proof"
-        );
-    }
-
-    #[test]
-    fn out_of_order_or_overwritten_nested_projection_chain_rejects() {
-        let mut out_of_order = nested_blocks();
-        out_of_order[0].instructions.swap(1, 2);
-        assert!(
-            !nested_proves(&out_of_order),
-            "nested projection definitions must occur strictly root-to-leaf before neutralization"
-        );
-
-        let mut overwritten = nested_blocks();
-        let matching_root_projection = overwritten[0].instructions.remove(1);
-        overwritten[0].instructions.insert(
-            1,
-            Instr::TupleFieldLoad {
-                tuple: Place::Local(4),
-                field_index: 0,
-                dest: Place::Local(1),
-            },
-        );
-        overwritten[0]
-            .instructions
-            .insert(3, matching_root_projection);
-        let type_classes = hew_hir::TypeClassTable::new();
-        assert!(
-            crate::dataflow::analyze(&overwritten, &type_classes, &[])
-                .checks
-                .is_empty(),
-            "the adversarial chain must be accepted by the checked-MIR dataflow authority"
-        );
-        assert!(
-            !nested_proves(&overwritten),
-            "a foreign intermediate load used to produce the seed, then overwritten by the \
-             matching root projection, must not earn the forwarding exemption"
-        );
-    }
-
-    #[test]
-    fn cfg_cycle_suspend_or_backedge_rejects() {
-        let mut cycle = blocks();
-        cycle[2].terminator = Terminator::Goto { target: 0 };
-        assert!(!proves(&cycle), "a proof-region CFG cycle must fail closed");
-
-        let mut suspend = blocks();
-        suspend.push(BasicBlock {
-            id: 3,
-            statements: vec![],
-            instructions: vec![],
-            terminator: Terminator::Suspend {
-                resume: 3,
-                cleanup: 3,
-                is_final: false,
-            },
-        });
-        assert!(
-            !proves(&suspend),
-            "an unclassified suspend carrier must fail closed"
-        );
-
-        let mut backedge = blocks();
-        backedge[2].terminator = Terminator::Goto { target: 3 };
-        backedge.push(BasicBlock {
-            id: 3,
-            statements: vec![],
-            instructions: vec![],
-            terminator: Terminator::Goto { target: 1 },
-        });
-        assert!(
-            !proves(&backedge),
-            "a join backedge into the proof region must fail closed"
-        );
-    }
-
-    #[test]
-    fn ordinary_unique_same_block_forwarding_remains_admitted() {
-        let binding = BindingId(1);
-        let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]);
-        let allowed = derive_tuple_composite_drop_allowed(
-            &[BasicBlock {
-                id: 0,
-                statements: vec![],
-                instructions: vec![
-                    Instr::TupleFieldLoad {
-                        tuple: Place::Local(0),
-                        field_index: 0,
-                        dest: Place::Local(1),
-                    },
-                    Instr::AggregateProjectionNeutralize {
-                        root: Place::Local(0),
-                        fields: vec![0],
-                        transferee: Place::Local(1),
-                    },
-                    Instr::Move {
-                        dest: Place::Local(2),
-                        src: Place::Local(1),
-                    },
-                ],
-                terminator: Terminator::Return,
-            }],
-            &HashMap::new(),
-            &[(binding, "pair".to_string(), tuple_ty.clone())],
-            &[(binding, Place::Local(0))].into_iter().collect(),
-            &[tuple_ty, ResolvedTy::String, ResolvedTy::String],
-            &HashMap::new(),
-            &[],
-            &[],
-            &HashMap::new(),
-        );
-        assert!(
-            allowed.contains(&binding),
-            "the cross-block proof must not change ordinary same-block forwarding"
-        );
-    }
-}
+mod enum_composite_field_drop_exemption;
 #[cfg(test)]
-mod enum_composite_field_drop_exemption {
-    //! Pins for the enum composite prover's `FieldDropInPlace` handling: the
-    //! blanket-scan exemption (the op is an interior discharge, not a payload
-    //! READ into an owning sink) paired with the DIRECT exclusion rule (a
-    //! base that is an alias member or a payload binder frees payload leaves
-    //! through a byte-alias of the composite's storage, so the composite must
-    //! be excluded — its `EnumInPlace` walk would re-free them; the
-    //! empirically reproduced two-step nested destructure `match opt {
-    //! Some(row) => match row { Row { a, b: _ } => … } }` aborted under
-    //! Guard-Malloc while the composite stayed admitted). The differential
-    //! control proves a genuine owning-sink read of the same binder still
-    //! excludes the composite.
-    use super::*;
-
-    fn opt_ty() -> ResolvedTy {
-        ResolvedTy::named_user("Opt", vec![])
-    }
-
-    fn row_ty() -> ResolvedTy {
-        ResolvedTy::named_user("Row", vec![])
-    }
-
-    fn derive(instrs: Vec<Instr>) -> (BindingId, HashSet<BindingId>) {
-        let b = BindingId(1);
-        let owned = vec![(b, "o".to_string(), opt_ty())];
-        let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
-        binding_locals.insert(b, Place::Local(0));
-        // local 0: the Opt composite; local 1: the Row payload binder;
-        // local 2: a general-storage sink for the differential control.
-        let local_tys = vec![
-            opt_ty(),
-            row_ty(),
-            ResolvedTy::Tuple(vec![row_ty()]),
-            ResolvedTy::String,
-            ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::String]),
-        ];
-        let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
-        record_field_orders.insert(
-            "Row".to_string(),
-            vec![
-                ("inner".to_string(), ResolvedTy::String),
-                ("tag".to_string(), ResolvedTy::String),
-                (
-                    "values".to_string(),
-                    ResolvedTy::named_builtin(
-                        "Vec",
-                        hew_types::BuiltinType::Vec,
-                        vec![ResolvedTy::String],
-                    ),
-                ),
-            ],
-        );
-        let enum_layouts = vec![crate::model::EnumLayout {
-            name: "Opt".to_string(),
-            tag_width: 1,
-            variants: vec![
-                crate::model::MachineVariantLayout {
-                    name: "Some".to_string(),
-                    field_tys: vec![row_ty()],
-                    field_names: vec![],
-                },
-                crate::model::MachineVariantLayout {
-                    name: "None".to_string(),
-                    field_tys: vec![],
-                    field_names: vec![],
-                },
-            ],
-            is_indirect: false,
-        }];
-        let allowed = derive_enum_composite_drop_allowed(
-            &[BasicBlock {
-                id: 0,
-                statements: vec![],
-                instructions: instrs,
-                terminator: Terminator::Return,
-            }],
-            &HashMap::new(),
-            &owned,
-            &binding_locals,
-            &HashMap::new(),
-            &HashMap::new(),
-            &local_tys,
-            &record_field_orders,
-            &enum_layouts,
-            &HashMap::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-            &crate::return_provenance::ExternContractTable::default(),
-        );
-        (b, allowed)
-    }
-
-    /// `Some(r)` destructure: the payload binder receives the interior
-    /// projection of the composite.
-    fn payload_destructure() -> Instr {
-        Instr::Move {
-            dest: Place::Local(1),
-            src: Place::EnumVariant {
-                local: 0,
-                variant_idx: 0,
-                field_idx: 0,
-            },
-        }
-    }
-
-    /// A `FieldDropInPlace` discharging one skipped field of the payload
-    /// binder frees payload leaves through the binder's byte-alias of the
-    /// composite's storage — the composite must be EXCLUDED, or its
-    /// `EnumInPlace` walk re-frees the discharged field (the reproduced
-    /// nested-destructure double-free: Guard-Malloc SIGSEGV on the second
-    /// iteration while the composite stayed admitted). Exclusion leaks the
-    /// payload remainder instead — the fail-closed direction. This is the
-    /// direct rule's pin; the blanket-scan exemption alone left the
-    /// composite admitted.
-    #[test]
-    fn field_drop_on_payload_binder_excludes_composite() {
-        let (b, allowed) = derive(vec![
-            payload_destructure(),
-            Instr::FieldDropInPlace {
-                base: Place::Local(1),
-                field: crate::model::FieldAddr::Record(FieldOffset(1)),
-                ty: ResolvedTy::String,
-            },
-        ]);
-        assert!(
-            !allowed.contains(&b),
-            "a FieldDropInPlace against the payload binder discharged payload \
-             leaves the composite's EnumInPlace walk would re-free; the \
-             composite must be excluded (leak-not-double-free); got {allowed:?}"
-        );
-    }
-
-    /// Differential control: a genuine owning-sink read of the same payload
-    /// binder (an aggregate construction) still excludes the composite —
-    /// the exemption admits exactly the interior discharge op, nothing wider.
-    #[test]
-    fn owning_sink_read_of_payload_binder_still_excludes_composite() {
-        let (b, allowed) = derive(vec![
-            payload_destructure(),
-            Instr::TupleConstruct {
-                elements: vec![Place::Local(1)],
-                dest: Place::Local(2),
-            },
-        ]);
-        assert!(
-            !allowed.contains(&b),
-            "a payload binder read into an owning sink escaped the composite; \
-             it must be excluded (fail-closed); got {allowed:?}"
-        );
-    }
-
-    #[test]
-    fn retained_string_field_read_stays_admitted_but_vec_and_field_drop_do_not() {
-        let (b, allowed) = derive(vec![
-            payload_destructure(),
-            Instr::RecordFieldLoad {
-                record: Place::Local(1),
-                field_offset: FieldOffset(0),
-                dest: Place::Local(3),
-            },
-            Instr::Move {
-                dest: Place::ReturnSlot,
-                src: Place::Local(3),
-            },
-        ]);
-        assert!(
-            allowed.contains(&b),
-            "a retained cloned string field read must not exclude the enum shell; got {allowed:?}"
-        );
-
-        let (b, allowed) = derive(vec![
-            payload_destructure(),
-            Instr::RecordFieldLoad {
-                record: Place::Local(1),
-                field_offset: FieldOffset(2),
-                dest: Place::Local(4),
-            },
-            Instr::Move {
-                dest: Place::ReturnSlot,
-                src: Place::Local(4),
-            },
-        ]);
-        assert!(
-            !allowed.contains(&b),
-            "a transferred Vec field read into an owning sink must exclude the enum shell; got \
-             {allowed:?}"
-        );
-
-        let (b, allowed) = derive(vec![
-            payload_destructure(),
-            Instr::FieldDropInPlace {
-                base: Place::Local(1),
-                field: crate::model::FieldAddr::Record(FieldOffset(0)),
-                ty: ResolvedTy::String,
-            },
-        ]);
-        assert!(
-            !allowed.contains(&b),
-            "FieldDropInPlace must continue excluding the enum shell; got {allowed:?}"
-        );
-    }
-
-    #[test]
-    fn retained_string_exemption_does_not_mask_a_reused_payload_generation() {
-        let blocks = vec![BasicBlock {
-            id: 0,
-            statements: vec![],
-            instructions: vec![
-                Instr::RecordFieldLoad {
-                    record: Place::Local(1),
-                    field_offset: FieldOffset(0),
-                    dest: Place::Local(3),
-                },
-                Instr::Move {
-                    dest: Place::Local(3),
-                    src: Place::MachineVariant {
-                        local: 0,
-                        variant_idx: 0,
-                        field_idx: 0,
-                    },
-                },
-            ],
-            terminator: Terminator::Return,
-        }];
-        assert!(
-            !uniquely_defined_retained_string_field_load_aliases(
-                &blocks,
-                &[opt_ty(), row_ty(), ResolvedTy::I64, ResolvedTy::String],
-            )
-            .contains(&3),
-            "a retained field-load generation must not erase payload taint after the local is \
-             reused for an unrelated generation"
-        );
-    }
-}
+mod tuple_projection_forward_transfer_proof;
 #[cfg(test)]
 mod witness_verifier_composite_traversal {
     //! W5.007a fix — the MIR witness-operand verifier must descend EVERY

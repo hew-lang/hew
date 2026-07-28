@@ -341,6 +341,65 @@ pub unsafe extern "C" fn hew_process_spawn(cmd: *const c_char) -> *mut HewProces
     }
 }
 
+/// Report whether `proc` is a live child handle.
+///
+/// [`hew_process_spawn`] and [`hew_process_spawn_argv`] return null when the
+/// launch fails; this predicate is how a caller tells a launched child apart
+/// from a failure before treating the handle as a resource.
+///
+/// # Safety
+///
+/// `proc` must be a valid pointer to a [`HewProcess`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_process_is_valid(proc: *mut HewProcess) -> bool {
+    !proc.is_null()
+}
+
+/// Spawn a command directly (no shell) with an explicit argv vector, without
+/// waiting.
+///
+/// Returns a heap-allocated [`HewProcess`] handle, or null on error with the
+/// failure detail recorded in the runtime's last-error slot.  The caller must
+/// free the handle with [`hew_process_drop`].
+///
+/// # Safety
+///
+/// `cmd` must be a valid NUL-terminated C string, or null.  `argv_vec` must be
+/// null or a valid `Vec<String>`-backed [`HewVec`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_process_spawn_argv(
+    cmd: *const c_char,
+    argv_vec: *mut HewVec,
+) -> *mut HewProcess {
+    // SAFETY: cmd is a caller-provided C string at this ABI boundary.
+    let Some(cmd_str) = (unsafe { cstr_to_str(&cmd, "hew_process_spawn_argv") }) else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: argv_vec is either null or a valid Vec<String>-backed HewVec.
+    let Some(owned_args) = (unsafe { hewvec_string_args(argv_vec, "hew_process_spawn_argv") })
+    else {
+        return std::ptr::null_mut();
+    };
+
+    let mut command = Command::new(cmd_str);
+    command.args(owned_args);
+    match command.spawn() {
+        Ok(child) => {
+            crate::hew_clear_error();
+            Box::into_raw(Box::new(HewProcess {
+                inner: child,
+                reaped: false,
+            }))
+        }
+        Err(error) => {
+            crate::set_last_error(format!(
+                "hew_process_spawn_argv: failed to execute '{cmd_str}': {error}"
+            ));
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Wait for a spawned process to finish.
 ///
 /// Returns the exit code, or `-1` on error.
@@ -378,7 +437,9 @@ pub unsafe extern "C" fn hew_process_wait(proc: *mut HewProcess) -> i32 {
 /// and must not have been freed already. Null is accepted (no-op).
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_drop(p: *mut HewProcess) {
-    cabi_guard!(p.is_null());
+    if p.is_null() {
+        return;
+    }
     // SAFETY: p was allocated with Box::into_raw and has not been freed.
     let mut proc = unsafe { Box::from_raw(p) };
     reap_process_for_drop(&mut proc);
@@ -476,7 +537,9 @@ pub unsafe extern "C" fn hew_process_result_stderr(r: *const HewProcessResult) -
 /// and must not have been freed already. Null is accepted (no-op).
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_result_free(r: *mut HewProcessResult) {
-    cabi_guard!(r.is_null());
+    if r.is_null() {
+        return;
+    }
     // SAFETY: r was allocated with Box::into_raw and has not been freed.
     let result = unsafe { Box::from_raw(r) };
     if !result.stdout.is_null() {
@@ -709,6 +772,53 @@ mod tests {
         }
     }
 
+    // #16: a failed launch produced a null handle that the Hew `Child`
+    // resource wrapped and presented as a live child. `hew_process_is_valid`
+    // is the authority that keeps a failed launch out of the Ok path.
+    #[test]
+    fn spawn_argv_missing_executable_is_invalid_with_detail() {
+        let cmd = CString::new("hew-process-executable-that-does-not-exist").unwrap();
+        // SAFETY: hew_vec_new_str allocates a valid empty Vec<String>.
+        let argv = unsafe { crate::vec::hew_vec_new_str() };
+        // SAFETY: cmd and argv are valid handles for the C ABI.
+        let proc = unsafe { hew_process_spawn_argv(cmd.as_ptr(), argv) };
+        assert!(proc.is_null());
+        // SAFETY: null is explicitly allowed by hew_process_is_valid.
+        assert!(!unsafe { hew_process_is_valid(proc) });
+        // SAFETY: last error is set by hew_process_spawn_argv on this thread.
+        unsafe {
+            let err = read_last_error();
+            assert!(
+                err.contains("hew-process-executable-that-does-not-exist")
+                    && err.contains("failed to execute"),
+                "unexpected last error: {err}"
+            );
+            crate::vec::hew_vec_free(argv);
+            crate::hew_clear_error();
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawn_argv_launches_and_waits() {
+        let cmd = CString::new("echo").unwrap();
+        let arg = CString::new("spawned-argv").unwrap();
+        // SAFETY: hew_vec_new_str allocates a valid Vec<String> handle.
+        let argv = unsafe { crate::vec::hew_vec_new_str() };
+        // SAFETY: argv is a valid string vec and arg is a valid C string.
+        unsafe { crate::vec::hew_vec_push_str(argv, arg.as_ptr()) };
+        // SAFETY: cmd and argv are valid handles for the C ABI.
+        let proc = unsafe { hew_process_spawn_argv(cmd.as_ptr(), argv) };
+        assert!(!proc.is_null());
+        // SAFETY: proc is a live HewProcess and argv must be released afterwards.
+        unsafe {
+            assert!(hew_process_is_valid(proc));
+            assert_eq!(hew_process_wait(proc), 0);
+            hew_process_free(proc);
+            crate::vec::hew_vec_free(argv);
+        }
+    }
+
     #[test]
     fn null_handling() {
         // SAFETY: null pointers are explicitly handled by all functions.
@@ -717,11 +827,30 @@ mod tests {
             assert!(hew_process_run_args(std::ptr::null(), std::ptr::null(), 0).is_null());
             assert!(hew_process_run_argv(std::ptr::null(), std::ptr::null_mut()).is_null());
             assert!(hew_process_spawn(std::ptr::null()).is_null());
+            assert!(hew_process_spawn_argv(std::ptr::null(), std::ptr::null_mut()).is_null());
+            assert!(!hew_process_is_valid(std::ptr::null_mut()));
             assert!(!hew_process_result_is_valid(std::ptr::null()));
             assert_eq!(hew_process_wait(std::ptr::null_mut()), -1);
             assert_eq!(hew_process_kill(std::ptr::null_mut()), -1);
             hew_process_result_free(std::ptr::null_mut());
             hew_process_free(std::ptr::null_mut());
         }
+    }
+
+    #[test]
+    fn null_release_is_a_side_effect_free_noop() {
+        crate::set_last_error("sentinel process error".to_owned());
+
+        // SAFETY: null is explicitly accepted by all process release functions.
+        unsafe {
+            hew_process_result_free(std::ptr::null_mut());
+            assert_eq!(read_last_error(), "sentinel process error");
+            hew_process_drop(std::ptr::null_mut());
+            assert_eq!(read_last_error(), "sentinel process error");
+            hew_process_free(std::ptr::null_mut());
+            assert_eq!(read_last_error(), "sentinel process error");
+        }
+
+        crate::hew_clear_error();
     }
 }

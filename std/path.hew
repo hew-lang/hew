@@ -32,6 +32,23 @@ pub type GlobResult {
     handle: GlobResultHandle;
 }
 
+/// Errors produced by `std::path` glob expansion and indexing.
+pub enum PathError {
+    /// The glob walk did not complete — an unreadable directory, an
+    /// allocation failure, or a platform with no implementation.
+    GlobFailed(string);
+    /// A match index was negative or at/past the match count.
+    IndexOutOfRange(string);
+}
+
+/// Return the human-readable detail carried by a `PathError`.
+pub fn path_error_message(err: PathError) -> string {
+    match err {
+        PathError::GlobFailed(message) => message,
+        PathError::IndexOutOfRange(message) => message,
+    }
+}
+
 /// Methods available on a `GlobResult`.
 trait GlobResultMethods {
     /// Return the number of matched paths.
@@ -39,6 +56,10 @@ trait GlobResultMethods {
 
     /// Return the matched path at the given index.
     fn get(self, index: i64) -> string;
+
+    /// Return the matched path at the given index, or `None` when the index
+    /// is outside `0 .. len()`.
+    fn try_get(self, index: i64) -> Option<string>;
 }
 
 impl GlobResultMethods for GlobResult {
@@ -49,11 +70,29 @@ impl GlobResultMethods for GlobResult {
         }
     }
     /// Return the matched path at the given index.
+    ///
+    /// Panics when `index` is outside `0 .. len()`. Use `try_get` to handle an
+    /// out-of-range index without terminating.
     fn get(res: GlobResult, index: i64) -> string {
-        unsafe {
-            hew_glob_get(res.handle, index as i32)
+        match res.try_get(index) {
+            Some(matched) => matched,
+            None => {
+                panic(f"path.GlobResult.get: index {index} out of range for {res.len()} match(es)");
+                ""
+            },
         }
-    } // INTERNAL-ABI: C ABI takes i32 index
+    }
+    /// Return the matched path at the given index, or `None` when out of range.
+    fn try_get(res: GlobResult, index: i64) -> Option<string> {
+        // The range check runs in `i64` so an index above `i32` range is
+        // rejected as out of range rather than wrapping into a valid slot.
+        if index < 0 || index >= res.len() {
+            return None;
+        }
+        unsafe {
+            Some(hew_glob_get(res.handle, index as i32))
+        }
+    } // INTERNAL-ABI: C ABI takes i32 index; the i64 range check above precedes it
 }
 
 impl GlobResult {
@@ -68,6 +107,9 @@ impl GlobResult {
 // ── Module-level functions ────────────────────────────────────────────
 /// Expand a glob pattern and return all matching paths.
 ///
+/// Panics when the expansion cannot complete (for example a matching directory
+/// that cannot be read). Use `try_glob` to handle that without terminating.
+///
 /// # Examples
 ///
 /// ```
@@ -75,7 +117,45 @@ impl GlobResult {
 /// ```
 pub fn glob(pattern: string) -> GlobResult {
     unsafe {
-        GlobResult { handle: hew_glob(pattern) }
+        let handle = hew_glob(pattern);
+        if !hew_glob_is_valid(handle) {
+            // `hew_glob` always transfers one heap-owned result handle, even
+            // when expansion fails.  Copy its error before releasing that
+            // handle: `hew_glob_error` borrows the result while constructing
+            // the Hew-owned string it returns.
+            let detail = hew_glob_error(handle);
+            hew_glob_free(handle);
+            panic(f"path.glob: {detail}");
+        }
+        GlobResult { handle: handle }
+    }
+}
+
+/// Expand a glob pattern, reporting expansion failure separately from a
+/// completed walk that matched nothing.
+///
+/// # Examples
+///
+/// ```
+/// match path.try_glob("src/**/*.hew") {
+///     Ok(files) => println(f"{files.len()} match(es)"),
+///     Err(err) => println(path.path_error_message(err)),
+/// }
+/// ```
+pub fn try_glob(pattern: string) -> Result<GlobResult, PathError> {
+    unsafe {
+        let handle = hew_glob(pattern);
+        if hew_glob_is_valid(handle) {
+            Ok(GlobResult { handle: handle })
+        } else {
+            // Preserve the detail before releasing the invalid handle.  The
+            // success arm transfers that same single owner to `GlobResult`;
+            // the failure arm consumes it here, so neither arm can leak or
+            // double-free it.
+            let detail = hew_glob_error(handle);
+            hew_glob_free(handle);
+            Err(PathError::GlobFailed(detail))
+        }
     }
 }
 
@@ -248,6 +328,8 @@ fn last_dot_pos(s: string) -> i64 {
 // ── FFI bindings (filesystem operations only) ────────────────────────
 extern "C" {
     fn hew_glob(pattern: string) -> GlobResultHandle;
+    fn hew_glob_is_valid(result: GlobResultHandle) -> bool;
+    fn hew_glob_error(result: GlobResultHandle) -> string;
     fn hew_glob_count(result: GlobResultHandle) -> i32;
     fn hew_glob_get(result: GlobResultHandle, index: i32) -> string;
     fn hew_glob_free(result: GlobResultHandle);

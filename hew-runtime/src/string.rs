@@ -1708,6 +1708,27 @@ pub unsafe extern "C" fn hew_unicode_is_alnum(cp: i32) -> bool {
     char::from_u32(cp as u32).is_some_and(char::is_alphanumeric)
 }
 
+/// Test whether the Unicode codepoint `cp` is Unicode punctuation.
+///
+/// "Punctuation" is the Unicode general category group `P*` — `Pc`, `Pd`,
+/// `Ps`, `Pe`, `Pi`, `Pf`, and `Po` — as decided by the pinned Unicode tables
+/// rather than by a hand-maintained range list. Returns `false` for invalid
+/// codepoints (negative, surrogate, or above `U+10FFFF`).
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "negative cp reinterprets as a high u32 value that char::from_u32 rejects — \
+              the sign-loss is the intentional invalid-codepoint guard"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_unicode_is_punct(cp: i32) -> bool {
+    use finl_unicode::categories::CharacterCategories;
+    char::from_u32(cp as u32).is_some_and(CharacterCategories::is_punctuation)
+}
+
 /// Convert the Unicode codepoint `cp` to its uppercase equivalent.
 ///
 /// Returns the first codepoint in the Unicode to-uppercase mapping, which
@@ -2685,6 +2706,64 @@ mod tests {
         assert!(unsafe { hew_unicode_is_alnum(0x31) }); // '1'
                                                         // SAFETY: hew_unicode_is_alnum takes only an i32; no pointers.
         assert!(!unsafe { hew_unicode_is_alnum(0x20) }); // space
+    }
+
+    /// `hew_unicode_is_punct` must answer for the Unicode `P*` category group
+    /// exactly, over every scalar value, not for a hand-maintained subset of
+    /// ranges. The pinned Unicode 17 tables are the authority.
+    #[test]
+    fn unicode_is_punct_matches_every_p_category_scalar() {
+        use finl_unicode::categories::{CharacterCategories, MinorCategory};
+
+        let mut punct_count = 0_u32;
+        let mut categories_seen: Vec<MinorCategory> = Vec::new();
+        for cp in 0..=0x0010_ffff_u32 {
+            let Some(c) = char::from_u32(cp) else {
+                continue;
+            };
+            let minor = c.get_minor_category();
+            let expected = matches!(
+                minor,
+                MinorCategory::Pc
+                    | MinorCategory::Pd
+                    | MinorCategory::Ps
+                    | MinorCategory::Pe
+                    | MinorCategory::Pi
+                    | MinorCategory::Pf
+                    | MinorCategory::Po
+            );
+            // SAFETY: hew_unicode_is_punct takes only an i32; no pointers.
+            let actual = unsafe { hew_unicode_is_punct(cp.cast_signed()) };
+            assert_eq!(
+                actual, expected,
+                "U+{cp:04X} punctuation classification disagrees with the Unicode tables"
+            );
+            if expected {
+                punct_count += 1;
+                if !categories_seen.contains(&minor) {
+                    categories_seen.push(minor);
+                }
+            }
+        }
+        assert_eq!(
+            categories_seen.len(),
+            7,
+            "every P* minor category (Pc, Pd, Ps, Pe, Pi, Pf, Po) must be represented \
+             in the sweep, saw {categories_seen:?}"
+        );
+        assert_eq!(
+            punct_count, 856,
+            "Unicode 17 defines 856 P* scalars; a different count means the pinned tables moved"
+        );
+    }
+
+    #[test]
+    fn unicode_is_punct_refuses_scalars_that_are_not_codepoints() {
+        for cp in [-1_i32, i32::MIN, 0xD800, 0xDFFF, 0x0011_0000, i32::MAX] {
+            // SAFETY: hew_unicode_is_punct takes only an i32; no pointers.
+            let is_punct = unsafe { hew_unicode_is_punct(cp) };
+            assert!(!is_punct, "{cp} is not a Unicode scalar value");
+        }
     }
 
     #[test]

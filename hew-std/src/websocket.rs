@@ -5,10 +5,11 @@
 //! All returned data pointers are allocated with `libc::malloc` so callers can
 //! free them with the corresponding free function.
 
+use crate::bind_addr::normalize_bind_addr;
 use hew_cabi::cabi::{alloc_cstring, free_cstring, malloc_bytes};
 use std::ffi::{c_void, CStr};
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -17,9 +18,11 @@ use parking_lot::Mutex as PlMutex;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 use tungstenite::client::connect_with_config;
+use tungstenite::client::{client_with_config, uri_mode, IntoClientRequest};
 use tungstenite::protocol::{Role, WebSocketConfig};
-use tungstenite::stream::MaybeTlsStream;
+use tungstenite::stream::{MaybeTlsStream, Mode};
 use tungstenite::{Message, WebSocket};
 
 /// Test-only drop counter for the outer `HewWsConn` Box.
@@ -328,8 +331,11 @@ impl HewWsConn {
     }
 
     fn close_handle(&self) {
-        self.inner.closed.store(true, Ordering::Release);
+        let first_close = !self.inner.closed.swap(true, Ordering::AcqRel);
         signal_reader_cancel(&self.inner);
+        if first_close {
+            send_close_frame(&self.inner);
+        }
         shutdown_socket(self.inner.shutdown_stream.as_ref(), Shutdown::Both);
 
         let reader_exited = wait_for_reader_exit_flag(&self.inner, READER_JOIN_WAIT);
@@ -542,6 +548,28 @@ fn send_ws_with_operation_gate(
     with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.send(message))
 }
 
+/// Best-effort WebSocket close handshake before the transport is shut down.
+///
+/// A raw socket shutdown first makes tungstenite's subsequent `close(None)`
+/// incapable of writing the protocol close frame (Windows reports a reset to
+/// the peer particularly reliably). Attached plain connections use the
+/// independent write framer; TLS and unattached connections use the primary
+/// framer. Either path is serialized with all other frame writes.
+fn send_close_frame(inner: &Arc<HewWsConnInner>) {
+    if let Some(write_ws_mutex) = inner.write_ws.as_ref() {
+        let mut guard = pl_lock(write_ws_mutex);
+        if let Some(ws) = guard.as_mut() {
+            let _ =
+                with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.close(None));
+        }
+        return;
+    }
+    let mut guard = pl_lock(&inner.ws);
+    if let Some(ws) = guard.as_mut() {
+        let _ = with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.close(None));
+    }
+}
+
 fn signal_reader_cancel(inner: &Arc<HewWsConnInner>) {
     if let Some(reader) = lock_or_recover(&inner.reader).as_ref() {
         reader.cancel.store(true, Ordering::Release);
@@ -598,10 +626,9 @@ fn drop_ws(inner: &Arc<HewWsConnInner>) {
         drop(pl_lock(write_ws_mutex).take());
     }
     let mut ws = pl_lock(&inner.ws);
-    let Some(mut ws) = ws.take() else {
+    let Some(ws) = ws.take() else {
         return;
     };
-    let _ = ws.close(None);
     drop(ws);
 }
 
@@ -685,29 +712,31 @@ fn spawn_attach_reader(
     on_message_type: i32,
     on_close_type: i32,
     ws_ptr: *mut HewWsConn,
-) {
-    {
-        let reader = lock_or_recover(&conn.inner.reader);
-        if reader.is_some() {
-            eprintln!("[attach] reader already attached for ws={ws_ptr:p}");
-            return;
-        }
+) -> Result<(), String> {
+    // Hold this guard through validation, spawn, and store. Two concurrent
+    // callers must not both observe an empty slot and start competing readers.
+    let mut reader = lock_or_recover(&conn.inner.reader);
+    if reader.is_some() {
+        return Err("websocket.attach: reader already attached".to_owned());
     }
     {
         let mut guard = pl_lock(&conn.inner.ws);
         let Some(ws) = guard.as_mut() else {
-            eprintln!("[attach] connection already closed for ws={ws_ptr:p}");
-            return;
+            return Err("websocket.attach: connection already closed".to_owned());
         };
         if let Err(err) = set_read_timeout(ws, Some(READER_READ_TIMEOUT)) {
-            eprintln!("[attach] failed to set read timeout for ws={ws_ptr:p}: {err}");
-            return;
+            return Err(format!(
+                "websocket.attach: failed to set read timeout for {ws_ptr:p}: {err}"
+            ));
         }
     }
 
-    // SAFETY: `actor` points to a valid ActorRef for the duration of this call;
-    // the reader owns a by-value snapshot after this copy.
-    let actor_ref = Box::new(unsafe { std::ptr::read(actor.cast::<HewActorRef>()) });
+    // Hew `LocalPid<T>` crosses an extern C call as the bare local actor
+    // pointer. Build the stable by-value actor-ref snapshot the reader owns.
+    let actor_ref = Box::new(HewActorRef {
+        kind: ACTOR_REF_LOCAL,
+        data: HewActorRefData { local: actor },
+    });
     let cancel = Arc::new(AtomicBool::new(false));
     let exited = Arc::new(AtomicBool::new(false));
     let inner = Arc::clone(&conn.inner);
@@ -787,12 +816,12 @@ fn spawn_attach_reader(
         reader_exited.store(true, Ordering::Release);
     });
 
-    let mut reader = lock_or_recover(&conn.inner.reader);
     *reader = Some(ReaderControl {
         cancel,
         exited,
         join: Some(join),
     });
+    Ok(())
 }
 
 /// Build a heap-allocated [`HewWsMessage`] from a type tag and byte slice.
@@ -865,25 +894,144 @@ fn recv_message(inner: &Arc<HewWsConnInner>) -> (HewWsRecvResult, *mut HewWsMess
 #[no_mangle]
 pub unsafe extern "C" fn hew_ws_connect(url: *const c_char) -> *mut HewWsConn {
     if url.is_null() {
+        set_ws_last_error(-1, "websocket.connect: url is null".to_owned());
         return std::ptr::null_mut();
     }
     // SAFETY: `url` is a valid NUL-terminated C string per caller contract.
     let Ok(url_str) = unsafe { CStr::from_ptr(url) }.to_str() else {
+        set_ws_last_error(-1, "websocket.connect: url is not valid UTF-8".to_owned());
         return std::ptr::null_mut();
     };
 
     let config = match websocket_config_from_env() {
         Ok(config) => config,
         Err(err) => {
-            eprintln!("[connect] invalid websocket config: {err}");
+            set_ws_last_error(-1, format!("websocket.connect: invalid config: {err}"));
             return std::ptr::null_mut();
         }
     };
 
-    match connect_with_config(url_str, Some(config), 3) {
-        Ok((ws, _response)) => Box::into_raw(Box::new(HewWsConn::new(ws, Role::Client))),
-        Err(_) => std::ptr::null_mut(),
+    match connect_preserving_errno(url_str, config, 3) {
+        Ok(ws) => {
+            clear_ws_last_error();
+            Box::into_raw(Box::new(HewWsConn::new(ws, Role::Client)))
+        }
+        Err(err) => {
+            set_ws_last_error(ws_errno_of(&err), format!("websocket.connect: {err}"));
+            std::ptr::null_mut()
+        }
     }
+}
+
+/// Connect once per resolved address while retaining the final socket errno.
+///
+/// `tungstenite::connect_with_config` discards every `TcpStream::connect`
+/// error and returns only `UrlError::UnableToConnect`. Reconnecting merely to
+/// recover an errno creates a TOCTOU race and can establish an unwanted second
+/// transport. This mirrors tungstenite's blocking client flow, but carries the
+/// actual error from the one authoritative connect attempt into Hew's typed
+/// error channel.
+fn connect_preserving_errno(
+    url_str: &str,
+    config: WebSocketConfig,
+    max_redirects: u8,
+) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, tungstenite::Error> {
+    let mut current = url_str.to_owned();
+
+    for attempt in 0..=max_redirects {
+        let request = current.as_str().into_client_request()?;
+        let uri = request.uri();
+        let mode = uri_mode(uri)?;
+        if matches!(mode, Mode::Tls) {
+            // hew-std currently builds tungstenite without a TLS connector,
+            // matching connect_with_config's existing fail-closed behaviour.
+            return Err(tungstenite::Error::Url(
+                tungstenite::error::UrlError::TlsFeatureNotEnabled,
+            ));
+        }
+        let host = uri
+            .host()
+            .ok_or(tungstenite::Error::Url(
+                tungstenite::error::UrlError::NoHostName,
+            ))?
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let port = uri.port_u16().unwrap_or(80);
+
+        let mut last_connect_error = None;
+        let mut connected = None;
+        for addr in (host, port).to_socket_addrs()? {
+            match TcpStream::connect(addr) {
+                Ok(stream) => {
+                    connected = Some(stream);
+                    break;
+                }
+                Err(err) => last_connect_error = Some(err),
+            }
+        }
+        let Some(stream) = connected else {
+            return Err(match last_connect_error {
+                Some(err) => tungstenite::Error::Io(err),
+                None => {
+                    tungstenite::Error::Url(tungstenite::error::UrlError::UnableToConnect(current))
+                }
+            });
+        };
+        stream.set_nodelay(true)?;
+
+        let handshake = client_with_config(request, MaybeTlsStream::Plain(stream), Some(config))
+            .map_err(|err| match err {
+                tungstenite::HandshakeError::Failure(failure) => failure,
+                tungstenite::HandshakeError::Interrupted(_) => {
+                    panic!("blocking WebSocket handshake unexpectedly interrupted")
+                }
+            });
+
+        match handshake {
+            Ok((ws, _response)) => return Ok(ws),
+            Err(tungstenite::Error::Http(response))
+                if response.status().is_redirection() && attempt < max_redirects =>
+            {
+                if let Some(location) = response.headers().get("Location") {
+                    location.to_str()?.clone_into(&mut current);
+                    continue;
+                }
+                return Err(tungstenite::Error::Http(response));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    unreachable!("WebSocket redirect loop always returns or continues")
+}
+
+/// Recover the OS errno a tungstenite error carries, or 0 when it is a
+/// protocol/handshake failure with no syscall behind it.
+fn ws_errno_of(err: &tungstenite::Error) -> i64 {
+    match err {
+        tungstenite::Error::Io(io_err) => ws_io_errno(io_err),
+        tungstenite::Error::Url(tungstenite::error::UrlError::UnableToConnect(_)) => 0,
+        tungstenite::Error::Url(_) | tungstenite::Error::HttpFormat(_) => -1,
+        _ => 0,
+    }
+}
+
+/// Classify a WebSocket I/O failure without inventing a platform errno.
+///
+/// A raw errno remains authoritative. `InvalidInput` and `InvalidData` are
+/// pre-syscall grammar failures and use the module's `-1` `InvalidArgument`
+/// sentinel; other errors without a raw errno remain unclassified as zero.
+fn ws_io_errno(err: &io::Error) -> i64 {
+    if let Some(errno) = err.raw_os_error() {
+        return i64::from(errno);
+    }
+    if matches!(
+        err.kind(),
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+    ) {
+        return -1;
+    }
+    0
 }
 
 /// Route an outbound WebSocket message through the write-side socket when available.
@@ -1011,6 +1159,63 @@ pub unsafe extern "C" fn hew_ws_recv(ws: *mut HewWsConn) -> *mut HewWsMessage {
 // because the FFI returns a single pointer. Cleared at every call.
 std::thread_local! {
     static LAST_WS_RECV_TIMED_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn set_ws_last_error(errno: i64, detail: String) {
+    hew_runtime::parse_error_slot::set_error_with_errno(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Websocket,
+        errno,
+        detail,
+    );
+}
+
+fn clear_ws_last_error() {
+    hew_runtime::parse_error_slot::clear_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Websocket,
+    );
+}
+
+/// Return the errno of this actor's most recent failed
+/// `hew_ws_connect` or `hew_ws_server_new`, or 0 when the last call succeeded.
+#[no_mangle]
+pub extern "C" fn hew_ws_last_errno() -> i64 {
+    hew_runtime::parse_error_slot::get_errno(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Websocket,
+    )
+}
+
+/// Return the detail of this actor's most recent failed
+/// `hew_ws_connect` or `hew_ws_server_new`, or the empty string when the last
+/// call succeeded.
+#[no_mangle]
+pub extern "C" fn hew_ws_last_error() -> *mut c_char {
+    let detail = hew_runtime::parse_error_slot::get_error(
+        hew_runtime::parse_error_slot::ErrorSlotKind::Websocket,
+    )
+    .unwrap_or_default();
+    hew_cabi::cabi::str_to_malloc(&detail)
+}
+
+/// Report whether `ws` is backed by a live WebSocket connection.
+///
+/// # Safety
+///
+/// `ws` must be null or a pointer previously returned by [`hew_ws_connect`]
+/// or `hew_ws_server_accept`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_ws_conn_is_valid(ws: *const HewWsConn) -> bool {
+    !ws.is_null()
+}
+
+/// Report whether `server` is backed by a bound listener.
+///
+/// # Safety
+///
+/// `server` must be null or a pointer previously returned by
+/// [`hew_ws_server_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_ws_server_is_valid(server: *const HewWsServer) -> bool {
+    !server.is_null()
 }
 
 fn set_last_ws_recv_timed_out(v: bool) {
@@ -1256,20 +1461,51 @@ pub unsafe extern "C" fn hew_ws_message_free(msg: *mut HewWsMessage) {
 pub unsafe extern "C" fn hew_ws_attach(
     ws: *mut HewWsConn,
     actor: *mut std::ffi::c_void,
-    on_message_type: i32,
-    on_close_type: i32,
-) {
+    on_message_type: i64,
+    on_close_type: i64,
+) -> i32 {
     if ws.is_null() || actor.is_null() {
-        eprintln!(
-            "[attach] null pointer: ws={} actor={}",
-            ws.is_null(),
-            actor.is_null()
+        set_ws_last_error(
+            -1,
+            format!(
+                "websocket.attach: null handle (ws={}, actor={})",
+                ws.is_null(),
+                actor.is_null()
+            ),
         );
-        return;
+        return -1;
     }
+    // The indices cross as `i64` and are range-checked here: narrowing them on
+    // the Hew side would turn `2^32 + 1` into index `1` and attach the reader
+    // to a different message than the caller named.
+    let (Ok(on_message_type), Ok(on_close_type)) =
+        (i32::try_from(on_message_type), i32::try_from(on_close_type))
+    else {
+        set_ws_last_error(
+            -1,
+            format!(
+                "websocket.attach: message-type index out of range \
+                 (on_message_type={on_message_type}, on_close_type={on_close_type})"
+            ),
+        );
+        eprintln!(
+            "[attach] message-type index out of range: on_message_type={on_message_type} \
+             on_close_type={on_close_type}"
+        );
+        return -1;
+    };
     // SAFETY: nulls are rejected above and `ws` remains valid for this call.
     let conn = unsafe { &*ws };
-    spawn_attach_reader(conn, actor, on_message_type, on_close_type, ws);
+    match spawn_attach_reader(conn, actor, on_message_type, on_close_type, ws) {
+        Ok(()) => {
+            clear_ws_last_error();
+            0
+        }
+        Err(detail) => {
+            set_ws_last_error(-1, detail);
+            -1
+        }
+    }
 }
 
 // Import the actor send function from the runtime.
@@ -1378,18 +1614,39 @@ fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
 #[no_mangle]
 pub unsafe extern "C" fn hew_ws_server_new(addr: *const c_char) -> *mut HewWsServer {
     if addr.is_null() {
+        set_ws_last_error(-1, "websocket.listen: address is null".to_owned());
         return std::ptr::null_mut();
     }
     // SAFETY: `addr` is a valid NUL-terminated C string per caller contract.
     let Ok(addr_str) = (unsafe { CStr::from_ptr(addr) }).to_str() else {
+        set_ws_last_error(
+            -1,
+            "websocket.listen: address is not valid UTF-8".to_owned(),
+        );
         return std::ptr::null_mut();
     };
-    match TcpListener::bind(addr_str) {
+    let bind_addr = normalize_bind_addr(addr_str);
+    match TcpListener::bind(bind_addr.as_ref()) {
         Ok(listener) => match HewWsServer::new(listener) {
-            Ok(server) => Box::into_raw(Box::new(server)),
-            Err(_) => std::ptr::null_mut(),
+            Ok(server) => {
+                clear_ws_last_error();
+                Box::into_raw(Box::new(server))
+            }
+            Err(err) => {
+                set_ws_last_error(
+                    ws_io_errno(&err),
+                    format!("websocket.listen: cannot prepare listener on `{addr_str}`: {err}"),
+                );
+                std::ptr::null_mut()
+            }
         },
-        Err(_) => std::ptr::null_mut(),
+        Err(err) => {
+            set_ws_last_error(
+                ws_io_errno(&err),
+                format!("websocket.listen: cannot bind `{addr_str}`"),
+            );
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -1459,7 +1716,8 @@ mod tests {
     )]
 
     use super::*;
-    use hew_runtime::{actor, scheduler, transport};
+    use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
+    use hew_runtime::{actor, transport};
     use std::collections::HashMap;
     #[cfg(unix)]
     use std::os::fd::AsRawFd;
@@ -1473,6 +1731,58 @@ mod tests {
     const TEST_STOP_TYPE: i32 = 101;
     const TEST_CRASH_TYPE: i32 = 102;
     const TEST_SEND_TEXT_TYPE: i32 = 103;
+
+    fn ws_last_error_text() -> String {
+        let ptr = hew_ws_last_error();
+        assert!(!ptr.is_null());
+        // SAFETY: accessor returns a valid header-aware C string.
+        let text = unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: pointer came from hew_ws_last_error.
+        unsafe { hew_cabi::cabi::free_cstring(ptr) };
+        text
+    }
+
+    #[test]
+    fn websocket_error_and_errno_follow_actor_across_worker_threads() {
+        use crate::net_error_slot_test_support::{spawn_error_slot_test_actor, with_actor_context};
+
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+        for _ in 0..3 {
+            let actor = spawn_error_slot_test_actor();
+            assert!(!actor.is_null());
+            let actor_addr = actor as usize;
+            let barrier = Arc::new(Barrier::new(2));
+            let worker_barrier = Arc::clone(&barrier);
+            let worker = std::thread::spawn(move || {
+                worker_barrier.wait();
+                let actor = actor_addr as *mut hew_runtime::actor::HewActor;
+                with_actor_context(actor, || (hew_ws_last_errno(), ws_last_error_text()))
+            });
+
+            with_actor_context(actor, || {
+                // SAFETY: null is the documented invalid-URL path.
+                let conn = unsafe { hew_ws_connect(std::ptr::null()) };
+                assert!(conn.is_null());
+            });
+            barrier.wait();
+            assert_eq!(
+                worker.join().expect("worker should read actor error"),
+                (-1, "websocket.connect: url is null".to_owned())
+            );
+
+            with_actor_context(actor, || {
+                assert_eq!(hew_ws_last_errno(), -1);
+                assert_eq!(ws_last_error_text(), "websocket.connect: url is null");
+            });
+
+            // SAFETY: actor is live and owned by this test.
+            unsafe { actor::hew_actor_stop(actor) };
+            // SAFETY: actor was stopped immediately above and is freed once.
+            assert_eq!(unsafe { actor::hew_actor_free(actor) }, 0);
+        }
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum ActorEvent {
@@ -1618,22 +1928,6 @@ mod tests {
         actor::hew_actor_self_stop();
 
         std::ptr::null_mut()
-    }
-
-    struct RuntimeGuard;
-
-    impl RuntimeGuard {
-        fn new() -> Self {
-            assert_eq!(scheduler::hew_sched_init(), 0);
-            Self
-        }
-    }
-
-    impl Drop for RuntimeGuard {
-        fn drop(&mut self) {
-            scheduler::hew_sched_shutdown();
-            scheduler::hew_runtime_cleanup();
-        }
     }
 
     fn run_in_isolated_test_process_with_env(
@@ -1837,15 +2131,15 @@ mod tests {
             )
         };
         assert!(!actor.is_null(), "test actor should spawn");
-        let mut actor_ref = unsafe { transport::hew_actor_ref_local(actor) };
-        unsafe {
+        let attach_status = unsafe {
             hew_ws_attach(
                 conn,
-                (&raw mut actor_ref).cast(),
-                TEST_MSG_TYPE,
-                TEST_CLOSE_TYPE,
-            );
+                actor.cast(),
+                TEST_MSG_TYPE.into(),
+                TEST_CLOSE_TYPE.into(),
+            )
         };
+        assert_eq!(attach_status, 0, "first attach should succeed");
         (actor, test_id, rx)
     }
 
@@ -1863,11 +2157,137 @@ mod tests {
     }
 
     #[test]
+    fn local_close_writes_protocol_frame_before_transport_shutdown() {
+        let (server, conn, mut peer) = attach_test_conn();
+        set_peer_read_timeout(&mut peer, Duration::from_secs(1));
+
+        // SAFETY: `conn` is the live server-side handle from `attach_test_conn`.
+        unsafe { hew_ws_close(conn) };
+
+        match peer.read() {
+            Ok(Message::Close(_)) => {}
+            Ok(other) => panic!("expected WebSocket close frame, got {other:?}"),
+            Err(err) => panic!("peer observed transport failure instead of close frame: {err}"),
+        }
+
+        // SAFETY: `server` remains live and has not been closed.
+        unsafe { hew_ws_server_close(server) };
+    }
+
+    #[test]
+    fn attach_wrapped_message_type_index_is_refused_not_narrowed() {
+        // `2^32 + 1` narrows to message-type index 1. Attaching under that
+        // index would deliver frames to a different `receive fn` than the
+        // caller named, so the attach is refused and no reader is spawned.
+        let (server, conn, client) = attach_test_conn();
+        let mut actor_slot: usize = 0;
+        let actor_ptr = std::ptr::from_mut(&mut actor_slot).cast::<c_void>();
+        // SAFETY: `conn` is a live connection and `actor_ptr` is a valid slot.
+        let status = unsafe { hew_ws_attach(conn, actor_ptr, 4_294_967_297, 1) };
+
+        assert_eq!(status, -1);
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert_eq!(
+            ws_last_error_text(),
+            "websocket.attach: message-type index out of range \
+             (on_message_type=4294967297, on_close_type=1)"
+        );
+        // SAFETY: `conn` is live for the duration of this borrow.
+        let attached = { lock_or_recover(&unsafe { &*conn }.inner.reader).is_some() };
+        assert!(
+            !attached,
+            "no reader may be attached under a narrowed message-type index"
+        );
+
+        drop(client);
+        // SAFETY: `conn` and `server` were produced by `attach_test_conn`.
+        unsafe { hew_ws_close(conn) };
+        // SAFETY: `server` is live and not yet closed.
+        unsafe { hew_ws_server_close(server) };
+    }
+
+    #[test]
+    fn attach_null_handles_preserve_typed_error_authority() {
+        // SAFETY: null handles exercise the guarded error path.
+        let status = unsafe { hew_ws_attach(std::ptr::null_mut(), std::ptr::null_mut(), 0, 1) };
+
+        assert_eq!(status, -1);
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert_eq!(
+            ws_last_error_text(),
+            "websocket.attach: null handle (ws=true, actor=true)"
+        );
+        assert_eq!(
+            hew_ws_last_errno(),
+            -1,
+            "reading detail must not consume the typed error authority"
+        );
+    }
+
+    #[test]
+    fn second_attach_is_refused_without_replacing_the_live_reader() {
+        run_in_isolated_test_process(
+            "second_attach_is_refused_without_replacing_the_live_reader",
+            "HEW_WS_DOUBLE_ATTACH_ISOLATED",
+            || {
+                let _runtime = NetErrorSlotRuntimeGuard::new();
+                let (server, conn, client) = attach_test_conn();
+                let (actor, test_id, _rx) = spawn_attached_actor(conn);
+                // SAFETY: both handles are live, but the connection already
+                // owns a reader from `spawn_attached_actor`.
+                let status = unsafe {
+                    hew_ws_attach(
+                        conn,
+                        actor.cast(),
+                        TEST_MSG_TYPE.into(),
+                        TEST_CLOSE_TYPE.into(),
+                    )
+                };
+
+                assert_eq!(status, -1);
+                assert_eq!(hew_ws_last_errno(), -1);
+                assert_eq!(
+                    ws_last_error_text(),
+                    "websocket.attach: reader already attached"
+                );
+                // SAFETY: `conn` remains live until teardown below.
+                assert!(
+                    lock_or_recover(&unsafe { &*conn }.inner.reader).is_some(),
+                    "the rejected attach must preserve the original live reader"
+                );
+
+                drop(client);
+                teardown_attached_actor(actor, test_id, conn, server);
+            },
+        );
+    }
+
+    #[test]
     fn connect_returns_null_for_invalid_url() {
-        let url = c"ws://127.0.0.1:1";
-        // SAFETY: url is a valid C string literal.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("claim loopback port");
+        let port = listener.local_addr().expect("read loopback port").port();
+        drop(listener);
+        let url =
+            std::ffi::CString::new(format!("ws://127.0.0.1:{port}/")).expect("URL contains no NUL");
+        // SAFETY: url is a valid C string.
         let conn = unsafe { hew_ws_connect(url.as_ptr()) };
         assert!(conn.is_null(), "expected null for unreachable address");
+        let errno = hew_ws_last_errno();
+        assert!(
+            matches!(errno, 61 | 111 | 10061),
+            "closed loopback port must retain ECONNREFUSED"
+        );
+        let detail = ws_last_error_text();
+        assert!(
+            detail.starts_with("websocket.connect: ")
+                && detail.contains(&format!("os error {errno}")),
+            "the precise OS transport failure must remain observable without \
+             assuming a platform-localized message: {detail:?}"
+        );
+        assert!(
+            matches!(hew_ws_last_errno(), 61 | 111 | 10061),
+            "reading detail must not consume errno"
+        );
     }
 
     #[test]
@@ -2110,6 +2530,26 @@ mod tests {
         // SAFETY: url is a valid C string.
         let conn = unsafe { hew_ws_connect(url.as_ptr()) };
         assert!(conn.is_null(), "non-WebSocket URL should fail");
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert!(
+            ws_last_error_text().contains("URL error: URL scheme not supported"),
+            "unsupported grammar detail must remain observable"
+        );
+        assert_eq!(hew_ws_last_errno(), -1);
+    }
+
+    #[test]
+    fn connect_malformed_url_is_invalid_argument_not_other_zero() {
+        let url = c"not a url";
+        // SAFETY: url is a valid C string.
+        let conn = unsafe { hew_ws_connect(url.as_ptr()) };
+        assert!(conn.is_null(), "malformed URL should fail");
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert_eq!(
+            ws_last_error_text(),
+            "websocket.connect: HTTP format error: invalid uri character"
+        );
+        assert_eq!(hew_ws_last_errno(), -1);
     }
 
     /// connect with an empty string returns null.
@@ -2119,6 +2559,8 @@ mod tests {
         // SAFETY: url is a valid C string.
         let conn = unsafe { hew_ws_connect(url.as_ptr()) };
         assert!(conn.is_null(), "empty URL should fail");
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert!(!ws_last_error_text().is_empty());
     }
 
     // ── Server tests ────────────────────────────────────────────────
@@ -2483,7 +2925,7 @@ mod tests {
             "server_accept_unblocks_when_owner_actor_stops",
             "HEW_WS_ACCEPT_STOP_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
                 assert!(!server.is_null(), "server should bind successfully");
 
@@ -2542,7 +2984,7 @@ mod tests {
             "attached_plain_ping_pong_echoes_payload",
             "HEW_WS_ATTACH_PING_PONG_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, mut client) = attach_test_conn();
                 let (actor, test_id, _rx) = spawn_attached_actor(conn);
                 set_peer_read_timeout(
@@ -2572,7 +3014,7 @@ mod tests {
             "attached_plain_large_send_and_ping_are_serialized",
             "HEW_WS_ATTACH_LARGE_SEND_PING_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, mut client) = attach_test_conn();
                 let (actor, test_id, _rx) = spawn_attached_actor(conn);
                 set_conn_send_buffer(conn, 4096);
@@ -2642,7 +3084,7 @@ mod tests {
             "attached_reader_cancel_after_ping_exits_cleanly",
             "HEW_WS_ATTACH_PING_CANCEL_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 OUTER_CONN_DROPS.store(0, Ordering::Relaxed);
                 let (server, conn, mut client) = attach_test_conn();
                 let inner = unsafe { &*conn }.inner.clone();
@@ -2685,7 +3127,7 @@ mod tests {
             "attach_reader_exits_when_actor_stops",
             "HEW_WS_ATTACH_STOP_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, client) = attach_test_conn();
                 let (actor, test_id, _rx) = spawn_attached_actor(conn);
 
@@ -2712,7 +3154,7 @@ mod tests {
             "attach_reader_exits_when_actor_crashes",
             "HEW_WS_ATTACH_CRASH_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, client) = attach_test_conn();
                 let (actor, test_id, _rx) = spawn_attached_actor(conn);
 
@@ -2739,7 +3181,7 @@ mod tests {
             "attach_reader_exits_when_conn_closes_before_actor_stop",
             "HEW_WS_ATTACH_CONN_DROP_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, client) = attach_test_conn();
                 let (actor, test_id, rx) = spawn_attached_actor(conn);
 
@@ -2771,7 +3213,7 @@ mod tests {
             "attach_reader_exits_when_remote_closes",
             "HEW_WS_ATTACH_REMOTE_CLOSE_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, mut client) = attach_test_conn();
                 let (actor, test_id, rx) = spawn_attached_actor(conn);
 
@@ -2799,7 +3241,7 @@ mod tests {
             "attach_reader_cancel_is_per_connection",
             "HEW_WS_ATTACH_PARALLEL_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server1, conn1, client1) = attach_test_conn();
                 let (server2, conn2, mut client2) = attach_test_conn();
                 let (actor1, test_id1, _rx1) = spawn_attached_actor(conn1);
@@ -2841,6 +3283,20 @@ mod tests {
         // SAFETY: Passing null is explicitly handled by hew_ws_server_new.
         let server = unsafe { hew_ws_server_new(std::ptr::null()) };
         assert!(server.is_null());
+    }
+
+    #[test]
+    fn server_malformed_addr_is_invalid_argument_not_other_zero() {
+        let addr = c"not an address";
+        // SAFETY: addr is a valid C string.
+        let server = unsafe { hew_ws_server_new(addr.as_ptr()) };
+        assert!(server.is_null());
+        assert_eq!(hew_ws_last_errno(), -1);
+        assert_eq!(
+            ws_last_error_text(),
+            "websocket.listen: cannot bind `not an address`"
+        );
+        assert_eq!(hew_ws_last_errno(), -1);
     }
 
     /// Server port with null returns -1.

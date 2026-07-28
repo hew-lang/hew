@@ -2464,9 +2464,15 @@ fn http_respond_three_arg_typechecks() {
         import std::net::http;
 
         fn main() {
-            let server = http.listen(":8080");
-            let req = server.accept();
-            req.respond(200, "text/plain", "Hello, Hew!");
+            match http.listen(":8080") {
+                Ok(server) => {
+                    let req = server.accept();
+                    req.respond(200, "text/plain", "Hello, Hew!");
+                    req.close();
+                    server.close();
+                },
+                Err(_err) => {},
+            }
         }
         "#,
     );
@@ -2487,9 +2493,15 @@ fn http_respond_four_arg_rejected() {
         import std::net::http;
 
         fn main() {
-            let server = http.listen(":8080");
-            let req = server.accept();
-            req.respond(200, "text/plain", 11, "Hello, Hew!");
+            match http.listen(":8080") {
+                Ok(server) => {
+                    let req = server.accept();
+                    req.respond(200, "text/plain", 11, "Hello, Hew!");
+                    req.close();
+                    server.close();
+                },
+                Err(_err) => {},
+            }
         }
         "#,
     );
@@ -2795,7 +2807,7 @@ fn builtin_string_to_int_typechecks_as_int() {
 }
 
 #[test]
-fn process_child_methods_typecheck_and_preserve_rewrite_path() {
+fn process_child_methods_resolve_as_fielded_resource_trait_methods() {
     let output = typecheck_inline(
         r"
         import std::process;
@@ -2812,21 +2824,14 @@ fn process_child_methods_typecheck_and_preserve_rewrite_path() {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
+        !output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_process_wait"
+                if c_symbol == "hew_process_wait" || c_symbol == "hew_process_kill"
         )),
-        "expected process.Child.wait rewrite, got: {:?}",
-        output.method_call_rewrites
-    );
-    assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol == "hew_process_kill"
-        )),
-        "expected process.Child.kill rewrite, got: {:?}",
+        "fielded process.Child methods must execute their source-level trait \
+         bodies (which unwrap ChildHandle) rather than bypass them through \
+         opaque-handle C-symbol rewrites: {:?}",
         output.method_call_rewrites
     );
 }

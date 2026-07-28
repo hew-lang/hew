@@ -1821,9 +1821,11 @@ pub unsafe extern "C" fn hew_tcp_connect_timeout(
 /// `{ptr, offset, len}` struct passed in `rax:rdx`). The triple OWNS a freshly
 /// allocated, refcount-1 buffer holding exactly the bytes read (mirrors
 /// `hew_bytes_from_static`'s construction + ownership). On EOF or error an
-/// empty triple (`null` ptr, len 0) is returned — callers detect disconnect by
-/// checking `.len() == 0`. The Hew drop spine releases the buffer via
-/// `hew_bytes_drop`.
+/// empty triple (`null` ptr, len 0) is returned. The two are distinguished by
+/// the paired error state, not by the returned value: an orderly EOF clears
+/// it, a read failure records the OS errno, and an invalid handle records
+/// `EBADF`. `net.Connection.try_read` consumes that state immediately after
+/// this call. The Hew drop spine releases the buffer via `hew_bytes_drop`.
 #[no_mangle]
 pub extern "C" fn hew_tcp_read(conn: c_int) -> crate::bytes::BytesTriple {
     let empty = crate::bytes::BytesTriple {
@@ -1832,16 +1834,31 @@ pub extern "C" fn hew_tcp_read(conn: c_int) -> crate::bytes::BytesTriple {
         len: 0,
     };
     let Some(mut stream) = tcp_clone_stream(conn) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_read: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
         return empty;
     };
     let mut buf = [0u8; 8192];
     match stream.read(&mut buf) {
-        Ok(0) => empty,
+        // An orderly EOF is a valid empty read, so the paired error state is
+        // cleared: a stale errno from an earlier operation must never be read
+        // back as this read's failure.
+        Ok(0) => {
+            clear_tcp_error_state();
+            empty
+        }
         Err(e) => {
             record_tcp_error_kind(e.kind());
+            hew_cabi::sink::set_last_error_with_errno(
+                format!("hew_tcp_read: {e}"),
+                e.raw_os_error().unwrap_or(0),
+            );
             empty
         }
         Ok(n) => {
+            clear_tcp_error_state();
             tcp_counters()
                 .bytes_read
                 .fetch_add(n as u64, Ordering::Relaxed);
@@ -1855,6 +1872,19 @@ pub extern "C" fn hew_tcp_read(conn: c_int) -> crate::bytes::BytesTriple {
             // owns (identical construction/ownership to `hew_bytes_from_str`).
             unsafe { crate::bytes::hew_bytes_from_static(buf.as_ptr(), len) }
         }
+    }
+}
+
+/// Discard any error message and errno left in the shared thread-local.
+///
+/// Both getters clear as they read, so reading them is the clear.
+fn clear_tcp_error_state() {
+    let _ = hew_cabi::sink::hew_stream_last_errno();
+    let ptr = hew_cabi::sink::hew_stream_last_error();
+    if !ptr.is_null() {
+        // SAFETY: `ptr` is the fresh header-aware cstring the getter handed us;
+        // it must be released through the matching header-aware free path.
+        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open
     }
 }
 

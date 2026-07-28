@@ -133,16 +133,17 @@ impl Expr {
 /// ```
 pub fn parse(expr: string) -> Expr {
     unsafe {
-        let parsed = Expr { handle: hew_cron_parse(expr) };
-        if !hew_cron_is_valid(parsed.handle) {
+        let handle = hew_cron_parse(expr);
+        if !hew_cron_is_valid(handle) {
             let detail = cron_last_error_message();
+            hew_cron_free(handle);
             if detail.len() == 0 {
                 panic(f"cron.parse: invalid expression: {expr}");
             } else {
                 panic(f"cron.parse: invalid expression `{expr}`: {detail}");
             }
         }
-        parsed
+        Expr { handle: handle }
     }
 }
 

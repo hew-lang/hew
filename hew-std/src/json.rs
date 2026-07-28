@@ -170,6 +170,10 @@ pub unsafe extern "C" fn hew_json_get_bool(val: *const HewJsonValue) -> i32 {
 ///
 /// Returns the `i64` value, or 0 if the value is not an integer.
 ///
+/// A JSON number above `i64::MAX` is still an integer, so the `0` this
+/// returns for it is a fabricated value rather than the document's. Callers
+/// must consult [`hew_json_int_status`] first; the Hew surface does.
+///
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewJsonValue`], or null.
@@ -181,6 +185,66 @@ pub unsafe extern "C" fn hew_json_get_int(val: *const HewJsonValue) -> i64 {
     // SAFETY: val is a valid HewJsonValue pointer per caller contract.
     let v = unsafe { &*val };
     v.inner.as_i64().unwrap_or(0)
+}
+
+/// Report whether [`hew_json_get_int`] can return this value truthfully.
+///
+/// Returns 1 when the value is an integer an `i64` can hold, 0 when it is an
+/// integer no `i64` can hold (a JSON number above `i64::MAX`), and -1 when it
+/// is not an integer at all or the pointer is null.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewJsonValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_int_status(val: *const HewJsonValue) -> i32 {
+    if val.is_null() {
+        return -1;
+    }
+    // SAFETY: val is a valid HewJsonValue pointer per caller contract.
+    let v = unsafe { &*val };
+    match &v.inner {
+        serde_json::Value::Number(n) if n.is_i64() => 1,
+        serde_json::Value::Number(n) if n.is_u64() => 0,
+        _ => -1,
+    }
+}
+
+/// Count the integers in this subtree that no `i64` can hold.
+///
+/// A document is only safe to read through [`hew_json_get_int`] when this
+/// returns 0. The walk is recursive, so an unrepresentable integer nested
+/// inside arrays and objects is found rather than discovered later as a
+/// fabricated `0`.
+///
+/// Returns -1 if the pointer is null.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewJsonValue`], or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_json_unrepresentable_int_count(val: *const HewJsonValue) -> i64 {
+    if val.is_null() {
+        return -1;
+    }
+    // SAFETY: val is a valid HewJsonValue pointer per caller contract.
+    let v = unsafe { &*val };
+    count_unrepresentable_ints(&v.inner)
+}
+
+fn count_unrepresentable_ints(value: &serde_json::Value) -> i64 {
+    match value {
+        serde_json::Value::Number(n) => i64::from(!n.is_i64() && n.is_u64()),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(count_unrepresentable_ints)
+            .fold(0i64, i64::saturating_add),
+        serde_json::Value::Object(fields) => fields
+            .values()
+            .map(count_unrepresentable_ints)
+            .fold(0i64, i64::saturating_add),
+        _ => 0,
+    }
 }
 
 /// Get the floating-point value from a [`HewJsonValue`].

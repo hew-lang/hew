@@ -5,6 +5,7 @@
 //! / `Box` so callers can free them with the corresponding free function.
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use std::os::raw::c_char;
+use std::time::Duration;
 
 use lettre::message::{header::ContentType, Mailbox};
 use lettre::transport::smtp::authentication::Credentials;
@@ -92,6 +93,13 @@ where
     send(guard.conn())
 }
 
+/// Upper bound on how long a connect probe may block.
+///
+/// `connect` must prove the server is reachable and speaking SMTP before it
+/// hands back a connection, and proving that means a real round trip. The
+/// bound keeps an unreachable host from stalling the caller indefinitely.
+const SMTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Apply optional credentials and port to an SMTP transport builder.
 fn configure_builder(
     builder: lettre::transport::smtp::SmtpTransportBuilder,
@@ -99,13 +107,45 @@ fn configure_builder(
     user: Option<&str>,
     pass: Option<&str>,
 ) -> SmtpTransport {
-    let builder = builder.port(port);
+    let builder = builder.port(port).timeout(Some(SMTP_CONNECT_TIMEOUT));
     let builder = if let (Some(u), Some(p)) = (user, pass) {
         builder.credentials(Credentials::new(u.to_owned(), p.to_owned()))
     } else {
         builder
     };
     builder.build()
+}
+
+/// Open a connection to the configured server and exchange one command.
+///
+/// `SmtpTransport` is lazy: building it performs no I/O, so a transport for an
+/// unreachable host is indistinguishable from a working one until the first
+/// send. `test_connection` opens the connection and issues a `NOOP`, which is
+/// what makes a connect failure observable at connect time.
+fn probe_transport(transport: &SmtpTransport, host: &str, port: u16) -> Result<(), String> {
+    match transport.test_connection() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "SMTP connect failed: server at `{host}:{port}` did not accept the connection probe"
+        )),
+        Err(err) => Err(format!(
+            "SMTP connect failed: cannot reach `{host}:{port}`: {err}"
+        )),
+    }
+}
+
+/// Report whether `conn` is backed by a probed connection.
+///
+/// A failed connect returns null, which is otherwise indistinguishable from a
+/// live connection until the first send.
+///
+/// # Safety
+///
+/// `conn` must be null or a pointer previously returned by
+/// [`hew_smtp_connect`] or [`hew_smtp_connect_tls`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_smtp_conn_is_valid(conn: *const HewSmtpConn) -> bool {
+    !conn.is_null()
 }
 
 fn normalize_port(port: i64) -> Option<u16> {
@@ -155,6 +195,11 @@ pub unsafe extern "C" fn hew_smtp_connect(
     };
 
     let transport = configure_builder(builder, port, user_str, pass_str);
+    if let Err(reason) = probe_transport(&transport, host_str, port) {
+        set_smtp_last_error(reason);
+        return std::ptr::null_mut();
+    }
+    clear_smtp_last_error();
     Box::into_raw(Box::new(HewSmtpConn { transport }))
 }
 
@@ -200,6 +245,11 @@ pub unsafe extern "C" fn hew_smtp_connect_tls(
     };
 
     let transport = configure_builder(builder, port, user_str, pass_str);
+    if let Err(reason) = probe_transport(&transport, host_str, port) {
+        set_smtp_last_error(reason);
+        return std::ptr::null_mut();
+    }
+    clear_smtp_last_error();
     Box::into_raw(Box::new(HewSmtpConn { transport }))
 }
 
@@ -448,8 +498,11 @@ pub unsafe extern "C" fn hew_smtp_close(conn: *mut HewSmtpConn) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lettre::transport::smtp::client::Tls;
     use std::cell::RefCell;
     use std::ffi::{CStr, CString};
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
     use std::ptr;
     use std::rc::Rc;
 
@@ -467,6 +520,77 @@ mod tests {
         // SAFETY: `err` was allocated via `malloc`.
         unsafe { hew_cabi::cabi::free_cstring(err) }; // CSTRING-FREE: str-open (test frees str_to_malloc error)
         text
+    }
+
+    #[test]
+    fn connection_probe_rejects_a_reachable_server_that_refuses_noop() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback SMTP oracle");
+        let port = listener.local_addr().expect("listener address").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept SMTP probe");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .expect("set write timeout");
+            stream.write_all(b"220 oracle ESMTP\r\n").expect("greeting");
+
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read EHLO");
+            assert!(line.starts_with("EHLO "), "unexpected command: {line:?}");
+            stream
+                .write_all(b"250-oracle\r\n250 HELP\r\n")
+                .expect("EHLO response");
+
+            line.clear();
+            reader.read_line(&mut line).expect("read NOOP");
+            assert_eq!(line, "NOOP\r\n");
+            stream
+                .write_all(b"550 NOOP refused\r\n")
+                .expect("NOOP rejection");
+
+            line.clear();
+            if reader.read_line(&mut line).unwrap_or(0) > 0 && line == "QUIT\r\n" {
+                stream.write_all(b"221 bye\r\n").expect("QUIT response");
+            }
+        });
+
+        let transport = SmtpTransport::builder_dangerous("127.0.0.1")
+            .port(port)
+            .tls(Tls::None)
+            .timeout(Some(Duration::from_secs(2)))
+            .build();
+        let result = probe_transport(&transport, "127.0.0.1", port);
+        assert!(
+            result.is_err(),
+            "NOOP refusal must reject the constructor gate"
+        );
+        server.join().expect("SMTP oracle thread");
+    }
+
+    #[test]
+    fn connection_probe_rejects_reachable_non_smtp_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback oracle");
+        let port = listener.local_addr().expect("listener address").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept probe");
+            stream
+                .write_all(b"this is not SMTP\r\n")
+                .expect("write junk");
+        });
+
+        let host = CString::new("127.0.0.1").expect("host CString");
+        // SAFETY: host is a valid C string and optional credentials are null.
+        let conn =
+            unsafe { hew_smtp_connect(host.as_ptr(), i64::from(port), ptr::null(), ptr::null()) };
+        assert!(
+            conn.is_null(),
+            "the public constructor must reject a reachable non-SMTP endpoint"
+        );
+        assert!(!last_error_text().is_empty());
+        server.join().expect("non-SMTP oracle thread");
     }
 
     #[test]

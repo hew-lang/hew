@@ -1,0 +1,92 @@
+//! Behavioural tests for std::encoding::markdown sanitized rendering.
+//!
+//! Sanitized output must stay HTML: the Markdown-generated structure survives
+//! and only author-written raw HTML and refused URLs are removed.
+
+import std::encoding::markdown;
+
+import std::testing;
+
+fn assert_contains(haystack: string, needle: string, what: string) {
+    if !haystack.contains(needle) {
+        panic(f"expected {what} in: {haystack}");
+    }
+}
+
+fn assert_absent(haystack: string, needle: string, what: string) {
+    if haystack.contains(needle) {
+        panic(f"expected {what} to be removed from: {haystack}");
+    }
+}
+
+#[test]
+fn test_to_html_safe_retains_generated_structure() {
+    let html = markdown.to_html_safe("# Title\n\n**bold** and `code`\n\n- one\n- two\n");
+    assert_contains(html, "<h1>", "a generated heading");
+    assert_contains(html, "<strong>", "generated strong emphasis");
+    assert_contains(html, "<code>", "a generated code span");
+    assert_contains(html, "<ul>", "a generated list");
+    assert_contains(html, "<li>", "a generated list item");
+}
+
+#[test]
+fn test_to_html_safe_retains_an_ordinary_link() {
+    let html = markdown.to_html_safe("[Hew](https://example.com/docs)");
+    assert_contains(html, "<a href=\"https://example.com/docs\">", "an allowed link");
+    assert_contains(html, "Hew", "the link text");
+}
+
+#[test]
+fn test_to_html_safe_drops_author_written_raw_html() {
+    let html = markdown.to_html_safe("Hello <script>alert(1)</script> world");
+    assert_absent(html, "<script", "a raw script tag");
+    assert_contains(html, "Hello", "the surrounding text");
+    assert_contains(html, "world", "the surrounding text");
+}
+
+#[test]
+fn test_to_html_safe_drops_event_attributes_on_raw_html() {
+    let html = markdown.to_html_safe("<img src=x onerror=alert(1)>\n\n<div onclick=\"x()\">t</div>\n");
+    assert_absent(html, "onerror", "an onerror handler");
+    assert_absent(html, "onclick", "an onclick handler");
+    assert_absent(html, "<img", "a raw img tag");
+}
+
+#[test]
+fn test_to_html_safe_drops_custom_heading_attributes() {
+    let html = markdown.to_html_safe("# Safe {#kept .styled onclick=alert(1) data-note=hello}");
+    assert_contains(html, "<h1>Safe</h1>", "safe heading structure");
+    assert_absent(html, "id=", "a heading ID");
+    assert_absent(html, "class=", "a heading class");
+    assert_absent(html, "onclick", "a heading event handler");
+    assert_absent(html, "data-note", "a custom heading attribute");
+    assert_absent(html, "alert(1)", "a heading event-handler payload");
+}
+
+#[test]
+fn test_to_html_safe_refuses_a_dangerous_link_url() {
+    let html = markdown.to_html_safe("[click](javascript:alert(1))");
+    assert_absent(html, "javascript:", "a javascript: destination");
+    assert_contains(html, "about:blank#refused", "the inert replacement destination");
+}
+
+#[test]
+fn test_to_html_safe_refuses_a_dangerous_image_url() {
+    let html = markdown.to_html_safe("![x](data:text/html;base64,PHNjcmlwdD4=)");
+    assert_absent(html, "data:text/html", "a data: destination");
+    assert_contains(html, "about:blank#refused", "the inert replacement destination");
+}
+
+#[test]
+fn test_to_html_safe_keeps_a_relative_url() {
+    let html = markdown.to_html_safe("[x](/docs/guide.html)");
+    assert_contains(html, "/docs/guide.html", "a relative destination");
+    assert_absent(html, "about:blank#refused", "no refusal for a relative URL");
+}
+
+#[test]
+fn test_to_html_is_unchanged_for_generated_markup() {
+    let html = markdown.to_html("# Hello\n\nWorld\n");
+    assert_contains(html, "<h1>", "a heading in unsanitized output");
+    assert_contains(html, "<p>", "a paragraph in unsanitized output");
+}

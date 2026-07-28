@@ -2774,22 +2774,25 @@ fn validate_lambda_captures(captures: &[LambdaCapture], findings: &mut Vec<MirCh
 /// Runtime ABIs that BORROW their owned-handle arguments by value rather than
 /// taking ownership: the callee snapshots/reads the handle without retaining or
 /// transferring it, so a borrowed arg does not alias a second free. The
-/// active-mode `conn.attach(handler)` surface lowers to
-/// `hew_tcp_attach_local(conn, handler)`, whose `LocalPid` handler the runtime
-/// registers as a non-owning `HewActorRef::Local` by-value snapshot (real
-/// free-count 1, via the caller's source drop alone). Kept as an explicit,
-/// narrow allowlist so the escape gate does not invent a phantom second free
-/// for a ratified borrowing surface while every non-listed call still fails
-/// closed by default. This allowlist is the PARTIAL form — only the callee's
-/// non-handle-leaf args are borrowed; owned-handle-leaf args are still poisoned
-/// (e.g. `hew_tcp_attach_local`'s `conn`). For callees that borrow EVERY arg
-/// including owned-handle leaves, see [`is_handle_borrowing_call_abi`].
+/// active-mode transport `attach(handler)` surfaces lower to typed pseudo
+/// calls whose `LocalPid` handler the runtime registers as a non-owning
+/// actor-ref snapshot (real free-count 1, via the caller's source drop alone).
+/// Kept as an explicit, narrow allowlist so the escape gate does not invent a
+/// phantom second free for a ratified borrowing surface while every non-listed
+/// call still fails closed by default. This allowlist is the PARTIAL form —
+/// only the callee's non-handle-leaf args are borrowed; owned-handle-leaf args
+/// are still poisoned. For callees that borrow EVERY arg including owned-handle
+/// leaves, see [`is_handle_borrowing_call_abi`].
 pub(super) fn is_borrowing_call_abi(
     builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
 ) -> bool {
     matches!(
         builtin,
-        Some(hew_types::runtime_call::RuntimeCallFamily::TcpAttachLocal)
+        Some(
+            hew_types::runtime_call::RuntimeCallFamily::TcpAttachLocal
+                | hew_types::runtime_call::RuntimeCallFamily::TlsAttachLocal
+                | hew_types::runtime_call::RuntimeCallFamily::WebSocketAttachLocal
+        )
     )
 }
 /// Runtime ABIs whose owned-handle-leaf arguments are ALSO borrowed (not just

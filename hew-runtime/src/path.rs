@@ -6,15 +6,21 @@
 //! - `hew_path_is_dir`    — test whether a path is a directory
 //! - `hew_path_absolute`  — resolve a path to an absolute form
 //! - `hew_glob`           — expand a glob pattern via POSIX `glob(3)`
+//! - `hew_glob_is_valid`  — whether the expansion completed without error
+//! - `hew_glob_error`     — the expansion failure detail, when there is one
 //! - `hew_glob_count`     — number of matched paths in a `HewGlobResult`
 //! - `hew_glob_get`       — retrieve a matched path by index
 //! - `hew_glob_free`      — release a `HewGlobResult`
 //!
-//! All functions fail-closed (null / false / 0) rather than propagating I/O
-//! errors, consistent with the existing `hew_path_exists` contract in
+//! The metadata helpers fail-closed (null / false / 0) rather than propagating
+//! I/O errors, consistent with the existing `hew_path_exists` contract in
 //! `file_io.rs`.  Glob expansion uses the platform's POSIX `glob(3)` via
 //! `libc` and copies the matched strings into a heap-owned `Vec<String>` so
-//! that the `libc::glob_t` can be freed immediately after the walk.
+//! that the `libc::glob_t` can be freed immediately after the walk.  An
+//! expansion that aborts (an unreadable directory, an allocation failure, or a
+//! platform with no implementation) records the failure on the result instead
+//! of returning zero matches, so a caller can tell "nothing matched" apart from
+//! "the walk never completed".
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -111,15 +117,23 @@ pub unsafe extern "C" fn hew_path_absolute(path: *const c_char) -> *mut c_char {
 pub struct HewGlobResult {
     /// The matched paths, each an owned UTF-8 string.
     matches: Vec<String>,
+    /// `Some(detail)` when the expansion did not complete.  A failed
+    /// expansion has no meaningful match list.
+    error: Option<String>,
 }
+
+/// Expand a glob pattern and return the matches, or the failure detail.
+type GlobExpansion = Result<Vec<String>, String>;
 
 /// Expand `pattern` using POSIX `glob(3)` and return a `HewGlobResult`.
 ///
 /// The returned pointer is heap-allocated and must be freed by calling
 /// `hew_glob_free`.  Returns a non-null pointer even when there are zero
-/// matches — the caller uses `hew_glob_count` to check.
+/// matches — the caller uses `hew_glob_count` to check.  A pattern whose
+/// expansion aborted produces a result that reports `hew_glob_is_valid` as
+/// false, which is distinct from a completed expansion with zero matches.
 ///
-/// Returns null only on allocation failure or null input.
+/// Returns null only on allocation failure.
 ///
 /// # Safety
 ///
@@ -131,41 +145,57 @@ pub struct HewGlobResult {
 #[no_mangle]
 pub unsafe extern "C" fn hew_glob(pattern: *const c_char) -> *mut HewGlobResult {
     if pattern.is_null() {
-        return Box::into_raw(Box::new(HewGlobResult { matches: vec![] }));
+        crate::set_last_error("hew_glob: pattern is null");
+        return Box::into_raw(Box::new(HewGlobResult {
+            matches: vec![],
+            error: Some("hew_glob: pattern is null".to_owned()),
+        }));
     }
     // SAFETY: caller guarantees `pattern` is a valid NUL-terminated C string.
     let c_pattern = unsafe { CStr::from_ptr(pattern) };
 
-    let matches = glob_expand(c_pattern);
-    Box::into_raw(Box::new(HewGlobResult { matches }))
+    match glob_expand(c_pattern) {
+        Ok(matches) => {
+            crate::hew_clear_error();
+            Box::into_raw(Box::new(HewGlobResult {
+                matches,
+                error: None,
+            }))
+        }
+        Err(detail) => {
+            crate::set_last_error(detail.clone());
+            Box::into_raw(Box::new(HewGlobResult {
+                matches: vec![],
+                error: Some(detail),
+            }))
+        }
+    }
 }
 
 /// Perform the POSIX `glob(3)` expansion and return the matched strings.
 ///
 /// Uses `libc::glob` on unix targets.
-fn glob_expand(pattern: &CStr) -> Vec<String> {
+fn glob_expand(pattern: &CStr) -> GlobExpansion {
     #[cfg(target_family = "unix")]
     {
         glob_expand_unix(pattern)
     }
     // SHIM: Windows glob not yet implemented.  The symbols stay present and
-    // link-clean, and the gap is RECORDED (fail-closed: an empty result with
-    // last_error set is diagnosable; a silent empty result would fabricate
-    // "no matches").
+    // link-clean, and the gap is RECORDED (fail-closed: the expansion reports
+    // an explicit failure, so it can never be read as "no matches").
     // WHEN obsolete: when a Windows target gains an end-to-end path/glob test
-    // lane.  WHAT the real solution looks like: FindFirstFileW/FindNextFileW
+    // coverage.  WHAT the real solution looks like: FindFirstFileW/FindNextFileW
     // expansion with the same HewGlobResult ownership contract.
     #[cfg(not(target_family = "unix"))]
     {
         let _ = pattern;
-        crate::set_last_error("hew_glob: glob expansion is not implemented on this platform");
-        vec![]
+        Err("hew_glob: glob expansion is not implemented on this platform".to_owned())
     }
 }
 
 #[cfg(target_family = "unix")]
-fn glob_expand_unix(pattern: &CStr) -> Vec<String> {
-    use libc::{glob as libc_glob, glob_t, globfree, GLOB_ERR};
+fn glob_expand_unix(pattern: &CStr) -> GlobExpansion {
+    use libc::{glob as libc_glob, glob_t, globfree, GLOB_ABORTED, GLOB_ERR, GLOB_NOMATCH};
 
     let mut g: glob_t;
     // SAFETY: `glob_t` is a C struct; zeroing it is the correct initialisation
@@ -185,8 +215,9 @@ fn glob_expand_unix(pattern: &CStr) -> Vec<String> {
     let rc = unsafe { libc_glob(pattern.as_ptr(), flags, None, &raw mut g) };
 
     // rc == 0        → success, g.gl_pathc paths in g.gl_pathv
-    // rc == GLOB_NOMATCH → no matches; gl_pathc may be 0; still need globfree
-    // other          → error; still need globfree
+    // rc == GLOB_NOMATCH → the walk completed and matched nothing
+    // other          → the walk aborted (unreadable directory, out of memory);
+    //                  the partial match list is not a result
     //
     // In all cases we must call globfree before returning.
     let mut results: Vec<String> = Vec::new();
@@ -210,7 +241,61 @@ fn glob_expand_unix(pattern: &CStr) -> Vec<String> {
     // SAFETY: `g` was initialised and (successfully or not) filled by `glob`.
     unsafe { globfree(&raw mut g) };
 
-    results
+    let pattern_text = pattern.to_string_lossy();
+    match rc {
+        0 => Ok(results),
+        GLOB_NOMATCH => Ok(Vec::new()),
+        GLOB_ABORTED => Err(format!(
+            "hew_glob: expansion of '{pattern_text}' aborted: a matching directory could not be read"
+        )),
+        other => Err(format!(
+            "hew_glob: expansion of '{pattern_text}' failed with glob(3) status {other}"
+        )),
+    }
+}
+
+/// Report whether the expansion behind `result` completed.
+///
+/// Returns `false` on null input and on any expansion that aborted, so an
+/// empty match list from a completed walk is never confused with a failure.
+///
+/// # Safety
+///
+/// `result` must be a pointer returned by [`hew_glob`] that has not yet been
+/// freed, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_glob_is_valid(result: *mut HewGlobResult) -> bool {
+    if result.is_null() {
+        return false;
+    }
+    // SAFETY: caller guarantees `result` is a live HewGlobResult.
+    let r = unsafe { &*result };
+    r.error.is_none()
+}
+
+/// Return the failure detail recorded on `result` as a `malloc`-allocated C
+/// string, or an empty string when the expansion completed.
+///
+/// # Safety
+///
+/// `result` must be a pointer returned by [`hew_glob`] that has not yet been
+/// freed, or null.
+///
+/// # Ownership
+///
+/// The returned pointer is `malloc`-allocated.  The caller must free it with
+/// `hew_string_drop`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_glob_error(result: *mut HewGlobResult) -> *mut c_char {
+    if result.is_null() {
+        return str_to_malloc("hew_glob: result handle is null");
+    }
+    // SAFETY: caller guarantees `result` is a live HewGlobResult.
+    let r = unsafe { &*result };
+    match r.error.as_deref() {
+        Some(detail) => str_to_malloc(detail),
+        None => str_to_malloc(""),
+    }
 }
 
 /// Return the number of paths in `result`.
@@ -422,6 +507,8 @@ mod tests {
         let res = unsafe { hew_glob(cp.as_ptr()) };
         assert!(!res.is_null());
         // SAFETY: res is a live HewGlobResult.
+        assert!(unsafe { hew_glob_is_valid(res) });
+        // SAFETY: res is a live HewGlobResult.
         let count = unsafe { hew_glob_count(res) };
         assert_eq!(count, 2);
         // SAFETY: res is live; index 0 is valid.
@@ -434,12 +521,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Read `hew_glob_error` for `res` as an owned Rust string.
+    fn glob_error_text(res: *mut HewGlobResult) -> String {
+        // SAFETY: res is a live HewGlobResult or null; both are in contract.
+        let ptr = unsafe { hew_glob_error(res) };
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a valid NUL-terminated C string from str_to_malloc.
+        let text = unsafe { CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: ptr was returned by hew_glob_error (str_to_malloc alloc).
+        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open
+        text
+    }
+
     // Pins the non-unix SHIM in glob_expand: matching files exist, but the
-    // unimplemented platform returns an empty result AND records the gap in
-    // last_error (fail-closed: diagnosable, never a fabricated "no matches").
+    // unimplemented platform reports an explicit expansion failure rather than
+    // zero matches (fail-closed: never readable as a fabricated "no matches").
     #[cfg(not(target_family = "unix"))]
     #[test]
-    fn glob_unsupported_platform_returns_empty_and_records_error() {
+    fn glob_unsupported_platform_reports_failure_not_no_matches() {
         let dir = test_dir("glob_match");
         std::fs::write(dir.join("a.txt"), "").unwrap();
         let pattern = format!("{}/*.txt", dir.to_str().unwrap());
@@ -448,19 +549,15 @@ mod tests {
         let res = unsafe { hew_glob(cp.as_ptr()) };
         assert!(!res.is_null());
         // SAFETY: res is a live HewGlobResult.
-        assert_eq!(unsafe { hew_glob_count(res) }, 0);
-        let err = crate::hew_last_error();
-        assert!(!err.is_null());
-        // SAFETY: hew_last_error returns a valid NUL-terminated C string.
-        let msg = unsafe { std::ffi::CStr::from_ptr(err) }.to_string_lossy();
-        assert!(msg.contains("glob expansion is not implemented"));
+        assert!(!unsafe { hew_glob_is_valid(res) });
+        assert!(glob_error_text(res).contains("glob expansion is not implemented"));
         // SAFETY: res is live.
         unsafe { hew_glob_free(res) };
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn glob_returns_empty_result_for_no_matches() {
+    fn glob_no_match_reflects_the_platform_contract() {
         let p = CString::new("/tmp/hew_path_glob_nomatch_*_zzz_999").unwrap();
         // SAFETY: p is a valid NUL-terminated C string.
         let res = unsafe { hew_glob(p.as_ptr()) };
@@ -468,20 +565,85 @@ mod tests {
         // SAFETY: res is a live HewGlobResult.
         let count = unsafe { hew_glob_count(res) };
         assert_eq!(count, 0);
+        #[cfg(target_family = "unix")]
+        {
+            // A completed POSIX walk that matched nothing is a success.
+            // SAFETY: res is a live HewGlobResult.
+            assert!(unsafe { hew_glob_is_valid(res) });
+            assert_eq!(glob_error_text(res), "");
+        }
+        #[cfg(not(target_family = "unix"))]
+        {
+            // The non-Unix shim cannot perform the walk, so zero paths is an
+            // explicit unsupported-platform failure, not "no matches".
+            // SAFETY: res is a live HewGlobResult.
+            assert!(!unsafe { hew_glob_is_valid(res) });
+            assert!(glob_error_text(res).contains("glob expansion is not implemented"));
+        }
         // SAFETY: res is live.
         unsafe { hew_glob_free(res) };
     }
 
+    // #22: an aborted walk used to be indistinguishable from "no matches".
+    // A directory with no read permission is the portable POSIX reproducer:
+    // GLOB_ERR makes glob(3) return GLOB_ABORTED with zero paths collected.
+    #[cfg(target_family = "unix")]
     #[test]
-    fn glob_null_pattern_returns_empty_result() {
+    fn glob_unreadable_directory_reports_failure_not_no_matches() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = test_dir("glob_denied");
+        let denied = dir.join("denied");
+        std::fs::create_dir_all(&denied).unwrap();
+        std::fs::write(denied.join("present.txt"), "x").unwrap();
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let readable = std::fs::read_dir(&denied).is_ok();
+        // A privileged test runner can read a 0o000 directory; the abort
+        // condition does not exist there, so there is nothing to assert.
+        if !readable {
+            let pattern = format!("{}/*", denied.to_str().unwrap());
+            let cp = CString::new(pattern).unwrap();
+            // SAFETY: cp is a valid NUL-terminated C string.
+            let res = unsafe { hew_glob(cp.as_ptr()) };
+            assert!(!res.is_null());
+            // SAFETY: res is a live HewGlobResult.
+            assert_eq!(unsafe { hew_glob_count(res) }, 0);
+            // SAFETY: res is a live HewGlobResult.
+            let completed = unsafe { hew_glob_is_valid(res) };
+            assert!(
+                !completed,
+                "an aborted walk must not report as a completed expansion"
+            );
+            assert!(glob_error_text(res).contains("aborted"));
+            // SAFETY: res is live.
+            unsafe { hew_glob_free(res) };
+        }
+
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn glob_null_pattern_reports_failure() {
         // SAFETY: null is the value under test; hew_glob handles it.
         let res = unsafe { hew_glob(std::ptr::null()) };
         assert!(!res.is_null());
         // SAFETY: res is a live HewGlobResult.
         let count = unsafe { hew_glob_count(res) };
         assert_eq!(count, 0);
+        // SAFETY: res is a live HewGlobResult.
+        assert!(!unsafe { hew_glob_is_valid(res) });
+        assert!(glob_error_text(res).contains("pattern is null"));
         // SAFETY: res is live.
         unsafe { hew_glob_free(res) };
+    }
+
+    #[test]
+    fn glob_is_valid_and_error_handle_null_result() {
+        // SAFETY: null is explicitly allowed by both contracts.
+        assert!(!unsafe { hew_glob_is_valid(std::ptr::null_mut()) });
+        assert!(glob_error_text(std::ptr::null_mut()).contains("null"));
     }
 
     #[test]

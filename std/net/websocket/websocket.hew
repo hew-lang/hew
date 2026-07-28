@@ -10,11 +10,17 @@
 //! import std::net::websocket;
 //!
 //! fn main() {
-//!     let ws = websocket.connect("ws://localhost:8080/ws");
-//!     ws.send_text("hello");
-//!     let msg = ws.recv();
-//!     msg.close();
-//!     ws.close();
+//!     match websocket.connect("ws://localhost:8080/ws") {
+//!         Ok(ws) => {
+//!             ws.send_text("hello");
+//!             let msg = ws.recv();
+//!             msg.close();
+//!             ws.close();
+//!         },
+//!         Err(_err) => {
+//!             println(websocket.last_error());
+//!         },
+//!     }
 //! }
 //! ```
 //!
@@ -24,20 +30,35 @@
 //! import std::net::websocket;
 //!
 //! fn main() {
-//!     let server = websocket.listen("0.0.0.0:8080");
-//!     let conn = server.accept();
-//!     let msg = conn.recv();
-//!     conn.send_text("got it");
-//!     conn.close();
-//!     server.close();
+//!     match websocket.listen("0.0.0.0:8080") {
+//!         Ok(server) => {
+//!             let conn = server.accept();
+//!             let msg = conn.recv();
+//!             conn.send_text("got it");
+//!             conn.close();
+//!             server.close();
+//!         },
+//!         Err(_err) => {
+//!             println(websocket.last_error());
+//!         },
+//!     }
 //! }
 //! ```
 
 import std::net;
 
+fn checked_recv_deadline(deadline_ms: i64) -> Result<i64, net.NetError> {
+    if deadline_ms <= 0 {
+        Ok(0)
+    } else {
+        net.try_duration_ms("websocket.Conn.recv_timeout", deadline_ms)
+    }
+}
+
 /// An open WebSocket connection handle.
 ///
-/// Created by calling `websocket.connect(url)`. Use `send_text()` to
+/// Created by calling `websocket.connect(url)`, which returns `Err` when the
+/// connection or handshake fails. Use `send_text()` to
 /// send messages and `recv()` to receive them.
 #[opaque]
 pub type Conn {
@@ -85,10 +106,10 @@ trait ConnMethods {
     /// is consumed and must not be used for recv() after this call.
     /// The actor can still call conn.send_text() for outbound messages.
     ///
-    /// `handler` is the actor that will receive on_message and on_close.
-    /// `on_message_type` is the msg_type index for the on_message receive fn.
-    /// `on_close_type` is the msg_type index for the on_close receive fn.
-    fn attach(self, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64);
+    /// `handler` is the actor that will receive `on_message` and `on_close`.
+    /// The compiler synthesises both protocol message IDs from the concrete
+    /// actor type behind the `LocalPid`.
+    fn attach(self, handler: LocalPid<WebSocketHandler>);
 }
 
 impl ConnMethods for Conn {
@@ -113,8 +134,9 @@ impl ConnMethods for Conn {
         }
     }
     fn recv_timeout(conn: Conn, deadline_ms: i64) -> Result<Message, net.NetError> {
-        let handle = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI
-            hew_ws_recv_timeout(conn, deadline_ms as i32)
+        let deadline = checked_recv_deadline(deadline_ms)?;
+        let handle = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI, range-checked above
+            hew_ws_recv_timeout(conn, deadline as i32)
         };
         let msg = Message { handle: handle };
         let valid: bool = unsafe {
@@ -136,11 +158,20 @@ impl ConnMethods for Conn {
             hew_ws_close(conn)
         };
     }
-    fn attach(conn: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i64, on_close_type: i64) {
-        unsafe {
-            hew_ws_attach(conn, handler, on_message_type as i32, on_close_type as i32)
-        }; // INTERNAL-ABI: C ABI takes i32 type indices
-    }
+    /// Compiler-lowered active-mode attach.
+    ///
+    /// Every call site is rewritten to `hew_ws_attach_local`; codegen resolves
+    /// the concrete actor's `on_message` / `on_close` protocol IDs and emits
+    /// the four-argument runtime ABI. This stub is never lowered.
+    fn attach(conn: Conn, handler: LocalPid<WebSocketHandler>) {}
+}
+
+#[test]
+fn websocket_nonpositive_deadlines_disable_but_positive_overflow_is_rejected() {
+    assert(checked_recv_deadline(-9223372036854775807).unwrap_or(-1) == 0);
+    assert(checked_recv_deadline(0).unwrap_or(-1) == 0);
+    assert(checked_recv_deadline(2147483647).is_ok());
+    assert(checked_recv_deadline(2147483648).is_err());
 }
 
 // ── Message methods ───────────────────────────────────────────────────
@@ -177,7 +208,8 @@ impl Message {
 // ── Server type ─────────────────────────────────────────────────────
 /// A WebSocket server listening for incoming connections.
 ///
-/// Created by calling `websocket.listen(addr)`. Use `accept()` to wait
+/// Created by calling `websocket.listen(addr)`, which returns `Err` when the
+/// address cannot be bound. Use `accept()` to wait
 /// for the next client connection.
 #[opaque]
 pub type Server {
@@ -234,7 +266,7 @@ impl ServerMethods for Server {
 ///     }
 /// }
 /// ```
-trait WebSocketHandler {
+pub trait WebSocketHandler {
     /// Called when a text frame arrives from the client.
     fn on_message(text: string);
 
@@ -243,30 +275,93 @@ trait WebSocketHandler {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-/// Open a WebSocket connection to the given URL (client).
-pub fn connect(url: string) -> Conn {
+/// Return the detail of this actor's most recent WebSocket failure.
+///
+/// Returns the empty string when the last call succeeded. Call it immediately
+/// after an `Err` for the precise, non-secret reason.
+pub fn last_error() -> string {
     unsafe {
-        hew_ws_connect(url)
+        hew_ws_last_error()
     }
 }
 
-/// Start a WebSocket server listening on the given address.
+/// Open a WebSocket connection to the given URL (client).
+///
+/// Returns `Err(net.NetError)` when the connection or the WebSocket handshake
+/// fails. Use `websocket.last_error()` for the precise detail.
 ///
 /// # Examples
 ///
 /// ```
-/// let server = websocket.listen("0.0.0.0:8080");
-/// let conn = server.accept();
+/// match websocket.connect("ws://127.0.0.1:9001/") {
+///     Ok(conn) => conn.close(),
+///     Err(err) => println(f"connect failed: {net.net_error_message(err)}"),
+/// }
 /// ```
-pub fn listen(addr: string) -> Server {
-    unsafe {
-        hew_ws_server_new(addr)
+pub fn connect(url: string) -> Result<Conn, net.NetError> {
+    let conn = unsafe {
+        hew_ws_connect(url)
+    };
+    let ok = unsafe {
+        hew_ws_conn_is_valid(conn)
+    };
+    if ok {
+        return Ok(conn);
     }
+    let errno = unsafe {
+        hew_ws_last_errno()
+    };
+    if errno == -1 {
+        let detail = unsafe {
+            hew_ws_last_error()
+        };
+        return Err(net.NetError::InvalidArgument(detail));
+    }
+    Err(net.net_error_from_errno(errno))
+}
+
+/// Start a WebSocket server listening on the given address.
+///
+/// Returns `Err(net.NetError)` when the address cannot be bound. Use
+/// `websocket.last_error()` for the precise detail.
+///
+/// # Examples
+///
+/// ```
+/// match websocket.listen("127.0.0.1:0") {
+///     Ok(server) => server.close(),
+///     Err(err) => println(f"listen failed: {net.net_error_message(err)}"),
+/// }
+/// ```
+pub fn listen(addr: string) -> Result<Server, net.NetError> {
+    let server = unsafe {
+        hew_ws_server_new(addr)
+    };
+    let ok = unsafe {
+        hew_ws_server_is_valid(server)
+    };
+    if ok {
+        return Ok(server);
+    }
+    let errno = unsafe {
+        hew_ws_last_errno()
+    };
+    if errno == -1 {
+        let detail = unsafe {
+            hew_ws_last_error()
+        };
+        return Err(net.NetError::InvalidArgument(detail));
+    }
+    Err(net.net_error_from_errno(errno))
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 extern "C" {
     fn hew_ws_connect(url: string) -> Conn;
+    fn hew_ws_conn_is_valid(ws: Conn) -> bool;
+    fn hew_ws_server_is_valid(server: Server) -> bool;
+    fn hew_ws_last_errno() -> i64;
+    fn hew_ws_last_error() -> string;
     fn hew_ws_send_text(ws: Conn, msg: string) -> i32;
     fn hew_ws_recv(ws: Conn) -> MessageHandle;
     fn hew_ws_recv_timeout(ws: Conn, deadline_ms: i32) -> MessageHandle;
@@ -280,5 +375,4 @@ extern "C" {
     fn hew_ws_server_port(server: Server) -> i32;
     fn hew_ws_server_accept(server: Server) -> Conn;
     fn hew_ws_server_close(server: Server);
-    fn hew_ws_attach(ws: Conn, handler: LocalPid<WebSocketHandler>, on_message_type: i32, on_close_type: i32);
 }

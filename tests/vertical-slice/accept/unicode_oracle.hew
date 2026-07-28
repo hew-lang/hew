@@ -8,6 +8,9 @@ fn main() {
     println(f"letter_latin_ext_add={unicode.is_letter(0x1E17)} lower_latin_ext_add={unicode.is_lower(0x1E17)} upper_latin_ext_add={unicode.to_upper(0x1E17)}");
     println(f"letter_thai={unicode.is_letter(0xE01)} letter_armenian={unicode.is_letter(0x531)} letter_cjk_ext_b={unicode.is_letter(0x20000)}");
     println(f"punct_bang={unicode.is_punct(33)} punct_ideo={unicode.is_punct(12290)} punct_A={unicode.is_punct(65)}");
+    println(f"punct_pc={unicode.is_punct(0x5F)} punct_pd={unicode.is_punct(0x2E17)} punct_ps={unicode.is_punct(0x2045)} punct_pe={unicode.is_punct(0x2046)}");
+    println(f"punct_pi={unicode.is_punct(0x2018)} punct_pf={unicode.is_punct(0x2019)} punct_po={unicode.is_punct(0x589)} punct_astral={unicode.is_punct(0x10100)}");
+    println(f"punct_sm={unicode.is_punct(0x2B)} punct_sc={unicode.is_punct(0x24)} punct_surrogate={unicode.is_punct(0xD800)} punct_wrapped={unicode.is_punct(4294967329)}");
     println(f"title_a={unicode.to_title(97)} title_eacute={unicode.to_title(233)} title_digit={unicode.to_title(49)}");
     println(f"rune_len={unicode.rune_len(65)},{unicode.rune_len(233)},{unicode.rune_len(26085)},{unicode.rune_len(128578)}");
     let text = "Aé日🙂";

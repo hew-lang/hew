@@ -20,22 +20,32 @@
 
 /// Encode a JSON string to MessagePack binary.
 ///
-/// Returns an empty `bytes` buffer on invalid JSON.
+/// Panics with the codec's reason on invalid JSON. Use `try_from_json(json)`
+/// when failure should be returned as an error.
 pub fn from_json(json: string) -> bytes {
-    unsafe {
-        hew_msgpack_from_json_hew(json)
+    match try_from_json(json) {
+        Ok(data) => data,
+        Err(reason) => {
+            panic(f"msgpack.from_json: {reason}");
+            "".to_bytes()
+        },
     }
 }
 
 /// Encode a JSON string to MessagePack binary.
 ///
-/// Returns `Err(reason)` on invalid JSON or serialization failure.
+/// Returns `Err(reason)` on invalid JSON or serialization failure. The codec's
+/// own reason slot decides success, not the length of the result, so a
+/// legitimately short encoding is never mistaken for a failure.
 pub fn try_from_json(json: string) -> Result<bytes, string> {
     let data = unsafe {
         hew_msgpack_from_json_hew(json)
     };
-    if data.len() == 0 {
-        Err(msgpack_err("msgpack: from_json failed"))
+    let reason = unsafe {
+        hew_msgpack_last_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
     } else {
         Ok(data)
     }
@@ -43,10 +53,15 @@ pub fn try_from_json(json: string) -> Result<bytes, string> {
 
 /// Decode a MessagePack `bytes` buffer to a JSON string.
 ///
-/// Returns an empty string on error.
+/// Panics with the codec's reason on malformed input. Use `try_to_json(data)`
+/// when failure should be returned as an error.
 pub fn to_json(data: bytes) -> string {
-    unsafe {
-        hew_msgpack_to_json_hew(data)
+    match try_to_json(data) {
+        Ok(json) => json,
+        Err(reason) => {
+            panic(f"msgpack.to_json: {reason}");
+            ""
+        },
     }
 }
 
@@ -57,44 +72,100 @@ pub fn try_to_json(data: bytes) -> Result<string, string> {
     let json = unsafe {
         hew_msgpack_to_json_hew(data)
     };
-    if json.len() == 0 {
-        Err(msgpack_err("msgpack: to_json failed"))
+    let reason = unsafe {
+        hew_msgpack_last_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
     } else {
         Ok(json)
     }
 }
 
-/// Read `last_error()` and fall back to `fallback` when the FFI reports
-/// nothing specific.
-fn msgpack_err(fallback: string) -> string {
-    let detail = unsafe {
-        hew_msgpack_last_error()
-    };
-    if detail.len() > 0 {
-        detail
-    } else {
-        fallback
+/// Encode an integer as a MessagePack varint.
+///
+/// Panics with the codec's reason if the encoding cannot be produced.
+pub fn encode_int(val: i64) -> bytes {
+    match try_encode_int(val) {
+        Ok(data) => data,
+        Err(reason) => {
+            panic(f"msgpack.encode_int: {reason}");
+            "".to_bytes()
+        },
     }
 }
 
-/// Encode an integer as a MessagePack varint.
-pub fn encode_int(val: i64) -> bytes {
-    unsafe {
-        hew_msgpack_encode_int_hew(val as i64)
-    } // INTERNAL-ABI: C ABI takes i64
+/// Encode an integer as a MessagePack varint without panicking.
+pub fn try_encode_int(val: i64) -> Result<bytes, string> {
+    let data = unsafe {
+        hew_msgpack_encode_int_hew(val)
+    };
+    let reason = unsafe {
+        hew_msgpack_last_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
+    } else {
+        Ok(data)
+    }
 }
 
 /// Encode a string as MessagePack str.
+///
+/// Panics with the codec's reason if the encoding cannot be produced.
 pub fn encode_string(s: string) -> bytes {
-    unsafe {
-        hew_msgpack_encode_string_hew(s)
+    match try_encode_string(s) {
+        Ok(data) => data,
+        Err(reason) => {
+            panic(f"msgpack.encode_string: {reason}");
+            "".to_bytes()
+        },
     }
 }
 
-/// Encode binary data as a MessagePack bin.
+/// Encode a string as MessagePack str without panicking.
+pub fn try_encode_string(s: string) -> Result<bytes, string> {
+    let data = unsafe {
+        hew_msgpack_encode_string_hew(s)
+    };
+    let reason = unsafe {
+        hew_msgpack_last_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
+    } else {
+        Ok(data)
+    }
+}
+
+/// Encode binary data as a MessagePack bin (bin8, bin16, or bin32).
+///
+/// Panics with the codec's reason if the encoding cannot be produced.
 pub fn encode_bytes(data: bytes) -> bytes {
-    unsafe {
+    match try_encode_bytes(data) {
+        Ok(encoded) => encoded,
+        Err(reason) => {
+            panic(f"msgpack.encode_bytes: {reason}");
+            "".to_bytes()
+        },
+    }
+}
+
+/// Encode binary data as a MessagePack bin without panicking.
+///
+/// An empty input is a value, not a missing argument: it encodes to an empty
+/// bin8 rather than to an empty result that reads as a failure.
+pub fn try_encode_bytes(data: bytes) -> Result<bytes, string> {
+    let encoded = unsafe {
         hew_msgpack_encode_bytes_hew(data)
+    };
+    let reason = unsafe {
+        hew_msgpack_last_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
+    } else {
+        Ok(encoded)
     }
 }
 

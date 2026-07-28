@@ -669,8 +669,27 @@ mod tests {
         reg.load("std::process").unwrap();
         assert_eq!(
             reg.drop_func_for("process.Child"),
-            Some("hew_process_drop"),
-            "process.Child drop func should be hew_process_drop"
+            None,
+            "process.Child is a fielded resource record; its generated drop \
+             dispatches through Child::close instead of a direct opaque-handle \
+             registry drop function"
+        );
+        assert!(
+            reg.is_drop_type("process.Child"),
+            "process.Child must remain a drop type even without a direct \
+             opaque-handle drop function"
+        );
+        let process_source = include_str!("../../std/process.hew");
+        assert!(
+            process_source.contains("fn close(child: Child)"),
+            "process.Child must retain its source-level resource close method"
+        );
+        assert_eq!(
+            process_source
+                .matches("hew_process_drop(child.handle)")
+                .count(),
+            1,
+            "process.Child::close must release its wrapped ChildHandle exactly once"
         );
         assert_eq!(
             reg.drop_func_for("http.Server"),
@@ -684,7 +703,11 @@ mod tests {
             "regex.Pattern should not have a drop func"
         );
         let all = reg.all_drop_funcs();
-        assert!(!all.is_empty(), "should have at least one drop func");
+        assert!(
+            all.is_empty(),
+            "the loaded fielded resource records dispatch through their \
+             source-level close methods, not direct opaque-handle drop funcs: {all:?}"
+        );
     }
 
     #[test]
@@ -725,23 +748,25 @@ mod tests {
     }
 
     #[test]
-    fn resolve_handle_method_sig_returns_process_child_signature() {
+    fn fielded_process_child_does_not_publish_a_short_handle_alias() {
         let mut reg = registry();
         reg.load("std::process").unwrap();
 
+        // The loader retains qualified imported-signature metadata for normal
+        // named-type/trait method resolution.
         let sig = reg
             .resolve_handle_method_sig("process.Child", "wait")
-            .expect("process.Child.wait should resolve");
+            .expect("qualified process.Child.wait imported signature should resolve");
         assert_eq!(sig.0, "hew_process_wait");
         assert_eq!(sig.1, Vec::<crate::ty::Ty>::new());
         assert_eq!(sig.2, crate::ty::Ty::I64);
 
-        let short_sig = reg
-            .resolve_handle_method_sig("Child", "kill")
-            .expect("short handle name should resolve");
-        assert_eq!(short_sig.0, "hew_process_kill");
-        assert_eq!(short_sig.1, Vec::<crate::ty::Ty>::new());
-        assert_eq!(short_sig.2, crate::ty::Ty::I64);
+        assert_eq!(
+            reg.resolve_handle_method_sig("Child", "kill"),
+            None,
+            "fielded process.Child is a named resource record, not an opaque \
+             handle that publishes an unqualified handle-registry alias"
+        );
     }
 
     #[test]

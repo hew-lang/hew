@@ -11,12 +11,13 @@
 //!
 //! - When a Hew actor is currently dispatched
 //!   (`hew_actor_current_id_silent() >= 0`), the slot is stored in a
-//!   process-wide `Mutex<HashMap<(u64, ErrorSlotKind), String>>` keyed by the
-//!   actor ID and error kind.  Each error type has its own per-actor slot, so
-//!   a yaml error cannot clear a datetime error and vice-versa.
+//!   process-wide map keyed by actor ID and error kind. Each value keeps an
+//!   errno and detail together, so consumers cannot observe mismatched halves.
+//!   Each error type has its own per-actor slot, so a yaml error cannot clear a
+//!   datetime error and vice-versa.
 //! - When called from outside any actor (main, test, blocking-pool helper),
 //!   `hew_actor_current_id_silent()` returns -1 and the slot falls back to a
-//!   `thread_local!` `HashMap<ErrorSlotKind, String>` so that non-actor callers
+//!   `thread_local!` map so that non-actor callers
 //!   remain isolated from each other and from other error types.
 //!
 //! The routing decision uses the SILENT probe deliberately: falling back to
@@ -45,7 +46,7 @@ use std::collections::HashMap;
 
 use crate::lifetime::PoisonSafe;
 
-// ── Parser discriminant ──────────────────────────────────────────────────────
+// ── Error-kind discriminant ──────────────────────────────────────────────────
 
 /// Identifies which error type owns an error slot entry.
 ///
@@ -66,28 +67,53 @@ pub enum ErrorSlotKind {
     Tls,
     Smtp,
     Http,
+    Websocket,
     Jwt,
 }
 
 // ── Process-wide actor-keyed error map ──────────────────────────────────────
 
-/// Global map from `(actor_id, ErrorSlotKind)` → last error message.
+/// Global map from `(actor_id, ErrorSlotKind)` → last coherent error pair.
 ///
 /// Only populated when `hew_actor_current_id_silent()` returns a non-negative
 /// value.
-static ACTOR_PARSE_ERRORS: PoisonSafe<Option<HashMap<(u64, ErrorSlotKind), String>>> =
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ErrorSlotValue {
+    errno: i64,
+    detail: String,
+}
+
+static ACTOR_PARSE_ERRORS: PoisonSafe<Option<HashMap<(u64, ErrorSlotKind), ErrorSlotValue>>> =
     PoisonSafe::new(None);
 
 fn actor_map_set(actor_id: u64, kind: ErrorSlotKind, msg: String) {
+    actor_map_set_with_errno(actor_id, kind, 0, msg);
+}
+
+fn actor_map_set_with_errno(actor_id: u64, kind: ErrorSlotKind, errno: i64, detail: String) {
     ACTOR_PARSE_ERRORS.access(|guard| {
         guard
             .get_or_insert_with(HashMap::new)
-            .insert((actor_id, kind), msg);
+            .insert((actor_id, kind), ErrorSlotValue { errno, detail });
     });
 }
 
 fn actor_map_get(actor_id: u64, kind: ErrorSlotKind) -> Option<String> {
-    ACTOR_PARSE_ERRORS.access(|guard| guard.as_ref()?.get(&(actor_id, kind)).cloned())
+    ACTOR_PARSE_ERRORS.access(|guard| {
+        guard
+            .as_ref()?
+            .get(&(actor_id, kind))
+            .map(|value| value.detail.clone())
+    })
+}
+
+fn actor_map_get_errno(actor_id: u64, kind: ErrorSlotKind) -> i64 {
+    ACTOR_PARSE_ERRORS.access(|guard| {
+        guard
+            .as_ref()
+            .and_then(|map| map.get(&(actor_id, kind)))
+            .map_or(0, |value| value.errno)
+    })
 }
 
 fn actor_map_clear(actor_id: u64, kind: ErrorSlotKind) {
@@ -113,7 +139,7 @@ thread_local! {
     ///
     /// Keyed by [`ErrorSlotKind`] so that non-actor callers cannot alias each
     /// other's errors across error types, matching the per-actor-map invariant.
-    static THREAD_PARSE_ERROR: std::cell::RefCell<HashMap<ErrorSlotKind, String>> =
+    static THREAD_PARSE_ERROR: std::cell::RefCell<HashMap<ErrorSlotKind, ErrorSlotValue>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
@@ -122,13 +148,27 @@ thread_local! {
 /// Record `msg` as the most recent error for `kind` in the current
 /// logical context (actor or thread).
 pub fn set_error(kind: ErrorSlotKind, msg: impl Into<String>) {
+    set_error_with_errno(kind, 0, msg);
+}
+
+/// Record an errno and detail together in the current logical context.
+///
+/// Both values share one actor-aware authority so a scheduler migration cannot
+/// pair an errno from one actor with the detail from another.
+pub fn set_error_with_errno(kind: ErrorSlotKind, errno: i64, msg: impl Into<String>) {
     let id = crate::actor::hew_actor_current_id_silent();
     if id >= 0 {
         #[expect(clippy::cast_sign_loss, reason = "checked: id >= 0")]
-        actor_map_set(id as u64, kind, msg.into());
+        actor_map_set_with_errno(id as u64, kind, errno, msg.into());
     } else {
         THREAD_PARSE_ERROR.with(|slot| {
-            slot.borrow_mut().insert(kind, msg.into());
+            slot.borrow_mut().insert(
+                kind,
+                ErrorSlotValue {
+                    errno,
+                    detail: msg.into(),
+                },
+            );
         });
     }
 }
@@ -155,7 +195,19 @@ pub fn get_error(kind: ErrorSlotKind) -> Option<String> {
         #[expect(clippy::cast_sign_loss, reason = "checked: id >= 0")]
         actor_map_get(id as u64, kind)
     } else {
-        THREAD_PARSE_ERROR.with(|slot| slot.borrow().get(&kind).cloned())
+        THREAD_PARSE_ERROR.with(|slot| slot.borrow().get(&kind).map(|value| value.detail.clone()))
+    }
+}
+
+/// Return the errno paired with the last error for `kind`, or 0 when absent.
+#[must_use]
+pub fn get_errno(kind: ErrorSlotKind) -> i64 {
+    let id = crate::actor::hew_actor_current_id_silent();
+    if id >= 0 {
+        #[expect(clippy::cast_sign_loss, reason = "checked: id >= 0")]
+        actor_map_get_errno(id as u64, kind)
+    } else {
+        THREAD_PARSE_ERROR.with(|slot| slot.borrow().get(&kind).map_or(0, |value| value.errno))
     }
 }
 

@@ -137,9 +137,9 @@ trait TlsStreamMethods {
     /// Outbound `write()` / `try_write()` remain valid.
     ///
     /// `handler` is the actor that will receive `on_data` and `on_close`.
-    /// `on_data_type` is the `msg_type` index for `on_data`.
-    /// `on_close_type` is the `msg_type` index for `on_close`.
-    fn attach(self, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64);
+    /// The compiler synthesises both protocol message IDs from the concrete
+    /// actor type behind the `LocalPid`.
+    fn attach(self, handler: LocalPid<TlsHandler>);
 
     /// Close the TLS connection and release resources.
     fn close(self);
@@ -162,15 +162,17 @@ impl TlsStreamMethods for TlsStream {
         })
     }
     fn read(stream: TlsStream, size: i64) -> Result<bytes, net.NetError> {
+        let checked = net.try_size_arg("tls.TlsStream.read", size)?;
         tls_read_result(unsafe {
-            hew_tls_read_result(stream, size as i32)
+            hew_tls_read_result(stream, checked as i32) // INTERNAL-ABI: range-checked above
         })
     }
-    fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64) {
-        unsafe {
-            hew_tls_attach(stream, handler, on_data_type as i32, on_close_type as i32)
-        }; // INTERNAL-ABI: C ABI takes i32 type indices
-    }
+    /// Compiler-lowered active-mode attach.
+    ///
+    /// Every call site is rewritten to `hew_tls_attach_local`; codegen resolves
+    /// the concrete actor's `on_data` / `on_close` protocol IDs and emits the
+    /// four-argument runtime ABI. This stub is never lowered.
+    fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>) {}
     fn close(stream: TlsStream) {
         unsafe {
             hew_tls_close(stream)
@@ -178,7 +180,6 @@ impl TlsStreamMethods for TlsStream {
     }
 }
 
-// ── Module-level functions ────────────────────────────────────────────
 /// Open a TLS connection to a remote host.
 ///
 /// Uses system root certificates to verify the server. Returns a
@@ -190,8 +191,15 @@ impl TlsStreamMethods for TlsStream {
 /// let stream = tls.connect("example.com", 443);
 /// ```
 pub fn connect(host: string, port: i64) -> TlsStream {
+    let checked = match net.try_port_arg("tls.connect", port) {
+        Ok(value) => value,
+        Err(err) => {
+            panic(f"tls.connect failed: {net.net_error_message(err)}");
+            0
+        },
+    };
     unsafe {
-        hew_tls_connect(host, port as i32)
+        hew_tls_connect(host, checked as i32) // INTERNAL-ABI: range-checked above
     }
 }
 
@@ -239,7 +247,6 @@ extern "C" {
     fn hew_tls_last_error() -> string;
     fn hew_tls_write_result(stream: TlsStream, data: bytes) -> TlsWriteFfiResult;
     fn hew_tls_read_result(stream: TlsStream, size: i32) -> TlsReadFfiResult;
-    fn hew_tls_attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i32, on_close_type: i32);
     fn hew_tls_close(stream: TlsStream);
 }
 

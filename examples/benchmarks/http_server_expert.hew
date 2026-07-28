@@ -1,4 +1,25 @@
-import std::net::http;
+import std::net::http::{Server};
+
+import std::net;
+
+fn serve_forever(server: Server) {
+    loop {
+        let req = server.accept();
+        let path = req.path();
+        match path {
+            "/" => {
+                req.respond_text(200, "Hello from Hew!");
+            },
+            "/health" => {
+                req.respond_text(200, "OK");
+            },
+            _ => {
+                req.respond_text(404, "Not Found");
+            },
+        }
+    }
+}
+
 // Expert HTTP server — synchronous match-dispatch pattern.
 //
 // This intentionally uses synchronous request handling in the main loop
@@ -25,21 +46,15 @@ import std::net::http;
 //   loop { router.route(server.accept()); }
 fn main() {
     let addr = "0.0.0.0:18080";
-    let server = http.listen(addr);
     println("Listening on " + addr);
-    loop {
-        let req = server.accept();
-        let path = req.path();
-        match path {
-            "/" => {
-                req.respond_text(200, "Hello from Hew!");
-            },
-            "/health" => {
-                req.respond_text(200, "OK");
-            },
-            _ => {
-                req.respond_text(404, "Not Found");
-            },
-        }
+    match http.listen(addr) {
+        Ok(server) => {
+            serve_forever(server);
+        },
+        Err(err) => {
+            let reason = net.net_error_message(err);
+            let detail = http.listen_error();
+            println(f"cannot listen on {addr}: {reason} - {detail}");
+        },
     }
 }

@@ -102,7 +102,7 @@ The **Checker disposition** column documents what the type checker emits when
 | **`std::net::dns.resolve`, `dns.lookup_host`** | 🚫 Error (`Dns`) | Native OS resolver; not compiled for wasm32 | WASM-TODO |
 | **`std::os.*`** | 🚫 Error (`OsEnv`) | Hew OS/env helpers are native-only today even where WASI may offer host data | WASM-TODO |
 | **`Node::*`, `RemotePid<T>::send` / `::ask`, remote monitor/link operations** | 🚫 Error (`Distributed`) | Key-derived identity, durable sessions, authenticated mesh routing, registry/SWIM, and cross-node lifecycle are native-only | WASM-TODO |
-| **`std::crypto::crypto.random_bytes`** | 🚫 Error (`CryptoRandom`) | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists | WASM-TODO |
+| **`std::crypto::crypto.random_bytes`, `crypto.try_random_bytes`** | 🚫 Error (`CryptoRandom`) | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists | WASM-TODO |
 
 ---
 
@@ -222,9 +222,9 @@ would otherwise end in a trap or linker failure:
 
 - **`std::crypto::crypto.random_bytes`**: Secure randomness is backed by
   `ring::SystemRandom`, which is native-only and absent from the wasm32 link set.
-  The checker rejects `crypto.random_bytes` on wasm32 so key material generation
-  fails closed instead of compiling to a non-cryptographic fallback or host
-  import. WASM-TODO: plumb a secure host entropy capability such as WASI
+  The checker rejects `crypto.random_bytes` and its fallible twin
+  `crypto.try_random_bytes` on wasm32 so key material generation fails closed
+  instead of compiling to a non-cryptographic fallback or host import. WASM-TODO: plumb a secure host entropy capability such as WASI
   `random_get`.
 
 ### ⚠️ WASM-TODO (documented gap / not yet checker-gated)

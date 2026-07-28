@@ -12,6 +12,13 @@
 use crate::common;
 
 use common::typecheck;
+use hew_types::MethodCallRewrite;
+
+fn has_rewrite(output: &hew_types::TypeCheckOutput, symbol: &str) -> bool {
+    output.method_call_rewrites.values().any(
+        |rewrite| matches!(rewrite, MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == symbol),
+    )
+}
 
 /// Positive: an actor whose `receive fn`s match the handler trait's methods
 /// coerces cleanly to `LocalPid<Handler>`.
@@ -93,4 +100,56 @@ fn explicit_handler_impl_without_receive_fns_is_rejected_early() {
          unrelated error: {:#?}",
         output.errors
     );
+}
+
+/// A user type may legally share a stdlib transport's short name. Bare
+/// `Connection`, `TlsStream`, and `Conn` receivers must keep their own
+/// `Type::attach` dispatch rather than being hijacked by a runtime attach
+/// pseudo-symbol that expects an opaque handle and actor PID.
+#[test]
+fn user_transport_short_names_keep_user_attach_dispatch() {
+    for (module_import, type_name) in [
+        ("import std::net;", "Connection"),
+        ("import std::net::tls;", "TlsStream"),
+        ("import std::net::websocket;", "Conn"),
+    ] {
+        let output = typecheck(&format!(
+            r"
+            {module_import}
+
+            type {type_name} {{ value: i64; }}
+
+            impl {type_name} {{
+                fn attach(self, increment: i64) -> i64 {{
+                    self.value + increment
+                }}
+            }}
+
+            fn invoke(value: {type_name}) -> i64 {{
+                value.attach(1)
+            }}
+            "
+        ));
+        assert!(
+            output.errors.is_empty(),
+            "user-defined {type_name}::attach must typecheck: {:#?}",
+            output.errors
+        );
+        assert!(
+            has_rewrite(&output, &format!("{type_name}::attach")),
+            "user-defined {type_name}::attach must retain user dispatch: {:#?}",
+            output.method_call_rewrites
+        );
+        for forbidden in [
+            "hew_tcp_attach_local",
+            "hew_tls_attach_local",
+            "hew_ws_attach_local",
+        ] {
+            assert!(
+                !has_rewrite(&output, forbidden),
+                "bare user {type_name} must not rewrite to {forbidden}: {:#?}",
+                output.method_call_rewrites
+            );
+        }
+    }
 }

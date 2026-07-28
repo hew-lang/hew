@@ -1561,13 +1561,18 @@ mod tests {
             info.drop_types.contains(&"process.Child".to_string()),
             "process module should mark process.Child as a drop type"
         );
+        assert!(
+            !info.handle_types.contains(&"process.Child".to_string()),
+            "fielded process.Child is a resource record, not an opaque handle"
+        );
         assert_eq!(
             info.drop_funcs
                 .iter()
                 .find(|(ty, _)| ty == "process.Child")
                 .map(|(_, func)| func.as_str()),
-            Some("hew_process_drop"),
-            "process.Child drop func should be hew_process_drop"
+            None,
+            "fielded process.Child must dispatch drop through its source-level \
+             close method rather than a direct opaque-handle drop function"
         );
     }
 
@@ -1583,6 +1588,10 @@ mod tests {
         assert_eq!(wait.c_symbol, "hew_process_wait");
         assert_eq!(wait.params, Vec::<Ty>::new());
         assert_eq!(wait.return_type, Ty::I64);
+        assert!(
+            wait.dispatch_through_impl,
+            "fielded process.Child.wait must execute its source-level impl body"
+        );
 
         let kill = info
             .handle_methods
@@ -1592,6 +1601,10 @@ mod tests {
         assert_eq!(kill.c_symbol, "hew_process_kill");
         assert_eq!(kill.params, Vec::<Ty>::new());
         assert_eq!(kill.return_type, Ty::I64);
+        assert!(
+            kill.dispatch_through_impl,
+            "fielded process.Child.kill must execute its source-level impl body"
+        );
     }
 
     #[test]

@@ -135,8 +135,16 @@ impl CanonicalValueMethods for Value {
         }
     }
     fn get_int(val: Value) -> i64 {
-        unsafe {
-            hew_json_get_int(val)
+        let status = unsafe {
+            hew_json_int_status(val)
+        };
+        if status == 0 {
+            panic("json.Value.get_int: the value is an integer no i64 can hold");
+            0
+        } else {
+            unsafe {
+                hew_json_get_int(val)
+            }
         }
     }
     fn get_float(val: Value) -> f64 {
@@ -285,6 +293,43 @@ pub fn try_parse(s: string) -> Result<Value, ParseError> {
     }
 }
 
+/// Read `val` as an `i64` without panicking.
+///
+/// A JSON number above `i64::MAX` is still an integer, so reading it as `0`
+/// would be the document's value replaced by a fabricated one. Returns
+/// `Err(reason)` for such a value and for a non-integer value.
+pub fn try_get_int(val: Value) -> Result<i64, string> {
+    let status = unsafe {
+        hew_json_int_status(val)
+    };
+    if status == 1 {
+        let n = unsafe {
+            hew_json_get_int(val)
+        };
+        Ok(n)
+    } else if status == 0 {
+        Err("json: the value is an integer no i64 can hold")
+    } else {
+        Err("json: the value is not an integer")
+    }
+}
+
+/// Count the integers in `val` and its descendants that no `i64` can hold.
+///
+/// The walk is recursive, so an unrepresentable integer nested inside arrays
+/// and objects is reported here rather than surfacing later as a fabricated
+/// `0` from `get_int()`. Returns -1 for an invalid handle.
+pub fn unrepresentable_int_count(val: Value) -> i64 {
+    unsafe {
+        hew_json_unrepresentable_int_count(val)
+    }
+}
+
+/// Report whether every integer in `val` and its descendants fits an `i64`.
+pub fn ints_are_representable(val: Value) -> bool {
+    unrepresentable_int_count(val) == 0
+}
+
 /// Create a new empty JSON object.
 pub fn object() -> Value {
     unsafe {
@@ -341,6 +386,8 @@ extern "C" {
     fn hew_json_type(val: Value) -> i32;
     fn hew_json_get_bool(val: Value) -> i32;
     fn hew_json_get_int(val: Value) -> i64;
+    fn hew_json_int_status(val: Value) -> i32;
+    fn hew_json_unrepresentable_int_count(val: Value) -> i64;
     fn hew_json_get_float(val: Value) -> f64;
     fn hew_json_get_string(val: Value) -> string;
     fn hew_json_get_field(val: Value, key: string) -> Value;

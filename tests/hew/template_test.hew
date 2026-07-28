@@ -263,3 +263,68 @@ fn malformed_unexpected_end_returns_error() {
         Err(e) => testing.assert_true(e.len() > 0),
     }
 }
+
+// ── An `{{if}}` has at most one `{{else}}` ────────────────────────────
+fn expect_template_rejected(src: string, what: string) {
+    let ctx = template.new_ctx();
+    let r = template.render(src, ctx);
+    match r {
+        Ok(out) => panic(f"expected {what} to be rejected, rendered `{out}`"),
+        Err(_) => {},
+    }
+}
+
+#[test]
+fn test_render_rejects_a_duplicate_else_in_one_if() {
+    let ctx = template.new_ctx();
+    let r = template.render("{{if .a}}A{{else}}B{{else}}C{{end}}", ctx);
+    match r {
+        Ok(out) => panic(f"expected a duplicate else to be rejected, rendered `{out}`"),
+        Err(e) => testing.assert_eq_str(e, "template: duplicate `{{else}}` in one `{{if}}`"),
+    }
+}
+
+#[test]
+fn test_render_rejects_a_duplicate_else_in_a_nested_if() {
+    expect_template_rejected("{{if .a}}{{if .b}}X{{else}}Y{{else}}Z{{end}}{{end}}", "a nested duplicate else");
+}
+
+#[test]
+fn test_render_rejects_an_else_that_belongs_to_a_range() {
+    expect_template_rejected("{{range .xs}}{{.}}{{else}}none{{end}}", "an else inside range");
+}
+
+#[test]
+fn test_render_still_accepts_one_else_per_if() {
+    let ctx = template.new_ctx();
+    template.ctx_set_bool(ctx, "a", true);
+    template.ctx_set_bool(ctx, "c", false);
+    let r = template.render("{{if .a}}A{{else}}B{{end}}{{if .c}}C{{else}}D{{end}}", ctx);
+    match r {
+        Ok(out) => testing.assert_eq_str(out, "AD"),
+        Err(e) => panic(f"one else per if must render: {e}"),
+    }
+}
+
+#[test]
+fn test_render_still_accepts_an_else_after_a_closed_inner_if() {
+    let ctx = template.new_ctx();
+    template.ctx_set_bool(ctx, "a", true);
+    template.ctx_set_bool(ctx, "b", false);
+    let r = template.render("{{if .a}}{{if .b}}X{{else}}Y{{end}}{{else}}Z{{end}}", ctx);
+    match r {
+        Ok(out) => testing.assert_eq_str(out, "Y"),
+        Err(e) => panic(f"an else after a closed inner if must render: {e}"),
+    }
+}
+
+#[test]
+fn test_render_selects_the_else_branch_with_a_spaced_end_tag() {
+    let ctx = template.new_ctx();
+    template.ctx_set_bool(ctx, "a", false);
+    let r = template.render("{{if .a}}yes{{else}}no{{ end }}", ctx);
+    match r {
+        Ok(out) => testing.assert_eq_str(out, "no"),
+        Err(e) => panic(f"a spaced end tag must render: {e}"),
+    }
+}

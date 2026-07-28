@@ -75,6 +75,13 @@ pub enum NetError {
     /// `Cancelled` means the operation was abandoned for another reason
     /// (e.g. the blocking pool was shut down mid-call).
     Cancelled(i64);
+    /// An argument was rejected before it reached the operating system.
+    ///
+    /// Carries the rejection detail rather than an errno: no syscall was
+    /// made, so there is no platform error code to report. Produced by the
+    /// endpoint and duration validation below, which run before every native
+    /// call whose C ABI narrows an `i64` to an `i32`.
+    InvalidArgument(string);
     /// Any other network-level failure.
     Other(i64);
 }
@@ -117,7 +124,170 @@ pub fn net_error_message(e: NetError) -> string {
         NetError::AddressNotAvailable(code) => f"AddressNotAvailable({code})",
         NetError::TimedOut(code) => f"TimedOut({code})",
         NetError::Cancelled(code) => f"Cancelled({code})",
+        NetError::InvalidArgument(detail) => f"InvalidArgument({detail})",
         NetError::Other(code) => f"Other({code})",
+    }
+}
+
+// ── Scalar and endpoint validation ────────────────────────────────────
+//
+// Every native networking entry point below narrows an `i64` to the `i32`
+// its C ABI declares. Narrowing first and validating afterwards is not
+// validation: `2^32 + 500` narrows to `500`, so an unrepresentable timeout
+// silently becomes a plausible one, and a port of `2^32 + 80` becomes `80`.
+// These helpers are the single authority every such call site runs first,
+// so an unrepresentable value is reported and never reaches the runtime.
+/// Largest value the `i32` parameters of the networking C ABI can carry.
+pub fn abi_i32_max() -> i64 {
+    2147483647
+}
+
+/// Validate a millisecond duration that the C ABI carries as an `i32`.
+///
+/// `context` names the calling API so the rejection identifies its origin.
+pub fn try_duration_ms(context: string, ms: i64) -> Result<i64, NetError> {
+    if ms < 0 {
+        return Err(NetError::InvalidArgument(f"{context}: invalid duration {ms} ms (must be >= 0)"));
+    }
+    if ms > abi_i32_max() {
+        return Err(NetError::InvalidArgument(f"{context}: invalid duration {ms} ms (must be <= {abi_i32_max()})"));
+    }
+    Ok(ms)
+}
+
+/// Validate a TCP connection timeout, preserving its negative "clear" sentinel.
+///
+/// The public API deliberately accepts any negative `i64` to clear an existing
+/// timeout. Normalize that whole domain to `-1` before narrowing to the runtime
+/// ABI, so values such as `i64::MIN` cannot wrap to a non-negative timeout.
+fn try_connection_timeout_ms(context: string, ms: i64) -> Result<i64, NetError> {
+    if ms < 0 {
+        return Ok(-1);
+    }
+    try_duration_ms(context, ms)
+}
+
+/// Validate a byte count that the C ABI carries as an `i32`.
+pub fn try_size_arg(context: string, size: i64) -> Result<i64, NetError> {
+    if size < 0 {
+        return Err(NetError::InvalidArgument(f"{context}: invalid size {size} (must be >= 0)"));
+    }
+    if size > abi_i32_max() {
+        return Err(NetError::InvalidArgument(f"{context}: invalid size {size} (must be <= {abi_i32_max()})"));
+    }
+    Ok(size)
+}
+
+/// Validate a TCP/UDP port number.
+pub fn try_port_arg(context: string, port: i64) -> Result<i64, NetError> {
+    if port < 0 || port > 65535 {
+        return Err(NetError::InvalidArgument(f"{context}: invalid port {port} (must be 0..=65535)"));
+    }
+    Ok(port)
+}
+
+/// A validated `host` / `port` pair.
+///
+/// `host` never carries the IPv6 bracket form: `[::1]:9000` yields host
+/// `::1`, which is what the resolver expects.
+pub type Endpoint {
+    host: string;
+    port: i64;
+}
+
+/// Longest address string the endpoint grammar accepts.
+///
+/// A DNS name is bounded at 253 octets and an IPv6 literal with brackets,
+/// a zone and a port stays well inside this; anything longer is malformed
+/// input, not an address, and is rejected before any resolver call.
+fn max_endpoint_len() -> i64 {
+    320
+}
+
+fn endpoint_reject(context: string, addr: string, reason: string) -> NetError {
+    NetError::InvalidArgument(f"{context}: invalid endpoint '{addr}' ({reason})")
+}
+
+fn try_endpoint_port(context: string, addr: string, text: string) -> Result<i64, NetError> {
+    if text == "" {
+        return Err(endpoint_reject(context, addr, "empty port"));
+    }
+    match string.to_int(text) {
+        Some(port) => try_port_arg(context, port),
+        None => Err(endpoint_reject(context, addr, f"port '{text}' is not a number")),
+    }
+}
+
+/// Parse `host:port`, `:port`, or `[ipv6]:port` into a validated `Endpoint`.
+///
+/// This is the single endpoint grammar for the networking modules. A missing
+/// port, a non-numeric port, a port outside `0..=65535`, an unbracketed IPv6
+/// literal, and an unterminated bracket are all rejected here, before any
+/// address string reaches a resolver or a native connect.
+///
+/// An empty host means "this machine": `:9000` yields host `127.0.0.1`.
+///
+/// # Examples
+///
+/// ```
+/// import std::net;
+///
+/// match net.try_parse_endpoint("net.connect_timeout", "[::1]:9000") {
+///     Ok(ep) => println(f"{ep.host} {ep.port}"),
+///     Err(err) => println(net.net_error_message(err)),
+/// }
+/// ```
+pub fn try_parse_endpoint(context: string, addr: string) -> Result<Endpoint, NetError> {
+    if addr == "" {
+        return Err(endpoint_reject(context, addr, "empty address"));
+    }
+    if addr.len() > max_endpoint_len() {
+        return Err(endpoint_reject(context, "<oversized>", f"address length {addr.len()} exceeds {max_endpoint_len()}"));
+    }
+    if addr.starts_with("[") {
+        return try_parse_bracketed_endpoint(context, addr);
+    }
+    let colon = addr.find(":");
+    match colon {
+        Some(i) => {
+            let host = addr.slice(0, i);
+            let port_text = addr.slice(i + 1, addr.len());
+            // A second colon outside brackets is an unbracketed IPv6 literal:
+            // its grammar is ambiguous with `host:port` and it is rejected
+            // rather than silently split at the first colon.
+            if port_text.contains(":") {
+                return Err(endpoint_reject(context, addr, "unbracketed IPv6 literal; write [address]:port"));
+            }
+            let port = try_endpoint_port(context, addr, port_text)?;
+            if host == "" {
+                Ok(Endpoint { host: "127.0.0.1", port: port })
+            } else {
+                Ok(Endpoint { host: host, port: port })
+            }
+        },
+        None => Err(endpoint_reject(context, addr, "missing ':port'")),
+    }
+}
+
+fn try_parse_bracketed_endpoint(context: string, addr: string) -> Result<Endpoint, NetError> {
+    let close = addr.find("]");
+    match close {
+        Some(end) => {
+            let host = addr.slice(1, end);
+            if host == "" {
+                return Err(endpoint_reject(context, addr, "empty bracketed host"));
+            }
+            let rest = addr.slice(end + 1, addr.len());
+            if rest == "" {
+                return Err(endpoint_reject(context, addr, "missing ':port'"));
+            }
+            if !rest.starts_with(":") {
+                return Err(endpoint_reject(context, addr, "expected ':port' after ']'"));
+            }
+            let port = try_endpoint_port(context, addr, rest.slice(1, rest.len()))?;
+            Ok(Endpoint { host: host, port: port })
+        },
+        None => Err(endpoint_reject(context, addr, "unterminated '[' in IPv6 literal")),
     }
 }
 
@@ -287,13 +457,25 @@ trait ConnectionMethods {
     /// Read raw bytes from the connection.
     ///
     /// Blocks until data is available. Returns an empty bytes buffer on EOF
-    /// or disconnect.
+    /// or disconnect. An empty buffer alone does not say which: use
+    /// `try_read` to tell an orderly EOF apart from a read failure.
     fn read(self) -> bytes;
+
+    /// Read raw bytes from the connection, separating EOF from failure.
+    ///
+    /// `Ok(empty)` is an orderly EOF — the peer closed and there is nothing
+    /// more to read. `Err(NetError)` is a read failure carrying the OS errno.
+    fn try_read(self) -> Result<bytes, NetError>;
 
     /// Read a UTF-8 string from the connection.
     ///
     /// Convenience wrapper that reads bytes and converts to string.
     fn read_string(self) -> string;
+
+    /// Read a UTF-8 string from the connection, separating EOF from failure.
+    ///
+    /// `Ok("")` is an orderly EOF; `Err(NetError)` is a read failure.
+    fn try_read_string(self) -> Result<string, NetError>;
 
     /// Write raw bytes to the connection.
     ///
@@ -434,12 +616,37 @@ impl ConnectionMethods for Connection {
             hew_tcp_read(conn)
         }
     }
+    /// Read raw bytes, reporting a read failure separately from EOF.
+    fn try_read(conn: Connection) -> Result<bytes, NetError> {
+        unsafe {
+            // Drop any status left by an earlier operation so the status read
+            // after the call describes this read and nothing else.
+            let _ = hew_stream_last_errno();
+            let data = hew_tcp_read(conn);
+            let errno = hew_stream_last_errno();
+            if errno == 0 {
+                Ok(data)
+            } else {
+                let _ = hew_stream_last_error();
+                Err(net_error_from_errno(errno as i64))
+            }
+        }
+    }
     /// Read a UTF-8 string from the connection.
     fn read_string(conn: Connection) -> string {
         unsafe {
             hew_bytes_to_string(unsafe {
                 hew_tcp_read(conn)
             })
+        }
+    }
+    /// Read a UTF-8 string, reporting a read failure separately from EOF.
+    fn try_read_string(conn: Connection) -> Result<string, NetError> {
+        match conn.try_read() {
+            Ok(data) => Ok(unsafe {
+                hew_bytes_to_string(data)
+            }),
+            Err(err) => Err(err),
         }
     }
     /// Write raw bytes to the connection.
@@ -464,14 +671,16 @@ impl ConnectionMethods for Connection {
     }
     /// Set the read timeout in milliseconds.
     fn set_read_timeout(conn: Connection, ms: i64) -> Result<(), NetError> {
+        let checked = try_connection_timeout_ms("net.Connection.set_read_timeout", ms)?;
         net_result_from_status(unsafe {
-            hew_tcp_set_read_timeout(conn, ms as i32)
+            hew_tcp_set_read_timeout(conn, checked as i32) // INTERNAL-ABI: range-checked above
         })
     }
     /// Set the write timeout in milliseconds.
     fn set_write_timeout(conn: Connection, ms: i64) -> Result<(), NetError> {
+        let checked = try_connection_timeout_ms("net.Connection.set_write_timeout", ms)?;
         net_result_from_status(unsafe {
-            hew_tcp_set_write_timeout(conn, ms as i32)
+            hew_tcp_set_write_timeout(conn, checked as i32) // INTERNAL-ABI: range-checked above
         })
     }
     /// Send raw bytes to the connection (active-mode-paired name for `write`).
@@ -599,35 +808,76 @@ pub fn try_connect(addr: string) -> Result<Connection, NetError> {
 
 /// Connect to a TCP server with a timeout.
 ///
-/// `timeout_sec` and `timeout_usec` specify the deadline.
+/// `timeout_sec` and `timeout_usec` specify the deadline. The address must
+/// carry an explicit port (`host:port`, `:port`, or `[ipv6]:port`).
+///
+/// Panics on a malformed address or an unrepresentable deadline. Use
+/// `try_connect_timeout` to observe those rejections instead.
 pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Connection {
-    let colon = addr.find(":");
-    // Derive `host`/`port` without moving `addr` into `host` up front: a bare
-    // `var host = addr;` consumes `addr` (string is move-typed), which would
-    // make the subsequent `addr.slice(...)`/`addr.len()` reads use-after-move.
-    // Keep `addr` live for the slice/len reads and only bind `host` to the
-    // borrowed-derived substring.
-    var host = "127.0.0.1";
-    var port: i64 = 0;
-    match colon {
-        Some(i) => {
-            if i != 0 {
-                host = addr.slice(0, i);
-            }
-            // A malformed port (non-numeric / empty after the colon) keeps
-            // the previous behaviour: port 0.
-            port = string.to_int(addr.slice(i + 1, addr.len())).unwrap_or(0);
+    let Endpoint { host, port } = match try_parse_endpoint("net.connect_timeout", addr) {
+        Ok(endpoint) => endpoint,
+        Err(err) => {
+            panic(f"net.connect_timeout failed: {net_error_message(err)}");
+            Endpoint { host: "", port: 0 }
         },
-        None => {
-            host = addr;
+    };
+    let timeout_ms = match try_connect_timeout_ms(timeout_sec, timeout_usec) {
+        Ok(ms) => ms,
+        Err(err) => {
+            panic(f"net.connect_timeout failed: {net_error_message(err)}");
+            0
         },
+    };
+    unsafe {
+        hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32) // INTERNAL-ABI: both values are range-checked above
     }
+}
+
+/// Connect to a TCP server with a timeout, reporting invalid input and
+/// connect failure instead of fabricating a default.
+///
+/// The address is parsed by the shared endpoint authority, so an unbracketed
+/// IPv6 literal, a non-numeric port, and a missing port are all rejected
+/// before the native connect rather than becoming host `127.0.0.1` port `0`.
+/// The deadline is accumulated with overflow checks and validated against the
+/// `i32` the C ABI carries.
+pub fn try_connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Result<Connection, NetError> {
+    let Endpoint { host, port } = try_parse_endpoint("net.connect_timeout", addr)?;
+    let timeout_ms = try_connect_timeout_ms(timeout_sec, timeout_usec)?;
+    unsafe {
+        let conn = hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32); // INTERNAL-ABI: both values are range-checked above
+        if hew_connection_is_valid(conn) {
+            Ok(conn)
+        } else {
+            let errno = hew_stream_last_errno();
+            let _ = hew_stream_last_error();
+            Err(net_error_from_errno(errno as i64))
+        }
+    }
+}
+
+/// Accumulate `timeout_sec` + `timeout_usec` into milliseconds with the
+/// overflow checks the plain `sec * 1000 + usec / 1000` form did not have.
+fn try_connect_timeout_ms(timeout_sec: i64, timeout_usec: i64) -> Result<i64, NetError> {
     let millis_per_second: i64 = 1000;
     let micros_per_millisecond: i64 = 1000;
-    let timeout_ms = timeout_sec * millis_per_second + timeout_usec / micros_per_millisecond;
-    unsafe {
-        hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32)
+    if timeout_sec < 0 {
+        return Err(NetError::InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (must be >= 0)"));
     }
+    if timeout_usec < 0 {
+        return Err(NetError::InvalidArgument(f"net.connect_timeout: invalid timeout_usec {timeout_usec} (must be >= 0)"));
+    }
+    // Bound each term against the ABI ceiling before multiplying or adding, so
+    // the accumulation itself can never wrap.
+    if timeout_sec > abi_i32_max() / millis_per_second {
+        return Err(NetError::InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (deadline exceeds {abi_i32_max()} ms)"));
+    }
+    let seconds_ms = timeout_sec * millis_per_second;
+    let micros_ms = timeout_usec / micros_per_millisecond;
+    if micros_ms > abi_i32_max() - seconds_ms {
+        return Err(NetError::InvalidArgument(f"net.connect_timeout: invalid deadline (timeout_sec {timeout_sec} + timeout_usec {timeout_usec} exceeds {abi_i32_max()} ms)"));
+    }
+    try_duration_ms("net.connect_timeout", seconds_ms + micros_ms)
 }
 
 /// Broadcast a message to all connections except the sender.

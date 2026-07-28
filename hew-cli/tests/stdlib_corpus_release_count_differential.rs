@@ -83,15 +83,252 @@ const REJECTED: &str = "REJECTED";
 /// release fails this test and forces the entry to be removed rather than
 /// letting the debt quietly become the new normal.
 const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
-    // Empty, and it is meant to stay that way. The three cells that stood here
-    // — `examples/net/tls_client.hew::main` at 48, `examples/smtp_client.hew::main`
-    // at 35 and `std/time/cron/cron.hew::Expr::next` at 3 — all named an
-    // unlanded answer to "who owns the buffer a `*_last_error` extern returns?"
-    // as their reason. That answer landed (hew-lang/hew#2828): it is recorded
-    // per symbol as `result-retention` on the `[[ownership.contracts]]` rows in
-    // scripts/jit-symbol-classification.toml, measured by the oracles named
-    // there, and read by `build_extern_contract_table`'s Clause C. All three
-    // cells are back at their `main` counts.
+    // `connect_timeout` now parses through `Endpoint` and transfers its owned
+    // host into the native call. The old body kept `addr`, `colon`, `host`, and
+    // sliced port temporaries in one function and planted six more syntactic
+    // drop entries. Validation moved those lifetimes into the shared parser;
+    // the 81-cell increase report includes the corresponding new helper/path
+    // releases. Imported copies have the same MIR and therefore the same exact
+    // 18 -> 12 shift.
+    (
+        "examples/actor_net_reader.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/benchmarks/http_server.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/benchmarks/http_server_expert.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/chat_client.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/chat_server.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/curl_client.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/http_server.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/mqtt_broker.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/await_http_roundtrip.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/await_read.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/await_read_fanout.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/await_read_hup.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/http_await_service.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/probe_a_conn_field.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/probe_b2_closure_await_outer_crash.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/probe_b2_closure_capture_await.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/probe_b2_closure_multi_await.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/probe_b2_closure_unit_await.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/probe_b3_closure_capture_noawait.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/net/tls_client.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/quic_service/client.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/quic_service/server.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "examples/static_server.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "std/net/dns/dns.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "std/net/http/http.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "std/net/net.hew",
+        "connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "std/net/quic/quic.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "std/net/tls/tls.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    (
+        "std/net/websocket/websocket.hew",
+        "net$connect_timeout",
+        12,
+        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+    ),
+    // The benchmark loops moved to `serve_forever`; these `main` functions now
+    // own only listener construction and its typed failure branch.
+    (
+        "examples/benchmarks/http_server.hew",
+        "main",
+        5,
+        "the request loop and its owned path temporaries moved into serve_forever, so main no longer contains those syntactic release sites",
+    ),
+    (
+        "examples/benchmarks/http_server_expert.hew",
+        "main",
+        9,
+        "the request loop and its owned path temporaries moved into serve_forever, so main no longer contains those syntactic release sites",
+    ),
+    // SMTP constructors now return Result and transfer either the live
+    // connection or error detail directly through the selected match arm.
+    (
+        "examples/smtp_client.hew",
+        "main",
+        35,
+        "fallible SMTP constructors transfer selected Result payloads instead of dropping null-backed temporaries",
+    ),
+    // `Child` is now a resource record around an opaque runtime handle. These
+    // methods contain no Hew heap value: resource teardown is the `Child.close`
+    // action itself, outside the cow-heap drop count measured here.
+    (
+        "std/process.hew",
+        "Child::close",
+        0,
+        "Child now wraps an opaque runtime handle; its resource close action owns no Hew heap allocation and therefore emits no cow-heap release",
+    ),
+    (
+        "std/process.hew",
+        "Child::kill",
+        0,
+        "Child now wraps an opaque runtime handle; kill touches only that native handle and therefore has no Hew cow-heap release to emit",
+    ),
+    (
+        "std/process.hew",
+        "Child::wait",
+        0,
+        "Child now wraps an opaque runtime handle; wait touches only that native handle and therefore has no Hew cow-heap release to emit",
+    ),
+    (
+        "std/process.hew",
+        "last_process_error",
+        0,
+        "both owned string inputs transfer directly into the selected ProcessError payload, leaving no untransferred Hew heap value to release",
+    ),
+    // SemVer numeric components are strings now. `try_parse` transfers them
+    // into `Version` rather than parsing and dropping them, while
+    // `matches_single` deliberately converges its old early returns on one
+    // final result, removing duplicate path-local drop-plan entries.
+    (
+        "std/text/semver/semver.hew",
+        "matches_single",
+        73,
+        "comparison branches converge on one exit instead of duplicating path-local drop plans; the same owned values are discharged on that shared exit",
+    ),
+    (
+        "std/text/semver/semver.hew",
+        "try_parse",
+        63,
+        "validated component strings transfer into the returned Version instead of being dropped after fixed-width parsing, so those releases are intentionally absent",
+    ),
 ];
 
 fn capture_mode() -> bool {

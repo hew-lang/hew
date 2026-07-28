@@ -1,10 +1,16 @@
 //! Tests for the std::path pure helper functions.
 
+import std::fs;
+
 import std::path;
+
+import std::process;
+
 import std::testing;
 
-// ── combine ─────────────────────────────────────────────────────────────
+import std::time::datetime;
 
+// ── combine ─────────────────────────────────────────────────────────────
 #[test]
 fn test_combine_avoids_double_slash_when_left_has_trailing_slash() {
     testing.assert_eq_str(path.combine("/a/", "b"), "/a/b");
@@ -26,7 +32,6 @@ fn test_combine_returns_empty_string_when_both_inputs_are_empty() {
 }
 
 // ── dirname ─────────────────────────────────────────────────────────────
-
 #[test]
 fn test_dirname_returns_parent_for_simple_file_path() {
     testing.assert_eq_str(path.dirname("/home/user/file.txt"), "/home/user");
@@ -48,7 +53,6 @@ fn test_dirname_strips_trailing_slash_before_split() {
 }
 
 // ── basename ────────────────────────────────────────────────────────────
-
 #[test]
 fn test_basename_returns_final_component_for_standard_path() {
     testing.assert_eq_str(path.basename("/home/user/file.txt"), "file.txt");
@@ -70,7 +74,6 @@ fn test_basename_returns_empty_string_for_root() {
 }
 
 // ── extension ───────────────────────────────────────────────────────────
-
 #[test]
 fn test_extension_returns_standard_extension() {
     testing.assert_eq_str(path.extension("photo.jpg"), "jpg");
@@ -172,3 +175,96 @@ fn test_extension_with_heap_input() {
     testing.assert_eq_str(result2, "log");
 }
 
+// ── glob expansion truth ────────────────────────────────────────────────
+//
+// #22: a `glob(3)` walk that aborts (a matching directory the process cannot
+// read) used to be reported as zero matches, which is the same value a
+// completed walk that matched nothing returns.
+// #44: `GlobResult.get` narrowed the `i64` index to `i32` before the native
+// range check, so index `2^32` wrapped to slot 0 and returned a real path.
+fn glob_scratch_dir(name: string) -> string {
+    f"tests/hew/_glob_{name}_{datetime.now_nanos()}"
+}
+
+fn chmod_dir(mode: string, dir: string) -> i64 {
+    let args: Vec<string> = Vec::new();
+    args.push(mode);
+    args.push(dir);
+    process.run_argv("chmod", args).exit_code
+}
+
+#[test]
+fn test_try_glob_reports_matches_for_a_completed_walk() {
+    match path.try_glob("std/*.hew") {
+        Ok(matches) => {
+            testing.assert_true(matches.len() > 0);
+            match matches.try_get(0) {
+                Some(first) => testing.assert_true(first.starts_with("std/")),
+                None => panic("expected a first match"),
+            }
+        },
+        Err(_) => panic("expected std/*.hew to expand"),
+    }
+}
+
+#[test]
+fn test_try_glob_reports_no_match_as_an_empty_success() {
+    match path.try_glob("std/hew-no-such-glob-subject-*.hew") {
+        Ok(matches) => testing.assert_true(matches.len() == 0),
+        Err(_) => panic("a completed walk that matched nothing is not a failure"),
+    }
+}
+
+#[test]
+fn test_try_glob_reports_an_unreadable_directory_as_a_failure() {
+    let dir = glob_scratch_dir("denied");
+    fs.mkdir_all(dir);
+    let inner = f"{dir}/sub";
+    fs.mkdir_all(inner);
+    fs.write(f"{inner}/present.txt", "x");
+    testing.assert_true(chmod_dir("000", inner) == 0);
+    let observed = match path.try_glob(f"{inner}/*") {
+        Ok(_) => "fabricated-empty-success",
+        Err(err) => path.path_error_message(err),
+    };
+    chmod_dir("755", inner);
+    fs.delete(f"{inner}/present.txt");
+    process.run_argv("rm", rm_rf_args(dir));
+    testing.assert_true(observed.contains("aborted"));
+}
+
+fn rm_rf_args(dir: string) -> Vec<string> {
+    let args: Vec<string> = Vec::new();
+    args.push("-rf");
+    args.push(dir);
+    args
+}
+
+#[test]
+fn test_glob_try_get_rejects_a_wrapped_index() {
+    let matches = path.glob("std/*.hew");
+    testing.assert_true(matches.len() > 0);
+    // 2^32 narrows to 0 under `index as i32`.
+    testing.assert_true(match matches.try_get(4294967296) {
+        Some(_) => false,
+        None => true,
+    });
+    // 2^32 - 1 narrows to -1.
+    testing.assert_true(match matches.try_get(4294967295) {
+        Some(_) => false,
+        None => true,
+    });
+    testing.assert_true(match matches.try_get(-1) {
+        Some(_) => false,
+        None => true,
+    });
+    testing.assert_true(match matches.try_get(matches.len()) {
+        Some(_) => false,
+        None => true,
+    });
+    testing.assert_true(match matches.try_get(0) {
+        Some(_) => true,
+        None => false,
+    });
+    matches.close();
+}

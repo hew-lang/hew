@@ -49,6 +49,9 @@ libc.workspace = true
 fd-lock.workspace = true
 hew-testutil = { path = "../hew-testutil" }
 object = "0.39"
+finl_unicode = { version = "=1.4.0", default-features = false, features = [
+  "categories",
+] }
 
 [lints]
 workspace = true

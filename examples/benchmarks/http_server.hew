@@ -1,8 +1,8 @@
-import std::net::http;
+import std::net::http::{Server};
 
-fn main() {
-    let server = http.listen("0.0.0.0:18080");
-    println("Listening on 0.0.0.0:18080");
+import std::net;
+
+fn serve_forever(server: Server) {
     loop {
         let req = server.accept();
         let path = req.path();
@@ -17,5 +17,19 @@ fn main() {
                 req.respond_text(404, "Not Found");
             },
         }
+    }
+}
+
+fn main() {
+    println("Listening on 0.0.0.0:18080");
+    match http.listen("0.0.0.0:18080") {
+        Ok(server) => {
+            serve_forever(server);
+        },
+        Err(err) => {
+            let reason = net.net_error_message(err);
+            let detail = http.listen_error();
+            println(f"cannot listen on 0.0.0.0:18080: {reason} - {detail}");
+        },
     }
 }

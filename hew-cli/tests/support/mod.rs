@@ -205,6 +205,11 @@ fn wasm_cargo_command() -> Command {
     ] {
         command.env_remove(var);
     }
+    // Explicitly override any user-level Cargo `build.rustc-wrapper` setting.
+    // Merely removing the environment variable lets Cargo fall back to that
+    // config (for example `sccache`), making the hermetic bootstrap depend on
+    // a developer-local daemon that may be unavailable in CI sandboxes.
+    command.env("RUSTC_WRAPPER", "");
     command
 }
 

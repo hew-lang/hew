@@ -33,6 +33,8 @@ pub enum CryptoError {
     InvalidUtf8;
     /// Native string allocation failed.
     AllocationFailure;
+    /// The system entropy source could not produce a nonce.
+    EntropyFailure;
 }
 
 fn crypto_error_from_i32(code: i32) -> CryptoError { // INTERNAL-ABI: C ABI error tag is i32 repr(C)
@@ -43,6 +45,7 @@ fn crypto_error_from_i32(code: i32) -> CryptoError { // INTERNAL-ABI: C ABI erro
         3 => CryptoError::AuthFailed,
         4 => CryptoError::InvalidUtf8,
         5 => CryptoError::AllocationFailure,
+        6 => CryptoError::EntropyFailure,
         _ => CryptoError::AuthFailed,
     }
 }
@@ -56,6 +59,7 @@ pub fn error_message(err: CryptoError) -> string {
         CryptoError::AuthFailed => "encrypt authentication failed",
         CryptoError::InvalidUtf8 => "encrypt plaintext was not valid UTF-8",
         CryptoError::AllocationFailure => "encrypt native allocation failed",
+        CryptoError::EntropyFailure => "encrypt system entropy source failed",
     }
 }
 
@@ -66,13 +70,46 @@ pub fn last_open_error() -> CryptoError {
     })
 }
 
+/// Return the last `try_seal` error observed on this thread.
+///
+/// Reading consumes the status, so a later successful seal is never read as
+/// this failure.
+pub fn last_seal_error() -> CryptoError {
+    crypto_error_from_i32(unsafe {
+        hew_encrypt_last_seal_error_code()
+    })
+}
+
 /// Encrypt plaintext using AES-256-GCM with the given key.
 ///
-/// Returns the ciphertext (nonce + encrypted data) as bytes.
+/// Returns the ciphertext (nonce + encrypted data) as bytes. Panics when the
+/// key is not a valid AES-256 key or the ciphertext cannot be produced; use
+/// `try_seal` to handle that instead.
 pub fn seal(key: bytes, plaintext: string) -> bytes {
-    base64.decode(unsafe {
-        hew_encrypt_seal_base64_hew(key, plaintext)
-    })
+    match try_seal(key, plaintext) {
+        Ok(ciphertext) => ciphertext,
+        Err(err) => {
+            panic(f"encrypt.seal failed: {error_message(err)}");
+            "".to_bytes()
+        },
+    }
+}
+
+/// Encrypt plaintext using AES-256-GCM, reporting an unusable key instead of
+/// failing out of the FFI boundary.
+///
+/// A key that is not 32 bytes, a plaintext the boundary cannot read, an
+/// entropy failure, and an allocation failure are all returned as
+/// `Err(CryptoError)`. No path returns an empty ciphertext as success: an
+/// empty plaintext still seals to a nonce plus a GCM tag.
+pub fn try_seal(key: bytes, plaintext: string) -> Result<bytes, CryptoError> {
+    let encoded = unsafe {
+        hew_encrypt_try_seal_base64_hew(key, plaintext)
+    };
+    match last_seal_error() {
+        CryptoError::None => Ok(base64.decode(encoded)),
+        err => Err(err),
+    }
 }
 
 /// Decrypt ciphertext using AES-256-GCM with the given key.
@@ -115,7 +152,8 @@ pub fn must_open(key: bytes, ciphertext: bytes) -> string {
 
 // -- FFI bindings --
 extern "C" {
-    fn hew_encrypt_seal_base64_hew(key: bytes, plaintext: string) -> string;
+    fn hew_encrypt_try_seal_base64_hew(key: bytes, plaintext: string) -> string;
+    fn hew_encrypt_last_seal_error_code() -> i32;
     fn hew_encrypt_open_hew(key: bytes, ciphertext: bytes) -> string;
     fn hew_encrypt_try_open_hew(key: bytes, ciphertext: bytes) -> string;
     fn hew_encrypt_must_open_hew(key: bytes, ciphertext: bytes) -> string;
@@ -134,8 +172,8 @@ fn crypto_error_from_i32_poisoned_codes_never_decode_to_none() {
     assert(crypto_error_from_i32(99) == CryptoError::AuthFailed);
     assert(crypto_error_from_i32(-1) != CryptoError::None);
     assert(crypto_error_from_i32(-1) == CryptoError::AuthFailed);
-    assert(crypto_error_from_i32(6) != CryptoError::None);
-    assert(crypto_error_from_i32(6) == CryptoError::AuthFailed);
+    assert(crypto_error_from_i32(7) != CryptoError::None);
+    assert(crypto_error_from_i32(7) == CryptoError::AuthFailed);
     assert(crypto_error_from_i32(100) != CryptoError::None);
     assert(crypto_error_from_i32(100) == CryptoError::AuthFailed);
 

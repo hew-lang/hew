@@ -452,6 +452,7 @@ stable = [
   "hew_println_str",
   "hew_process_drop",
   "hew_process_free",
+  "hew_process_is_valid",
   "hew_process_kill",
   "hew_process_last_error",
   "hew_process_result_exit_code",
@@ -463,6 +464,7 @@ stable = [
   "hew_process_run_args",
   "hew_process_run_argv",
   "hew_process_spawn",
+  "hew_process_spawn_argv",
   "hew_process_wait",
   "hew_random_choices_vec",
   "hew_random_gauss",
@@ -723,6 +725,7 @@ stable = [
   "hew_unicode_is_digit",
   "hew_unicode_is_letter",
   "hew_unicode_is_lower",
+  "hew_unicode_is_punct",
   "hew_unicode_is_space",
   "hew_unicode_is_upper",
   "hew_unicode_to_lower",
@@ -902,13 +905,16 @@ stable-stdlib = [
   "hew_ed25519_sign_hew",
   "hew_ed25519_verify_hew",
   "hew_encrypt_last_open_error_code",
+  "hew_compress_last_error",
+  "hew_encrypt_last_seal_error_code",
   "hew_encrypt_must_open_hew",
-  "hew_encrypt_seal_base64_hew",
   "hew_encrypt_try_open_hew",
+  "hew_encrypt_try_seal_base64_hew",
   "hew_gzip_compress_hew",
   "hew_gzip_decompress_hew",
   "hew_hmac_sha256_hew",
   "hew_http_last_error",
+  "hew_http_last_listen_errno",
   "hew_http_request_body_string",
   "hew_http_request_free",
   "hew_http_request_header",
@@ -928,6 +934,8 @@ stable-stdlib = [
   "hew_http_response_status",
   "hew_http_server_close",
   "hew_http_server_new",
+  "hew_http_server_is_valid",
+  "hew_http_server_port",
   "hew_http_server_recv",
   "hew_http_server_set_request_timeout_ms",
   "hew_http_set_timeout",
@@ -955,6 +963,8 @@ stable-stdlib = [
   "hew_json_get_field",
   "hew_json_get_float",
   "hew_json_get_int",
+  "hew_json_int_status",
+  "hew_json_unrepresentable_int_count",
   "hew_json_get_string",
   "hew_json_last_error",
   "hew_json_object_keys",
@@ -1032,6 +1042,7 @@ stable-stdlib = [
   "hew_quic_stream_send_timeout_hew",
   "hew_quic_stream_stop",
   "hew_random_bytes_hew",
+  "hew_random_last_error_code",
   "hew_regex_capture_index_one",
   "hew_regex_capture_name_one",
   "hew_regex_capture_width",
@@ -1049,6 +1060,7 @@ stable-stdlib = [
   "hew_sha384_hew",
   "hew_sha512_hew",
   "hew_smtp_close",
+  "hew_smtp_conn_is_valid",
   "hew_smtp_connect",
   "hew_smtp_connect_tls",
   "hew_smtp_last_error",
@@ -1082,6 +1094,7 @@ stable-stdlib = [
   "hew_toml_get_int",
   "hew_toml_get_string",
   "hew_toml_last_error",
+  "hew_toml_last_serialize_error",
   "hew_toml_parse",
   "hew_toml_stringify",
   "hew_toml_table_new",
@@ -1107,8 +1120,11 @@ stable-stdlib = [
   "hew_uuid_v7",
   "hew_ws_attach",
   "hew_ws_close",
+  "hew_ws_conn_is_valid",
   "hew_ws_connect",
   "hew_ws_message_free",
+  "hew_ws_last_errno",
+  "hew_ws_last_error",
   "hew_ws_message_is_valid",
   "hew_ws_message_text",
   "hew_ws_message_type",
@@ -1119,6 +1135,7 @@ stable-stdlib = [
   "hew_ws_server_accept",
   "hew_ws_server_close",
   "hew_ws_server_new",
+  "hew_ws_server_is_valid",
   "hew_ws_server_port",
   "hew_xml_children_count",
   "hew_xml_free",
@@ -1149,6 +1166,8 @@ stable-stdlib = [
   "hew_yaml_get_field",
   "hew_yaml_get_float",
   "hew_yaml_get_int",
+  "hew_yaml_int_status",
+  "hew_yaml_unrepresentable_int_count",
   "hew_yaml_get_string",
   "hew_yaml_last_error",
   "hew_yaml_object_new",
@@ -1271,8 +1290,10 @@ codegen-stable = [
   "hew_get_reply_channel",
   "hew_glob",
   "hew_glob_count",
+  "hew_glob_error",
   "hew_glob_free",
   "hew_glob_get",
+  "hew_glob_is_valid",
   "hew_global_timer_wheel",
   "hew_lambda_body_alloc_reply_buf",
   "hew_lambda_drain_all",
@@ -1959,6 +1980,13 @@ params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 
+[[ownership.contracts]]
+symbol = "hew_toml_last_serialize_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
 # hew-std/src/toml.rs:73-81 allocates the actor-local error string.
 [[ownership.contracts]]
 symbol = "hew_toml_last_error"
@@ -2471,6 +2499,13 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_unicode_is_punct"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_unicode_is_digit"
 result = "none"
 params = ["borrow"]
@@ -2885,6 +2920,13 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_process_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_process_kill"
 result = "none"
 params = ["borrow"]
@@ -2968,6 +3010,13 @@ discharge-depth = "deep"
 symbol = "hew_process_spawn"
 result = "fresh"
 params = ["borrow"]
+release-symbol = "hew_process_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_process_spawn_argv"
+result = "fresh"
+params = ["borrow", "borrow"]
 release-symbol = "hew_process_drop"
 discharge-depth = "shallow"
 
@@ -3105,6 +3154,13 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_glob_error"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
 symbol = "hew_glob_free"
 result = "none"
 params = ["consume"]
@@ -3117,6 +3173,13 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_glob_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_path_absolute"
@@ -3399,6 +3462,13 @@ release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
 
 [[ownership.contracts]]
+symbol = "hew_compress_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
 symbol = "hew_gzip_compress_hew"
 result = "fresh"
 params = ["borrow"]
@@ -3511,6 +3581,20 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_encrypt_last_seal_error_code"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_random_last_error_code"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_encrypt_must_open_hew"
 result = "fresh"
 params = ["borrow", "borrow"]
@@ -3518,7 +3602,7 @@ release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 
 [[ownership.contracts]]
-symbol = "hew_encrypt_seal_base64_hew"
+symbol = "hew_encrypt_try_seal_base64_hew"
 result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
@@ -4000,7 +4084,8 @@ discharge-depth = "none"
 # WebSocket — hew-std/src/websocket.rs. connect/server_accept return Box'd
 # HewWsConn handles (Box::from_raw in hew_ws_close); recv(_timeout) return
 # Box'd HewWsMessage handles; message_text returns a fresh alloc_cstring
-# string. hew_ws_attach snapshots the actor ref by value (borrow).
+# string. hew_ws_attach wraps the borrowed local actor pointer in a by-value
+# actor-ref snapshot for its reader thread.
 [[ownership.contracts]]
 symbol = "hew_ws_attach"
 result = "none"
@@ -4109,8 +4194,8 @@ discharge-depth = "none"
 # TLS — hew-std/src/tls.rs. connect returns a Box'd HewTlsStream consumed by
 # hew_tls_close. hew_tls_read_result returns a repr(C) struct whose .data
 # field is a fresh owned BytesTriple (released via hew_bytes_drop); the write
-# bridge only reads its borrowed BytesTriple. hew_tls_attach snapshots the
-# actor ref by value (borrow).
+# bridge only reads its borrowed BytesTriple. hew_tls_attach wraps the borrowed
+# local actor pointer in a by-value actor-ref snapshot for its reader thread.
 [[ownership.contracts]]
 symbol = "hew_tls_attach"
 result = "none"
@@ -4642,6 +4727,20 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_json_int_status"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_unrepresentable_int_count"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_json_get_int"
 result = "none"
 params = ["borrow"]
@@ -5002,6 +5101,20 @@ discharge-depth = "deep"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_get_float"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_int_status"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_unrepresentable_int_count"
 result = "none"
 params = ["borrow"]
 release-symbol = ""
@@ -5380,6 +5493,62 @@ discharge-depth = "none"
 # deliberately NOT consulted (see the system-lane provenance boundary above).
 [[ownership.contracts]]
 symbol = "hew_mailbox_has_user_messages"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_last_listen_errno"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_server_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_server_port"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_ws_last_errno"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_conn_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_ws_server_is_valid"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_smtp_conn_is_valid"
 result = "none"
 params = ["borrow"]
 release-symbol = ""

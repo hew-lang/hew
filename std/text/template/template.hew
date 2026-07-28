@@ -126,6 +126,7 @@ pub enum TemplateError {
     UnexpectedTag(string);
     DotOutsideRange(string);
     UnknownDirective(string);
+    DuplicateElse(string);
 }
 
 fn template_error_message(e: TemplateError) -> string {
@@ -135,6 +136,7 @@ fn template_error_message(e: TemplateError) -> string {
         TemplateError::UnexpectedTag(message) => message,
         TemplateError::DotOutsideRange(message) => message,
         TemplateError::UnknownDirective(message) => message,
+        TemplateError::DuplicateElse(message) => message,
     }
 }
 
@@ -218,6 +220,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
     var true_end = -1; // byte offset of the end of the "true" branch (exclusive)
     var false_start = -1; // byte offset of the start of the "false" branch
     var end_pos = -1; // byte offset right after the `{{end}}` that closes this if
+    var end_tag_start = -1; // byte offset of the `{{` of that closing `{{end}}`
     while pos < tlen {
         let rest = tmpl.slice(pos, tlen);
         let open = match rest.find("{{") {
@@ -245,6 +248,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
                 if true_end < 0 {
                     true_end = pos + open;
                 }
+                end_tag_start = pos + open;
                 end_pos = next_pos;
                 // Exit the scan loop.
                 pos = tlen + 1;
@@ -253,6 +257,9 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
                 pos = next_pos;
             }
         } else if tag == "else" && depth == 0 {
+            if false_start >= 0 {
+                return Err(TemplateError::DuplicateElse("template: duplicate `{{else}}` in one `{{if}}`"));
+            }
             true_end = pos + open;
             false_start = next_pos;
             pos = next_pos;
@@ -272,12 +279,11 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
         }
     } else {
         if false_start >= 0 {
-            // false_end is the start of the `{{end}}` that we found; it is
-            // `true_end` as set by the `{{else}}` branch of the scan above,
-            // which may already hold the right offset.  Recompute from end_pos:
-            // `{{end}}` is 7 bytes, so the `{{` preceding `end` starts at
-            // end_pos - 7.
-            let false_end = end_pos - 7;
+            // The false branch runs from just after `{{else}}` to the `{{` of
+            // the closing `{{end}}`, whose offset the scan above recorded.
+            // Deriving it from `end_pos` would assume `{{end}}` is exactly
+            // seven bytes and mis-slice a spaced `{{ end }}`.
+            let false_end = end_tag_start;
             let branch = tmpl.slice(false_start, false_end);
             let rendered = render_segment(branch, ctx, range_elem, in_range);
             match rendered {
@@ -428,7 +434,7 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
 }
 
 fn unclosed_block_error(block: string) -> TemplateError {
-    if block == "if" {
+    if block == "if" || block == "if-else" {
         TemplateError::UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`")
     } else {
         TemplateError::UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`")
@@ -476,9 +482,14 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
                 return Err(TemplateError::UnexpectedTag("template: unexpected `{{else}}`"));
             }
             let top = stack[stack.len() - 1];
+            if top == "if-else" {
+                return Err(TemplateError::DuplicateElse("template: duplicate `{{else}}` in one `{{if}}`"));
+            }
             if top != "if" {
                 return Err(TemplateError::UnexpectedTag("template: unexpected `{{else}}`"));
             }
+            let _ = stack.pop();
+            stack.push("if-else");
         } else if tag == "end" {
             if stack.len() == 0 {
                 return Err(TemplateError::UnexpectedTag("template: unexpected `{{end}}`"));

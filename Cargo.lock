@@ -1807,6 +1807,7 @@ dependencies = [
  "clap_complete",
  "dirs",
  "fd-lock",
+ "finl_unicode",
  "hew-analysis",
  "hew-codegen-rs",
  "hew-compile",
@@ -1952,6 +1953,7 @@ dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
  "fd-lock",
+ "finl_unicode",
  "flate2",
  "hew-cabi",
  "hew-runtime-testkit",
@@ -2039,6 +2041,7 @@ dependencies = [
  "url",
  "uuid",
  "webpki-roots",
+ "zeroize",
 ]
 
 [[package]]

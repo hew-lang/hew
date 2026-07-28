@@ -25,44 +25,177 @@
 //! ```
 
 /// Gzip-compress `data`, returning compressed bytes.
+///
+/// Panics with the codec's reason if compression fails. Use
+/// `try_gzip_compress(data)` when failure should be returned as an error.
 pub fn gzip_compress(data: bytes) -> bytes {
-    unsafe {
+    match try_gzip_compress(data) {
+        Ok(out) => out,
+        Err(reason) => {
+            panic(f"compress.gzip_compress: {reason}");
+            "".to_bytes()
+        },
+    }
+}
+
+/// Gzip-compress `data` without panicking.
+///
+/// A failed codec call and a codec call that legitimately produced no bytes
+/// both yield an empty buffer, so the codec's own reason decides which one
+/// happened.
+pub fn try_gzip_compress(data: bytes) -> Result<bytes, string> {
+    let out = unsafe {
         hew_gzip_compress_hew(data)
+    };
+    let reason = unsafe {
+        hew_compress_last_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
+    } else {
+        Ok(out)
     }
 }
 
 /// Gzip-decompress `data`, returning uncompressed bytes.
+///
+/// Panics with the codec's reason if decompression fails. Use
+/// `try_gzip_decompress(data, max_output_len)` when failure should be
+/// returned as an error.
 pub fn gzip_decompress(data: bytes, max_output_len: i64) -> bytes {
-    unsafe {
+    match try_gzip_decompress(data, max_output_len) {
+        Ok(out) => out,
+        Err(reason) => {
+            panic(f"compress.gzip_decompress: {reason}");
+            "".to_bytes()
+        },
+    }
+}
+
+/// Gzip-decompress `data` without panicking.
+pub fn try_gzip_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string> {
+    let out = unsafe {
         hew_gzip_decompress_hew(data, max_output_len)
+    };
+    let reason = unsafe {
+        hew_compress_last_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
+    } else {
+        Ok(out)
     }
 }
 
 /// Deflate-compress `data` (raw DEFLATE), returning compressed bytes.
+///
+/// Panics with the codec's reason if compression fails.
 pub fn deflate_compress(data: bytes) -> bytes {
-    unsafe {
+    match try_deflate_compress(data) {
+        Ok(out) => out,
+        Err(reason) => {
+            panic(f"compress.deflate_compress: {reason}");
+            "".to_bytes()
+        },
+    }
+}
+
+/// Deflate-compress `data` (raw DEFLATE) without panicking.
+pub fn try_deflate_compress(data: bytes) -> Result<bytes, string> {
+    let out = unsafe {
         hew_deflate_compress_hew(data)
+    };
+    let reason = unsafe {
+        hew_compress_last_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
+    } else {
+        Ok(out)
     }
 }
 
 /// Deflate-decompress `data` (raw DEFLATE), returning uncompressed bytes.
+///
+/// Panics with the codec's reason if decompression fails.
 pub fn deflate_decompress(data: bytes, max_output_len: i64) -> bytes {
-    unsafe {
+    match try_deflate_decompress(data, max_output_len) {
+        Ok(out) => out,
+        Err(reason) => {
+            panic(f"compress.deflate_decompress: {reason}");
+            "".to_bytes()
+        },
+    }
+}
+
+/// Deflate-decompress `data` (raw DEFLATE) without panicking.
+pub fn try_deflate_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string> {
+    let out = unsafe {
         hew_deflate_decompress_hew(data, max_output_len)
+    };
+    let reason = unsafe {
+        hew_compress_last_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
+    } else {
+        Ok(out)
     }
 }
 
 /// Zlib-compress `data`, returning compressed bytes.
+///
+/// Panics with the codec's reason if compression fails.
 pub fn zlib_compress(data: bytes) -> bytes {
-    unsafe {
+    match try_zlib_compress(data) {
+        Ok(out) => out,
+        Err(reason) => {
+            panic(f"compress.zlib_compress: {reason}");
+            "".to_bytes()
+        },
+    }
+}
+
+/// Zlib-compress `data` without panicking.
+pub fn try_zlib_compress(data: bytes) -> Result<bytes, string> {
+    let out = unsafe {
         hew_zlib_compress_hew(data)
+    };
+    let reason = unsafe {
+        hew_compress_last_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
+    } else {
+        Ok(out)
     }
 }
 
 /// Zlib-decompress `data`, returning uncompressed bytes.
+///
+/// Panics with the codec's reason if decompression fails.
 pub fn zlib_decompress(data: bytes, max_output_len: i64) -> bytes {
-    unsafe {
+    match try_zlib_decompress(data, max_output_len) {
+        Ok(out) => out,
+        Err(reason) => {
+            panic(f"compress.zlib_decompress: {reason}");
+            "".to_bytes()
+        },
+    }
+}
+
+/// Zlib-decompress `data` without panicking.
+pub fn try_zlib_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string> {
+    let out = unsafe {
         hew_zlib_decompress_hew(data, max_output_len)
+    };
+    let reason = unsafe {
+        hew_compress_last_error()
+    };
+    if reason.len() > 0 {
+        Err(reason)
+    } else {
+        Ok(out)
     }
 }
 
@@ -74,4 +207,5 @@ extern "C" {
     fn hew_deflate_decompress_hew(data: bytes, max_output_len: i64) -> bytes;
     fn hew_zlib_compress_hew(data: bytes) -> bytes;
     fn hew_zlib_decompress_hew(data: bytes, max_output_len: i64) -> bytes;
+    fn hew_compress_last_error() -> string;
 }

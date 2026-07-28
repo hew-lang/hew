@@ -37,6 +37,7 @@ extern "C" {
     fn hew_unicode_is_digit(cp: i32) -> bool;
     fn hew_unicode_is_letter(cp: i32) -> bool;
     fn hew_unicode_is_alnum(cp: i32) -> bool;
+    fn hew_unicode_is_punct(cp: i32) -> bool;
     fn hew_unicode_to_upper(cp: i32) -> i32;
     fn hew_unicode_to_lower(cp: i32) -> i32;
 }
@@ -193,33 +194,18 @@ pub fn is_alnum(cp: i64) -> bool {
 /// unicode.is_punct(0x3002)  // true  (IDEOGRAPHIC FULL STOP)
 /// unicode.is_punct(65)      // false ('A')
 /// ```
+///
+/// Punctuation is the Unicode general category group `P*` — `Pc`, `Pd`, `Ps`,
+/// `Pe`, `Pi`, `Pf`, and `Po` — decided by the Unicode tables the runtime is
+/// pinned to. Returns `false` for values that are not Unicode scalars.
 pub fn is_punct(cp: i64) -> bool {
+    // Validate before narrowing: `cp` is an i64 and the FFI takes an i32, so
+    // an out-of-range value would wrap into a different codepoint.
     if !is_valid_rune(cp) {
         return false;
     }
-    match cp {
-        x if x >= 33 && x <= 47 => true,
-        x if x >= 58 && x <= 64 => true,
-        x if x >= 91 && x <= 96 => true,
-        x if x >= 123 && x <= 126 => true,
-        0xA1 => true,
-        0xA7 => true,
-        0xAB => true,
-        0xB6 => true,
-        0xB7 => true,
-        0xBB => true,
-        0xBF => true,
-        0x37E => true,
-        x if x >= 0x2010 && x <= 0x2027 => true,
-        x if x >= 0x2030 && x <= 0x205E => true,
-        x if x >= 0x3001 && x <= 0x303F => true,
-        x if x >= 0xFE10 && x <= 0xFE19 => true,
-        x if x >= 0xFE30 && x <= 0xFE4F => true,
-        x if x >= 0xFF01 && x <= 0xFF0F => true,
-        x if x >= 0xFF1A && x <= 0xFF20 => true,
-        x if x >= 0xFF3B && x <= 0xFF40 => true,
-        x if x >= 0xFF5B && x <= 0xFF65 => true,
-        _ => false,
+    unsafe {
+        hew_unicode_is_punct(cp as i32)
     }
 }
 

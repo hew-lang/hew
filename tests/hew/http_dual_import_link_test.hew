@@ -24,10 +24,16 @@ import std::testing;
 /// fixed port is held across the test run.
 #[test]
 fn test_server_impl_linked_in_dual_import_unit() {
-    let server = http.listen(":0");
-    let _prev = server.set_request_timeout_ms(1000);
-    server.close();
-    testing.assert_true(true);
+    match http.listen(":0") {
+        Ok(server) => {
+            let _prev = server.set_request_timeout_ms(1000);
+            server.close();
+            testing.assert_true(true);
+        },
+        Err(_err) => {
+            testing.assert_true(false);
+        },
+    }
 }
 
 /// Every `Response` accessor that was previously a bodiless declaration is now

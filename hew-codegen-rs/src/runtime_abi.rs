@@ -3820,6 +3820,8 @@ pub(crate) fn lower_call_runtime_abi(
         | F::StringFind
         | F::StringGet
         | F::TcpAttachLocal
+        | F::TlsAttachLocal
+        | F::WebSocketAttachLocal
         | F::TaskCompleteThreaded
         | F::TaskCompletionObserve
         | F::TaskCompletionUnobserve
@@ -4494,6 +4496,18 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // `ptr` value to an `i32` parameter and fail LLVM verification.
         "hew_tcp_attach_local" => i32_ty.fn_type(
             &[ptr_ty.into(), ptr_ty.into(), i32_ty.into(), i32_ty.into()],
+            false,
+        ),
+        // hew_tls_attach / hew_ws_attach(stream, actor, message_id,
+        // close_id) -> c_int (`hew-std/src/{tls,websocket}.rs`). Their typed
+        // Hew method surfaces are intercepted under `_local` pseudo names;
+        // codegen resolves the concrete actor protocol IDs and calls these
+        // real four-argument runtime ABIs. The runtime accepts i64 message IDs
+        // and range-checks them before narrowing to the actor runtime's c_int
+        // protocol index, preventing wrapped IDs from selecting another
+        // handler.
+        "hew_tls_attach" | "hew_ws_attach" => i32_ty.fn_type(
+            &[ptr_ty.into(), ptr_ty.into(), i64_ty.into(), i64_ty.into()],
             false,
         ),
         // hew_node_api_ask(pid, dispatch, msg_type, data, size, timeout_ms,

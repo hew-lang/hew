@@ -108,9 +108,15 @@ fn explicit_handler_impl_without_receive_fns_is_rejected_early() {
 /// pseudo-symbol that expects an opaque handle and actor PID.
 #[test]
 fn user_transport_short_names_keep_user_attach_dispatch() {
-    for type_name in ["Connection", "TlsStream", "Conn"] {
+    for (module_import, type_name) in [
+        ("import std::net;", "Connection"),
+        ("import std::net::tls;", "TlsStream"),
+        ("import std::net::websocket;", "Conn"),
+    ] {
         let output = typecheck(&format!(
             r"
+            {module_import}
+
             type {type_name} {{ value: i64; }}
 
             impl {type_name} {{

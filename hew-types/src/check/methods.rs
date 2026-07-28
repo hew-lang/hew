@@ -1746,7 +1746,7 @@ impl Checker {
         // transport protocol's handler `msg_id`s, and emits the real four-arg
         // runtime attach ABI. The source impl bodies are stubs, so these
         // explicit rewrites are the authority. Mirrors `RemotePid::send`.
-        if let Some(symbol) = transport_attach_runtime_symbol(name, method) {
+        if let Some(symbol) = self.resolved_transport_attach_runtime_symbol(name, method) {
             self.record_runtime_method_call_rewrite(span, symbol);
             return;
         }
@@ -1772,6 +1772,34 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, c_symbol);
             }
         }
+    }
+
+    /// Resolve an active transport handle to its compiler-lowered attach symbol.
+    ///
+    /// Imported method return types may retain their defining module's bare
+    /// spelling (`Connection`, `TlsStream`, or `Conn`). Canonicalise that
+    /// already-resolved nominal type through the checker's owner tables before
+    /// consulting the closed symbol map. Registry membership then proves the
+    /// identity is a loaded fieldless `#[opaque]` handle, while the user-module
+    /// guard prevents an alias-qualified user type from impersonating a stdlib
+    /// carrier. A root-local same-named type deliberately remains bare under
+    /// `canonical_nominal_name` and therefore cannot reach this rewrite.
+    fn resolved_transport_attach_runtime_symbol(
+        &self,
+        receiver_name: &str,
+        method: &str,
+    ) -> Option<&'static str> {
+        let canonical = self
+            .canonical_nominal_name(receiver_name)
+            .unwrap_or_else(|| receiver_name.to_string());
+        let symbol = transport_attach_runtime_symbol(&canonical, method)?;
+        let (module, _) = canonical.rsplit_once('.')?;
+        if self.user_modules.contains(module)
+            || !self.module_registry.is_handle_type(canonical.as_str())
+        {
+            return None;
+        }
+        Some(symbol)
     }
 
     /// True when `name` (qualified `regex.PatternHandle` or bare `Listener`)

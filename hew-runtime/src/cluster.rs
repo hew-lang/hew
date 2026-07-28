@@ -165,9 +165,12 @@ struct ConnectionTokens {
     /// waits for it — it CANCELS THE REMAINDER of it, by flipping the flag
     /// below under this lock. The delivering thread re-reads that flag under
     /// the same lock immediately before every remaining observable step and
-    /// abandons the rest, which is what lets retirement state a real
-    /// post-condition without ever blocking on user code: once it has
-    /// returned, no further ALIVE step for the token it retired will start.
+    /// abandons the rest. A successful re-read is the next step's
+    /// linearization point: retirement suppresses every step that has not
+    /// already passed that point, without blocking on user code. A step that
+    /// passed it immediately before cancellation may enter its callback after
+    /// retirement returns; the single transition drainer keeps the queued
+    /// `TokenLost` demotion ordered behind that already-authorized step.
     in_flight_deliveries: HashMap<u16, InFlightGuardedDelivery>,
 }
 
@@ -177,7 +180,8 @@ struct InFlightGuardedDelivery {
     publication_token: u64,
     /// Set by a retirement or supersede that took this token away. Read by the
     /// delivering thread under `connection_tokens` before each remaining
-    /// observable step; once set, no further step runs.
+    /// observable step; once set, no step that has not already passed its gate
+    /// runs.
     cancelled: bool,
 }
 
@@ -194,7 +198,7 @@ struct GuardedDeliveryInFlight<'a> {
 impl GuardedDeliveryInFlight<'_> {
     /// True while this delivery is still allowed to produce its next
     /// observable step. Re-read under `connection_tokens` before every step:
-    /// that is the serialization point against a retirement's cancel.
+    /// that is the step's linearization point against a retirement's cancel.
     fn may_emit(&self) -> bool {
         let tokens = self.cluster.connection_tokens.lock_or_recover();
         matches!(
@@ -1264,8 +1268,9 @@ impl HewCluster {
                 // it runs with no lock held — but each step of it is still
                 // cancellable: `may_emit` is re-read under the token lock
                 // before every observable step below, and a retirement that
-                // flips the flag suppresses every step that has not started.
-                // That, not a wait, is what upholds the post-condition.
+                // flips the flag suppresses every step that has not passed its
+                // gate. That per-step linearization, not a wait, is what keeps
+                // cancellation deadlock-free.
                 in_flight = Some(GuardedDeliveryInFlight {
                     cluster: self,
                     node_id: transition.node_id,
@@ -1292,10 +1297,13 @@ impl HewCluster {
 
         // Every observable step of a guarded delivery is gated on a fresh
         // read of the in-flight registration. A retirement that cancelled this
-        // token stops the delivery here rather than being made to wait for it,
-        // so nothing observable for a retired token starts after the
-        // retirement returned. Ungated transitions have no token to retire and
-        // always run the full sequence.
+        // token stops the delivery here rather than being made to wait for it.
+        // Passing this gate linearizes the next step before a racing
+        // retirement: that already-authorized step may enter after retirement
+        // returns, but every later step observes cancellation, and the
+        // single-drainer queue orders the retirement's `TokenLost` demotion
+        // behind it. Ungated transitions have no token to retire and always run
+        // the full sequence.
         let may_emit = || {
             in_flight
                 .as_ref()
@@ -1850,9 +1858,11 @@ impl HewCluster {
             // (`current` no longer matches it), so nothing can register a new
             // delivery behind this.
             //
-            // This is what makes the post-condition sayable without ever
-            // blocking on user code: once this function has returned, no
-            // observable ALIVE step for `publication_token` will start. The
+            // This cancels every step that has not already passed its
+            // per-step gate without ever blocking on user code. A step that
+            // passed immediately before this cancel is already linearized and
+            // may enter after this function returns; the queued `TokenLost`
+            // demotion remains ordered behind it by the single drainer. The
             // cancel takes `connection_tokens` only, holds it for a hash-map
             // write, and waits on nothing — no condvar, no other thread, and
             // above all not the delivering thread, which may be this very

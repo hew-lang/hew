@@ -104,6 +104,38 @@ fn run_send_post_enqueue_pre_wake_hook(a: &HewActor) {
     }
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) struct SendPostEnqueueHookGuard;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl SendPostEnqueueHookGuard {
+    pub(crate) fn install(
+        actor_id: u64,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut hook = SEND_POST_ENQUEUE_PRE_WAKE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(hook.is_none(), "send ownership hook already installed");
+        *hook = Some((actor_id, entered.clone(), release.clone()));
+        (Self, entered, release)
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Drop for SendPostEnqueueHookGuard {
+    fn drop(&mut self) {
+        *SEND_POST_ENQUEUE_PRE_WAKE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
 // ── Free-path pre-detach rendezvous hook (test-only) ─────────────────────
 //
 // Lets a test deterministically force the reactor-detach UAF window: the hook
@@ -7898,35 +7930,6 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
 mod tests {
     use super::*;
     use crate::execution_context::TestExecutionContext;
-
-    struct SendPostEnqueueHookGuard;
-
-    impl SendPostEnqueueHookGuard {
-        fn install(
-            actor_id: u64,
-        ) -> (
-            Self,
-            std::sync::Arc<std::sync::Barrier>,
-            std::sync::Arc<std::sync::Barrier>,
-        ) {
-            let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
-            let release = std::sync::Arc::new(std::sync::Barrier::new(2));
-            let mut hook = SEND_POST_ENQUEUE_PRE_WAKE_HOOK
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            assert!(hook.is_none(), "send ownership hook already installed");
-            *hook = Some((actor_id, entered.clone(), release.clone()));
-            (Self, entered, release)
-        }
-    }
-
-    impl Drop for SendPostEnqueueHookGuard {
-        fn drop(&mut self) {
-            *SEND_POST_ENQUEUE_PRE_WAKE_HOOK
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = None;
-        }
-    }
 
     struct SpawnPublicationHookGuard;
 

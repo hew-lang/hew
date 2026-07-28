@@ -6412,6 +6412,8 @@ mod tests {
             .store(HewActorState::Runnable as i32, Ordering::Release);
         let actor = TrackedTestActor::install(stub);
         let actor_ptr = actor.ptr();
+        let (send_hook, linked, release_sender) =
+            crate::actor::SendPostEnqueueHookGuard::install(actor.id);
 
         // A REAL blocking ask from another thread: it creates the channel,
         // enqueues the node carrying it, and parks in `hew_reply_wait`.
@@ -6431,16 +6433,13 @@ mod tests {
             let _ = done_tx.send(reply.is_null());
         });
 
-        // Wait for the ask to land before dispatching it.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        // SAFETY: mailbox is live for the whole test.
-        while unsafe { mailbox::hew_mailbox_len(mailbox) } == 0 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the ask never reached the mailbox"
-            );
-            std::thread::yield_now();
-        }
+        // Count reservation deliberately precedes node reachability, so
+        // mailbox length is not a publication rendezvous. Pause after the
+        // exact node is linked, then release the sender into its no-op wake
+        // handoff against this already-Runnable actor.
+        linked.wait();
+        release_sender.wait();
+        drop(send_hook);
 
         // Dispatch it: the handler suspends still owing the reply.
         activate_actor(actor_ptr);

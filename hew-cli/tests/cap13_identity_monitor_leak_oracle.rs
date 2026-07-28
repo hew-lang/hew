@@ -4,6 +4,7 @@
 
 mod support;
 
+use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,12 @@ impl Drop for ChildGuard {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+struct LeakClient {
+    child: ChildGuard,
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
 }
 
 fn compile_fixture(dir: &Path) -> PathBuf {
@@ -95,32 +102,43 @@ fn wait_for_server_ready(server: &mut ChildGuard) -> BufReader<std::process::Chi
     }
 }
 
-fn spawn_client_under_leaks(binary: &Path, port: u16, scenario: &str, kx_dir: &Path) -> ChildGuard {
-    ChildGuard(
-        Command::new("leaks")
-            .arg("--atExit")
-            .arg("--")
-            .arg(binary)
-            .env("MallocStackLogging", "1")
-            .env("MallocScribble", "1")
-            .env("MallocPreScribble", "1")
-            .env("MallocGuardEdges", "1")
-            .env("HEW_TRANSPORT", "tcp")
-            .env("HEW_DIST_ROLE", "client")
-            .env("HEW_DIST_PORT", port.to_string())
-            .env("HEW_DIST_SCENARIO", scenario)
-            .env("HEW_DIST_KX_DIR", kx_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("run CAP-13 leak client under leaks"),
-    )
+fn spawn_client_under_leaks(binary: &Path, port: u16, scenario: &str, kx_dir: &Path) -> LeakClient {
+    // `leaks --atExit` writes a full allocation report after the child exits.
+    // A piped report can exceed the pipe buffer, deadlocking leaks before our
+    // parent observes its exit. Capture to files so the child always drains.
+    let stdout_path = kx_dir.join("client-leaks.stdout");
+    let stderr_path = kx_dir.join("client-leaks.stderr");
+    let stdout = File::create(&stdout_path).expect("create CAP-13 client stdout capture");
+    let stderr = File::create(&stderr_path).expect("create CAP-13 client stderr capture");
+    LeakClient {
+        child: ChildGuard(
+            Command::new("leaks")
+                .arg("--atExit")
+                .arg("--")
+                .arg(binary)
+                .env("MallocStackLogging", "1")
+                .env("MallocScribble", "1")
+                .env("MallocPreScribble", "1")
+                .env("MallocGuardEdges", "1")
+                .env("HEW_TRANSPORT", "tcp")
+                .env("HEW_DIST_ROLE", "client")
+                .env("HEW_DIST_PORT", port.to_string())
+                .env("HEW_DIST_SCENARIO", scenario)
+                .env("HEW_DIST_KX_DIR", kx_dir)
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn()
+                .expect("run CAP-13 leak client under leaks"),
+        ),
+        stdout_path,
+        stderr_path,
+    }
 }
 
-fn finish_client(mut client: ChildGuard) -> Output {
+fn finish_client(mut client: LeakClient) -> Output {
     let deadline = Instant::now() + PROCESS_TIMEOUT;
     let status = loop {
-        if let Some(status) = client.0.try_wait().expect("poll CAP-13 leak client") {
+        if let Some(status) = client.child.0.try_wait().expect("poll CAP-13 leak client") {
             break status;
         }
         assert!(
@@ -129,22 +147,8 @@ fn finish_client(mut client: ChildGuard) -> Output {
         );
         thread::sleep(Duration::from_millis(20));
     };
-    let mut stdout = Vec::new();
-    client
-        .0
-        .stdout
-        .take()
-        .expect("client stdout was captured")
-        .read_to_end(&mut stdout)
-        .expect("drain CAP-13 leak client stdout");
-    let mut stderr = Vec::new();
-    client
-        .0
-        .stderr
-        .take()
-        .expect("client stderr was captured")
-        .read_to_end(&mut stderr)
-        .expect("drain CAP-13 leak client stderr");
+    let stdout = std::fs::read(&client.stdout_path).expect("read CAP-13 leak client stdout");
+    let stderr = std::fs::read(&client.stderr_path).expect("read CAP-13 leak client stderr");
     Output {
         status,
         stdout,
@@ -211,11 +215,6 @@ fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
         "PASS {scenario} iterations={iterations} closed={iterations} down=0 local=0 target=0 ids=distinct"
     );
     assert!(
-        client.status.success() && client_stdout.contains(&sentinel),
-        "CAP-13 leak client did not complete its exact lifecycle sentinel\n{}",
-        describe_output(&client)
-    );
-    assert!(
         !client_stdout.contains("FAIL "),
         "CAP-13 leak client reported failure\n{}",
         describe_output(&client)
@@ -228,12 +227,21 @@ fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
         "CAP-13 leak server missed exact target cleanup\nstdout:\n{server_stdout}"
     );
     let report = format!("{client_stdout}\n{client_stderr}");
-    parse_leak_nodes(&report).unwrap_or_else(|| {
+    let leak_nodes = parse_leak_nodes(&report).unwrap_or_else(|| {
         panic!(
             "leaks did not emit a parseable node summary\n{}",
             describe_output(&client)
         )
-    })
+    });
+    // `leaks(1)` reserves exit 1 for a completed inspection that found one
+    // or more leaks. Any other nonzero exit is an inspector/tool failure.
+    let completed_leak_inspection = client.status.code() == Some(1) && leak_nodes > 0;
+    assert!(
+        (client.status.success() || completed_leak_inspection) && client_stdout.contains(&sentinel),
+        "CAP-13 leak client did not complete cleanly or its exact lifecycle sentinel\n{}",
+        describe_output(&client)
+    );
+    leak_nodes
 }
 
 #[cfg_attr(

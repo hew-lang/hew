@@ -327,33 +327,20 @@ const CARRIERS: &[Carrier] = &[
 /// listed fails the sweep as a new seam. Either way the table cannot silently
 /// drift away from what the compiler does.
 ///
-/// Neither entry is this round's class — both are refusals of DOMESTIC values,
-/// with no `extern` anywhere in the program — and neither is reachable from the
-/// standard library as it is written today (`std/process.hew` and
-/// `std/time/cron/cron.hew` both consume their error carrier through `match`).
-/// They are recorded here because the sweep is the instrument that found them
-/// and deleting the cells would lose them.
-const KNOWN_GAPS: &[(&str, &str, &str)] = &[
-    (
-        "result_enum_msg",
-        "let_else",
-        "E_MIR_CHECK ObligationOverReleased: `let Err(r) = produce() else {...}` followed \
-         by a callee-owned consumption of `r` charges the synthetic \
-         `__hew_call_scrutinee` twice — the payload move-out is not credited against the \
-         scrutinee's own obligation. `if let` and `match` over the IDENTICAL program are \
-         accepted, so this is a binder-shape gap in the obligation-balance checker, not a \
-         provenance question.",
-    ),
-    (
-        "result_record",
-        "while_let",
-        "E_NOT_YET_IMPLEMENTED `while-let scrutinee reassigned from non-fresh value`: \
+/// The remaining entry is not this round's class: it is a refusal of a DOMESTIC
+/// value, with no `extern` anywhere in the program, and is not reachable from
+/// the standard library as it is written today. It remains recorded here
+/// because the sweep is the instrument that found it and deleting the cell
+/// would lose it.
+const KNOWN_GAPS: &[(&str, &str, &str)] = &[(
+    "result_record",
+    "while_let",
+    "E_NOT_YET_IMPLEMENTED `while-let scrutinee reassigned from non-fresh value`: \
          reassigning the scrutinee to `Err(Failure::Bad(\"a\" + \"b\"))` — an enum literal \
          over a fresh concat, which is fresh by construction — is not recognised as \
          proven-fresh. The `Option` carrier's `c = None` reassignment carries no heap and \
          so never asks the question.",
-    ),
-];
+)];
 
 fn known_gap(carrier: &str, binder: &str) -> Option<&'static str> {
     KNOWN_GAPS

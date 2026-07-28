@@ -1818,7 +1818,8 @@ impl Builder {
         reason = "one exhaustive match keeps assignment boundary rules together"
     )]
     fn assign(&mut self, target: &HirExpr, value: &HirExpr) {
-        let src = if self.assign_target_stays_copy_in(target, value) {
+        let copy_in = self.assign_target_stays_copy_in(target, value);
+        let src = if copy_in {
             self.lower_value(value)
         } else {
             self.lower_value_for_move(value)
@@ -1826,6 +1827,65 @@ impl Builder {
         let Some(src) = src else {
             return;
         };
+        // A direct assignment from an owned tuple projection transfers that
+        // field into the assignment target. Tuple field loads byte-copy
+        // non-string heap owners, so clear the source slot after the load; the
+        // tuple keeps its remaining-field drop while the reassigned binding
+        // becomes the sole owner of the extracted field.
+        if !copy_in {
+            if let HirExprKind::TupleIndex { tuple, index } = &value.kind {
+                if let HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(source_binding),
+                    ..
+                } = &tuple.kind
+                {
+                    let source_is_owned = self.owned_locals.iter().any(|entry| {
+                        entry.binding == *source_binding
+                            && entry.disposition == Disposition::ScopeExit
+                    });
+                    let field_ty = self.subst_ty(&value.ty);
+                    let field_transfers = source_is_owned
+                        && !matches!(field_ty, ResolvedTy::String)
+                        && crate::model::ty_owns_heap_mir(
+                            &field_ty,
+                            &self.record_field_orders,
+                            &self.enum_layouts,
+                        );
+                    if field_transfers {
+                        if let Ok(field) = u32::try_from(*index) {
+                            let source_root =
+                                self.instructions
+                                    .iter()
+                                    .rev()
+                                    .find_map(|instr| match instr {
+                                        Instr::TupleFieldLoad {
+                                            tuple,
+                                            field_index,
+                                            dest,
+                                        } if *dest == src && *field_index == field => Some(*tuple),
+                                        _ => None,
+                                    });
+                            if let Some(source_root) = source_root {
+                                let already_neutralized = self.instructions.iter().any(|instr| {
+                                    matches!(
+                                        instr,
+                                        Instr::AggregateProjectionNeutralize { root, fields, .. }
+                                            if *root == source_root && fields.as_slice() == [field]
+                                    )
+                                });
+                                if !already_neutralized {
+                                    self.push_instr(Instr::AggregateProjectionNeutralize {
+                                        root: source_root,
+                                        fields: vec![field],
+                                        transferee: src,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Some((field_offset, _)) = self.actor_state_field_for_target(target) {
             self.instructions
                 .push(Instr::ActorStateFieldStore { field_offset, src });

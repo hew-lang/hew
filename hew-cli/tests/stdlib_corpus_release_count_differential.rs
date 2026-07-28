@@ -83,186 +83,15 @@ const REJECTED: &str = "REJECTED";
 /// release fails this test and forces the entry to be removed rather than
 /// letting the debt quietly become the new normal.
 const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
-    // `connect_timeout` now parses through `Endpoint` and transfers its owned
-    // host into the native call. The old body kept `addr`, `colon`, `host`, and
-    // sliced port temporaries in one function and planted six more syntactic
-    // drop entries. Validation moved those lifetimes into the shared parser;
-    // the 81-cell increase report includes the corresponding new helper/path
-    // releases. Imported copies have the same MIR and therefore the same exact
-    // 18 -> 12 shift.
+    // The `Err(err)` binder is an interior byte-alias of the parent `Result`.
+    // The local-call snapshot is separately cloned, but the binder itself is
+    // not: dropping both binder and parent on cancellation walked the same
+    // `CronError` string twice.
     (
-        "examples/actor_net_reader.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/benchmarks/http_server.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/benchmarks/http_server_expert.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/chat_client.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/chat_server.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/curl_client.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/http_server.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/mqtt_broker.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/await_http_roundtrip.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/await_read.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/await_read_fanout.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/await_read_hup.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/http_await_service.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/probe_a_conn_field.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/probe_b2_closure_await_outer_crash.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/probe_b2_closure_capture_await.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/probe_b2_closure_multi_await.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/probe_b2_closure_unit_await.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/probe_b3_closure_capture_noawait.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/net/tls_client.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/quic_service/client.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/quic_service/server.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "examples/static_server.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "std/net/dns/dns.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "std/net/http/http.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "std/net/net.hew",
-        "connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "std/net/quic/quic.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "std/net/tls/tls.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
-    ),
-    (
-        "std/net/websocket/websocket.hew",
-        "net$connect_timeout",
-        12,
-        "endpoint parsing moved to the shared validator; six syntactic local drop sites moved into that helper without withholding a runtime release",
+        "std/time/cron/cron.hew",
+        "Expr::next",
+        6,
+        "the nested CronError binder aliases its parent Result; suppressing its duplicate cancellation drop prevents a child-plus-parent double-free",
     ),
     // The benchmark loops moved to `serve_forever`; these `main` functions now
     // own only listener construction and its typed failure branch.
@@ -317,11 +146,28 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     // into `Version` rather than parsing and dropping them, while
     // `matches_single` deliberately converges its old early returns on one
     // final result, removing duplicate path-local drop-plan entries.
+    //
+    // 73 was wrong; 82 is the accounted count. The pre-migration baseline of
+    // 86 (`fixtures/release-count-baseline.tsv`) held ten `req_ver`
+    // return-plan sites under that older function shape. A later
+    // source/control-flow migration changed the plan topology, and under the
+    // new shape the scanner token-ownership leak this range fixes was
+    // silently discarding every one of `req_ver`'s releases. In the broken
+    // base's 25/24/24/0 shape, each match call leaked the `req_ver` `Version`
+    // record, represented by multiple allocator nodes per record. The repair
+    // restores `req_ver`'s release at the one normal-return plan plus eight
+    // cancel/unwind plans — nine sites, not all ten. Head totals 82
+    // (25/24/24/9) against the broken merge base's 73 (25/24/24/0): the three
+    // other co-resident locals are unaffected by the fix, and `req_ver` goes
+    // from 0 to 9. See `hew-cli/tests/semver_matches_leak_oracle.rs` for the
+    // durable, continuously-run proof that `matches_single` is exactly
+    // leak-free across all eight operators plus the unmatched-operator
+    // fallthrough.
     (
         "std/text/semver/semver.hew",
         "matches_single",
-        73,
-        "comparison branches converge on one exit instead of duplicating path-local drop plans; the same owned values are discharged on that shared exit",
+        82,
+        "pre-migration baseline of 86 held ten `req_ver` return-plan sites under an older function shape; a later source/control-flow migration changed the plan topology, and the scanner ownership repair restores `req_ver`'s release at the one normal-return plan plus eight cancel/unwind plans, giving 82 (25/24/24/9) against the broken merge base's 73 (25/24/24/0) — see `semver_matches_leak_oracle.rs` for the leak-free proof",
     ),
     (
         "std/text/semver/semver.hew",

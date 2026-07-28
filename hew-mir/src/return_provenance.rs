@@ -2279,6 +2279,10 @@ pub(crate) struct FreshOwnerVerdicts {
     /// `ItemId` → (coarse ∨ precise) freshness ∧ ¬laundering. Private: the whole
     /// point.
     rows: HashMap<hew_hir::ItemId, bool>,
+    /// Functions whose string return is an independently retained field-load
+    /// share. This is deliberately NOT folded into `rows`: a retained share is
+    /// releasable once, but still pointer-aliases its source allocation.
+    retained_string_projection_returns: HashSet<hew_hir::ItemId>,
     /// Declared `extern "C"` fn names with no audited fresh-owner return.
     opaque_extern_names: HashSet<String>,
     /// The audited extern contract table, carried so
@@ -2365,6 +2369,7 @@ impl FreshOwnerVerdicts {
     fn build(
         coarse_fresh_returns: &HashMap<hew_hir::ItemId, bool>,
         precise_returns: &HashMap<hew_hir::ItemId, ReturnProvenance>,
+        retained_string_projection_returns: &HashSet<hew_hir::ItemId>,
         launders_opaque_extern: &HashSet<hew_hir::ItemId>,
         carries_proven_foreign: &HashSet<hew_hir::ItemId>,
         extern_table: &ExternContractTable,
@@ -2396,6 +2401,7 @@ impl FreshOwnerVerdicts {
         let analyzed = rows.keys().copied().collect();
         Self {
             rows,
+            retained_string_projection_returns: retained_string_projection_returns.clone(),
             opaque_extern_names,
             extern_table: extern_table.clone(),
             analyzed,
@@ -2419,6 +2425,7 @@ impl FreshOwnerVerdicts {
     fn denying_all() -> Self {
         Self {
             rows: HashMap::new(),
+            retained_string_projection_returns: HashSet::new(),
             opaque_extern_names: HashSet::new(),
             extern_table: ExternContractTable::default(),
             analyzed: HashSet::new(),
@@ -2441,6 +2448,18 @@ impl FreshOwnerVerdicts {
     #[must_use]
     pub(crate) fn item_returns_fresh_owner(&self, id: hew_hir::ItemId) -> bool {
         self.rows.get(&id) == Some(&true)
+    }
+
+    /// Whether `id` returns a string field projection whose MIR load retains an
+    /// independent `+1` share. This licenses exactly one balancing string
+    /// release; unlike [`Self::item_returns_fresh_owner`], it says nothing about
+    /// pointer non-aliasing and must not be used by composite/destructive-owner
+    /// consumers.
+    #[must_use]
+    pub(crate) fn item_returns_retained_string_owner(&self, id: hew_hir::ItemId) -> bool {
+        self.from_module_analysis
+            && self.retained_string_projection_returns.contains(&id)
+            && !self.launders_opaque_extern.contains(&id)
     }
 
     /// True when `symbol` names a declared `extern "C"` fn with no audited
@@ -2585,6 +2604,7 @@ impl FreshOwnerVerdicts {
         let analyzed = rows.keys().copied().collect();
         Self {
             rows,
+            retained_string_projection_returns: HashSet::new(),
             opaque_extern_names,
             extern_table: ExternContractTable::default(),
             analyzed,
@@ -2697,6 +2717,8 @@ pub(crate) fn build_call_scrutinee_provenance(
     let may_mutate = compute_may_mutate_heap_param(origin_fns);
     let provenance =
         compute_call_scrutinee_return_provenance(origin_fns, &extern_table, &may_mutate);
+    let retained_string_projection_returns =
+        compute_fn_returns_retained_string_projection_owner(origin_fns);
     // The table-aware freshness authority: the coarse proof MINUS everything the
     // opaque-extern laundering summary vetoes, plus the direct-extern name veto.
     // The coarse map is passed in rather than recomputed so both consumers read
@@ -2712,6 +2734,7 @@ pub(crate) fn build_call_scrutinee_provenance(
     let fresh_owner_verdicts = FreshOwnerVerdicts::build(
         coarse_fresh_returns,
         &provenance,
+        &retained_string_projection_returns,
         &launders_opaque_extern,
         &carries_proven_foreign,
         &extern_table,
@@ -4547,6 +4570,73 @@ pub fn compute_call_scrutinee_return_provenance(
     provenance
 }
 
+/// Functions whose every value-returning path produces a `string` by loading a
+/// record or tuple field.
+///
+/// This is deliberately separate from [`ReturnProvenance`]. A string field
+/// projection still aliases the same refcounted allocation as its object, so it
+/// is not "fresh" in the pointer-provenance sense. MIR codegen nevertheless
+/// emits `hew_string_clone` for every string-typed `RecordFieldLoad` and
+/// `TupleFieldLoad`, giving the returned value an independent `+1` release
+/// obligation. The caller may therefore own and drop that returned share once.
+///
+/// Keeping the proof separate preserves the frozen coarse alias verdicts and
+/// prevents the `+1` release fact from being mistaken for non-aliasing by other
+/// consumers. [`FreshOwnerVerdicts::item_returns_retained_string_owner`] is its
+/// only reader, and the opaque-extern laundering veto still applies there.
+fn compute_fn_returns_retained_string_projection_owner(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+) -> HashSet<hew_hir::ItemId> {
+    fns.iter()
+        .filter_map(|(&id, &f)| {
+            let mut return_values: Vec<&HirExpr> = Vec::new();
+            crate::lower::collect_return_values_in_block(&f.body, &mut return_values);
+            if let Some(tail) = &f.body.tail {
+                if !matches!(tail.ty, ResolvedTy::Unit | ResolvedTy::Never) {
+                    return_values.push(tail);
+                }
+            }
+            (!return_values.is_empty()
+                && return_values
+                    .into_iter()
+                    .all(value_is_retained_string_projection))
+            .then_some(id)
+        })
+        .collect()
+}
+
+/// Whether this value position is guaranteed to lower to a string field-load
+/// retain. Value-preserving wrappers are transparent; every branch must satisfy
+/// the proof. All calls, locals, literals, and unmodelled forms fail closed.
+fn value_is_retained_string_projection(expr: &HirExpr) -> bool {
+    if !matches!(expr.ty, ResolvedTy::String) {
+        return false;
+    }
+    match &expr.kind {
+        HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. } => true,
+        HirExprKind::Block(block) => block
+            .tail
+            .as_deref()
+            .is_some_and(value_is_retained_string_projection),
+        HirExprKind::If {
+            then_expr,
+            else_expr: Some(else_expr),
+            ..
+        } => {
+            value_is_retained_string_projection(then_expr)
+                && value_is_retained_string_projection(else_expr)
+        }
+        HirExprKind::Match { arms, .. } => {
+            !arms.is_empty()
+                && arms
+                    .iter()
+                    .all(|arm| value_is_retained_string_projection(&arm.body))
+        }
+        HirExprKind::Return { value: Some(value) } => value_is_retained_string_projection(value),
+        _ => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Module-map helpers
 // ---------------------------------------------------------------------------
@@ -4658,6 +4748,73 @@ pub(crate) mod tests {
             fn project(b: Box) -> string { b.data }
             fn ctor(s: string) -> Box { Box { data: s } }
             ",
+        );
+    }
+
+    /// A string field load aliases its source allocation but codegen retains it,
+    /// so release authority and pointer-alias provenance must remain distinct.
+    #[test]
+    fn retained_string_projection_is_a_release_owner_not_a_fresh_alias() {
+        let module = lower_source(
+            r"
+            record Box { data: string }
+            fn record_project(b: Box) -> string { b.data }
+            fn tuple_project(t: (string, i64)) -> string { t.0 }
+            fn passthru(s: string) -> string { s }
+            fn mixed(flag: bool, b: Box, s: string) -> string {
+                if flag { b.data } else { s }
+            }
+            ",
+        );
+        let origin_fns = origin_fns_of(&module);
+        let retained = compute_fn_returns_retained_string_projection_owner(&origin_fns);
+
+        for name in ["record_project", "tuple_project"] {
+            assert!(
+                retained.contains(&fn_id(&module, name)),
+                "`{name}` lowers its returned string projection through a retaining field load"
+            );
+        }
+        for name in ["passthru", "mixed"] {
+            assert!(
+                !retained.contains(&fn_id(&module, name)),
+                "`{name}` has a path that merely forwards a string and must not mint a second owner"
+            );
+        }
+
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        assert!(
+            !coarse[&fn_id(&module, "record_project")],
+            "the frozen alias analysis must still report that the projection aliases its parameter"
+        );
+        let extern_table = build_extern_contract_table(&module);
+        let precise = compute_call_scrutinee_return_provenance(
+            &origin_fns,
+            &extern_table,
+            &compute_may_mutate_heap_param(&origin_fns),
+        );
+        assert!(
+            precise[&fn_id(&module, "record_project")].is_params_only(),
+            "release authority must not rewrite pointer-alias provenance"
+        );
+        let authority =
+            build_call_scrutinee_provenance(&module, &origin_fns, &coarse).fresh_owner_verdicts;
+        let projected = fn_id(&module, "record_project");
+        assert!(
+            !authority.item_returns_fresh_owner(projected),
+            "a retained projection must not broaden the non-aliasing/fresh-owner row"
+        );
+        assert!(
+            authority.item_returns_retained_string_owner(projected),
+            "the string-only query must preserve the projection's one retained release"
+        );
+        assert!(
+            !authority.item_returns_retained_string_owner(fn_id(&module, "passthru")),
+            "a forwarded parameter has no independently retained projection share"
+        );
+        assert!(
+            !authority.item_returns_retained_string_owner(fn_id(&module, "mixed")),
+            "one forwarding return path must veto the retained-projection authority"
         );
     }
 

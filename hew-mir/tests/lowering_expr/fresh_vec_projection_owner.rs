@@ -94,6 +94,19 @@ fn runtime_call_count(pipeline: &IrPipeline, fn_name: &str, symbol: &str) -> usi
         .count()
 }
 
+fn aggregate_neutralize_count(pipeline: &IrPipeline, fn_name: &str) -> usize {
+    pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instruction| matches!(instruction, Instr::AggregateProjectionNeutralize { .. }))
+        .count()
+}
+
 fn synthetic_drop_exits<'a>(
     pipeline: &'a IrPipeline,
     fn_name: &str,
@@ -182,6 +195,58 @@ fn borrowed_control() -> i64 {
     assert_eq!(call_count(&p, "borrowed_control", "hew_vec_get_clone"), 0);
     assert_eq!(synthetic_binds(&p, "borrowed_control"), 0);
     assert!(synthetic_locals(&p, "borrowed_control").is_empty());
+}
+
+#[test]
+fn copy_in_projection_assignment_does_not_neutralize_source_but_consuming_assignment_does() {
+    let p = pipeline(
+        r#"
+record Holder { items: Vec<string> }
+
+fn make() -> (Holder, i64) {
+    (Holder { items: ["left", "right"] }, 7)
+}
+
+fn copy_in() -> i64 {
+    var v: Vec<Holder> = [];
+    v.push(Holder { items: ["seed"] });
+    let pair = make();
+    v[0] = pair.0;
+    pair.0.items.len()
+}
+
+fn consuming() -> i64 {
+    var owner = Holder { items: ["seed"] };
+    let pair = make();
+    owner = pair.0;
+    owner.items.len()
+}
+
+fn forward() -> i64 {
+    let pair = (Holder { items: ["transferred"] }, ["sibling"]);
+    var owner = Holder { items: [] };
+    owner = pair.0;
+    let rebound = owner;
+    rebound.items.len() + pair.1.len()
+}
+"#,
+    );
+
+    assert_eq!(
+        aggregate_neutralize_count(&p, "copy_in"),
+        0,
+        "COPY-IN `v[0] = pair.0` must preserve pair.0 for later reads"
+    );
+    assert_eq!(
+        aggregate_neutralize_count(&p, "consuming"),
+        1,
+        "consuming assignment must transfer pair.0 and neutralize its source slot"
+    );
+    assert_eq!(
+        aggregate_neutralize_count(&p, "forward"),
+        1,
+        "forward assignment and rebind must neutralize pair.0 exactly once"
+    );
 }
 
 #[test]

@@ -2203,6 +2203,29 @@ pub(super) fn callee_returns_fresh_owner(
     };
     verdicts.item_returns_fresh_owner(*item_id)
 }
+
+/// String-only sibling of [`callee_returns_fresh_owner`]. A retained field
+/// projection aliases its source pointer but owns one independent refcount
+/// share, so this query may license one string drop and nothing stronger.
+pub(super) fn callee_returns_retained_string_owner(
+    callee: &HirExpr,
+    verdicts: &crate::return_provenance::FreshOwnerVerdicts,
+) -> bool {
+    let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
+        return false;
+    };
+    let symbol = match resolved {
+        ResolvedRef::Builtin(family) => family.c_symbol(),
+        _ => name.as_str(),
+    };
+    if verdicts.symbol_is_ownership_opaque_extern(symbol) {
+        return false;
+    }
+    let ResolvedRef::Item(item_id) = resolved else {
+        return false;
+    };
+    verdicts.item_returns_retained_string_owner(*item_id)
+}
 /// True when `callee` names a statically-resolved Item — a free function (whose
 /// body the freshness fixpoint analyzed), an extern / runtime primitive, or an
 /// aggregate constructor. False for a closure value, a function-pointer

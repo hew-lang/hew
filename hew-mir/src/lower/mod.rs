@@ -162,12 +162,12 @@ use self::suspend_places::{
 };
 #[cfg(not(test))]
 use self::temp_drop::{
-    apply_nested_fresh_bytes_temp_drops, apply_nested_fresh_string_temp_drops,
-    bytes_interior_producer_dest, bytes_place_is_typed, bytes_runtime_arg_is_borrow,
-    bytes_share_sink_places, classify_actor_state_load_modes,
+    aggregate_projection_transfer_dests, apply_nested_fresh_bytes_temp_drops,
+    apply_nested_fresh_string_temp_drops, bytes_interior_producer_dest, bytes_place_is_typed,
+    bytes_runtime_arg_is_borrow, bytes_share_sink_places, classify_actor_state_load_modes,
     compute_collection_interior_alias_taint, compute_projection_alias_taint,
     derive_cow_fresh_borrowed_owner, derive_cow_sole_owner, finalize_bytes_ownership,
-    finalize_string_local_share_intents, finalize_string_ownership,
+    finalize_string_local_share_intents, finalize_string_ownership, forward_move_closure,
     readmit_retained_bytes_tuple_roots, string_call_borrows, string_field_load_producer_dest,
 };
 
@@ -296,6 +296,7 @@ const SENTINEL_DOWN_CRASH_KIND_BINDING: BindingId = BindingId(u32::MAX - 10);
 const SYNTHETIC_OWNED_TEMP_BINDING_BASE: u32 = u32::MAX - 64;
 
 const SYNTHETIC_CALL_SCRUTINEE_NAME: &str = "__hew_call_scrutinee";
+const SYNTHETIC_PROJECTED_SCRUTINEE_NAME: &str = "__hew_projected_scrutinee";
 const SYNTHETIC_WHILE_LET_ITERATION_NAME: &str = "__hew_while_let_iteration";
 const SYNTHETIC_DISCARDED_CALL_RESULT_NAME: &str = "__hew_discarded_call_result";
 /// Name for the #2743 synthetic owner minted over a fresh owned composite/string
@@ -3900,15 +3901,44 @@ fn outbound_live_out(
                     live.insert(local);
                 }
             }
+            // A record-field release immediately before a later whole-local
+            // overwrite is a discharge-only read of the OLD value. For owned
+            // call carriers the predecessor may transfer that old value and
+            // neutralize its source slot; the field release then observes null
+            // and safely no-ops before the call result overwrites the slot.
+            //
+            // Treating that null-tolerant release as an ordinary live read
+            // makes the carrier look live after its sole call use, forcing a
+            // structural snapshot clone. Besides unnecessary churn, the clone
+            // creates a second refcount authority for each COW field and
+            // defeats the overwrite release this liveness query is supposed to
+            // enable. Track whole-local definitions already seen in the
+            // backward walk so ONLY a RecordFieldDrop dominated by a later
+            // overwrite gets this transfer-compatible classification. Any
+            // intervening or earlier ordinary read still inserts the local and
+            // keeps the fail-closed clone path.
+            let mut overwritten_later = HashSet::new();
             for instr in block.instructions.iter().rev() {
                 let (reads, writes) = dataflow::instr_reads_writes(instr);
                 for place in writes {
-                    if let Some(local) = base_local(place) {
+                    if let Place::Local(local) = place {
+                        live.remove(&local);
+                        overwritten_later.insert(local);
+                    } else if let Some(local) = base_local(place) {
                         live.remove(&local);
                     }
                 }
                 for place in reads {
                     if let Some(local) = base_local(place) {
+                        if matches!(
+                            instr,
+                            Instr::RecordFieldDrop {
+                                record: Place::Local(record),
+                                ..
+                            } if *record == local && overwritten_later.contains(&local)
+                        ) {
+                            continue;
+                        }
                         live.insert(local);
                     }
                 }
@@ -4069,6 +4099,29 @@ fn prepare_owned_call_carriers(
                         && local_counts.get(&local) == Some(&1)
                 });
             if transferable {
+                // The instruction stream is about to transfer this source and
+                // neutralize its slot. Mirror that ownership hand-off in the
+                // checker stream when the source is a named owned binding.
+                // A following assignment emits `Bind` in the call successor
+                // and restores the redefined binding to Live; without a rebind,
+                // the Consume keeps the transferred value out of every
+                // scope-exit drop plan. This is the path-sensitive fact the
+                // record sole-owner prover cannot recover from a flow-insensitive
+                // scan of `NeutralizePayloadSlot` alone.
+                let transferred_binding = local.and_then(|source_local| {
+                    builder.owned_locals.iter().find_map(|entry| {
+                        (builder.binding_locals.get(&entry.binding)
+                            == Some(&Place::Local(source_local)))
+                        .then(|| {
+                            (
+                                entry.binding,
+                                entry.name.clone(),
+                                entry.ty.clone(),
+                                entry.disposition,
+                            )
+                        })
+                    })
+                });
                 let dest = builder.alloc_local(arg.ty.clone());
                 block.instructions.push(Instr::Move {
                     dest,
@@ -4081,6 +4134,34 @@ fn prepare_owned_call_carriers(
                 });
                 if let Some(slot) = args.get_mut(arg.index) {
                     *slot = dest;
+                }
+                if let Some((binding, name, ty, Disposition::ScopeExit)) = transferred_binding {
+                    // The HIR use may already carry Consume intent (for an
+                    // ordinary consuming parameter). Do not author a second
+                    // transition at the same call site: the checker would
+                    // correctly read that as use-after-consume. Carrier
+                    // preparation only supplies the missing transition for
+                    // borrow-stamped calls whose physical last use transfers.
+                    let already_consumed = block.statements.iter().any(|statement| {
+                        matches!(
+                            statement,
+                            MirStatement::Use {
+                                binding: seen_binding,
+                                site,
+                                intent: IntentKind::Consume,
+                                ..
+                            } if *seen_binding == binding && *site == arg.site
+                        )
+                    });
+                    if !already_consumed {
+                        block.statements.push(MirStatement::Use {
+                            binding,
+                            name,
+                            site: arg.site,
+                            ty,
+                            intent: IntentKind::Consume,
+                        });
+                    }
                 }
                 continue;
             }
@@ -5756,15 +5837,18 @@ enum ProjectedPayloadOrigin {
     EphemeralTemp,
     /// The FAIL-CLOSED default (#2523 F1/F1b/F2): the scrutinee is anything NOT
     /// proven a fresh sole owner — a re-readable *place* projection (`match h.b`,
-    /// `match pair.0`, `match arr[i]`, `match self.field`), a `Block`/`If`/
-    /// `Scope` wrapper whose value is a sub-expression (`match { h.b }`), a
-    /// closure-CAPTURED binding (read from the env by copy, not moved into the
-    /// temp), a NESTED-pattern binder (extracted through a transient copy the
-    /// move cannot neutralize), or any un-enumerated / future HIR shape. The
-    /// move-out is REJECTED before codegen; `reason` selects the precise
-    /// diagnostic. Rejecting a wrapper-hidden but otherwise-safe producer is
-    /// acceptable — the safe default is to reject rather than risk aliasing.
-    /// Borrow-only matches never reach this arm (they do not consume the binder).
+    /// `match arr[i]`, `match self.field`), a `Block`/`If`/`Scope` wrapper whose
+    /// value is a sub-expression (`match { h.b }`), a closure-CAPTURED binding
+    /// (read from the env by copy, not moved into the temp), a NESTED-pattern
+    /// binder (extracted through a transient copy the move cannot neutralize),
+    /// or any un-enumerated / future HIR shape. A direct projection from an
+    /// owned tuple (`match pair.0`) is the one explicit exception: enum-match
+    /// lowering can neutralize that exact tuple field, consume-mark the tuple,
+    /// and mint the match temp as its sole replacement owner. Other move-outs
+    /// are REJECTED before codegen; `reason` selects the precise diagnostic.
+    /// Rejecting a wrapper-hidden but otherwise-safe producer is acceptable —
+    /// the safe default is to reject rather than risk aliasing. Borrow-only
+    /// matches never reach this arm (they do not consume the binder).
     Reject(ProjectedPayloadRejectReason),
 }
 

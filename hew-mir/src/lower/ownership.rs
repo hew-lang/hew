@@ -1,7 +1,7 @@
 use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
-    callee_returns_fresh_owner, machine_layout_name_matches, mangle_layout_key,
-    monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
+    callee_returns_fresh_owner, callee_returns_retained_string_owner, machine_layout_name_matches,
+    mangle_layout_key, monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
     ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
@@ -624,6 +624,10 @@ impl Builder {
             return false;
         }
         callee_returns_fresh_owner(callee, &self.call_scrutinee_provenance.fresh_owner_verdicts)
+            || callee_returns_retained_string_owner(
+                callee,
+                &self.call_scrutinee_provenance.fresh_owner_verdicts,
+            )
     }
     /// The ARGUMENT-side sibling of
     /// [`FreshOwnerVerdicts::symbol_is_ownership_opaque_extern`], which is the

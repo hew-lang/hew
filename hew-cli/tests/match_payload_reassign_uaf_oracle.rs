@@ -428,8 +428,11 @@ fn field_place_no_reread_source() -> String {
     )
 }
 
-/// A TUPLE-index place scrutinee (`match pair.0`) — same code path as a record
-/// field. MUST reject.
+/// A TUPLE-index scrutinee (`match pair.0`) whose direct owning tuple can hand
+/// the projected enum field to the match temp. Moving the payload remains
+/// fail-closed when the loop re-reads `pair`: the projection transfer
+/// neutralizes `pair.0` and consume-marks `pair`, so the generic MIR checker
+/// rejects the later iteration before codegen.
 fn tuple_place_reread_loop_source() -> String {
     format!(
         "enum Box {{\n\
@@ -560,13 +563,13 @@ fn field_place_move_out_no_reread_is_rejected() {
     );
 }
 
-/// (F1) A tuple-index place scrutinee move-out is rejected (same code path).
+/// A tuple-index owner transfer is rejected when the source tuple is re-read.
 #[test]
 fn tuple_place_move_out_is_rejected() {
     assert_compile_fails(
         "tuple_place_reread",
         &tuple_place_reread_loop_source(),
-        "cannot move the heap-owning payload `v` out of a `match` on a re-readable place",
+        "binding `pair` is used after it was consumed",
     );
 }
 

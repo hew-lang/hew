@@ -4514,6 +4514,18 @@ fn build_lifo_drops(
         // exactly once on the owner and never on a moved-out record. A returned
         // record is excluded (the `ReturnSlot` owns it); a field-read-only
         // record stays in the set and is dropped here.
+        // A field-bearing user `#[resource]` record must stay on this structural
+        // arm: its `RecordInPlace` helper runs the user close first and then
+        // recursively tears down every owned field.  The scalar
+        // `AffineResource` arm below runs only the close ritual and would leak
+        // heap fields and skip nested resource closes.
+        //
+        // `affine_release_flags` is populated by the single
+        // `affine_release_needs_drop_flag` predicate for user closes. Attach
+        // that flag to the WHOLE recursive helper so a conditional by-value
+        // hand-off skips both the close and field teardown on the consumed
+        // path, while the live path performs the complete resource-record
+        // ritual exactly once.
         if owned_record_drop_allowed.contains(binding) {
             let place = *binding_locals.get(binding).unwrap_or_else(|| {
                 panic!(
@@ -4527,7 +4539,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::RecordInPlace,
-                guard: None,
+                guard: affine_release_flags.get(binding).copied(),
             });
             continue;
         }

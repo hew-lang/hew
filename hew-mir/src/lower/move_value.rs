@@ -366,7 +366,11 @@ impl Builder {
                 dest
             }
             OwnedCarrierNeutralizeTarget::Projection { root, fields } => {
-                self.push_instr(Instr::AggregateProjectionNeutralize { root, fields });
+                self.push_instr(Instr::AggregateProjectionNeutralize {
+                    root,
+                    fields,
+                    transferee: value,
+                });
                 self.prepared_owned_call_sources.insert(value);
                 value
             }

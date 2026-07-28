@@ -24,6 +24,7 @@ use hew_runtime::tracing::{
     drain_events, hew_trace_begin, hew_trace_enable, hew_trace_end, hew_trace_lifecycle,
     hew_trace_reset, trace_now_ns, SPAN_SPAWN,
 };
+use hew_runtime::{set_current_context, HewExecutionContext};
 
 // ── Mock OTLP receiver ────────────────────────────────────────────────────────
 
@@ -114,10 +115,35 @@ fn read_http_post_body(stream: &mut TcpStream) -> String {
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+struct ContextGuard {
+    context: Box<HewExecutionContext>,
+    previous: *mut HewExecutionContext,
+}
+
+impl ContextGuard {
+    fn install() -> Self {
+        let mut context = Box::new(HewExecutionContext::default());
+        let raw: *mut HewExecutionContext = context.as_mut();
+        let previous = set_current_context(raw);
+        Self { context, previous }
+    }
+}
+
+impl Drop for ContextGuard {
+    fn drop(&mut self) {
+        let raw: *mut HewExecutionContext = self.context.as_mut();
+        let restored = set_current_context(self.previous);
+        if !std::thread::panicking() {
+            assert_eq!(restored, raw);
+        }
+    }
+}
+
 /// Verify that a begin/end span pair is correctly exported to a mock OTLP receiver.
 #[test]
 fn otel_exporter_posts_valid_otlp_json() {
     let _guard = TEST_LOCK.lock().unwrap();
+    let _context = ContextGuard::install();
 
     // 1. Reset tracing state and enable recording.
     hew_trace_reset();
@@ -193,21 +219,21 @@ fn otel_exporter_posts_valid_otlp_json() {
     );
 
     // 8. Verify the mock received the body.
-    let received = receiver
+    let request_body = receiver
         .wait_for_body(Duration::from_secs(3))
         .expect("mock receiver did not receive a request within 3 seconds");
 
-    assert!(!received.is_empty(), "received body was empty");
+    assert!(!request_body.is_empty(), "received body was empty");
     assert!(
-        received.contains("resourceSpans"),
-        "received body does not contain resourceSpans: {received}"
+        request_body.contains("resourceSpans"),
+        "received body does not contain resourceSpans: {request_body}"
     );
     assert!(
-        received.contains("test-service"),
+        request_body.contains("test-service"),
         "service name not in received body"
     );
     assert!(
-        received.contains("hew.actor_id"),
+        request_body.contains("hew.actor_id"),
         "actor_id attribute missing from received body"
     );
 
@@ -225,6 +251,7 @@ fn otel_exporter_posts_valid_otlp_json() {
 #[test]
 fn span_reconstruction_pairs_begin_and_end_events() {
     let _guard = TEST_LOCK.lock().unwrap();
+    let _context = ContextGuard::install();
     hew_trace_reset();
     hew_trace_enable(1);
 

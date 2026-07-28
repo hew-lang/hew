@@ -1,9 +1,8 @@
 //! Generational-index slotmap (`Arena<T>`).
 //!
 //! An `Arena<T>` is an owned, `Vec`-backed store that hands out stable,
-//! generation-checked handles (`Key<T>`) instead of pointers. Arena clones are
-//! independent value snapshots: keys that predate the clone work in both
-//! snapshots, while later divergent inserts receive distinct generations.
+//! generation-checked handles (`Key<T>`) instead of pointers. An arena owns
+//! mutable identity state and cannot be cloned; its keys remain plain values.
 //! Insertion and removal use O(1) slot bookkeeping; returning an owned `T`
 //! follows the value model and may additionally cost O(size of T). A key keeps
 //! working across unrelated mutations and fails closed once the value it named
@@ -41,19 +40,35 @@ pub type Key<T> {
 }
 
 // A slot in the backing store. `value: None` marks the slot free. Every
-// `insert` mints a process-unique generation, so slot reuse — including reuse
-// in divergent Arena snapshots — cannot recreate an issued `Key`.
+// `insert` mints a fresh arena-local generation, so slot reuse cannot recreate
+// an issued `Key`.
 type Slot<T> {
     generation: i64;
     value: Option<T>;
 }
 
+// An Arena owns mutable identity state and must not fork. A no-op affine
+// witness makes clone admissibility fail closed transitively, including when
+// an Arena is nested in another record. The witness owns no runtime resource.
+#[resource]
+type ArenaCloneGuard {
+    marker: i64;
+}
+
+impl ArenaCloneGuard {
+    fn close(self) {}
+}
+
 /// A generational-index slotmap with O(1) slot bookkeeping.
 ///
 /// Construct with `arena.new()`. Values are owned by the arena; accessors
-/// return `Option<T>` copies under the value model, never references.
+/// return `Option<T>` copies under the value model, never references. An arena
+/// is non-cloneable because forking its identity state could issue ambiguous
+/// keys.
 pub type Arena<T> {
+    clone_guard: ArenaCloneGuard;
     arena_id: i64;
+    generation_counter: Vec<i64>;
     slots: Vec<Slot<T>>;
     free: Vec<i64>;
 }
@@ -69,19 +84,28 @@ pub fn new<T>() -> Arena<T> {
     }
     let slots: Vec<Slot<T>> = Vec::new();
     let free: Vec<i64> = Vec::new();
-    Arena { arena_id: arena_id, slots: slots, free: free }
+    let generation_counter: Vec<i64> = [1];
+    let clone_guard = ArenaCloneGuard { marker: 0 };
+    Arena {
+        clone_guard: clone_guard,
+        arena_id: arena_id,
+        generation_counter: generation_counter,
+        slots: slots,
+        free: free,
+    }
 }
 
 impl<T> Arena<T> {
     /// Insert `value` and return a fresh `Key<T>` naming it.
     ///
     /// Reuses a freed slot when one is available; otherwise appends a new slot.
-    /// Every insertion receives a process-unique generation. O(1).
+    /// Every insertion receives a fresh monotonic generation. O(1).
     fn insert(self, value: T) -> Key<T> {
-        let generation = unsafe { hew_arena_key_generation_new() };
-        if generation == 0 {
+        let generation = self.generation_counter[0];
+        if generation == 9223372036854775807 {
             panic("arena.insert: key generation space exhausted");
         }
+        self.generation_counter.set(0, generation + 1);
         if self.free.is_empty() {
             self.slots.push(Slot { generation: generation, value: Some(value) });
             Key {
@@ -156,5 +180,4 @@ impl<T> Arena<T> {
 
 extern "C" {
     fn hew_arena_instance_id_new() -> i64;
-    fn hew_arena_key_generation_new() -> i64;
 }

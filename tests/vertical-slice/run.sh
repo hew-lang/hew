@@ -857,7 +857,15 @@ run_accept_expect_stdout "arena_len_live_count"
 run_accept_expect_stdout "arena_composite_value"
 run_accept_expect_stdout "arena_no_leak_cycle"
 run_accept_expect_stdout "arena_cross_instance_key_rejected"
-run_accept_expect_stdout "arena_clone_divergent_keys"
+run_accept_expect_stdout "arena_nested_vec_reuse"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/arena_method_clone_rejected.hew" \
+  "cannot be cloned" \
+  "arena_method_clone_rejected"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/arena_prefix_clone_rejected.hew" \
+  "cannot be cloned" \
+  "arena_prefix_clone_rejected"
 if grep -qF 'E_CODEGEN_FRONT' "${reject_output}" || \
     grep -qF 'IntCmp lhs is not an integer' "${reject_output}"; then
   echo "managed_record_or_enum_eq leaked codegen-front diagnostics" >&2

@@ -125,6 +125,68 @@ fn retained_string_field_load_aliases(
         .collect()
 }
 
+/// The generation-safe subset of retained string field-load aliases.
+///
+/// The aggregate provers key payload ownership by MIR local, while a local may
+/// be reused for multiple generations.  Removing payload-binder taint is sound
+/// only when the field load and every onward alias each uniquely define their
+/// destination.  This keeps a retained string clone from masking a different
+/// payload generation that later reuses the same local.
+fn uniquely_defined_retained_string_field_load_aliases(
+    blocks: &[BasicBlock],
+    local_tys: &[ResolvedTy],
+) -> HashSet<u32> {
+    let dominators = block_dominators(blocks);
+    let mut proven_defs: HashMap<u32, InstrSite> = HashMap::new();
+    for block in blocks {
+        for (index, instr) in block.instructions.iter().enumerate() {
+            let Some(dest) = string_field_load_producer_dest(instr, local_tys).and_then(base_local)
+            else {
+                continue;
+            };
+            let site = InstrSite {
+                block: block.id,
+                index,
+            };
+            if single_dominating_local_generation(blocks, &dominators, dest, site) {
+                proven_defs.insert(dest, site);
+            }
+        }
+    }
+
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for (index, instr) in block.instructions.iter().enumerate() {
+                let Instr::Move {
+                    dest: Place::Local(dest),
+                    src: Place::Local(src),
+                } = instr
+                else {
+                    continue;
+                };
+                let site = InstrSite {
+                    block: block.id,
+                    index,
+                };
+                let Some(&src_def) = proven_defs.get(src) else {
+                    continue;
+                };
+                if single_dominating_local_generation(blocks, &dominators, *dest, site)
+                    && instr_site_dominates(&dominators, src_def, site)
+                    && proven_defs.insert(*dest, site).is_none()
+                {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    proven_defs.into_keys().collect()
+}
+
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose
 /// composite drop the sole-owner prover excludes because ONE of its fields
 /// escaped through a field binder.
@@ -1354,6 +1416,9 @@ pub(super) fn derive_enum_composite_drop_allowed(
             break;
         }
     }
+    let retained_string_payload_aliases =
+        uniquely_defined_retained_string_field_load_aliases(blocks, local_tys);
+    payload_binders.retain(|local, _| !retained_string_payload_aliases.contains(local));
 
     // Escape scan. A composite root is excluded if:
     //   (a) any alias-set member is read into an OWNING sink (a source operand
@@ -3149,6 +3214,127 @@ fn whole_local_write_sites(blocks: &[BasicBlock], local: u32) -> Option<Vec<Inst
     Some(sites)
 }
 
+fn block_dominators(blocks: &[BasicBlock]) -> HashMap<u32, HashSet<u32>> {
+    let Some(entry) = blocks.first().map(|block| block.id) else {
+        return HashMap::new();
+    };
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|block| (block.id, block)).collect();
+    if by_id.len() != blocks.len() {
+        return HashMap::new();
+    }
+
+    let mut reachable = blocks_reachable_from(blocks, entry);
+    reachable.insert(entry);
+    let mut predecessors: HashMap<u32, HashSet<u32>> = HashMap::new();
+    for block in blocks {
+        for successor in block.successors() {
+            if reachable.contains(&block.id) && reachable.contains(&successor) {
+                predecessors.entry(successor).or_default().insert(block.id);
+            }
+        }
+    }
+
+    let mut dominators: HashMap<u32, HashSet<u32>> = reachable
+        .iter()
+        .copied()
+        .map(|block| {
+            if block == entry {
+                (block, HashSet::from([entry]))
+            } else {
+                (block, reachable.clone())
+            }
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for &block in &reachable {
+            if block == entry {
+                continue;
+            }
+            let Some(preds) = predecessors.get(&block) else {
+                dominators.remove(&block);
+                continue;
+            };
+            let mut pred_dominators = preds
+                .iter()
+                .filter_map(|pred| dominators.get(pred).cloned());
+            let Some(mut next) = pred_dominators.next() else {
+                dominators.remove(&block);
+                continue;
+            };
+            for pred_doms in pred_dominators {
+                next.retain(|dominator| pred_doms.contains(dominator));
+            }
+            next.insert(block);
+            if dominators.get(&block) != Some(&next) {
+                dominators.insert(block, next);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    dominators
+}
+
+fn instr_site_dominates(
+    dominators: &HashMap<u32, HashSet<u32>>,
+    def: InstrSite,
+    use_site: InstrSite,
+) -> bool {
+    if def.block == use_site.block {
+        return def.index < use_site.index;
+    }
+    dominators
+        .get(&use_site.block)
+        .is_some_and(|blocks| blocks.contains(&def.block))
+}
+
+fn single_dominating_local_generation(
+    blocks: &[BasicBlock],
+    dominators: &HashMap<u32, HashSet<u32>>,
+    local: u32,
+    def: InstrSite,
+) -> bool {
+    if whole_local_write_sites(blocks, local).as_deref() != Some(&[def]) {
+        return false;
+    }
+    let Some(def_instr) = blocks
+        .iter()
+        .find(|block| block.id == def.block)
+        .and_then(|block| block.instructions.get(def.index))
+    else {
+        return false;
+    };
+    if crate::dataflow::instr_reads_writes(def_instr)
+        .0
+        .into_iter()
+        .any(|place| base_local(place) == Some(local))
+    {
+        return false;
+    }
+    blocks.iter().all(|block| {
+        block.instructions.iter().enumerate().all(|(index, instr)| {
+            let site = InstrSite {
+                block: block.id,
+                index,
+            };
+            !instr_references_local(instr, local)
+                || site == def
+                || instr_site_dominates(dominators, def, site)
+        }) && (!terminator_references_local(&block.terminator, None, local)
+            || instr_site_dominates(
+                dominators,
+                def,
+                InstrSite {
+                    block: block.id,
+                    index: block.instructions.len(),
+                },
+            ))
+    })
+}
+
 fn instr_references_local(instr: &Instr, local: u32) -> bool {
     let (reads, writes) = crate::dataflow::instr_reads_writes(instr);
     reads
@@ -3221,6 +3407,132 @@ fn carrier_cleanup_fields(
     )
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the sequential fail-closed proof keeps the tag, constructor, and layout \
+              conditions adjacent so no accepted reference shape is hidden across helpers"
+)]
+fn exact_empty_enum_carrier_initialization(
+    blocks: &[BasicBlock],
+    dominators: &HashMap<u32, HashSet<u32>>,
+    initialization_site: InstrSite,
+    carrier: u32,
+    local_tys: &[ResolvedTy],
+    enum_layouts: &[crate::model::EnumLayout],
+) -> bool {
+    let Some(initialization_block) = blocks
+        .iter()
+        .find(|block| block.id == initialization_site.block)
+    else {
+        return false;
+    };
+    let Some(Instr::Move {
+        dest: Place::Local(initialized_carrier),
+        src: Place::Local(constructor),
+    }) = initialization_block
+        .instructions
+        .get(initialization_site.index)
+    else {
+        return false;
+    };
+    if *initialized_carrier != carrier || *constructor == carrier {
+        return false;
+    }
+    let (Some(carrier_ty), Some(constructor_ty)) = (
+        local_tys.get(carrier as usize),
+        local_tys.get(*constructor as usize),
+    ) else {
+        return false;
+    };
+    if carrier_ty != constructor_ty {
+        return false;
+    }
+    let ResolvedTy::Named { name, args, .. } = carrier_ty else {
+        return false;
+    };
+    let Some(layout) = crate::model::find_enum_layout(name, args, enum_layouts) else {
+        return false;
+    };
+    if layout.is_indirect {
+        return false;
+    }
+
+    let mut tag_write = None;
+    for block in blocks {
+        if terminator_references_local(&block.terminator, None, *constructor) {
+            return false;
+        }
+        for (index, instr) in block.instructions.iter().enumerate() {
+            let site = InstrSite {
+                block: block.id,
+                index,
+            };
+            if site == initialization_site {
+                continue;
+            }
+            match instr {
+                Instr::Move {
+                    dest: Place::MachineTag(tagged_local) | Place::EnumTag(tagged_local),
+                    src: Place::Local(tag_source),
+                } if *tagged_local == *constructor => {
+                    if tag_write.replace((site, *tag_source)).is_some() {
+                        return false;
+                    }
+                }
+                _ if instr_references_local(instr, *constructor) => return false,
+                _ => {}
+            }
+        }
+    }
+    let Some((tag_write_site, tag_source)) = tag_write else {
+        return false;
+    };
+    if !instr_site_dominates(dominators, tag_write_site, initialization_site) {
+        return false;
+    }
+
+    let mut tag_constants = Vec::new();
+    for block in blocks {
+        if terminator_references_local(&block.terminator, None, tag_source) {
+            return false;
+        }
+        for (index, instr) in block.instructions.iter().enumerate() {
+            let site = InstrSite {
+                block: block.id,
+                index,
+            };
+            match instr {
+                Instr::ConstI64 {
+                    dest: Place::Local(constant_dest),
+                    value,
+                } if *constant_dest == tag_source
+                    && site.block == tag_write_site.block
+                    && site.index < tag_write_site.index =>
+                {
+                    tag_constants.push((site, *value));
+                }
+                _ if instr_references_local(instr, tag_source) && site != tag_write_site => {
+                    return false;
+                }
+                _ => {}
+            }
+        }
+    }
+    let [(constant_site, tag_value)] = tag_constants.as_slice() else {
+        return false;
+    };
+    if constant_site.block != tag_write_site.block || constant_site.index >= tag_write_site.index {
+        return false;
+    }
+    let Ok(variant_idx) = usize::try_from(*tag_value) else {
+        return false;
+    };
+    layout
+        .variants
+        .get(variant_idx)
+        .is_some_and(|variant| variant.field_tys.is_empty())
+}
+
 fn record_field_drop_contract_is_valid(
     ty: &ResolvedTy,
     drop_fn: &crate::model::DropFnSpec,
@@ -3247,7 +3559,11 @@ fn complete_carrier_cleanup_sites(
     local_tys: &[ResolvedTy],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
+    empty_enum_initialization_is_exact: bool,
 ) -> Option<Vec<InstrSite>> {
+    if cleanup_block.instructions.is_empty() && empty_enum_initialization_is_exact {
+        return Some(Vec::new());
+    }
     let expected = carrier_cleanup_fields(carrier, local_tys, record_field_orders, enum_layouts)?;
     let mut observed = HashSet::new();
     let mut sites = Vec::new();
@@ -3399,6 +3715,10 @@ fn derive_tuple_projection_forward_transfers(
     if by_id.len() != blocks.len() {
         return proofs;
     }
+    let dominators = block_dominators(blocks);
+    if dominators.is_empty() {
+        return proofs;
+    }
     let mut predecessors: HashMap<u32, HashSet<u32>> = HashMap::new();
     for block in blocks {
         for successor in block.successors() {
@@ -3518,58 +3838,149 @@ fn derive_tuple_projection_forward_transfers(
                 let Some(carrier_defs) = whole_local_write_sites(blocks, *carrier) else {
                     continue;
                 };
-                if carrier_defs.len() != 2 || !carrier_defs.contains(&overwrite_site) {
+                if !carrier_defs.contains(&overwrite_site) {
                     continue;
                 }
-                let Some(initialization_site) = carrier_defs
-                    .iter()
-                    .copied()
-                    .find(|site| *site != overwrite_site)
-                    .filter(|site| {
-                        site.block == neutralize_block.id && site.index < neutralize_index
+                let inline_enum_carrier = local_tys
+                    .get(*carrier as usize)
+                    .and_then(|ty| match ty {
+                        ResolvedTy::Named { name, args, .. } => {
+                            crate::model::find_enum_layout(name, args, enum_layouts)
+                        }
+                        _ => None,
                     })
-                else {
+                    .is_some_and(|layout| !layout.is_indirect);
+                let has_declared_cleanup = !inline_enum_carrier;
+                let initialization_sites: Vec<_> = if has_declared_cleanup {
+                    carrier_defs
+                        .iter()
+                        .copied()
+                        .filter(|site| *site != overwrite_site)
+                        .filter(|site| {
+                            if site.block == neutralize_block.id {
+                                site.index < neutralize_index
+                            } else {
+                                blocks_reachable_from(blocks, site.block)
+                                    .contains(&neutralize_block.id)
+                            }
+                        })
+                        .collect()
+                } else {
+                    carrier_defs
+                        .iter()
+                        .copied()
+                        .filter(|site| *site != overwrite_site)
+                        .filter(|site| {
+                            exact_empty_enum_carrier_initialization(
+                                blocks,
+                                &dominators,
+                                *site,
+                                *carrier,
+                                local_tys,
+                                enum_layouts,
+                            )
+                        })
+                        .filter(|site| instr_site_dominates(&dominators, *site, neutralize_site))
+                        .collect()
+                };
+                let [initialization_site] = initialization_sites.as_slice() else {
                     continue;
                 };
+                let initialization_site = *initialization_site;
+                let non_initial_carrier_defs: HashSet<InstrSite> = carrier_defs
+                    .iter()
+                    .copied()
+                    .filter(|site| *site != initialization_site)
+                    .collect();
+                if has_declared_cleanup && carrier_defs.len() != 2 {
+                    continue;
+                }
+                let alternate_carrier_defs: Vec<_> = non_initial_carrier_defs
+                    .iter()
+                    .copied()
+                    .filter(|site| *site != overwrite_site)
+                    .collect();
+                if !has_declared_cleanup
+                    && alternate_carrier_defs.iter().copied().any(|site| {
+                        !exact_empty_enum_carrier_initialization(
+                            blocks,
+                            &dominators,
+                            site,
+                            *carrier,
+                            local_tys,
+                            enum_layouts,
+                        ) || blocks_reachable_from(blocks, neutralize_block.id)
+                            .contains(&site.block)
+                    })
+                {
+                    continue;
+                }
+                if !instr_site_dominates(&dominators, neutralize_site, overwrite_site) {
+                    continue;
+                }
                 let Some(cleanup_sites) = complete_carrier_cleanup_sites(
                     by_id[&cleanup_block],
                     *carrier,
                     local_tys,
                     record_field_orders,
                     enum_layouts,
+                    !has_declared_cleanup,
                 ) else {
                     continue;
                 };
 
-                let Some((forward_index, final_owner)) = join
-                    .instructions
-                    .iter()
-                    .enumerate()
-                    .skip(overwrite_index.saturating_add(1))
-                    .find_map(|(index, instr)| {
-                        if !instr_references_local(instr, *carrier) {
+                let forward_in_block =
+                    |block: &BasicBlock, start| {
+                        block.instructions.iter().enumerate().skip(start).find_map(
+                            |(index, instr)| {
+                                if !instr_references_local(instr, *carrier) {
+                                    return None;
+                                }
+                                match instr {
+                                    Instr::Move {
+                                        dest: Place::Local(final_owner),
+                                        src: Place::Local(move_carrier),
+                                    } if *move_carrier == *carrier => Some((index, *final_owner)),
+                                    _ => None,
+                                }
+                            },
+                        )
+                    };
+                let forward = forward_in_block(join, overwrite_index.saturating_add(1))
+                    .map(|(index, owner)| (join_block, index, owner))
+                    .or_else(|| {
+                        let Terminator::Goto { target } = join.terminator else {
                             return None;
-                        }
-                        match instr {
-                            Instr::Move {
-                                dest: Place::Local(final_owner),
-                                src: Place::Local(move_carrier),
-                            } if *move_carrier == *carrier => Some((index, *final_owner)),
-                            _ => None,
-                        }
-                    })
-                else {
+                        };
+                        let forward_block = by_id.get(&target)?;
+                        forward_in_block(forward_block, 0)
+                            .map(|(index, owner)| (target, index, owner))
+                    });
+                let Some((forward_block, forward_index, final_owner)) = forward else {
                     continue;
                 };
                 if final_owner == root || final_owner == seed || final_owner == *carrier {
                     continue;
                 }
                 let forward_site = InstrSite {
-                    block: join_block,
+                    block: forward_block,
                     index: forward_index,
                 };
-                if whole_local_write_sites(blocks, final_owner).as_deref() != Some(&[forward_site])
-                {
+                if !instr_site_dominates(&dominators, initialization_site, forward_site) {
+                    continue;
+                }
+                if !single_dominating_local_generation(
+                    blocks,
+                    &dominators,
+                    final_owner,
+                    forward_site,
+                ) {
+                    continue;
+                }
+                if alternate_carrier_defs.iter().any(|site| {
+                    !blocks_reachable_from(blocks, site.block).contains(&forward_site.block)
+                        || (site.block == forward_site.block && site.index >= forward_site.index)
+                }) {
                     continue;
                 }
 
@@ -3593,13 +4004,14 @@ fn derive_tuple_projection_forward_transfers(
                                 .all(|place| base_local(place) != Some(*carrier)))
                             || (cleanup_sites.contains(&site)
                                 && cleanup_field_drop_base(instr) == Some(Place::Local(*carrier)))
-                            || site == overwrite_site
+                            || non_initial_carrier_defs.contains(&site)
                             || site == forward_site
                     })
                 });
                 if !carrier_accesses_are_exact {
                     continue;
                 }
+
                 let seed_accesses_are_exact = blocks.iter().all(|block| {
                     !terminator_references_local(
                         &block.terminator,
@@ -3635,6 +4047,7 @@ fn derive_tuple_projection_forward_transfers(
         }
     }
 
+    let mut owner_exempt_defs: HashMap<(u32, u32), InstrSite> = HashMap::new();
     for transfer in transfers {
         let TupleProjectionForwardTransfer {
             root,
@@ -3653,6 +4066,7 @@ fn derive_tuple_projection_forward_transfers(
             .entry(final_owner)
             .or_default()
             .insert(root);
+        owner_exempt_defs.insert((final_owner, root), forward_site);
         for local in [carrier, final_owner] {
             proofs
                 .release_exempt_roots
@@ -3669,9 +4083,74 @@ fn derive_tuple_projection_forward_transfers(
         }
         proofs
             .forward_exempt_roots
+            .entry(overwrite_site)
+            .or_default()
+            .insert(root);
+        proofs
+            .forward_exempt_roots
             .entry(forward_site)
             .or_default()
             .insert(root);
+    }
+
+    // Match lowering moves enum tags and payload projections through fresh
+    // locals. Propagate a detached-root exemption only through a destination
+    // whose current Move is its sole whole-local definition, and only when the
+    // source's proven definition dominates that Move. This is deliberately a
+    // generation proof: a branch-merged or reused destination must not inherit
+    // an exemption from one generation and apply it to another.
+    let dominators = block_dominators(blocks);
+    loop {
+        let mut changed = false;
+        for block in blocks {
+            for (index, instr) in block.instructions.iter().enumerate() {
+                let Instr::Move {
+                    dest: Place::Local(dest),
+                    src,
+                } = instr
+                else {
+                    continue;
+                };
+                let Some(src) = base_local(*src) else {
+                    continue;
+                };
+                if src == *dest {
+                    continue;
+                }
+                let site = InstrSite {
+                    block: block.id,
+                    index,
+                };
+                if !single_dominating_local_generation(blocks, &dominators, *dest, site) {
+                    continue;
+                }
+                let detached_roots: Vec<_> = owner_exempt_defs
+                    .iter()
+                    .filter_map(|(&(local, root), &def_site)| {
+                        (local == src && instr_site_dominates(&dominators, def_site, site))
+                            .then_some(root)
+                    })
+                    .collect();
+                for root in detached_roots {
+                    if owner_exempt_defs.insert((*dest, root), site).is_none() {
+                        proofs
+                            .owner_exempt_roots
+                            .entry(*dest)
+                            .or_default()
+                            .insert(root);
+                        proofs
+                            .release_exempt_roots
+                            .entry(*dest)
+                            .or_default()
+                            .insert(root);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
     }
     proofs
 }
@@ -4046,14 +4525,14 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             // A `Move` discriminates a benign whole-value hand-off (dest is
             // another alias member) from a real whole-tuple escape.
             if let Instr::Move { dest, src } = instr {
+                let src_local = base_local(*src);
+                let dest_local = base_local(*dest);
                 let forward_exempt_roots = tuple_projection_forward_proofs
                     .forward_exempt_roots
                     .get(&InstrSite {
                         block: block.id,
                         index: instr_index,
                     });
-                let src_local = base_local(*src);
-                let dest_local = base_local(*dest);
                 if let Some(sl) = src_local {
                     let src_is_member = alias_of.contains_key(&sl)
                         && matches!(src, Place::Local(_) | Place::ReturnSlot);
@@ -4072,10 +4551,17 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                         let benign = dest_local.is_some_and(is_escape_binder)
                             && matches!(dest, Place::Local(_));
                         if !benign {
+                            let mut binder_exempt_roots =
+                                forward_exempt_roots.cloned().unwrap_or_default();
+                            if let Some(owner_roots) =
+                                tuple_projection_forward_proofs.owner_exempt_roots.get(&sl)
+                            {
+                                binder_exempt_roots.extend(owner_roots);
+                            }
                             exclude_tuple_roots_except(
                                 &alias_of,
                                 &mut excluded_roots,
-                                forward_exempt_roots,
+                                Some(&binder_exempt_roots),
                             );
                         }
                     }
@@ -7851,11 +8337,359 @@ mod tuple_projection_forward_transfer_proof {
         .is_some_and(|roots| roots.contains(&0))
     }
 
+    fn enum_carrier_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Carrier", vec![])
+    }
+
+    fn enum_layouts() -> Vec<crate::model::EnumLayout> {
+        vec![crate::model::EnumLayout {
+            name: "Carrier".to_string(),
+            tag_width: 1,
+            variants: vec![
+                crate::model::MachineVariantLayout {
+                    name: "Full".to_string(),
+                    field_tys: vec![ResolvedTy::named_builtin(
+                        "Vec",
+                        hew_types::BuiltinType::Vec,
+                        vec![ResolvedTy::String],
+                    )],
+                    field_names: vec![],
+                },
+                crate::model::MachineVariantLayout {
+                    name: "Empty".to_string(),
+                    field_tys: vec![],
+                    field_names: vec![],
+                },
+            ],
+            is_indirect: false,
+        }]
+    }
+
+    fn empty_enum_carrier_blocks() -> Vec<BasicBlock> {
+        vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::ConstI64 {
+                        dest: Place::Local(5),
+                        value: 1,
+                    },
+                    Instr::Move {
+                        dest: Place::MachineTag(4),
+                        src: Place::Local(5),
+                    },
+                    Instr::Move {
+                        dest: Place::Local(2),
+                        src: Place::Local(4),
+                    },
+                    Instr::TupleFieldLoad {
+                        tuple: Place::Local(0),
+                        field_index: 0,
+                        dest: Place::Local(1),
+                    },
+                    Instr::AggregateProjectionNeutralize {
+                        root: Place::Local(0),
+                        fields: vec![0],
+                        transferee: Place::Local(1),
+                    },
+                ],
+                terminator: Terminator::Branch {
+                    cond: Place::Local(9),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Goto { target: 2 },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![
+                    Instr::Move {
+                        dest: Place::Local(2),
+                        src: Place::Local(1),
+                    },
+                    Instr::Move {
+                        dest: Place::Local(3),
+                        src: Place::Local(2),
+                    },
+                ],
+                terminator: Terminator::Return,
+            },
+        ]
+    }
+
+    fn empty_enum_carrier_proofs(
+        blocks: &[BasicBlock],
+        layouts: &[crate::model::EnumLayout],
+    ) -> TupleProjectionForwardProofs {
+        let carrier = enum_carrier_ty();
+        derive_tuple_projection_forward_transfers(
+            blocks,
+            &HashMap::new(),
+            &[(0, 0)].into_iter().collect(),
+            &[
+                ResolvedTy::Tuple(vec![carrier.clone(), ResolvedTy::I64]),
+                carrier.clone(),
+                carrier.clone(),
+                carrier.clone(),
+                carrier,
+                ResolvedTy::I64,
+            ],
+            &HashMap::new(),
+            layouts,
+        )
+    }
+
+    fn empty_enum_carrier_proves(blocks: &[BasicBlock]) -> bool {
+        empty_enum_carrier_proofs(blocks, &enum_layouts())
+            .owner_exempt_roots
+            .get(&3)
+            .is_some_and(|roots| roots.contains(&0))
+    }
+
     #[test]
     fn exact_tuple_projection_forwarding_is_proven() {
         assert!(
             proves(&blocks()),
             "the exact branch-cleanup-join forwarding shape must earn its scoped proof"
+        );
+    }
+
+    #[test]
+    fn proven_empty_enum_carrier_allows_projection_forwarding() {
+        assert!(
+            empty_enum_carrier_proves(&empty_enum_carrier_blocks()),
+            "an empty cleanup is sound only when the exact initial enum generation has one \
+             constructor tag for a declared payload-free variant"
+        );
+    }
+
+    #[test]
+    fn owner_exemption_does_not_admit_an_unrelated_tuple_root() {
+        let alias_of = [(10, 0), (11, 1)].into_iter().collect();
+        let mut excluded = HashSet::new();
+        let exempt = [0].into_iter().collect();
+
+        exclude_tuple_roots_except(&alias_of, &mut excluded, Some(&exempt));
+
+        assert_eq!(
+            excluded,
+            [1].into_iter().collect(),
+            "a proven owner exemption must remain scoped to its proven tuple root"
+        );
+    }
+
+    #[test]
+    fn enum_carrier_requires_exact_empty_generation_evidence() {
+        let mut nonempty_tag = empty_enum_carrier_blocks();
+        let Instr::ConstI64 { value, .. } = &mut nonempty_tag[0].instructions[0] else {
+            panic!("fixture must initialize the enum tag");
+        };
+        *value = 0;
+        assert!(
+            !empty_enum_carrier_proves(&nonempty_tag),
+            "an empty cleanup cannot overwrite a generation tagged for a payload-bearing variant"
+        );
+
+        let mut payload_write = empty_enum_carrier_blocks();
+        payload_write[0].instructions.insert(
+            2,
+            Instr::Move {
+                dest: Place::MachineVariant {
+                    local: 4,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+                src: Place::Local(1),
+            },
+        );
+        assert!(
+            !empty_enum_carrier_proves(&payload_write),
+            "a seed with any payload write must not earn an empty-cleanup exemption"
+        );
+
+        let mut reused_tag = empty_enum_carrier_blocks();
+        reused_tag[0].instructions.insert(
+            2,
+            Instr::IntAdd {
+                dest: Place::Local(8),
+                lhs: Place::Local(5),
+                rhs: Place::Local(9),
+            },
+        );
+        assert!(
+            !empty_enum_carrier_proves(&reused_tag),
+            "the constructor tag must be uniquely consumed by its exact enum-tag write"
+        );
+
+        let carrier = enum_carrier_ty();
+        let no_layout_proof = derive_tuple_projection_forward_transfers(
+            &empty_enum_carrier_blocks(),
+            &HashMap::new(),
+            &[(0, 0)].into_iter().collect(),
+            &[
+                ResolvedTy::Tuple(vec![carrier.clone(), ResolvedTy::I64]),
+                carrier.clone(),
+                carrier.clone(),
+                carrier.clone(),
+                carrier,
+                ResolvedTy::I64,
+            ],
+            &HashMap::new(),
+            &[],
+        );
+        assert!(
+            no_layout_proof.owner_exempt_roots.is_empty(),
+            "an unresolved enum layout must remain denied rather than treating an empty cleanup \
+            as type-only evidence"
+        );
+    }
+
+    #[test]
+    fn enum_carrier_rejects_ambiguous_tags_layouts_and_definitions() {
+        let mut duplicate_tag_write = empty_enum_carrier_blocks();
+        duplicate_tag_write[0].instructions.insert(
+            2,
+            Instr::Move {
+                dest: Place::MachineTag(4),
+                src: Place::Local(5),
+            },
+        );
+        assert!(
+            !empty_enum_carrier_proves(&duplicate_tag_write),
+            "two writes of the constructor tag cannot prove one exact empty generation"
+        );
+
+        let mut nonconstant_tag = empty_enum_carrier_blocks();
+        nonconstant_tag[0].instructions[0] = Instr::IntAdd {
+            dest: Place::Local(5),
+            lhs: Place::Local(6),
+            rhs: Place::Local(7),
+        };
+        assert!(
+            !empty_enum_carrier_proves(&nonconstant_tag),
+            "a computed tag source cannot prove the declared payload-free variant"
+        );
+
+        let mut active_definition_before_neutralize = empty_enum_carrier_blocks();
+        active_definition_before_neutralize[0].instructions.insert(
+            3,
+            Instr::Move {
+                dest: Place::Local(2),
+                src: Place::Local(3),
+            },
+        );
+        assert!(
+            !empty_enum_carrier_proves(&active_definition_before_neutralize),
+            "a second carrier generation reaching neutralization must not inherit empty cleanup"
+        );
+
+        let mut indirect_layouts = enum_layouts();
+        indirect_layouts[0].is_indirect = true;
+        assert!(
+            empty_enum_carrier_proofs(&empty_enum_carrier_blocks(), &indirect_layouts)
+                .owner_exempt_roots
+                .is_empty(),
+            "an indirect enum layout must remain outside the inline empty-generation proof"
+        );
+    }
+
+    #[test]
+    fn detached_owner_exemption_requires_one_dominating_destination_generation() {
+        let mut reused_dest = empty_enum_carrier_blocks();
+        reused_dest[2].instructions.extend([
+            Instr::Move {
+                dest: Place::Local(6),
+                src: Place::MachineVariant {
+                    local: 3,
+                    variant_idx: 0,
+                    field_idx: 0,
+                },
+            },
+            Instr::Move {
+                dest: Place::Local(6),
+                src: Place::Local(4),
+            },
+        ]);
+
+        let proofs = empty_enum_carrier_proofs(&reused_dest, &enum_layouts());
+        assert!(
+            proofs
+                .owner_exempt_roots
+                .get(&6)
+                .is_none_or(HashSet::is_empty),
+            "a reused destination must not apply one detached generation's exemption to another"
+        );
+    }
+
+    #[test]
+    fn empty_enum_constructor_tag_must_dominate_carrier_initialization() {
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Branch {
+                    cond: Place::Local(9),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![
+                    Instr::ConstI64 {
+                        dest: Place::Local(5),
+                        value: 1,
+                    },
+                    Instr::Move {
+                        dest: Place::MachineTag(4),
+                        src: Place::Local(5),
+                    },
+                ],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 3,
+                statements: vec![],
+                instructions: vec![Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(4),
+                }],
+                terminator: Terminator::Return,
+            },
+        ];
+        assert!(
+            !exact_empty_enum_carrier_initialization(
+                &blocks,
+                &block_dominators(&blocks),
+                InstrSite { block: 3, index: 0 },
+                2,
+                &[
+                    ResolvedTy::I64,
+                    ResolvedTy::I64,
+                    enum_carrier_ty(),
+                    ResolvedTy::I64,
+                    enum_carrier_ty(),
+                    ResolvedTy::I64,
+                ],
+                &enum_layouts(),
+            ),
+            "reachability from one predecessor is not proof that the empty tag reaches the \
+             constructor assignment on every path"
         );
     }
 
@@ -8353,13 +9187,27 @@ mod enum_composite_field_drop_exemption {
         binding_locals.insert(b, Place::Local(0));
         // local 0: the Opt composite; local 1: the Row payload binder;
         // local 2: a general-storage sink for the differential control.
-        let local_tys = vec![opt_ty(), row_ty(), ResolvedTy::Tuple(vec![row_ty()])];
+        let local_tys = vec![
+            opt_ty(),
+            row_ty(),
+            ResolvedTy::Tuple(vec![row_ty()]),
+            ResolvedTy::String,
+            ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::String]),
+        ];
         let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
         record_field_orders.insert(
             "Row".to_string(),
             vec![
                 ("inner".to_string(), ResolvedTy::String),
                 ("tag".to_string(), ResolvedTy::String),
+                (
+                    "values".to_string(),
+                    ResolvedTy::named_builtin(
+                        "Vec",
+                        hew_types::BuiltinType::Vec,
+                        vec![ResolvedTy::String],
+                    ),
+                ),
             ],
         );
         let enum_layouts = vec![crate::model::EnumLayout {
@@ -8458,6 +9306,90 @@ mod enum_composite_field_drop_exemption {
             !allowed.contains(&b),
             "a payload binder read into an owning sink escaped the composite; \
              it must be excluded (fail-closed); got {allowed:?}"
+        );
+    }
+
+    #[test]
+    fn retained_string_field_read_stays_admitted_but_vec_and_field_drop_do_not() {
+        let (b, allowed) = derive(vec![
+            payload_destructure(),
+            Instr::RecordFieldLoad {
+                record: Place::Local(1),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(3),
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(3),
+            },
+        ]);
+        assert!(
+            allowed.contains(&b),
+            "a retained cloned string field read must not exclude the enum shell; got {allowed:?}"
+        );
+
+        let (b, allowed) = derive(vec![
+            payload_destructure(),
+            Instr::RecordFieldLoad {
+                record: Place::Local(1),
+                field_offset: FieldOffset(2),
+                dest: Place::Local(4),
+            },
+            Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(4),
+            },
+        ]);
+        assert!(
+            !allowed.contains(&b),
+            "a transferred Vec field read into an owning sink must exclude the enum shell; got \
+             {allowed:?}"
+        );
+
+        let (b, allowed) = derive(vec![
+            payload_destructure(),
+            Instr::FieldDropInPlace {
+                base: Place::Local(1),
+                field: crate::model::FieldAddr::Record(FieldOffset(0)),
+                ty: ResolvedTy::String,
+            },
+        ]);
+        assert!(
+            !allowed.contains(&b),
+            "FieldDropInPlace must continue excluding the enum shell; got {allowed:?}"
+        );
+    }
+
+    #[test]
+    fn retained_string_exemption_does_not_mask_a_reused_payload_generation() {
+        let blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(1),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(3),
+                },
+                Instr::Move {
+                    dest: Place::Local(3),
+                    src: Place::MachineVariant {
+                        local: 0,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+        assert!(
+            !uniquely_defined_retained_string_field_load_aliases(
+                &blocks,
+                &[opt_ty(), row_ty(), ResolvedTy::I64, ResolvedTy::String],
+            )
+            .contains(&3),
+            "a retained field-load generation must not erase payload taint after the local is \
+             reused for an unrelated generation"
         );
     }
 }

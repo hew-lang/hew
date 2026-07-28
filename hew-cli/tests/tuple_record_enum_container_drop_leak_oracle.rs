@@ -23,7 +23,7 @@ use support::leak_slope::{
     assert_frame_slope_below_tolerance_exact_lines, compile_to_native, measure_leaks_exact,
     run_under_malloc_scribble,
 };
-use support::{describe_output, require_codegen};
+use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const TUPLE_RECORD_ENUM_TEMPLATE: &str = r#"
 record Holder {
@@ -202,6 +202,63 @@ fn main() -> i64 {
 }
 "#;
 
+const ENUM_CARRIER_FORWARD_REBIND_SOURCE: &str = r#"
+record Payload {
+    values: Vec<string>,
+    label: string,
+}
+
+fn helper(i: i64) -> i64 {
+    let pair: (Option<Payload>, Vec<string>) = (
+        Some(Payload {
+            values: ["transferred"],
+            label: "tag",
+        }),
+        ["left", "right"],
+    );
+
+    var carrier: Option<Payload> = None;
+    if i % 2 == 0 {
+        carrier = pair.0;
+    } else {
+        carrier = None;
+    }
+
+    let rebound = carrier;
+    let payload_score = match rebound {
+        Some(payload) => {
+            if payload.values[0] != "transferred"
+                || payload.label != "tag"
+                || payload.values.len() != 1 {
+                -100000
+            } else {
+                payload.values[0].len() + payload.label.len() + payload.values.len()
+            }
+        },
+        None => {
+            7
+        },
+    };
+
+    let sibling_score =
+        if pair.1[0] != "left" || pair.1[1] != "right" || pair.1.len() != 2 {
+            -200000
+        } else {
+            pair.1[0].len() + pair.1[1].len() + pair.1.len()
+        };
+    payload_score + sibling_score + i
+}
+
+fn main() -> i64 {
+    var checksum = 0;
+    for frame in 0..64 {
+        checksum = checksum + helper(frame);
+    }
+    println(f"checksum={checksum}");
+    if checksum == 3424 { 0 } else { 91 }
+}
+"#;
+
 fn source_from(template: &str, frames: usize) -> String {
     template.replace("__FRAMES__", &frames.to_string())
 }
@@ -212,6 +269,68 @@ fn tuple_record_enum_source(frames: usize) -> String {
 
 fn expected_lines(frames: usize) -> usize {
     frames
+}
+
+fn dump_elaborated_mir(source: &str, name: &str) -> String {
+    let dir = tempfile::Builder::new()
+        .prefix("tuple-record-enum-elab-")
+        .tempdir()
+        .expect("tempdir");
+    let path = dir.path().join(format!("{name}.hew"));
+    std::fs::write(&path, source).expect("write Hew source");
+    let output = std::process::Command::new(hew_binary())
+        .args([
+            "compile",
+            "--dump-mir",
+            "elab",
+            path.to_str().expect("Hew source path is UTF-8"),
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("run hew compile --dump-mir elab");
+    assert!(
+        output.status.success(),
+        "elaborated MIR dump failed:\n{}",
+        describe_output(&output)
+    );
+    String::from_utf8(output.stdout).expect("MIR dump is UTF-8")
+}
+
+fn enum_carrier_one_frame_source(frame: i64, expected: i64) -> String {
+    let helper = ENUM_CARRIER_FORWARD_REBIND_SOURCE
+        .split("\nfn main()")
+        .next()
+        .expect("fixture helper section");
+    format!(
+        "{helper}\n\nfn main() -> i64 {{\n    let checksum = helper({frame});\n    println(f\"checksum={{checksum}}\");\n    if checksum == {expected} {{ 0 }} else {{ 91 }}\n}}\n"
+    )
+}
+
+#[test]
+fn empty_enum_carrier_projection_forwarding_keeps_tuple_and_enum_drop_authorities() {
+    let dump = dump_elaborated_mir(
+        ENUM_CARRIER_FORWARD_REBIND_SOURCE,
+        "enum_carrier_forward_rebind",
+    );
+    let helper = dump
+        .split("fn helper")
+        .nth(1)
+        .and_then(|section| section.split("\nfn main").next())
+        .expect("helper elaborated MIR section");
+
+    assert!(
+        helper.contains("ty=(Option<Payload>, Vec<string>) kind=tuple_in_place"),
+        "the terminal plan must retain TupleInPlace for pair after the exact empty-enum carrier \
+         overwrite:\n{helper}"
+    );
+    assert!(
+        helper.contains("ty=Option<Payload> kind=enum_in_place"),
+        "the forwarded enum owner must retain its active Payload Vec release authority:\n{helper}"
+    );
+    assert!(
+        !helper.contains("kind=record_in_place"),
+        "the payload alias must not receive a separate RecordInPlace drop:\n{helper}"
+    );
 }
 
 #[cfg_attr(
@@ -349,4 +468,70 @@ fn helper_frame_forward_rebind_releases_transferred_and_sibling_vecs() {
         (0, 0),
         "each helper frame must release the transferred data and sibling Vec allocations"
     );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator contract is macOS-only; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn empty_enum_carrier_helper_releases_payload_and_tuple_sibling_on_both_paths() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("tuple-enum-carrier-forward-rebind-helper-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        ENUM_CARRIER_FORWARD_REBIND_SOURCE,
+        dir.path(),
+        "enum_carrier_forward_rebind_helper",
+    );
+    let even_bin = compile_to_native(
+        &enum_carrier_one_frame_source(0, 26),
+        dir.path(),
+        "enum_carrier_forward_rebind_even",
+    );
+    let odd_bin = compile_to_native(
+        &enum_carrier_one_frame_source(1, 19),
+        dir.path(),
+        "enum_carrier_forward_rebind_odd",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    let even_output = run_under_malloc_scribble(&even_bin);
+    let odd_output = run_under_malloc_scribble(&odd_bin);
+
+    assert!(
+        output.status.success(),
+        "the even transfer and odd non-transfer helper paths must survive poisoned allocation \
+         without a double-free or use-after-free:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "checksum=3424\n",
+        "64 helper frames must execute both paths and produce the exact work checksum"
+    );
+    assert_eq!(
+        measure_leaks_exact(&bin),
+        (0, 0),
+        "the tuple sibling Vec and the active enum Payload Vec must each release exactly once"
+    );
+    for (name, output, expected) in [
+        ("even", &even_output, "checksum=26\n"),
+        ("odd", &odd_output, "checksum=19\n"),
+    ] {
+        assert!(
+            output.status.success(),
+            "{name} one-frame helper must exit successfully:\n{}",
+            describe_output(output)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            expected,
+            "{name} one-frame helper must print its exact checksum"
+        );
+    }
+    assert_eq!(measure_leaks_exact(&even_bin), (0, 0));
+    assert_eq!(measure_leaks_exact(&odd_bin), (0, 0));
 }

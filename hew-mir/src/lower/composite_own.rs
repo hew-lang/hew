@@ -8,11 +8,12 @@ use super::{
     bytes_place_is_typed, bytes_runtime_arg_is_borrow, bytes_share_sink_places,
     close_alias_binders_forward, collect_record_field_binders,
     compute_collection_interior_alias_taint, descend_match_bound_hop_alias_chain,
-    descend_match_bound_hop_aliases, instr_escape_places, instr_source_places,
-    local_is_byte_copy_aggregate, note_payload_escape, place_is_interior_projection,
-    place_is_tag_read, propagate_whole_value_alias_roots, readmit_retained_bytes_tuple_roots,
-    render_owned_handle_ty, retained_string_terminator_drop_safe, shift_instr_spans_on_insert,
-    short_name, string_binder_read_is_user_fn_borrow, string_field_load_producer_dest,
+    descend_match_bound_hop_aliases, forward_move_closure, instr_escape_places,
+    instr_source_places, local_is_byte_copy_aggregate, note_payload_escape,
+    place_is_interior_projection, place_is_tag_read, propagate_whole_value_alias_roots,
+    readmit_retained_bytes_tuple_roots, render_owned_handle_ty,
+    retained_string_terminator_drop_safe, shift_instr_spans_on_insert, short_name,
+    string_binder_read_is_user_fn_borrow, string_field_load_producer_dest,
     terminator_escape_places, terminator_source_places, ty_is_heap_owning_enum_composite,
     ty_is_heap_owning_tuple, ty_is_owned_handle_leaf, vec_iter_record_init_vec_source,
     AggregateOwner, BTreeMap, BasicBlock, BindingId, BytesDropDerivation, BytesRetainPlacement,
@@ -1868,12 +1869,19 @@ pub(super) fn derive_owned_record_drop_allowed(
     let dest_is_byte_copy_aggregate = |local: u32| -> bool {
         local_is_byte_copy_aggregate(local, local_tys, record_field_orders, enum_layouts)
     };
+    let transferred_projection_closure =
+        forward_move_closure(blocks, &aggregate_projection_transfer_dests(blocks));
+    field_binders.retain(|local| !transferred_projection_closure.contains(local));
+    binder_provenance.retain(|local, _| !transferred_projection_closure.contains(local));
+
     let mut match_hop_binders = descend_match_bound_hop_aliases(
         blocks,
         &candidate_owned_aliases,
         &dest_is_byte_copy_aggregate,
     );
-    match_hop_binders.retain(|binder, _| !field_binders.contains(binder));
+    match_hop_binders.retain(|binder, _| {
+        !field_binders.contains(binder) && !transferred_projection_closure.contains(binder)
+    });
     for (&binder, &owner_local) in &match_hop_binders {
         binder_provenance
             .entry(binder)
@@ -3163,8 +3171,9 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             break;
         }
     }
-    let transferred_projection_dests = aggregate_projection_transfer_dests(blocks);
-    elem_binders.retain(|local| !transferred_projection_dests.contains(local));
+    let transferred_projection_closure =
+        forward_move_closure(blocks, &aggregate_projection_transfer_dests(blocks));
+    elem_binders.retain(|local| !transferred_projection_closure.contains(local));
     let predicate_string_temps = predicate_string_temp_drop_proof(blocks, local_tys);
     elem_binders.retain(|local| !predicate_string_temps.contains(local));
 
@@ -3452,6 +3461,7 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                 Instr::Move { .. }
                     | Instr::Drop { .. }
                     | Instr::TupleFieldLoad { .. }
+                    | Instr::RecordFieldLoad { .. }
                     | Instr::AggregateProjectionNeutralize { .. }
                     // `FieldDropInPlace` is an interior field op (uses base, no
                     // dest, no alias); its composite-suppression semantics are

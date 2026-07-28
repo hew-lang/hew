@@ -168,6 +168,39 @@ fn main() {
 }
 "#;
 
+const FORWARD_REBIND_SIBLING_SOURCE: &str = r#"
+record Holder {
+    items: Vec<string>,
+    tag: string,
+}
+
+fn main() {
+    let pair = (Holder { items: ["transferred"], tag: "tag" }, [1, 2]);
+    var owner = Holder { items: [], tag: "" };
+    owner = pair.0;
+    let rebound = owner;
+    if rebound.items[0] != "transferred" || pair.1.len() != 2 {
+        return;
+    }
+    print("OK");
+}
+"#;
+
+const FORWARD_REBIND_CONTROL_SOURCE: &str = r#"
+record Holder {
+    items: Vec<string>,
+    tag: string,
+}
+
+fn main() {
+    let pair = (Holder { items: ["transferred"], tag: "tag" }, [1, 2]);
+    if pair.0.items[0] != "transferred" || pair.1.len() != 2 {
+        return;
+    }
+    print("OK");
+}
+"#;
+
 fn source_from(template: &str, frames: usize) -> String {
     template.replace("__FRAMES__", &frames.to_string())
 }
@@ -276,5 +309,62 @@ fn transferred_record_and_tuple_siblings_remain_live_until_single_drop() {
         "final record fields, enum payload sum, and scalar tuple sibling must survive every \
          reassignment before the single final drop:\n{}",
         describe_output(&output)
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator contract is macOS-only; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn forward_rebind_transfer_drops_transferred_field_once_and_sibling_fields() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("tuple-record-forward-rebind-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        FORWARD_REBIND_SIBLING_SOURCE,
+        dir.path(),
+        "forward_rebind_sibling",
+    );
+    let control_bin = compile_to_native(
+        FORWARD_REBIND_CONTROL_SOURCE,
+        dir.path(),
+        "forward_rebind_control",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    let control_output = run_under_malloc_scribble(&control_bin);
+
+    assert!(
+        output.status.success(),
+        "forward rebind of a corroborated projection transfer must not double-free:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "OK",
+        "all transferred and sibling values must remain readable before one final drop"
+    );
+    assert!(
+        control_output.status.success(),
+        "the non-transfer control must run cleanly:\n{}",
+        describe_output(&control_output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&control_output.stdout),
+        "OK",
+        "the allocation-equivalent control must complete its visible work witness"
+    );
+    assert_eq!(
+        measure_leaks_exact(&bin),
+        (0, 0),
+        "the transferred field and tuple sibling fields must release exactly once"
+    );
+    assert_eq!(
+        measure_leaks_exact(&control_bin),
+        (0, 0),
+        "the allocation-equivalent control must release every allocation"
     );
 }

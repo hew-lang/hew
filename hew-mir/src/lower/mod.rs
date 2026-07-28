@@ -167,7 +167,7 @@ use self::temp_drop::{
     bytes_runtime_arg_is_borrow, bytes_share_sink_places, classify_actor_state_load_modes,
     compute_collection_interior_alias_taint, compute_projection_alias_taint,
     derive_cow_fresh_borrowed_owner, derive_cow_sole_owner, finalize_bytes_ownership,
-    finalize_string_local_share_intents, finalize_string_ownership,
+    finalize_string_local_share_intents, finalize_string_ownership, forward_move_closure,
     readmit_retained_bytes_tuple_roots, string_call_borrows, string_field_load_producer_dest,
 };
 

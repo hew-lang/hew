@@ -1344,6 +1344,8 @@ pub(super) fn aggregate_projection_transfer_dests(blocks: &[BasicBlock]) -> Hash
         }
     }
 
+    let uniquely_written_locals = uniquely_written_locals(blocks);
+
     blocks
         .iter()
         .flat_map(|block| &block.instructions)
@@ -1364,11 +1366,75 @@ pub(super) fn aggregate_projection_transfer_dests(blocks: &[BasicBlock]) -> Hash
                     }
                     cursor = parent;
                 }
-                (cursor == *root).then(|| base_local(*transferee)).flatten()
+                (cursor == *root)
+                    .then(|| base_local(*transferee))
+                    .flatten()
+                    .filter(|local| uniquely_written_locals.contains(local))
             }
             _ => None,
         })
         .collect()
+}
+
+/// Return locals written exactly once in the full MIR CFG. A global owner
+/// exemption is sound only for a slot that cannot be reused on another path.
+fn uniquely_written_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let mut writes = HashMap::<u32, usize>::new();
+    for block in blocks {
+        for instr in &block.instructions {
+            for place in crate::dataflow::instr_reads_writes(instr).1 {
+                if let Some(local) = base_local(place) {
+                    *writes.entry(local).or_default() += 1;
+                }
+            }
+        }
+        for place in crate::dataflow::terminator_write_places(&block.terminator) {
+            if let Some(local) = base_local(place) {
+                *writes.entry(local).or_default() += 1;
+            }
+        }
+    }
+    writes
+        .into_iter()
+        .filter_map(|(local, count)| (count == 1).then_some(local))
+        .collect()
+}
+
+/// Close corroborated projection transfer destinations over unambiguous
+/// same-block whole-value `Move` edges. A transferred field may be rebound
+/// before its owning drop, but local reuse or a CFG edge makes a global
+/// exemption unprovable and therefore remains an escape binder.
+pub(super) fn forward_move_closure(blocks: &[BasicBlock], seeds: &HashSet<u32>) -> HashSet<u32> {
+    let uniquely_written_locals = uniquely_written_locals(blocks);
+    let mut closure: HashSet<u32> = seeds
+        .iter()
+        .copied()
+        .filter(|local| uniquely_written_locals.contains(local))
+        .collect();
+
+    for block in blocks {
+        let mut ready = HashSet::new();
+        for instr in &block.instructions {
+            if let Instr::AggregateProjectionNeutralize { transferee, .. } = instr {
+                if let Some(local) = base_local(*transferee) {
+                    if closure.contains(&local) {
+                        ready.insert(local);
+                    }
+                }
+            }
+            if let Instr::Move {
+                dest: Place::Local(dest),
+                src: Place::Local(src),
+            } = instr
+            {
+                if ready.contains(src) && uniquely_written_locals.contains(dest) {
+                    ready.insert(*dest);
+                    closure.insert(*dest);
+                }
+            }
+        }
+    }
+    closure
 }
 
 #[cfg(test)]
@@ -1607,6 +1673,115 @@ mod aggregate_projection_transfer_dest_tests {
         assert!(
             missing_taint.contains(&10) && missing_taint.contains(&20),
             "without explicit transfer authority, projection taint must propagate fail closed"
+        );
+    }
+
+    #[test]
+    fn corroborated_transfer_closes_over_forward_moves() {
+        let blocks = [BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::TupleFieldLoad {
+                    tuple: Place::Local(1),
+                    field_index: 0,
+                    dest: Place::Local(10),
+                },
+                Instr::AggregateProjectionNeutralize {
+                    root: Place::Local(1),
+                    fields: vec![0],
+                    transferee: Place::Local(10),
+                },
+                Instr::Move {
+                    dest: Place::Local(20),
+                    src: Place::Local(10),
+                },
+                Instr::Move {
+                    dest: Place::Local(30),
+                    src: Place::Local(20),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        assert_eq!(
+            forward_move_closure(&blocks, &aggregate_projection_transfer_dests(&blocks)),
+            HashSet::from([10, 20, 30]),
+            "every forward owner rebind must leave the escape-binder set"
+        );
+    }
+
+    #[test]
+    fn reused_or_cross_block_destinations_do_not_gain_transfer_authority() {
+        let reused_dest = [BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::TupleFieldLoad {
+                    tuple: Place::Local(1),
+                    field_index: 0,
+                    dest: Place::Local(10),
+                },
+                Instr::AggregateProjectionNeutralize {
+                    root: Place::Local(1),
+                    fields: vec![0],
+                    transferee: Place::Local(10),
+                },
+                Instr::Move {
+                    dest: Place::Local(20),
+                    src: Place::Local(10),
+                },
+                Instr::ConstI64 {
+                    dest: Place::Local(20),
+                    value: 0,
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+        let cross_block = [
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::TupleFieldLoad {
+                        tuple: Place::Local(1),
+                        field_index: 0,
+                        dest: Place::Local(10),
+                    },
+                    Instr::AggregateProjectionNeutralize {
+                        root: Place::Local(1),
+                        fields: vec![0],
+                        transferee: Place::Local(10),
+                    },
+                ],
+                terminator: Terminator::Goto { target: 1 },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![Instr::Move {
+                    dest: Place::Local(20),
+                    src: Place::Local(10),
+                }],
+                terminator: Terminator::Return,
+            },
+        ];
+
+        assert_eq!(
+            forward_move_closure(
+                &reused_dest,
+                &aggregate_projection_transfer_dests(&reused_dest)
+            ),
+            HashSet::from([10]),
+            "a reused destination cannot be globally exempted as a transfer owner"
+        );
+        assert_eq!(
+            forward_move_closure(
+                &cross_block,
+                &aggregate_projection_transfer_dests(&cross_block)
+            ),
+            HashSet::from([10]),
+            "a CFG edge lacks the path proof required for a global transfer exemption"
         );
     }
 }

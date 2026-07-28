@@ -1667,7 +1667,8 @@ impl Builder {
                 // on the not-moved path instead of retracting it entirely.
                 self.maybe_alloc_collection_drop_flag(binding, &binding_ty);
                 self.maybe_alloc_conditional_record_drop_flag(
-                    binding.id,
+                    binding,
+                    &binding_ty,
                     owned_string_record_key.is_some(),
                 );
             }

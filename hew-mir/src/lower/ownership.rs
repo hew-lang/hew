@@ -2459,17 +2459,34 @@ impl Builder {
     /// retain-backed String ingress. Keeping the record registered is therefore
     /// sound: the flag selects between its local owner on a non-consuming path
     /// and the destination owner after a consume.
+    ///
+    /// This flag family is deliberately exclusive with every other runtime
+    /// ownership flag. In particular, a mutable consume-and-reassign binding
+    /// belongs solely to #2301's overwrite protocol, and a `#[resource]` /
+    /// `#[linear]` marker belongs solely to its affine close protocol. Letting
+    /// either also acquire `RecordInPlace` authority lets one flag re-arm a drop
+    /// that the other flag suppressed.
     pub(crate) fn maybe_alloc_conditional_record_drop_flag(
         &mut self,
-        binding: BindingId,
+        binding: &HirBinding,
+        ty: &ResolvedTy,
         is_owned_string_record_init: bool,
     ) {
         if !is_owned_string_record_init
-            || !self.prepass_consumed_bindings.contains(&binding)
+            || !self.prepass_consumed_bindings.contains(&binding.id)
+            || (binding.mutable && self.prepass_reassigned_bindings.contains(&binding.id))
+            || matches!(
+                named_type_marker(ty, &self.type_classes),
+                Some(ResourceMarker::Resource | ResourceMarker::Linear)
+            )
+            || self.affine_release_flags.contains_key(&binding.id)
+            || self.collection_drop_flags.contains_key(&binding.id)
+            || self.actor_message_cow_drop_flags.contains_key(&binding.id)
+            || self.overwrite_guard_flags.contains_key(&binding.id)
             || !self.owned_locals.iter().any(|entry| {
-                entry.binding == binding && entry.disposition == Disposition::ScopeExit
+                entry.binding == binding.id && entry.disposition == Disposition::ScopeExit
             })
-            || self.conditional_record_drop_flags.contains_key(&binding)
+            || self.conditional_record_drop_flags.contains_key(&binding.id)
         {
             return;
         }
@@ -2478,7 +2495,7 @@ impl Builder {
             dest: flag,
             value: 0,
         });
-        self.conditional_record_drop_flags.insert(binding, flag);
+        self.conditional_record_drop_flags.insert(binding.id, flag);
     }
 
     /// #2301 -- emit `if flag == 0 { <release old value of `dest`> }` as a CFG

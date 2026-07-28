@@ -1,4 +1,4 @@
-use hew_hir::{lower_program, verify_hir, HirDiagnosticKind, ResolutionCtx};
+use hew_hir::{lower_program, verify_hir, HirDiagnosticKind, IntentKind, ResolutionCtx};
 use hew_mir::{
     lower_hir_module, CmpPred, FloatWidth, Instr, MirCheck, MirDiagnosticKind, MirStatement, Place,
     Terminator, TrapKind,
@@ -987,6 +987,97 @@ fn conditional_heap_resource_move_keeps_flag_guarded_record_drop() {
         "a heap-owning resource must not bypass recursive field teardown through \
          the scalar Resource close path: {:?}",
         run.drop_plans
+    );
+}
+
+/// A direct String-record construction can satisfy the syntactic ingress proof
+/// used by the conditional-record protocol even when its declared type is a
+/// `#[resource]`. The marker is authoritative: this binding gets exactly the
+/// affine/resource flag, never a second zero-only conditional-record flag.
+#[test]
+fn direct_string_resource_move_has_only_resource_flag_authority() {
+    let p = lower_source(
+        r#"
+        #[resource]
+        type Token { text: string }
+        impl Token {
+            fn close(self) {
+                let _ = self.text.len();
+            }
+        }
+        fn sink(token: Token) {
+            token.close();
+        }
+        fn run(flag: bool) {
+            let token = Token { text: "payload".to_upper() };
+            if flag {
+                sink(token);
+            }
+        }
+    "#,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "a direct String resource transfer must lower cleanly: {:?}",
+        p.diagnostics
+    );
+    let run = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "run")
+        .expect("run function present");
+    let drops = run
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .collect::<Vec<_>>();
+    let resource_guard = drops
+        .iter()
+        .find_map(|drop| {
+            (drop.kind == hew_mir::DropKind::Resource)
+                .then_some(drop.guard)
+                .flatten()
+        })
+        .expect("the conditional resource transfer needs one resource guard");
+    assert!(
+        drops
+            .iter()
+            .all(|drop| drop.kind != hew_mir::DropKind::RecordInPlace),
+        "a resource marker must never acquire RecordInPlace authority: \
+         {run:#?}"
+    );
+
+    let checked = p
+        .checked_mir
+        .iter()
+        .find(|f| f.name == "run")
+        .expect("run checked MIR present");
+    let zero_init_places = checked
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::ConstI64 { dest, value: 0 } => Some(*dest),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        zero_init_places,
+        std::collections::HashSet::from([resource_guard]),
+        "the resource binding must not receive a second, zero-only \
+         conditional-record flag: {checked:#?}"
+    );
+    assert!(
+        checked
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::ConstI64 { dest, value: 1 } if *dest == resource_guard
+            )),
+        "the direct transfer must execute the resource flag handoff: \
+         {checked:#?}"
     );
 }
 
@@ -2674,6 +2765,168 @@ fn conditional_record_state_handoff_keeps_guarded_scope_exit_drop() {
              {checked:#?}"
         );
     }
+}
+
+/// A mutable direct record that is consumed and then overwritten belongs only
+/// to #2301's overwrite protocol. Giving it the conditional-record flag as
+/// well lets assignment reset one family while the other still describes the
+/// moved value, causing a shared-exit double release.
+#[test]
+fn mutable_conditional_record_consume_then_overwrite_uses_only_overwrite_protocol() {
+    let pipeline = lower_source(
+        r#"
+        type Wrap { name: string }
+        fn run(take: bool) -> i64 {
+            var current = Wrap { name: "old".to_upper() };
+            var seen: i64 = 0;
+            if take {
+                let moved: Wrap = current;
+                seen = moved.name.len();
+            }
+            current = Wrap { name: "new".to_upper() };
+            seen + current.name.len()
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "the mutable consume/reassign control must lower cleanly: {:?}",
+        pipeline.diagnostics
+    );
+    let run = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "run")
+        .expect("mutable consume/reassign function present");
+    assert!(
+        run.drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+            .all(|drop| drop.guard.is_none()),
+        "the mutable binding must not acquire a conditional RecordInPlace \
+         guard in addition to #2301's overwrite guard: {run:#?}"
+    );
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "run")
+        .expect("mutable consume/reassign checked MIR present");
+    assert!(
+        checked
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(instr, Instr::IntCmp { .. })),
+        "the control must genuinely exercise #2301's guarded old-value \
+         release before overwrite: {checked:#?}"
+    );
+}
+
+/// Mailbox send currently retains/copies a record ingress rather than consuming
+/// the source binding. Keep this shape outside the conditional-owner protocol:
+/// the source remains the ordinary unguarded owner and the send carrier owns
+/// its retained leaves.
+#[test]
+fn conditional_record_send_remains_outside_conditional_owner_protocol() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Sink {
+            receive fn take(value: Wrap) {}
+        }
+        fn route(sink: LocalPid<Sink>, label: string, send_it: bool) {
+            let next = Wrap { name: label };
+            if send_it {
+                sink.take(next);
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "the conditional send control must lower cleanly: {:?}",
+        pipeline.diagnostics
+    );
+    let route = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "route")
+        .expect("conditional send function present");
+    assert!(
+        route
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+            .all(|drop| drop.guard.is_none()),
+        "retain-backed send ingress must not acquire conditional consume \
+         authority: {route:#?}"
+    );
+    assert!(
+        route.statements.iter().any(|statement| matches!(
+            statement,
+            MirStatement::Use {
+                name,
+                intent: IntentKind::Read,
+                ..
+            } if name == "next"
+        )),
+        "the send control must pin the retain-backed Read ingress: {route:#?}"
+    );
+}
+
+/// Aggregate embedding currently records an `AggregateAlias` rather than a
+/// direct conditional consume of the source. Do not broaden W60.115 to this
+/// shape without a separate alias-aware proof; fail closed by withholding the
+/// conditional-record flag.
+#[test]
+fn conditional_record_aggregate_embedding_remains_fail_closed() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        type Envelope { value: Wrap }
+        fn consume(envelope: Envelope) -> i64 {
+            envelope.value.name.len()
+        }
+        fn route(label: string, embed: bool) -> i64 {
+            let next = Wrap { name: label };
+            if embed {
+                consume(Envelope { value: next })
+            } else {
+                0
+            }
+        }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "the conditional aggregate control must lower cleanly: {:?}",
+        pipeline.diagnostics
+    );
+    let route = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "route")
+        .expect("conditional aggregate function present");
+    assert!(
+        route
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+            .all(|drop| drop.guard.is_none()),
+        "aggregate-alias embedding must remain outside the conditional-owner \
+         protocol until it has its own alias-aware proof: {route:#?}"
+    );
+    assert!(
+        route.statements.iter().any(|statement| matches!(
+            statement,
+            MirStatement::AggregateAlias { name, .. } if name == "next"
+        )),
+        "the control must genuinely exercise aggregate embedding: {route:#?}"
+    );
 }
 
 /// The conditional-record flag is deliberately narrower than the general

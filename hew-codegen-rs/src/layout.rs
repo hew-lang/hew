@@ -5279,9 +5279,10 @@ pub(crate) fn lower_vec_get_clone_call(
 ///   none_bb: tag := 1 (None); br next
 /// ```
 ///
-/// The receiver is borrowed (`is_collection_receiver_borrow_callee`), so `buf`
-/// keeps its scope-exit drop. `u8` is a scalar (Copy): the `Some` payload is a
-/// by-value load — no owned clone, no drop obligation on the payload.
+/// The receiver is classified as `ReceiverOwnership::Borrows` by
+/// `callee_ownership_contract`, so `buf` keeps its scope-exit drop. `u8` is a
+/// scalar (Copy): the `Some` payload is a by-value load — no owned clone, no
+/// drop obligation on the payload.
 pub(crate) fn lower_bytes_get_option_call(
     fn_ctx: &FnCtx<'_, '_>,
     args: &[Place],
@@ -5456,12 +5457,13 @@ pub(crate) fn lower_bytes_get_option_call(
 ///   none_bb: tag := 1 (None); br next
 /// ```
 ///
-/// The receiver is borrowed (`is_collection_receiver_borrow_callee`), so `s`
-/// keeps its scope-exit drop. `char` is a scalar (Copy): the `Some` payload is
-/// a by-value codepoint load — no owned clone, no drop obligation on the
-/// payload. Unlike `bytes` (a stack `BytesTriple`), a `string` value is a
-/// single heap `*const c_char` handle, so the receiver marshals through
-/// `load_duplex_handle` exactly like the trapping `hew_string_index` arm.
+/// The receiver is classified as `ReceiverOwnership::Borrows` by
+/// `callee_ownership_contract`, so `s` keeps its scope-exit drop. `char` is a
+/// scalar (Copy): the `Some` payload is a by-value codepoint load — no owned
+/// clone, no drop obligation on the payload. Unlike `bytes` (a stack
+/// `BytesTriple`), a `string` value is a single heap `*const c_char` handle, so
+/// the receiver marshals through `load_duplex_handle` exactly like the trapping
+/// `hew_string_index` arm.
 pub(crate) fn lower_string_get_option_call(
     fn_ctx: &FnCtx<'_, '_>,
     args: &[Place],

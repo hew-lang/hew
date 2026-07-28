@@ -16,6 +16,22 @@ source "${ROOT}/scripts/lib/corpus-floor.sh"
 FILTER='binary(~oracle) + test(ffi_borrow_boundary_has_no_drop_or_leak_slope)'
 FFI_VERDICT='hew-cli::ffi_link_e2e ffi_borrow_boundary_has_no_drop_or_leak_slope'
 
+enumerate_inventory() {
+    (
+        cd "${ROOT}"
+        cargo nextest list \
+            -p hew-cli \
+            --profile ci \
+            --run-ignored all \
+            --no-pager \
+            --color never \
+            --cargo-quiet \
+            -E "${FILTER}" \
+            --message-format oneline \
+            --list-type full
+    )
+}
+
 verify_inventory() {
     local inventory="$1"
 
@@ -28,6 +44,13 @@ verify_inventory() {
     malformed_line="$(awk 'NF != 2 { print NR; exit }' "${inventory}")"
     if [[ -n "${malformed_line}" ]]; then
         echo "macos-leak-oracle: malformed nextest inventory at line ${malformed_line}" >&2
+        return 1
+    fi
+
+    local duplicate_line
+    duplicate_line="$(awk 'seen[$0]++ { print NR; exit }' "${inventory}")"
+    if [[ -n "${duplicate_line}" ]]; then
+        echo "macos-leak-oracle: duplicate nextest inventory verdict at line ${duplicate_line}" >&2
         return 1
     fi
 
@@ -57,6 +80,10 @@ verify_inventory() {
         "macos-leak-oracle-binaries" \
         "${binary_count}" \
         "${test_count} selected test verdicts, including ffi_link_e2e"
+    corpus_floor_assert \
+        "macos-leak-oracle-tests" \
+        "${test_count}" \
+        "${binary_count} selected binaries, including ffi_link_e2e"
     echo "macos-leak-oracle: inventory accepted (${binary_count} binaries, ${test_count} tests)"
 }
 
@@ -68,8 +95,16 @@ if [[ "${1:-}" == "--check-inventory-file" ]]; then
     verify_inventory "$2"
     exit
 fi
+if [[ "${1:-}" == "--list-inventory" ]]; then
+    if [[ "$#" -ne 1 ]]; then
+        echo "usage: scripts/macos-leak-oracle.sh --list-inventory" >&2
+        exit 2
+    fi
+    enumerate_inventory
+    exit
+fi
 if [[ "$#" -ne 0 ]]; then
-    echo "usage: scripts/macos-leak-oracle.sh" >&2
+    echo "usage: scripts/macos-leak-oracle.sh [--list-inventory | --check-inventory-file <nextest-oneline-file>]" >&2
     exit 2
 fi
 
@@ -88,19 +123,7 @@ trap cleanup_inventory EXIT
 inventory="${inventory_dir}/nextest-oneline.txt"
 
 echo "==> Enumerating the macOS leak-oracle corpus"
-(
-    cd "${ROOT}"
-    cargo nextest list \
-        -p hew-cli \
-        --profile ci \
-        --run-ignored all \
-        --no-pager \
-        --color never \
-        --cargo-quiet \
-        -E "${FILTER}" \
-        --message-format oneline \
-        --list-type full
-) > "${inventory}"
+enumerate_inventory > "${inventory}"
 verify_inventory "${inventory}"
 
 echo "==> Running the complete macOS leak-oracle corpus"

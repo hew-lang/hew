@@ -6314,25 +6314,25 @@ pub struct ElabDrop {
     /// variants. Defaults to `Resource` so existing call sites that
     /// only populate the pre-M2 fields stay correct.
     pub kind: DropKind,
-    /// Path-sensitive exactly-once gate for a non-idempotent user
-    /// `#[resource]` close (#1933 / #1941).
+    /// Path-sensitive exactly-once gate for a conditional ownership transfer.
     ///
-    /// `None` for every idempotent / null-tolerant drop (Duplex, lambda,
-    /// half-handle, `CowHeap`, ordinary record/enum/tuple in-place, dyn-trait)
-    /// — those either refcount or null-after-free at runtime and never
-    /// double-free on a shared (`MaybeConsumed`) control-flow join.
+    /// `None` for every idempotent / null-tolerant drop that needs no
+    /// path-sensitive transfer guard (Duplex, lambda, half-handle, `CowHeap`,
+    /// ordinary enum/tuple in-place, dyn-trait, and records that remain live
+    /// on every path).
     ///
     /// `Some(flag)` for a `DropKind::Resource` whose `drop_fn` is a
-    /// `DropFnSpec::UserClose`, or for the `DropKind::RecordInPlace` helper of
-    /// a field-bearing user resource record: the user `close` ritual is NOT
-    /// runtime idempotent (`lower_drop_user_fn` unconditionally
-    /// loads-calls-zeroes, and a zero payload is a legitimate field value, not
-    /// a closed flag).
+    /// `DropFnSpec::UserClose`, for the `DropKind::RecordInPlace` helper of a
+    /// field-bearing user resource record, or for an ordinary record whose
+    /// whole value is transferred on only some paths. Resource close rituals
+    /// are not runtime idempotent; ordinary conditional records need the same
+    /// edge distinction so recursive field teardown runs only where the record
+    /// remained live.
     /// `flag` is an `i64` local initialised to 0 at the binding's
     /// introduction and set to 1 at each `IntentKind::Consume` use site.
-    /// Codegen gates the close on `flag == 0` so a resource reached at a
+    /// Codegen gates the drop on `flag == 0` so a binding reached at a
     /// `MaybeConsumed` join — Live on one predecessor, Consumed on the
-    /// other — closes exactly once on the live path and is skipped on the
+    /// other — releases exactly once on the live path and is skipped on the
     /// already-consumed path. The drop-plan validator re-derives only
     /// `kind` (via the Place-driven `drop_kind_for` SSOT) and never
     /// inspects `guard`, so this runtime-gating annotation is orthogonal to

@@ -1,9 +1,13 @@
 fn Sink__recv__take -> ()
   statements:
+    drop BindingId(3) last ty=string
     drop BindingId(2) boxed ty=Boxed
+    drop BindingId(1) text ty=string
   drop_plans:
     return[bb0] ->
+      drop _3 ty=string kind=cow_heap(hew_string_drop)
       drop _2 ty=Boxed kind=record_in_place
+      drop _1 ty=string kind=cow_heap(hew_string_drop)
 
 fn main -> ()
   statements:

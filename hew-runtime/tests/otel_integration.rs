@@ -133,7 +133,9 @@ impl Drop for ContextGuard {
     fn drop(&mut self) {
         let raw: *mut HewExecutionContext = self.context.as_mut();
         let restored = set_current_context(self.previous);
-        assert_eq!(restored, raw);
+        if !std::thread::panicking() {
+            assert_eq!(restored, raw);
+        }
     }
 }
 

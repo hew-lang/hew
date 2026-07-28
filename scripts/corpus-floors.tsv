@@ -48,5 +48,5 @@ sandbox-vm-binaries	exact	4	-	VM-dependent hew-sandbox-wasm test binaries requir
 stdlib-int-surface-files	exact	73	-	tracked std/ .hew files scanned for removed int/uint aliases
 stdlib-proof-modules	exact	69	-	public stdlib modules mapped to executable proof fixtures
 stdlib-ratchet-files	exact	73	-	std/ .hew files type-checked by scripts/stdlib-ratchet.sh
-surface-example-expectations	exact	13	-	v0.5 surface examples compared against a paired .expected
+surface-example-expectations	exact	14	-	v0.5 surface examples compared against a paired .expected
 ux-example-expectations	exact	27	-	ux and progressive tutorials compared against a paired .expected

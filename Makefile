@@ -940,17 +940,7 @@ test-ux-examples: hew-native runtime $(LIBHEW_READY)
 # leak advisory shipped unnoticed), and an entry that has since grown an
 # `.expected` or no longer exists FAILS too, so the list cannot rot.
 #
-#   examples/v05/surfaces/scanner_tokens.hew — `hew run` emits an obligation
-#   under-release advisory naming the loop-carried `Scanner` local. The advisory
-#   is a TRUE POSITIVE (`leaks --atExit` reports 160 bytes across 5 blocks, all
-#   from `hew_string_slice`), and the leak is compiler-side, not example-side:
-#   the by-value owned-record escape-scan behind `DropKind::RecordInPlace`
-#   declines a record reassigned in a loop from a tuple projection and, being
-#   fail-closed, leaks rather than risk a double free. The example's Hew is the
-#   documented value-state `Scanner` surface and must NOT be contorted to dodge
-#   a substrate gap; it is gated again once the record drop prover clears this
-#   shape.
-SURFACE_EXAMPLES_UNGATED := examples/v05/surfaces/scanner_tokens.hew
+SURFACE_EXAMPLES_UNGATED :=
 
 test-surface-examples: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running v0.5 surface examples against .expected"

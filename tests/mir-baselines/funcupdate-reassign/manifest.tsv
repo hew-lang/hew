@@ -1,6 +1,6 @@
 # Funcupdate / reassign elaborated-MIR golden baselines (#2648 interface pin, MIR half).
 #
-# generating-revision: d5fbb9c86288c79fe56427ddb20e4d4918c053eb (origin/main, the rebase base)
+# generating-revision: d776454e79a490573c218d884ff7be65fb048e4d
 #   (rebased forward from 3683c2ac5; the closure/gen-fn string fixtures were
 #   regenerated to carry the A240 string copy-on-write drop plan — string shares
 #   are now Read/retain, so the source binding keeps a scope-exit drop and every
@@ -46,6 +46,12 @@
 #   and exits cleanly under the same poisoned allocator, so the added drop is
 #   exactly-once rather than a second release. The baseline was stale; the MIR
 #   is right.
+#   Refreshed for scanner-token call-carrier ownership at d776454e: terminal
+#   transferred/rebound record values now carry their `record_in_place` drops
+#   on panic, cancel, and return edges. Only
+#   funcupdate_owned_field_drop_test.elab.mir shifted, purely additively: 13
+#   `(none)`/terminal slots gain the already-declared record owner drop; no CFG,
+#   terminator, statement, value, or other fixture changes.
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
 # normalization: two run-variance normalizations — (1) the dump's function
 #   ORDER is nondeterministic (map iteration), so the harness splits both

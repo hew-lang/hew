@@ -34,17 +34,18 @@ fn test_funcupdate_string_field_override_drops_old -> ()
     branch[bb5: bb6/bb7] ->
       (none)
     panic[bb6] ->
-      (none)
+      drop _5 ty=FlatConfig kind=record_in_place
     goto[bb7->bb2] ->
       (none)
     cancel[bb7] ->
-      (none)
+      drop _5 ty=FlatConfig kind=record_in_place
     call[bb8 string$repeat -> bb9] ->
       (none)
     call[bb9 testing$assert_eq_str -> bb10] ->
       (none)
     return[bb10] ->
       drop _23 ty=string kind=cow_heap(hew_string_drop)
+      drop _5 ty=FlatConfig kind=record_in_place
 
 fn test_funcupdate_bitcopy_field_override_carries_label -> ()
   statements:
@@ -81,21 +82,22 @@ fn test_funcupdate_bitcopy_field_override_carries_label -> ()
     call[bb4 testing$assert_eq -> bb9] ->
       (none)
     panic[bb5] ->
-      (none)
+      drop _5 ty=FlatConfig kind=record_in_place
     branch[bb6: bb7/bb8] ->
       (none)
     panic[bb7] ->
-      (none)
+      drop _5 ty=FlatConfig kind=record_in_place
     goto[bb8->bb2] ->
       (none)
     cancel[bb8] ->
-      (none)
+      drop _5 ty=FlatConfig kind=record_in_place
     call[bb9 string$repeat -> bb10] ->
       (none)
     call[bb10 testing$assert_eq_str -> bb11] ->
       (none)
     return[bb11] ->
       drop _24 ty=string kind=cow_heap(hew_string_drop)
+      drop _5 ty=FlatConfig kind=record_in_place
 
 fn test_funcupdate_vec_field_override_drops_old -> ()
   statements:
@@ -148,17 +150,17 @@ fn test_funcupdate_vec_field_override_drops_old -> ()
     branch[bb7: bb8/bb9] ->
       (none)
     panic[bb8] ->
-      (none)
+      drop _5 ty=VecHolder kind=record_in_place
     goto[bb9->bb3] ->
       (none)
     cancel[bb9] ->
-      (none)
+      drop _5 ty=VecHolder kind=record_in_place
     call[bb10 hew_vec_len -> bb11] ->
       (none)
     call[bb11 testing$assert_eq -> bb12] ->
       (none)
     return[bb12] ->
-      (none)
+      drop _5 ty=VecHolder kind=record_in_place
 
 fn test_funcupdate_multi_field_override_drops_old -> ()
   statements:
@@ -217,11 +219,11 @@ fn test_funcupdate_multi_field_override_drops_old -> ()
     branch[bb9: bb10/bb11] ->
       (none)
     panic[bb10] ->
-      (none)
+      drop _7 ty=VecHolder kind=record_in_place
     goto[bb11->bb4] ->
       (none)
     cancel[bb11] ->
-      (none)
+      drop _7 ty=VecHolder kind=record_in_place
     call[bb12 testing$assert_eq -> bb13] ->
       (none)
     call[bb13 string$repeat -> bb14] ->
@@ -230,6 +232,7 @@ fn test_funcupdate_multi_field_override_drops_old -> ()
       (none)
     return[bb15] ->
       drop _27 ty=string kind=cow_heap(hew_string_drop)
+      drop _7 ty=VecHolder kind=record_in_place
 
 fn test_funcupdate_hashmap_field_override_drops_old -> ()
   statements:

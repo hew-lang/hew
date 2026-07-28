@@ -1666,6 +1666,10 @@ impl Builder {
                 // conditional move keeps its (flag-gated) scope-exit release
                 // on the not-moved path instead of retracting it entirely.
                 self.maybe_alloc_collection_drop_flag(binding, &binding_ty);
+                self.maybe_alloc_conditional_record_drop_flag(
+                    binding.id,
+                    owned_string_record_key.is_some(),
+                );
             }
             HirStmtKind::Let(_, None) => {}
             HirStmtKind::Expr(expr) => {
@@ -2451,6 +2455,16 @@ impl Builder {
                             // branch and remain handler-owned on another.
                             // Preserve it in the scope-exit ledger and record
                             // the path-local transfer for the guarded drop.
+                            self.instructions.push(Instr::ConstI64 {
+                                dest: flag,
+                                value: 1,
+                            });
+                        } else if let Some(flag) =
+                            self.conditional_record_drop_flags.get(id).copied()
+                        {
+                            // A fresh record may transfer only on this CFG
+                            // edge. Keep its local drop registered for sibling
+                            // paths and record the executed handoff here.
                             self.instructions.push(Instr::ConstI64 {
                                 dest: flag,
                                 value: 1,

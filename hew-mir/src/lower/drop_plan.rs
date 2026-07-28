@@ -720,7 +720,7 @@ pub(super) fn elaborate(
     // string record is a subset of the owned-aggregate records covered here).
     let alias_field_binders = builder.alias_owner_field_binders();
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
-    let owned_record_drop_allowed = derive_owned_record_drop_allowed(
+    let mut owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
@@ -732,6 +732,12 @@ pub(super) fn elaborate(
         &alias_field_binders,
         &builder.proven_borrow_call_args,
     );
+    // A flagged fresh String/BitCopy record has an explicit runtime owner
+    // discriminator. The ordinary escape scan excludes it because one path
+    // reaches an owning sink; re-admit exactly the bindings whose construction
+    // authority and consume hook installed the flag. The guarded drop fires
+    // only where that sink did not execute.
+    owned_record_drop_allowed.extend(builder.conditional_record_drop_flags.keys().copied());
 
     // W5.021 — fail-closed sole-owner allow-set for heap-owning **tuple**
     // bindings (the tuple/record-of-owned-handles drop spine). A by-value owned
@@ -903,6 +909,7 @@ pub(super) fn elaborate(
         &builder.affine_release_flags,
         &builder.collection_drop_flags,
         &builder.actor_message_cow_drop_flags,
+        &builder.conditional_record_drop_flags,
         &projection_alias_tainted,
     );
     let ordinary_lifo_drops: Vec<ElabDrop> = lifo_drops
@@ -4231,6 +4238,7 @@ fn build_lifo_drops(
     affine_release_flags: &HashMap<BindingId, Place>,
     collection_drop_flags: &HashMap<BindingId, Place>,
     actor_message_cow_drop_flags: &HashMap<BindingId, Place>,
+    conditional_record_drop_flags: &HashMap<BindingId, Place>,
     projection_alias_tainted: &HashSet<u32>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
@@ -4547,7 +4555,13 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::RecordInPlace,
-                guard: affine_release_flags.get(binding).copied(),
+                // Resource-record flags take the same precedence as the
+                // consume hook in `lower_value_for_move`; ordinary conditional
+                // record flags cover the disjoint String/BitCopy record class.
+                guard: affine_release_flags
+                    .get(binding)
+                    .or_else(|| conditional_record_drop_flags.get(binding))
+                    .copied(),
             });
             continue;
         }

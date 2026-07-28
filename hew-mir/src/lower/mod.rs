@@ -1429,6 +1429,19 @@ struct Builder {
     /// this map. The consume hook and `build_lifo_drops` consult this same map,
     /// so allocation, move marking, and guarded release cannot drift.
     pub(crate) actor_message_cow_drop_flags: HashMap<BindingId, Place>,
+    /// Path-sensitive drop flags for fresh monomorphic records whose admitted
+    /// fields are String/BitCopy and which are consumed on at least one body
+    /// path. W60.108 makes every String field in such a construction an
+    /// independent owner; the flag preserves the local `RecordInPlace` drop on
+    /// a sibling non-consuming path and suppresses it after ownership moves to
+    /// a state/send/aggregate sink.
+    ///
+    /// These records are kept in `owned_locals` across consume sites. The flag
+    /// is zero-initialised at the binding's `let`, set to one at every consume,
+    /// and attached to its scope-exit drop. The narrow String/BitCopy
+    /// construction gate excludes borrowed collection/opaque fields whose
+    /// source ownership is not independently materialised.
+    pub(crate) conditional_record_drop_flags: HashMap<BindingId, Place>,
     /// #2301 per-function pre-pass scratch: `BindingId`s used with
     /// `intent=Consume` anywhere in the body. Populated by
     /// `collect_vec_owned_element_keys_from_expr` before lowering; intersected

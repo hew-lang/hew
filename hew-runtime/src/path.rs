@@ -557,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn glob_returns_empty_result_for_no_matches() {
+    fn glob_no_match_reflects_the_platform_contract() {
         let p = CString::new("/tmp/hew_path_glob_nomatch_*_zzz_999").unwrap();
         // SAFETY: p is a valid NUL-terminated C string.
         let res = unsafe { hew_glob(p.as_ptr()) };
@@ -565,10 +565,21 @@ mod tests {
         // SAFETY: res is a live HewGlobResult.
         let count = unsafe { hew_glob_count(res) };
         assert_eq!(count, 0);
-        // A completed walk that matched nothing is a success, not a failure.
-        // SAFETY: res is a live HewGlobResult.
-        assert!(unsafe { hew_glob_is_valid(res) });
-        assert_eq!(glob_error_text(res), "");
+        #[cfg(target_family = "unix")]
+        {
+            // A completed POSIX walk that matched nothing is a success.
+            // SAFETY: res is a live HewGlobResult.
+            assert!(unsafe { hew_glob_is_valid(res) });
+            assert_eq!(glob_error_text(res), "");
+        }
+        #[cfg(not(target_family = "unix"))]
+        {
+            // The non-Unix shim cannot perform the walk, so zero paths is an
+            // explicit unsupported-platform failure, not "no matches".
+            // SAFETY: res is a live HewGlobResult.
+            assert!(!unsafe { hew_glob_is_valid(res) });
+            assert!(glob_error_text(res).contains("glob expansion is not implemented"));
+        }
         // SAFETY: res is live.
         unsafe { hew_glob_free(res) };
     }

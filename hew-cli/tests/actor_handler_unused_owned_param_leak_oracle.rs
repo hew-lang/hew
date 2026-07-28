@@ -126,6 +126,7 @@ fn state_or_drop_source(frames: usize) -> String {
 }
 
 fn conditional_local_record_handoff_source(frames: usize) -> String {
+    let expected = frames.saturating_mul(7).saturating_add(4);
     format!(
         "type Wrap {{ name: string }}\n\
          actor Fan {{\n\
@@ -145,7 +146,7 @@ fn conditional_local_record_handoff_source(frames: usize) -> String {
          \x20       fan.route(\"discard\".to_upper(), false);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 99 }}, Err(_) => 100 }}\n\
+         \x20   match await fan.total() {{ Ok(n) => if n == {expected} {{ 0 }} else {{ 99 }}, Err(_) => 100 }}\n\
          }}\n"
     )
 }
@@ -504,6 +505,53 @@ fn main() -> i64 {\n\
 \x20   match await fan.total() { Ok(n) => if n > 40 { 0 } else { 101 }, Err(_) => 102 }\n\
 }\n";
 
+/// Counterfactual for the resource/record classification overlap. The local is
+/// a direct String-record construction (so it matches W60.115's ingress shape)
+/// and a `#[resource]` (so only the affine close flag may govern it). The close
+/// reads the payload under the poisoned allocator, making a second close of the
+/// neutralized source observable.
+const DIRECT_STRING_RESOURCE_TRANSFER_POISON_SOURCE: &str = "\
+#[resource]\n\
+type Token { text: string }\n\
+impl Token {\n\
+\x20   fn close(self) {\n\
+\x20       let _ = self.text.len();\n\
+\x20   }\n\
+}\n\
+fn take(consume token: Token) -> i64 {\n\
+\x20   token.text.len()\n\
+}\n\
+fn main() -> i64 {\n\
+\x20   let token = Token { text: \"payload\".to_upper() };\n\
+\x20   let transfer = \"go\".len() == 2;\n\
+\x20   var seen: i64 = 0;\n\
+\x20   if transfer { seen = take(token); }\n\
+\x20   if seen == 7 { 0 } else { 103 }\n\
+}\n";
+
+/// Counterfactual for the two-flag collision between W60.115 and #2301. The
+/// mutable direct record is moved on alternating edges, then overwritten on
+/// every iteration. #2301 must suppress the old-value release only on moved
+/// edges and re-arm it after each assignment; no conditional `RecordInPlace`
+/// flag may participate.
+const MUTABLE_DIRECT_RECORD_TRANSFER_OVERWRITE_POISON_SOURCE: &str = "\
+type Wrap { name: string }\n\
+fn main() -> i64 {\n\
+\x20   var current = Wrap { name: \"old\".to_upper() };\n\
+\x20   var seen: i64 = 0;\n\
+\x20   var i: i64 = 0;\n\
+\x20   while i < 40 {\n\
+\x20       if i % 2 == 0 {\n\
+\x20           let moved: Wrap = current;\n\
+\x20           seen = seen + moved.name.len();\n\
+\x20       }\n\
+\x20       current = Wrap { name: \"fresh\".to_upper() };\n\
+\x20       seen = seen + current.name.len();\n\
+\x20       i = i + 1;\n\
+\x20   }\n\
+\x20   if seen == 298 { 0 } else { 104 }\n\
+}\n";
+
 macro_rules! macos_slope_test {
     ($name:ident, $label:literal, $source:ident) => {
         #[cfg_attr(
@@ -680,6 +728,58 @@ fn conditional_local_record_handoff_releases_exactly_once_on_both_edges() {
         Some(0),
         "the local record must drop on the non-consuming edge and transfer on \
          the state-store edge without double release:\n{}",
+        describe_output(&output)
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator control uses the Darwin malloc diagnostics"
+)]
+#[test]
+fn direct_string_resource_transfer_has_only_affine_close_authority() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("direct-string-resource-transfer-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        DIRECT_STRING_RESOURCE_TRANSFER_POISON_SOURCE,
+        dir.path(),
+        "direct_string_resource_transfer",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a direct String-record resource transfer must close exactly once \
+         through the affine protocol:\n{}",
+        describe_output(&output)
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator control uses the Darwin malloc diagnostics"
+)]
+#[test]
+fn mutable_direct_record_transfer_then_overwrite_uses_only_overwrite_flag() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("mutable-direct-record-transfer-overwrite-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        MUTABLE_DIRECT_RECORD_TRANSFER_OVERWRITE_POISON_SOURCE,
+        dir.path(),
+        "mutable_direct_record_transfer_overwrite",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "alternating direct record transfers and overwrites must release each \
+         generation exactly once through #2301:\n{}",
         describe_output(&output)
     );
 }

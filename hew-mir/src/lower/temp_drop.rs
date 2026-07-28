@@ -5651,9 +5651,12 @@ pub(super) fn finalize_bytes_ownership(
         }
     }
     derivation.retain_sites.retain(|site| {
-        site.required_bindings
-            .iter()
-            .all(|binding| derivation.allowed.contains(binding))
+        bytes_retain_site_is_required(
+            &raw.blocks,
+            &builder.actor_message_cow_drop_flags,
+            &derivation.allowed,
+            site,
+        )
     });
     apply_bytes_retain_sites(
         &mut raw.blocks,
@@ -5662,6 +5665,36 @@ pub(super) fn finalize_bytes_ownership(
     );
     derivation
 }
+
+fn bytes_retain_site_is_required(
+    blocks: &[BasicBlock],
+    actor_message_cow_drop_flags: &HashMap<BindingId, Place>,
+    allowed: &HashSet<BindingId>,
+    site: &BytesRetainSite,
+) -> bool {
+    // Once an actor-message COW flag is armed, the mailbox reference is being
+    // handed off to the sink and the guarded handler-frame drop is suppressed.
+    // Retaining that same handoff would leave an extra reference with no
+    // matching release.
+    let armed_handoff = site.required_bindings.iter().any(|binding| {
+        actor_message_cow_drop_flags
+            .get(binding)
+            .is_some_and(|flag| {
+                blocks
+                    .iter()
+                    .find(|block| block.id == site.block)
+                    .is_some_and(|block| {
+                        actor_message_cow_flag_armed_before(block, site.instr_index, *flag)
+                    })
+            })
+    });
+    !armed_handoff
+        && site
+            .required_bindings
+            .iter()
+            .all(|binding| allowed.contains(binding))
+}
+
 #[cfg(test)]
 mod cow_sole_owner_derivation {
     //! Direct structural tests for `derive_cow_sole_owner` — the fail-closed
@@ -5681,6 +5714,80 @@ mod cow_sole_owner_derivation {
             instructions,
             terminator: Terminator::Return,
         }
+    }
+
+    fn bytes_retain_site(binding: BindingId, instr_index: usize) -> BytesRetainSite {
+        BytesRetainSite {
+            block: 0,
+            instr_index,
+            placement: BytesRetainPlacement::Before,
+            value: Place::Local(7),
+            required_bindings: vec![binding],
+        }
+    }
+
+    #[test]
+    fn actor_message_bytes_retain_site_is_removed_only_after_handoff_flag_arms() {
+        let binding = BindingId(1);
+        let flag = Place::Local(90);
+        let actor_flags = HashMap::from([(binding, flag)]);
+        let allowed = HashSet::from([binding]);
+        let sink = Instr::Move {
+            dest: Place::Local(8),
+            src: Place::Local(7),
+        };
+
+        let flag_after_site = block(vec![
+            sink.clone(),
+            Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            },
+        ]);
+        assert!(
+            bytes_retain_site_is_required(
+                &[flag_after_site],
+                &actor_flags,
+                &allowed,
+                &bytes_retain_site(binding, 0),
+            ),
+            "an actor-message bytes share still needs its retain before the handoff flag arms"
+        );
+
+        let flag_before_site = block(vec![
+            Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            },
+            sink,
+        ]);
+        assert!(
+            !bytes_retain_site_is_required(
+                &[flag_before_site],
+                &actor_flags,
+                &allowed,
+                &bytes_retain_site(binding, 1),
+            ),
+            "an armed actor-message handoff suppresses the source drop, so its extra retain must be removed"
+        );
+    }
+
+    #[test]
+    fn ordinary_bytes_retain_site_survives_without_actor_handoff_authority() {
+        let binding = BindingId(1);
+        let blocks = [block(vec![Instr::Move {
+            dest: Place::Local(8),
+            src: Place::Local(7),
+        }])];
+        assert!(
+            bytes_retain_site_is_required(
+                &blocks,
+                &HashMap::new(),
+                &HashSet::from([binding]),
+                &bytes_retain_site(binding, 0),
+            ),
+            "a non-actor bytes overwrite/share still needs an independent retained reference"
+        );
     }
 
     /// A `string` owned local whose backing local is never touched by any

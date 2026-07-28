@@ -748,23 +748,25 @@ mod tests {
     }
 
     #[test]
-    fn resolve_handle_method_sig_returns_process_child_signature() {
+    fn fielded_process_child_does_not_publish_a_short_handle_alias() {
         let mut reg = registry();
         reg.load("std::process").unwrap();
 
+        // The loader retains qualified imported-signature metadata for normal
+        // named-type/trait method resolution.
         let sig = reg
             .resolve_handle_method_sig("process.Child", "wait")
-            .expect("process.Child.wait should resolve");
+            .expect("qualified process.Child.wait imported signature should resolve");
         assert_eq!(sig.0, "hew_process_wait");
         assert_eq!(sig.1, Vec::<crate::ty::Ty>::new());
         assert_eq!(sig.2, crate::ty::Ty::I64);
 
-        let short_sig = reg
-            .resolve_handle_method_sig("Child", "kill")
-            .expect("short handle name should resolve");
-        assert_eq!(short_sig.0, "hew_process_kill");
-        assert_eq!(short_sig.1, Vec::<crate::ty::Ty>::new());
-        assert_eq!(short_sig.2, crate::ty::Ty::I64);
+        assert_eq!(
+            reg.resolve_handle_method_sig("Child", "kill"),
+            None,
+            "fielded process.Child is a named resource record, not an opaque \
+             handle that publishes an unqualified handle-registry alias"
+        );
     }
 
     #[test]

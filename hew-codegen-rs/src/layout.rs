@@ -30,7 +30,7 @@ use hew_mir::{
     StateFieldCloneKind, Terminator,
 };
 use hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
-use hew_types::{BuiltinType, ResolvedTy};
+use hew_types::{BuiltinType, ResolvedTy, Ty};
 
 #[allow(unused_imports)]
 use crate::llvm::*;
@@ -4603,6 +4603,120 @@ pub(crate) fn lower_hashmap_layout_direct_call(
     Ok(())
 }
 
+/// Compare checker-approved type spellings across a MIR call boundary.
+///
+/// Imports can leave one side bare (`Key<T>`) and the other owner-qualified
+/// (`arena.Key<T>`). Raw `ResolvedTy` equality rejects that legal alias, while
+/// LLVM-layout equality alone is too permissive for distinct nominal types
+/// with the same ABI. This comparison admits only the checker's qualified-name
+/// alias rule and applies it recursively through the composite shapes these
+/// container operations can carry. The checker has already rejected ambiguous
+/// bare-name ownership before MIR; two distinct qualified owners never match.
+fn resolved_ty_matches_checked_alias(expected: &ResolvedTy, actual: &ResolvedTy) -> bool {
+    if expected == actual {
+        return true;
+    }
+    match (expected, actual) {
+        (
+            ResolvedTy::Named {
+                name: expected_name,
+                args: expected_args,
+                builtin: expected_builtin,
+                is_opaque: expected_opaque,
+            },
+            ResolvedTy::Named {
+                name: actual_name,
+                args: actual_args,
+                builtin: actual_builtin,
+                is_opaque: actual_opaque,
+            },
+        ) => {
+            expected_builtin == actual_builtin
+                && expected_opaque == actual_opaque
+                && Ty::names_match_qualified(expected_name, actual_name)
+                && expected_args.len() == actual_args.len()
+                && expected_args
+                    .iter()
+                    .zip(actual_args)
+                    .all(|(left, right)| resolved_ty_matches_checked_alias(left, right))
+        }
+        (ResolvedTy::Tuple(expected), ResolvedTy::Tuple(actual)) => {
+            expected.len() == actual.len()
+                && expected
+                    .iter()
+                    .zip(actual)
+                    .all(|(left, right)| resolved_ty_matches_checked_alias(left, right))
+        }
+        (ResolvedTy::Array(expected, expected_len), ResolvedTy::Array(actual, actual_len)) => {
+            expected_len == actual_len && resolved_ty_matches_checked_alias(expected, actual)
+        }
+        (ResolvedTy::Slice(expected), ResolvedTy::Slice(actual))
+        | (ResolvedTy::Task(expected), ResolvedTy::Task(actual))
+        | (ResolvedTy::Borrow { pointee: expected }, ResolvedTy::Borrow { pointee: actual }) => {
+            resolved_ty_matches_checked_alias(expected, actual)
+        }
+        (
+            ResolvedTy::Pointer {
+                is_mutable: expected_mutable,
+                pointee: expected,
+            },
+            ResolvedTy::Pointer {
+                is_mutable: actual_mutable,
+                pointee: actual,
+            },
+        ) => {
+            expected_mutable == actual_mutable
+                && resolved_ty_matches_checked_alias(expected, actual)
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod checked_alias_tests {
+    use super::*;
+
+    fn named(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: name.to_string(),
+            args,
+            builtin: None,
+            is_opaque: false,
+        }
+    }
+
+    #[test]
+    fn accepts_bare_and_qualified_spelling_recursively() {
+        let bare = ResolvedTy::Tuple(vec![
+            named("Key", vec![ResolvedTy::String]),
+            ResolvedTy::I64,
+        ]);
+        let qualified = ResolvedTy::Tuple(vec![
+            named("arena.Key", vec![ResolvedTy::String]),
+            ResolvedTy::I64,
+        ]);
+        assert!(resolved_ty_matches_checked_alias(&bare, &qualified));
+    }
+
+    #[test]
+    fn rejects_distinct_qualified_nominal_owners() {
+        let arena_key = named("arena.Key", vec![ResolvedTy::String]);
+        let other_key = named("other.Key", vec![ResolvedTy::String]);
+        assert!(!resolved_ty_matches_checked_alias(&arena_key, &other_key));
+    }
+
+    #[test]
+    fn rejects_builtin_and_user_named_collisions() {
+        let builtin = ResolvedTy::named_builtin(
+            BuiltinType::Vec.canonical_name(),
+            BuiltinType::Vec,
+            vec![ResolvedTy::I64],
+        );
+        let user = named("Vec", vec![ResolvedTy::I64]);
+        assert!(!resolved_ty_matches_checked_alias(&builtin, &user));
+    }
+}
+
 pub(crate) fn lower_hashmap_get_layout_call(
     fn_ctx: &FnCtx<'_, '_>,
     args: &[Place],
@@ -4639,14 +4753,13 @@ pub(crate) fn lower_hashmap_get_layout_call(
         ResolvedTy::Named { args: ty_args, .. }
             if dest_ty.is_builtin(BuiltinType::Option)
                 && ty_args.len() == 1
-                && ty_args[0] == val_resolved => {}
+                && resolved_ty_matches_checked_alias(&val_resolved, &ty_args[0]) => {}
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "hew_hashmap_get_layout dest must be Option<{val_resolved:?}>, got {other:?}"
             )));
         }
     }
-
     let val_llvm_ty = resolve_ty(
         fn_ctx.ctx,
         fn_ctx.target_data,
@@ -4773,7 +4886,7 @@ pub(crate) fn lower_hashmap_remove_take_call(
         ResolvedTy::Named { args: ty_args, .. }
             if dest_ty.is_builtin(BuiltinType::Option)
                 && ty_args.len() == 1
-                && ty_args[0] == val_resolved => {}
+                && resolved_ty_matches_checked_alias(&val_resolved, &ty_args[0]) => {}
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "hew_hashmap_remove_take_layout dest must be Option<{val_resolved:?}>, \
@@ -4781,7 +4894,6 @@ pub(crate) fn lower_hashmap_remove_take_call(
             )));
         }
     }
-
     let val_llvm_ty = resolve_ty(
         fn_ctx.ctx,
         fn_ctx.target_data,
@@ -5045,11 +5157,11 @@ pub(crate) fn lower_vec_get_clone_call(
             ..
         } if (dest_ty.is_builtin(BuiltinType::Option) || name == "Option")
             && ty_args.len() == 1
-            && ty_args[0] == elem_resolved =>
+            && resolved_ty_matches_checked_alias(&elem_resolved, &ty_args[0]) =>
         {
             true
         }
-        ty if ty == &elem_resolved => false,
+        ty if resolved_ty_matches_checked_alias(&elem_resolved, ty) => false,
         other => {
             return Err(CodegenError::FailClosed(format!(
                 "hew_vec_get_clone dest must be Option<{elem_resolved:?}> or bare \
@@ -5057,7 +5169,6 @@ pub(crate) fn lower_vec_get_clone_call(
             )));
         }
     };
-
     let elem_llvm_ty = resolve_ty(
         fn_ctx.ctx,
         fn_ctx.target_data,

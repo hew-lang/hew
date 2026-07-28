@@ -1,0 +1,17 @@
+// Arena<T>: three distinct inserts round-trip to their exact values. Forged
+// keys with the right arena identity but out-of-range indices fail closed.
+import std::arena::{ Arena, Key };
+
+fn main() {
+    let store: Arena<string> = arena.new();
+    let k0 = store.insert("zero");
+    let k1 = store.insert("one");
+    let k2 = store.insert("two");
+    let high: Key<string> = Key { arena_id: store.arena_id, index: 99, generation: 0 };
+    let negative: Key<string> = Key { arena_id: store.arena_id, index: -1, generation: 0 };
+    println(store.get(k0).unwrap());
+    println(store.get(k1).unwrap());
+    println(store.get(k2).unwrap());
+    println(store.get(high).is_none());
+    println(store.get(negative).is_none());
+}

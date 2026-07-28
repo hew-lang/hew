@@ -32,7 +32,7 @@ fn main() {
 ## Quick wayfinding
 
 - **CLI, files, and OS** — [`std::io`](io.hew), [`std::fs`](fs.hew), [`std::path`](path.hew), [`std::os`](os.hew), [`std::process`](process.hew)
-- **Collections and scans** — [`std::vec`](vec.hew), [`std::deque`](deque.hew), [`std::iter`](iter.hew), [`std::sort`](sort/sort.hew)
+- **Collections and scans** — [`std::vec`](vec.hew), [`std::arena`](arena.hew), [`std::deque`](deque.hew), [`std::iter`](iter.hew), [`std::sort`](sort/sort.hew)
 - **Streams and coordination** — [`std::stream`](stream.hew), [`std::channel::channel`](channel/channel.hew), [`std::semaphore`](semaphore.hew), [`std::concurrency`](concurrency/concurrency.hew)
 - **Data formats and wire protocols** — [`std::encoding::json`](encoding/json/json.hew), [`std::encoding::yaml`](encoding/yaml/yaml.hew), [`std::encoding::toml`](encoding/toml/toml.hew), [`std::encoding::csv`](encoding/csv/csv.hew), [`std::encoding::xml`](encoding/xml/xml.hew), [`std::encoding::wire::value_trait`](encoding/wire/value_trait.hew)
 - **Networking** — [`std::net`](net/net.hew), [`std::net::http`](net/http/http.hew), [`std::net::dns`](net/dns/dns.hew), [`std::net::tls`](net/tls/tls.hew), [`std::net::quic`](net/quic/quic.hew), [`std::net::url`](net/url/url.hew)
@@ -71,6 +71,7 @@ Every shipped module under `std/` should appear here.
 | Module | Import | Use for |
 | --- | --- | --- |
 | [`vec`](vec.hew) | `std::vec` | Utility helpers for `Vec<T>` |
+| [`arena`](arena.hew) | `std::arena` | Single-owner generational slotmap with stable value keys |
 | [`deque`](deque.hew) | `std::deque` | Double-ended queue operations |
 | [`iter`](iter.hew) | `std::iter` | Map/filter/fold-style helpers for `Vec<T>` |
 | [`sort`](sort/sort.hew) | `std::sort` | Sorting and reversing vector helpers |

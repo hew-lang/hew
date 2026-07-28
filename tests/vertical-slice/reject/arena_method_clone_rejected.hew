@@ -1,0 +1,7 @@
+// Arena owns mutable identity state and cannot be forked.
+import std::arena::{ Arena };
+
+fn main() {
+    let store: Arena<string> = arena.new();
+    let _copy = store.clone();
+}

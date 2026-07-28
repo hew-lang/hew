@@ -1418,6 +1418,17 @@ struct Builder {
     /// outside the collection classes keep the legacy retraction (leak on the
     /// not-moved path, never double-free).
     pub(crate) collection_drop_flags: HashMap<BindingId, Place>,
+    /// Runtime drop-flags for actor-message `CowValue` leaf parameters that
+    /// are consumed on at least one body path. Mailbox delivery makes the
+    /// handler frame an owner, but a shared exit can see the parameter as
+    /// `MaybeConsumed`; the flag preserves its scope-exit drop on the live
+    /// path and suppresses it after a state/send transfer.
+    ///
+    /// Admission is structural: only types for which
+    /// `cow_value_leaf_drop_symbol` supplies the existing drop ritual enter
+    /// this map. The consume hook and `build_lifo_drops` consult this same map,
+    /// so allocation, move marking, and guarded release cannot drift.
+    pub(crate) actor_message_cow_drop_flags: HashMap<BindingId, Place>,
     /// #2301 per-function pre-pass scratch: `BindingId`s used with
     /// `intent=Consume` anywhere in the body. Populated by
     /// `collect_vec_owned_element_keys_from_expr` before lowering; intersected
@@ -6016,6 +6027,7 @@ impl Builder {
                 == Some(true);
             let param_is_owned_carrier =
                 self.register_owned_call_carrier_param(func.id, i, param, slot, param_is_consumed);
+            let owned_ty = self.subst_ty(&param.ty);
             // A summary-owned param is one whose CALLERS consult the same
             // `call_param_owned_carrier` verdict and therefore move ownership
             // in (transfer, clone, or fail closed) — the callee owns it even
@@ -6058,7 +6070,6 @@ impl Builder {
                 }
             }
             if param_is_consumed {
-                let owned_ty = self.subst_ty(&param.ty);
                 // U3 — see `owner_warrant_for_owned_parameter`.
                 let warrant = self.owner_warrant_for_owned_parameter(param.id, &owned_ty);
                 self.register_owned_local(param.id, param.name.clone(), owned_ty.clone(), warrant);
@@ -6083,6 +6094,33 @@ impl Builder {
                 // branch still drops exactly once. A no-op for a binding whose
                 // close is idempotent/refcounted (`affine_release_needs_drop_flag`).
                 self.maybe_alloc_affine_release_flag(param.id, &owned_ty);
+            }
+            // A mailbox delivery transfers every heap-owning message parameter
+            // into the actor-handler frame. Register that frame-local owner at
+            // the same parameter seam as resource/carrier ownership so the
+            // existing type-directed, path-sensitive drop elaborator selects
+            // the exact release shape and suppresses it after a consume or
+            // escape. This is deliberately structural rather than a list of
+            // message types: `binding_seeds_drop_elaboration` is the single
+            // value-class authority used for ordinary owned bindings too.
+            //
+            // Resource consumes and admitted call carriers already registered
+            // above and therefore stay mutually exclusive. Synthetic runtime ABI
+            // borrows are not mailbox deliveries: a receive-gen shell's trailing
+            // sink is pump infrastructure that the pump closes explicitly, while
+            // `__crash_message` remains owned and released by the supervisor
+            // after the hook returns.
+            let actor_message_param = !param_is_consumed
+                && !param_is_owned_carrier
+                && self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler
+                && param.id != SENTINEL_CRASH_MESSAGE_BINDING
+                && !self
+                    .stream_producer_pump
+                    .as_ref()
+                    .is_some_and(|pump| pump.sink == slot)
+                && self.binding_seeds_drop_elaboration(&owned_ty);
+            if actor_message_param {
+                self.register_owned_param(param, owned_ty.clone(), func.body.scope);
             }
             // #2732 — callee-side drop for a by-value heap-owning ENUM COMPOSITE
             // param (`Result<T, string>`, `Option<string>`, a user enum with an
@@ -6114,69 +6152,20 @@ impl Builder {
             // registered above) from double-registering.
             if !param_is_consumed
                 && !param_is_owned_carrier
+                && !actor_message_param
                 && self
                     .param_ownership
                     .call_param_consume
                     .get(&(func.id, i))
                     .is_some_and(|v| v.is_consume())
-            {
-                let owned_ty = self.subst_ty(&param.ty);
-                if ty_is_heap_owning_enum_composite(
+                && ty_is_heap_owning_enum_composite(
                     &owned_ty,
                     &self.record_field_orders,
                     &self.enum_layouts,
-                ) {
-                    self.register_owned_param(param, owned_ty, func.body.scope);
-                    callee_owns_param = true;
-                }
-            }
-            // #2747 — callee-side drop for a by-value owned-aggregate RECORD
-            // message param delivered to an actor `receive fn` handler. The
-            // mailbox hand-off (`sink.take(b)`) CONSUMES the caller's `b` into
-            // the mailbox `memcpy`; the delivered copy handed to the handler is
-            // a fresh SOLE owner of its heap field buffers. Nobody else frees
-            // it: the caller's original was consumed, so it is NOT the borrow a
-            // by-value record param is in a `FunctionCallConv::Default` call
-            // (where the caller retains ownership and drops it — the reason
-            // records are deliberately NOT registered in the enum branch above).
-            // A handler that only BORROWS its heap field (`b.payload.len()` / a
-            // field read) never drains it through a consuming iterator or a
-            // move-into-state, so the buffer leaked once per delivered message.
-            //
-            // Register the message record into `owned_locals` + the body scope so
-            // `derive_owned_record_drop_allowed` picks it up and emits the
-            // recursive `DropKind::RecordInPlace` field teardown on the
-            // read-and-discard path. That prover's escape scan already excludes a
-            // record whose owned field ESCAPES into actor state (`store =
-            // b.payload` / `spawn A(field: v)`): for a retained field the
-            // synthesised `state_drop_fn` is the single free, so the escape-scan's
-            // field-binder exclusion keeps the handler from double-freeing it
-            // (fail-closed: leak a non-escaped sibling, never double-free). The
-            // consume path (a `for v in b.payload` drain that frees the buffer as
-            // it iterates) is likewise excluded by the same escape/consume scan,
-            // so the iterate handler keeps its single free. Gated on the
-            // `ActorHandler` call convention: a `Default` record param stays the
-            // caller's drop. The synthetic trailing sink param of a `receive gen
-            // fn` shell is a stream handle, not an owned-aggregate record, so
-            // `is_owned_aggregate_record_ty` filters it out.
-            if !param_is_consumed
-                && self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler
+                )
             {
-                let owned_ty = self.subst_ty(&param.ty);
-                if self.is_owned_aggregate_record_ty(&owned_ty) {
-                    self.register_owned_param(param, owned_ty, func.body.scope);
-                }
-            }
-            // The mailbox copy transfers ownership of a top-level indirect-enum
-            // node to an actor handler. Ordinary free-function parameters remain
-            // caller-owned borrows and are deliberately excluded here.
-            if !param_is_consumed
-                && self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler
-            {
-                let owned_ty = self.subst_ty(&param.ty);
-                if crate::lower::drop_plan::ty_is_indirect_enum(&owned_ty, &self.enum_layouts) {
-                    self.register_owned_param(param, owned_ty, func.body.scope);
-                }
+                self.register_owned_param(param, owned_ty, func.body.scope);
+                callee_owns_param = true;
             }
             if !callee_owns_param {
                 if let Place::Local(local) = slot {
@@ -6605,6 +6594,12 @@ impl Builder {
         // generator gate. Every other fact this walk records is set-valued and
         // idempotent, so repeating it adds no duplicate semantic effects.
         self.collect_prepass_facts(&func.body);
+        if self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler {
+            for param in &func.params {
+                let ty = self.subst_ty(&param.ty);
+                self.maybe_alloc_actor_message_cow_drop_flag(param.id, &ty);
+            }
+        }
 
         self.active_scopes.push(func.body.scope);
         for stmt in &func.body.statements {

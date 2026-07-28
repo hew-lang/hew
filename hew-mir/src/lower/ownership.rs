@@ -2420,6 +2420,37 @@ impl Builder {
         });
         self.collection_drop_flags.insert(binding.id, flag);
     }
+
+    /// Allocate the path-sensitive scope-exit flag for a mailbox-owned `CoW`
+    /// leaf parameter that is consumed on at least one handler path.
+    ///
+    /// Unlike ordinary by-value parameters, actor message parameters own the
+    /// delivered value. A branch that moves the value into actor state (or
+    /// forwards it) and then rejoins a borrow-only branch produces a
+    /// `MaybeConsumed` exit. The static sole-owner scan must keep a drop for
+    /// the live path, while the moved path must suppress it at runtime.
+    pub(crate) fn maybe_alloc_actor_message_cow_drop_flag(
+        &mut self,
+        binding: BindingId,
+        ty: &ResolvedTy,
+    ) {
+        if !self.prepass_consumed_bindings.contains(&binding)
+            || super::cow_value_leaf_drop_symbol(ty).is_none()
+            || !self.owned_locals.iter().any(|entry| {
+                entry.binding == binding && entry.disposition == Disposition::ScopeExit
+            })
+            || self.actor_message_cow_drop_flags.contains_key(&binding)
+        {
+            return;
+        }
+        let flag = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: flag,
+            value: 0,
+        });
+        self.actor_message_cow_drop_flags.insert(binding, flag);
+    }
+
     /// #2301 -- emit `if flag == 0 { <release old value of `dest`> }` as a CFG
     /// diamond, then leave the cursor at the continuation block so the caller's
     /// `Move` (store of the fresh value) and the `flag = 0` reset land there.

@@ -1661,6 +1661,107 @@ fn fn_has_record_inplace_drop(pipeline: &hew_mir::IrPipeline, fn_name: &str) -> 
         })
 }
 
+/// Mailbox delivery transfers a fresh string owner into the receive frame.
+/// Even a completely ignored parameter must therefore have one unguarded
+/// scope-exit release; ordinary by-value string parameters remain borrows and
+/// do not take this actor-only path.
+#[test]
+fn recv_handler_ignored_string_param_earns_scope_exit_drop() {
+    let pipeline = lower_source(
+        r#"
+        actor Sink {
+            var seen: i64;
+            receive fn take(label: string) { seen = seen + 1; }
+        }
+        fn main() -> i64 {
+            let sink = spawn Sink(seen: 0);
+            sink.take("unused".to_upper());
+            0
+        }
+        "#,
+    );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "Sink__recv__take")
+        .expect("receive handler present");
+    assert!(
+        handler
+            .drop_plans
+            .iter()
+            .any(|(_, plan)| plan.drops.iter().any(|drop| matches!(
+                drop.kind,
+                hew_mir::DropKind::CowHeap { .. }
+            ) && drop.guard.is_none())),
+        "an ignored mailbox-owned string must earn one unguarded handler-exit drop: {:?}",
+        handler.drop_plans
+    );
+}
+
+/// A mailbox-owned string moved into actor state on one branch and merely read
+/// on the other reaches the shared return as `MaybeConsumed`. The elaborated
+/// drop must survive behind one runtime flag, and both flag values must be
+/// present in realized MIR: zero at entry, one immediately on the transfer
+/// path.
+#[test]
+fn recv_handler_conditional_string_transfer_uses_guarded_drop() {
+    let pipeline = lower_source(
+        r#"
+        actor Keeper {
+            var seen: i64;
+            var last: string;
+            receive fn take(label: string, keep: bool) {
+                if keep {
+                    last = label;
+                } else {
+                    seen = seen + label.len();
+                }
+            }
+        }
+        fn main() -> i64 {
+            let keeper = spawn Keeper(seen: 0, last: "seed");
+            keeper.take("next".to_upper(), true);
+            0
+        }
+        "#,
+    );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "Keeper__recv__take")
+        .expect("receive handler present");
+    let guard = handler
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .find_map(|drop| {
+            matches!(drop.kind, hew_mir::DropKind::CowHeap { .. })
+                .then_some(drop.guard)
+                .flatten()
+        })
+        .expect("conditional mailbox string drop must carry a runtime guard");
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|f| f.name == "Keeper__recv__take")
+        .expect("checked receive handler present");
+    for expected in [0, 1] {
+        assert!(
+            checked
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .any(|instr| matches!(
+                    instr,
+                    Instr::ConstI64 { dest, value }
+                        if *dest == guard && *value == expected
+                )),
+            "conditional mailbox string flag must be assigned {expected}: {:?}",
+            checked.blocks
+        );
+    }
+}
+
 /// #2747 — a by-value owned-aggregate RECORD message param delivered to an actor
 /// `receive fn` and only BORROWED (`b.payload.len()`) is a transient
 /// read-and-discard the handler frame solely owns: the mailbox `memcpy`

@@ -533,6 +533,34 @@ fn supervisor_child_with_on_crash_hook_surfaces_symbol_on_layout() {
         hew_mir::FunctionCallConv::ActorHandler,
         "on(crash) MIR function must use ActorHandler calling convention"
     );
+
+    // `__crash_message` is a runtime ABI borrow, not a mailbox-delivered
+    // message owner. The synthetic prologue clones it into `CrashInfo.message`;
+    // the supervisor retains and releases the original after this hook returns.
+    // Treating every ActorHandler parameter as mailbox-owned would add a second
+    // CowHeap release for this parameter and UAF/double-free the supervisor's
+    // owner under ASan.
+    let crash_message_local = crash_fn
+        .local_names
+        .iter()
+        .position(|name| name.as_deref() == Some("__crash_message"))
+        .expect("on(crash) ABI must expose the synthetic crash-message parameter");
+    let crash_message_place =
+        Place::Local(u32::try_from(crash_message_local).expect("MIR local index must fit in u32"));
+    let elaborated_crash_fn = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "Crashable__on_crash")
+        .expect("Crashable__on_crash must be present in elaborated MIR");
+    assert!(
+        elaborated_crash_fn.drop_plans.iter().all(|(_, plan)| {
+            plan.drops
+                .iter()
+                .all(|drop| drop.place != crash_message_place)
+        }),
+        "the runtime-owned __crash_message ABI borrow must never earn a handler-frame drop: {:?}",
+        elaborated_crash_fn.drop_plans
+    );
 }
 
 /// Verify-AST gate (S1): a SCALAR config-field init arg

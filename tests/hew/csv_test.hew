@@ -2,6 +2,8 @@
 
 import std::encoding::csv;
 
+import std::fs;
+
 import std::testing;
 
 // ── Happy-path parse ──────────────────────────────────────────────────
@@ -58,6 +60,19 @@ fn test_parse_get_by_name_missing_column_returns_empty() {
     let tbl = csv.parse("name\nAlice");
     testing.assert_eq_str(tbl.get_by_name(0, "nonexistent"), "");
     tbl.free();
+}
+
+#[test]
+fn test_try_parse_file_missing_path_returns_err() {
+    let path = "tests/hew/_csv_try_parse_missing.csv";
+    let _ = fs.try_delete(path);
+    match csv.try_parse_file(path) {
+        Ok(tbl) => {
+            tbl.free();
+            panic("expected missing CSV path to return Err");
+        },
+        Err(reason) => testing.assert_true(reason.contains("NotFound")),
+    }
 }
 
 // ── Quoted-field parsing ──────────────────────────────────────────────

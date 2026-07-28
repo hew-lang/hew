@@ -573,7 +573,7 @@ pub fn stream_send(strm: QUICStream, data: bytes) -> Result<(), net.NetError> {
 
 /// Validate a QUIC per-call deadline before the C ABI narrows it to `i32`.
 ///
-/// A non-positive deadline disables the deadline and is passed through as-is;
+/// A non-positive deadline disables the deadline and is normalized to zero;
 /// a positive one must be representable, so `2^32 + 500` is rejected rather
 /// than narrowed into a 500 ms deadline.
 fn try_quic_deadline_ms(context: string, deadline_ms: i64) -> Result<i64, net.NetError> {

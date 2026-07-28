@@ -108,12 +108,13 @@ pub fn try_parse_no_headers(data: string) -> Result<Table, string> {
 
 /// Parse CSV data from a file path (first row is treated as headers).
 ///
-/// Returns `Err(string)` if the input is not well-formed CSV. Panics if the
-/// file cannot be read.
+/// Returns `Err(string)` if the file cannot be read or the input is not
+/// well-formed CSV.
 pub fn try_parse_file(path: string) -> Result<Table, string> {
-    let content = fs.read(path);
-    let parsed = parse_impl(content, true);
-    parsed
+    match fs.try_read(path) {
+        Ok(content) => parse_impl(content, true),
+        Err(reason) => Err(fs.io_error_message(reason)),
+    }
 }
 
 /// Parse CSV data from a string (first row is treated as headers).

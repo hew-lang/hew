@@ -1080,8 +1080,8 @@ impl HewCluster {
     /// that retires this token in the window since the guard passed revokes it,
     /// and a superseding admission moves `current` on. In both cases the ALIVE
     /// this transition would have emitted is not emitted at all — it is not
-    /// merely emitted late, which is the whole point: an observer must never
-    /// see a peer alive after the retirement that superseded it.
+    /// merely emitted late. Once claimed, later cancellation operates at the
+    /// per-step gates documented by [`GuardedDeliveryInFlight::may_emit`].
     ///
     /// `visible` is published HERE, not at authorization, so a peer is only
     /// ever recorded as observably alive if its ALIVE is genuinely about to be
@@ -1146,11 +1146,11 @@ impl HewCluster {
     /// preceded by a `connection_tokens`-locked re-read of this flag, and the
     /// mutex totally orders those re-reads against this store. If a re-read
     /// follows the store, its step is abandoned. If it precedes the store, the
-    /// step was decided before the retirement reached its own linearization
-    /// point (the token removal, in this same critical section), so it
-    /// linearizes before the retirement rather than after it. Hence no
-    /// observable ALIVE step for a retired token ever *starts* after the
-    /// retirement that superseded it has returned.
+    /// step was authorized before the retirement reached its own
+    /// linearization point (the token removal, in this same critical section),
+    /// so it linearizes before the retirement even if its callback is entered
+    /// after retirement returns. The single transition drainer keeps the
+    /// queued `TokenLost` demotion ordered behind that authorized step.
     ///
     /// Callers must already have made a further claim on this token impossible
     /// (by removing it from `current`, or by having observed that it is not

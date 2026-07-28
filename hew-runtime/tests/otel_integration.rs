@@ -123,7 +123,7 @@ struct ContextGuard {
 impl ContextGuard {
     fn install() -> Self {
         let mut context = Box::new(HewExecutionContext::default());
-        let raw = (&raw mut *context).cast::<HewExecutionContext>();
+        let raw: *mut HewExecutionContext = context.as_mut();
         let previous = set_current_context(raw);
         Self { context, previous }
     }
@@ -131,9 +131,9 @@ impl ContextGuard {
 
 impl Drop for ContextGuard {
     fn drop(&mut self) {
-        let raw = (&raw mut *self.context).cast::<HewExecutionContext>();
+        let raw: *mut HewExecutionContext = self.context.as_mut();
         let restored = set_current_context(self.previous);
-        debug_assert_eq!(restored, raw);
+        assert_eq!(restored, raw);
     }
 }
 

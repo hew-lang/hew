@@ -2451,6 +2451,36 @@ impl Builder {
         self.actor_message_cow_drop_flags.insert(binding, flag);
     }
 
+    /// Allocate the path-sensitive scope-exit flag for a freshly constructed
+    /// String/BitCopy record that is consumed on at least one body path.
+    ///
+    /// The `owned_string_record_init_key_for_let` authority proves this is a
+    /// direct monomorphic construction whose owned leaves use W60.108's
+    /// retain-backed String ingress. Keeping the record registered is therefore
+    /// sound: the flag selects between its local owner on a non-consuming path
+    /// and the destination owner after a consume.
+    pub(crate) fn maybe_alloc_conditional_record_drop_flag(
+        &mut self,
+        binding: BindingId,
+        is_owned_string_record_init: bool,
+    ) {
+        if !is_owned_string_record_init
+            || !self.prepass_consumed_bindings.contains(&binding)
+            || !self.owned_locals.iter().any(|entry| {
+                entry.binding == binding && entry.disposition == Disposition::ScopeExit
+            })
+            || self.conditional_record_drop_flags.contains_key(&binding)
+        {
+            return;
+        }
+        let flag = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: flag,
+            value: 0,
+        });
+        self.conditional_record_drop_flags.insert(binding, flag);
+    }
+
     /// #2301 -- emit `if flag == 0 { <release old value of `dest`> }` as a CFG
     /// diamond, then leave the cursor at the continuation block so the caller's
     /// `Move` (store of the fresh value) and the `flag = 0` reset land there.

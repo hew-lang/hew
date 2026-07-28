@@ -125,6 +125,31 @@ fn state_or_drop_source(frames: usize) -> String {
     )
 }
 
+fn conditional_local_record_handoff_source(frames: usize) -> String {
+    format!(
+        "type Wrap {{ name: string }}\n\
+         actor Fan {{\n\
+         \x20   var seen: i64;\n\
+         \x20   var held: Wrap;\n\
+         \x20   receive fn route(label: string, store: bool) {{\n\
+         \x20       let next = Wrap {{ name: label }};\n\
+         \x20       if store {{ held = next; }}\n\
+         \x20       else {{ seen = seen + next.name.len(); }}\n\
+         \x20   }}\n\
+         \x20   receive fn total() -> i64 {{ seen + held.name.len() }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let fan = spawn Fan(seen: 0, held: Wrap {{ name: \"seed\" }});\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       fan.route(\"discard\".to_upper(), false);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 99 }}, Err(_) => 100 }}\n\
+         }}\n"
+    )
+}
+
 fn loop_carried_record_ingress_source(frames: usize) -> String {
     format!(
         "type Wrap {{ name: string }}\n\
@@ -457,6 +482,28 @@ fn main() -> i64 {\n\
 \x20   match await fan.total() { Ok(n) => if n > 12 { 0 } else { 97 }, Err(_) => 98 }\n\
 }\n";
 
+const CONDITIONAL_LOCAL_RECORD_HANDOFF_POISON_SOURCE: &str = "\
+type Wrap { name: string }\n\
+actor Fan {\n\
+\x20   var seen: i64;\n\
+\x20   var held: Wrap;\n\
+\x20   receive fn route(label: string, store: bool) {\n\
+\x20       let next = Wrap { name: label };\n\
+\x20       if store { held = next; }\n\
+\x20       else { seen = seen + next.name.len(); }\n\
+\x20   }\n\
+\x20   receive fn total() -> i64 { seen + held.name.len() }\n\
+}\n\
+fn main() -> i64 {\n\
+\x20   let fan = spawn Fan(seen: 0, held: Wrap { name: \"seed\" });\n\
+\x20   var i: i64 = 0;\n\
+\x20   while i < 40 {\n\
+\x20       fan.route(\"handoff\".to_upper(), i % 2 == 0);\n\
+\x20       i = i + 1;\n\
+\x20   }\n\
+\x20   match await fan.total() { Ok(n) => if n > 40 { 0 } else { 101 }, Err(_) => 102 }\n\
+}\n";
+
 macro_rules! macos_slope_test {
     ($name:ident, $label:literal, $source:ident) => {
         #[cfg_attr(
@@ -494,6 +541,11 @@ macos_slope_test!(
     state_transfer_and_borrow_branch_are_exactly_once,
     "actor_handler_state_or_drop",
     state_or_drop_source
+);
+macos_slope_test!(
+    conditional_local_record_nonconsuming_edge_has_flat_leak_slope,
+    "conditional_local_record_handoff",
+    conditional_local_record_handoff_source
 );
 macos_slope_test!(
     loop_carried_record_ingress_retains_once_per_distinct_state_owner,
@@ -602,6 +654,32 @@ fn branch_local_fresh_ingress_is_never_hoisted_past_join() {
         Some(0),
         "a branch-local fresh leaf must be retained while path-defined and live; \
          hoisting after the join reads an uninitialised or already-dropped slot:\n{}",
+        describe_output(&output)
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator control uses the Darwin malloc diagnostics"
+)]
+#[test]
+fn conditional_local_record_handoff_releases_exactly_once_on_both_edges() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("conditional-local-record-handoff-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        CONDITIONAL_LOCAL_RECORD_HANDOFF_POISON_SOURCE,
+        dir.path(),
+        "conditional_local_record_handoff",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the local record must drop on the non-consuming edge and transfer on \
+         the state-store edge without double release:\n{}",
         describe_output(&output)
     );
 }

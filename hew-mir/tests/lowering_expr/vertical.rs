@@ -2618,6 +2618,167 @@ fn recv_handler_forwarded_vec_param_has_no_scope_exit_double_release() {
     );
 }
 
+/// A local owned record consumed into actor state on only one branch remains
+/// owned by the handler on the sibling branch. Its scope-exit drop therefore
+/// needs a path-sensitive guard: skip after the handoff, fire when the handoff
+/// did not execute. Retracting the binding globally at the state-store site
+/// leaks one string allocation per non-store invocation.
+#[test]
+fn conditional_record_state_handoff_keeps_guarded_scope_exit_drop() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var held: Wrap;
+            receive fn route(label: string, store: bool) -> i64 {
+                let next = Wrap { name: label };
+                if store { held = next; }
+                7
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("conditional-handoff handler elaborated MIR present");
+    let record_drops = handler
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+        .collect::<Vec<_>>();
+    let guard = record_drops.iter().find_map(|drop| drop.guard).expect(
+        "the fresh record needs a guarded scope-exit drop for the sibling \
+             non-consuming edge",
+    );
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("conditional-handoff handler checked MIR present");
+    for expected in [0, 1] {
+        assert!(
+            checked
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .any(|instr| matches!(
+                    instr,
+                    Instr::ConstI64 { dest, value }
+                        if *dest == guard && *value == expected
+                )),
+            "the conditional record owner flag must be assigned {expected}: \
+             {checked:#?}"
+        );
+    }
+}
+
+/// The conditional-record flag is deliberately narrower than the general
+/// owned-record value class. A record containing a Vec does not prove that
+/// every field was independently retained by the fresh construction, so a
+/// branch-local consume must not re-admit its source drop behind this flag.
+#[test]
+fn conditional_record_handoff_with_vec_field_is_not_flagged() {
+    let pipeline = lower_source(
+        r"
+        type Bag { name: string, values: Vec<i64> }
+        actor Fan {
+            var held: Bag;
+            receive fn route(label: string, store: bool) -> i64 {
+                let values: Vec<i64> = Vec::new();
+                let next = Bag { name: label, values: values };
+                if store { held = next; }
+                7
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("Vec-record conditional-handoff handler present");
+    assert!(
+        handler
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+            .all(|drop| drop.guard.is_none()),
+        "a record with a collection field must not enter the String/BitCopy \
+         conditional-owner protocol: {handler:#?}"
+    );
+}
+
+/// Merely rebinding a whole record does not establish the direct-construction
+/// ingress proof. Keep it outside the conditional-record flag protocol.
+#[test]
+fn conditional_record_handoff_from_whole_value_rebind_is_not_flagged() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var held: Wrap;
+            receive fn route(input: Wrap, store: bool) -> i64 {
+                let next = input;
+                if store { held = next; }
+                7
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("whole-value rebind handler present");
+    assert!(
+        handler
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+            .all(|drop| drop.guard.is_none()),
+        "a whole-value rebind must not inherit direct RecordInit ownership \
+         authority: {handler:#?}"
+    );
+}
+
+/// A fresh record that never transfers remains the ordinary sole owner. It
+/// still gets an unguarded `RecordInPlace` scope-exit drop.
+#[test]
+fn unconsumed_fresh_string_record_keeps_unguarded_drop() {
+    let pipeline = lower_source(
+        r#"
+        type Wrap { name: string }
+        fn main() -> i64 {
+            let next = Wrap { name: "local".to_upper() };
+            next.name.len()
+        }
+        "#,
+    );
+    let main = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main elaborated MIR present");
+    assert!(
+        main.drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .any(|drop| {
+                matches!(drop.kind, hew_mir::DropKind::RecordInPlace) && drop.guard.is_none()
+            }),
+        "an unconsumed fresh record must retain its ordinary unguarded drop: \
+         {main:#?}"
+    );
+}
+
 /// A functional-update (`..user`) consumes the source record's fields into the
 /// new record; both are owned-by-value and admitted. The source's owned field
 /// moves out, so the new record owns it. Migrated forward from the reject test.

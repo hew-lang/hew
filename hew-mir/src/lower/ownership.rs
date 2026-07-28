@@ -2420,6 +2420,84 @@ impl Builder {
         });
         self.collection_drop_flags.insert(binding.id, flag);
     }
+
+    /// Allocate the path-sensitive scope-exit flag for a mailbox-owned `CoW`
+    /// leaf parameter that is consumed on at least one handler path.
+    ///
+    /// Unlike ordinary by-value parameters, actor message parameters own the
+    /// delivered value. A branch that moves the value into actor state (or
+    /// forwards it) and then rejoins a borrow-only branch produces a
+    /// `MaybeConsumed` exit. The static sole-owner scan must keep a drop for
+    /// the live path, while the moved path must suppress it at runtime.
+    pub(crate) fn maybe_alloc_actor_message_cow_drop_flag(
+        &mut self,
+        binding: BindingId,
+        ty: &ResolvedTy,
+    ) {
+        if !self.prepass_consumed_bindings.contains(&binding)
+            || super::cow_value_leaf_drop_symbol(ty).is_none()
+            || !self.owned_locals.iter().any(|entry| {
+                entry.binding == binding && entry.disposition == Disposition::ScopeExit
+            })
+            || self.actor_message_cow_drop_flags.contains_key(&binding)
+        {
+            return;
+        }
+        let flag = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: flag,
+            value: 0,
+        });
+        self.actor_message_cow_drop_flags.insert(binding, flag);
+    }
+
+    /// Allocate the path-sensitive scope-exit flag for a freshly constructed
+    /// String/BitCopy record that is consumed on at least one body path.
+    ///
+    /// The `owned_string_record_init_key_for_let` authority proves this is a
+    /// direct monomorphic construction whose owned leaves use W60.108's
+    /// retain-backed String ingress. Keeping the record registered is therefore
+    /// sound: the flag selects between its local owner on a non-consuming path
+    /// and the destination owner after a consume.
+    ///
+    /// This flag family is deliberately exclusive with every other runtime
+    /// ownership flag. In particular, a mutable consume-and-reassign binding
+    /// belongs solely to #2301's overwrite protocol, and a `#[resource]` /
+    /// `#[linear]` marker belongs solely to its affine close protocol. Letting
+    /// either also acquire `RecordInPlace` authority lets one flag re-arm a drop
+    /// that the other flag suppressed.
+    pub(crate) fn maybe_alloc_conditional_record_drop_flag(
+        &mut self,
+        binding: &HirBinding,
+        ty: &ResolvedTy,
+        is_owned_string_record_init: bool,
+    ) {
+        if !is_owned_string_record_init
+            || !self.prepass_consumed_bindings.contains(&binding.id)
+            || (binding.mutable && self.prepass_reassigned_bindings.contains(&binding.id))
+            || matches!(
+                named_type_marker(ty, &self.type_classes),
+                Some(ResourceMarker::Resource | ResourceMarker::Linear)
+            )
+            || self.affine_release_flags.contains_key(&binding.id)
+            || self.collection_drop_flags.contains_key(&binding.id)
+            || self.actor_message_cow_drop_flags.contains_key(&binding.id)
+            || self.overwrite_guard_flags.contains_key(&binding.id)
+            || !self.owned_locals.iter().any(|entry| {
+                entry.binding == binding.id && entry.disposition == Disposition::ScopeExit
+            })
+            || self.conditional_record_drop_flags.contains_key(&binding.id)
+        {
+            return;
+        }
+        let flag = self.alloc_local(ResolvedTy::I64);
+        self.instructions.push(Instr::ConstI64 {
+            dest: flag,
+            value: 0,
+        });
+        self.conditional_record_drop_flags.insert(binding.id, flag);
+    }
+
     /// #2301 -- emit `if flag == 0 { <release old value of `dest`> }` as a CFG
     /// diamond, then leave the cursor at the continuation block so the caller's
     /// `Move` (store of the fresh value) and the `flag = 0` reset land there.

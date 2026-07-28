@@ -1666,6 +1666,11 @@ impl Builder {
                 // conditional move keeps its (flag-gated) scope-exit release
                 // on the not-moved path instead of retracting it entirely.
                 self.maybe_alloc_collection_drop_flag(binding, &binding_ty);
+                self.maybe_alloc_conditional_record_drop_flag(
+                    binding,
+                    &binding_ty,
+                    owned_string_record_key.is_some(),
+                );
             }
             HirStmtKind::Let(_, None) => {}
             HirStmtKind::Expr(expr) => {
@@ -2440,6 +2445,27 @@ impl Builder {
                             // scope exit. The dataflow's own `Use{Consume}`
                             // transition still drives the move-checker and the
                             // per-exit `BindingState` narrowing.
+                            self.instructions.push(Instr::ConstI64 {
+                                dest: flag,
+                                value: 1,
+                            });
+                        } else if let Some(flag) =
+                            self.actor_message_cow_drop_flags.get(id).copied()
+                        {
+                            // A mailbox-owned CoW leaf can be moved on one
+                            // branch and remain handler-owned on another.
+                            // Preserve it in the scope-exit ledger and record
+                            // the path-local transfer for the guarded drop.
+                            self.instructions.push(Instr::ConstI64 {
+                                dest: flag,
+                                value: 1,
+                            });
+                        } else if let Some(flag) =
+                            self.conditional_record_drop_flags.get(id).copied()
+                        {
+                            // A fresh record may transfer only on this CFG
+                            // edge. Keep its local drop registered for sibling
+                            // paths and record the executed handoff here.
                             self.instructions.push(Instr::ConstI64 {
                                 dest: flag,
                                 value: 1,

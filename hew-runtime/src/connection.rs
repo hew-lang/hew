@@ -1116,7 +1116,7 @@ fn refuse_established_publication(
             )
         };
     }
-    let _ = remove_connection(mgr, conn_id);
+    let _ = remove_connection(mgr, conn_id, Some(publication_token));
 }
 
 #[expect(
@@ -4559,7 +4559,7 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         return -1;
     }
     // SAFETY: caller guarantees `mgr` is valid.
-    remove_connection(unsafe { &*mgr }, conn_id)
+    remove_connection(unsafe { &*mgr }, conn_id, None)
 }
 
 /// The guarded removal/teardown path, as a safe function over a borrowed
@@ -4575,21 +4575,41 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
 /// actor, join the reader, then retire the claim, the route and the cluster
 /// membership.
 ///
-/// Returns 0 on success, -1 if `conn_id` is not installed.
+/// `expected_publication_token` makes an internal removal exact: refusal
+/// teardown supplies its admission token so a stale publisher cannot remove a
+/// successor that recycled the same numeric `conn_id`. The public remove API
+/// passes `None` because it intentionally removes the connection currently
+/// installed under the caller-supplied id.
+///
+/// Returns 0 on success, -1 if the requested admission is not installed.
 #[allow(
     clippy::too_many_lines,
     reason = "function handles the full connection teardown and claim retirement protocol"
 )]
-fn remove_connection(mgr: &HewConnMgr, conn_id: c_int) -> c_int {
+fn remove_connection(
+    mgr: &HewConnMgr,
+    conn_id: c_int,
+    expected_publication_token: Option<u64>,
+) -> c_int {
     // Phase 1: locate the connection and clone the publication handles — without
     // removing the conn from the list yet. Holding only Arc clones here so we
     // release the connections lock before calling into routing/cluster.
     let publication_data = mgr.connections.access(|conns| {
-        let idx = conns.iter().position(|c| c.conn_id == conn_id);
+        let idx = conns.iter().position(|connection| {
+            connection.conn_id == conn_id
+                && expected_publication_token
+                    .is_none_or(|token| connection.publication_token == token)
+        });
         let Some(idx) = idx else {
-            set_last_error(format!(
-                "hew_connmgr_remove: connection {conn_id} not found"
-            ));
+            if let Some(token) = expected_publication_token {
+                set_last_error(format!(
+                    "hew_connmgr_remove: connection {conn_id} publication {token} not found"
+                ));
+            } else {
+                set_last_error(format!(
+                    "hew_connmgr_remove: connection {conn_id} not found"
+                ));
+            }
             return None;
         };
         let conn = &conns[idx];
@@ -7288,6 +7308,62 @@ mod tests {
                     "the exact successor publication must clear its own stash"
                 );
             });
+        });
+    }
+
+    /// A refusal belongs to one exact `(conn_id, publication_token)`
+    /// admission. If its actor has already gone and a successor recycled the
+    /// numeric id, the stale refusal must leave that successor installed and
+    /// leave its authority claim untouched.
+    ///
+    /// Counterfactual: routing the refusal through ordinary bare-`conn_id`
+    /// removal unlinks the successor, marks its publication removed, and
+    /// retires its claim; every assertion below fails.
+    #[test]
+    fn stale_refusal_cannot_remove_reused_conn_successor() {
+        const ROUTE_SLOT: u16 = 18;
+        const CONN: c_int = 97;
+        const STALE_TOKEN: u64 = 1_000;
+        const SUCCESSOR_TOKEN: u64 = 1_100;
+
+        with_reserved_claim(ROUTE_SLOT, CONN, SUCCESSOR_TOKEN, true, |mgr| {
+            // SAFETY: the manager is live for the whole closure.
+            let mgr_ref = unsafe { &*mgr };
+            refuse_established_publication(mgr_ref, ROUTE_SLOT, CONN, STALE_TOKEN);
+
+            assert_eq!(
+                // SAFETY: the manager is still live.
+                unsafe { hew_connmgr_count(mgr) },
+                1,
+                "a stale refusal must not unlink the recycled-id successor"
+            );
+            mgr_ref.connections.access(|connections| {
+                let successor = connections
+                    .iter()
+                    .find(|connection| {
+                        connection.conn_id == CONN
+                            && connection.publication_token == SUCCESSOR_TOKEN
+                    })
+                    .expect("the exact successor admission must remain installed");
+                assert_eq!(
+                    successor.state.load(Ordering::Acquire),
+                    CONN_STATE_ACTIVE,
+                    "the stale refusal must not close the successor"
+                );
+                assert!(
+                    !successor.publication_removed.load(Ordering::Acquire),
+                    "the stale refusal must not cancel the successor publication"
+                );
+            });
+
+            let (claims, _changed) = &mgr_ref.claims;
+            let claims = claims.lock_or_recover();
+            let successor_claim = claims
+                .get(&test_node_identity(ROUTE_SLOT))
+                .expect("the successor claim must remain live");
+            assert_eq!(successor_claim.conn_id, CONN);
+            assert_eq!(successor_claim.publication_token, SUCCESSOR_TOKEN);
+            assert_eq!(successor_claim.state, ClaimState::Reserved);
         });
     }
 
@@ -10232,6 +10308,11 @@ mod tests {
     unsafe impl Send for ReentrantRefusal {}
 
     static REENTRANT_REFUSAL: Mutex<Option<ReentrantRefusal>> = Mutex::new(None);
+    /// Serializes the two tests that install the process-global callback
+    /// context above. The callback deliberately drops `REENTRANT_REFUSAL`
+    /// before re-entering teardown, so that slot cannot itself serve as the
+    /// whole-test guard.
+    static REENTRANT_REFUSAL_TEST_GUARD: Mutex<()> = Mutex::new(());
 
     extern "C" fn refuse_from_state_callback(node_id: u16, state: i32, _incarnation: u64) {
         // The slot lock is dropped before the refusal: the refusal drives
@@ -10321,6 +10402,7 @@ mod tests {
         route_slot: u16,
         conn_id: c_int,
     ) -> Vec<ReentrantSeen> {
+        let _test_guard = REENTRANT_REFUSAL_TEST_GUARD.lock_or_recover();
         // No close is parked: this is about the delivery, not the close.
         let race = stage_teardown_race(0);
         let staged = race.stage_connection(conn_id, route_slot, true);
@@ -10400,8 +10482,9 @@ mod tests {
         observed
     }
 
-    /// Assert the ordering the token-guarded retirement exists to provide:
-    /// no ALIVE is observable once that retirement has returned.
+    /// Assert the ordering for this re-entrant interleaving: the state-callback
+    /// ALIVE step has already started, and retirement must cancel every later
+    /// ALIVE step before returning to that callback.
     fn assert_no_alive_survives_the_refusal(route_slot: u16, observed: &[ReentrantSeen]) {
         assert!(
             observed.contains(&ReentrantSeen::State(
@@ -10418,7 +10501,7 @@ mod tests {
             ReentrantSeen::Membership(route_slot, crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED);
         assert!(
             !observed[returned..].contains(&joined),
-            "no ALIVE may be observable once the retirement has returned, got {observed:?}"
+            "no later ALIVE step may survive the re-entrant retirement, got {observed:?}"
         );
         assert!(
             !observed.contains(&joined),

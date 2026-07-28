@@ -1256,6 +1256,7 @@ pub(super) fn compute_projection_alias_taint(
             _ => None,
         })
         .collect();
+    let transferred_projection_dests = aggregate_projection_transfer_dests(blocks);
     let mut tainted: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
@@ -1266,7 +1267,10 @@ pub(super) fn compute_projection_alias_taint(
                     // balancing drop is admitted (see the doc above).
                     let is_retained_string_field_load =
                         string_field_load_producer_dest(instr, locals).is_some();
-                    if !exempt_seed_locals.contains(&l) && !is_retained_string_field_load {
+                    if !exempt_seed_locals.contains(&l)
+                        && !is_retained_string_field_load
+                        && !transferred_projection_dests.contains(&l)
+                    {
                         tainted.insert(l);
                     }
                 }
@@ -1306,6 +1310,37 @@ pub(super) fn compute_projection_alias_taint(
         }
     }
     tainted
+}
+
+/// Field-load destinations whose source slot is explicitly zeroed after the
+/// load. The destination is then the sole owner of those bits, not an interior
+/// alias of the aggregate root.
+pub(super) fn aggregate_projection_transfer_dests(blocks: &[BasicBlock]) -> HashSet<u32> {
+    let neutralized: HashSet<(Place, Vec<u32>)> = blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::AggregateProjectionNeutralize { root, fields } => Some((*root, fields.clone())),
+            _ => None,
+        })
+        .collect();
+    blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::RecordFieldLoad {
+                record,
+                field_offset,
+                dest,
+            } if neutralized.contains(&(*record, vec![field_offset.0])) => base_local(*dest),
+            Instr::TupleFieldLoad {
+                tuple,
+                field_index,
+                dest,
+            } if neutralized.contains(&(*tuple, vec![*field_index])) => base_local(*dest),
+            _ => None,
+        })
+        .collect()
 }
 /// Interior-alias taint for the COLLECTION / owned-vector sole-owner provers:
 /// the locals that hold an interior pointer of a still-live aggregate and must

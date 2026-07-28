@@ -2,10 +2,11 @@
 use super::*;
 #[cfg(not(test))]
 use super::{
-    alias_projection_chain_owner_seeds, attribute_field_binder_provenance, base_local,
-    binder_read_is_borrow_safe_instr, binder_read_is_borrow_safe_terminator, blocks_reachable_from,
-    bytes_interior_producer_dest, bytes_place_is_typed, bytes_runtime_arg_is_borrow,
-    bytes_share_sink_places, close_alias_binders_forward, collect_record_field_binders,
+    aggregate_projection_transfer_dests, alias_projection_chain_owner_seeds,
+    attribute_field_binder_provenance, base_local, binder_read_is_borrow_safe_instr,
+    binder_read_is_borrow_safe_terminator, blocks_reachable_from, bytes_interior_producer_dest,
+    bytes_place_is_typed, bytes_runtime_arg_is_borrow, bytes_share_sink_places,
+    close_alias_binders_forward, collect_record_field_binders,
     compute_collection_interior_alias_taint, descend_match_bound_hop_alias_chain,
     descend_match_bound_hop_aliases, instr_escape_places, instr_source_places,
     local_is_byte_copy_aggregate, note_payload_escape, place_is_interior_projection,
@@ -103,6 +104,24 @@ fn predicate_string_temp_drop_proof(
         }
     }
     proven
+}
+
+/// String field loads are emitted with an independent `+1` retain. Follow
+/// their Move aliases so the aggregate sole-owner provers do not mistake that
+/// independently owned share for an extraction of the source aggregate's
+/// original field ownership.
+fn retained_string_field_load_aliases(
+    blocks: &[BasicBlock],
+    local_tys: &[ResolvedTy],
+) -> HashSet<u32> {
+    let seeds = blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
+        .filter_map(base_local);
+    propagate_whole_value_alias_roots(blocks, seeds)
+        .into_keys()
+        .collect()
 }
 
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose
@@ -734,7 +753,6 @@ fn compute_escaped_chain_sibling_drops(
             break;
         }
     }
-
     // Escape scan. A chain carrier read into an owning sink is an escape; an
     // interior descent (`RecordFieldLoad`/`TupleFieldLoad` reading the carrier —
     // the next hop of the chain, or the consumed-match destructure) and a
@@ -1688,8 +1706,10 @@ pub(super) fn derive_enum_composite_drop_allowed(
 ///   the original owner exactly once is correct — UNLESS the alias is what
 ///   escapes (returned), in which case the *escapee* owns the fields now.
 /// - A `RecordFieldLoad` reads one field out. Reading a `BitCopy` field is
-///   harmless. Reading an OWNED field shares its pointer with no retain; if that
-///   loaded field then escapes into an owning sink, the record must NOT drop it.
+///   harmless. A string field load is retained by codegen and therefore owns an
+///   independent share. Every other owned field shares its pointer with no
+///   retain; if that loaded field escapes into an owning sink, the record must
+///   NOT drop it.
 ///
 /// ## The fail-closed rule
 ///
@@ -1809,6 +1829,9 @@ pub(super) fn derive_owned_record_drop_allowed(
             .entry(alias_local)
             .or_insert(FieldBinderProvenance::RootOnly { root: owner_local });
     }
+    let retained_string_field_aliases = retained_string_field_load_aliases(blocks, local_tys);
+    field_binders.retain(|local| !retained_string_field_aliases.contains(local));
+    binder_provenance.retain(|local, _| !retained_string_field_aliases.contains(local));
     let retained_bytes_field_seeds: HashSet<u32> = blocks
         .iter()
         .flat_map(|block| block.instructions.windows(2))
@@ -1911,12 +1934,7 @@ pub(super) fn derive_owned_record_drop_allowed(
     // generator handle `let g = pair.0`, an owned nested record `let inner =
     // b.inner`) — which moves the ORIGINAL owner out and DOES need the record
     // excluded — is not a `string_field_load_producer_dest` and still seeds.
-    let mut exempt_read_temp_locals: HashSet<u32> = blocks
-        .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
-        .filter_map(base_local)
-        .collect();
+    let mut exempt_read_temp_locals = retained_string_field_aliases;
     exempt_read_temp_locals.extend(retained_bytes_field_aliases);
     exempt_read_temp_locals.extend(
         propagate_whole_value_alias_roots(blocks, exempt_read_temp_locals.iter().copied())
@@ -1988,6 +2006,27 @@ pub(super) fn derive_owned_record_drop_allowed(
         }
     };
     for block in blocks {
+        // Whole-local call-carrier transfers are represented twice by
+        // construction: `Move { dest, src }` + `NeutralizePayloadSlot` in the
+        // instruction stream, and a `Use { Consume }` in the checker stream.
+        // The Consume is the path-sensitive authority: a successor `Bind`
+        // redefinition restores the binding to Live, while a transfer with no
+        // rebind remains Consumed at every reachable exit. Keep both ends of
+        // that transfer out of this flow-insensitive escape veto or an early
+        // loop iteration would suppress the terminal drop of a later rebound
+        // value.
+        let call_carrier_transfer_dests: HashSet<u32> = block
+            .instructions
+            .iter()
+            .filter_map(|instr| match instr {
+                Instr::NeutralizePayloadSlot {
+                    transferee: Some(Place::Local(dest)),
+                    authority: crate::model::NeutralizeAuthority::SendTransferLastUse,
+                    ..
+                } => Some(*dest),
+                _ => None,
+            })
+            .collect();
         for instr in &block.instructions {
             if initializes_generator_env_snapshot(instr, &generator_env_inits) {
                 continue;
@@ -2104,6 +2143,16 @@ pub(super) fn derive_owned_record_drop_allowed(
                     // lowering to release overridden fields; the surrounding record
                     // binding is still live (and should receive its composite drop).
                     | Instr::RecordFieldDrop { .. }
+                    // A last-use call-carrier neutralize is an ownership
+                    // DISCHARGE, not an unmodelled escape. Its checker-stream
+                    // Consume controls per-exit liveness; treating this
+                    // null-store as a second flow-insensitive sink would erase
+                    // a later assignment's Bind and leak the rebound value.
+                    | Instr::NeutralizePayloadSlot {
+                        authority:
+                            crate::model::NeutralizeAuthority::SendTransferLastUse,
+                        ..
+                    }
                     // `FieldDropInPlace` is the same interior field-op shape (uses
                     // base, no dest, no alias); its composite-suppression semantics
                     // are the DIRECT exclusion rule at the top of this loop, not
@@ -2177,6 +2226,7 @@ pub(super) fn derive_owned_record_drop_allowed(
                     && alias_of.contains_key(&l)
                     && matches!(p, Place::Local(_) | Place::ReturnSlot)
                     && !proven_borrow_arg_locals.contains(&l)
+                    && !call_carrier_transfer_dests.contains(&l)
                     && !binder_read_is_borrow_safe_terminator(
                         &block.terminator,
                         suspend_kinds.get(&block.id),
@@ -3113,6 +3163,8 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             break;
         }
     }
+    let transferred_projection_dests = aggregate_projection_transfer_dests(blocks);
+    elem_binders.retain(|local| !transferred_projection_dests.contains(local));
     let predicate_string_temps = predicate_string_temp_drop_proof(blocks, local_tys);
     elem_binders.retain(|local| !predicate_string_temps.contains(local));
 
@@ -3131,6 +3183,8 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             elem_binders.insert(alias_local);
         }
     }
+    let retained_string_element_aliases = retained_string_field_load_aliases(blocks, local_tys);
+    elem_binders.retain(|local| !retained_string_element_aliases.contains(local));
     let retained_bytes_element_seeds: HashSet<u32> = blocks
         .iter()
         .flat_map(|block| block.instructions.windows(2))
@@ -3230,12 +3284,7 @@ pub(super) fn derive_tuple_composite_drop_allowed(
     // excludes the tuple when an extracted binder is read into an owning sink
     // (returned / sent / `close()`d); this seed adds the two
     // exempt-from-that-scan release paths (standalone `Drop`, for-in consume).
-    let mut exempt_read_temp_locals: HashSet<u32> = blocks
-        .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
-        .filter_map(base_local)
-        .collect();
+    let mut exempt_read_temp_locals = retained_string_element_aliases;
     exempt_read_temp_locals.extend(retained_bytes_element_aliases);
     exempt_read_temp_locals.extend(
         propagate_whole_value_alias_roots(blocks, exempt_read_temp_locals.iter().copied())
@@ -3403,6 +3452,7 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                 Instr::Move { .. }
                     | Instr::Drop { .. }
                     | Instr::TupleFieldLoad { .. }
+                    | Instr::AggregateProjectionNeutralize { .. }
                     // `FieldDropInPlace` is an interior field op (uses base, no
                     // dest, no alias); its composite-suppression semantics are
                     // the DIRECT exclusion rule at the top of this loop — which
@@ -5390,16 +5440,23 @@ mod owned_record_drop_derivation {
         binding_locals: &HashMap<BindingId, Place>,
         local_tys: &[ResolvedTy],
     ) -> HashSet<BindingId> {
+        derive_with_field_ty(blocks, owned, binding_locals, local_tys, ResolvedTy::String)
+    }
+
+    fn derive_with_field_ty(
+        blocks: &[BasicBlock],
+        owned: &[(BindingId, String, ResolvedTy)],
+        binding_locals: &HashMap<BindingId, Place>,
+        local_tys: &[ResolvedTy],
+        field_ty: ResolvedTy,
+    ) -> HashSet<BindingId> {
         // `Rec` carries a heap-owning `string` field so the unified
         // `ty_owns_heap` authority (record-aware) classifies a `Rec`-typed
         // field-load binder as heap-owning — the verdict the candidate
         // predicate `is_rec` selects on, kept in agreement now that the
         // record-blindness workaround is gone (DIV-1).
         let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
-        record_field_orders.insert(
-            "Rec".to_string(),
-            vec![("label".to_string(), ResolvedTy::String)],
-        );
+        record_field_orders.insert("Rec".to_string(), vec![("label".to_string(), field_ty)]);
         derive_owned_record_drop_allowed(
             blocks,
             &HashMap::new(),
@@ -5632,11 +5689,11 @@ mod owned_record_drop_derivation {
         );
     }
 
-    /// An owned (string) field loaded out of the record and moved into the
-    /// `ReturnSlot` means the field escaped: the record must be EXCLUDED so it
-    /// does not double-free the returned field.
+    /// A string field load is retained by codegen. Moving that independent
+    /// share into the `ReturnSlot` must leave the record admitted to release its
+    /// original share.
     #[test]
-    fn escaped_owned_field_excludes_record() {
+    fn escaped_retained_string_field_keeps_record_owner() {
         let b = BindingId(1);
         let owned = vec![(b, "r".to_string(), rec_ty())];
         let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
@@ -5662,9 +5719,9 @@ mod owned_record_drop_derivation {
             &local_tys,
         );
         assert!(
-            !allowed.contains(&b),
-            "an owned field loaded out and returned escaped the record; the \
-             record must be excluded to avoid double-freeing it; got {allowed:?}"
+            allowed.contains(&b),
+            "the returned string field owns a retained share, so the record \
+             must keep its original field release; got {allowed:?}"
         );
     }
 
@@ -5948,8 +6005,10 @@ mod owned_record_drop_derivation {
             [(escaping, Place::Local(0)), (unrelated, Place::Local(1))]
                 .into_iter()
                 .collect();
-        // local 2 receives the loaded owned (string) field of local 0.
-        let local_tys = vec![rec_ty(), rec_ty(), ResolvedTy::String];
+        // Use a non-retained heap field: string field loads are independent
+        // `+1` shares and therefore are not ownership extractions.
+        let field_ty = vec_string_ty();
+        let local_tys = vec![rec_ty(), rec_ty(), field_ty.clone()];
         let instrs = vec![
             Instr::RecordFieldLoad {
                 record: Place::Local(0),
@@ -5962,11 +6021,12 @@ mod owned_record_drop_derivation {
             },
         ];
 
-        let allowed = derive(
+        let allowed = derive_with_field_ty(
             &[block(0, instrs, Terminator::Return)],
             &owned,
             &binding_locals,
             &local_tys,
+            field_ty,
         );
         assert!(
             !allowed.contains(&escaping),
@@ -5994,7 +6054,8 @@ mod owned_record_drop_derivation {
             [(first, Place::Local(0)), (second, Place::Local(1))]
                 .into_iter()
                 .collect();
-        let local_tys = vec![rec_ty(), rec_ty(), ResolvedTy::String];
+        let field_ty = vec_string_ty();
+        let local_tys = vec![rec_ty(), rec_ty(), field_ty.clone()];
         let instrs = vec![
             Instr::RecordFieldLoad {
                 record: Place::Local(0),
@@ -6012,11 +6073,12 @@ mod owned_record_drop_derivation {
             },
         ];
 
-        let allowed = derive(
+        let allowed = derive_with_field_ty(
             &[block(0, instrs, Terminator::Return)],
             &owned,
             &binding_locals,
             &local_tys,
+            field_ty,
         );
         assert!(
             !allowed.contains(&first) && !allowed.contains(&second),
@@ -6041,8 +6103,10 @@ mod owned_record_drop_derivation {
             [(root, Place::Local(0)), (bystander, Place::Local(1))]
                 .into_iter()
                 .collect();
-        // local 2: the binder; local 3: an unrelated string overwriting it.
-        let local_tys = vec![rec_ty(), rec_ty(), ResolvedTy::String, ResolvedTy::String];
+        // local 2: the non-retained binder; local 3: an unrelated value
+        // overwriting it.
+        let field_ty = vec_string_ty();
+        let local_tys = vec![rec_ty(), rec_ty(), field_ty.clone(), field_ty.clone()];
         let instrs = vec![
             Instr::RecordFieldLoad {
                 record: Place::Local(0),
@@ -6059,11 +6123,12 @@ mod owned_record_drop_derivation {
             },
         ];
 
-        let allowed = derive(
+        let allowed = derive_with_field_ty(
             &[block(0, instrs, Terminator::Return)],
             &owned,
             &binding_locals,
             &local_tys,
+            field_ty,
         );
         assert!(
             !allowed.contains(&root) && !allowed.contains(&bystander),
@@ -6918,6 +6983,47 @@ mod tuple_composite_field_drop_exclusion {
         );
     }
 
+    /// A string element load carries a codegen-minted retain. Returning that
+    /// independent share must not suppress the tuple's release of its original
+    /// element share.
+    #[test]
+    fn escaped_retained_string_element_keeps_tuple_owner() {
+        let b = BindingId(1);
+        let owned = vec![(b, "p".to_string(), pair_ty())];
+        let binding_locals = [(b, Place::Local(0))].into_iter().collect();
+        let allowed = derive_tuple_composite_drop_allowed(
+            &[BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::TupleFieldLoad {
+                        tuple: Place::Local(0),
+                        field_index: 0,
+                        dest: Place::Local(1),
+                    },
+                    Instr::Move {
+                        dest: Place::ReturnSlot,
+                        src: Place::Local(1),
+                    },
+                ],
+                terminator: Terminator::Return,
+            }],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &[pair_ty(), ResolvedTy::String],
+            &HashMap::new(),
+            &[],
+            &[],
+            &HashMap::new(),
+        );
+        assert!(
+            allowed.contains(&b),
+            "a retained string element escape must leave the tuple's original \
+             share owned; got {allowed:?}"
+        );
+    }
+
     /// A `FieldDropInPlace` addressing the tuple root excludes it — the op
     /// already discharged that element's release.
     #[test]
@@ -6947,12 +7053,15 @@ mod tuple_composite_field_drop_exclusion {
     #[test]
     fn field_drop_in_place_on_elem_binder_excludes_tuple() {
         let b = BindingId(1);
-        let owned = vec![(b, "p".to_string(), pair_ty())];
+        let vec_ty = ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]);
+        let inner_ty = ResolvedTy::Tuple(vec![vec_ty, ResolvedTy::String]);
+        let outer_ty = ResolvedTy::Tuple(vec![inner_ty.clone(), ResolvedTy::I64]);
+        let owned = vec![(b, "p".to_string(), outer_ty.clone())];
         let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
         binding_locals.insert(b, Place::Local(0));
         // local 1: the extracted heap-owning element binder; local 2: the
         // match scrutinee copy of the binder.
-        let local_tys = vec![pair_ty(), ResolvedTy::String, ResolvedTy::String];
+        let local_tys = vec![outer_ty, inner_ty.clone(), inner_ty];
         let allowed = derive_tuple_composite_drop_allowed(
             &[BasicBlock {
                 id: 0,

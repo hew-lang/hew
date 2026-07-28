@@ -1716,7 +1716,8 @@ mod tests {
     )]
 
     use super::*;
-    use hew_runtime::{actor, scheduler, transport};
+    use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
+    use hew_runtime::{actor, transport};
     use std::collections::HashMap;
     #[cfg(unix)]
     use std::os::fd::AsRawFd;
@@ -1745,9 +1746,7 @@ mod tests {
 
     #[test]
     fn websocket_error_and_errno_follow_actor_across_worker_threads() {
-        use crate::net_error_slot_test_support::{
-            spawn_error_slot_test_actor, with_actor_context, NetErrorSlotRuntimeGuard,
-        };
+        use crate::net_error_slot_test_support::{spawn_error_slot_test_actor, with_actor_context};
 
         let _runtime = NetErrorSlotRuntimeGuard::new();
         for _ in 0..3 {
@@ -1929,22 +1928,6 @@ mod tests {
         actor::hew_actor_self_stop();
 
         std::ptr::null_mut()
-    }
-
-    struct RuntimeGuard;
-
-    impl RuntimeGuard {
-        fn new() -> Self {
-            assert_eq!(scheduler::hew_sched_init(), 0);
-            Self
-        }
-    }
-
-    impl Drop for RuntimeGuard {
-        fn drop(&mut self) {
-            scheduler::hew_sched_shutdown();
-            scheduler::hew_runtime_cleanup();
-        }
     }
 
     fn run_in_isolated_test_process_with_env(
@@ -2247,7 +2230,7 @@ mod tests {
             "second_attach_is_refused_without_replacing_the_live_reader",
             "HEW_WS_DOUBLE_ATTACH_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, client) = attach_test_conn();
                 let (actor, test_id, _rx) = spawn_attached_actor(conn);
                 // SAFETY: both handles are live, but the connection already
@@ -2942,7 +2925,7 @@ mod tests {
             "server_accept_unblocks_when_owner_actor_stops",
             "HEW_WS_ACCEPT_STOP_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let server = unsafe { hew_ws_server_new(c"127.0.0.1:0".as_ptr()) };
                 assert!(!server.is_null(), "server should bind successfully");
 
@@ -3001,7 +2984,7 @@ mod tests {
             "attached_plain_ping_pong_echoes_payload",
             "HEW_WS_ATTACH_PING_PONG_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, mut client) = attach_test_conn();
                 let (actor, test_id, _rx) = spawn_attached_actor(conn);
                 set_peer_read_timeout(
@@ -3031,7 +3014,7 @@ mod tests {
             "attached_plain_large_send_and_ping_are_serialized",
             "HEW_WS_ATTACH_LARGE_SEND_PING_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, mut client) = attach_test_conn();
                 let (actor, test_id, _rx) = spawn_attached_actor(conn);
                 set_conn_send_buffer(conn, 4096);
@@ -3101,7 +3084,7 @@ mod tests {
             "attached_reader_cancel_after_ping_exits_cleanly",
             "HEW_WS_ATTACH_PING_CANCEL_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 OUTER_CONN_DROPS.store(0, Ordering::Relaxed);
                 let (server, conn, mut client) = attach_test_conn();
                 let inner = unsafe { &*conn }.inner.clone();
@@ -3144,7 +3127,7 @@ mod tests {
             "attach_reader_exits_when_actor_stops",
             "HEW_WS_ATTACH_STOP_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, client) = attach_test_conn();
                 let (actor, test_id, _rx) = spawn_attached_actor(conn);
 
@@ -3171,7 +3154,7 @@ mod tests {
             "attach_reader_exits_when_actor_crashes",
             "HEW_WS_ATTACH_CRASH_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, client) = attach_test_conn();
                 let (actor, test_id, _rx) = spawn_attached_actor(conn);
 
@@ -3198,7 +3181,7 @@ mod tests {
             "attach_reader_exits_when_conn_closes_before_actor_stop",
             "HEW_WS_ATTACH_CONN_DROP_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, client) = attach_test_conn();
                 let (actor, test_id, rx) = spawn_attached_actor(conn);
 
@@ -3230,7 +3213,7 @@ mod tests {
             "attach_reader_exits_when_remote_closes",
             "HEW_WS_ATTACH_REMOTE_CLOSE_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server, conn, mut client) = attach_test_conn();
                 let (actor, test_id, rx) = spawn_attached_actor(conn);
 
@@ -3258,7 +3241,7 @@ mod tests {
             "attach_reader_cancel_is_per_connection",
             "HEW_WS_ATTACH_PARALLEL_ISOLATED",
             || {
-                let _runtime = RuntimeGuard::new();
+                let _runtime = NetErrorSlotRuntimeGuard::new();
                 let (server1, conn1, client1) = attach_test_conn();
                 let (server2, conn2, mut client2) = attach_test_conn();
                 let (actor1, test_id1, _rx1) = spawn_attached_actor(conn1);

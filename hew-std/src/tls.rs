@@ -924,9 +924,10 @@ pub unsafe extern "C" fn hew_tls_attach(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
     use hew_cabi::cabi::free_cstring;
+    use hew_runtime::actor;
     use hew_runtime::bytes::{hew_bytes_clone_ref, hew_bytes_drop, hew_bytes_push};
-    use hew_runtime::{actor, scheduler};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use std::cell::Cell;
     use std::collections::HashMap;
@@ -1678,32 +1679,6 @@ mod tests {
         std::ptr::null_mut()
     }
 
-    static TLS_RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    struct TlsRuntimeGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl TlsRuntimeGuard {
-        fn new() -> Self {
-            // The scheduler is process-global: repeated init is a no-op, but
-            // cleanup frees every tracked actor. Hold exclusive ownership for
-            // the full test so one TLS test cannot reclaim another's live actor.
-            let lock = TLS_RUNTIME_TEST_LOCK
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            assert_eq!(scheduler::hew_sched_init(), 0);
-            Self { _lock: lock }
-        }
-    }
-
-    impl Drop for TlsRuntimeGuard {
-        fn drop(&mut self) {
-            scheduler::hew_sched_shutdown();
-            scheduler::hew_runtime_cleanup();
-        }
-    }
-
     fn recv_tls_event(rx: &Receiver<TlsActorEvent>, timeout: Duration) -> TlsActorEvent {
         rx.recv_timeout(timeout)
             .unwrap_or_else(|err| panic!("expected tls actor event within {timeout:?}: {err:?}"))
@@ -1789,7 +1764,7 @@ mod tests {
 
     #[test]
     fn attach_reader_delivers_decrypted_data_and_reaps_on_close() {
-        let _runtime = TlsRuntimeGuard::new();
+        let _runtime = NetErrorSlotRuntimeGuard::new();
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let addr = listener.local_addr().expect("local addr");
@@ -2080,7 +2055,7 @@ mod tests {
         // (the server never sends data and never closes) when `hew_tls_close` is
         // called. `hew_tls_close` must join the still-running reader and return
         // within ~`TLS_READER_TIMEOUT`, not block forever or detach it.
-        let _runtime = TlsRuntimeGuard::new();
+        let _runtime = NetErrorSlotRuntimeGuard::new();
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let addr = listener.local_addr().expect("local addr");
@@ -2237,9 +2212,7 @@ mod tests {
     /// Run 3× to satisfy the flake gate.
     #[test]
     fn tls_error_visible_across_worker_threads_regression_2659() {
-        use crate::net_error_slot_test_support::{
-            spawn_error_slot_test_actor, with_actor_context, NetErrorSlotRuntimeGuard,
-        };
+        use crate::net_error_slot_test_support::{spawn_error_slot_test_actor, with_actor_context};
 
         // hew_actor_spawn requires an installed runtime authority; shared
         // across tls/smtp/quic so their regression tests serialize on the

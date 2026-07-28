@@ -1238,11 +1238,7 @@ fn publish_identity_connection_established(
     // THIS connection can never restore a claim for a connection whose
     // transport is closed here. The stash is restorable state only while the
     // publication is still pending or suppressed.
-    mgr.connections.access(|conns| {
-        if let Some(conn) = conns.iter().find(|c| c.conn_id == conn_id) {
-            conn.superseded_claim.lock_or_recover().take();
-        }
-    });
+    clear_superseded_claim_if_current(mgr, conn_id, publication_token);
 
     // Same-credential reconnect (issue #2652, D3 step 3): our claim overwrote a
     // live Published claim from the same peer credential. The superseded
@@ -1254,6 +1250,23 @@ fn publish_identity_connection_established(
             close_superseded_connection_once(mgr, superseded.conn_id, superseded.publication_token);
         }
     }
+}
+
+/// Clear the restorable predecessor claim only from the exact admission whose
+/// publication completed.
+///
+/// A transport may recycle `conn_id` after a concurrent removal closes and
+/// unlinks this actor. The old publisher can still reach this cleanup point, so
+/// a bare `conn_id` lookup could erase a successor admission's predecessor
+/// claim. The publication token makes the lookup an exact admission identity.
+fn clear_superseded_claim_if_current(mgr: &HewConnMgr, conn_id: c_int, publication_token: u64) {
+    mgr.connections.access(|conns| {
+        if let Some(conn) = conns.iter().find(|connection| {
+            connection.conn_id == conn_id && connection.publication_token == publication_token
+        }) {
+            conn.superseded_claim.lock_or_recover().take();
+        }
+    });
 }
 
 /// Close a superseded connection's transport at most once, and only while that
@@ -3690,8 +3703,9 @@ pub(crate) unsafe fn hew_connmgr_expect_peer(
 ///
 /// # Safety
 ///
-/// `mgr` must be a valid pointer returned by [`hew_connmgr_new`] and
-/// must not be used after this call.
+/// `mgr` must be a valid pointer returned by [`hew_connmgr_new`]. The caller
+/// surrenders exclusive ownership when this call begins: no concurrent call
+/// may still be using the manager, and it must not be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
     if !mgr.is_null() {
@@ -7215,6 +7229,68 @@ mod tests {
         });
     }
 
+    /// A publication completing late after its actor was removed must not
+    /// clear the predecessor stash of a successor that recycled the same
+    /// transport `conn_id`.
+    ///
+    /// Counterfactual: a bare `conn_id` lookup finds the successor and takes
+    /// its stash on the first call below, so the retention assertion fails.
+    #[test]
+    fn stale_publisher_cannot_clear_reused_conn_successor_stash() {
+        const CONN: c_int = 96;
+        const STALE_TOKEN: u64 = 1_000;
+        const SUCCESSOR_TOKEN: u64 = 1_100;
+
+        with_reserved_claim(17, CONN, SUCCESSOR_TOKEN, true, |mgr| {
+            // SAFETY: the manager is live for the whole closure.
+            let mgr = unsafe { &*mgr };
+            let predecessor = LiveClaim {
+                credential: None,
+                route_slot: 17,
+                session_incarnation: 1,
+                conn_id: 95,
+                publication_token: 900,
+                state: ClaimState::Published,
+            };
+            mgr.connections.access(|connections| {
+                let successor = connections
+                    .iter()
+                    .find(|connection| {
+                        connection.conn_id == CONN
+                            && connection.publication_token == SUCCESSOR_TOKEN
+                    })
+                    .expect("successor admission is installed");
+                *successor.superseded_claim.lock_or_recover() = Some(predecessor);
+            });
+
+            clear_superseded_claim_if_current(mgr, CONN, STALE_TOKEN);
+            mgr.connections.access(|connections| {
+                let successor = connections
+                    .iter()
+                    .find(|connection| connection.conn_id == CONN)
+                    .expect("successor admission remains installed");
+                let stash = successor.superseded_claim.lock_or_recover();
+                assert_eq!(
+                    stash.as_ref().map(|claim| claim.conn_id),
+                    Some(95),
+                    "a stale publication token must not clear the successor's stash"
+                );
+            });
+
+            clear_superseded_claim_if_current(mgr, CONN, SUCCESSOR_TOKEN);
+            mgr.connections.access(|connections| {
+                let successor = connections
+                    .iter()
+                    .find(|connection| connection.conn_id == CONN)
+                    .expect("successor admission remains installed");
+                assert!(
+                    successor.superseded_claim.lock_or_recover().is_none(),
+                    "the exact successor publication must clear its own stash"
+                );
+            });
+        });
+    }
+
     /// Ordering safety across a failed flush (the stale-replay hazard): a
     /// broadcast REMOVE for a name whose ADD is still parked must queue BEHIND
     /// the parked ADD, and the retry must deliver both in original order — the
@@ -9910,8 +9986,8 @@ mod tests {
     /// every check, registered as in flight, and about to run its callbacks —
     /// when the connection it was authorized against is refused. The whole
     /// transition can no longer be revoked, so the refusal CANCELS THE
-    /// REMAINDER of it: once `notify_connection_lost_if_current` has returned,
-    /// no observable ALIVE step for the retired token starts.
+    /// REMAINDER of it. This seam parks before the first step's gate, so the
+    /// refusal must suppress the whole delivery.
     ///
     /// The refusal must NOT wait for the claimed delivery. Waiting would mean
     /// blocking on a thread running externally-registered callbacks, which is
@@ -9926,8 +10002,9 @@ mod tests {
     /// Counterfactual: with the claim treated as the end of the story (no
     /// per-step re-read of the in-flight registration), the released delivery
     /// runs its callbacks unconditionally and the peer's `NODE_JOINED` is
-    /// recorded AFTER the refusal-returned marker — the negative assertion
-    /// below fails.
+    /// recorded after the refusal-returned marker — the negative assertion
+    /// below fails. A race after a successful per-step gate has different,
+    /// explicitly linearized semantics; see `GuardedDeliveryInFlight::may_emit`.
     #[test]
     #[expect(
         clippy::too_many_lines,

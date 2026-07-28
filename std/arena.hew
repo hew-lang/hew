@@ -28,8 +28,10 @@
 /// stays valid until its value is removed. Once removed, the key fails
 /// closed forever — `get` returns `None` even after the slot is reused by a
 /// later `insert`, because that reuse issues a fresh key with a higher
-/// generation. The `T` tag ties a key to the arena that produced it.
+/// generation. The `T` tag prevents cross-element-type use, and the instance
+/// identity prevents a same-typed arena from accepting an issued key.
 pub type Key<T> {
+    arena_id: i64;
     index: i64;
     generation: i64;
 }
@@ -48,6 +50,7 @@ type Slot<T> {
 /// Construct with `arena.new()`. Values are owned by the arena; accessors
 /// return `Option<T>` copies under the value model, never references.
 pub type Arena<T> {
+    arena_id: i64;
     slots: Vec<Slot<T>>;
     free: Vec<i64>;
 }
@@ -57,9 +60,13 @@ pub type Arena<T> {
 /// The element type is inferred from the binding, e.g.
 /// `let store: arena.Arena<i64> = arena.new();`.
 pub fn new<T>() -> Arena<T> {
+    let arena_id = unsafe { hew_arena_instance_id_new() };
+    if arena_id == 0 {
+        panic("arena.new: arena identity space exhausted");
+    }
     let slots: Vec<Slot<T>> = Vec::new();
     let free: Vec<i64> = Vec::new();
-    Arena { slots: slots, free: free }
+    Arena { arena_id: arena_id, slots: slots, free: free }
 }
 
 impl<T> Arena<T> {
@@ -71,7 +78,11 @@ impl<T> Arena<T> {
     fn insert(self, value: T) -> Key<T> {
         if self.free.is_empty() {
             self.slots.push(Slot { generation: 0, value: Some(value) });
-            Key { index: self.slots.len() - 1, generation: 0 }
+            Key {
+                arena_id: self.arena_id,
+                index: self.slots.len() - 1,
+                generation: 0,
+            }
         } else {
             let index = self.free.pop();
             let generation = match self.slots.get(index) {
@@ -79,7 +90,11 @@ impl<T> Arena<T> {
                 None => 0,
             };
             self.slots.set(index, Slot { generation: generation, value: Some(value) });
-            Key { index: index, generation: generation }
+            Key {
+                arena_id: self.arena_id,
+                index: index,
+                generation: generation,
+            }
         }
     }
     /// Return the value named by `key`, or `None` if the key is stale.
@@ -88,6 +103,9 @@ impl<T> Arena<T> {
     /// longer matches after slot reuse) returns `None`, as does an
     /// out-of-range key.
     fn get(self, key: Key<T>) -> Option<T> {
+        if key.arena_id != self.arena_id {
+            return None;
+        }
         match self.slots.get(key.index) {
             Some(slot) => match slot.value {
                 Some(value) => if slot.generation == key.generation {
@@ -107,6 +125,9 @@ impl<T> Arena<T> {
     /// key: returns `None`. Double-remove is idempotent — the second call
     /// returns `None`.
     fn remove(self, key: Key<T>) -> Option<T> {
+        if key.arena_id != self.arena_id {
+            return None;
+        }
         match self.slots.get(key.index) {
             Some(slot) => match slot.value {
                 Some(value) => if slot.generation == key.generation {
@@ -129,4 +150,8 @@ impl<T> Arena<T> {
     fn contains(self, key: Key<T>) -> bool {
         self.get(key).is_some()
     }
+}
+
+extern "C" {
+    fn hew_arena_instance_id_new() -> i64;
 }

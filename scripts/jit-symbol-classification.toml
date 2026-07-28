@@ -132,6 +132,7 @@ stable = [
   "hew_arc_strong_count",
   "hew_arena_free",
   "hew_arena_free_all",
+  "hew_arena_instance_id_new",
   "hew_arena_malloc",
   "hew_arena_new",
   "hew_arena_new_with_cap",
@@ -1829,6 +1830,15 @@ substantive justification is on that edge in the table above; this entry only \
 stops the call site from being read as an independent lane operation."""
 
 [ownership]
+
+# Scalar positive identity (or zero exhaustion sentinel); no owned value crosses
+# the boundary.
+[[ownership.contracts]]
+symbol = "hew_arena_instance_id_new"
+result = "none"
+params = []
+release-symbol = ""
+discharge-depth = "none"
 
 # Scalar i64 counter getter; no parameters, nothing owned crosses the boundary.
 [[ownership.contracts]]

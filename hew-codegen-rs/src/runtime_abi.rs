@@ -4027,6 +4027,9 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_observe_scrape" => ptr_ty.fn_type(&[], false),
         "hew_observe_series" => ptr_ty.fn_type(&[], false),
         "hew_observe_barrier" => i64_ty.fn_type(&[], false),
+        // Process-unique positive identity for std::arena::Arena<T>. Zero is
+        // the fail-closed exhaustion sentinel.
+        "hew_arena_instance_id_new" => i64_ty.fn_type(&[], false),
         // User-metric scalar emit path (#1862). Bodies in
         // `hew-runtime/src/metrics.rs`. A name comes in as `*const c_char` and
         // the slot handle goes out as `i64` (>= 0 valid, -1 on failure); the

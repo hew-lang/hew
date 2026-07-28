@@ -856,6 +856,7 @@ run_accept_expect_stdout "arena_generation_reuse"
 run_accept_expect_stdout "arena_len_live_count"
 run_accept_expect_stdout "arena_composite_value"
 run_accept_expect_stdout "arena_no_leak_cycle"
+run_accept_expect_stdout "arena_cross_instance_key_rejected"
 if grep -qF 'E_CODEGEN_FRONT' "${reject_output}" || \
     grep -qF 'IntCmp lhs is not an integer' "${reject_output}"; then
   echo "managed_record_or_enum_eq leaked codegen-front diagnostics" >&2

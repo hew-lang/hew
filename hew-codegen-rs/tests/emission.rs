@@ -30,6 +30,8 @@ mod identity_emission;
 mod mem_floor_intrinsic_emission;
 #[path = "emission/overflow_trap_emission.rs"]
 mod overflow_trap_emission;
+#[path = "emission/quic_string_result_emission.rs"]
+mod quic_string_result_emission;
 #[path = "emission/record_emission.rs"]
 mod record_emission;
 #[path = "emission/stdlib_builtins_emission.rs"]

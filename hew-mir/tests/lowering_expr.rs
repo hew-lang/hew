@@ -75,6 +75,8 @@ mod owner_mint_warrant_seams;
 mod plain_vec_local_drop;
 #[path = "lowering_expr/polymorphic_mir_typeparam.rs"]
 mod polymorphic_mir_typeparam;
+#[path = "lowering_expr/quic_string_temp_drop_canary.rs"]
+mod quic_string_temp_drop_canary;
 #[path = "lowering_expr/rc_weak_lowering.rs"]
 mod rc_weak_lowering;
 #[path = "lowering_expr/regex_predicate_lowering.rs"]

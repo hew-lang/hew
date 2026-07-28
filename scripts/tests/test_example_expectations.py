@@ -32,18 +32,22 @@ def invoke(
     compiler: Path,
     *inventory: str,
     timeout_seconds: str = "0.1",
+    floor_key: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    args = [
+        sys.executable,
+        str(RUNNER),
+        "--hew-bin",
+        str(compiler),
+        "--label",
+        "selftest",
+        f"--timeout-seconds={timeout_seconds}",
+    ]
+    if floor_key is not None:
+        args.extend(("--floor-key", floor_key))
+    args.extend(inventory)
     return subprocess.run(
-        [
-            sys.executable,
-            str(RUNNER),
-            "--hew-bin",
-            str(compiler),
-            "--label",
-            "selftest",
-            f"--timeout-seconds={timeout_seconds}",
-            *inventory,
-        ],
+        args,
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -57,9 +61,15 @@ def expect_status(
     *inventory: str,
     contains: str,
     timeout_seconds: str = "0.1",
+    floor_key: str | None = None,
     excludes: tuple[str, ...] = (),
 ) -> None:
-    result = invoke(compiler, *inventory, timeout_seconds=timeout_seconds)
+    result = invoke(
+        compiler,
+        *inventory,
+        timeout_seconds=timeout_seconds,
+        floor_key=floor_key,
+    )
     combined = result.stdout + result.stderr
     unexpected = [text for text in excludes if text in combined]
     if result.returncode != expected or contains not in combined or unexpected:
@@ -115,8 +125,93 @@ def assert_timeout_exit_race_is_classified() -> None:
         )
 
 
+def assert_still_live_kill_failure_is_fatal() -> None:
+    module = load_runner_module()
+
+    class LiveProcess:
+        pid = 434343
+        returncode = None
+
+        def __init__(self) -> None:
+            self.communicate_calls = 0
+
+        def communicate(self, *, timeout=None):
+            self.communicate_calls += 1
+            if self.communicate_calls == 1:
+                raise subprocess.TimeoutExpired(["fake-hew"], timeout)
+            raise AssertionError(
+                "run_process must not enter unbounded communicate() after a "
+                "still-live process resists termination"
+            )
+
+        def kill(self) -> None:
+            raise PermissionError("still-live process resisted termination")
+
+        def poll(self) -> None:
+            return None
+
+    process = LiveProcess()
+    original_popen = module.subprocess.Popen
+    original_killpg = getattr(module.os, "killpg", None)
+    try:
+        module.subprocess.Popen = lambda *_args, **_kwargs: process
+
+        def kill_failed(*_args, **_kwargs) -> None:
+            raise PermissionError("still-live process resisted termination")
+
+        if module.os.name != "nt":
+            module.os.killpg = kill_failed
+        try:
+            module.run_process(["fake-hew"], 0.001)
+        except PermissionError as error:
+            if "resisted termination" not in str(error):
+                raise AssertionError(
+                    f"unexpected termination failure: {error}"
+                ) from error
+        else:
+            raise AssertionError(
+                "a still-live process termination failure must remain fatal"
+            )
+    finally:
+        module.subprocess.Popen = original_popen
+        if original_killpg is not None:
+            module.os.killpg = original_killpg
+
+    if process.communicate_calls != 1:
+        raise AssertionError(
+            "still-live termination failure must not enter a second, unbounded "
+            f"communicate(); got {process.communicate_calls} calls"
+        )
+
+
 def main() -> None:
+    counterfactuals = 0
+
+    def check_status(
+        expected: int,
+        compiler: Path,
+        *inventory: str,
+        contains: str,
+        timeout_seconds: str = "0.1",
+        floor_key: str | None = None,
+        excludes: tuple[str, ...] = (),
+    ) -> None:
+        nonlocal counterfactuals
+        expect_status(
+            expected,
+            compiler,
+            *inventory,
+            contains=contains,
+            timeout_seconds=timeout_seconds,
+            floor_key=floor_key,
+            excludes=excludes,
+        )
+        counterfactuals += 1
+
     assert_timeout_exit_race_is_classified()
+    counterfactuals += 1
+    assert_still_live_kill_failure_is_fatal()
+    counterfactuals += 1
 
     with tempfile.TemporaryDirectory(prefix="hew-example-expectations-") as temp:
         root = Path(temp)
@@ -165,14 +260,49 @@ else:
         good = root / "good"
         write(good / "ok.hew", "fn main() {}\n")
         write(good / "ok.expected", "expected\n")
-        expect_status(0, compiler, "--source-root", str(good), contains="1 passed")
+        check_status(0, compiler, "--source-root", str(good), contains="1 passed")
+
+        check_status(
+            1,
+            compiler,
+            "--source-root",
+            str(good),
+            floor_key="selftest-unknown-floor",
+            contains="no registry row for 'selftest-unknown-floor'",
+        )
+
+        check_status(
+            1,
+            compiler,
+            "--source-root",
+            str(good),
+            "--source-root",
+            str(good),
+            contains="duplicate source root",
+        )
+
+        not_a_directory = root / "not-a-directory"
+        write(not_a_directory, "not a directory\n")
+        check_status(
+            1,
+            compiler,
+            "--source-root",
+            str(not_a_directory),
+            contains="source root is not a directory",
+        )
+
+        check_status(
+            1,
+            compiler,
+            contains="inventory is empty",
+        )
 
         crlf = root / "crlf"
         write(crlf / "crlf_output.hew", "fn main() {}\n")
         write(crlf / "crlf_output.expected", "expected\n")
         write(crlf / "crlf_expectation.hew", "fn main() {}\n")
         (crlf / "crlf_expectation.expected").write_bytes(b"expected\r\n")
-        expect_status(
+        check_status(
             0,
             compiler,
             "--source-root",
@@ -183,7 +313,7 @@ else:
         fractional = root / "fractional.hew"
         write(fractional, "fn main() {}\n")
         write(fractional.with_suffix(".expected"), "expected\n")
-        expect_status(
+        check_status(
             0,
             compiler,
             "--source",
@@ -194,7 +324,7 @@ else:
 
         missing = root / "missing"
         write(missing / "missing.hew", "fn main() {}\n")
-        expect_status(
+        check_status(
             1,
             compiler,
             "--source-root",
@@ -206,7 +336,7 @@ else:
         write(orphan / "ok.hew", "fn main() {}\n")
         write(orphan / "ok.expected", "expected\n")
         write(orphan / "gone.expected", "stale\n")
-        expect_status(
+        check_status(
             1,
             compiler,
             "--source-root",
@@ -216,7 +346,7 @@ else:
 
         empty = root / "empty"
         empty.mkdir()
-        expect_status(
+        check_status(
             1,
             compiler,
             "--source-root",
@@ -227,7 +357,7 @@ else:
         duplicate = root / "duplicate"
         write(duplicate / "ok.hew", "fn main() {}\n")
         write(duplicate / "ok.expected", "expected\n")
-        expect_status(
+        check_status(
             1,
             compiler,
             "--source-root",
@@ -239,7 +369,7 @@ else:
 
         malformed = root / "not-hew.txt"
         write(malformed, "not a source\n")
-        expect_status(
+        check_status(
             1,
             compiler,
             "--source",
@@ -250,7 +380,7 @@ else:
         nonzero = root / "nonzero.hew"
         write(nonzero, "fn main() {}\n")
         write(nonzero.with_suffix(".expected"), "expected\n")
-        expect_status(
+        check_status(
             1,
             compiler,
             "--source",
@@ -261,7 +391,7 @@ else:
         drift = root / "drift.hew"
         write(drift, "fn main() {}\n")
         write(drift.with_suffix(".expected"), "expected\n")
-        expect_status(
+        check_status(
             1,
             compiler,
             "--source",
@@ -272,18 +402,18 @@ else:
         hang = root / "hang.hew"
         write(hang, "fn main() {}\n")
         write(hang.with_suffix(".expected"), "")
-        expect_status(
+        check_status(
             1,
             compiler,
             "--source",
             str(hang),
-            contains="timed out after 0.1s",
+            contains="exceeded runner deadline 2.1s (Hew timeout 0.1s)",
             excludes=("exited with status",),
         )
 
         not_executable = root / "not-executable"
         write(not_executable, "#!/bin/sh\nexit 0\n")
-        expect_status(
+        check_status(
             1,
             not_executable,
             "--source",
@@ -291,7 +421,7 @@ else:
             contains="compiler is not executable",
         )
 
-        expect_status(
+        check_status(
             1,
             compiler,
             "--source",
@@ -301,7 +431,7 @@ else:
         )
 
         for invalid_timeout in ("nan", "inf", "-inf"):
-            expect_status(
+            check_status(
                 1,
                 compiler,
                 "--source",
@@ -310,7 +440,10 @@ else:
                 contains="must be finite and greater than zero",
             )
 
-    print("example-expectations selftest: 18/18 counterfactuals PASS")
+    print(
+        "example-expectations selftest: "
+        f"{counterfactuals}/{counterfactuals} counterfactuals PASS"
+    )
 
 
 if __name__ == "__main__":

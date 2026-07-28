@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a closed corpus of Hew examples against exact output expectations."""
+"""Run a closed corpus of Hew examples against normalized output expectations."""
 
 from __future__ import annotations
 
@@ -32,7 +32,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run every admitted Hew source, require a paired .expected file, "
-            "and compare combined stdout/stderr exactly."
+            "and compare combined stdout/stderr after CRLF and terminal-newline "
+            "normalization."
         )
     )
     parser.add_argument("--hew-bin", type=Path, required=True)
@@ -168,6 +169,7 @@ def main() -> None:
         expected = normalized_text(
             expectation.read_bytes(), source=f"expectation {display(expectation)}"
         )
+        runner_timeout_seconds = args.timeout_seconds + 2.0
         status, output_bytes = run_process(
             [
                 str(args.hew_bin.resolve()),
@@ -176,13 +178,16 @@ def main() -> None:
                 f"{hew_timeout_ms}ms",
                 str(source),
             ],
-            args.timeout_seconds + 2.0,
+            runner_timeout_seconds,
         )
         actual = normalized_text(output_bytes, source=f"output from {display(source)}")
 
         reasons: list[str] = []
         if status is None:
-            reasons.append(f"timed out after {args.timeout_seconds:g}s")
+            reasons.append(
+                f"exceeded runner deadline {runner_timeout_seconds:g}s "
+                f"(Hew timeout {args.timeout_seconds:g}s)"
+            )
         elif status != 0:
             reasons.append(f"exited with status {status}")
         if actual != expected:
@@ -200,7 +205,7 @@ def main() -> None:
     if failed:
         fail(
             f"{failed} {args.label} example(s) failed; "
-            "run `hew run <file>` to reproduce"
+            f"run `hew run --timeout {hew_timeout_ms}ms <file>` to reproduce"
         )
 
 

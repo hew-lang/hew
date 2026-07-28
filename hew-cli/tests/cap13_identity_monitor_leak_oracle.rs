@@ -12,7 +12,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use support::leak_slope::require_leaks_tool;
+use support::leak_slope::{parse_leaks_summary, require_leaks_tool};
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(45);
@@ -244,6 +244,60 @@ fn run_probe(binary: &Path, scenario: &str, iterations: usize) -> usize {
     leak_nodes
 }
 
+fn run_identity_display_probe(binary: &Path, scenario: &str, iterations: usize) -> (usize, usize) {
+    let kx_dir = tempfile::tempdir().expect("create identity display key directory");
+    let port = allocate_loopback_port();
+    let mut server = spawn_server(binary, port, scenario, kx_dir.path());
+    let client = spawn_client_under_leaks(binary, port, scenario, kx_dir.path());
+    let server_reader = wait_for_server_ready(&mut server);
+    let client = finish_client(client);
+    let client_stdout = String::from_utf8_lossy(&client.stdout);
+    let client_stderr = String::from_utf8_lossy(&client.stderr);
+    let sentinel = format!("PASS {scenario} iterations={iterations}");
+    let report = format!("{client_stdout}\n{client_stderr}");
+    let summary = parse_leaks_summary(&report).unwrap_or_else(|| {
+        panic!(
+            "leaks did not emit a parseable identity display summary\n{}",
+            describe_output(&client)
+        )
+    });
+    // The shared authenticated-node fixture has a constant credential-file
+    // allocation at shutdown. `leaks(1)` reports findings with exit 1; accept
+    // that exit only when a parsed positive summary accounts for it. Every
+    // other nonzero exit remains an allocator/tool failure.
+    let completed_leak_inspection =
+        client.status.code() == Some(1) && (summary.0 > 0 || summary.1 > 0);
+
+    assert!(
+        client.status.success() || completed_leak_inspection,
+        "identity display client failed under leaks or the poisoned allocator\n{}",
+        describe_output(&client)
+    );
+    assert!(
+        !client_stdout.contains("FAIL ") && client_stdout.contains(&sentinel),
+        "identity display client missed its exact completion sentinel\n{}",
+        describe_output(&client)
+    );
+    let program_line_count = client_stdout
+        .lines()
+        .take_while(|line| !line.starts_with("Process:"))
+        .filter(|line| !line.is_empty())
+        .count();
+    assert_eq!(
+        program_line_count,
+        iterations * 10 + 1,
+        "identity display client did not execute every direct, named, and mixed path\n{}",
+        describe_output(&client)
+    );
+
+    // The identity-display scenario is client-only. Once its clean shutdown is
+    // observed, terminate the otherwise long-lived fixture server.
+    drop(server_reader);
+    drop(server);
+
+    summary
+}
+
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
@@ -260,5 +314,24 @@ fn cross_process_monitor_close_has_zero_leak_slope_and_no_poisoned_allocator_fai
     assert!(
         high <= low,
         "CAP-13 monitor lifecycle has a positive leak-node slope: low={low}, high={high}"
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn identity_display_temporaries_have_zero_leak_slope_and_no_poisoned_allocator_failure() {
+    require_leaks_tool();
+    require_codegen();
+    let emit_dir = tempfile::tempdir().expect("create identity display compile directory");
+    let binary = compile_fixture(emit_dir.path());
+
+    let low = run_identity_display_probe(&binary, "identity_display_low", LOW_ITERATIONS);
+    let high = run_identity_display_probe(&binary, "identity_display_high", HIGH_ITERATIONS);
+    assert_eq!(
+        high, low,
+        "identity display nodes or bytes grew between low={low:?} and high={high:?}"
     );
 }

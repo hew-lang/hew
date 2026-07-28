@@ -320,6 +320,44 @@ impl Default for CalleeOwnershipContract {
     }
 }
 
+/// Project one compiler-synthetic callee through the real runtime ownership
+/// contract it emits.
+///
+/// Synthetic identity-display names are not linkable C symbols: codegen
+/// rewrites them to `hew_node_id_format` / `hew_location_format`. Their result
+/// may therefore be admitted only when that real formatter's audited FFI row
+/// proves every fact needed by the string drop plan: one borrowed parameter, a
+/// fresh/retained result, the shallow `hew_string_drop` release, and a measured
+/// transfer showing that the runtime keeps no pointer. Any missing or drifted
+/// conjunct returns the fail-closed contract (no caller release).
+fn compiler_synthetic_ownership_contract(runtime_symbol: &str) -> CalleeOwnershipContract {
+    use crate::ffi_contracts::{
+        ExternParamOwnership, ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
+    };
+
+    let admitted = crate::ffi_contracts::extern_ownership_contract(runtime_symbol)
+        .contract()
+        .is_some_and(|contract| {
+            contract.params == [ExternParamOwnership::Borrow]
+                && matches!(
+                    contract.result,
+                    ExternResultOwnership::Fresh | ExternResultOwnership::Retained
+                )
+                && contract.release_symbol == "hew_string_drop"
+                && contract.discharge_depth == ReleaseDischargeDepth::Shallow
+                && contract.result_retention == ExternResultRetention::Transferred
+        });
+    if admitted {
+        CalleeOwnershipContract::new(
+            ReceiverOwnership::Escapes,
+            StringArgsOwnership::Escaping,
+            ResultOwnership::FreshOwnedString,
+        )
+    } else {
+        CalleeOwnershipContract::FAIL_CLOSED
+    }
+}
+
 /// Return the ownership contract for a runtime callee spelling.
 ///
 /// Unknown callees are explicit fail-closed contracts: operands escape and the
@@ -335,6 +373,12 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         Borrowed, FreshOwnedBytes, FreshOwnedString, IndependentValue, Untracked,
     };
     use StringArgsOwnership::{BorrowingUse, Escaping, PrintSink};
+
+    if let Some(runtime_symbol) =
+        hew_hir::stdlib_catalog::compiler_synthetic_runtime_ownership_symbol(callee)
+    {
+        return compiler_synthetic_ownership_contract(runtime_symbol);
+    }
 
     match callee {
         // Bytes append borrows the receiver and the unpacked source triple.
@@ -764,7 +808,10 @@ mod tests {
         "hew_hashset_to_vec_layout",
         "hew_i64_to_string",
         "hew_int_to_string",
+        "hew_location_display",
         "hew_node_api_identity_key",
+        "hew_node_id_display",
+        "hew_remote_pid_display",
         "hew_string_char_at",
         "hew_string_char_at_utf8",
         "hew_string_char_count",
@@ -959,7 +1006,7 @@ mod tests {
     #[test]
     fn callee_ownership_contract_symbols_are_unique_positive_rows() {
         let unique = CONTRACT_SYMBOLS.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(CONTRACT_SYMBOLS.len(), 172);
+        assert_eq!(CONTRACT_SYMBOLS.len(), 175);
         assert_eq!(
             unique.len(),
             CONTRACT_SYMBOLS.len(),
@@ -980,6 +1027,27 @@ mod tests {
             callee_ownership_contract("hew_nope"),
             CalleeOwnershipContract::FAIL_CLOSED
         );
+    }
+
+    #[test]
+    fn identity_display_synthetics_inherit_measured_runtime_transfer_contracts() {
+        for (callee, runtime_symbol) in [
+            ("hew_node_id_display", "hew_node_id_format"),
+            ("hew_location_display", "hew_location_format"),
+            ("hew_remote_pid_display", "hew_location_format"),
+        ] {
+            assert_eq!(
+                hew_hir::stdlib_catalog::compiler_synthetic_runtime_ownership_symbol(callee),
+                Some(runtime_symbol),
+                "{callee} must project to its real runtime allocator"
+            );
+            assert_eq!(
+                callee_ownership_contract(callee).result,
+                ResultOwnership::FreshOwnedString,
+                "{callee} must mint exactly the caller-owned string share measured for \
+                 {runtime_symbol}"
+            );
+        }
     }
 
     #[test]

@@ -130,6 +130,24 @@ pub enum BuiltinLinkage {
     },
 }
 
+/// Map a compiler-synthetic identity-display callee to the runtime formatter
+/// whose ownership contract governs its result.
+///
+/// These presentation names reach MIR as [`BuiltinLinkage::CalleeNameDispatchOnly`]
+/// and are intercepted before LLVM symbol resolution, so they are not linked
+/// runtime symbols and must never receive fabricated FFI rows of their own.
+/// Codegen and MIR ownership instead share this explicit projection to the real
+/// runtime allocator. Unknown synthetic callees stay unmapped and therefore
+/// fail closed at both consumers.
+#[must_use]
+pub fn compiler_synthetic_runtime_ownership_symbol(callee: &str) -> Option<&'static str> {
+    match callee {
+        "hew_node_id_display" => Some("hew_node_id_format"),
+        "hew_location_display" | "hew_remote_pid_display" => Some("hew_location_format"),
+        _ => None,
+    }
+}
+
 /// Which descriptor flavour a `LayoutDescriptorSymbol` row names.
 ///
 /// Mirrors the two cabi structs (`HewMapKeyLayout`, `HewMapValueLayout`) so
@@ -2810,5 +2828,35 @@ fn len_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
         ResolvedTy::String => Some("len_str"),
         ResolvedTy::Named { name, .. } if name == "Vec" => Some("len_vec"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compiler_synthetic_runtime_ownership_symbol;
+
+    #[test]
+    fn identity_display_synthetics_map_only_to_real_runtime_formatters() {
+        assert_eq!(
+            compiler_synthetic_runtime_ownership_symbol("hew_node_id_display"),
+            Some("hew_node_id_format")
+        );
+        for callee in ["hew_location_display", "hew_remote_pid_display"] {
+            assert_eq!(
+                compiler_synthetic_runtime_ownership_symbol(callee),
+                Some("hew_location_format"),
+                "{callee} must share the location formatter ownership contract"
+            );
+        }
+        assert_eq!(
+            compiler_synthetic_runtime_ownership_symbol("hew_node_id_format"),
+            None,
+            "the runtime symbol is not itself a compiler synthetic"
+        );
+        assert_eq!(
+            compiler_synthetic_runtime_ownership_symbol("user_display"),
+            None,
+            "unknown display callees must remain fail-closed"
+        );
     }
 }

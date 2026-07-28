@@ -46,10 +46,11 @@
 # established it for that symbol by measuring the runtime's actual retention
 # behaviour: distinct addresses for two live results, refcount 1 at handoff,
 # and the callee's own state surviving the caller's release. Those oracles are
-# hew-runtime/tests/last_error_result_retention.rs,
-# hew-runtime/tests/string_result_retention.rs,
-# hew-std/src/last_error_retention.rs, and
-# hew-std/src/string_result_retention.rs (hew-lang/hew#2828).
+# hew-runtime/tests/{last_error_result_retention,string_result_retention,
+# identity_format_result_retention,os_io_string_result_retention}.rs,
+# hew-std/src/{last_error_retention,string_result_retention,
+# os_io_string_retention,websocket_string_result_retention}.rs, and
+# hew-std/src/http/string_result_retention.rs (hew-lang/hew#2828).
 #
 # Three-tier model (rationale: Option A chosen over Option B for substrate
 # clarity — the tier boundary is a compile-time contract, not just a doc claim):
@@ -1887,6 +1888,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_location_format"
@@ -1894,6 +1896,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # hew-std/src/json.rs:379-384 reconstructs and drops `val`.
 [[ownership.contracts]]

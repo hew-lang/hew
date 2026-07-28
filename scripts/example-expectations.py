@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from pathlib import Path
 import signal
@@ -142,8 +143,8 @@ def assert_floor(key: str, actual: int, label: str) -> None:
 
 def main() -> None:
     args = parse_args()
-    if args.timeout_seconds <= 0:
-        fail("--timeout-seconds must be greater than zero")
+    if not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0:
+        fail("--timeout-seconds must be finite and greater than zero")
     if not args.hew_bin.is_file() or not os.access(args.hew_bin, os.X_OK):
         fail(f"compiler is not executable: {display(args.hew_bin)}")
 
@@ -153,6 +154,7 @@ def main() -> None:
 
     passed = 0
     failed = 0
+    hew_timeout_ms = max(1, math.ceil(args.timeout_seconds * 1000))
     for source in sources:
         expectation = source.with_suffix(".expected")
         expected = normalized_text(
@@ -163,7 +165,7 @@ def main() -> None:
                 str(args.hew_bin.resolve()),
                 "run",
                 "--timeout",
-                f"{args.timeout_seconds:g}s",
+                f"{hew_timeout_ms}ms",
                 str(source),
             ],
             args.timeout_seconds + 2.0,

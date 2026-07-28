@@ -31,8 +31,7 @@ def invoke(
             str(compiler),
             "--label",
             "selftest",
-            "--timeout-seconds",
-            timeout_seconds,
+            f"--timeout-seconds={timeout_seconds}",
             *inventory,
         ],
         cwd=ROOT,
@@ -69,7 +68,25 @@ import pathlib
 import sys
 import time
 
+if len(sys.argv) != 5:
+    print(f"unexpected argv length: {sys.argv!r}")
+    raise SystemExit(91)
+if sys.argv[1] != "run":
+    print(f"unexpected subcommand: {sys.argv[1]!r}")
+    raise SystemExit(92)
+if sys.argv[2] != "--timeout":
+    print(f"missing --timeout: {sys.argv!r}")
+    raise SystemExit(93)
+
 source = pathlib.Path(sys.argv[-1]).stem
+expected_timeout = "125ms" if source == "fractional" else "100ms"
+if sys.argv[3] != expected_timeout:
+    print(f"unexpected timeout: {sys.argv[3]!r}, expected {expected_timeout!r}")
+    raise SystemExit(94)
+if not pathlib.Path(sys.argv[4]).is_file():
+    print(f"source is not the final argv entry: {sys.argv!r}")
+    raise SystemExit(95)
+
 if source == "hang":
     time.sleep(10)
 elif source == "nonzero":
@@ -87,6 +104,18 @@ else:
         write(good / "ok.hew", "fn main() {}\n")
         write(good / "ok.expected", "expected\n")
         expect_status(0, compiler, "--source-root", str(good), contains="1 passed")
+
+        fractional = root / "fractional.hew"
+        write(fractional, "fn main() {}\n")
+        write(fractional.with_suffix(".expected"), "expected\n")
+        expect_status(
+            0,
+            compiler,
+            "--source",
+            str(fractional),
+            timeout_seconds="0.125",
+            contains="1 passed",
+        )
 
         missing = root / "missing"
         write(missing / "missing.hew", "fn main() {}\n")
@@ -192,10 +221,20 @@ else:
             "--source",
             str(nonzero),
             timeout_seconds="0",
-            contains="must be greater than zero",
+            contains="must be finite and greater than zero",
         )
 
-    print("example-expectations selftest: 11/11 counterfactuals PASS")
+        for invalid_timeout in ("nan", "inf", "-inf"):
+            expect_status(
+                1,
+                compiler,
+                "--source",
+                str(nonzero),
+                timeout_seconds=invalid_timeout,
+                contains="must be finite and greater than zero",
+            )
+
+    print("example-expectations selftest: 15/15 counterfactuals PASS")
 
 
 if __name__ == "__main__":

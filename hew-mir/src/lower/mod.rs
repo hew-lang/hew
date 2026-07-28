@@ -95,14 +95,13 @@ use self::cfg_util::{
 };
 #[cfg(not(test))]
 use self::composite_own::{
-    apply_escaped_record_sibling_field_drops, derive_bytes_actor_transfer_blocks,
-    derive_consumed_local_aggregate_member_bindings, derive_enum_composite_drop_allowed,
-    derive_local_bytes_drop_allowed, derive_local_collection_drop_allowed,
-    derive_owned_record_drop_allowed, derive_returned_aggregate_member_bindings,
-    derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
-    derive_tuple_composite_drop_allowed, detect_actor_state_handle_consume,
-    detect_actor_state_resource_overwrite, detect_opaque_resource_field_misuse,
-    detect_unproven_aggregate_handle_double_free,
+    apply_escaped_record_sibling_field_drops, derive_consumed_local_aggregate_member_bindings,
+    derive_enum_composite_drop_allowed, derive_local_bytes_drop_allowed,
+    derive_local_collection_drop_allowed, derive_owned_record_drop_allowed,
+    derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
+    derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
+    detect_actor_state_handle_consume, detect_actor_state_resource_overwrite,
+    detect_opaque_resource_field_misuse, detect_unproven_aggregate_handle_double_free,
 };
 #[cfg(not(test))]
 use self::consts::{
@@ -167,9 +166,10 @@ use self::temp_drop::{
     apply_nested_fresh_string_temp_drops, bytes_interior_producer_dest, bytes_place_is_typed,
     bytes_runtime_arg_is_borrow, bytes_share_sink_places, classify_actor_state_load_modes,
     compute_collection_interior_alias_taint, compute_projection_alias_taint,
-    derive_cow_fresh_borrowed_owner, derive_cow_sole_owner, finalize_bytes_ownership,
-    finalize_string_local_share_intents, finalize_string_ownership, forward_move_closure,
-    readmit_retained_bytes_tuple_roots, string_call_borrows, string_field_load_producer_dest,
+    derive_bytes_actor_transfer_blocks, derive_cow_fresh_borrowed_owner, derive_cow_sole_owner,
+    finalize_bytes_ownership, finalize_string_local_share_intents, finalize_string_ownership,
+    forward_move_closure, readmit_retained_bytes_tuple_roots, string_call_borrows,
+    string_field_load_producer_dest,
 };
 
 /// Maps each original (unsanitized) callee symbol to the adapter symbol
@@ -355,6 +355,7 @@ struct PendingOutboundArg {
 struct ResolvedOutboundArg {
     source: Place,
     ty: ResolvedTy,
+    site: SiteId,
     mode: SendAliasMode,
 }
 
@@ -1425,11 +1426,17 @@ struct Builder {
     /// `MaybeConsumed`; the flag preserves its scope-exit drop on the live
     /// path and suppresses it after a state/send transfer.
     ///
-    /// Admission is structural: only types for which
-    /// `cow_value_leaf_drop_symbol` supplies the existing drop ritual enter
-    /// this map. The consume hook and `build_lifo_drops` consult this same map,
-    /// so allocation, move marking, and guarded release cannot drift.
+    /// Admission is structural: leaf `string` values use
+    /// `cow_value_leaf_drop_symbol`, while `bytes` uses its dedicated
+    /// `BytesTriple` admission/drop authority. The consume hook and
+    /// `build_lifo_drops` consult this same map, so allocation, move marking,
+    /// and guarded release cannot drift.
     pub(crate) actor_message_cow_drop_flags: HashMap<BindingId, Place>,
+    /// Direct actor-call argument bindings whose finalized outbound mode may
+    /// become `TransferLastUse` even when HIR intent remains borrow-like until
+    /// CFG analysis. This pre-pass fact lets `ActorHandler` `bytes` allocate its
+    /// path flag in the dominating parameter prologue.
+    pub(crate) prepass_actor_message_transfer_bindings: HashSet<BindingId>,
     /// Path-sensitive drop flags for fresh monomorphic records whose admitted
     /// fields are String/BitCopy and which are consumed on at least one body
     /// path. W60.108 makes every String field in such a construction an
@@ -4541,6 +4548,7 @@ fn resolve_outbound_actor_modes(
                 .map(|(arg, mode)| ResolvedOutboundArg {
                     source: arg.source,
                     ty: arg.ty.clone(),
+                    site: arg.site,
                     mode,
                 })
                 .collect();
@@ -4670,6 +4678,64 @@ fn prepare_outbound_actor_payloads(
                 match arg.mode {
                     SendAliasMode::SnapshotBitCopy => prepared.push(arg.source),
                     SendAliasMode::TransferLastUse => {
+                        // Outbound mode resolution can discover a physical
+                        // last-use transfer after HIR lowering stamped the
+                        // source read-only. If this is a guarded actor-message
+                        // leaf, mark the same path-local hand-off here, at the
+                        // authority that selected `TransferLastUse`, before
+                        // moving and neutralising the source slot.
+                        let guarded_transfer = builder
+                            .actor_message_cow_drop_flags
+                            .iter()
+                            .find_map(|(binding, flag)| {
+                                if builder.binding_locals.get(binding) != Some(&arg.source) {
+                                    return None;
+                                }
+                                builder
+                                    .owned_locals
+                                    .iter()
+                                    .find(|entry| entry.binding == *binding)
+                                    .map(|entry| {
+                                        (*binding, *flag, entry.name.clone(), entry.ty.clone())
+                                    })
+                            });
+                        if let Some((binding, flag, name, ty)) = guarded_transfer {
+                            let already_set = block.instructions.iter().any(|instr| {
+                                matches!(
+                                    instr,
+                                    Instr::ConstI64 {
+                                        dest,
+                                        value: 1
+                                    } if *dest == flag
+                                )
+                            });
+                            if !already_set {
+                                prep.push(Instr::ConstI64 {
+                                    dest: flag,
+                                    value: 1,
+                                });
+                            }
+                            let already_consumed = block.statements.iter().any(|statement| {
+                                matches!(
+                                    statement,
+                                    MirStatement::Use {
+                                        binding: seen_binding,
+                                        site,
+                                        intent: IntentKind::Consume,
+                                        ..
+                                    } if *seen_binding == binding && *site == arg.site
+                                )
+                            });
+                            if !already_consumed {
+                                block.statements.push(MirStatement::Use {
+                                    binding,
+                                    name,
+                                    site: arg.site,
+                                    ty,
+                                    intent: IntentKind::Consume,
+                                });
+                            }
+                        }
                         let dest = builder.alloc_local(arg.ty.clone());
                         prep.push(Instr::Move {
                             dest,
@@ -6070,23 +6136,15 @@ impl Builder {
                 && !param_is_consumed
                 && !param_is_owned_carrier
             {
-                if self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler {
-                    // A copy-mode actor mailbox transfers its one `bytes`
-                    // refcount into the delivered `BytesTriple`; the receive
-                    // handler frame is therefore the terminal owner. Register
-                    // that parameter like every other handler-owned payload so
-                    // `derive_local_bytes_drop_allowed` emits the balancing
-                    // `hew_bytes_drop` unless the handler forwards the owner.
-                    //
-                    // Ordinary by-value calls remain borrows: their callers
-                    // keep the refcount and are still recorded in
-                    // `borrowed_bytes_param_locals` below. Keeping this split
-                    // at the call-convention boundary mirrors the owned-record
-                    // handler ingress rule and prevents both the active-mode
-                    // read leak and a free-function double-drop.
-                    let owned_ty = self.subst_ty(&param.ty);
-                    self.register_owned_param(param, owned_ty, func.body.scope);
-                } else if let Place::Local(local) = slot {
+                // Record every by-value `bytes` parameter for return/share
+                // retain derivation. Ordinary calls borrow the caller's
+                // reference. Actor handlers own the mailbox reference through
+                // the generic `actor_message_param` registration below, but a
+                // byte-copy returned from one branch still needs a fresh
+                // reference because the guarded source slot drops on that
+                // branch. This alias registry supplies that retain; it does not
+                // itself register a scope-exit owner.
+                if let Place::Local(local) = slot {
                     self.borrowed_bytes_param_locals.insert(local);
                 }
             }

@@ -601,12 +601,22 @@ pub(super) fn elaborate(
             &builder.borrowed_bytes_param_locals,
         )
         .allowed;
+        derived.extend(
+            owned_locals_snapshot
+                .iter()
+                .filter(|(binding, _, ty)| {
+                    matches!(ty, ResolvedTy::Bytes)
+                        && builder.actor_message_cow_drop_flags.contains_key(binding)
+                })
+                .map(|(binding, _, _)| *binding),
+        );
         for states in dataflow_result.exit_states.values() {
             for (binding, state) in states {
                 if matches!(
                     state,
                     dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-                ) {
+                ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
+                {
                     derived.remove(binding);
                 }
             }
@@ -1241,6 +1251,17 @@ pub(super) fn elaborate(
                 continue;
             };
             for (binding, reach) in &transfer_reach {
+                // A guarded actor-message Bytes binding already remains in the
+                // LIFO template across a `MaybeConsumed` join. Its shared exit
+                // drop is the sole release on the live path; adding the legacy
+                // frontier re-admission as well would release once at the
+                // non-transfer Goto and again at the shared exit while the
+                // flag is still zero. The only exception is function-entry
+                // cancellation, which precedes flag initialisation and is
+                // converted to an unconditional drop below.
+                if builder.actor_message_cow_drop_flags.contains_key(binding) && !is_entry_cancel {
+                    continue;
+                }
                 // This exit is at or downstream of the transfer: the
                 // receiving actor owns the buffer there — no re-admission.
                 if reach.contains(&block) {
@@ -1295,7 +1316,15 @@ pub(super) fn elaborate(
                 let Some(&place) = builder.binding_locals.get(binding) else {
                     continue;
                 };
-                if plan.drops.iter().any(|drop| drop.place == place) {
+                if let Some(existing) = plan.drops.iter_mut().find(|drop| drop.place == place) {
+                    if is_entry_cancel {
+                        // The function-entry cancellation branch precedes the
+                        // entry block's flag zero-initialisation. Dataflow
+                        // proves the mailbox parameter itself Live there, so
+                        // this is an unconditional release; reading the
+                        // not-yet-initialised runtime flag would be undefined.
+                        existing.guard = None;
+                    }
                     continue;
                 }
                 plan.drops.push(ElabDrop {
@@ -4724,7 +4753,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: drop_kind_for(place, ty, None),
-                guard: None,
+                guard: actor_message_cow_drop_flags.get(binding).copied(),
             });
             continue;
         }

@@ -2598,6 +2598,30 @@ fn recv_handler_borrow_only_bytes_param_earns_bytes_drop() {
          CowHeap(Bytes) drop: {:?}",
         pipeline.elaborated_mir
     );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Sink__recv__take")
+        .expect("Sink__recv__take must be present");
+    assert!(
+        handler.drop_plans.iter().all(|(_, plan)| {
+            plan.drops
+                .iter()
+                .filter(|drop| {
+                    matches!(
+                        drop.kind,
+                        hew_mir::DropKind::CowHeap {
+                            release: hew_mir::CowHeapRelease::Bytes
+                        }
+                    )
+                })
+                .count()
+                <= 1
+        }),
+        "one mailbox reference must never produce duplicate Bytes drops in a \
+         single exit plan: {:#?}",
+        handler.drop_plans
+    );
 }
 
 /// Counterfactual: ordinary by-value Hew calls borrow `bytes`; the caller keeps

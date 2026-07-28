@@ -21,8 +21,7 @@ use super::{
     vec_iter_record_init_vec_source, AggregateOwner, BTreeMap, BasicBlock, BindingId, Builder,
     BytesDropDerivation, BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership,
     FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement, Place,
-    ResolvedTy, RootScan, ScopeId, SelectArmKind, SuspendKind, Terminator,
-    FOR_ITER_CURSOR_NAME_PREFIX,
+    ResolvedTy, RootScan, ScopeId, SuspendKind, Terminator, FOR_ITER_CURSOR_NAME_PREFIX,
 };
 
 fn generator_env_snapshot_init_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
@@ -4278,103 +4277,6 @@ fn derive_tuple_projection_forward_transfers(
     proofs
 }
 
-/// Per-binding map from an owned local `bytes` candidate to the block(s)
-/// whose terminator hands its triple to an actor mailbox (`Send` / `Ask` /
-/// `RemoteAsk`, actor-ask arms in `Select` / `SuspendingSelect`, `Join`
-/// branches, and collapsed suspending Ask/RemoteAsk carriers recovered from
-/// `suspend_kinds`) — the forwarding transfer
-/// [`derive_local_bytes_drop_allowed`]'s escape scan already excludes from
-/// `allowed`, WHOLE-FUNCTION, the moment any block reads it there (see that
-/// function's doc: "excluded twice over").
-///
-/// # Why a whole-function exclusion needs a per-exit re-admission map
-///
-/// That exclusion is sound for every exit REACHABLE from the transfer block —
-/// the mailbox `memcpy` really did hand the buffer to the receiving actor, so
-/// a scope-exit drop there would double-free. It is UNSOUND for an exit the
-/// transfer cannot reach: a cooperative-cancellation branch taken before the
-/// handler ever reaches its forwarding `send` (the `CooperateKind::FunctionEntry`
-/// checkpoint fires in the prologue, strictly before every later block) still
-/// owns the untransferred triple, and the whole-function exclusion silently
-/// leaks it — the W60.114 cancellation gap. Mirrors
-/// [`derive_returned_member_transfer_blocks`]'s `ReturnSlot` precedent for
-/// exactly the same reason: a path-insensitive removal is right on the
-/// transfer's own reach and wrong everywhere else, so the elaborator needs the
-/// reach set to re-admit precisely the exits outside it.
-///
-/// Fail-closed: a candidate whose transfer site is not located here (no
-/// `Send`/`Ask`/`RemoteAsk` reads it) maps to nothing and stays under the
-/// path-insensitive exclusion if `allowed` excluded it for some OTHER reason —
-/// leak, never a re-admitted double-free. Over-recording a transfer block only
-/// narrows re-admission (leak-safe); under-recording is closed by scanning
-/// every actor-mailbox carrier in each block's terminator and the exact
-/// collapsed-suspend side-table entry.
-pub(super) fn derive_bytes_actor_transfer_blocks(
-    blocks: &[BasicBlock],
-    suspend_kinds: &HashMap<u32, SuspendKind>,
-    owned_locals: &[(BindingId, String, ResolvedTy)],
-    binding_locals: &HashMap<BindingId, Place>,
-) -> HashMap<BindingId, HashSet<u32>> {
-    let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
-    for (binding, _name, ty) in owned_locals {
-        if !matches!(ty, ResolvedTy::Bytes) {
-            continue;
-        }
-        let Some(place) = binding_locals.get(binding) else {
-            continue;
-        };
-        let Some(local) = base_local(*place) else {
-            continue;
-        };
-        candidate_local_to_binding.insert(local, *binding);
-    }
-    if candidate_local_to_binding.is_empty() {
-        return HashMap::new();
-    }
-    let alias_of =
-        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
-    let mut transfer_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
-    for block in blocks {
-        let values: Vec<Place> = match &block.terminator {
-            Terminator::Send { value, .. }
-            | Terminator::Ask { value, .. }
-            | Terminator::RemoteAsk { value, .. } => vec![*value],
-            Terminator::Suspend { .. } => match suspend_kinds.get(&block.id) {
-                Some(SuspendKind::Ask { value, .. } | SuspendKind::RemoteAsk { value, .. }) => {
-                    vec![*value]
-                }
-                _ => continue,
-            },
-            Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => arms
-                .iter()
-                .filter_map(|arm| match &arm.kind {
-                    SelectArmKind::ActorAsk { value, .. } => Some(*value),
-                    SelectArmKind::StreamNext { .. }
-                    | SelectArmKind::TaskAwait { .. }
-                    | SelectArmKind::ChannelRecv { .. }
-                    | SelectArmKind::AfterTimer { .. } => None,
-                })
-                .collect(),
-            Terminator::Join { branches, .. } => {
-                branches.iter().map(|branch| branch.value).collect()
-            }
-            _ => continue,
-        };
-        for value in values {
-            let Some(local) = base_local(value) else {
-                continue;
-            };
-            let Some(&root) = alias_of.get(&local) else {
-                continue;
-            };
-            let Some(&binding) = candidate_local_to_binding.get(&root) else {
-                continue;
-            };
-            transfer_blocks.entry(binding).or_default().insert(block.id);
-        }
-    }
-    transfer_blocks
-}
 /// W5.021 — fail-closed sole-owner derivation for owned-aggregate **tuple**
 /// bindings (the tuple/record-of-owned-handles drop spine). Returns the subset
 /// of `owned_locals` whose tuple binding still owns its heap members at scope

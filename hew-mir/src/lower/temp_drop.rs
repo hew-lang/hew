@@ -11,8 +11,8 @@ use super::{
     ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
     BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, FieldOffset, HashMap, HashSet,
     Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
-    ResolvedTy, SiteId, StringDropDerivation, StringRetainCondition, StringRetainSite, SuspendKind,
-    Terminator,
+    ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
+    StringRetainSite, SuspendKind, Terminator,
 };
 
 pub(super) fn finalize_string_local_share_intents(
@@ -5217,6 +5217,90 @@ fn apply_bytes_retain_sites(
     }
     *instr_spans = new_spans;
 }
+
+/// Per-binding map from an owned local `bytes` candidate to the block(s)
+/// whose terminator hands its triple to an actor mailbox (`Send` / `Ask` /
+/// `RemoteAsk`, actor-ask arms in `Select` / `SuspendingSelect`, `Join`
+/// branches, and collapsed suspending Ask/RemoteAsk carriers recovered from
+/// `suspend_kinds`) — the forwarding transfer
+/// [`derive_local_bytes_drop_allowed`]'s escape scan already excludes from
+/// `allowed`, whole-function, the moment any block reads it there.
+///
+/// That exclusion is sound for every exit reachable from the transfer block,
+/// but not for a cancellation branch taken before the handler reaches the
+/// transfer. The elaborator uses this map to distinguish those regions.
+///
+/// Fail-closed: an unlocated transfer maps to nothing and stays under the
+/// path-insensitive exclusion. Over-recording only narrows re-admission;
+/// every actor-mailbox carrier and collapsed-suspend side-table entry is
+/// scanned to prevent under-recording.
+pub(super) fn derive_bytes_actor_transfer_blocks(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    owned_locals: &[(BindingId, String, ResolvedTy)],
+    binding_locals: &HashMap<BindingId, Place>,
+) -> HashMap<BindingId, HashSet<u32>> {
+    let mut candidate_local_to_binding: HashMap<u32, BindingId> = HashMap::new();
+    for (binding, _name, ty) in owned_locals {
+        if !matches!(ty, ResolvedTy::Bytes) {
+            continue;
+        }
+        let Some(place) = binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(local) = base_local(*place) else {
+            continue;
+        };
+        candidate_local_to_binding.insert(local, *binding);
+    }
+    if candidate_local_to_binding.is_empty() {
+        return HashMap::new();
+    }
+    let alias_of =
+        propagate_whole_value_alias_roots(blocks, candidate_local_to_binding.keys().copied());
+    let mut transfer_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+    for block in blocks {
+        let values: Vec<Place> = match &block.terminator {
+            Terminator::Send { value, .. }
+            | Terminator::Ask { value, .. }
+            | Terminator::RemoteAsk { value, .. } => vec![*value],
+            Terminator::Suspend { .. } => match suspend_kinds.get(&block.id) {
+                Some(SuspendKind::Ask { value, .. } | SuspendKind::RemoteAsk { value, .. }) => {
+                    vec![*value]
+                }
+                _ => continue,
+            },
+            Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => arms
+                .iter()
+                .filter_map(|arm| match &arm.kind {
+                    SelectArmKind::ActorAsk { value, .. } => Some(*value),
+                    SelectArmKind::StreamNext { .. }
+                    | SelectArmKind::TaskAwait { .. }
+                    | SelectArmKind::ChannelRecv { .. }
+                    | SelectArmKind::AfterTimer { .. } => None,
+                })
+                .collect(),
+            Terminator::Join { branches, .. } => {
+                branches.iter().map(|branch| branch.value).collect()
+            }
+            _ => continue,
+        };
+        for value in values {
+            let Some(local) = base_local(value) else {
+                continue;
+            };
+            let Some(&root) = alias_of.get(&local) else {
+                continue;
+            };
+            let Some(&binding) = candidate_local_to_binding.get(&root) else {
+                continue;
+            };
+            transfer_blocks.entry(binding).or_default().insert(block.id);
+        }
+    }
+    transfer_blocks
+}
+
 pub(super) fn finalize_bytes_ownership(
     raw: &mut RawMirFunction,
     builder: &Builder,
@@ -5231,12 +5315,30 @@ pub(super) fn finalize_bytes_ownership(
         &builder.locals,
         &builder.borrowed_bytes_param_locals,
     );
+    // A mailbox-owned `bytes` parameter conditionally transferred on one CFG
+    // path is deliberately visible to the path-insensitive escape scan, which
+    // excludes its whole alias root. Its actor-message runtime flag is the
+    // stronger path-sensitive authority: the source remains a drop candidate,
+    // the consume edge sets the flag to one, and the sibling live edge observes
+    // zero. Re-admit only exact registered Bytes bindings carrying that flag;
+    // ordinary locals and unguarded actor parameters remain under the
+    // fail-closed escape scan.
+    derivation.allowed.extend(
+        owned_locals_snapshot
+            .iter()
+            .filter(|(binding, _, ty)| {
+                matches!(ty, ResolvedTy::Bytes)
+                    && builder.actor_message_cow_drop_flags.contains_key(binding)
+            })
+            .map(|(binding, _, _)| *binding),
+    );
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
             if matches!(
                 state,
                 dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) {
+            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
+            {
                 derivation.allowed.remove(binding);
             }
         }

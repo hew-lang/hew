@@ -23,6 +23,7 @@
 
 mod support;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
@@ -127,27 +128,31 @@ fn is_block_label(line: &str) -> bool {
             .is_some_and(|token| token.ends_with(':'))
 }
 
-/// Split `body`'s lines into (inside the `cancel_exit:` block, everywhere
-/// else), each rejoined as a newline-separated string.
-fn split_on_cancel_exit(body: &str) -> (String, String) {
-    let mut inside = String::new();
-    let mut outside = String::new();
-    let mut in_cancel_block = false;
+/// Split an LLVM function body into its labelled basic blocks.
+fn basic_blocks(body: &str) -> BTreeMap<String, String> {
+    let mut blocks = BTreeMap::new();
+    let mut current_name: Option<String> = None;
+    let mut current_body = String::new();
     for line in body.lines() {
-        if line.starts_with("cancel_exit:") {
-            in_cancel_block = true;
-        } else if in_cancel_block && (is_block_label(line) || line == "}") {
-            in_cancel_block = false;
+        if is_block_label(line) {
+            if let Some(name) = current_name.take() {
+                blocks.insert(name, std::mem::take(&mut current_body));
+            }
+            current_name = line
+                .split_whitespace()
+                .next()
+                .and_then(|token| token.strip_suffix(':'))
+                .map(str::to_owned);
         }
-        let dest = if in_cancel_block || line.starts_with("cancel_exit:") {
-            &mut inside
-        } else {
-            &mut outside
-        };
-        dest.push_str(line);
-        dest.push('\n');
+        if current_name.is_some() {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
     }
-    (inside, outside)
+    if let Some(name) = current_name {
+        blocks.insert(name, current_body);
+    }
+    blocks
 }
 
 #[test]
@@ -170,12 +175,52 @@ fn cooperate_then_forward_drops_bytes_in_the_cancel_exit_block() {
         "a handler with pre-transfer work must emit a function-entry cooperate \
          checkpoint (a `cancel_exit` block):\n{body}"
     );
-    let (cancel_block, _outside) = split_on_cancel_exit(&body);
+    let blocks = basic_blocks(&body);
+    let cancel_block = blocks
+        .get("cancel_exit")
+        .expect("cancel_exit block must be present");
     assert!(
-        cancel_block.contains("call void @hew_bytes_drop("),
-        "cancellation reached before the forwarding send must release the \
-         still-untransferred handler-owned `bytes` parameter in its OWN \
-         cancel_exit block:\n{cancel_block}\n\nfull function:\n{body}"
+        cancel_block.contains("label %borrow_drop_copy_only"),
+        "cancel_exit must branch to the Bytes copy-mode drop child:\n\
+         {cancel_block}\n\nfull function:\n{body}"
+    );
+    let drop_block = blocks
+        .get("borrow_drop_copy_only")
+        .expect("cancel Bytes drop child must be present");
+    let child_predecessors = blocks
+        .values()
+        .filter(|block| block.contains("label %borrow_drop_copy_only"))
+        .count();
+    assert_eq!(
+        child_predecessors, 1,
+        "borrow_drop_copy_only must have cancel_exit as its unique predecessor: \
+         {blocks:#?}"
+    );
+    let cancel_local_drops = drop_block
+        .lines()
+        .filter(|line| {
+            line.contains("call void @hew_bytes_drop(")
+                && line_reads_local(drop_block, line, "%local_0")
+        })
+        .count();
+    assert_eq!(
+        cancel_local_drops, 1,
+        "the cancellation child must release `%local_0` exactly once:\n\
+         {drop_block}\n\nfull function:\n{body}"
+    );
+    let outside_local_drops = blocks
+        .iter()
+        .filter(|(name, _)| name.as_str() != "borrow_drop_copy_only")
+        .flat_map(|(_, block)| {
+            block.lines().filter(|line| {
+                line.contains("call void @hew_bytes_drop(")
+                    && line_reads_local(block, line, "%local_0")
+            })
+        })
+        .count();
+    assert_eq!(
+        outside_local_drops, 0,
+        "no other block may release the transferred parameter slot:\n{body}"
     );
 }
 
@@ -202,21 +247,19 @@ fn cooperate_then_forward_does_not_drop_bytes_on_the_normal_send_path() {
     // failed delivery (a distinct, pre-existing mechanism this fix does not
     // touch), so the assertion is scoped to the parameter's own slot rather
     // than to every `hew_bytes_drop` call in the function.
-    let (_cancel_block, outside_cancel) = split_on_cancel_exit(&body);
-    let local_0_drop_outside_cancel = outside_cancel.lines().any(|line| {
-        line.contains("call void @hew_bytes_drop(")
-            && outside_cancel
-                .lines()
-                .take_while(|l| *l != line)
-                .last()
-                .is_some()
-            && line_reads_local(&outside_cancel, line, "%local_0")
+    let blocks = basic_blocks(&body);
+    let local_0_drop_outside_cancel = blocks.iter().any(|(name, block)| {
+        name != "borrow_drop_copy_only"
+            && block.lines().any(|line| {
+                line.contains("call void @hew_bytes_drop(")
+                    && line_reads_local(block, line, "%local_0")
+            })
     });
     assert!(
         !local_0_drop_outside_cancel,
         "the successful-forward path transfers the sole `bytes` reference to \
          the recipient's mailbox and must not also drop the parameter slot \
-         `%local_0`:\n{outside_cancel}"
+         `%local_0`:\n{body}"
     );
 }
 

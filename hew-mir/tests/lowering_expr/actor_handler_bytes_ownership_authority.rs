@@ -84,6 +84,28 @@ fn has_bytes_drop(pipeline: &hew_mir::IrPipeline, fn_name: &str, exit_label: &st
         .any(|d| d.contains("Bytes"))
 }
 
+fn bytes_drops_for<'a>(
+    pipeline: &'a hew_mir::IrPipeline,
+    fn_name: &str,
+    exit_label: &str,
+) -> Vec<&'a hew_mir::ElabDrop> {
+    let function = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present in elaborated_mir"));
+    function
+        .drop_plans
+        .iter()
+        .find(|(exit, _)| format!("{exit:?}").starts_with(exit_label))
+        .unwrap_or_else(|| panic!("no {exit_label} exit in {fn_name}"))
+        .1
+        .drops
+        .iter()
+        .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Gap 1 — the invalid-free blocker (caller-side mint predicate)
 // ---------------------------------------------------------------------------
@@ -338,9 +360,12 @@ fn cooperate_then_forward_does_not_source_drop_on_a_successful_send() {
         drops_for(&pipeline, "Forwarder__recv__forward", "Send")
     );
     assert!(
-        !has_bytes_drop(&pipeline, "Forwarder__recv__forward", "Return"),
+        bytes_drops_for(&pipeline, "Forwarder__recv__forward", "Return")
+            .iter()
+            .all(|drop| drop.guard.is_some()),
         "the return exit, reached only after a successful send on this \
-         straight-line handler, must not double-release: {:?}",
+         straight-line handler, may retain only the transfer-suppressed \
+         guarded drop: {:?}",
         drops_for(&pipeline, "Forwarder__recv__forward", "Return")
     );
 }
@@ -374,14 +399,15 @@ fn main() -> i64 { 0 }
         has_bytes_drop(&pipeline, "Forwarder__recv__forward", "Cancel"),
         "cancellation before the suspending ask must release the untransferred bytes"
     );
-    assert!(
-        !has_bytes_drop(&pipeline, "Forwarder__recv__forward", "Suspend"),
-        "the suspending ask transfers ownership into its mailbox carrier"
-    );
-    assert!(
-        !has_bytes_drop(&pipeline, "Forwarder__recv__forward", "Return"),
-        "the resumed return is downstream of the transfer and must not drop again"
-    );
+    for exit in ["Suspend", "Return"] {
+        assert!(
+            bytes_drops_for(&pipeline, "Forwarder__recv__forward", exit)
+                .iter()
+                .all(|drop| drop.guard.is_some()),
+            "{exit} is downstream of the transfer and may retain only a \
+             transfer-suppressed guarded drop"
+        );
+    }
 }
 
 /// Actor-ask payloads nested in suspending select arms and join branches are
@@ -440,12 +466,13 @@ fn main() -> i64 { 0 }
                 continue;
             }
             assert!(
-                !plan
-                    .drops
+                plan.drops
                     .iter()
-                    .any(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes)),
-                "after the select/join carrier submits the payload, the source \
-                 must not drop it again at {exit:?}: {plan:#?}"
+                    .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
+                    .all(|drop| drop.guard.is_some()),
+                "after the select/join carrier submits the payload, only a \
+                 transfer-suppressed guarded source drop may remain at \
+                 {exit:?}: {plan:#?}"
             );
         }
     }
@@ -453,8 +480,9 @@ fn main() -> i64 { 0 }
 
 /// Regression for Opus's branch counterexample. `BindingState::Live` proves
 /// initialisation, not last use: a non-forwarding branch can contain several
-/// Call checkpoints before its final scope-close Goto. None of those Calls may
-/// release `data`; exactly the terminal Goto owns the branch's one release.
+/// Call checkpoints before its final scope-close Goto. None of those
+/// checkpoints may release `data`; the shared Return carries one guarded drop
+/// that fires only on the non-transfer path.
 #[test]
 fn conditional_forward_does_not_drop_before_later_non_transfer_branch_uses() {
     let source = r#"
@@ -503,22 +531,60 @@ fn main() -> i64 { 0 }
         .flat_map(|(_, plan)| &plan.drops)
         .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
         .count();
+    let return_bytes: Vec<_> = f
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, hew_mir::ExitPath::Return { .. }))
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
+        .collect();
     assert_eq!(
         call_drop_count, 0,
         "a sequential call checkpoint is before later uses, not a release boundary: {:#?}",
         f.drop_plans
     );
     assert_eq!(
-        goto_drop_count, 1,
-        "only the non-transfer branch's last-use Goto may release the bytes: {:#?}",
+        goto_drop_count, 0,
+        "the non-transfer Goto must not release before the shared guarded exit: {:#?}",
         f.drop_plans
+    );
+    assert_eq!(
+        return_bytes.len(),
+        1,
+        "the shared exit must contain exactly one Bytes drop: {:#?}",
+        f.drop_plans
+    );
+    assert!(
+        return_bytes[0].guard.is_some(),
+        "the shared Bytes drop must be guarded by the path-local transfer flag"
+    );
+    let flag = return_bytes[0].guard.expect("guard asserted above");
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Forwarder__recv__forward")
+        .expect("Forwarder__recv__forward raw MIR must be present");
+    let flag_writes: Vec<i64> = raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            hew_mir::Instr::ConstI64 { dest, value } if *dest == flag => Some(*value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        flag_writes,
+        [0, 1],
+        "the actor-message Bytes guard must be initialised once and set exactly \
+         once on the consuming branch: {:#?}",
+        raw.blocks
     );
 }
 
-/// The non-transfer release is a one-way CFG-frontier crossing, not "every
-/// Goto after the last read". Nested scope joins and loop back-edges can place
-/// arbitrarily many Gotos before the final merge; only that final merge into
-/// the transfer's downstream region may carry the release.
+/// Nested scope joins and loop back-edges can place arbitrarily many Gotos
+/// before the final merge. None may carry an eager release; the one guarded
+/// shared-exit drop remains the sole authority.
 #[test]
 fn nested_and_looping_non_transfer_paths_release_once_at_the_final_join() {
     let nested = r#"
@@ -577,11 +643,28 @@ fn main() -> i64 { 0 }
             .flat_map(|(_, plan)| &plan.drops)
             .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
             .count();
+        let return_bytes: Vec<_> = f
+            .drop_plans
+            .iter()
+            .filter(|(exit, _)| matches!(exit, hew_mir::ExitPath::Return { .. }))
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
+            .collect();
         assert_eq!(
-            goto_drop_count, 1,
-            "nested joins and loop edges must not accumulate releases before \
-             the one final non-transfer frontier: {:#?}",
+            goto_drop_count, 0,
+            "nested joins and loop edges must not release before the shared \
+             guarded exit: {:#?}",
             f.drop_plans
+        );
+        assert_eq!(
+            return_bytes.len(),
+            1,
+            "the shared exit must carry exactly one Bytes drop: {:#?}",
+            f.drop_plans
+        );
+        assert!(
+            return_bytes[0].guard.is_some(),
+            "the shared Bytes drop must retain its transfer guard"
         );
     }
 }
@@ -638,7 +721,7 @@ fn main() -> i64 { 0 }
         .iter()
         .filter(|(exit, _)| matches!(exit, hew_mir::ExitPath::Cancel { .. }))
         .flat_map(|(_, plan)| &plan.drops)
-        .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
+        .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes) && drop.guard.is_none())
         .count();
     assert_eq!(
         goto_bytes, 0,
@@ -651,8 +734,8 @@ fn main() -> i64 { 0 }
     );
     assert_eq!(
         cancel_bytes, 1,
-        "only pre-construction entry cancellation owns a direct bytes release; \
-         cancellation after Holder construction must leave it to Holder: {:#?}",
+        "only pre-construction entry cancellation owns an unguarded direct \
+         bytes release; later source drops must be transfer-suppressed: {:#?}",
         f.drop_plans
     );
 }
@@ -707,7 +790,7 @@ fn main() -> i64 { 0 }
         .iter()
         .filter(|(exit, _)| matches!(exit, hew_mir::ExitPath::Cancel { .. }))
         .flat_map(|(_, plan)| &plan.drops)
-        .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
+        .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes) && drop.guard.is_none())
         .count();
     assert_eq!(
         goto_bytes, 0,
@@ -717,7 +800,8 @@ fn main() -> i64 { 0 }
     assert!(enum_drops >= 1, "the Option in-place release must remain");
     assert_eq!(
         cancel_bytes, 1,
-        "only pre-construction entry cancellation owns a direct bytes release: {:#?}",
+        "only pre-construction entry cancellation owns an unguarded direct \
+         bytes release: {:#?}",
         f.drop_plans
     );
 }
@@ -758,8 +842,9 @@ fn main() -> i64 { 0 }
         .expect("Forwarder__recv__forward must be present");
     // The not-live recover edge is a `Goto` (F-04 joins straight back into
     // normal control flow); the live-delivery edge is the `Send` itself.
-    // Exactly one of the two release-bearing exits (the recover `Goto`) may
-    // carry the drop; the `Send` — a successful delivery — never does.
+    // The successful delivery sets the guard; the not-live path does not. Both
+    // converge on the shared Return, whose one guarded drop therefore releases
+    // only the undelivered path.
     let send_drop_count = f
         .drop_plans
         .iter()
@@ -774,15 +859,31 @@ fn main() -> i64 { 0 }
         .flat_map(|(_, plan)| &plan.drops)
         .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
         .count();
+    let return_bytes: Vec<_> = f
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, hew_mir::ExitPath::Return { .. }))
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| matches!(drop.ty, hew_types::ResolvedTy::Bytes))
+        .collect();
     assert_eq!(
         send_drop_count, 0,
         "a live delivery transfers ownership; the send exit must not drop: {:#?}",
         f.drop_plans
     );
     assert_eq!(
-        goto_drop_count, 1,
-        "the not-live recover edge must release the undelivered payload \
-         exactly once: {:#?}",
+        goto_drop_count, 0,
+        "the recover edge must defer release to the shared guarded exit: {:#?}",
         f.drop_plans
+    );
+    assert_eq!(
+        return_bytes.len(),
+        1,
+        "the shared exit must carry exactly one Bytes drop: {:#?}",
+        f.drop_plans
+    );
+    assert!(
+        return_bytes[0].guard.is_some(),
+        "the shared Bytes drop must discriminate delivered from undelivered paths"
     );
 }

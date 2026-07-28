@@ -1764,6 +1764,21 @@ impl Builder {
             }
         }
     }
+    fn prepass_note_actor_message_args<'a>(&mut self, args: impl IntoIterator<Item = &'a HirExpr>) {
+        for arg in args {
+            if !matches!(self.subst_ty(&arg.ty), ResolvedTy::Bytes) {
+                continue;
+            }
+            if let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding),
+                ..
+            } = &arg.kind
+            {
+                self.prepass_actor_message_transfer_bindings
+                    .insert(*binding);
+            }
+        }
+    }
     /// Harvest owned-Vec element keys from an expression's type and recurse into
     /// the structural child expressions that may carry a `Vec<owned>` value.
     /// Every visited expr contributes its own `.ty` (so a `Vec<Header>`
@@ -1847,8 +1862,14 @@ impl Builder {
             }
             HirExprKind::ActorSend { receiver, args, .. }
             | HirExprKind::ActorAsk { receiver, args, .. }
-            | HirExprKind::ActorGenStream { receiver, args, .. }
-            | HirExprKind::SpawnedCall {
+            | HirExprKind::ActorGenStream { receiver, args, .. } => {
+                self.prepass_note_actor_message_args(args);
+                self.collect_vec_owned_element_keys_from_expr(receiver);
+                for a in args {
+                    self.collect_vec_owned_element_keys_from_expr(a);
+                }
+            }
+            HirExprKind::SpawnedCall {
                 callee: receiver,
                 args,
                 ..
@@ -1868,6 +1889,7 @@ impl Builder {
                 timeout_ms,
                 ..
             } => {
+                self.prepass_note_actor_message_args(std::iter::once(msg.as_ref()));
                 self.collect_vec_owned_element_keys_from_expr(receiver);
                 self.collect_vec_owned_element_keys_from_expr(msg);
                 self.collect_vec_owned_element_keys_from_expr(timeout_ms);
@@ -1961,6 +1983,7 @@ impl Builder {
                             self.collect_vec_owned_element_keys_from_expr(stream);
                         }
                         hew_hir::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                            self.prepass_note_actor_message_args(args);
                             self.collect_vec_owned_element_keys_from_expr(actor);
                             for arg in args {
                                 self.collect_vec_owned_element_keys_from_expr(arg);
@@ -1981,6 +2004,7 @@ impl Builder {
             }
             HirExprKind::Join(join) => {
                 for branch in &join.branches {
+                    self.prepass_note_actor_message_args(&branch.args);
                     self.collect_vec_owned_element_keys_from_expr(&branch.actor);
                     for arg in &branch.args {
                         self.collect_vec_owned_element_keys_from_expr(arg);
@@ -2434,8 +2458,20 @@ impl Builder {
         binding: BindingId,
         ty: &ResolvedTy,
     ) {
-        if !self.prepass_consumed_bindings.contains(&binding)
-            || super::cow_value_leaf_drop_symbol(ty).is_none()
+        // `string` and `bytes` intentionally have separate sole-owner
+        // admission authorities, but both use the same actor-message transfer
+        // protocol. `cow_value_leaf_drop_symbol` admits only `string`; accept
+        // `bytes` explicitly here so its dedicated BytesTriple drop can carry
+        // the same path-sensitive guard without creating a second drop class.
+        let is_actor_message_cow_leaf =
+            super::cow_value_leaf_drop_symbol(ty).is_some() || matches!(ty, ResolvedTy::Bytes);
+        let may_transfer = self.prepass_consumed_bindings.contains(&binding)
+            || (matches!(ty, ResolvedTy::Bytes)
+                && self
+                    .prepass_actor_message_transfer_bindings
+                    .contains(&binding));
+        if !may_transfer
+            || !is_actor_message_cow_leaf
             || !self.owned_locals.iter().any(|entry| {
                 entry.binding == binding && entry.disposition == Disposition::ScopeExit
             })

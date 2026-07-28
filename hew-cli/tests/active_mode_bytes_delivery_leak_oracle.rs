@@ -171,6 +171,94 @@ fn run_under_leaks(bin: &Path, port: u16, deliveries: usize) -> (usize, usize) {
     summary
 }
 
+const CONDITIONAL_HANDLER_BYTES_SOURCE: &str = r#"
+actor Sink {
+    receive fn take(data: bytes) { println("FORWARDED"); }
+}
+actor Router {
+    let sink: LocalPid<Sink>;
+    receive fn route(data: bytes, forward: bool) {
+        if forward {
+            sink.take(data);
+        } else {
+            let n = data.len();
+            println(n as i64);
+            println("LOCAL");
+        }
+    }
+}
+fn main() -> i64 {
+    let sink = spawn Sink();
+    let router = spawn Router(sink: sink);
+    router.route(b"forward-owner", true);
+    router.route(b"local-owner", false);
+    sleep(100ms);
+    println("DONE");
+    0
+}
+"#;
+
+fn run_conditional_under_leaks(bin: &Path) -> (usize, usize) {
+    let mut child = ChildGuard(
+        Command::new("leaks")
+            .args(["--atExit", "--"])
+            .arg(bin)
+            .env("MallocStackLogging", "1")
+            .env("MallocScribble", "1")
+            .env("MallocPreScribble", "1")
+            .env("MallocGuardEdges", "1")
+            .env("HEW_WORKERS", "2")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|error| panic!("run {} under leaks(1): {error}", bin.display())),
+    );
+    let deadline = Instant::now() + PROCESS_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.0.try_wait().expect("poll conditional Bytes oracle") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "conditional Bytes oracle {} did not finish within {PROCESS_TIMEOUT:?}",
+            bin.display()
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    let mut stdout = String::new();
+    child
+        .0
+        .stdout
+        .take()
+        .expect("conditional Bytes stdout was captured")
+        .read_to_string(&mut stdout)
+        .expect("read conditional Bytes stdout");
+    let mut stderr = String::new();
+    child
+        .0
+        .stderr
+        .take()
+        .expect("conditional Bytes stderr was captured")
+        .read_to_string(&mut stderr)
+        .expect("read conditional Bytes stderr");
+    let report = format!("{stdout}\n{stderr}");
+    for witness in ["FORWARDED", "LOCAL", "DONE"] {
+        assert_eq!(
+            stdout.lines().filter(|line| *line == witness).count(),
+            1,
+            "conditional Bytes oracle did not execute `{witness}` exactly once:\n{report}"
+        );
+    }
+    let summary = parse_leaks_summary(&report)
+        .unwrap_or_else(|| panic!("leaks(1) emitted no parseable summary:\n{report}"));
+    assert!(
+        status.success(),
+        "conditional Bytes handler leaked or failed under guard malloc: \
+         status={status:?}\n{report}"
+    );
+    summary
+}
+
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
@@ -206,5 +294,30 @@ fn active_mode_bytes_delivery_is_exactly_leak_free() {
         run_under_leaks(&high, high_port, HIGH_DELIVERIES),
         (0, 0),
         "every delivered active-mode bytes payload must be released"
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn conditional_handler_bytes_transfer_balances_both_paths() {
+    require_leaks_tool();
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("conditional-handler-bytes-")
+        .tempdir()
+        .expect("create conditional Bytes leak tempdir");
+    let bin = compile_to_native(
+        CONDITIONAL_HANDLER_BYTES_SOURCE,
+        dir.path(),
+        "conditional_handler_bytes",
+    );
+    assert_eq!(
+        run_conditional_under_leaks(&bin),
+        (0, 0),
+        "the forwarded and locally-retained handler paths must each release exactly once"
     );
 }

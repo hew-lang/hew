@@ -3246,37 +3246,6 @@ pub(super) fn derive_local_bytes_drop_allowed(
         retain_sites,
     }
 }
-/// W5.021 — fail-closed sole-owner derivation for owned-aggregate **tuple**
-/// bindings (the tuple/record-of-owned-handles drop spine). Returns the subset
-/// of `owned_locals` whose tuple binding still owns its heap members at scope
-/// exit and therefore earns a `DropKind::TupleInPlace` drop.
-///
-/// This is the tuple analogue of [`derive_owned_record_drop_allowed`]: a tuple
-/// is an inline struct in its binding's alloca; its owned members (pointer
-/// handles like `Stream`/`Sink`, or heap leaves `string`/`bytes`/`Vec`/nested
-/// owned record/enum/tuple) are the heap owners. The escape model is identical
-/// — the tuple is the *owner* and the question is whether it (or one of its
-/// owned members) escapes:
-/// - A whole-value `Move` of the tuple (`let b = a` rebind, or a tail/if-arm
-///   that flows to the return) byte-copies the struct with no retain; that
-///   alias never independently drops, so dropping the original owner exactly
-///   once is correct — UNLESS the alias is what escapes (returned), in which
-///   case the escapee owns the members now.
-/// - A `TupleFieldLoad` reads one element out. Reading a `BitCopy` element is
-///   harmless. Reading an OWNED element (a pointer handle or a heap leaf)
-///   shares its owner with no retain; if that loaded element then escapes into
-///   an owning sink (e.g. a `let sink = __tuple_N.0` destructure binder that
-///   itself owns and drops the handle), the tuple must NOT drop it. This is the
-///   canonical `__tuple_N` destructure-temp case (DEFECT #3): the element
-///   binders own the handles, so the whole-tuple temp is excluded.
-///
-/// Fail-closed: a tuple binding is admitted IFF its whole-value alias set is
-/// never read into an owning sink (except the benign `Move` hand-off) AND no
-/// owned element loaded from it escapes. Anything the prover cannot positively
-/// clear is excluded — it leaks, never double-frees. A `TupleFieldLoad` reading
-/// the tuple is an INTERIOR read (it seeds an element binder for the escape
-/// rule, it does not escape the whole tuple). LESSONS:
-/// drop-allowset-from-value-flow, raii-null-after-move, cleanup-all-exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct InstrSite {
     block: u32,
@@ -4293,6 +4262,37 @@ fn derive_tuple_projection_forward_transfers(
     proofs
 }
 
+/// W5.021 — fail-closed sole-owner derivation for owned-aggregate **tuple**
+/// bindings (the tuple/record-of-owned-handles drop spine). Returns the subset
+/// of `owned_locals` whose tuple binding still owns its heap members at scope
+/// exit and therefore earns a `DropKind::TupleInPlace` drop.
+///
+/// This is the tuple analogue of [`derive_owned_record_drop_allowed`]: a tuple
+/// is an inline struct in its binding's alloca; its owned members (pointer
+/// handles like `Stream`/`Sink`, or heap leaves `string`/`bytes`/`Vec`/nested
+/// owned record/enum/tuple) are the heap owners. The escape model is identical
+/// — the tuple is the *owner* and the question is whether it (or one of its
+/// owned members) escapes:
+/// - A whole-value `Move` of the tuple (`let b = a` rebind, or a tail/if-arm
+///   that flows to the return) byte-copies the struct with no retain; that
+///   alias never independently drops, so dropping the original owner exactly
+///   once is correct — UNLESS the alias is what escapes (returned), in which
+///   case the escapee owns the members now.
+/// - A `TupleFieldLoad` reads one element out. Reading a `BitCopy` element is
+///   harmless. Reading an OWNED element (a pointer handle or a heap leaf)
+///   shares its owner with no retain; if that loaded element then escapes into
+///   an owning sink (e.g. a `let sink = __tuple_N.0` destructure binder that
+///   itself owns and drops the handle), the tuple must NOT drop it. This is the
+///   canonical `__tuple_N` destructure-temp case (DEFECT #3): the element
+///   binders own the handles, so the whole-tuple temp is excluded.
+///
+/// Fail-closed: a tuple binding is admitted IFF its whole-value alias set is
+/// never read into an owning sink (except the benign `Move` hand-off) AND no
+/// owned element loaded from it escapes. Anything the prover cannot positively
+/// clear is excluded — it leaks, never double-frees. A `TupleFieldLoad` reading
+/// the tuple is an INTERIOR read (it seeds an element binder for the escape
+/// rule, it does not escape the whole tuple). LESSONS:
+/// drop-allowset-from-value-flow, raii-null-after-move, cleanup-all-exits.
 #[allow(
     clippy::too_many_lines,
     reason = "four sequential single-purpose passes (candidate collection, \

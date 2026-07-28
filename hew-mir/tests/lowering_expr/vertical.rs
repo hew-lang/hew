@@ -1,4 +1,4 @@
-use hew_hir::{lower_program, verify_hir, HirDiagnosticKind, ResolutionCtx};
+use hew_hir::{lower_program, verify_hir, HirDiagnosticKind, IntentKind, ResolutionCtx};
 use hew_mir::{
     lower_hir_module, CmpPred, FloatWidth, Instr, MirCheck, MirDiagnosticKind, MirStatement, Place,
     Terminator, TrapKind,
@@ -990,6 +990,101 @@ fn conditional_heap_resource_move_keeps_flag_guarded_record_drop() {
     );
 }
 
+/// A direct String-record construction can satisfy the syntactic ingress proof
+/// used by the conditional-record protocol even when its declared type is a
+/// `#[resource]`. The marker is authoritative for the flag: this binding gets
+/// exactly the affine/resource guard, never a second zero-only
+/// conditional-record flag. Because the record owns a string field, teardown
+/// still uses the recursive `RecordInPlace` helper rather than the scalar
+/// close-only path.
+#[test]
+fn direct_string_resource_move_has_only_resource_flag_authority() {
+    let p = lower_source(
+        r#"
+        #[resource]
+        type Token { text: string }
+        impl Token {
+            fn close(self) {
+                let _ = self.text.len();
+            }
+        }
+        fn sink(token: Token) {
+            token.close();
+        }
+        fn run(flag: bool) {
+            let token = Token { text: "payload".to_upper() };
+            if flag {
+                sink(token);
+            }
+        }
+    "#,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "a direct String resource transfer must lower cleanly: {:?}",
+        p.diagnostics
+    );
+    let run = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "run")
+        .expect("run function present");
+    let drops = run
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .collect::<Vec<_>>();
+    let affine_guard = drops
+        .iter()
+        .find_map(|drop| {
+            (drop.kind == hew_mir::DropKind::RecordInPlace)
+                .then_some(drop.guard)
+                .flatten()
+        })
+        .expect("the conditional resource transfer needs one affine guard");
+    assert!(
+        drops
+            .iter()
+            .all(|drop| drop.kind != hew_mir::DropKind::Resource),
+        "a field-bearing resource must not bypass recursive teardown through \
+         the scalar close-only path: \
+         {run:#?}"
+    );
+
+    let checked = p
+        .checked_mir
+        .iter()
+        .find(|f| f.name == "run")
+        .expect("run checked MIR present");
+    let zero_init_places = checked
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::ConstI64 { dest, value: 0 } => Some(*dest),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        zero_init_places,
+        std::collections::HashSet::from([affine_guard]),
+        "the resource binding must not receive a second, zero-only \
+         conditional-record flag: {checked:#?}"
+    );
+    assert!(
+        checked
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::ConstI64 { dest, value: 1 } if *dest == affine_guard
+            )),
+        "the direct transfer must execute the resource flag handoff: \
+         {checked:#?}"
+    );
+}
+
 /// Control for the flag scoping: a `#[resource]` consumed UNCONDITIONALLY (a
 /// single straight-line `close()`) reaches its exit at `Consumed`, so the
 /// per-exit dataflow filter EXCLUDES it entirely — no scope-exit resource
@@ -1661,6 +1756,804 @@ fn fn_has_record_inplace_drop(pipeline: &hew_mir::IrPipeline, fn_name: &str) -> 
         })
 }
 
+/// Mailbox delivery transfers a fresh string owner into the receive frame.
+/// Even a completely ignored parameter must therefore have one unguarded
+/// scope-exit release; ordinary by-value string parameters remain borrows and
+/// do not take this actor-only path.
+#[test]
+fn recv_handler_ignored_string_param_earns_scope_exit_drop() {
+    let pipeline = lower_source(
+        r#"
+        actor Sink {
+            var seen: i64;
+            receive fn take(label: string) { seen = seen + 1; }
+        }
+        fn main() -> i64 {
+            let sink = spawn Sink(seen: 0);
+            sink.take("unused".to_upper());
+            0
+        }
+        "#,
+    );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "Sink__recv__take")
+        .expect("receive handler present");
+    assert!(
+        handler
+            .drop_plans
+            .iter()
+            .any(|(_, plan)| plan.drops.iter().any(|drop| matches!(
+                drop.kind,
+                hew_mir::DropKind::CowHeap { .. }
+            ) && drop.guard.is_none())),
+        "an ignored mailbox-owned string must earn one unguarded handler-exit drop: {:?}",
+        handler.drop_plans
+    );
+}
+
+/// A mailbox-owned string moved into actor state on one branch and merely read
+/// on the other reaches the shared return as `MaybeConsumed`. The elaborated
+/// drop must survive behind one runtime flag, and both flag values must be
+/// present in realized MIR: zero at entry, one immediately on the transfer
+/// path.
+#[test]
+fn recv_handler_conditional_string_transfer_uses_guarded_drop() {
+    let pipeline = lower_source(
+        r#"
+        actor Keeper {
+            var seen: i64;
+            var last: string;
+            receive fn take(label: string, keep: bool) {
+                if keep {
+                    last = label;
+                } else {
+                    seen = seen + label.len();
+                }
+            }
+        }
+        fn main() -> i64 {
+            let keeper = spawn Keeper(seen: 0, last: "seed");
+            keeper.take("next".to_upper(), true);
+            0
+        }
+        "#,
+    );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "Keeper__recv__take")
+        .expect("receive handler present");
+    let guard = handler
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .find_map(|drop| {
+            matches!(drop.kind, hew_mir::DropKind::CowHeap { .. })
+                .then_some(drop.guard)
+                .flatten()
+        })
+        .expect("conditional mailbox string drop must carry a runtime guard");
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|f| f.name == "Keeper__recv__take")
+        .expect("checked receive handler present");
+    for expected in [0, 1] {
+        assert!(
+            checked
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .any(|instr| matches!(
+                    instr,
+                    Instr::ConstI64 { dest, value }
+                        if *dest == guard && *value == expected
+                )),
+            "conditional mailbox string flag must be assigned {expected}: {:?}",
+            checked.blocks
+        );
+    }
+}
+
+/// A path-sensitive mailbox drop flag cannot erase the ordinary alias verdict.
+/// On the `Wrap` branch the binding is only read into `RecordInit`, so the flag
+/// remains zero and the handler's guarded scope-exit drop will run. That
+/// aggregate must receive its own retain before construction. On the direct
+/// state-transfer branch, the consuming `BindingRef` arms the flag and no
+/// retain is needed.
+#[test]
+fn recv_handler_conditional_record_ingress_retains_before_guarded_drop() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var held: Wrap;
+            var last: string;
+            receive fn route(label: string, wrap: bool) {
+                if wrap {
+                    held = Wrap { name: label };
+                } else {
+                    last = label;
+                }
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Fan__recv__route")
+        .expect("receive handler raw MIR present");
+    let record_block = raw
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .instructions
+                .iter()
+                .any(|instr| matches!(instr, Instr::RecordInit { .. }))
+        })
+        .expect("record-ingress branch present");
+    let record_index = record_block
+        .instructions
+        .iter()
+        .position(|instr| matches!(instr, Instr::RecordInit { .. }))
+        .expect("record init index");
+    assert!(
+        record_block.instructions[..record_index]
+            .iter()
+            .any(|instr| matches!(
+                instr,
+                Instr::StringRetain {
+                    value: Place::Local(0),
+                    condition: hew_mir::StringRetainCondition::Always,
+                }
+            )),
+        "the unconsumed mailbox string copied into a record must be retained \
+         before the aggregate becomes an owner: {:?}",
+        record_block.instructions
+    );
+
+    let direct_store_block = raw
+        .blocks
+        .iter()
+        .find(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::ActorStateFieldStore {
+                        field_offset: hew_mir::FieldOffset(1),
+                        src: Place::Local(0)
+                    }
+                )
+            })
+        })
+        .expect("direct state-transfer branch present");
+    assert!(
+        direct_store_block
+            .instructions
+            .iter()
+            .any(|instr| matches!(instr, Instr::ConstI64 { value: 1, .. })),
+        "the direct ownership-transfer branch must arm its drop flag: {:?}",
+        direct_store_block.instructions
+    );
+    assert!(
+        direct_store_block
+            .instructions
+            .iter()
+            .all(|instr| !matches!(instr, Instr::StringRetain { .. })),
+        "an armed direct handoff must not mint an unbalanced extra owner: {:?}",
+        direct_store_block.instructions
+    );
+
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "Fan__recv__route")
+        .expect("receive handler elaborated MIR present");
+    assert!(
+        handler
+            .drop_plans
+            .iter()
+            .any(|(_, plan)| plan.drops.iter().any(|drop| matches!(
+                drop.kind,
+                hew_mir::DropKind::CowHeap { .. }
+            ) && drop.guard.is_some())),
+        "the retained read branch and armed handoff branch must converge on one \
+         guarded source drop: {:?}",
+        handler.drop_plans
+    );
+}
+
+/// A cyclic record ingress carries the exact actor-state leaf path while
+/// retaining each borrowed incoming string. The overwrite helper releases the
+/// old String owner even on equal-pointer replacement, balancing one mint
+/// against one release on every iteration.
+#[test]
+fn recv_handler_loop_carried_record_ingress_retains_borrowed_owner() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var seen: i64;
+            var held: Wrap;
+            receive fn route(label: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    held = Wrap { name: label };
+                    i = i + 1;
+                }
+                seen = seen + 1;
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Fan__recv__route")
+        .expect("receive handler raw MIR present");
+    let record_block = raw
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .instructions
+                .iter()
+                .any(|instr| matches!(instr, Instr::RecordInit { .. }))
+        })
+        .expect("loop record-ingress block present");
+    let record_index = record_block
+        .instructions
+        .iter()
+        .position(|instr| matches!(instr, Instr::RecordInit { .. }))
+        .expect("record init index");
+    assert!(
+        matches!(
+            record_block.instructions[..record_index].last(),
+            Some(Instr::StringRetain {
+                value: Place::Local(0),
+                condition: hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress {
+                    state_field: hew_mir::FieldOffset(1),
+                    record_path,
+                    ..
+                },
+            }) if record_path.as_slice() == [hew_mir::FieldOffset(0)]
+        ),
+        "loop-carried ingress must retain the mailbox string at held.name: {:?}",
+        record_block.instructions
+    );
+    assert!(
+        !raw.blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::StringRetain {
+                    condition: hew_mir::StringRetainCondition::Always,
+                    ..
+                }
+            )),
+        "the cyclic ingress must use the actor-state ingress witness: {:?}",
+        raw.blocks
+    );
+
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "Fan__recv__route")
+        .expect("receive handler elaborated MIR present");
+    assert!(
+        handler.drop_plans.iter().any(|(exit, plan)| matches!(
+            exit,
+            hew_mir::ExitPath::Return { .. }
+        ) && plan
+            .drops
+            .iter()
+            .any(|drop| matches!(drop.kind, hew_mir::DropKind::CowHeap { .. }))),
+        "zero iterations must still release the mailbox string through the \
+         handler-exit drop: {:?}",
+        handler.drop_plans
+    );
+}
+
+/// The cyclic state-leaf proof follows the constructed record through
+/// whole-value moves and through enclosing `RecordInit`s. These are the two
+/// minimal shapes that defeated the original adjacent-instruction match and
+/// leaked one string per delivered message.
+#[test]
+fn recv_handler_loop_record_ingress_tracks_move_chains_and_nested_leaf_paths() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        type Inner { name: string }
+        type Outer { inner: Inner }
+        actor Fan {
+            var seen: i64;
+            var flat: Wrap;
+            var nested: Outer;
+            receive fn route_move(label: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    let next = Wrap { name: label };
+                    flat = next;
+                    i = i + 1;
+                }
+                seen = seen + 1;
+            }
+            receive fn route_nested(label: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    nested = Outer { inner: Inner { name: label } };
+                    i = i + 1;
+                }
+                seen = seen + 1;
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+
+    for (handler_name, state_field, expected_path) in [
+        (
+            "Fan__recv__route_move",
+            hew_mir::FieldOffset(1),
+            vec![hew_mir::FieldOffset(0)],
+        ),
+        (
+            "Fan__recv__route_nested",
+            hew_mir::FieldOffset(2),
+            vec![hew_mir::FieldOffset(0), hew_mir::FieldOffset(0)],
+        ),
+    ] {
+        let handler = pipeline
+            .raw_mir
+            .iter()
+            .find(|function| function.name == handler_name)
+            .unwrap_or_else(|| panic!("{handler_name} raw MIR present"));
+        let conditions = handler
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instr| match instr {
+                Instr::StringRetain { condition, .. } => Some(condition),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            conditions.iter().any(|condition| matches!(
+                condition,
+                hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress {
+                    state_field: actual_state,
+                    record_path,
+                    ..
+                } if *actual_state == state_field && *record_path == expected_path
+            )),
+            "{handler_name} must carry the exact actor-state leaf path: {conditions:?}"
+        );
+        assert!(
+            conditions
+                .iter()
+                .all(|condition| !matches!(condition, hew_mir::StringRetainCondition::Always)),
+            "{handler_name} must use the actor-state ingress witness: \
+             {conditions:?}"
+        );
+    }
+}
+
+/// The loop-carried state sink may land in a successor block when a branch
+/// separates construction from assignment. The lineage proof must cross the
+/// split/join while keeping the ingress retain on the path-defining
+/// construction.
+#[test]
+fn recv_handler_loop_record_ingress_tracks_cfg_split_to_state_sink() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var seen: i64;
+            var held: Wrap;
+            receive fn route(label: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    let next = Wrap { name: label };
+                    if i > 0 { seen = seen + 1; }
+                    held = next;
+                    i = i + 1;
+                }
+                seen = seen + 1;
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("split-ingress handler raw MIR present");
+    let record_block = handler
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .instructions
+                .iter()
+                .any(|instr| matches!(instr, Instr::RecordInit { .. }))
+        })
+        .expect("record construction block");
+    let retain_block = handler
+        .blocks
+        .iter()
+        .find(|block| {
+            block.instructions.windows(2).any(|pair| {
+                matches!(
+                    pair,
+                    [
+                        Instr::StringRetain {
+                            condition:
+                                hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress {
+                                    state_field: hew_mir::FieldOffset(1),
+                                    record_path,
+                                    ..
+                                },
+                            ..
+                        },
+                        Instr::RecordInit { .. }
+                    ] if record_path.as_slice() == [hew_mir::FieldOffset(0)]
+                )
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "ingress retain immediately before split-ingress construction: {:?}",
+                handler.blocks
+            )
+        });
+    assert_eq!(
+        record_block.id, retain_block.id,
+        "the ingress retain must stay on the path-defining construction"
+    );
+    assert!(
+        handler.blocks.iter().any(|block| {
+            block.id != retain_block.id
+                && block
+                    .instructions
+                    .iter()
+                    .any(|instr| matches!(instr, Instr::ActorStateFieldStore { .. }))
+        }),
+        "the regression witness must keep construction and state store in different blocks: {:?}",
+        handler.blocks
+    );
+    assert!(
+        handler
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .all(|instr| !matches!(
+                instr,
+                Instr::StringRetain {
+                    condition: hew_mir::StringRetainCondition::Always,
+                    ..
+                }
+            )),
+        "the split cyclic ingress must use the actor-state ingress witness: {:?}",
+        handler.blocks
+    );
+}
+
+/// Alternative constructors and alternative nested leaf paths must keep their
+/// ingress retains on the branch that actually selected that value. Moving
+/// every retain to the shared state store would execute all alternatives.
+#[test]
+fn recv_handler_loop_record_ingress_keeps_branch_selected_paths_exclusive() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        type Inner { name: string }
+        type Pair { left: Inner; right: Inner }
+        actor Fan {
+            var seen: i64;
+            var flat: Wrap;
+            var pair: Pair;
+            var repeated: Pair;
+            receive fn route(label: string, other: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    let next = if i % 2 == 0 {
+                        Wrap { name: label }
+                    } else {
+                        Wrap { name: label }
+                    };
+                    flat = next;
+                    let named = Inner { name: label };
+                    let alternate = Inner { name: other };
+                    let nested = if i % 2 == 0 {
+                        Pair { left: named, right: alternate }
+                    } else {
+                        Pair { left: alternate, right: named }
+                    };
+                    pair = nested;
+                    repeated = Pair {
+                        left: Inner { name: label },
+                        right: Inner { name: label }
+                    };
+                    i = i + 1;
+                }
+                seen = seen + 1;
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("branch-selected handler raw MIR present");
+    let mut conditional = Vec::new();
+    let mut ordinary = 0usize;
+    for block in &handler.blocks {
+        for instr in &block.instructions {
+            if let Instr::StringRetain {
+                condition:
+                    hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress {
+                        state_field,
+                        record_path,
+                    },
+                ..
+            } = instr
+            {
+                conditional.push((block.id, state_field.0, record_path.clone()));
+            }
+            ordinary += usize::from(matches!(
+                instr,
+                Instr::StringRetain {
+                    condition: hew_mir::StringRetainCondition::Always,
+                    ..
+                }
+            ));
+        }
+    }
+    assert_eq!(
+        conditional
+            .iter()
+            .filter(|(_, field, path)| {
+                *field == 1 && path.as_slice() == [hew_mir::FieldOffset(0)]
+            })
+            .count(),
+        2,
+        "each alternative flat constructor needs one exclusive retain: {conditional:?}"
+    );
+    assert_eq!(
+        ordinary, 2,
+        "the two cross-field sources must each fall back to one path-safe owner mint: {:?}",
+        handler.blocks
+    );
+    assert_eq!(
+        conditional
+            .iter()
+            .filter(|(_, field, _)| *field == 3)
+            .count(),
+        2,
+        "the two repeated-source occurrences each need a retain site: {conditional:?}"
+    );
+}
+
+#[test]
+fn recv_handler_nested_branch_ingress_retains_before_join() {
+    let pipeline = lower_source(
+        r"
+        type Inner { name: string }
+        type Outer { inner: Inner }
+        actor Fan {
+            var held: Outer;
+            receive fn route(label: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    let selected = if i % 2 == 0 {
+                        Inner { name: label }
+                    } else {
+                        Inner { name: label }
+                    };
+                    held = Outer { inner: selected };
+                    i = i + 1;
+                }
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("nested branch handler raw MIR present");
+    let retain_blocks = handler
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            block.instructions.iter().any(|instr| matches!(
+                instr,
+                Instr::StringRetain {
+                    condition: hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress {
+                        state_field: hew_mir::FieldOffset(0),
+                        record_path,
+                    },
+                    ..
+                } if record_path.as_slice()
+                    == [hew_mir::FieldOffset(0), hew_mir::FieldOffset(0)]
+            ))
+            .then_some(block.id)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retain_blocks.len(),
+        2,
+        "both nested alternatives need a branch-local retain: {:?}",
+        handler.blocks
+    );
+    assert_ne!(
+        retain_blocks[0], retain_blocks[1],
+        "nested alternatives must not be hoisted together at the common Outer constructor"
+    );
+}
+
+#[test]
+fn recv_handler_branch_to_two_state_fields_mints_one_source_owner() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var one: Wrap;
+            var two: Wrap;
+            receive fn route(label: string, choose_one: bool, count: i64) {
+                var i = 0;
+                while i < count {
+                    let next = Wrap { name: label };
+                    if choose_one { one = next; } else { two = next; }
+                    i = i + 1;
+                }
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("two-state-field handler raw MIR present");
+    let retains = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::StringRetain {
+                    value: Place::Local(0),
+                    condition: hew_mir::StringRetainCondition::Always,
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        retains, 1,
+        "mutually exclusive state sinks must fall back to one source-construction owner mint: \
+         {:?}",
+        handler.blocks
+    );
+}
+
+#[test]
+fn recv_handler_simultaneous_distinct_sources_keep_two_owner_mints() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var one: Wrap;
+            var two: Wrap;
+            receive fn route(left: string, right: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    let first = Wrap { name: left };
+                    let second = Wrap { name: right };
+                    one = first;
+                    two = second;
+                    i = i + 1;
+                }
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("simultaneous-distinct-source handler raw MIR present");
+    let state_ingress_retains =
+        handler
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|instr| {
+                matches!(
+                    instr,
+                    Instr::StringRetain {
+                        condition:
+                            hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+    assert_eq!(
+        state_ingress_retains, 2,
+        "distinct source constructions executed in the same iteration each require an owner mint: \
+         {:?}",
+        handler.blocks
+    );
+}
+
+/// A constructed local that can leave the handler without reaching actor state
+/// still needs an ordinary owner for its scope-exit record drop. The CFG proof
+/// must reject the state-ingress witness on that path.
+#[test]
+fn recv_handler_record_ingress_with_non_store_exit_retains_unconditionally() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var held: Wrap;
+            receive fn route(label: string, store: bool, count: i64) {
+                var i = 0;
+                while i < count {
+                    let next = Wrap { name: label };
+                    if !store { return; }
+                    held = next;
+                    i = i + 1;
+                }
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("early-exit handler raw MIR present");
+    let conditions = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::StringRetain { condition, .. } => Some(condition),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        conditions
+            .iter()
+            .any(|condition| matches!(condition, hew_mir::StringRetainCondition::Always)),
+        "the non-store exit must keep an owner for the local record drop: {conditions:?}"
+    );
+    assert!(
+        conditions.iter().all(|condition| !matches!(
+            condition,
+            hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress { .. }
+        )),
+        "a state-ingress owner is unsound when another path drops the local record: \
+         {conditions:?}"
+    );
+}
+
 /// #2747 — a by-value owned-aggregate RECORD message param delivered to an actor
 /// `receive fn` and only BORROWED (`b.payload.len()`) is a transient
 /// read-and-discard the handler frame solely owns: the mailbox `memcpy`
@@ -1728,6 +2621,418 @@ fn recv_handler_record_param_retained_into_state_suppresses_record_inplace_drop(
          state must NOT earn a RecordInPlace drop — the state_drop_fn is its \
          single free; admitting it double-frees: {:?}",
         pipeline.elaborated_mir
+    );
+}
+
+/// A receive parameter forwarded to another mailbox has exactly one owner on
+/// each transport edge. The handler moves the Vec into the prepared send
+/// carrier, so neither the source parameter nor the carrier may remain in a
+/// scope-exit drop plan. The `Send.cleanup_plan` is the carrier's sole local
+/// release authority and codegen emits it only on the mutually-exclusive
+/// transport-failure edge.
+#[test]
+fn recv_handler_forwarded_vec_param_has_no_scope_exit_double_release() {
+    let pipeline = lower_source(
+        r"
+        actor Consumer {
+            receive fn take(values: Vec<i64>) {}
+        }
+        actor Relay {
+            let consumer: LocalPid<Consumer>;
+            receive fn forward(values: Vec<i64>) {
+                consumer.take(values);
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Relay__recv__forward")
+        .expect("Relay.forward raw MIR present");
+    let (send_value, cleanup_plan) = raw
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::Send {
+                value,
+                cleanup_plan,
+                ..
+            } => Some((*value, cleanup_plan)),
+            _ => None,
+        })
+        .expect("Relay.forward must terminate one block with a mailbox send");
+    assert!(
+        cleanup_plan.is_some(),
+        "the send must carry one typed cleanup witness for the transport-error edge"
+    );
+    let param = Place::Local(0);
+    assert!(
+        raw.blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::Move { dest, src } if *dest == send_value && *src == param
+            )),
+        "the receive parameter must move into the prepared send carrier: {:?}",
+        raw.blocks
+    );
+
+    let elaborated = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "Relay__recv__forward")
+        .expect("Relay.forward elaborated MIR present");
+    assert!(
+        elaborated.drop_plans.iter().all(|(_, plan)| plan
+            .drops
+            .iter()
+            .all(|drop| drop.place != param && drop.place != send_value)),
+        "a delivered or accepted mailbox owner must not retain a handler-exit \
+         release for the source or carrier: {:?}",
+        elaborated.drop_plans
+    );
+
+    assert_eq!(
+        raw.blocks
+            .iter()
+            .filter(|block| matches!(
+                &block.terminator,
+                Terminator::Send {
+                    cleanup_plan: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "the single send terminator must be the sole carrier of the typed \
+         undelivered-send cleanup authority: {:?}",
+        raw.blocks
+    );
+}
+
+/// A local owned record consumed into actor state on only one branch remains
+/// owned by the handler on the sibling branch. Its scope-exit drop therefore
+/// needs a path-sensitive guard: skip after the handoff, fire when the handoff
+/// did not execute. Retracting the binding globally at the state-store site
+/// leaks one string allocation per non-store invocation.
+#[test]
+fn conditional_record_state_handoff_keeps_guarded_scope_exit_drop() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var held: Wrap;
+            receive fn route(label: string, store: bool) -> i64 {
+                let next = Wrap { name: label };
+                if store { held = next; }
+                7
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("conditional-handoff handler elaborated MIR present");
+    let record_drops = handler
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+        .collect::<Vec<_>>();
+    let guard = record_drops.iter().find_map(|drop| drop.guard).expect(
+        "the fresh record needs a guarded scope-exit drop for the sibling \
+             non-consuming edge",
+    );
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("conditional-handoff handler checked MIR present");
+    for expected in [0, 1] {
+        assert!(
+            checked
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .any(|instr| matches!(
+                    instr,
+                    Instr::ConstI64 { dest, value }
+                        if *dest == guard && *value == expected
+                )),
+            "the conditional record owner flag must be assigned {expected}: \
+             {checked:#?}"
+        );
+    }
+}
+
+/// A mutable direct record that is consumed and then overwritten belongs only
+/// to #2301's overwrite protocol. Giving it the conditional-record flag as
+/// well lets assignment reset one family while the other still describes the
+/// moved value, causing a shared-exit double release.
+#[test]
+fn mutable_conditional_record_consume_then_overwrite_uses_only_overwrite_protocol() {
+    let pipeline = lower_source(
+        r#"
+        type Wrap { name: string }
+        fn run(take: bool) -> i64 {
+            var current = Wrap { name: "old".to_upper() };
+            var seen: i64 = 0;
+            if take {
+                let moved: Wrap = current;
+                seen = moved.name.len();
+            }
+            current = Wrap { name: "new".to_upper() };
+            seen + current.name.len()
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "the mutable consume/reassign control must lower cleanly: {:?}",
+        pipeline.diagnostics
+    );
+    let run = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "run")
+        .expect("mutable consume/reassign function present");
+    assert!(
+        run.drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+            .all(|drop| drop.guard.is_none()),
+        "the mutable binding must not acquire a conditional RecordInPlace \
+         guard in addition to #2301's overwrite guard: {run:#?}"
+    );
+    let checked = pipeline
+        .checked_mir
+        .iter()
+        .find(|function| function.name == "run")
+        .expect("mutable consume/reassign checked MIR present");
+    assert!(
+        checked
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(instr, Instr::IntCmp { .. })),
+        "the control must genuinely exercise #2301's guarded old-value \
+         release before overwrite: {checked:#?}"
+    );
+}
+
+/// Mailbox send currently retains/copies a record ingress rather than consuming
+/// the source binding. Keep this shape outside the conditional-owner protocol:
+/// the source remains the ordinary unguarded owner and the send carrier owns
+/// its retained leaves.
+#[test]
+fn conditional_record_send_remains_outside_conditional_owner_protocol() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Sink {
+            receive fn take(value: Wrap) {}
+        }
+        fn route(sink: LocalPid<Sink>, label: string, send_it: bool) {
+            let next = Wrap { name: label };
+            if send_it {
+                sink.take(next);
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "the conditional send control must lower cleanly: {:?}",
+        pipeline.diagnostics
+    );
+    let route = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "route")
+        .expect("conditional send function present");
+    assert!(
+        route
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+            .all(|drop| drop.guard.is_none()),
+        "retain-backed send ingress must not acquire conditional consume \
+         authority: {route:#?}"
+    );
+    assert!(
+        route.statements.iter().any(|statement| matches!(
+            statement,
+            MirStatement::Use {
+                name,
+                intent: IntentKind::Read,
+                ..
+            } if name == "next"
+        )),
+        "the send control must pin the retain-backed Read ingress: {route:#?}"
+    );
+}
+
+/// Aggregate embedding currently records an `AggregateAlias` rather than a
+/// direct conditional consume of the source. Do not broaden W60.115 to this
+/// shape without a separate alias-aware proof; fail closed by withholding the
+/// conditional-record flag.
+#[test]
+fn conditional_record_aggregate_embedding_remains_fail_closed() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        type Envelope { value: Wrap }
+        fn consume(envelope: Envelope) -> i64 {
+            envelope.value.name.len()
+        }
+        fn route(label: string, embed: bool) -> i64 {
+            let next = Wrap { name: label };
+            if embed {
+                consume(Envelope { value: next })
+            } else {
+                0
+            }
+        }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "the conditional aggregate control must lower cleanly: {:?}",
+        pipeline.diagnostics
+    );
+    let route = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "route")
+        .expect("conditional aggregate function present");
+    assert!(
+        route
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+            .all(|drop| drop.guard.is_none()),
+        "aggregate-alias embedding must remain outside the conditional-owner \
+         protocol until it has its own alias-aware proof: {route:#?}"
+    );
+    assert!(
+        route.statements.iter().any(|statement| matches!(
+            statement,
+            MirStatement::AggregateAlias { name, .. } if name == "next"
+        )),
+        "the control must genuinely exercise aggregate embedding: {route:#?}"
+    );
+}
+
+/// The conditional-record flag is deliberately narrower than the general
+/// owned-record value class. A record containing a Vec does not prove that
+/// every field was independently retained by the fresh construction, so a
+/// branch-local consume must not re-admit its source drop behind this flag.
+#[test]
+fn conditional_record_handoff_with_vec_field_is_not_flagged() {
+    let pipeline = lower_source(
+        r"
+        type Bag { name: string, values: Vec<i64> }
+        actor Fan {
+            var held: Bag;
+            receive fn route(label: string, store: bool) -> i64 {
+                let values: Vec<i64> = Vec::new();
+                let next = Bag { name: label, values: values };
+                if store { held = next; }
+                7
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("Vec-record conditional-handoff handler present");
+    assert!(
+        handler
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+            .all(|drop| drop.guard.is_none()),
+        "a record with a collection field must not enter the String/BitCopy \
+         conditional-owner protocol: {handler:#?}"
+    );
+}
+
+/// Merely rebinding a whole record does not establish the direct-construction
+/// ingress proof. Keep it outside the conditional-record flag protocol.
+#[test]
+fn conditional_record_handoff_from_whole_value_rebind_is_not_flagged() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var held: Wrap;
+            receive fn route(input: Wrap, store: bool) -> i64 {
+                let next = input;
+                if store { held = next; }
+                7
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("whole-value rebind handler present");
+    assert!(
+        handler
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| matches!(drop.kind, hew_mir::DropKind::RecordInPlace))
+            .all(|drop| drop.guard.is_none()),
+        "a whole-value rebind must not inherit direct RecordInit ownership \
+         authority: {handler:#?}"
+    );
+}
+
+/// A fresh record that never transfers remains the ordinary sole owner. It
+/// still gets an unguarded `RecordInPlace` scope-exit drop.
+#[test]
+fn unconsumed_fresh_string_record_keeps_unguarded_drop() {
+    let pipeline = lower_source(
+        r#"
+        type Wrap { name: string }
+        fn main() -> i64 {
+            let next = Wrap { name: "local".to_upper() };
+            next.name.len()
+        }
+        "#,
+    );
+    let main = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main elaborated MIR present");
+    assert!(
+        main.drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .any(|drop| {
+                matches!(drop.kind, hew_mir::DropKind::RecordInPlace) && drop.guard.is_none()
+            }),
+        "an unconsumed fresh record must retain its ordinary unguarded drop: \
+         {main:#?}"
     );
 }
 

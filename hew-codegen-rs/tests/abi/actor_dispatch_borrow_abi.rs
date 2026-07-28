@@ -222,34 +222,23 @@ fn define_body<'a>(ll: &'a str, fn_name: &str) -> Vec<&'a str> {
     out
 }
 
-/// GATE 1 — non-owning receive lowering.
+/// GATE 1 — receive-parameter ownership follows the dispatch mode.
 ///
-/// A receive handler binds its message payload as a borrow: the single
-/// final drop of an aliased payload is owned by the envelope and runs once
-/// in `hew_msg_envelope_release` when the node is freed. The handler MUST
-/// therefore emit NO drop / release / free of the received binding — a
-/// handler-side drop on top of the envelope release would double-free a
-/// destructor-bearing payload (String / Vec / Arc).
+/// In copy mode (`borrow_mode == 0`) the handler owns the mailbox-transferred
+/// payload and must release an unused heap-owning parameter at function exit.
+/// In live-borrow mode the envelope remains the sole owner, so the identical
+/// drop must be suppressed and `hew_msg_envelope_release` performs the one
+/// release when the node is freed.
 ///
-/// We pin this at the lowering level: a `string` payload (a non-`Copy`,
-/// heap-owning type) received into a handler with an unused binding emits a
-/// body that does not call any string/collection destructor. An *owned*
-/// param would be dropped at function exit (it would land in the MIR
-/// `owned_locals` set); a borrowed receive binding is never added there
-/// (`hew-mir/src/lower.rs` `lower_params`), so no drop is emitted.
+/// We pin both halves at the lowering level: a `string` payload (a non-`Copy`,
+/// heap-owning type) received into a handler with an unused binding emits one
+/// real destructor in the `borrow_mode == 0` arm, a merge that bypasses it for
+/// live borrows, and no retain or envelope release in the handler itself.
 #[test]
-fn receive_handler_does_not_drop_borrowed_payload() {
+fn receive_handler_payload_drop_is_borrow_mode_gated() {
     let source = r#"
 actor Inbox {
-    var count: i64;
-
-    init() {
-        count = 0;
-    }
-
-    receive fn store(s: string) {
-        count = count + 1;
-    }
+    receive fn store(s: string) {}
 }
 
 fn main() -> i64 {
@@ -266,13 +255,24 @@ fn main() -> i64 {
         "store handler must take (ctx, string payload, borrow_mode i32); got:\n{header}"
     );
 
-    // The handler body must NOT release/drop/free the borrowed payload —
-    // the sole drop is the envelope's `hew_msg_envelope_release` on node
-    // free. Any of these calls inside the handler would double-drop under a
-    // live borrow receive.
     let body = define_body(&ll, "Inbox__recv__store").join("\n");
+    assert!(
+        body.contains("borrow_drop_copy_only") && body.contains("borrow_drop_merge"),
+        "the received parameter's drop must be enclosed by a real \
+         borrow-mode branch and merge; Body:\n{body}"
+    );
+    assert!(
+        body.contains("borrow_drop_is_copy") && body.contains("icmp eq i32 %2"),
+        "the received parameter may be released only when borrow_mode == 0; \
+         Body:\n{body}"
+    );
+    assert_eq!(
+        body.matches("call void @hew_string_drop").count(),
+        1,
+        "copy mode must contain exactly one release for the unused transferred \
+         string parameter; Body:\n{body}"
+    );
     for forbidden in [
-        "hew_string_drop",
         "hew_string_free",
         "hew_vec_free",
         "hew_vec_drop",
@@ -281,29 +281,145 @@ fn main() -> i64 {
     ] {
         assert!(
             !body.contains(forbidden),
-            "GATE 1 violated: receive handler emits `{forbidden}` on the \
-             borrowed payload — the handler must be non-owning (no drop); \
-             the sole drop is hew_msg_envelope_release at node free. \
-             Body:\n{body}"
+            "GATE 1 violated: receive handler emits unrelated ownership action \
+             `{forbidden}`; Body:\n{body}"
         );
     }
 
-    // De-vacuity (P5-RX Stage 2a, A625): a borrowed view that NEVER escapes an
-    // owned sink must also emit NO retain. Without this the test would pass
-    // identically before and after the retain-on-escape mechanism (the binding
-    // was never in `owned_locals`, so it never dropped regardless) — pinning
-    // the *absence* of a spurious `hew_string_clone` makes the test sensitive
-    // to the new sink machinery: a retain mistakenly fired on a non-escaping
-    // view would trip here.
+    // An unused parameter never escapes into another owner, so neither mode
+    // needs a retain.
     assert!(
         !body.contains("hew_string_clone") && !body.contains("borrow_clone"),
         "a non-escaping borrowed view must not be retained — no `hew_string_clone` \
          should appear in the handler. Body:\n{body}"
     );
+}
+
+/// GATE 1 — every wired non-String owning message shape follows the same
+/// copy-owner/live-view split as String.
+///
+/// The MIR elaborator emits distinct releases for bytes, a plain Vec, and a
+/// recursively owning record. All three must sit exclusively in the
+/// `borrow_mode == 0` region: a live envelope receipt owns the complete payload
+/// bytes and its drop glue performs the one recursive release.
+#[test]
+fn receive_handler_non_string_payload_drops_are_borrow_mode_gated() {
+    let source = r#"
+type Packet {
+    label: string;
+    values: Vec<i64>;
+}
+
+actor Inbox {
+    receive fn take_bytes(payload: bytes) {}
+    receive fn take_values(values: Vec<i64>) {}
+    receive fn take_packet(packet: Packet) {}
+}
+
+fn main() -> i64 {
+    0
+}
+"#;
+    let ll = emit_ll_text(&pipeline_from_source(source), "inbox_non_string_recv");
+    for (handler, release) in [
+        ("Inbox__recv__take_bytes", "@hew_bytes_drop"),
+        ("Inbox__recv__take_values", "call void @hew_vec_free("),
+        (
+            "Inbox__recv__take_packet",
+            "@__hew_record_drop_inplace_Packet",
+        ),
+    ] {
+        let body = define_body(&ll, handler).join("\n");
+        assert!(
+            body.contains("borrow_drop_copy_only") && body.contains("borrow_drop_merge"),
+            "{handler} must gate its owning non-String parameter drop through \
+             a real borrow-mode branch+merge; Body:\n{body}"
+        );
+        assert!(
+            body.contains("borrow_drop_is_copy") && body.contains("icmp eq i32 %2"),
+            "{handler} may release its message view only when borrow_mode == 0; \
+             Body:\n{body}"
+        );
+        assert_eq!(
+            body.matches(release).count(),
+            1,
+            "{handler} copy-mode arm must contain exactly one `{release}` call; \
+             Body:\n{body}"
+        );
+        assert!(
+            !body.contains("@hew_msg_envelope_release"),
+            "{handler} must leave envelope release to the scheduler; Body:\n{body}"
+        );
+        assert!(
+            !body.contains("borrow_escape_trap"),
+            "{handler} only discards its message view, so the gated drop is \
+             sufficient and the live-borrow path must remain usable; Body:\n{body}"
+        );
+    }
+}
+
+/// A non-String live-borrow payload cannot yet be retained for re-send.
+///
+/// Copy mode still owns the Vec and may transfer it to the next mailbox, but a
+/// live receipt is an envelope view. Re-sending that view would give two
+/// envelopes the same Vec owner and double-release it, so the handler must trap
+/// before user code whenever `borrow_mode != 0`.
+#[test]
+fn receive_handler_non_string_resend_fails_closed_under_live_borrow() {
+    let source = r#"
+actor Consumer {
+    receive fn take(values: Vec<i64>) {}
+}
+
+actor Relay {
+    let consumer: LocalPid<Consumer>;
+
+    receive fn forward(values: Vec<i64>) {
+        consumer.take(values);
+    }
+}
+
+fn main() -> i64 {
+    0
+}
+"#;
+    let ll = emit_ll_text(&pipeline_from_source(source), "relay_vec_resend");
+    let body = define_body(&ll, "Relay__recv__forward").join("\n");
+
     assert!(
-        !body.contains("borrow_drop_copy_only"),
-        "a non-escaping borrowed view has no owned drop to suppress — the gated \
-         drop machinery must not appear. Body:\n{body}"
+        body.contains("borrow_escape_trap") && body.contains("borrow_escape_ok"),
+        "a non-String re-send must arm the live-borrow fail-closed entry trap; \
+         Body:\n{body}"
+    );
+    assert!(
+        body.contains("borrow_escape_is_live") && body.contains("icmp ne i32 %2"),
+        "the re-send trap must reject only borrow_mode != 0; Body:\n{body}"
+    );
+    assert!(
+        body.contains("call void @hew_panic()") && body.contains("unreachable"),
+        "the live-borrow re-send arm must panic and terminate before the send; \
+         Body:\n{body}"
+    );
+    assert_eq!(
+        body.matches("@hew_actor_send_by_id").count(),
+        1,
+        "copy mode must retain the ordinary single mailbox transfer; Body:\n{body}"
+    );
+    assert!(
+        !body.contains("borrow_drop_copy_only") && !body.contains("borrow_drop_merge"),
+        "the forwarding handler must not keep a scope-exit Vec release after \
+         transferring the payload to the next mailbox; Body:\n{body}"
+    );
+    let fail_label = body
+        .find("actor_send_fail:")
+        .expect("send failure recovery block must be present");
+    let release = body
+        .find("call void @hew_vec_free_owned")
+        .expect("failed send must reclaim its undelivered Vec carrier");
+    assert!(
+        release > fail_label && body.matches("call void @hew_vec_free_owned").count() == 1,
+        "the sole Vec release must be confined to the mutually-exclusive \
+         undelivered-send recovery edge; Body:\n{body}"
     );
 }
 

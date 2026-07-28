@@ -342,7 +342,7 @@ entry:
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
-bb0:                                              ; preds = %after_cooperate
+bb0:                                              ; preds = %borrow_escape_ok
   %field_0_load_ptr = getelementptr inbounds nuw %Boxed, ptr %local_0, i32 0, i32 0
   %field_0_load = load ptr, ptr %field_0_load_ptr, align 4
   store ptr %field_0_load, ptr %local_2, align 4
@@ -369,10 +369,8 @@ bb1:                                              ; preds = %bb0
   br i1 %cond_nz, label %bb2, label %bb3
 
 bb2:                                              ; preds = %bb1
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  call void @hew_trap_with_code(i32 205)
-  call void @llvm.trap()
-  unreachable
+  %borrow_drop_is_copy4 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy4, label %borrow_drop_copy_only5, label %borrow_drop_merge6
 
 bb3:                                              ; preds = %bb1
   %"hew_vec_get_i64 arg0" = load ptr, ptr %local_3, align 4
@@ -388,127 +386,115 @@ bb3:                                              ; preds = %bb1
   %checked_overflow_widen = zext i1 %checked_overflow to i8
   store i64 %checked_result, ptr %local_9, align 8
   store i8 %checked_overflow_widen, ptr %local_10, align 1
-  %cond_load4 = load i8, ptr %local_10, align 1
-  %cond_nz5 = icmp ne i8 %cond_load4, 0
-  br i1 %cond_nz5, label %bb4, label %bb5
+  %cond_load7 = load i8, ptr %local_10, align 1
+  %cond_nz8 = icmp ne i8 %cond_load7, 0
+  br i1 %cond_nz8, label %bb4, label %bb5
 
 bb4:                                              ; preds = %bb3
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  call void @hew_trap_with_code(i32 201)
-  call void @llvm.trap()
-  unreachable
+  %borrow_drop_is_copy9 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy9, label %borrow_drop_copy_only10, label %borrow_drop_merge11
 
 bb5:                                              ; preds = %bb3
-  %field_0_load_ptr6 = getelementptr inbounds nuw %Boxed, ptr %local_0, i32 0, i32 0
-  %field_0_load7 = load ptr, ptr %field_0_load_ptr6, align 4
-  store ptr %field_0_load7, ptr %local_11, align 4
+  %field_0_load_ptr12 = getelementptr inbounds nuw %Boxed, ptr %local_0, i32 0, i32 0
+  %field_0_load13 = load ptr, ptr %field_0_load_ptr12, align 4
+  store ptr %field_0_load13, ptr %local_11, align 4
   store i64 1, ptr %local_12, align 8
-  %"hew_vec_len arg08" = load ptr, ptr %local_11, align 4
-  %hew_vec_len_call9 = call i64 @hew_vec_len(ptr %"hew_vec_len arg08")
-  store i64 %hew_vec_len_call9, ptr %local_13, align 8
-  %cmp_lhs10 = load i64, ptr %local_12, align 8
-  %cmp_rhs11 = load i64, ptr %local_13, align 8
-  %cmp_bit12 = icmp uge i64 %cmp_lhs10, %cmp_rhs11
-  %cmp_zext13 = zext i1 %cmp_bit12 to i8
-  store i8 %cmp_zext13, ptr %local_14, align 1
-  %cond_load14 = load i8, ptr %local_14, align 1
-  %cond_nz15 = icmp ne i8 %cond_load14, 0
-  br i1 %cond_nz15, label %bb6, label %bb7
+  %"hew_vec_len arg014" = load ptr, ptr %local_11, align 4
+  %hew_vec_len_call15 = call i64 @hew_vec_len(ptr %"hew_vec_len arg014")
+  store i64 %hew_vec_len_call15, ptr %local_13, align 8
+  %cmp_lhs16 = load i64, ptr %local_12, align 8
+  %cmp_rhs17 = load i64, ptr %local_13, align 8
+  %cmp_bit18 = icmp uge i64 %cmp_lhs16, %cmp_rhs17
+  %cmp_zext19 = zext i1 %cmp_bit18 to i8
+  store i8 %cmp_zext19, ptr %local_14, align 1
+  %cond_load20 = load i8, ptr %local_14, align 1
+  %cond_nz21 = icmp ne i8 %cond_load20, 0
+  br i1 %cond_nz21, label %bb6, label %bb7
 
 bb6:                                              ; preds = %bb5
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  call void @hew_trap_with_code(i32 205)
-  call void @llvm.trap()
-  unreachable
+  %borrow_drop_is_copy22 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy22, label %borrow_drop_copy_only23, label %borrow_drop_merge24
 
 bb7:                                              ; preds = %bb5
-  %"hew_vec_get_i64 arg016" = load ptr, ptr %local_11, align 4
-  %"hew_vec_get_i64 arg117" = load i64, ptr %local_12, align 8
-  %hew_vec_get_i64_call18 = call i64 @hew_vec_get_i64(ptr %"hew_vec_get_i64 arg016", i64 %"hew_vec_get_i64 arg117")
-  store i64 %hew_vec_get_i64_call18, ptr %local_15, align 8
+  %"hew_vec_get_i64 arg025" = load ptr, ptr %local_11, align 4
+  %"hew_vec_get_i64 arg126" = load i64, ptr %local_12, align 8
+  %hew_vec_get_i64_call27 = call i64 @hew_vec_get_i64(ptr %"hew_vec_get_i64 arg025", i64 %"hew_vec_get_i64 arg126")
+  store i64 %hew_vec_get_i64_call27, ptr %local_15, align 8
   store i64 100, ptr %local_16, align 8
-  %checked_lhs19 = load i64, ptr %local_15, align 8
-  %checked_rhs20 = load i64, ptr %local_16, align 8
-  %with_overflow21 = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs19, i64 %checked_rhs20)
-  %checked_result22 = extractvalue { i64, i1 } %with_overflow21, 0
-  %checked_overflow23 = extractvalue { i64, i1 } %with_overflow21, 1
-  %checked_overflow_widen24 = zext i1 %checked_overflow23 to i8
-  store i64 %checked_result22, ptr %local_17, align 8
-  store i8 %checked_overflow_widen24, ptr %local_18, align 1
-  %cond_load25 = load i8, ptr %local_18, align 1
-  %cond_nz26 = icmp ne i8 %cond_load25, 0
-  br i1 %cond_nz26, label %bb8, label %bb9
+  %checked_lhs28 = load i64, ptr %local_15, align 8
+  %checked_rhs29 = load i64, ptr %local_16, align 8
+  %with_overflow30 = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %checked_lhs28, i64 %checked_rhs29)
+  %checked_result31 = extractvalue { i64, i1 } %with_overflow30, 0
+  %checked_overflow32 = extractvalue { i64, i1 } %with_overflow30, 1
+  %checked_overflow_widen33 = zext i1 %checked_overflow32 to i8
+  store i64 %checked_result31, ptr %local_17, align 8
+  store i8 %checked_overflow_widen33, ptr %local_18, align 1
+  %cond_load34 = load i8, ptr %local_18, align 1
+  %cond_nz35 = icmp ne i8 %cond_load34, 0
+  br i1 %cond_nz35, label %bb8, label %bb9
 
 bb8:                                              ; preds = %bb7
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  call void @hew_trap_with_code(i32 201)
-  call void @llvm.trap()
-  unreachable
+  %borrow_drop_is_copy36 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy36, label %borrow_drop_copy_only37, label %borrow_drop_merge38
 
 bb9:                                              ; preds = %bb7
-  %checked_lhs27 = load i64, ptr %local_9, align 8
-  %checked_rhs28 = load i64, ptr %local_17, align 8
-  %with_overflow29 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs27, i64 %checked_rhs28)
-  %checked_result30 = extractvalue { i64, i1 } %with_overflow29, 0
-  %checked_overflow31 = extractvalue { i64, i1 } %with_overflow29, 1
-  %checked_overflow_widen32 = zext i1 %checked_overflow31 to i8
-  store i64 %checked_result30, ptr %local_19, align 8
-  store i8 %checked_overflow_widen32, ptr %local_20, align 1
-  %cond_load33 = load i8, ptr %local_20, align 1
-  %cond_nz34 = icmp ne i8 %cond_load33, 0
-  br i1 %cond_nz34, label %bb10, label %bb11
+  %checked_lhs39 = load i64, ptr %local_9, align 8
+  %checked_rhs40 = load i64, ptr %local_17, align 8
+  %with_overflow41 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs39, i64 %checked_rhs40)
+  %checked_result42 = extractvalue { i64, i1 } %with_overflow41, 0
+  %checked_overflow43 = extractvalue { i64, i1 } %with_overflow41, 1
+  %checked_overflow_widen44 = zext i1 %checked_overflow43 to i8
+  store i64 %checked_result42, ptr %local_19, align 8
+  store i8 %checked_overflow_widen44, ptr %local_20, align 1
+  %cond_load45 = load i8, ptr %local_20, align 1
+  %cond_nz46 = icmp ne i8 %cond_load45, 0
+  br i1 %cond_nz46, label %bb10, label %bb11
 
 bb10:                                             ; preds = %bb9
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  call void @hew_trap_with_code(i32 201)
-  call void @llvm.trap()
-  unreachable
+  %borrow_drop_is_copy47 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy47, label %borrow_drop_copy_only48, label %borrow_drop_merge49
 
 bb11:                                             ; preds = %bb9
-  %field_0_load_ptr35 = getelementptr inbounds nuw %Boxed, ptr %local_0, i32 0, i32 0
-  %field_0_load36 = load ptr, ptr %field_0_load_ptr35, align 4
-  store ptr %field_0_load36, ptr %local_21, align 4
+  %field_0_load_ptr50 = getelementptr inbounds nuw %Boxed, ptr %local_0, i32 0, i32 0
+  %field_0_load51 = load ptr, ptr %field_0_load_ptr50, align 4
+  store ptr %field_0_load51, ptr %local_21, align 4
   store i64 2, ptr %local_22, align 8
-  %"hew_vec_len arg037" = load ptr, ptr %local_21, align 4
-  %hew_vec_len_call38 = call i64 @hew_vec_len(ptr %"hew_vec_len arg037")
-  store i64 %hew_vec_len_call38, ptr %local_23, align 8
-  %cmp_lhs39 = load i64, ptr %local_22, align 8
-  %cmp_rhs40 = load i64, ptr %local_23, align 8
-  %cmp_bit41 = icmp uge i64 %cmp_lhs39, %cmp_rhs40
-  %cmp_zext42 = zext i1 %cmp_bit41 to i8
-  store i8 %cmp_zext42, ptr %local_24, align 1
-  %cond_load43 = load i8, ptr %local_24, align 1
-  %cond_nz44 = icmp ne i8 %cond_load43, 0
-  br i1 %cond_nz44, label %bb12, label %bb13
+  %"hew_vec_len arg052" = load ptr, ptr %local_21, align 4
+  %hew_vec_len_call53 = call i64 @hew_vec_len(ptr %"hew_vec_len arg052")
+  store i64 %hew_vec_len_call53, ptr %local_23, align 8
+  %cmp_lhs54 = load i64, ptr %local_22, align 8
+  %cmp_rhs55 = load i64, ptr %local_23, align 8
+  %cmp_bit56 = icmp uge i64 %cmp_lhs54, %cmp_rhs55
+  %cmp_zext57 = zext i1 %cmp_bit56 to i8
+  store i8 %cmp_zext57, ptr %local_24, align 1
+  %cond_load58 = load i8, ptr %local_24, align 1
+  %cond_nz59 = icmp ne i8 %cond_load58, 0
+  br i1 %cond_nz59, label %bb12, label %bb13
 
 bb12:                                             ; preds = %bb11
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  call void @hew_trap_with_code(i32 205)
-  call void @llvm.trap()
-  unreachable
+  %borrow_drop_is_copy60 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy60, label %borrow_drop_copy_only61, label %borrow_drop_merge62
 
 bb13:                                             ; preds = %bb11
-  %"hew_vec_get_i64 arg045" = load ptr, ptr %local_21, align 4
-  %"hew_vec_get_i64 arg146" = load i64, ptr %local_22, align 8
-  %hew_vec_get_i64_call47 = call i64 @hew_vec_get_i64(ptr %"hew_vec_get_i64 arg045", i64 %"hew_vec_get_i64 arg146")
-  store i64 %hew_vec_get_i64_call47, ptr %local_25, align 8
-  %checked_lhs48 = load i64, ptr %local_19, align 8
-  %checked_rhs49 = load i64, ptr %local_25, align 8
-  %with_overflow50 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs48, i64 %checked_rhs49)
-  %checked_result51 = extractvalue { i64, i1 } %with_overflow50, 0
-  %checked_overflow52 = extractvalue { i64, i1 } %with_overflow50, 1
-  %checked_overflow_widen53 = zext i1 %checked_overflow52 to i8
-  store i64 %checked_result51, ptr %local_26, align 8
-  store i8 %checked_overflow_widen53, ptr %local_27, align 1
-  %cond_load54 = load i8, ptr %local_27, align 1
-  %cond_nz55 = icmp ne i8 %cond_load54, 0
-  br i1 %cond_nz55, label %bb14, label %bb15
+  %"hew_vec_get_i64 arg063" = load ptr, ptr %local_21, align 4
+  %"hew_vec_get_i64 arg164" = load i64, ptr %local_22, align 8
+  %hew_vec_get_i64_call65 = call i64 @hew_vec_get_i64(ptr %"hew_vec_get_i64 arg063", i64 %"hew_vec_get_i64 arg164")
+  store i64 %hew_vec_get_i64_call65, ptr %local_25, align 8
+  %checked_lhs66 = load i64, ptr %local_19, align 8
+  %checked_rhs67 = load i64, ptr %local_25, align 8
+  %with_overflow68 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 %checked_lhs66, i64 %checked_rhs67)
+  %checked_result69 = extractvalue { i64, i1 } %with_overflow68, 0
+  %checked_overflow70 = extractvalue { i64, i1 } %with_overflow68, 1
+  %checked_overflow_widen71 = zext i1 %checked_overflow70 to i8
+  store i64 %checked_result69, ptr %local_26, align 8
+  store i8 %checked_overflow_widen71, ptr %local_27, align 1
+  %cond_load72 = load i8, ptr %local_27, align 1
+  %cond_nz73 = icmp ne i8 %cond_load72, 0
+  br i1 %cond_nz73, label %bb14, label %bb15
 
 bb14:                                             ; preds = %bb13
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  call void @hew_trap_with_code(i32 201)
-  call void @llvm.trap()
-  unreachable
+  %borrow_drop_is_copy74 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy74, label %borrow_drop_copy_only75, label %borrow_drop_merge76
 
 bb15:                                             ; preds = %bb13
   %ctx_actor_ptr_slot = getelementptr i8, ptr %0, i64 0
@@ -518,15 +504,100 @@ bb15:                                             ; preds = %bb13
   %actor_state_field_0_ptr = getelementptr inbounds nuw %Sink, ptr %actor_state_ptr, i32 0, i32 0
   %actor_state_field_0_src = load i64, ptr %local_26, align 8
   store i64 %actor_state_field_0_src, ptr %actor_state_field_0_ptr, align 8
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  ret i8 0
+  %borrow_drop_is_copy77 = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy77, label %borrow_drop_copy_only78, label %borrow_drop_merge79
 
 cancel_exit:                                      ; preds = %entry
-  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
-  ret i8 0
+  %borrow_drop_is_copy = icmp eq i32 %3, 0
+  br i1 %borrow_drop_is_copy, label %borrow_drop_copy_only, label %borrow_drop_merge
 
 after_cooperate:                                  ; preds = %entry
+  %borrow_escape_is_live = icmp ne i32 %3, 0
+  br i1 %borrow_escape_is_live, label %borrow_escape_trap, label %borrow_escape_ok
+
+borrow_drop_copy_only:                            ; preds = %cancel_exit
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge
+
+borrow_drop_merge:                                ; preds = %borrow_drop_copy_only, %cancel_exit
+  ret i8 0
+
+borrow_escape_ok:                                 ; preds = %after_cooperate
   br label %bb0
+
+borrow_escape_trap:                               ; preds = %after_cooperate
+  call void @hew_panic()
+  unreachable
+
+borrow_drop_copy_only5:                           ; preds = %bb2
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge6
+
+borrow_drop_merge6:                               ; preds = %borrow_drop_copy_only5, %bb2
+  call void @hew_trap_with_code(i32 205)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only10:                          ; preds = %bb4
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge11
+
+borrow_drop_merge11:                              ; preds = %borrow_drop_copy_only10, %bb4
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only23:                          ; preds = %bb6
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge24
+
+borrow_drop_merge24:                              ; preds = %borrow_drop_copy_only23, %bb6
+  call void @hew_trap_with_code(i32 205)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only37:                          ; preds = %bb8
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge38
+
+borrow_drop_merge38:                              ; preds = %borrow_drop_copy_only37, %bb8
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only48:                          ; preds = %bb10
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge49
+
+borrow_drop_merge49:                              ; preds = %borrow_drop_copy_only48, %bb10
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only61:                          ; preds = %bb12
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge62
+
+borrow_drop_merge62:                              ; preds = %borrow_drop_copy_only61, %bb12
+  call void @hew_trap_with_code(i32 205)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only75:                          ; preds = %bb14
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge76
+
+borrow_drop_merge76:                              ; preds = %borrow_drop_copy_only75, %bb14
+  call void @hew_trap_with_code(i32 201)
+  call void @llvm.trap()
+  unreachable
+
+borrow_drop_copy_only78:                          ; preds = %bb15
+  call void @__hew_record_drop_inplace_Boxed(ptr %local_0)
+  br label %borrow_drop_merge79
+
+borrow_drop_merge79:                              ; preds = %borrow_drop_copy_only78, %bb15
+  ret i8 0
 }
 
 define i8 @__original_main() {
@@ -1609,15 +1680,6 @@ entry:
   %ow_new_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %1, i32 0, i32 1
   %ow_new_d0_f1_leaf = load ptr, ptr %ow_new_d0_f1_ptr, align 4
   store ptr %ow_new_d0_f1_leaf, ptr %ow_slot_0, align 4
-  %ow_old_d0_f1_ptr = getelementptr inbounds nuw %CrashInfo, ptr %0, i32 0, i32 1
-  %ow_old_d0_f1_val = load ptr, ptr %ow_old_d0_f1_ptr, align 4
-  %ow_old_d0_f1_int = ptrtoint ptr %ow_old_d0_f1_val to i64
-  %ow_old_d0_f1_cmp0_leaf = load ptr, ptr %ow_slot_0, align 4
-  %ow_old_d0_f1_cmp0_int = ptrtoint ptr %ow_old_d0_f1_cmp0_leaf to i64
-  %ow_old_d0_f1_cmp0_eq = icmp eq i64 %ow_old_d0_f1_int, %ow_old_d0_f1_cmp0_int
-  %ow_old_d0_f1_matched0 = or i1 false, %ow_old_d0_f1_cmp0_eq
-  %ow_old_d0_f1_neutralized = select i1 %ow_old_d0_f1_matched0, ptr null, ptr %ow_old_d0_f1_val
-  store ptr %ow_old_d0_f1_neutralized, ptr %ow_old_d0_f1_ptr, align 4
   call void @__hew_record_drop_inplace_CrashInfo(ptr %0)
   ret void
 }

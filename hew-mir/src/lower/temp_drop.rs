@@ -9,9 +9,10 @@ use super::{
     place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
     shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_layout_key,
     ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
-    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, HashMap, HashSet, Instr,
-    IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction, ResolvedTy,
-    SiteId, StringDropDerivation, StringRetainSite, SuspendKind, Terminator,
+    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, FieldOffset, HashMap, HashSet,
+    Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
+    ResolvedTy, SiteId, StringDropDerivation, StringRetainCondition, StringRetainSite, SuspendKind,
+    Terminator,
 };
 
 pub(super) fn finalize_string_local_share_intents(
@@ -258,17 +259,329 @@ fn string_share_sink_places(instr: &Instr) -> Vec<Place> {
         _ => Vec::new(),
     }
 }
+/// Whether a path-sensitive mailbox-owner flag is definitely armed before an
+/// instruction in the same block.
+///
+/// A consuming `BindingRef` writes `1` immediately before lowering its owning
+/// sink. Looking only backward within the block is deliberately conservative:
+/// if a future lowering separates the write from the sink across a CFG edge,
+/// this returns false and the string derivation retains or excludes the source
+/// instead of assuming that a scope-exit drop will be suppressed.
+fn actor_message_cow_flag_armed_before(
+    block: &BasicBlock,
+    instr_index: usize,
+    flag: Place,
+) -> bool {
+    block.instructions[..instr_index]
+        .iter()
+        .rev()
+        .find_map(|instr| match instr {
+            Instr::ConstI64 { dest, value } if *dest == flag => Some(*value == 1),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ActorStateRecordLeafSink {
+    block: u32,
+    instr_index: usize,
+    state_field: FieldOffset,
+    record_path: Vec<FieldOffset>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ActorStateRecordTraceState {
+    block: u32,
+    instr_index: usize,
+    current: Place,
+    retired: Vec<Place>,
+    record_path: Vec<FieldOffset>,
+    retain_block: u32,
+    retain_instr_index: usize,
+    state_writes_since_retain: Vec<FieldOffset>,
+}
+
+enum ActorStateRecordTraceStep {
+    Continue,
+    Killed,
+    Sink { state_field: FieldOffset },
+}
+
+fn actor_state_record_trace_instr(
+    state: &mut ActorStateRecordTraceState,
+    instr: &Instr,
+    leaf_value: Place,
+) -> Option<ActorStateRecordTraceStep> {
+    let (reads, writes) = crate::dataflow::instr_reads_writes(instr);
+    if reads.iter().any(|place| state.retired.contains(place)) {
+        return None;
+    }
+    let reads_leaf = reads.contains(&leaf_value);
+    let leaf_read_is_sibling_record_share = matches!(
+        instr,
+        Instr::RecordInit { fields, .. }
+            if fields.iter().any(|(_, value)| *value == leaf_value)
+    );
+    if reads_leaf && !leaf_read_is_sibling_record_share {
+        return None;
+    }
+
+    let mut transferred = false;
+    let step = match instr {
+        Instr::Move { dest, src } if *src == state.current => {
+            if !matches!(dest, Place::Local(_)) || writes.contains(&leaf_value) {
+                return None;
+            }
+            state.retired.push(state.current);
+            state.current = *dest;
+            transferred = true;
+            ActorStateRecordTraceStep::Continue
+        }
+        Instr::RecordInit { fields, dest, .. } => {
+            let mut ingress_fields = fields
+                .iter()
+                .filter(|(_, source)| *source == state.current)
+                .map(|(field, _)| *field);
+            if let Some(enclosing_field) = ingress_fields.next() {
+                if ingress_fields.next().is_some()
+                    || !matches!(dest, Place::Local(_))
+                    || writes.contains(&leaf_value)
+                {
+                    return None;
+                }
+                state.record_path.insert(0, enclosing_field);
+                state.retired.push(state.current);
+                state.current = *dest;
+                transferred = true;
+            } else if reads.contains(&state.current) {
+                return None;
+            }
+            ActorStateRecordTraceStep::Continue
+        }
+        Instr::ActorStateFieldStore { field_offset, src } if *src == state.current => {
+            ActorStateRecordTraceStep::Sink {
+                state_field: *field_offset,
+            }
+        }
+        Instr::ActorStateFieldStore { field_offset, .. } => {
+            if !state.state_writes_since_retain.contains(field_offset) {
+                state.state_writes_since_retain.push(*field_offset);
+            }
+            ActorStateRecordTraceStep::Continue
+        }
+        _ if reads.contains(&state.current) => return None,
+        _ => ActorStateRecordTraceStep::Continue,
+    };
+
+    if writes.contains(&leaf_value) {
+        return None;
+    }
+    state.retired.retain(|place| !writes.contains(place));
+    if !transferred && writes.contains(&state.current) {
+        return Some(ActorStateRecordTraceStep::Killed);
+    }
+    Some(step)
+}
+
+/// Whether a consumed aggregate lineage is read again before each Place is
+/// redefined. The checker should already reject this, but keeping the proof
+/// local prevents a future checker/lowering drift from turning a state-ingress
+/// retain into a use-after-transfer.
+fn actor_state_record_lineage_is_reused(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    block_id: u32,
+    instr_index: usize,
+    lineage: Vec<Place>,
+) -> bool {
+    let mut worklist = vec![(block_id, instr_index, lineage)];
+    let mut visited = HashSet::new();
+    while let Some((block_id, instr_index, mut live)) = worklist.pop() {
+        if !visited.insert((block_id, instr_index, live.clone())) {
+            continue;
+        }
+        let Some(block) = block_by_id(blocks, block_id) else {
+            return true;
+        };
+        for instr in &block.instructions[instr_index..] {
+            let (reads, writes) = crate::dataflow::instr_reads_writes(instr);
+            if reads.iter().any(|place| live.contains(place)) {
+                return true;
+            }
+            live.retain(|place| !writes.contains(place));
+            if live.is_empty() {
+                break;
+            }
+        }
+        if live.is_empty() {
+            continue;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .iter()
+            .any(|place| live.contains(place))
+        {
+            return true;
+        }
+        let writes = crate::dataflow::terminator_write_places(&block.terminator);
+        live.retain(|place| !writes.contains(place));
+        if live.is_empty() {
+            continue;
+        }
+        for successor in block.successors() {
+            worklist.push((successor, 0, live.clone()));
+        }
+    }
+    false
+}
+
+fn enqueue_actor_state_record_trace_successors(
+    block: &BasicBlock,
+    suspend_kind: Option<&SuspendKind>,
+    state: &ActorStateRecordTraceState,
+    leaf_value: Place,
+    worklist: &mut Vec<ActorStateRecordTraceState>,
+) -> Option<()> {
+    let terminator_sources = terminator_source_places(&block.terminator, suspend_kind);
+    if terminator_sources
+        .iter()
+        .any(|place| *place == state.current || state.retired.contains(place))
+        || terminator_sources.contains(&leaf_value)
+    {
+        return None;
+    }
+    let terminator_writes = crate::dataflow::terminator_write_places(&block.terminator);
+    if terminator_writes.contains(&leaf_value)
+        || terminator_writes.contains(&state.current)
+        || terminator_writes
+            .iter()
+            .any(|place| state.retired.contains(place))
+    {
+        return None;
+    }
+    let successors = block.successors();
+    if successors.is_empty() {
+        return matches!(block.terminator, Terminator::Trap { .. }).then_some(());
+    }
+    for successor in successors {
+        let mut next = state.clone();
+        next.block = successor;
+        next.instr_index = 0;
+        worklist.push(next);
+    }
+    Some(())
+}
+
+/// Follow one freshly-constructed record owner through all safe CFG paths to
+/// actor-state fields, returning each path-specific retain site and complete
+/// string-leaf path.
+///
+/// The path may cross whole-value `Move`s, enclosing `RecordInit`s, calls, and
+/// control-flow splits/joins. The retain stays at the first leaf-bearing
+/// `RecordInit`, where `leaf_value` is path-defined and still live. Every path
+/// from that construction must reach one compatible state sink, and the target
+/// state field must remain unchanged between the retain and sink. Any unknown
+/// read, killed/escaping path, source redefinition, divergent sink, or post-sink
+/// reuse refuses the state-ingress witness so the caller keeps the ordinary
+/// retain.
+fn actor_state_record_leaf_sinks(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    block_id: u32,
+    record_init_index: usize,
+    record_dest: Place,
+    leaf_value: Place,
+    leaf_field: FieldOffset,
+) -> Option<Vec<ActorStateRecordLeafSink>> {
+    if !matches!(record_dest, Place::Local(_)) || !matches!(leaf_value, Place::Local(_)) {
+        return None;
+    }
+
+    let mut worklist = vec![ActorStateRecordTraceState {
+        block: block_id,
+        instr_index: record_init_index + 1,
+        current: record_dest,
+        retired: Vec::new(),
+        record_path: vec![leaf_field],
+        retain_block: block_id,
+        retain_instr_index: record_init_index,
+        state_writes_since_retain: Vec::new(),
+    }];
+    let mut visited = HashSet::new();
+    let mut sinks = Vec::new();
+
+    while let Some(mut state) = worklist.pop() {
+        if !visited.insert(state.clone()) {
+            continue;
+        }
+        let block = block_by_id(blocks, state.block)?;
+        let mut lineage_live = true;
+        for (instr_index, instr) in block
+            .instructions
+            .iter()
+            .enumerate()
+            .skip(state.instr_index)
+        {
+            match actor_state_record_trace_instr(&mut state, instr, leaf_value)? {
+                ActorStateRecordTraceStep::Continue => {}
+                ActorStateRecordTraceStep::Killed => return None,
+                ActorStateRecordTraceStep::Sink { state_field } => {
+                    if state.state_writes_since_retain.contains(&state_field) {
+                        return None;
+                    }
+                    let mut lineage = state.retired.clone();
+                    lineage.push(state.current);
+                    if actor_state_record_lineage_is_reused(
+                        blocks,
+                        suspend_kinds,
+                        state.block,
+                        instr_index + 1,
+                        lineage,
+                    ) {
+                        return None;
+                    }
+                    let sink = ActorStateRecordLeafSink {
+                        block: state.retain_block,
+                        instr_index: state.retain_instr_index,
+                        state_field,
+                        record_path: state.record_path.clone(),
+                    };
+                    if !sinks.contains(&sink) {
+                        sinks.push(sink);
+                    }
+                    lineage_live = false;
+                    break;
+                }
+            }
+            state.instr_index = instr_index + 1;
+        }
+        if !lineage_live {
+            continue;
+        }
+
+        enqueue_actor_state_record_trace_successors(
+            block,
+            suspend_kinds.get(&block.id),
+            &state,
+            leaf_value,
+            &mut worklist,
+        )?;
+    }
+
+    (!sinks.is_empty()).then_some(sinks)
+}
+
 fn apply_string_retain_sites(
     blocks: &mut [BasicBlock],
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
     retain_sites: &[StringRetainSite],
 ) {
-    let mut before: HashMap<(u32, usize), Vec<Place>> = HashMap::new();
+    let mut before: HashMap<(u32, usize), Vec<(Place, StringRetainCondition)>> = HashMap::new();
     for site in retain_sites {
         before
             .entry((site.block, site.instr_index))
             .or_default()
-            .push(site.value);
+            .push((site.value, site.condition.clone()));
     }
 
     let old_spans = std::mem::take(instr_spans);
@@ -282,9 +595,12 @@ fn apply_string_retain_sites(
                 .get(&(block.id, u32::try_from(old_index).unwrap_or(u32::MAX)))
                 .copied();
             if let Some(values) = before.get(&(block.id, old_index)) {
-                for value in values {
+                for (value, condition) in values {
                     let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
-                    rewritten.push(Instr::StringRetain { value: *value });
+                    rewritten.push(Instr::StringRetain {
+                        value: *value,
+                        condition: condition.clone(),
+                    });
                     if let Some(span) = span {
                         new_spans.insert((block.id, new_index), span);
                     }
@@ -335,6 +651,7 @@ pub(super) fn derive_cow_sole_owner(
     locals: &[ResolvedTy],
     borrowed_param_locals: &HashSet<u32>,
     parameter_locals: &HashSet<u32>,
+    actor_message_cow_drop_flags: &HashMap<BindingId, Place>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     extern_contracts: &crate::return_provenance::ExternContractTable,
@@ -449,6 +766,7 @@ pub(super) fn derive_cow_sole_owner(
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
     let mut pending_share_sites: Vec<(u32, usize, Place, Vec<BindingId>)> = Vec::new();
+    let mut state_ingress_share_sites: Vec<StringRetainSite> = Vec::new();
     let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
         if let Some(&root) = alias_of.get(&local) {
             excluded.insert(root);
@@ -472,6 +790,21 @@ pub(super) fn derive_cow_sole_owner(
                                         *src,
                                         Vec::new(),
                                     ));
+                                } else if let Some(flag) =
+                                    actor_message_cow_drop_flags.get(&binding)
+                                {
+                                    if !actor_message_cow_flag_armed_before(
+                                        block,
+                                        instr_index,
+                                        *flag,
+                                    ) {
+                                        pending_share_sites.push((
+                                            block.id,
+                                            instr_index,
+                                            *src,
+                                            Vec::new(),
+                                        ));
+                                    }
                                 } else {
                                     handoff_bindings.insert(binding);
                                 }
@@ -500,7 +833,21 @@ pub(super) fn derive_cow_sole_owner(
                         alias_of.contains_key(&dest_local) && matches!(dest, Place::Local(_))
                     });
                     if src_is_member && !dest_is_member {
-                        note_escape(src_local, &mut excluded_roots);
+                        let root = alias_of.get(&src_local).copied().unwrap_or(src_local);
+                        let binding = candidate_local_to_binding.get(&root).copied();
+                        if let Some(flag) =
+                            binding.and_then(|id| actor_message_cow_drop_flags.get(&id))
+                        {
+                            if !actor_message_cow_flag_armed_before(block, instr_index, *flag) {
+                                // This is a copy into a new owner, not a
+                                // path-marked handoff. Mint that owner
+                                // explicitly so the guarded source drop
+                                // remains balanced.
+                                pending_share_sites.push((block.id, instr_index, *src, Vec::new()));
+                            }
+                        } else {
+                            note_escape(src_local, &mut excluded_roots);
+                        }
                     }
                 }
                 continue;
@@ -523,7 +870,22 @@ pub(super) fn derive_cow_sole_owner(
                     if borrowed_alias_of.contains_key(&local) {
                         pending_share_sites.push((block.id, instr_index, field.src, Vec::new()));
                     } else if alias_of.contains_key(&local) {
-                        note_escape(local, &mut excluded_roots);
+                        let root = alias_of.get(&local).copied().unwrap_or(local);
+                        let binding = candidate_local_to_binding.get(&root).copied();
+                        if let Some(flag) =
+                            binding.and_then(|id| actor_message_cow_drop_flags.get(&id))
+                        {
+                            if !actor_message_cow_flag_armed_before(block, instr_index, *flag) {
+                                pending_share_sites.push((
+                                    block.id,
+                                    instr_index,
+                                    field.src,
+                                    Vec::new(),
+                                ));
+                            }
+                        } else {
+                            note_escape(local, &mut excluded_roots);
+                        }
                     }
                 }
             }
@@ -570,8 +932,77 @@ pub(super) fn derive_cow_sole_owner(
                     };
                     let source_local = base_local(values[0]).unwrap_or(root);
                     if share_needs_retain(source_local, block.id, instr_index) {
+                        // Follow whole-value moves and enclosing records to the
+                        // state leaf while keeping the borrowed owner mint at
+                        // the first leaf-bearing constructor, where the source
+                        // remains path-defined and live. The
+                        // overwrite helper releases the old String owner even
+                        // on equal-pointer replacement; every admitted incoming
+                        // borrow therefore mints exactly one replacement owner.
+                        let state_record_ingress = if cyclic_blocks.contains(&block.id) {
+                            match instr {
+                                Instr::RecordInit { fields, dest, .. } => fields
+                                    .iter()
+                                    .filter_map(|(record_field, value)| {
+                                        let local = base_local(*value)?;
+                                        (alias_of.get(&local).copied() == Some(root))
+                                            .then_some((*record_field, *value))
+                                    })
+                                    .map(|(record_field, value)| {
+                                        actor_state_record_leaf_sinks(
+                                            blocks,
+                                            suspend_kinds,
+                                            block.id,
+                                            instr_index,
+                                            *dest,
+                                            value,
+                                            record_field,
+                                        )
+                                        .map(|sinks| (value, sinks))
+                                    })
+                                    .collect::<Option<Vec<_>>>(),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some(sites) = state_record_ingress.filter(|sites| {
+                            !sites.is_empty()
+                                && sites.len() == values.len()
+                                && sites.iter().all(|(_, sinks)| sinks.len() == 1)
+                        }) {
+                            for (value, sinks) in sites {
+                                let sink = sinks
+                                    .into_iter()
+                                    .next()
+                                    .expect("single-sink ingress was checked above");
+                                state_ingress_share_sites.push(StringRetainSite {
+                                    block: sink.block,
+                                    instr_index: sink.instr_index,
+                                    value,
+                                    condition:
+                                        StringRetainCondition::ActorStateRecordBorrowedIngress {
+                                            state_field: sink.state_field,
+                                            record_path: sink.record_path,
+                                        },
+                                    required_bindings: Vec::new(),
+                                });
+                            }
+                            continue;
+                        }
                         for value in values {
                             pending_share_sites.push((block.id, instr_index, value, Vec::new()));
+                        }
+                    } else if let Some(flag) = actor_message_cow_drop_flags.get(&binding) {
+                        if !actor_message_cow_flag_armed_before(block, instr_index, *flag) {
+                            for value in values {
+                                pending_share_sites.push((
+                                    block.id,
+                                    instr_index,
+                                    value,
+                                    Vec::new(),
+                                ));
+                            }
                         }
                     } else {
                         handoff_bindings.insert(binding);
@@ -611,7 +1042,16 @@ pub(super) fn derive_cow_sole_owner(
                     if alias_of.contains_key(&local)
                         && matches!(place, Place::Local(_) | Place::ReturnSlot)
                     {
-                        note_escape(local, &mut excluded_roots);
+                        let root = alias_of.get(&local).copied().unwrap_or(local);
+                        let binding = candidate_local_to_binding.get(&root).copied();
+                        let guarded = binding
+                            .and_then(|id| actor_message_cow_drop_flags.get(&id))
+                            .is_some_and(|flag| {
+                                actor_message_cow_flag_armed_before(block, instr_index, *flag)
+                            });
+                        if !guarded {
+                            note_escape(local, &mut excluded_roots);
+                        }
                     }
                 }
             }
@@ -631,7 +1071,20 @@ pub(super) fn derive_cow_sole_owner(
                         if alias_of.contains_key(&local)
                             && matches!(place, Place::Local(_) | Place::ReturnSlot)
                         {
-                            note_escape(local, &mut excluded_roots);
+                            let root = alias_of.get(&local).copied().unwrap_or(local);
+                            let binding = candidate_local_to_binding.get(&root).copied();
+                            let guarded = binding
+                                .and_then(|id| actor_message_cow_drop_flags.get(&id))
+                                .is_some_and(|flag| {
+                                    actor_message_cow_flag_armed_before(
+                                        block,
+                                        block.instructions.len(),
+                                        *flag,
+                                    )
+                                });
+                            if !guarded {
+                                note_escape(local, &mut excluded_roots);
+                            }
                         }
                     }
                 }
@@ -660,10 +1113,13 @@ pub(super) fn derive_cow_sole_owner(
                 block,
                 instr_index,
                 value,
+                condition: StringRetainCondition::Always,
                 required_bindings,
             },
         )
         .collect::<Vec<_>>();
+
+    retain_sites.extend(state_ingress_share_sites);
 
     // Returning a by-value parameter duplicates the caller's live reference.
     for block in blocks {
@@ -680,6 +1136,7 @@ pub(super) fn derive_cow_sole_owner(
                     block: block.id,
                     instr_index,
                     value: *src,
+                    condition: StringRetainCondition::Always,
                     required_bindings: Vec::new(),
                 });
             }
@@ -717,6 +1174,7 @@ pub(super) fn derive_cow_sole_owner(
                     block: block.id,
                     instr_index,
                     value: *src,
+                    condition: StringRetainCondition::Always,
                     required_bindings: Vec::new(),
                 });
             } else {
@@ -731,6 +1189,7 @@ pub(super) fn derive_cow_sole_owner(
                     block: block.id,
                     instr_index,
                     value: *src,
+                    condition: StringRetainCondition::Always,
                     required_bindings: Vec::new(),
                 });
             }
@@ -2345,6 +2804,7 @@ pub(super) fn finalize_string_ownership(
         &builder.locals,
         &builder.borrowed_string_param_locals,
         &builder.parameter_locals,
+        &builder.actor_message_cow_drop_flags,
         &builder.module_fn_names,
         &builder.module_generic_fn_names,
         &builder.call_scrutinee_provenance.extern_table,
@@ -2364,7 +2824,8 @@ pub(super) fn finalize_string_ownership(
             if matches!(
                 state,
                 dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) {
+            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
+            {
                 derivation.allowed.remove(binding);
             }
         }
@@ -4656,6 +5117,7 @@ mod cow_sole_owner_derivation {
             &[],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4712,6 +5174,7 @@ mod cow_sole_owner_derivation {
             &[],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4765,6 +5228,7 @@ mod cow_sole_owner_derivation {
             &[],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4812,6 +5276,7 @@ mod cow_sole_owner_derivation {
             &[],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4826,6 +5291,7 @@ mod cow_sole_owner_derivation {
                 block: 0,
                 instr_index: 0,
                 value: Place::Local(60),
+                condition: StringRetainCondition::Always,
                 required_bindings: Vec::new(),
             }]
         );
@@ -4862,6 +5328,7 @@ mod cow_sole_owner_derivation {
             ],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4873,6 +5340,7 @@ mod cow_sole_owner_derivation {
                 block: 0,
                 instr_index: 0,
                 value: Place::Local(3),
+                condition: StringRetainCondition::Always,
                 required_bindings: Vec::new(),
             }]
         );
@@ -4896,6 +5364,7 @@ mod cow_sole_owner_derivation {
             &[ResolvedTy::String, ResolvedTy::String, ResolvedTy::String],
             &HashSet::from([2]),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4906,6 +5375,7 @@ mod cow_sole_owner_derivation {
                 block: 0,
                 instr_index: 0,
                 value: Place::Local(2),
+                condition: StringRetainCondition::Always,
                 required_bindings: Vec::new(),
             }]
         );
@@ -4940,6 +5410,7 @@ mod cow_sole_owner_derivation {
             ],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::from(["hew_string_drop".to_string()]),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),

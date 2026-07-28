@@ -70,14 +70,15 @@ pub extern "C" fn hew_clear_error() {
     LAST_ERROR.with(|e| *e.borrow_mut() = None);
 }
 
-/// Process-wide source of non-zero identities for `std::arena::Arena<T>`.
+/// Process-wide source of non-zero identities and key generations for
+/// `std::arena::Arena<T>`.
 ///
-/// Keys carry this identity alongside their slot index and generation, so a
-/// key minted by one arena cannot name the same-shaped slot in another arena.
-/// `u64::MAX` is the exhausted sentinel and is never returned.
-static NEXT_ARENA_INSTANCE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// One token space prevents independently-mutated Arena snapshots from issuing
+/// interchangeable keys. `u64::MAX` is the exhausted sentinel and is never
+/// returned.
+static NEXT_ARENA_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-fn claim_arena_instance_id(counter: &std::sync::atomic::AtomicU64) -> Option<i64> {
+fn claim_arena_identity(counter: &std::sync::atomic::AtomicU64) -> Option<i64> {
     use std::sync::atomic::Ordering;
 
     counter
@@ -102,27 +103,66 @@ fn claim_arena_instance_id(counter: &std::sync::atomic::AtomicU64) -> Option<i64
 /// issuing an aliasing identity.
 #[no_mangle]
 pub extern "C" fn hew_arena_instance_id_new() -> i64 {
-    claim_arena_instance_id(&NEXT_ARENA_INSTANCE_ID).unwrap_or(0)
+    claim_arena_identity(&NEXT_ARENA_TOKEN).unwrap_or(0)
+}
+
+/// Mint a process-unique, positive generation for one inserted Arena key.
+///
+/// Returns `0` after exhaustion. The Hew wrapper treats that sentinel as a
+/// hard insertion failure, so divergent Arena snapshots never alias a key.
+#[no_mangle]
+pub extern "C" fn hew_arena_key_generation_new() -> i64 {
+    claim_arena_identity(&NEXT_ARENA_TOKEN).unwrap_or(0)
 }
 
 #[cfg(test)]
 mod arena_instance_id_tests {
-    use super::claim_arena_instance_id;
+    use super::{claim_arena_identity, hew_arena_instance_id_new, hew_arena_key_generation_new};
+    use std::collections::HashSet;
     use std::sync::atomic::AtomicU64;
 
     #[test]
     fn instance_ids_are_positive_and_distinct() {
         let counter = AtomicU64::new(1);
-        assert_eq!(claim_arena_instance_id(&counter), Some(1));
-        assert_eq!(claim_arena_instance_id(&counter), Some(2));
+        assert_eq!(claim_arena_identity(&counter), Some(1));
+        assert_eq!(claim_arena_identity(&counter), Some(2));
     }
 
     #[test]
     fn instance_id_exhaustion_fails_closed_without_wraparound() {
         let counter = AtomicU64::new(i64::MAX as u64);
-        assert_eq!(claim_arena_instance_id(&counter), Some(i64::MAX));
-        assert_eq!(claim_arena_instance_id(&counter), None);
-        assert_eq!(claim_arena_instance_id(&counter), None);
+        assert_eq!(claim_arena_identity(&counter), Some(i64::MAX));
+        assert_eq!(claim_arena_identity(&counter), None);
+        assert_eq!(claim_arena_identity(&counter), None);
+    }
+
+    #[test]
+    fn exported_arena_tokens_are_unique_under_concurrency() {
+        const THREADS: usize = 8;
+        const IDS_PER_THREAD: usize = 1_024;
+
+        let handles: Vec<_> = (0..THREADS)
+            .map(|thread_index| {
+                std::thread::spawn(move || {
+                    (0..IDS_PER_THREAD)
+                        .map(|index| {
+                            if (index + thread_index) % 2 == 0 {
+                                hew_arena_instance_id_new()
+                            } else {
+                                hew_arena_key_generation_new()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let ids: Vec<_> = handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("arena token worker must not panic"))
+            .collect();
+
+        assert!(ids.iter().all(|id| *id > 0));
+        assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), ids.len());
     }
 }
 

@@ -1,0 +1,27 @@
+// Arena clones are independent snapshots. Keys issued before the clone remain
+// valid in both snapshots, while same-slot inserts after the fork receive
+// distinct generations and fail closed when used against the other snapshot.
+import std::arena::{ Arena };
+
+fn main() {
+    let left: Arena<string> = arena.new();
+    let shared = left.insert("shared");
+    let method_snapshot = left.clone();
+    let right = clone method_snapshot;
+
+    println(left.get(shared).unwrap());
+    println(method_snapshot.get(shared).unwrap());
+    println(right.get(shared).unwrap());
+
+    left.remove(shared);
+    right.remove(shared);
+    let left_key = left.insert("left");
+    let right_key = right.insert("right");
+
+    println(left_key.index == right_key.index);
+    println(left_key.generation != right_key.generation);
+    println(left.get(right_key).is_none());
+    println(right.get(left_key).is_none());
+    println(left.get(left_key).unwrap());
+    println(right.get(right_key).unwrap());
+}

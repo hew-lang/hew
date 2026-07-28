@@ -4601,10 +4601,8 @@ pub enum Instr {
     /// already return `+1`; this marker covers the remaining share points.
     StringRetain {
         value: Place,
-        /// Whether the retain is unconditional or depends on an existing
-        /// actor-state aggregate leaf. Loop-carried record ingress uses the
-        /// conditional form so re-storing the same leaf does not mint an
-        /// orphaned reference on every iteration.
+        /// Whether this is an ordinary share or a proven actor-state record
+        /// ingress carrying the destination leaf path.
         condition: StringRetainCondition,
     },
     /// Explicit checker-admitted numeric `as` cast.
@@ -5634,16 +5632,13 @@ pub struct FieldOffset(pub u32);
 pub enum StringRetainCondition {
     /// Always mint one additional string owner.
     Always,
-    /// Mint an owner only when the current actor-state record leaf differs
-    /// from `value`.
+    /// Mint an owner for a borrowed string entering an actor-state record.
     ///
     /// This is the count-balanced loop-carried `RecordInit` →
-    /// `ActorStateFieldStore` form. The aggregate overwrite helper drops a
-    /// non-alias old leaf and neutralizes an equal old/new alias. Suppressing
-    /// the retain on equality therefore leaves exactly one owner in state,
-    /// while a differing pointer retains the incoming leaf before the old one
-    /// is released.
-    ActorStateRecordFieldDiffers {
+    /// `ActorStateFieldStore` form. String leaves are retained before the old
+    /// record's string owners are released, so equal-pointer self replacement
+    /// remains live without preserving a stale owner.
+    ActorStateRecordBorrowedIngress {
         state_field: FieldOffset,
         /// Full field path from the actor-state record field to the string
         /// leaf. A direct `Wrap.name` is `[0]`; nested record construction

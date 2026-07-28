@@ -11721,8 +11721,13 @@ fn record_overwrite_release_neutralizes_aliased_leaves_before_drop() {
     // unconditional release of the old pointer.
     assert_eq!(
         ir.matches("_neutralized = select i1").count(),
-        2,
-        "one guarded select per heap leaf (string + bytes); IR:\n{ir}"
+        1,
+        "bytes remains alias-neutralised while string releases its old owner; IR:\n{ir}"
+    );
+    assert!(
+        !ir.contains("ow_old_d0_f0_neutralized") && ir.contains("ow_old_d0_f1_neutralized"),
+        "String must reach the drop spine intact while Bytes keeps the existing \
+         leak-over-UAF alias guard; IR:\n{ir}"
     );
     // The drop spine runs AFTER the neutralise pass.
     let neutralize_at = ir

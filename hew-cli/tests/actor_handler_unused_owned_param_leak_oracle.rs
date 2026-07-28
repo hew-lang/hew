@@ -135,6 +135,7 @@ fn loop_carried_record_ingress_source(frames: usize) -> String {
          \x20       var j: i64 = 0;\n\
          \x20       while j < count {{\n\
          \x20           let next = Wrap {{ name: label }};\n\
+         \x20           if j > 0 {{ seen = seen + 1; }}\n\
          \x20           held = next;\n\
          \x20           j = j + 1;\n\
          \x20       }}\n\
@@ -179,6 +180,166 @@ fn nested_loop_carried_record_ingress_source(frames: usize) -> String {
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 87 }}, Err(_) => 88 }}\n\
+         }}\n"
+    )
+}
+
+fn branch_selected_record_ingress_source(frames: usize) -> String {
+    format!(
+        "type Wrap {{ name: string }}\n\
+         actor Fan {{\n\
+         \x20   var seen: i64;\n\
+         \x20   var held: Wrap;\n\
+         \x20   receive fn route(label: string, count: i64) {{\n\
+         \x20       var j: i64 = 0;\n\
+         \x20       while j < count {{\n\
+         \x20           let next = if j > 0 {{\n\
+         \x20               Wrap {{ name: label }}\n\
+         \x20           }} else {{\n\
+         \x20               Wrap {{ name: label }}\n\
+         \x20           }};\n\
+         \x20           held = next;\n\
+         \x20           j = j + 1;\n\
+         \x20       }}\n\
+         \x20       seen = seen + 1;\n\
+         \x20   }}\n\
+         \x20   receive fn total() -> i64 {{ seen + held.name.len() }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let fan = spawn Fan(seen: 0, held: Wrap {{ name: \"seed\" }});\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       fan.route(\"branch\".to_upper(), i % 5);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 89 }}, Err(_) => 90 }}\n\
+         }}\n"
+    )
+}
+
+fn branch_selected_nested_record_ingress_source(frames: usize) -> String {
+    format!(
+        "type Inner {{ name: string }}\n\
+         type Outer {{ inner: Inner }}\n\
+         actor Fan {{\n\
+         \x20   var seen: i64;\n\
+         \x20   var held: Outer;\n\
+         \x20   receive fn route(label: string, count: i64) {{\n\
+         \x20       var j: i64 = 0;\n\
+         \x20       while j < count {{\n\
+         \x20           let inner = if j > 0 {{\n\
+         \x20               Inner {{ name: label }}\n\
+         \x20           }} else {{\n\
+         \x20               Inner {{ name: label }}\n\
+         \x20           }};\n\
+         \x20           let next = Outer {{ inner: inner }};\n\
+         \x20           held = next;\n\
+         \x20           j = j + 1;\n\
+         \x20       }}\n\
+         \x20       seen = seen + 1;\n\
+         \x20   }}\n\
+         \x20   receive fn total() -> i64 {{ seen + held.inner.name.len() }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let fan = spawn Fan(seen: 0, held: Outer {{ inner: Inner {{ name: \"seed\" }} }});\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       fan.route(\"nested-branch\".to_upper(), i % 5);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 93 }}, Err(_) => 94 }}\n\
+         }}\n"
+    )
+}
+
+fn cross_field_swapped_record_ingress_source(frames: usize) -> String {
+    format!(
+        "type Inner {{ name: string }}\n\
+         type Pair {{ left: Inner; right: Inner }}\n\
+         actor Fan {{\n\
+         \x20   var seen: i64;\n\
+         \x20   var held: Pair;\n\
+         \x20   receive fn route(label: string, other: string, count: i64) {{\n\
+         \x20       var j: i64 = 0;\n\
+         \x20       while j < count {{\n\
+         \x20           let named = Inner {{ name: label }};\n\
+         \x20           let alternate = Inner {{ name: other }};\n\
+         \x20           let next = if j % 2 == 0 {{\n\
+         \x20               Pair {{ left: named, right: alternate }}\n\
+         \x20           }} else {{\n\
+         \x20               Pair {{ left: alternate, right: named }}\n\
+         \x20           }};\n\
+         \x20           held = next;\n\
+         \x20           j = j + 1;\n\
+         \x20       }}\n\
+         \x20       seen = seen + 1;\n\
+         \x20   }}\n\
+         \x20   receive fn total() -> i64 {{\n\
+         \x20       seen + held.left.name.len() + held.right.name.len()\n\
+         \x20   }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let fan = spawn Fan(\n\
+         \x20       seen: 0,\n\
+         \x20       held: Pair {{ left: Inner {{ name: \"left\" }}, right: Inner {{ name: \"right\" }} }}\n\
+         \x20   );\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       fan.route(\"named\".to_upper(), \"alternate\".to_upper(), i % 5);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 91 }}, Err(_) => 92 }}\n\
+         }}\n"
+    )
+}
+
+fn shifted_repeated_record_ingress_source(frames: usize) -> String {
+    format!(
+        "type Inner {{ name: string }}\n\
+         type Triple {{ a: Inner; b: Inner; c: Inner }}\n\
+         actor Fan {{\n\
+         \x20   var seen: i64;\n\
+         \x20   var held: Triple;\n\
+         \x20   receive fn route(label: string, other: string, count: i64) {{\n\
+         \x20       var j: i64 = 0;\n\
+         \x20       while j < count {{\n\
+         \x20           let next = if j % 2 == 0 {{\n\
+         \x20               Triple {{\n\
+         \x20                   a: Inner {{ name: other }},\n\
+         \x20                   b: Inner {{ name: label }},\n\
+         \x20                   c: Inner {{ name: label }}\n\
+         \x20               }}\n\
+         \x20           }} else {{\n\
+         \x20               Triple {{\n\
+         \x20                   a: Inner {{ name: label }},\n\
+         \x20                   b: Inner {{ name: label }},\n\
+         \x20                   c: Inner {{ name: other }}\n\
+         \x20               }}\n\
+         \x20           }};\n\
+         \x20           held = next;\n\
+         \x20           j = j + 1;\n\
+         \x20       }}\n\
+         \x20       seen = seen + 1;\n\
+         \x20   }}\n\
+         \x20   receive fn total() -> i64 {{\n\
+         \x20       seen + held.a.name.len() + held.b.name.len() + held.c.name.len()\n\
+         \x20   }}\n\
+         }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let fan = spawn Fan(\n\
+         \x20       seen: 0,\n\
+         \x20       held: Triple {{\n\
+         \x20           a: Inner {{ name: \"a\" }},\n\
+         \x20           b: Inner {{ name: \"b\" }},\n\
+         \x20           c: Inner {{ name: \"c\" }}\n\
+         \x20       }}\n\
+         \x20   );\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       fan.route(\"repeat\".to_upper(), \"other\".to_upper(), i % 5);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 93 }}, Err(_) => 94 }}\n\
          }}\n"
     )
 }
@@ -284,6 +445,26 @@ macos_slope_test!(
     nested_loop_carried_record_ingress_retains_once_per_distinct_state_owner,
     "actor_handler_nested_loop_carried_record_ingress",
     nested_loop_carried_record_ingress_source
+);
+macos_slope_test!(
+    branch_selected_record_ingress_retains_only_the_selected_paths,
+    "actor_handler_branch_selected_record_ingress",
+    branch_selected_record_ingress_source
+);
+macos_slope_test!(
+    branch_selected_nested_record_ingress_retains_before_the_cfg_join,
+    "actor_handler_branch_selected_nested_record_ingress",
+    branch_selected_nested_record_ingress_source
+);
+macos_slope_test!(
+    cross_field_swapped_record_ingress_balances_preserved_owners,
+    "actor_handler_cross_field_swapped_record_ingress",
+    cross_field_swapped_record_ingress_source
+);
+macos_slope_test!(
+    shifted_repeated_record_ingress_preserves_exact_owner_multiplicity,
+    "actor_handler_shifted_repeated_record_ingress",
+    shifted_repeated_record_ingress_source
 );
 
 #[cfg_attr(

@@ -41,7 +41,7 @@
 
 mod support;
 
-use support::leak_slope::{measure_leaks, require_leaks_tool};
+use support::leak_slope::{measure_leaks, measure_leaks_exact, require_leaks_tool};
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -165,6 +165,24 @@ fn main() {\n\
 \x20   print(\"OK\");\n\
 }\n";
 
+const COPY_IN_PROJECTION_SOURCE: &str = "\
+record Holder { items: Vec<string> }\n\
+fn make() -> (Holder, Vec<string>) {\n\
+\x20   (Holder { items: [\"pair-item\"] }, [\"sibling-item\"])\n\
+}\n\
+fn main() {\n\
+\x20   var v: Vec<Holder> = [];\n\
+\x20   v.push(Holder { items: [\"seed-item\"] });\n\
+\x20   let pair = make();\n\
+\x20   v[0] = pair.0;\n\
+\x20   print(pair.0.items[0]);\n\
+\x20   print(\"|\");\n\
+\x20   print(v[0].items[0]);\n\
+\x20   print(\"|\");\n\
+\x20   print(pair.1[0]);\n\
+\x20   print(\"|OK\");\n\
+}\n";
+
 // ── leak measurement plumbing (same shape as vec_push_temp_leak_oracle) ────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and return
@@ -282,6 +300,39 @@ fn vec_index_assign_consumed_bound_local_no_per_frame_leak_slope() {
         index_assign_consumed_bound_source,
         LOW_FRAMES,
         HIGH_FRAMES,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator contract is macOS-only; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn vec_index_assign_projection_copy_in_preserves_source_and_siblings() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("vec-index-assign-projection-copy-in-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(COPY_IN_PROJECTION_SOURCE, dir.path(), "projection_copy_in");
+    let output = support::leak_slope::run_under_malloc_scribble(&bin);
+
+    assert!(
+        output.status.success(),
+        "COPY-IN projection assignment must not poison or double-free pair.0:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "pair-item|pair-item|sibling-item|OK",
+        "COPY-IN must deep-copy into the Vec while leaving both projected source \
+         fields readable"
+    );
+    assert_eq!(
+        measure_leaks_exact(&bin),
+        (0, 0),
+        "COPY-IN projection assignment must release both the Vec clone and pair exactly once"
     );
 }
 

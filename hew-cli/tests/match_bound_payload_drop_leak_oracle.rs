@@ -78,6 +78,44 @@ fn main() {\n\
 \x20   run();\n\
 }\n";
 
+const NESTED_ENUM_CANCEL_SCRIBBLE_SOURCE: &str = r#"
+import std::net;
+
+extern "C" {
+    fn usleep(usec: i32) -> i32;
+}
+
+fn cancellation_window() -> i64 {
+    let result = net.try_parse_endpoint("nested-enum-cancel", "missing-port");
+    match result {
+        Ok(endpoint) => endpoint.port,
+        Err(err) => {
+            let message = net.net_error_message(err);
+            let _ = unsafe { usleep(300000) };
+            message.len()
+        },
+    }
+}
+
+actor Worker {
+    receive fn run() {
+        scope {
+            fork {
+                cancellation_window();
+            };
+            after(20ms) {};
+        };
+    }
+}
+
+fn main() -> i64 {
+    let worker = spawn Worker;
+    worker.run();
+    sleep(500ms);
+    0
+}
+"#;
+
 /// Looped `match`-arm binder for the per-iteration slope probe. Each cycle binds
 /// a FRESH `Some("…".to_upper())` heap payload, borrows it (`!s.is_empty()`), and
 /// returns 1 so the loop is not dead code. The composite's `EnumInPlace` drop is
@@ -210,5 +248,39 @@ fn match_bound_owned_payload_no_double_free_under_malloc_scribble() {
         "g63_match_bound_scribble",
         G63_MATCH_BOUND_SCRIBBLE_SOURCE,
         "m",
+    );
+}
+
+/// A nested enum payload binder is a shallow alias of its parent Result, not a
+/// second owner. Cancellation must drop the parent shell without also walking
+/// the bound `NetError` payload.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the deterministic double-free witness requires the Darwin poisoned allocator"
+)]
+#[test]
+fn nested_enum_payload_cancel_drops_parent_exactly_once() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("nested-enum-cancel-scribble-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        NESTED_ENUM_CANCEL_SCRIBBLE_SOURCE,
+        dir.path(),
+        "nested_enum_cancel",
+    );
+    let output = run_under_malloc_scribble(&bin);
+
+    assert!(
+        output.status.success(),
+        "cancellation must not drop both the shallow NetError binder and its parent Result:\n{}",
+        describe_output(&output)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "the cancellation witness must remain silent:\n{}",
+        describe_output(&output)
     );
 }

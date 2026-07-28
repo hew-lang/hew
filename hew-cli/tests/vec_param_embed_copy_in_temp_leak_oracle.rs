@@ -1002,12 +1002,12 @@ fn nested_and_tuple_projection_moves_neutralize_the_original_carrier_slots() {
         .and_then(|section| section.split("fn i8::fmt").next())
         .expect("tuple MIR section");
     assert!(
-        nested.contains("aggregate_projection_neutralize _0 fields=[0, 0]"),
-        "a two-hop record projection must clear the original carrier leaf; removing second-hop provenance must fail this tooth:\n{nested}"
+        nested.contains("aggregate_projection_neutralize _0 fields=[0, 0] -> _8"),
+        "a two-hop record projection must name the actual terminal field-load destination; flattening the nested path or recording its intermediate `_7` alias must fail this tooth:\n{nested}"
     );
     assert!(
-        tupled.contains("aggregate_projection_neutralize _0 fields=[0]"),
-        "a tuple projection must clear the original carrier leaf; removing TupleIndex propagation must fail this tooth:\n{tupled}"
+        tupled.contains("aggregate_projection_neutralize _0 fields=[0] -> _7"),
+        "a tuple projection must clear the original carrier leaf and name its field-load destination; removing TupleIndex propagation must fail this tooth:\n{tupled}"
     );
     for section in [nested, tupled] {
         assert_eq!(

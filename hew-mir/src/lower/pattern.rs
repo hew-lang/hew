@@ -9,7 +9,7 @@ use super::{
     MirDiagnostic, MirDiagnosticKind, MirStatement, Place, ProjectedPayloadOrigin,
     ProjectedPayloadProvenance, ProjectedPayloadRejectReason, ProjectedScrutinee,
     ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SiteId, Terminator, TrapKind, ValueClass,
-    VecElementRelease,
+    VecElementRelease, SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
 };
 
 /// Chain-wide ownership mode for record/tuple project matches.
@@ -1212,11 +1212,20 @@ impl Builder {
         }
     }
 
-    /// Field-precise owned-field enumeration for a record/tuple match
-    /// destructure scrutinee. For each owned field (non-BitCopy by value-class)
-    /// returns `(field_idx, substituted_type)`. Used by `lower_match_project`
-    /// to compute the set of fields needing explicit-drop emission for the
-    /// partial-extraction case.
+    /// Field-precise heap-owning-field enumeration for a record/tuple match
+    /// destructure scrutinee. For each field that transitively owns heap
+    /// storage, returns `(field_idx, substituted_type)`. Used by
+    /// `lower_match_project` to compute the fields needing explicit-drop
+    /// emission for the partial-extraction case, and by record overwrite
+    /// release to enumerate the leaves that must be discharged.
+    ///
+    /// The layout-aware heap-ownership authority excludes direct
+    /// payload-free/scalar-payload enums: they are non-BitCopy values but own
+    /// no heap, and treating one as an owner makes its absent release symbol
+    /// veto the real owning siblings of a record. A non-BitCopy shape that the
+    /// in-place dispatcher cannot discharge (notably a closure with a hidden
+    /// environment box) remains in the list so its caller fails closed rather
+    /// than silently skipping an unsupported owner.
     pub(crate) fn project_record_owned_field_list(
         &self,
         ty: &ResolvedTy,
@@ -1233,10 +1242,17 @@ impl Builder {
             .enumerate()
             .filter_map(|(idx, (_name, field_ty))| {
                 let substituted = self.subst_ty(field_ty);
-                if ValueClass::of_ty(&substituted, &self.type_classes) == ValueClass::BitCopy {
-                    None
-                } else {
+                let owns_heap = crate::model::ty_owns_heap_mir(
+                    &substituted,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                );
+                let unsupported_non_bitcopy = self.binding_seeds_drop_elaboration(&substituted)
+                    && !self.field_drop_slot_dischargeable(&substituted, &mut HashSet::new());
+                if owns_heap || unsupported_non_bitcopy {
                     u32::try_from(idx).ok().map(|i| (i, substituted))
+                } else {
+                    None
                 }
             })
             .collect()
@@ -3677,6 +3693,47 @@ impl Builder {
         // narrower string/generator/recv markers.
         let vec_iter_next_scrutinee = self.is_vec_iter_next_scrutinee(scrutinee);
 
+        // An enum projected out of a tuple owner can transfer that field's
+        // release authority into the match temp. The ordinary field load is a
+        // byte-copy, so the transfer is completed below by zeroing the tuple
+        // slot and registering the temp as the sole enum owner.
+        let projected_tuple_owner =
+            if let HirExprKind::TupleIndex { tuple, index } = &scrutinee.kind {
+                if let HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(binding),
+                    name,
+                } = &tuple.kind
+                {
+                    let owns_source = self.owned_locals.iter().any(|entry| {
+                        entry.binding == *binding && entry.disposition == Disposition::ScopeExit
+                    });
+                    (owns_source
+                        && arms.iter().all(|arm| arm.guard.is_none())
+                        && super::ty_is_heap_owning_enum_composite(
+                            &self.subst_ty(&scrutinee.ty),
+                            &self.record_field_orders,
+                            &self.enum_layouts,
+                        ))
+                    .then(|| {
+                        u32::try_from(*index).ok().map(|field| {
+                            (
+                                ProjectedScrutinee {
+                                    binding: *binding,
+                                    name: name.clone(),
+                                    ty: self.subst_ty(&tuple.ty),
+                                },
+                                field,
+                            )
+                        })
+                    })
+                    .flatten()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
         // Lower the scrutinee in the entry block. A failure propagates
         // via `?`; the half-built match leaves no dangling block.
         let scrutinee_place = self.lower_value(scrutinee)?;
@@ -3703,7 +3760,49 @@ impl Builder {
         // only a bare owning (non-captured) binding or a proven-ephemeral
         // producer takes the temp-neutralize consume path; a place, a wrapper, a
         // closure-captured binding, or any un-enumerated shape is REJECTED.
-        let scrutinee_origin = self.classify_scrutinee_origin(scrutinee);
+        let mut scrutinee_origin = self.classify_scrutinee_origin(scrutinee);
+        let mut projected_tuple_owner_active = false;
+
+        if let Some((owner, field)) = projected_tuple_owner {
+            let source_root = self
+                .instructions
+                .iter()
+                .rev()
+                .find_map(|instr| match instr {
+                    Instr::TupleFieldLoad {
+                        tuple,
+                        field_index,
+                        dest,
+                    } if *dest == scrutinee_place && *field_index == field => Some(*tuple),
+                    _ => None,
+                });
+            if let Some(source_root) = source_root {
+                let warrant = self.owner_warrant_for_admitted_temp(scrutinee);
+                if !warrant.withholds_mint() {
+                    self.push_instr(Instr::AggregateProjectionNeutralize {
+                        root: source_root,
+                        fields: vec![field],
+                        transferee: scrutinee_place,
+                    });
+                    self.statements.push(MirStatement::AggregateAlias {
+                        binding: owner.binding,
+                        name: owner.name,
+                        site: scrutinee.site,
+                        ty: owner.ty,
+                        partial_projection: true,
+                    });
+                    self.register_synthetic_owned_local(
+                        SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
+                        scrutinee.site,
+                        scrutinee_local,
+                        self.subst_ty(&scrutinee.ty),
+                        warrant,
+                    );
+                    scrutinee_origin = ProjectedPayloadOrigin::EphemeralTemp;
+                    projected_tuple_owner_active = true;
+                }
+            }
+        }
 
         // synthetic owned binding over its temp so the arm-destructured
         // payload is released on every exit edge — most importantly the loop
@@ -3977,14 +4076,21 @@ impl Builder {
                     }
                 }
                 let dest = self.alloc_local(binding.ty.clone());
+                let payload_source = Place::MachineVariant {
+                    local: scrutinee_local,
+                    variant_idx,
+                    field_idx: binding.field_idx,
+                };
                 self.push_instr(Instr::Move {
                     dest,
-                    src: Place::MachineVariant {
-                        local: scrutinee_local,
-                        variant_idx,
-                        field_idx: binding.field_idx,
-                    },
+                    src: payload_source,
                 });
+                if projected_tuple_owner_active && keep_for_drop_elab {
+                    self.push_move_out_neutralize(
+                        payload_source,
+                        crate::model::NeutralizeAuthority::EphemeralTempConsume,
+                    );
+                }
                 // An owned call-carrier scrutinee gets a terminal snapshot
                 // drop on every exit, so a payload binder that MOVES the
                 // payload out must neutralize the variant slot on that arm —
@@ -3992,11 +4098,7 @@ impl Builder {
                 // binder crosses an ownership boundary.
                 self.note_carrier_payload_binder(
                     scrutinee_local,
-                    Place::MachineVariant {
-                        local: scrutinee_local,
-                        variant_idx,
-                        field_idx: binding.field_idx,
-                    },
+                    payload_source,
                     dest,
                     &binding_ty,
                 );

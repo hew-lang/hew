@@ -14075,7 +14075,7 @@ fn lower_instruction_with_cancel_drops(
             lower_neutralize_payload_slot(fn_ctx, *place)?;
             let _ = ctx;
         }
-        Instr::AggregateProjectionNeutralize { root, fields } => {
+        Instr::AggregateProjectionNeutralize { root, fields, .. } => {
             lower_aggregate_projection_neutralize(fn_ctx, *root, fields)?;
             let _ = ctx;
         }

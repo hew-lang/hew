@@ -70,6 +70,62 @@ pub extern "C" fn hew_clear_error() {
     LAST_ERROR.with(|e| *e.borrow_mut() = None);
 }
 
+/// Process-wide source of non-zero identities for `std::arena::Arena<T>`.
+///
+/// Keys carry this identity alongside their slot index and generation, so a
+/// key minted by one arena cannot name the same-shaped slot in another arena.
+/// `u64::MAX` is the exhausted sentinel and is never returned.
+static NEXT_ARENA_INSTANCE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn claim_arena_instance_id(counter: &std::sync::atomic::AtomicU64) -> Option<i64> {
+    use std::sync::atomic::Ordering;
+
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            if next == u64::MAX {
+                None
+            } else if next == i64::MAX as u64 {
+                Some(u64::MAX)
+            } else {
+                Some(next + 1)
+            }
+        })
+        .ok()
+        .and_then(|id| i64::try_from(id).ok())
+        .filter(|id| *id != 0)
+}
+
+/// Mint a process-unique, positive identity for one `std::arena::Arena<T>`.
+///
+/// Returns `0` after the positive `i64` identity space is exhausted. The Hew
+/// wrapper treats that sentinel as a hard construction failure rather than
+/// issuing an aliasing identity.
+#[no_mangle]
+pub extern "C" fn hew_arena_instance_id_new() -> i64 {
+    claim_arena_instance_id(&NEXT_ARENA_INSTANCE_ID).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod arena_instance_id_tests {
+    use super::claim_arena_instance_id;
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn instance_ids_are_positive_and_distinct() {
+        let counter = AtomicU64::new(1);
+        assert_eq!(claim_arena_instance_id(&counter), Some(1));
+        assert_eq!(claim_arena_instance_id(&counter), Some(2));
+    }
+
+    #[test]
+    fn instance_id_exhaustion_fails_closed_without_wraparound() {
+        let counter = AtomicU64::new(i64::MAX as u64);
+        assert_eq!(claim_arena_instance_id(&counter), Some(i64::MAX));
+        assert_eq!(claim_arena_instance_id(&counter), None);
+        assert_eq!(claim_arena_instance_id(&counter), None);
+    }
+}
+
 /// Native no-op for the target-neutral actor metadata registration call.
 ///
 /// The v0.5 LLVM emitter builds one textual module before object emission, so

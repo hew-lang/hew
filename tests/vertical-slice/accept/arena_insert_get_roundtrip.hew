@@ -7,7 +7,7 @@ fn main() {
     let k0 = store.insert("zero");
     let k1 = store.insert("one");
     let k2 = store.insert("two");
-    let never: Key<string> = Key { index: 99, generation: 0 };
+    let never: Key<string> = Key { arena_id: 0, index: 99, generation: 0 };
     println(store.get(k0).unwrap());
     println(store.get(k1).unwrap());
     println(store.get(k2).unwrap());

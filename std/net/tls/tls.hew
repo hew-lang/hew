@@ -172,8 +172,7 @@ impl TlsStreamMethods for TlsStream {
     /// Every call site is rewritten to `hew_tls_attach_local`; codegen resolves
     /// the concrete actor's `on_data` / `on_close` protocol IDs and emits the
     /// four-argument runtime ABI. This stub is never lowered.
-    fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>) {
-    }
+    fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>) {}
     fn close(stream: TlsStream) {
         unsafe {
             hew_tls_close(stream)

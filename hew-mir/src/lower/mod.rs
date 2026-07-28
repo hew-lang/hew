@@ -6069,7 +6069,23 @@ impl Builder {
                 && !param_is_consumed
                 && !param_is_owned_carrier
             {
-                if let Place::Local(local) = slot {
+                if self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler {
+                    // A copy-mode actor mailbox transfers its one `bytes`
+                    // refcount into the delivered `BytesTriple`; the receive
+                    // handler frame is therefore the terminal owner. Register
+                    // that parameter like every other handler-owned payload so
+                    // `derive_local_bytes_drop_allowed` emits the balancing
+                    // `hew_bytes_drop` unless the handler forwards the owner.
+                    //
+                    // Ordinary by-value calls remain borrows: their callers
+                    // keep the refcount and are still recorded in
+                    // `borrowed_bytes_param_locals` below. Keeping this split
+                    // at the call-convention boundary mirrors the owned-record
+                    // handler ingress rule and prevents both the active-mode
+                    // read leak and a free-function double-drop.
+                    let owned_ty = self.subst_ty(&param.ty);
+                    self.register_owned_param(param, owned_ty, func.body.scope);
+                } else if let Place::Local(local) = slot {
                     self.borrowed_bytes_param_locals.insert(local);
                 }
             }

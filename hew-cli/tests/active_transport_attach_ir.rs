@@ -35,6 +35,8 @@ actor WebSocketProbe {
     receive fn on_close() {}
 }
 
+fn _observe_borrowed_bytes(data: bytes) {}
+
 fn attach_tcp(listener: net.Listener, handler: LocalPid<TcpProbe>) {
     let conn = listener.accept();
     conn.attach(handler);
@@ -150,5 +152,18 @@ fn inferred_transport_attach_emits_concrete_dispatch_ids() {
     assert_dispatch_contains(
         function_body(&ir, "@__hew_actor_dispatch_WebSocketProbe("),
         websocket_ids,
+    );
+
+    let tcp_on_data = function_body(&ir, "@TcpProbe__recv__on_data(");
+    assert!(
+        tcp_on_data.contains("call void @hew_bytes_drop("),
+        "copy-mode active transport delivery transfers the sole bytes owner \
+         into the receive handler, whose cleanup must release it:\n{tcp_on_data}"
+    );
+    let ordinary_borrow = function_body(&ir, "@_observe_borrowed_bytes(");
+    assert!(
+        !ordinary_borrow.contains("call void @hew_bytes_drop("),
+        "ordinary by-value bytes calls remain caller-owned borrows; the \
+         active-handler ingress rule must not widen:\n{ordinary_borrow}"
     );
 }

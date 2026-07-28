@@ -2554,6 +2554,100 @@ fn recv_handler_record_ingress_with_non_store_exit_retains_unconditionally() {
     );
 }
 
+/// True when the named function earns a top-level `bytes` release.
+fn fn_has_bytes_drop(pipeline: &hew_mir::IrPipeline, fn_name: &str) -> bool {
+    pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present in elaborated_mir"))
+        .drop_plans
+        .iter()
+        .any(|(_, plan)| {
+            plan.drops.iter().any(|drop| {
+                matches!(
+                    drop.kind,
+                    hew_mir::DropKind::CowHeap {
+                        release: hew_mir::CowHeapRelease::Bytes
+                    }
+                )
+            })
+        })
+}
+
+/// A copy-mode mailbox transfers the sole `bytes` refcount into the receive
+/// handler. A borrow-only handler is the terminal owner and must release it.
+/// This is the compiler half of active-mode socket delivery: the reactor sends
+/// the same ordinary mailbox payload as any Hew actor sender.
+#[test]
+fn recv_handler_borrow_only_bytes_param_earns_bytes_drop() {
+    let pipeline = lower_source(
+        r"
+        actor Sink {
+            var seen: i64;
+            receive fn take(data: bytes) {
+                seen = seen + data.len();
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(
+        fn_has_bytes_drop(&pipeline, "Sink__recv__take"),
+        "a borrow-only receive-handler bytes param must earn the balancing \
+         CowHeap(Bytes) drop: {:?}",
+        pipeline.elaborated_mir
+    );
+}
+
+/// Counterfactual: ordinary by-value Hew calls borrow `bytes`; the caller keeps
+/// the refcount. The actor-ingress rule must not widen into free functions.
+#[test]
+fn ordinary_borrow_only_bytes_param_does_not_earn_bytes_drop() {
+    let pipeline = lower_source(
+        r"
+        fn observe(data: bytes) -> i64 { data.len() }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(
+        !fn_has_bytes_drop(&pipeline, "observe"),
+        "an ordinary by-value bytes parameter is caller-owned and must not be \
+         dropped by the callee: {:?}",
+        pipeline.elaborated_mir
+    );
+}
+
+/// Counterfactual: forwarding the mailbox-owned triple into another actor
+/// transfers its one refcount again. The first handler must suppress its drop;
+/// the final recipient becomes the terminal owner.
+#[test]
+fn recv_handler_forwarded_bytes_param_transfers_drop_to_recipient() {
+    let pipeline = lower_source(
+        r"
+        actor Recipient {
+            receive fn take(data: bytes) { let _ = data.len(); }
+        }
+        actor Forwarder {
+            let recipient: LocalPid<Recipient>;
+            receive fn forward(data: bytes) { recipient.take(data); }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    assert!(
+        !fn_has_bytes_drop(&pipeline, "Forwarder__recv__forward"),
+        "the forwarding handler transferred its only bytes refcount and must \
+         not drop it again: {:?}",
+        pipeline.elaborated_mir
+    );
+    assert!(
+        fn_has_bytes_drop(&pipeline, "Recipient__recv__take"),
+        "the terminal recipient must own and drop the forwarded bytes: {:?}",
+        pipeline.elaborated_mir
+    );
+}
+
 /// #2747 — a by-value owned-aggregate RECORD message param delivered to an actor
 /// `receive fn` and only BORROWED (`b.payload.len()`) is a transient
 /// read-and-discard the handler frame solely owns: the mailbox `memcpy`

@@ -4435,16 +4435,29 @@ mod tests {
     /// it enqueues first, then `sched_try_wake` observes that no worker has
     /// published a park yet. The fixed final probe sees the work and never
     /// enters `wait_timeout`; omitting only that probe enters the wait with the
-    /// work still stranded. A condvar may wake spuriously, so the negative
-    /// control also records real work-path notifications rather than requiring
-    /// an exact timeout result.
+    /// work still stranded. A condvar may wake spuriously, so the hook records
+    /// its own work-path notification delta synchronously rather than requiring
+    /// an exact timeout result or attributing concurrent tests' notifications
+    /// to this enqueue.
     #[test]
     fn pre_park_enqueue_and_wake_cannot_be_lost() {
+        static PRE_PARK_ACTOR: AtomicPtr<HewActor> = AtomicPtr::new(ptr::null_mut());
+
         fn enqueue_in_final_probe_gap() {
-            sched_enqueue(ptr::dangling_mut::<HewActor>());
+            let sched = get_scheduler().expect("test scheduler installed");
+            let notifications_before = sched.parkers[0].work_notifications.load(Ordering::Relaxed);
+            sched_enqueue(PRE_PARK_ACTOR.load(Ordering::Acquire));
+            assert_eq!(
+                sched.parkers[0].work_notifications.load(Ordering::Relaxed),
+                notifications_before,
+                "this pre-publication wake must not issue a real parker notification"
+            );
         }
 
         let sched_guard = NoWorkerSchedulerForTest::install();
+        let actor = stub_actor();
+        let actor_ptr = (&raw const actor).cast_mut();
+        PRE_PARK_ACTOR.store(actor_ptr, Ordering::Release);
         let _hook = WorkerPreParkHookGuard::install(enqueue_in_final_probe_gap);
         // SAFETY: the local deque stores no pointers in this test.
         let (local, _stealer) = unsafe { WorkDeque::new() };
@@ -4457,11 +4470,10 @@ mod tests {
         );
         assert_eq!(
             sched_guard.pop_global(),
-            Some(ptr::dangling_mut::<HewActor>()),
+            Some(actor_ptr),
             "the fixed path must leave the exact enqueued work for the next worker-loop probe"
         );
 
-        let notifications_before = sched.parkers[0].work_notifications.load(Ordering::Relaxed);
         let counterfactual = park_worker(sched, 0, &local, false);
         assert!(
             matches!(
@@ -4472,16 +4484,11 @@ mod tests {
              got {counterfactual:?}"
         );
         assert_eq!(
-            sched.parkers[0].work_notifications.load(Ordering::Relaxed),
-            notifications_before,
-            "the pre-publication wake must not issue a real parker notification; \
-             a Notified outcome here can only be a permitted spurious wake"
-        );
-        assert_eq!(
             sched_guard.pop_global(),
-            Some(ptr::dangling_mut::<HewActor>()),
+            Some(actor_ptr),
             "the counterfactual wait must leave the runnable work stranded until the late probe"
         );
+        PRE_PARK_ACTOR.store(ptr::null_mut(), Ordering::Release);
     }
 
     /// #2830 busy-target strand: round-robin may start at a worker that is

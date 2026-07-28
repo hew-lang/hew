@@ -6804,7 +6804,15 @@ impl Checker {
                 }
             )
         {
-            if resolved.has_inference_var() {
+            if resolved.has_inference_var()
+                && matches!(
+                    &resolved,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Vec | BuiltinType::HashMap),
+                        ..
+                    }
+                )
+            {
                 self.deferred_builtin_clone_admission
                     .entry(SpanKey::in_module(span, self.current_module_idx))
                     .or_insert_with(|| DeferredBuiltinCloneAdmission {

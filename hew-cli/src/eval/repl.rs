@@ -1598,11 +1598,24 @@ fn run_wasm_eval_compiled(
     }
 }
 
+fn prompts_for_terminal_state(
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+) -> (&'static str, &'static str) {
+    if stdin_is_terminal && stdout_is_terminal {
+        ("hew> ", "... ")
+    } else {
+        ("", "")
+    }
+}
+
 /// Run the interactive REPL with a custom execution timeout.
 ///
 /// The startup banner and help line are printed only when both stdin and stdout
 /// are interactive terminals and `quiet` is `false`; piped/redirected stdin or
-/// stdout, or an explicit `quiet`, suppresses them.
+/// stdout, or an explicit `quiet`, suppresses them. Primary and continuation
+/// prompts also require both terminals, but remain visible for an interactive
+/// `--quiet` session.
 ///
 /// # Errors
 ///
@@ -1618,15 +1631,19 @@ pub fn run_interactive(
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
     session.set_jit_mode(jit);
+    let (primary_prompt, continuation_prompt) = prompts_for_terminal_state(
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+    );
+    let interactive_terminals = !primary_prompt.is_empty();
 
-    if !quiet && std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+    if !quiet && interactive_terminals {
         println!("Hew REPL v{}", env!("CARGO_PKG_VERSION"));
         println!("Type :help for commands, :items to list definitions, :quit to exit.\n");
     }
 
     loop {
-        let prompt = "hew> ";
-        let line = match rl.readline(prompt) {
+        let line = match rl.readline(primary_prompt) {
             Ok(line) => line,
             Err(
                 rustyline::error::ReadlineError::Interrupted | rustyline::error::ReadlineError::Eof,
@@ -1646,7 +1663,7 @@ pub fn run_interactive(
             classify::input_completeness(&input),
             InputCompleteness::Incomplete
         ) {
-            match rl.readline("... ") {
+            match rl.readline(continuation_prompt) {
                 Ok(cont) => {
                     input.push('\n');
                     input.push_str(&cont);
@@ -1817,6 +1834,18 @@ fn pluralize_session_entry(count: usize, singular: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repl_prompts_require_terminal_stdin_and_stdout() {
+        assert_eq!(
+            prompts_for_terminal_state(true, true),
+            ("hew> ", "... "),
+            "an interactive terminal must retain both REPL prompts"
+        );
+        assert_eq!(prompts_for_terminal_state(false, true), ("", ""));
+        assert_eq!(prompts_for_terminal_state(true, false), ("", ""));
+        assert_eq!(prompts_for_terminal_state(false, false), ("", ""));
+    }
 
     #[test]
     fn describe_runtime_failure_names_arithmetic_signal() {

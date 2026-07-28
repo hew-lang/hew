@@ -117,6 +117,9 @@ fi
 
 PAYLOAD="hew-mqtt-delivery-$PORT"
 TOPIC="hew/rc1/e2e"
+FORGED_CONNECT_PROBES=32
+MALFORMED_SINGLE_PROBES=7
+EXPECTED_DISCONNECTS=$((FORGED_CONNECT_PROBES + MALFORMED_SINGLE_PROBES + 3))
 
 "$BROKER_BIN" "$PORT" >"$WORK_DIR/broker.log" 2>&1 &
 BROKER_PID=$!
@@ -147,6 +150,48 @@ wait_for_log "malformed remaining length" ||
     fail "broker did not classify the malformed Remaining Length"
 kill -0 "$BROKER_PID" 2>/dev/null ||
     fail "broker exited after rejecting malformed Remaining Length"
+
+# Every MQTT string length is peer-controlled. Repeated minimal CONNECT frames
+# with a forged 65,535-byte protocol-name length must close cleanly instead of
+# panicking the handler and stranding one descriptor/router row per packet.
+perl -MIO::Socket::INET -e '
+    $SIG{ALRM} = sub { die "timed out waiting for forged CONNECT close\n" };
+    my @frames = (
+        [ "PUBLISH topic length",    0x30, 0x02, 0xFF, 0xFF ],
+        [ "SUBSCRIBE topic length",  0x82, 0x04, 0x00, 0x01, 0xFF, 0xFF ],
+        [ "UNSUBSCRIBE topic length",0xA2, 0x04, 0x00, 0x01, 0xFF, 0xFF ],
+        [ "PINGREQ body",            0xC0, 0x01, 0x00 ],
+        [ "DISCONNECT body",         0xE0, 0x01, 0x00 ],
+        [ "unsupported packet",      0xF0, 0x00 ],
+        [ "oversize Remaining Length", 0x30, 0x81, 0x80, 0x40 ],
+    );
+    for my $probe (1 .. $ARGV[1] + scalar @frames) {
+        alarm 3;
+        my $socket = IO::Socket::INET->new(
+            PeerAddr => "127.0.0.1",
+            PeerPort => $ARGV[0],
+            Proto => "tcp",
+        ) or die "forged CONNECT $probe connect: $!\n";
+        my @frame = $probe <= $ARGV[1]
+            ? (0x10, 0x04, 0xFF, 0xFF, 0x00, 0x00)
+            : @{$frames[$probe - $ARGV[1] - 1]}[1 .. $#{$frames[$probe - $ARGV[1] - 1]}];
+        print {$socket} pack("C*", @frame)
+            or die "malformed packet $probe write: $!\n";
+        shutdown($socket, 1)
+            or die "malformed packet $probe shutdown: $!\n";
+        my $read = sysread($socket, my $byte, 1);
+        die "malformed packet $probe read: $!\n" unless defined $read;
+        die "broker retained malformed packet $probe\n" unless $read == 0;
+        alarm 0;
+    }
+' "$PORT" "$FORGED_CONNECT_PROBES" ||
+    fail "malformed MQTT length/body probe was not rejected"
+wait_for_log "malformed CONNECT" ||
+    fail "broker did not classify the forged CONNECT"
+wait_for_log "packet exceeds size limit" ||
+    fail "broker did not classify the oversize Remaining Length"
+kill -0 "$BROKER_PID" 2>/dev/null ||
+    fail "broker exited after rejecting malformed MQTT packets"
 
 mosquitto_sub \
     -h 127.0.0.1 \
@@ -190,13 +235,20 @@ wait_for_log "\\[router\\] publish topic=$TOPIC" 50 ||
 
 for ((i = 0; i < 50; i++)); do
     disconnects="$(grep -c "\\[router\\] client disconnected" "$WORK_DIR/broker.log" || true)"
-    if [[ "$disconnects" -ge 2 ]]; then
+    if [[ "$disconnects" -ge "$EXPECTED_DISCONNECTS" ]]; then
         break
     fi
     sleep 0.1
 done
-[[ "${disconnects:-0}" -ge 2 ]] ||
-    fail "both MQTT clients did not complete disconnect cleanup"
+[[ "${disconnects:-0}" == "$EXPECTED_DISCONNECTS" ]] ||
+    fail "malformed probes and both MQTT clients did not complete disconnect cleanup"
+registrations="$(grep -c "\\[router\\] client registered" "$WORK_DIR/broker.log" || true)"
+[[ "$registrations" == "$EXPECTED_DISCONNECTS" ]] ||
+    fail "router registration/disconnect accounting drifted: registrations=$registrations disconnects=$disconnects"
+
+if grep -Eq "PANIC:|panicked" "$WORK_DIR/broker.log"; then
+    fail "broker logged an actor panic while handling the probe sequence"
+fi
 
 kill -0 "$BROKER_PID" 2>/dev/null ||
     fail "broker exited during the round trip"

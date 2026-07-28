@@ -1976,6 +1976,7 @@ fn recv_handler_loop_record_ingress_tracks_move_chains_and_nested_leaf_paths() {
         r"
         type Wrap { name: string }
         type Inner { name: string }
+        type Outer { inner: Inner }
         actor Fan {
             var seen: i64;
             var flat: Wrap;
@@ -2160,7 +2161,6 @@ fn recv_handler_loop_record_ingress_keeps_branch_selected_paths_exclusive() {
         type Wrap { name: string }
         type Inner { name: string }
         type Pair { left: Inner; right: Inner }
-        type Outer { inner: Inner }
         actor Fan {
             var seen: i64;
             var flat: Wrap;
@@ -2201,6 +2201,7 @@ fn recv_handler_loop_record_ingress_keeps_branch_selected_paths_exclusive() {
         .find(|function| function.name == "Fan__recv__route")
         .expect("branch-selected handler raw MIR present");
     let mut conditional = Vec::new();
+    let mut ordinary = 0usize;
     for block in &handler.blocks {
         for instr in &block.instructions {
             if let Instr::StringRetain {
@@ -2214,6 +2215,13 @@ fn recv_handler_loop_record_ingress_keeps_branch_selected_paths_exclusive() {
             {
                 conditional.push((block.id, state_field.0, record_path.clone()));
             }
+            ordinary += usize::from(matches!(
+                instr,
+                Instr::StringRetain {
+                    condition: hew_mir::StringRetainCondition::Always,
+                    ..
+                }
+            ));
         }
     }
     assert_eq!(
@@ -2226,19 +2234,11 @@ fn recv_handler_loop_record_ingress_keeps_branch_selected_paths_exclusive() {
         2,
         "each alternative flat constructor needs one exclusive retain: {conditional:?}"
     );
-    for path in [
-        vec![hew_mir::FieldOffset(0), hew_mir::FieldOffset(0)],
-        vec![hew_mir::FieldOffset(1), hew_mir::FieldOffset(0)],
-    ] {
-        assert_eq!(
-            conditional
-                .iter()
-                .filter(|(_, field, actual)| *field == 2 && **actual == path)
-                .count(),
-            2,
-            "each nested path must retain only on its selecting branch: {conditional:?}"
-        );
-    }
+    assert_eq!(
+        ordinary, 2,
+        "the two cross-field sources must each fall back to one path-safe owner mint: {:?}",
+        handler.blocks
+    );
     assert_eq!(
         conditional
             .iter()
@@ -2305,6 +2305,104 @@ fn recv_handler_nested_branch_ingress_retains_before_join() {
     assert_ne!(
         retain_blocks[0], retain_blocks[1],
         "nested alternatives must not be hoisted together at the common Outer constructor"
+    );
+}
+
+#[test]
+fn recv_handler_branch_to_two_state_fields_mints_one_source_owner() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var one: Wrap;
+            var two: Wrap;
+            receive fn route(label: string, choose_one: bool, count: i64) {
+                var i = 0;
+                while i < count {
+                    let next = Wrap { name: label };
+                    if choose_one { one = next; } else { two = next; }
+                    i = i + 1;
+                }
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("two-state-field handler raw MIR present");
+    let retains = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::StringRetain {
+                    value: Place::Local(0),
+                    condition: hew_mir::StringRetainCondition::Always,
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        retains, 1,
+        "mutually exclusive state sinks must fall back to one source-construction owner mint: \
+         {:?}",
+        handler.blocks
+    );
+}
+
+#[test]
+fn recv_handler_simultaneous_distinct_sources_keep_two_owner_mints() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var one: Wrap;
+            var two: Wrap;
+            receive fn route(left: string, right: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    let first = Wrap { name: left };
+                    let second = Wrap { name: right };
+                    one = first;
+                    two = second;
+                    i = i + 1;
+                }
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Fan__recv__route")
+        .expect("simultaneous-distinct-source handler raw MIR present");
+    let state_ingress_retains =
+        handler
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .filter(|instr| {
+                matches!(
+                    instr,
+                    Instr::StringRetain {
+                        condition:
+                            hew_mir::StringRetainCondition::ActorStateRecordBorrowedIngress { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+    assert_eq!(
+        state_ingress_retains, 2,
+        "distinct source constructions executed in the same iteration each require an owner mint: \
+         {:?}",
+        handler.blocks
     );
 }
 

@@ -1,0 +1,12 @@
+// A module-qualified generic record must keep the same nominal layout when it
+// crosses a Vec element boundary. The Vec source carries `Key<string>` while
+// the indexed destination is resolved as `arena.Key<string>`.
+import std::arena::{ Arena, Key };
+
+fn main() {
+    let store: Arena<string> = arena.new();
+    let key = store.insert("through-vec");
+    let keys: Vec<Key<string>> = [key];
+    let recovered = keys[0];
+    println(store.get(recovered).unwrap());
+}

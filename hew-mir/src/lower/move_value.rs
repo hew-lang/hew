@@ -44,16 +44,18 @@ impl Builder {
     ///
     /// Registered call carriers already name their root in
     /// `owned_carrier_neutralize`. An ordinary scope-exit tuple owner also
-    /// seeds a root-relative transfer for a `Vec` leaf: the load byte-copies
-    /// the one owned pointer, so a later ownership boundary must clear the
-    /// tuple slot before the loaded value can become a sole owner.
+    /// seeds a root-relative transfer for a `Vec` or `CancellationToken` leaf:
+    /// the load byte-copies the one owned pointer, so a later ownership
+    /// boundary must clear the tuple slot before the loaded value can become a
+    /// sole owner.
     ///
-    /// This authority is deliberately Vec-only. Other `HandleTransfer` leaves
-    /// (generator, stream/sink, indirect-enum, map/set) have distinct consume
-    /// and close protocols; treating them as a plain projected Vec duplicates
-    /// their downstream release. Inline aggregate aliases, retained strings,
-    /// and `bytes` (whose MIR ownership pass inserts an explicit retain for
-    /// field loads) likewise do not seed this route.
+    /// This authority is deliberately limited to leaves whose structural drop
+    /// accepts an empty representation after transfer. Other
+    /// `HandleTransfer` leaves (generator, stream/sink, indirect-enum, map/set)
+    /// have distinct consume and close protocols; treating them as a plain
+    /// projected owner duplicates their downstream release. Inline aggregate
+    /// aliases, retained strings, and `bytes` (whose MIR ownership pass inserts
+    /// an explicit retain for field loads) likewise do not seed this route.
     pub(crate) fn note_carrier_projection(
         &mut self,
         aggregate: Place,
@@ -64,13 +66,16 @@ impl Builder {
     ) {
         let authority = self.owned_carrier_authority(aggregate).or_else(|| {
             let field_ty = self.subst_ty(field_ty);
-            if !matches!(
-                field_ty,
-                ResolvedTy::Named {
-                    builtin: Some(hew_types::BuiltinType::Vec),
-                    ..
-                }
-            ) || self.classify_field_load(&field_ty) != Some(FieldLoadClass::HandleTransfer)
+            let has_empty_structural_drop = field_ty == ResolvedTy::CancellationToken
+                || matches!(
+                    field_ty,
+                    ResolvedTy::Named {
+                        builtin: Some(hew_types::BuiltinType::Vec),
+                        ..
+                    }
+                );
+            if !has_empty_structural_drop
+                || self.classify_field_load(&field_ty) != Some(FieldLoadClass::HandleTransfer)
             {
                 return None;
             }

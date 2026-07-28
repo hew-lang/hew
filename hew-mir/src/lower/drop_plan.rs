@@ -339,7 +339,10 @@ pub(super) fn elaborate(
     // variant, return, and live-local co-owner mints carry explicit
     // `StringRetain` markers. Last-use handoffs keep one owner and emit no
     // retain. The marker sites and this drop allow-set come from the same MIR
-    // derivation, so emission and admission cannot drift.
+    // derivation, so emission and admission cannot drift. A flagged actor
+    // message string is the sole exception to the static consume exclusion:
+    // its runtime flag distinguishes the branch that transferred ownership
+    // from the branch on which the handler still owns the payload.
     //
     // Consume facts narrow the allow-set further: a binding `Consumed` or
     // `MaybeConsumed` at any block exit is removed, because `enumerate_exits`
@@ -386,10 +389,11 @@ pub(super) fn elaborate(
         }
         derived
     };
-    // A conditionally-consumed mailbox CoW leaf has a runtime transfer flag.
-    // Re-admit it after the whole-function escape scan: every consuming sink
-    // sets the flag before taking ownership, so the guarded drop fires only on
-    // the path where the handler frame still owns the delivered value.
+    // Re-admit a conditionally-consumed mailbox string after the static scan.
+    // `maybe_alloc_actor_message_cow_drop_flag` admits only a registered
+    // scope-exit owner with the wired leaf release, and each BindingRef consume
+    // sets that same flag before the handoff. The guarded drop therefore fires
+    // only on the runtime path where the handler still owns the delivery.
     for (binding, _, ty) in &owned_locals_snapshot {
         if builder.actor_message_cow_drop_flags.contains_key(binding)
             && cow_value_leaf_drop_symbol(ty).is_some()

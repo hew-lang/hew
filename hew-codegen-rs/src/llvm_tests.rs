@@ -5316,6 +5316,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         // borrow path; carry the inert defaults.
         borrow_mode: None,
         borrow_tainted: HashSet::new(),
+        borrow_drop_tainted: HashSet::new(),
         // Composite-helper unit tests never lower a `Terminator::Suspend`;
         // no coroutine prologue state.
         coro: None,
@@ -5455,6 +5456,7 @@ fn borrow_gated_drop_emits_copy_only_conditional_region() {
     let borrow_mode = fn_ctx.ctx.i64_type().const_int(0, false);
     fn_ctx.borrow_mode = Some(borrow_mode);
     fn_ctx.borrow_tainted.insert(0);
+    fn_ctx.borrow_drop_tainted.insert(0);
     let drop = ElabDrop {
         place: Place::Local(0),
         ty: ResolvedTy::String,

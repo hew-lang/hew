@@ -2119,13 +2119,16 @@ impl Builder {
         }
     }
 
-    /// True iff an `ActorHandler`-convention `lower_params` will register a
-    /// scope-exit owner for a message parameter of this argument's type.
+    /// True iff an `ActorHandler`-convention `lower_params` routes a message
+    /// parameter of this argument's type through owned-local registration.
     ///
-    /// Mirrors the structural actor-message mint in `lower_params`. The sender
-    /// and receiver must ask the same value-class authority whether a mailbox
-    /// transfer creates a release obligation; otherwise a proven-foreign value
-    /// could acquire an invalid receiver-side owner.
+    /// Mirrors the structural `actor_message_param` seed in `lower_params`.
+    /// Registration is intentionally broader than "will emit a destructor":
+    /// the downstream type-directed elaborator may classify a non-BitCopy
+    /// View/PersistentShare shape as having no release. The caller still asks
+    /// the identical seed fact so a structurally owned heap value cannot cross
+    /// the mailbox boundary without the provenance preflight that justifies
+    /// the receiver-side mint.
     fn actor_handler_mints_an_owner_for_message(&self, arg: &HirExpr) -> bool {
         let ty = self.subst_ty(&arg.ty);
         self.binding_seeds_drop_elaboration(&ty)

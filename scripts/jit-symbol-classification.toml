@@ -1667,7 +1667,7 @@ internal = [
 # reason paragraph makes that authenticated. The gate enforces that directly.
 [sys-lane-closure.authenticated-edges]
 
-"worker_loop -> activate_actor" = """
+"worker_loop -> activate_queued_actor" = """
 The native scheduler worker is the system lane's one legitimate consumer: \
 draining sys_queue ahead of the user queue and routing each HewSysMsg to the \
 actor's sys_dispatch is what the lane exists for. Every stable symbol that \
@@ -1709,8 +1709,9 @@ codegen-stable and the only surface that reaches it is monitor(target), whose \
 lowering synthesises hew_actor_self() as arg0. Asserted by \
 link_monitor_subject_is_always_the_self_handle."""
 
-"hew_actor_trap -> hew_supervisor_notify_child_actor_event" = """
-Authenticated producer. hew_actor_trap is NOT user-declarable (internal tier, \
+"hew_actor_trap_inner -> hew_supervisor_notify_child_actor_event" = """
+Authenticated producer. hew_actor_trap_inner is NOT user-declarable (private, \
+and reached through hew_actor_trap, whose internal tier is \
 asserted by extern_rt_system_lane_symbols_rejected), which is what makes the \
 rest of this reason true: it was demoted precisely because its `actor` and \
 `error_code` arguments let a caller choose both the subject and the reason of \
@@ -1722,20 +1723,36 @@ hew_actor_close / hew_actor_group_stop_all via call_terminate_fn -> \
 handle_crash_recovery when a terminate hook panics — those callers name the \
 actor they already own and supply no code at all."""
 
-"hew_actor_trap -> propagate_exit_to_links" = """
-Authenticated producer, and see the edge above for why hew_actor_trap itself \
+"hew_actor_trap_inner -> propagate_exit_to_links" = """
+Authenticated producer, and see the edge above for why hew_actor_trap_inner \
 is no longer user-declarable. The trapping actor has died; \
 propagate_exit_to_links fans the EXIT out to the link set the runtime recorded \
 for it. No remaining caller supplies the recipients (they are whoever linked \
 to this actor) or the reason (it is the crash record). Refusing this edge \
 would mean links cannot fire, which is the whole contract of link()."""
 
-"hew_actor_trap -> notify_monitors_on_death" = """
-The third and last of hew_actor_trap's death fan-outs (links, monitors, \
+"hew_actor_trap_inner -> notify_monitors_on_death" = """
+The third and last of hew_actor_trap_inner's death fan-outs (links, monitors, \
 parent supervisor). Same authentication: the actor is already dead, the \
 watcher set is runtime state, and the reason is the recorded crash. Listed as \
 its own edge rather than folded into the other two so that a fourth fan-out \
 target would trip the gate."""
+
+"mailbox_reclaim_queued_terminal -> detach_queued_terminal_locked" = """
+Authenticated terminal consumer. Both functions are crate-private and the \
+caller enters only after an actor has become terminal, while holding the \
+terminal-reclaim serialization that gives it exclusive consumer ownership. \
+The caller supplies no system message, destination, or reason: it detaches \
+the runtime-owned system queue together with the user queue so terminal \
+actors cannot strand lifecycle signals or their owned payloads."""
+
+"mailbox_reclaim_queued_terminal_if -> detach_queued_terminal_locked" = """
+Authenticated quiescent terminal consumer. This is the predicate-gated mirror \
+of mailbox_reclaim_queued_terminal: both functions are crate-private, the \
+terminal-reclaim lock serializes the decision with activation ownership, and \
+detachment occurs only after the runtime proves there is no active queue \
+consumer. The caller cannot produce or address a system message; it only \
+retires runtime-owned nodes that a terminal actor can no longer dispatch."""
 
 "enqueue_down -> deliver_down_message" = """
 Authenticated producer: the monitored actor died and the runtime owes its \

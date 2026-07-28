@@ -103,6 +103,10 @@ mod last_error_retention;
 pub mod quic;
 #[cfg(not(target_family = "wasm"))]
 pub mod smtp;
+// R1/R2/R3 proofs for deterministic, no-I/O string producers. These are the
+// executable authority for the corresponding `result-retention` rows.
+#[cfg(all(test, not(target_family = "wasm")))]
+mod string_result_retention;
 #[cfg(not(target_family = "wasm"))]
 pub mod tls;
 #[cfg(not(target_family = "wasm"))]

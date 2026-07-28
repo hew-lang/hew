@@ -244,12 +244,12 @@ mod tests {
     fn retention_defaults_to_unspecified() {
         // Absence is the fail-closed answer, and it is the common case: a row
         // that has never been measured must not read as a transfer.
-        let bytes_to_string = extern_ownership_contract("hew_bytes_to_string")
+        let file_read = extern_ownership_contract("hew_file_read")
             .contract()
-            .expect("hew_bytes_to_string is classified");
-        assert_eq!(bytes_to_string.result, ExternResultOwnership::Fresh);
+            .expect("hew_file_read is classified");
+        assert_eq!(file_read.result, ExternResultOwnership::Fresh);
         assert_eq!(
-            bytes_to_string.result_retention,
+            file_read.result_retention,
             ExternResultRetention::Unspecified
         );
     }

@@ -71,6 +71,12 @@ forced-cancel-test = []
 # integration tests can read them. Adds no production dependencies.
 clone-failure-test = []
 
+# Cross-crate codegen/runtime composition oracle support. This exposes one
+# worker-free actor teardown seam so codegen tests can supply an actual
+# JIT-emitted message drop callback and prove terminal ask cleanup end to end.
+# Never enabled by `default` or `full`.
+composition-test = []
+
 [dependencies]
 # CBOR body codec (ciborium, RFC 8949); CDDL schema in schemas/envelope.cddl.
 ciborium = "0.2"

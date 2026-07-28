@@ -1,14 +1,36 @@
 mod support;
 
-use std::process::Command;
+use std::process::Output;
 
-use support::{hew_binary, require_codegen, strip_ansi};
+use support::{require_codegen, strip_ansi};
 
 fn write_fixture(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = support::tempdir();
     let path = dir.path().join("fixture.hew");
     std::fs::write(&path, content).expect("cannot write fixture");
     (dir, path)
+}
+
+/// Run a generated fixture with an optional single-worker scheduler.  The
+/// bounded runner makes a lost reply a test failure instead of an orphaned
+/// compiler process.
+fn run_fixture(path: &std::path::Path, workers: Option<&str>, label: &str) -> Output {
+    let mut command = support::hew_command();
+    command.arg("run").arg(path);
+    if let Some(workers) = workers {
+        command.env("HEW_WORKERS", workers);
+    }
+    support::run_bounded_command(command, label)
+}
+
+fn check_fixture(path: &std::path::Path, json: bool, label: &str) -> Output {
+    let mut command = support::hew_command();
+    command.arg("check");
+    if json {
+        command.arg("--format=json");
+    }
+    command.arg(path);
+    support::run_bounded_command(command, label)
 }
 
 /// A supervisor child declared with named init args propagates the seeded value
@@ -24,7 +46,7 @@ fn supervisor_child_init_args_seed_actor_state() {
 
     let source = r#"actor Worker {
     let id: i64;
-    receive fn report() { print("worker id="); println(id); }
+    receive fn report() -> i64 { print("worker id="); println(id); 0 }
 }
 supervisor Pool {
     strategy: one_for_one;
@@ -33,19 +55,13 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep(30ms);
     let w = sup.w1;
-    w.report();
-    sleep(50ms);
+    let _ = await w.report();
 }
 "#;
 
     let (_dir, path) = write_fixture(source);
-
-    let output = Command::new(hew_binary())
-        .args(["run", path.to_str().unwrap()])
-        .output()
-        .expect("hew binary must run");
+    let output = run_fixture(&path, None, "seeded i64 actor-state oracle");
 
     let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -72,7 +88,12 @@ fn main() {
 /// The test exercises BOTH argument orders — natural (`a: 7, b: 99`) and
 /// reversed (`b: 99, a: 7`) — to confirm neither clobbers the other.
 ///
-/// Green condition: both runs exit 0 AND stdout contains "a=7 b=99".
+/// The actor replies only after it has printed and checked both fields.  That
+/// reply is the completion authority: unlike the old fixed sleeps, it cannot
+/// let `main` exit between enqueueing `report` and dispatching it.
+///
+/// Green condition: both orders, under the default pool and `HEW_WORKERS=1`,
+/// exit 0 AND stdout is exactly "a=7 b=99".
 #[test]
 fn supervisor_child_i32_fields_reversed_arg_order() {
     require_codegen();
@@ -80,26 +101,91 @@ fn supervisor_child_i32_fields_reversed_arg_order() {
     let source_natural = r#"actor Worker {
     let a: i32;
     let b: i32;
-    receive fn report() { print("a="); print(a); print(" b="); println(b); }
+    receive fn report() -> i64 {
+        print("a="); print(a); print(" b="); println(b);
+        if a == 7 && b == 99 { 0 } else { 1 }
+    }
 }
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
     child w: Worker(a: 7, b: 99);
 }
-fn main() {
+fn main() -> i64 {
     let sup = spawn Pool;
-    sleep(30ms);
     let w = sup.w;
-    w.report();
-    sleep(50ms);
+    match await w.report() {
+        Ok(status) => status,
+        Err(_) => 2,
+    }
 }
 "#;
 
     let source_reversed = r#"actor Worker {
     let a: i32;
     let b: i32;
-    receive fn report() { print("a="); print(a); print(" b="); println(b); }
+    receive fn report() -> i64 {
+        print("a="); print(a); print(" b="); println(b);
+        if a == 7 && b == 99 { 0 } else { 1 }
+    }
+}
+supervisor Pool {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(b: 99, a: 7);
+}
+fn main() -> i64 {
+    let sup = spawn Pool;
+    let w = sup.w;
+    match await w.report() {
+        Ok(status) => status,
+        Err(_) => 2,
+    }
+}
+"#;
+
+    for (label, source) in [("natural", source_natural), ("reversed", source_reversed)] {
+        let (_dir, path) = write_fixture(source);
+        for workers in [None, Some("1")] {
+            let pool = workers.unwrap_or("default");
+            let output = run_fixture(
+                &path,
+                workers,
+                &format!("i32 two-field oracle ({label} order, HEW_WORKERS={pool})"),
+            );
+            let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+            let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+            assert!(
+                output.status.success(),
+                "i32 two-field oracle ({label} order, HEW_WORKERS={pool}) must exit 0; \
+                 stdout: {stdout}; stderr: {stderr}"
+            );
+            assert_eq!(
+                stdout, "a=7 b=99\n",
+                "i32 two-field oracle ({label} order, HEW_WORKERS={pool}) \
+                 must observe the acknowledged field values"
+            );
+        }
+    }
+}
+
+/// The old `tell; sleep(50ms)` form has no completion authority: a loaded
+/// worker turn can still be pending when `main` exits.  This deliberately
+/// delayed handler is a counterfactual for the former 30 ms / 50 ms oracle;
+/// it must exit successfully with no report, proving that a quiet process is
+/// not evidence that a tell was handled.
+#[test]
+fn supervisor_child_i32_fixed_sleep_oracle_misses_delayed_turn() {
+    require_codegen();
+
+    let source = r#"actor Worker {
+    let a: i32;
+    let b: i32;
+    receive fn report() {
+        sleep(100ms);
+        print("a="); print(a); print(" b="); println(b);
+    }
 }
 supervisor Pool {
     strategy: one_for_one;
@@ -115,27 +201,75 @@ fn main() {
 }
 "#;
 
-    for (label, source) in [("natural", source_natural), ("reversed", source_reversed)] {
-        let (_dir, path) = write_fixture(source);
+    let (_dir, path) = write_fixture(source);
+    let output = run_fixture(
+        &path,
+        Some("1"),
+        "fixed-sleep counterfactual (HEW_WORKERS=1)",
+    );
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
-        let output = Command::new(hew_binary())
-            .args(["run", path.to_str().unwrap()])
-            .output()
-            .expect("hew binary must run");
+    assert!(
+        output.status.success(),
+        "fixed-sleep counterfactual should still exit 0; stderr: {stderr}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "the former fixed sleeps must miss a delayed report; got stdout: {stdout}"
+    );
+}
 
-        let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-        let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+/// An ask/reply oracle must reject a plausible but wrong field value.  The
+/// control uses the same reversed declaration order as the regression tooth,
+/// but deliberately supplies `b: 98`; a false green would hide the width/order
+/// wrong-code failure this test protects.
+#[test]
+fn supervisor_child_i32_ask_reply_oracle_discriminates_wrong_values() {
+    require_codegen();
 
-        assert!(
-            output.status.success(),
-            "i32 two-field oracle ({label} order) must exit 0; stderr: {stderr}"
-        );
-        assert!(
-            stdout.contains("a=7 b=99"),
-            "i32 two-field oracle ({label} order) must print 'a=7 b=99'; \
-             got stdout: {stdout}"
-        );
+    let source = r#"actor Worker {
+    let a: i32;
+    let b: i32;
+    receive fn report() -> i64 {
+        print("a="); print(a); print(" b="); println(b);
+        if a == 7 && b == 99 { 0 } else { 1 }
     }
+}
+supervisor Pool {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(b: 98, a: 7);
+}
+fn main() -> i64 {
+    let sup = spawn Pool;
+    let w = sup.w;
+    match await w.report() {
+        Ok(status) => status,
+        Err(_) => 2,
+    }
+}
+"#;
+
+    let (_dir, path) = write_fixture(source);
+    let output = run_fixture(
+        &path,
+        Some("1"),
+        "wrong-value ask/reply control (HEW_WORKERS=1)",
+    );
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "wrong-value ask/reply control must return its non-zero mismatch code; \
+         stdout: {stdout}; stderr: {stderr}"
+    );
+    assert_eq!(
+        stdout, "a=7 b=98\n",
+        "wrong-value ask/reply control must report the actual mismatching state"
+    );
 }
 
 /// Two i32 fields plus an i64 and a bool, seeded in fully reversed
@@ -154,10 +288,11 @@ fn supervisor_child_mixed_width_fields_reversed_arg_order() {
     let x: i32;
     let y: i64;
     let z: bool;
-    receive fn report() {
+    receive fn report() -> i64 {
         print("x="); print(x);
         print(" y="); print(y);
         print(" z="); println(z);
+        0
     }
 }
 supervisor Pool {
@@ -167,19 +302,13 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep(30ms);
     let w = sup.w;
-    w.report();
-    sleep(50ms);
+    let _ = await w.report();
 }
 "#;
 
     let (_dir, path) = write_fixture(source);
-
-    let output = Command::new(hew_binary())
-        .args(["run", path.to_str().unwrap()])
-        .output()
-        .expect("hew binary must run");
+    let output = run_fixture(&path, None, "mixed-width init-args oracle");
 
     let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -223,7 +352,7 @@ fn supervisor_child_narrow_and_unsigned_widths_reversed_arg_order() {
     let d: u16;
     let e: u32;
     let f: u64;
-    receive fn report() {
+    receive fn report() -> i64 {
         var ok: i64 = 0;
         if a == 120 { ok = ok + 1; }
         if b == 30000 { ok = ok + 1; }
@@ -232,6 +361,7 @@ fn supervisor_child_narrow_and_unsigned_widths_reversed_arg_order() {
         if e == 4000000000 { ok = ok + 1; }
         if f == 18000000000 { ok = ok + 1; }
         print("ok="); println(ok);
+        ok
     }
 }
 supervisor Pool {
@@ -241,19 +371,13 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep(30ms);
     let w = sup.w;
-    w.report();
-    sleep(50ms);
+    let _ = await w.report();
 }
 "#;
 
     let (_dir, path) = write_fixture(source);
-
-    let output = Command::new(hew_binary())
-        .args(["run", path.to_str().unwrap()])
-        .output()
-        .expect("hew binary must run");
+    let output = run_fixture(&path, None, "narrow/unsigned init-args oracle");
 
     let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -296,11 +420,7 @@ fn main() {
 "#;
 
     let (_dir, path) = write_fixture(source);
-
-    let output = Command::new(hew_binary())
-        .args(["check", path.to_str().unwrap()])
-        .output()
-        .expect("hew binary must run");
+    let output = check_fixture(&path, false, "narrow-width overflow compile error");
 
     assert!(
         !output.status.success(),
@@ -345,11 +465,11 @@ fn main() {
 "#;
 
     let (_dir, path) = write_fixture(source);
-
-    let output = Command::new(hew_binary())
-        .args(["check", path.to_str().unwrap()])
-        .output()
-        .expect("hew binary must run");
+    let output = check_fixture(
+        &path,
+        false,
+        "stateful supervisor child without init args compile error",
+    );
 
     // Must fail to compile — not a runtime crash.
     assert!(
@@ -385,7 +505,7 @@ fn supervisor_child_declared_default_fills_omitted_field() {
     let source = r#"actor Worker {
     let a: i64;
     let b: i64 = 100;
-    receive fn report() { print("a="); print(a); print(" b="); println(b); }
+    receive fn report() -> i64 { print("a="); print(a); print(" b="); println(b); 0 }
 }
 supervisor Pool {
     strategy: one_for_one;
@@ -394,19 +514,13 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep(30ms);
     let w = sup.w;
-    w.report();
-    sleep(50ms);
+    let _ = await w.report();
 }
 "#;
 
     let (_dir, path) = write_fixture(source);
-
-    let output = Command::new(hew_binary())
-        .args(["run", path.to_str().unwrap()])
-        .output()
-        .expect("hew binary must run");
+    let output = run_fixture(&path, None, "declared-default init-args oracle");
 
     let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -433,7 +547,7 @@ fn supervisor_child_all_declared_defaults_no_explicit_args() {
     let source = r#"actor Worker {
     let x: i64 = 5;
     let y: i64 = 9;
-    receive fn report() { print("x="); print(x); print(" y="); println(y); }
+    receive fn report() -> i64 { print("x="); print(x); print(" y="); println(y); 0 }
 }
 supervisor Pool {
     strategy: one_for_one;
@@ -442,19 +556,13 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep(30ms);
     let w = sup.w;
-    w.report();
-    sleep(50ms);
+    let _ = await w.report();
 }
 "#;
 
     let (_dir, path) = write_fixture(source);
-
-    let output = Command::new(hew_binary())
-        .args(["run", path.to_str().unwrap()])
-        .output()
-        .expect("hew binary must run");
+    let output = run_fixture(&path, None, "all-declared-defaults init-args oracle");
 
     let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -482,7 +590,7 @@ fn supervisor_child_explicit_arg_overrides_declared_default() {
     let source = r#"actor Worker {
     let a: i64 = 1;
     let b: i64 = 100;
-    receive fn report() { print("a="); print(a); print(" b="); println(b); }
+    receive fn report() -> i64 { print("a="); print(a); print(" b="); println(b); 0 }
 }
 supervisor Pool {
     strategy: one_for_one;
@@ -491,19 +599,13 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep(30ms);
     let w = sup.w;
-    w.report();
-    sleep(50ms);
+    let _ = await w.report();
 }
 "#;
 
     let (_dir, path) = write_fixture(source);
-
-    let output = Command::new(hew_binary())
-        .args(["run", path.to_str().unwrap()])
-        .output()
-        .expect("hew binary must run");
+    let output = run_fixture(&path, None, "explicit-overrides-default init-args oracle");
 
     let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -552,11 +654,7 @@ fn main() {
 "#;
 
     let (_dir, path) = write_fixture(source);
-
-    let output = Command::new(hew_binary())
-        .args(["check", path.to_str().unwrap()])
-        .output()
-        .expect("hew binary must run");
+    let output = check_fixture(&path, false, "required supervisor field compile error");
 
     assert!(
         !output.status.success(),
@@ -584,7 +682,7 @@ fn supervisor_child_i32_field_with_declared_default() {
     let source = r#"actor Worker {
     let a: i32 = 42;
     let b: i32;
-    receive fn report() { print("a="); print(a); print(" b="); println(b); }
+    receive fn report() -> i64 { print("a="); print(a); print(" b="); println(b); 0 }
 }
 supervisor Pool {
     strategy: one_for_one;
@@ -593,19 +691,13 @@ supervisor Pool {
 }
 fn main() {
     let sup = spawn Pool;
-    sleep(30ms);
     let w = sup.w;
-    w.report();
-    sleep(50ms);
+    let _ = await w.report();
 }
 "#;
 
     let (_dir, path) = write_fixture(source);
-
-    let output = Command::new(hew_binary())
-        .args(["run", path.to_str().unwrap()])
-        .output()
-        .expect("hew binary must run");
+    let output = run_fixture(&path, None, "i32 declared-default init-args oracle");
 
     let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -638,9 +730,10 @@ fn supervisor_stop_with_stateful_child_exits_cleanly() {
 
     let source = r#"actor Counter {
     var count: i64 = 0;
-    receive fn increment() {
+    receive fn increment() -> i64 {
         count = count + 1;
         println(f"Count: {count}");
+        count
     }
 }
 supervisor CounterGroup {
@@ -651,9 +744,8 @@ supervisor CounterGroup {
 }
 fn main() {
     let sup = spawn CounterGroup;
-    sup.c1.increment();
-    sup.c2.increment();
-    sleep(50ms);
+    let _ = await sup.c1.increment();
+    let _ = await sup.c2.increment();
     supervisor_stop(sup);
     println("Stopped");
 }
@@ -661,13 +753,14 @@ fn main() {
 
     let (_dir, path) = write_fixture(source);
 
-    let output = Command::new(hew_binary())
-        .args(["run", path.to_str().unwrap()])
+    let mut command = support::hew_command();
+    command
+        .arg("run")
+        .arg(&path)
         .env("MallocScribble", "1")
         .env("MallocPreScribble", "1")
-        .env("MallocGuardEdges", "1")
-        .output()
-        .expect("hew binary must run");
+        .env("MallocGuardEdges", "1");
+    let output = support::run_bounded_command(command, "stateful supervisor-stop teardown oracle");
 
     let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
@@ -713,11 +806,7 @@ supervisor Pool {
 ";
 
     let (_dir, path) = write_fixture(source);
-
-    let output = Command::new(hew_binary())
-        .args(["check", "--format=json", path.to_str().unwrap()])
-        .output()
-        .expect("hew binary must run");
+    let output = check_fixture(&path, true, "missing supervisor field JSON diagnostic");
 
     assert!(
         !output.status.success(),

@@ -103,6 +103,10 @@ static SYS_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSw
     crate::lifetime::PoisonSafe::new(None);
 
 #[cfg(test)]
+static USER_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSwapPreLinkHook>> =
+    crate::lifetime::PoisonSafe::new(None);
+
+#[cfg(test)]
 pub(crate) struct SysCountPublicationHookGuard;
 
 #[cfg(test)]
@@ -143,6 +147,48 @@ fn run_sys_count_publication_hook(node: *mut HewMsgNode) {
         hook.as_ref().and_then(|(target, entered, release)| {
             (i32::try_from(*target).ok() == Some(msg_type))
                 .then(|| (entered.clone(), release.clone()))
+        })
+    });
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct UserCountPublicationHookGuard;
+
+#[cfg(test)]
+impl UserCountPublicationHookGuard {
+    pub(crate) fn install(
+        node: *mut HewMsgNode,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        USER_COUNT_PUBLICATION_HOOK.access(|hook| {
+            assert!(hook.is_none(), "user-count hook already installed");
+            *hook = Some((node.addr(), entered.clone(), release.clone()));
+        });
+        (Self, entered, release)
+    }
+}
+
+#[cfg(test)]
+impl Drop for UserCountPublicationHookGuard {
+    fn drop(&mut self) {
+        USER_COUNT_PUBLICATION_HOOK.access(|hook| *hook = None);
+    }
+}
+
+#[cfg(test)]
+fn run_user_count_publication_hook(node: *mut HewMsgNode) {
+    let rendezvous = USER_COUNT_PUBLICATION_HOOK.access(|hook| {
+        hook.as_ref().and_then(|(target, entered, release)| {
+            (*target == node.addr()).then(|| (entered.clone(), release.clone()))
         })
     });
     if let Some((entered, release)) = rendezvous {
@@ -2091,9 +2137,9 @@ unsafe fn send_with_overflow(
                     if node.is_null() {
                         return SendOutcome::Oom;
                     }
+                    mb.count.fetch_add(1, Ordering::Release);
                     q.user_queue.push_back(node);
                     drop(q);
-                    mb.count.fetch_add(1, Ordering::Release);
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                     return SendOutcome::Enqueued;
@@ -2174,9 +2220,9 @@ unsafe fn send_with_overflow(
                             if node.is_null() {
                                 return SendOutcome::Oom;
                             }
+                            mb.count.fetch_add(1, Ordering::Release);
                             q.user_queue.push_back(node);
                             drop(q);
-                            mb.count.fetch_add(1, Ordering::Release);
                             update_high_water_mark(mb);
                             MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                             return SendOutcome::Enqueued;
@@ -2220,6 +2266,7 @@ unsafe fn send_with_overflow(
                         if node.is_null() {
                             return SendOutcome::Oom;
                         }
+                        mb.count.fetch_add(1, Ordering::Release);
                         q.user_queue.push_back(node);
                     } else {
                         // hew_mailbox_try_push path: allocate first, then lock.
@@ -2235,9 +2282,9 @@ unsafe fn send_with_overflow(
                             unsafe { hew_msg_node_free_with_message_drop(old, mb.message_drop_fn) };
                             mb.count.fetch_sub(1, Ordering::Release);
                         }
+                        mb.count.fetch_add(1, Ordering::Release);
                         q.user_queue.push_back(node);
                     }
-                    mb.count.fetch_add(1, Ordering::Release);
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                     return SendOutcome::DroppedOld;
@@ -2262,8 +2309,9 @@ unsafe fn send_with_overflow(
 /// mailbox's user queue and update the shared counters.
 ///
 /// Routes to the slow-path mutex queue or the lock-free fast queue
-/// depending on `mb.use_slow_path`, then bumps `count`, the high-water
-/// mark, and the global sent counter. Used for unbounded sends and
+/// depending on `mb.use_slow_path`. The shared `count` reservation is
+/// published before the node becomes reachable, then the high-water mark and
+/// global sent counter are updated. Used for unbounded sends and
 /// mutex-backed sends below capacity; bounded lock-free sends use
 /// [`enqueue_reserved_fast_user_node`] because their CAS reservation has
 /// already incremented `count`.
@@ -2273,6 +2321,29 @@ unsafe fn send_with_overflow(
 /// `node` must be a valid, exclusively-owned [`HewMsgNode`] with
 /// `node.next == null`. Ownership of the node transfers into the queue.
 unsafe fn enqueue_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
+    #[cfg(test)]
+    // SAFETY: production publishes the count reservation before reachability.
+    unsafe {
+        enqueue_user_node_inner(mb, node, true);
+    }
+
+    #[cfg(not(test))]
+    {
+        mb.count.fetch_add(1, Ordering::Release);
+        // SAFETY: caller transfers an exclusively owned node.
+        unsafe { link_user_node(mb, node) };
+        update_high_water_mark(mb);
+        MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Link an exclusively owned node into the selected user queue.
+///
+/// # Safety
+///
+/// `node` must be a valid, exclusively-owned [`HewMsgNode`] with
+/// `node.next == null`. Ownership transfers into the queue.
+unsafe fn link_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
     if mb.use_slow_path {
         let mut q = mb.slow_path.lock_or_recover();
         q.user_queue.push_back(node);
@@ -2280,7 +2351,25 @@ unsafe fn enqueue_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
         // SAFETY: `node` was allocated with next == null.
         unsafe { mb.user_fast.enqueue(node) };
     }
-    mb.count.fetch_add(1, Ordering::Release);
+}
+
+#[cfg(test)]
+unsafe fn enqueue_user_node_inner(
+    mb: &HewMailbox,
+    node: *mut HewMsgNode,
+    publish_count_first: bool,
+) {
+    // SAFETY: production publishes the count reservation before reachability.
+    if publish_count_first {
+        mb.count.fetch_add(1, Ordering::Release);
+        run_user_count_publication_hook(node);
+    }
+    // SAFETY: caller transfers an exclusively owned node.
+    unsafe { link_user_node(mb, node) };
+    if !publish_count_first {
+        run_user_count_publication_hook(node);
+        mb.count.fetch_add(1, Ordering::Release);
+    }
     update_high_water_mark(mb);
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 }
@@ -2432,9 +2521,9 @@ unsafe fn send_aliased_with_overflow(
                         q = mb.not_full.wait_or_recover(q);
                     }
                     // EXIT(block-enqueued): capacity freed; node enqueued.
+                    mb.count.fetch_add(1, Ordering::Release);
                     q.user_queue.push_back(node);
                     drop(q);
-                    mb.count.fetch_add(1, Ordering::Release);
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                     return SendOutcome::Enqueued;
@@ -2482,9 +2571,9 @@ unsafe fn send_aliased_with_overflow(
                                 q = mb.not_full.wait_or_recover(q);
                             }
                             // EXIT(coalesce-fallback-block-enqueued).
+                            mb.count.fetch_add(1, Ordering::Release);
                             q.user_queue.push_back(node);
                             drop(q);
-                            mb.count.fetch_add(1, Ordering::Release);
                             update_high_water_mark(mb);
                             MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                             return SendOutcome::Enqueued;
@@ -4393,6 +4482,95 @@ mod tests {
         unsafe {
             run_case(false);
             run_case(true);
+        }
+    }
+
+    /// The user count reservation follows the same publication rule as the
+    /// system queue: a reachable node must never race ahead of its count.
+    /// Linking first lets a consumer deterministically decrement zero to
+    /// `-1`; production reserves first and preserves the count.
+    #[test]
+    #[expect(
+        clippy::undocumented_unsafe_blocks,
+        reason = "the deterministic two-ordering fixture keeps raw mailbox/node operations compact inside its unsafe case helper"
+    )]
+    fn user_count_is_published_before_consumer_reachability() {
+        unsafe fn run_case(publish_count_first: bool, slow_path: bool) {
+            let mb = if slow_path {
+                unsafe { hew_mailbox_new_with_policy(1, OverflowPolicy::DropOld) }
+            } else {
+                unsafe { hew_mailbox_new() }
+            };
+            assert!(!mb.is_null());
+            let node = unsafe { msg_node_alloc(17, ptr::null_mut(), 0, ptr::null_mut()) };
+            assert!(!node.is_null());
+
+            let (hook, entered, release) = UserCountPublicationHookGuard::install(node);
+            let mb_addr = mb.addr();
+            let node_addr = node.addr();
+            let producer = std::thread::spawn(move || {
+                let mb = ptr::with_exposed_provenance_mut::<HewMailbox>(mb_addr);
+                let node = ptr::with_exposed_provenance_mut::<HewMsgNode>(node_addr);
+                // SAFETY: mailbox and node outlive this joined producer.
+                unsafe { enqueue_user_node_inner(&*mb, node, publish_count_first) };
+            });
+            entered.wait();
+
+            if publish_count_first {
+                assert_eq!(
+                    unsafe { (*mb).count.load(Ordering::Acquire) },
+                    1,
+                    "reservation is visible before queue publication"
+                );
+                assert!(
+                    unsafe { hew_mailbox_try_recv(mb) }.is_null(),
+                    "count publication alone does not fabricate a reachable node"
+                );
+                assert_eq!(
+                    unsafe { (*mb).count.load(Ordering::Acquire) },
+                    1,
+                    "an empty dequeue cannot consume the reservation"
+                );
+                release.wait();
+                producer.join().expect("user producer");
+                let received = unsafe { hew_mailbox_try_recv(mb) };
+                assert_eq!(received, node);
+                assert_eq!(unsafe { (*mb).count.load(Ordering::Acquire) }, 0);
+                drop(hook);
+                unsafe { hew_msg_node_free(received) };
+            } else {
+                assert_eq!(
+                    unsafe { (*mb).count.load(Ordering::Acquire) },
+                    0,
+                    "counterfactual pauses after link but before count"
+                );
+                let received = unsafe { hew_mailbox_try_recv(mb) };
+                assert_eq!(received, node, "consumer wins before omitted publication");
+                assert_eq!(
+                    unsafe { (*mb).count.load(Ordering::Acquire) },
+                    -1,
+                    "dequeue-before-increment makes the user count negative"
+                );
+                release.wait();
+                producer.join().expect("counterfactual producer");
+                assert_eq!(
+                    unsafe { (*mb).count.load(Ordering::Acquire) },
+                    0,
+                    "late increment merely hides the transiently corrupted count"
+                );
+                drop(hook);
+                unsafe { hew_msg_node_free(received) };
+            }
+
+            unsafe { hew_mailbox_free(mb) };
+        }
+
+        // Red-first omission, then production, on both queue implementations.
+        unsafe {
+            for slow_path in [false, true] {
+                run_case(false, slow_path);
+                run_case(true, slow_path);
+            }
         }
     }
 

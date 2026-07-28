@@ -1832,6 +1832,95 @@ fn recv_handler_record_param_retained_into_state_suppresses_record_inplace_drop(
     );
 }
 
+/// A receive parameter forwarded to another mailbox has exactly one owner on
+/// each transport edge. The handler moves the Vec into the prepared send
+/// carrier, so neither the source parameter nor the carrier may remain in a
+/// scope-exit drop plan. The `Send.cleanup_plan` is the carrier's sole local
+/// release authority and codegen emits it only on the mutually-exclusive
+/// transport-failure edge.
+#[test]
+fn recv_handler_forwarded_vec_param_has_no_scope_exit_double_release() {
+    let pipeline = lower_source(
+        r"
+        actor Consumer {
+            receive fn take(values: Vec<i64>) {}
+        }
+        actor Relay {
+            let consumer: LocalPid<Consumer>;
+            receive fn forward(values: Vec<i64>) {
+                consumer.take(values);
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Relay__recv__forward")
+        .expect("Relay.forward raw MIR present");
+    let (send_value, cleanup_plan) = raw
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::Send {
+                value,
+                cleanup_plan,
+                ..
+            } => Some((*value, cleanup_plan)),
+            _ => None,
+        })
+        .expect("Relay.forward must terminate one block with a mailbox send");
+    assert!(
+        cleanup_plan.is_some(),
+        "the send must carry one typed cleanup witness for the transport-error edge"
+    );
+    let param = Place::Local(0);
+    assert!(
+        raw.blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::Move { dest, src } if *dest == send_value && *src == param
+            )),
+        "the receive parameter must move into the prepared send carrier: {:?}",
+        raw.blocks
+    );
+
+    let elaborated = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "Relay__recv__forward")
+        .expect("Relay.forward elaborated MIR present");
+    assert!(
+        elaborated.drop_plans.iter().all(|(_, plan)| plan
+            .drops
+            .iter()
+            .all(|drop| drop.place != param && drop.place != send_value)),
+        "a delivered or accepted mailbox owner must not retain a handler-exit \
+         release for the source or carrier: {:?}",
+        elaborated.drop_plans
+    );
+
+    assert_eq!(
+        raw.blocks
+            .iter()
+            .filter(|block| matches!(
+                &block.terminator,
+                Terminator::Send {
+                    cleanup_plan: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "the single send terminator must be the sole carrier of the typed \
+         undelivered-send cleanup authority: {:?}",
+        raw.blocks
+    );
+}
+
 /// A functional-update (`..user`) consumes the source record's fields into the
 /// new record; both are owned-by-value and admitted. The source's owned field
 /// moves out, so the new record owns it. Migrated forward from the reject test.

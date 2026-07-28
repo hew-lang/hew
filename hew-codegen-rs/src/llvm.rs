@@ -1807,11 +1807,21 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     pub(crate) borrow_mode: Option<IntValue<'ctx>>,
     /// P5-RX Stage 2a (A625): the closed set of MIR `Place::Local` ids that
     /// carry a value derived (transitively, via `Instr::Move`) from a `String`
-    /// receive parameter — the "borrow taint" set. Empty for every non-receive
-    /// function and for receive handlers with no `String` params. Consulted at
-    /// each escape sink (field store / return / re-send) and at every
-    /// elaborated drop to decide whether the `borrow_mode` gate applies.
+    /// receive parameter. Empty for every non-receive function and for receive
+    /// handlers with no `String` params. Consulted at the String-specific
+    /// retain-on-escape sinks (field store / return / re-send).
     pub(crate) borrow_tainted: HashSet<u32>,
+    /// Receive-parameter locals whose values are non-owning views when
+    /// `borrow_mode != 0`, plus same-typed local handoffs derived from them.
+    ///
+    /// Unlike `borrow_tainted`, this set is type-general: every structurally
+    /// heap-owning message parameter and every parameter carrying an actual
+    /// elaborated drop is rooted here. Elaborated drops consult it so a live
+    /// envelope borrow never releases String, bytes, collection, aggregate, or
+    /// resource storage the envelope still owns. Non-String uses that would
+    /// require a shape-specific retain protocol fail closed at function entry;
+    /// copy-mode receipts keep the ordinary owned drop path.
+    pub(crate) borrow_drop_tainted: HashSet<u32>,
     /// Per-coroutine emission state, `Some` ONLY for a function whose MIR
     /// carries a `Terminator::Suspend` (R326/R327). The `Suspend` terminator arm
     /// reads this to place each `coro.suspend` + its 3-way switch; the
@@ -13807,18 +13817,17 @@ fn lower_instruction_with_cancel_drops(
             // never silently no-op. LESSONS: boundary-fail-closed,
             // cleanup-all-exits, raii-null-after-move, lifecycle-symmetry.
             if let Some(name) = drop_fn {
-                // P5-RX Stage 2a (A625): a borrowed-String-derived value is a
+                // P5-RX Stage 2a (A625): a borrowed message-derived value is a
                 // non-owning view under `borrow_mode != 0`; gate its inline
-                // drop on `borrow_mode == 0` so it never double-frees the
-                // envelope-owned buffer. Mirrors the `emit_one_elab_drop`
-                // suppression for the elaborated drop-plan path (hand-built
-                // test pipelines inline `Instr::Drop` instead of using
-                // `drop_plans`). Non-receive functions and non-tainted places
-                // fall straight through to the unchanged drop.
+                // drop on `borrow_mode == 0` so it never double-releases
+                // envelope-owned storage. Mirrors `emit_one_elab_drop` for
+                // hand-built pipelines that inline `Instr::Drop` instead of
+                // carrying drop plans. Non-receive functions and non-tainted
+                // places fall straight through unchanged.
                 if let (Some(borrow_mode), Some(base)) =
                     (fn_ctx.borrow_mode, place_base_local(place))
                 {
-                    if fn_ctx.borrow_tainted.contains(&base) {
+                    if fn_ctx.borrow_drop_tainted.contains(&base) {
                         let parent = fn_ctx
                             .builder
                             .get_insert_block()
@@ -19978,7 +19987,7 @@ fn classify_move_borrow_sink(dest: &Place) -> MoveBorrowSink {
     }
 }
 
-/// P5-RX Stage 2a (A625): compute the borrow-taint set for a function — the
+/// P5-RX Stage 2a (A625): compute the String borrow-taint set for a function — the
 /// closed set of `Place::Local` ids carrying a value derived from a `String`
 /// receive parameter.
 ///
@@ -20050,6 +20059,139 @@ fn compute_borrow_taint(func: &RawMirFunction) -> HashSet<u32> {
         }
     }
     tainted
+}
+
+/// Compute the type-general receive-view set used by drop suppression.
+///
+/// Every structurally heap-owning receive parameter is a private owner in copy
+/// mode and an envelope-owned view in live-borrow mode. The realised
+/// elaborated drops add any release-bearing parameter the structural heap axis
+/// does not describe. Root those locals and propagate only whole-value,
+/// same-typed local moves: those moves preserve the ownership shape, while any
+/// other use of a non-String root is rejected by
+/// [`has_unhandled_non_string_borrow_use`] on the live path.
+fn compute_borrow_drop_taint(
+    func: &RawMirFunction,
+    elab: Option<&hew_mir::ElaboratedMirFunction>,
+    record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
+    enum_layouts: &[EnumLayout],
+    machine_layouts: &MachineLayoutMap<'_>,
+) -> HashSet<u32> {
+    let mut tainted = HashSet::new();
+    if !is_receive_handler(func) {
+        return tainted;
+    }
+    let layouts = CgHeapLayouts {
+        record_field_resolved_tys,
+        enum_layouts,
+        machine_layouts,
+    };
+    for (idx, ty) in func.params.iter().enumerate() {
+        if hew_mir::ty_owns_heap(ty, &layouts) {
+            tainted.insert(idx as u32);
+        }
+    }
+    if let Some(elab) = elab {
+        for base in elab
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter_map(|drop| place_base_local(&drop.place))
+        {
+            if (base as usize) < func.params.len() {
+                tainted.insert(base);
+            }
+        }
+    }
+    if tainted.is_empty() {
+        return tainted;
+    }
+    loop {
+        let mut changed = false;
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                let Instr::Move {
+                    dest: Place::Local(dest),
+                    src: Place::Local(src),
+                } = instr
+                else {
+                    continue;
+                };
+                if !tainted.contains(src) || tainted.contains(dest) {
+                    continue;
+                }
+                let src_ty = func.locals.get(*src as usize);
+                let dest_ty = func.locals.get(*dest as usize);
+                if src_ty.is_some() && src_ty == dest_ty {
+                    tainted.insert(*dest);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    tainted
+}
+
+/// Detect a use of a non-String live-borrow view that has no retain protocol.
+///
+/// A same-typed local handoff is safe because `compute_borrow_drop_taint`
+/// propagates the view and suppresses the eventual drop. An explicit MIR drop
+/// is safe because its emission is borrow-mode gated. Every other read —
+/// including a field projection, call, return, aggregate construction, or
+/// mailbox send — could mint or outlive the envelope owner. Until each shape
+/// has a typed retain-on-escape ritual, reject that dormant live path at entry.
+fn has_unhandled_non_string_borrow_use(
+    func: &RawMirFunction,
+    borrow_drop_tainted: &HashSet<u32>,
+    string_borrow_tainted: &HashSet<u32>,
+) -> bool {
+    let non_string: HashSet<u32> = borrow_drop_tainted
+        .difference(string_borrow_tainted)
+        .copied()
+        .collect();
+    if non_string.is_empty() {
+        return false;
+    }
+    let reads_non_string = |places: Vec<Place>| {
+        places
+            .iter()
+            .filter_map(place_base_local)
+            .any(|base| non_string.contains(&base))
+    };
+    for block in &func.blocks {
+        for instr in &block.instructions {
+            match instr {
+                Instr::Move {
+                    dest: Place::Local(dest),
+                    src: Place::Local(src),
+                } if non_string.contains(src)
+                    && borrow_drop_tainted.contains(dest)
+                    && func.locals.get(*src as usize) == func.locals.get(*dest as usize) =>
+                {
+                    continue;
+                }
+                Instr::Drop { place, .. }
+                    if place_base_local(place).is_some_and(|base| non_string.contains(&base)) =>
+                {
+                    continue;
+                }
+                _ => {}
+            }
+            if reads_non_string(instr_source_places(instr)) {
+                return true;
+            }
+        }
+        if reads_non_string(terminator_source_places(
+            &block.terminator,
+            func.suspend_kinds.get(&block.id),
+        )) {
+            return true;
+        }
+    }
+    false
 }
 
 /// P5-RX Stage 2a (A625): detect borrow-escape vectors NOT handled by the
@@ -20535,18 +20677,16 @@ fn emit_one_elab_drop(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<
 /// it: a flag-gated resource close still honours the borrow-mode suppression
 /// on its live path.
 fn emit_one_elab_drop_borrow_aware(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<()> {
-    // P5-RX Stage 2a (A625): a value derived from a borrowed `String` receive
-    // payload is a non-owning view under `borrow_mode != 0` — the envelope's
-    // `hew_msg_envelope_release` is its sole owner. Suppress this drop in
-    // borrow mode (gate it on `borrow_mode == 0`) so it never double-frees the
-    // envelope-owned buffer; under `borrow_mode == 0` (copy mode) the handler
-    // owns its private copy and the drop runs unchanged. A tainted local that
-    // *escapes* into an owned sink is never reached here: P3's value-flow drop
-    // derivation excludes any local read as a source operand, and every escape
-    // (field store / return / re-send) reads its source — so retain-on-escape
-    // and drop-suppression are mutually exclusive per local.
+    // P5-RX Stage 2a (A625): a value derived from an owning receive parameter
+    // is a non-owning view under `borrow_mode != 0` — the envelope's drop glue
+    // is its sole owner. Gate every such elaborated release on copy mode so
+    // String, bytes, collections, aggregates, and resource shapes cannot
+    // double-release envelope storage. String escape sinks retain through
+    // `borrow_tainted`; unsupported non-String uses are guarded by the
+    // fail-closed entry trap, so the live path reaches this emitter only for a
+    // discard whose drop must be suppressed.
     if let (Some(borrow_mode), Some(base)) = (fn_ctx.borrow_mode, place_base_local(&drop.place)) {
-        if fn_ctx.borrow_tainted.contains(&base) {
+        if fn_ctx.borrow_drop_tainted.contains(&base) {
             return emit_borrow_gated_elab_drop(fn_ctx, borrow_mode, drop);
         }
     }
@@ -21370,7 +21510,9 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
 /// verdict as enum-bearing ones, and the verdict matches the MIR drop
 /// elaborator's (`dedup-semantic-boundary`).
 struct CgHeapLayouts<'a, 'ctx> {
-    fn_ctx: &'a FnCtx<'a, 'ctx>,
+    record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
+    enum_layouts: &'a [EnumLayout],
+    machine_layouts: &'a MachineLayoutMap<'ctx>,
 }
 
 impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
@@ -21381,10 +21523,9 @@ impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
         } else {
             mangle_with_shortened_args(short, args)
         };
-        self.fn_ctx
-            .record_field_resolved_tys
+        self.record_field_resolved_tys
             .get(key.as_str())
-            .or_else(|| self.fn_ctx.record_field_resolved_tys.get(short))
+            .or_else(|| self.record_field_resolved_tys.get(short))
             .cloned()
     }
 
@@ -21401,7 +21542,6 @@ impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
         };
         // Enum layouts.
         if let Some(layout) = self
-            .fn_ctx
             .enum_layouts
             .iter()
             .find(|el| el.name == key || el.name == name || short_name(&el.name) == short)
@@ -21417,7 +21557,7 @@ impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
         // Machine state payloads (machines are enums at the value-classification
         // layer; their per-variant field types live in the machine layout
         // registry, not `enum_layouts`).
-        if let Some(machine) = self.fn_ctx.machine_layouts.get(short) {
+        if let Some(machine) = self.machine_layouts.get(short) {
             return Some(machine.variant_field_tys.clone());
         }
         None
@@ -21430,7 +21570,7 @@ impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
         } else {
             mangle_with_shortened_args(short, args)
         };
-        self.fn_ctx.enum_layouts.iter().any(|layout| {
+        self.enum_layouts.iter().any(|layout| {
             (layout.name == key || layout.name == name || short_name(&layout.name) == short)
                 && layout.is_indirect
         })
@@ -21448,7 +21588,14 @@ pub(crate) fn resolved_ty_contains_heap_leaf(
     ty: &ResolvedTy,
     _visiting: &mut HashSet<String>,
 ) -> bool {
-    hew_mir::ty_owns_heap(ty, &CgHeapLayouts { fn_ctx })
+    hew_mir::ty_owns_heap(
+        ty,
+        &CgHeapLayouts {
+            record_field_resolved_tys: fn_ctx.record_field_resolved_tys,
+            enum_layouts: fn_ctx.enum_layouts,
+            machine_layouts: fn_ctx.machine_layouts,
+        },
+    )
 }
 
 /// True when the address-based slot-drop path can reach a captured closure's
@@ -29993,11 +30140,11 @@ fn lower_function<'ctx>(
 
     // P5-RX Stage 2a (A625): for a receive handler, grab the trailing runtime
     // `borrow_mode` i32 LLVM parameter (threaded by Stage 1's dispatch
-    // trampoline) and compute the borrow-taint set so the escape sinks and
-    // drops of a borrowed String payload can be runtime-gated. `declare_function`
-    // appends this param ONLY for `<Actor>__recv__<handler>` functions, at LLVM
-    // index `params.len() + 1` (ctx occupies index 0, params occupy 1..=n).
-    // Both stay inert (`None` / empty) for every other function.
+    // trampoline), the String-specific retain taint, and the type-general
+    // drop-suppression taint. `declare_function` appends this param ONLY for
+    // `<Actor>__recv__<handler>` functions, at LLVM index `params.len() + 1`
+    // (ctx occupies index 0, params occupy 1..=n). All three stay inert
+    // (`None` / empty) for every other function.
     let is_recv_handler = is_receive_handler(func);
     let borrow_mode = if is_recv_handler {
         let bm_idx = u32::try_from(func.params.len() + 1).map_err(|_| {
@@ -30015,17 +30162,27 @@ fn lower_function<'ctx>(
         None
     };
     let borrow_tainted = compute_borrow_taint(func);
-    // P5-RX Stage 2a (A625): does any borrowed-String view escape through a
-    // vector this stage does not retain (call/composite/ask/...)? If so we emit
-    // a runtime `borrow_mode != 0` entry trap below (fail-closed without
-    // breaking copy-mode compilation). Computed before the FnCtx move.
+    let borrow_drop_tainted = compute_borrow_drop_taint(
+        func,
+        elab,
+        record_field_resolved_tys,
+        enum_layouts,
+        machine_layouts,
+    );
+    // P5-RX Stage 2a (A625): does any borrowed view reach a vector this stage
+    // cannot retain (call/composite/ask/... for String; every owning operation
+    // beyond same-typed handoff/drop for non-String)? If so emit a runtime
+    // `borrow_mode != 0` entry trap below without breaking copy mode. Computed
+    // before the FnCtx move.
     let has_indirect_enum_message_param = is_recv_handler
         && func.params.iter().any(|ty| {
             matches!(ty, ResolvedTy::Named { name, .. }
                 if crate::layout::is_indirect_enum(name, enum_layouts))
         });
     let borrow_escape_trap = borrow_mode.is_some()
-        && (has_unhandled_borrow_escape(func, &borrow_tainted) || has_indirect_enum_message_param);
+        && (has_unhandled_borrow_escape(func, &borrow_tainted)
+            || has_unhandled_non_string_borrow_use(func, &borrow_drop_tainted, &borrow_tainted)
+            || has_indirect_enum_message_param);
 
     // Emit the implicit actor-drain epilogue only for the native program entry
     // point of an actor-using program WITHOUT supervisors.
@@ -30188,6 +30345,7 @@ fn lower_function<'ctx>(
         const_globals,
         borrow_mode,
         borrow_tainted,
+        borrow_drop_tainted,
         coro: coro_state,
         lambda_actor_shape: match func.call_conv {
             FunctionCallConv::LambdaActorBody(shape) => Some(shape),
@@ -30291,18 +30449,18 @@ fn lower_function<'ctx>(
             &owned_carrier_cancel_drops,
         )?;
     }
-    // P5-RX Stage 2a (A625): runtime fail-closed entry trap. When a borrowed
-    // `String` receive view escapes through a vector this stage does not yet
-    // retain (call-return laundering, composite construction, ask/select/spawn
-    // payloads — see `has_unhandled_borrow_escape`), a LIVE borrow receipt
-    // (`borrow_mode != 0`) would create a second owner and double-free against
-    // `hew_msg_envelope_release`. Trap before any user code runs rather than
-    // emit that fail-open double-free. Copy-mode receipts (`borrow_mode == 0`,
-    // the only mode any scheduler drives today) fall straight through to the
-    // unchanged body, so this never regresses current compilation/execution; it
-    // only arms the guard for the future Stage-2b send flip. Coarse by design
-    // (the whole handler traps if ANY unhandled escape exists) — false-closing a
-    // dormant path is safe; fail-open is not. LESSONS: boundary-fail-closed.
+    // P5-RX Stage 2a (A625): runtime fail-closed entry trap. A String receive
+    // view traps for escape vectors without a retain ritual (call-return
+    // laundering, composite construction, ask/select/spawn payloads). An owning
+    // non-String view traps on any use beyond a same-typed local handoff or a
+    // borrow-gated drop, including re-send: no shape-general clone ritual yet
+    // exists to give that sink an independent owner. A LIVE receipt would
+    // otherwise double-release against `hew_msg_envelope_release`; trap before
+    // user code rather than emit that fail-open path. Copy-mode receipts
+    // (`borrow_mode == 0`, the only mode any scheduler drives today) fall
+    // through unchanged. Coarse by design (the whole handler traps if ANY
+    // unhandled use exists) — false-closing a dormant path is safe; fail-open
+    // is not. LESSONS: boundary-fail-closed.
     if let (true, Some(borrow_mode)) = (borrow_escape_trap, fn_ctx.borrow_mode) {
         let cont_bb = ctx.append_basic_block(llvm_fn, "borrow_escape_ok");
         let trap_bb = ctx.append_basic_block(llvm_fn, "borrow_escape_trap");

@@ -197,12 +197,20 @@ fn build_publish(topic: string, payload: bytes, qos: i32, packet_id: i32) -> byt
 // delivery to the same actor.
 actor ClientHandler {
     let conn: Connection;
+    let session_id: string;
     var client_id: string;
     let router: LocalPid<Router>;
     var buf: bytes;
     var registered: bool;
     receive fn start() {
+        registered = true;
         conn.attach(this);
+    }
+    receive fn reject_registration() {
+        conn.close();
+        unsafe {
+            hew_actor_self_stop()
+        };
     }
     receive fn deliver(packet: bytes) {
         let _ = conn.send(packet);
@@ -244,6 +252,7 @@ actor ClientHandler {
             match ptype {
                 1 => {
                     // CONNECT
+                    var connect_rejected = false;
                     let proto_wire_len = mqtt_str_wire_len(buf, var_off, packet_end);
                     if pflags != 0 || proto_wire_len < 0 {
                         connected = false;
@@ -255,25 +264,42 @@ actor ClientHandler {
                         } else {
                             let protocol_level = buf[header_off] as i32;
                             let payload_off: i64 = header_off + 4;
-                            let client_id_wire_len =
-                                mqtt_str_wire_len(buf, payload_off, packet_end);
+                            let client_id_wire_len = mqtt_str_wire_len(buf, payload_off, packet_end);
                             if protocol_level != 4 || client_id_wire_len < 0 {
                                 connected = false;
                             } else {
                                 let new_client_id = read_mqtt_str(buf, payload_off);
-                                if new_client_id != "" {
-                                    router.rename_client(
-                                        client_id.clone(),
-                                        new_client_id.clone(),
-                                    );
-                                    client_id = new_client_id;
+                                let claim_status = match await router.claim_client_id(session_id.clone(), new_client_id.clone()) {
+                                    Ok(value) => {
+                                        if value {
+                                            1
+                                        } else {
+                                            0
+                                        }
+                                    },
+                                    Err(_) => -1,
+                                };
+                                if claim_status == 1 {
+                                    if new_client_id != "" {
+                                        client_id = new_client_id;
+                                    }
+                                    println(f"[mqtt] CONNECT client_id={client_id}");
+                                    let _ = conn.send(build_connack(0, 0));
+                                } else {
+                                    connect_rejected = true;
+                                    connected = false;
+                                    if claim_status == 0 {
+                                        println(f"[mqtt] duplicate client_id={new_client_id} rejected session={session_id}");
+                                        let _ = conn.send(build_connack(0, 2));
+                                    } else {
+                                        println(f"[mqtt] ClientId claim unavailable session={session_id}");
+                                        let _ = conn.send(build_connack(0, 3));
+                                    }
                                 }
-                                println(f"[mqtt] CONNECT client_id={client_id}");
-                                let _ = conn.send(build_connack(0, 0));
                             }
                         }
                     }
-                    if !connected {
+                    if !connected && !connect_rejected {
                         println(f"[mqtt] malformed CONNECT for {client_id}");
                     }
                 },
@@ -327,7 +353,7 @@ actor ClientHandler {
                                 // matching only; reject filters it cannot honor.
                                 return_codes.push(0x80 as u8);
                             } else {
-                                router.subscribe(stopic, client_id.clone(), req_qos);
+                                router.subscribe(stopic, session_id.clone(), req_qos);
                                 return_codes.push(req_qos as u8);
                             }
                             topic_off = topic_off + tw + 1;
@@ -355,7 +381,7 @@ actor ClientHandler {
                                 break;
                             }
                             let utopic = read_mqtt_str(buf, topic_off);
-                            router.unsubscribe(utopic, client_id.clone());
+                            router.unsubscribe(utopic, session_id.clone());
                             topic_off = topic_off + tw;
                         }
                         if connected {
@@ -399,7 +425,7 @@ actor ClientHandler {
         }
         if !connected {
             if registered {
-                router.client_disconnect(client_id.clone());
+                router.client_disconnect(session_id.clone());
                 registered = false;
             }
             println(f"[mqtt] connection closed for {client_id}");
@@ -411,7 +437,7 @@ actor ClientHandler {
     }
     receive fn on_close() {
         if registered {
-            router.client_disconnect(client_id.clone());
+            router.client_disconnect(session_id.clone());
             registered = false;
             println(f"[mqtt] connection closed for {client_id}");
         }
@@ -425,45 +451,64 @@ actor ClientHandler {
 // Router — tracks clients and subscriptions; fans out publishes directly.
 //
 // State uses only clonable types: strings, i32, and LocalPid actor handles.
-// Parallel arrays: client_ids[i] <-> clients[i]
-// Parallel arrays: sub_topics[i] <-> sub_client_ids[i] <-> sub_qos[i]
+// A generated session ID is the immutable registry and delivery authority;
+// the peer-selected ClientId is metadata claimed atomically during CONNECT.
+// Parallel arrays: session_ids[i] <-> client_ids[i] <-> clients[i]
+// Parallel arrays: sub_topics[i] <-> sub_session_ids[i] <-> sub_qos[i]
 actor Router {
+    var session_ids: Vec<string>;
     var client_ids: Vec<string>;
     var clients: Vec<LocalPid<ClientHandler>>;
     var sub_topics: Vec<string>;
-    var sub_client_ids: Vec<string>;
+    var sub_session_ids: Vec<string>;
     var sub_qos: Vec<i32>;
-    receive fn register_client(
-        client_id: string,
-        client: LocalPid<ClientHandler>,
-    ) -> bool {
-        client_ids.push(client_id);
-        clients.push(client);
-        println("[router] client registered");
-        true
-    }
-    receive fn rename_client(old_client_id: string, new_client_id: string) {
-        for i in 0 .. client_ids.len() {
-            if client_ids[i] == old_client_id {
-                client_ids[i] = new_client_id;
-                break;
+    receive fn register_client(session_id: string, client: LocalPid<ClientHandler>) -> bool {
+        for existing_session in session_ids {
+            if existing_session == session_id {
+                println(f"[router] duplicate session_id={session_id} rejected");
+                return false;
             }
         }
+        session_ids.push(session_id);
+        client_ids.push("");
+        clients.push(client);
+        println(f"[router] state event=register clients={session_ids.len()} subscriptions={sub_topics.len()}");
+        true
     }
-    receive fn subscribe(topic: string, client_id: string, qos: i32) {
+    receive fn claim_client_id(session_id: string, requested: string) -> bool {
+        if requested != "" {
+            for i in 0 .. client_ids.len() {
+                if client_ids[i] == requested && session_ids[i] != session_id {
+                    println(f"[router] duplicate client_id={requested} rejected session={session_id}");
+                    return false;
+                }
+            }
+        }
+        // Empty ClientIds are permitted for clean sessions in MQTT 3.1.1.
+        // Their generated session IDs remain the routing authority.
+        for i in 0 .. client_ids.len() {
+            if session_ids[i] == session_id {
+                client_ids[i] = requested;
+                return true;
+            }
+        }
+        println(f"[router] missing session_id={session_id} during CONNECT");
+        false
+    }
+    receive fn subscribe(topic: string, session_id: string, qos: i32) {
         sub_topics.push(topic);
-        sub_client_ids.push(client_id);
+        sub_session_ids.push(session_id);
         sub_qos.push(qos);
-        println(f"[router] subscribed qos={qos}");
+        println(f"[router] state event=subscribe clients={session_ids.len()} subscriptions={sub_topics.len()} qos={qos}");
     }
     receive fn publish(topic: string, payload: bytes, qos: i32, packet_id: i32) {
         // Fan out to all matching subscribers via actor handles.
         for i in 0 .. sub_topics.len() {
             if sub_topics[i] == topic {
-                let sub_cid = sub_client_ids[i];
+                let sub_session = sub_session_ids[i];
                 let sub_q = sub_qos[i];
-                for j in 0 .. client_ids.len() {
-                    if client_ids[j] == sub_cid {
+                for j in 0 .. session_ids.len() {
+                    if session_ids[j] == sub_session {
                         let target = clients[j];
                         target.deliver(build_publish(topic, payload, sub_q, packet_id));
                         break;
@@ -473,52 +518,61 @@ actor Router {
         }
         println(f"[router] publish topic={topic}");
     }
-    receive fn unsubscribe(topic: string, client_id: string) {
+    receive fn unsubscribe(topic: string, session_id: string) {
+        let before = sub_topics.len();
         let new_topics: Vec<string> = Vec::new();
-        let new_ids: Vec<string> = Vec::new();
+        let new_sessions: Vec<string> = Vec::new();
         let new_qos: Vec<i32> = Vec::new();
         for i in 0 .. sub_topics.len() {
-            if sub_client_ids[i] == client_id {
+            if sub_session_ids[i] == session_id {
                 if sub_topics[i] == topic {
                     continue;
                 }
             }
             new_topics.push(sub_topics[i]);
-            new_ids.push(sub_client_ids[i]);
+            new_sessions.push(sub_session_ids[i]);
             new_qos.push(sub_qos[i]);
         }
         sub_topics = new_topics;
-        sub_client_ids = new_ids;
+        sub_session_ids = new_sessions;
         sub_qos = new_qos;
-        println(f"[router] unsubscribed topic={topic}");
+        let removed = before - sub_topics.len();
+        println(f"[router] state event=unsubscribe clients={session_ids.len()} subscriptions={sub_topics.len()} removed={removed} topic={topic}");
     }
-    receive fn client_disconnect(client_id: string) {
+    receive fn client_disconnect(session_id: string) {
         // Remove from client registry
-        let new_ids: Vec<string> = Vec::new();
+        let clients_before = session_ids.len();
+        let subscriptions_before = sub_topics.len();
+        let new_sessions: Vec<string> = Vec::new();
+        let new_client_ids: Vec<string> = Vec::new();
         let new_clients: Vec<LocalPid<ClientHandler>> = Vec::new();
-        for i in 0 .. client_ids.len() {
-            if client_ids[i] != client_id {
-                new_ids.push(client_ids[i]);
+        for i in 0 .. session_ids.len() {
+            if session_ids[i] != session_id {
+                new_sessions.push(session_ids[i]);
+                new_client_ids.push(client_ids[i]);
                 new_clients.push(clients[i]);
             }
         }
-        client_ids = new_ids;
+        session_ids = new_sessions;
+        client_ids = new_client_ids;
         clients = new_clients;
         // Remove subscriptions for this client
         let new_sub_topics: Vec<string> = Vec::new();
-        let new_sub_ids: Vec<string> = Vec::new();
+        let new_sub_sessions: Vec<string> = Vec::new();
         let new_sub_qos: Vec<i32> = Vec::new();
-        for j in 0 .. sub_client_ids.len() {
-            if sub_client_ids[j] != client_id {
+        for j in 0 .. sub_session_ids.len() {
+            if sub_session_ids[j] != session_id {
                 new_sub_topics.push(sub_topics[j]);
-                new_sub_ids.push(sub_client_ids[j]);
+                new_sub_sessions.push(sub_session_ids[j]);
                 new_sub_qos.push(sub_qos[j]);
             }
         }
         sub_topics = new_sub_topics;
-        sub_client_ids = new_sub_ids;
+        sub_session_ids = new_sub_sessions;
         sub_qos = new_sub_qos;
-        println("[router] client disconnected");
+        let removed_clients = clients_before - session_ids.len();
+        let removed_subscriptions = subscriptions_before - sub_topics.len();
+        println(f"[router] state event=disconnect session={session_id} removed_clients={removed_clients} removed_subscriptions={removed_subscriptions} clients={session_ids.len()} subscriptions={sub_topics.len()}");
     }
 }
 
@@ -536,9 +590,16 @@ actor Acceptor {
         loop {
             let conn = await lst.accept();
             let cid = f"client-{next_id}";
-            let handler = spawn ClientHandler(conn: conn, client_id: cid.clone(), router: router, buf: bytes::new(), registered: true);
-            let _ = await router.register_client(cid, handler);
-            handler.start();
+            let handler = spawn ClientHandler(conn: conn, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes::new(), registered: false);
+            let accepted = match await router.register_client(cid, handler) {
+                Ok(value) => value,
+                Err(_) => false,
+            };
+            if accepted {
+                handler.start();
+            } else {
+                handler.reject_registration();
+            }
             next_id = next_id + 1;
         }
     }
@@ -550,12 +611,13 @@ fn main() {
         port = os.args(1);
     }
     let addr = f"127.0.0.1:{port}";
+    let empty_sessions: Vec<string> = Vec::new();
     let empty_ids: Vec<string> = Vec::new();
     let empty_clients: Vec<LocalPid<ClientHandler>> = Vec::new();
     let empty_sub_topics: Vec<string> = Vec::new();
-    let empty_sub_ids: Vec<string> = Vec::new();
+    let empty_sub_sessions: Vec<string> = Vec::new();
     let empty_sub_qos: Vec<i32> = Vec::new();
-    let router = spawn Router(client_ids: empty_ids, clients: empty_clients, sub_topics: empty_sub_topics, sub_client_ids: empty_sub_ids, sub_qos: empty_sub_qos);
+    let router = spawn Router(session_ids: empty_sessions, client_ids: empty_ids, clients: empty_clients, sub_topics: empty_sub_topics, sub_session_ids: empty_sub_sessions, sub_qos: empty_sub_qos);
     let listener = spawn Acceptor(router: router, addr: addr);
     listener.start();
     loop {

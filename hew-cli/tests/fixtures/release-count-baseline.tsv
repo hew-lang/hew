@@ -569,9 +569,10 @@ examples/metrics_smoke.hew	metrics$counter	2
 examples/metrics_smoke.hew	metrics$gauge	2
 examples/metrics_smoke.hew	metrics$histogram	2
 examples/module_generic_boundaries/main.hew	main	1
-examples/mqtt_broker.hew	Acceptor__recv__start	4
-examples/mqtt_broker.hew	ClientHandler__recv__on_data	41
+examples/mqtt_broker.hew	Acceptor__recv__start	9
+examples/mqtt_broker.hew	ClientHandler__recv__on_data	48
 examples/mqtt_broker.hew	Router__recv__publish	12
+examples/mqtt_broker.hew	Router__recv__register_client	3
 examples/mqtt_broker.hew	build_publish	4
 examples/mqtt_broker.hew	build_suback	1
 examples/mqtt_broker.hew	main	2

@@ -2,7 +2,7 @@
 # Real MQTT publish/delivery oracle for examples/mqtt_broker.hew.
 #
 # Requires mosquitto_sub and mosquitto_pub. By default the script builds the
-# broker with build/bin/hew; set HEW_BIN to another compiler, or set
+# broker with target/debug/hew; set HEW_BIN to another compiler, or set
 # HEW_MQTT_BROKER_BIN to exercise an already-built broker counterfactual.
 
 set -euo pipefail
@@ -12,19 +12,20 @@ WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hew-mqtt-broker-e2e.XXXXXX")"
 BROKER_PID=""
 SUB_PID=""
 PUB_PID=""
+DUP_PID=""
 
 cleanup() {
     local pid
     local i
     local any_alive
-    for pid in "$PUB_PID" "$SUB_PID" "$BROKER_PID"; do
+    for pid in "$DUP_PID" "$PUB_PID" "$SUB_PID" "$BROKER_PID"; do
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
         fi
     done
     for ((i = 0; i < 20; i++)); do
         any_alive=0
-        for pid in "$PUB_PID" "$SUB_PID" "$BROKER_PID"; do
+        for pid in "$DUP_PID" "$PUB_PID" "$SUB_PID" "$BROKER_PID"; do
             if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
                 any_alive=1
             fi
@@ -34,12 +35,12 @@ cleanup() {
         fi
         sleep 0.1
     done
-    for pid in "$PUB_PID" "$SUB_PID" "$BROKER_PID"; do
+    for pid in "$DUP_PID" "$PUB_PID" "$SUB_PID" "$BROKER_PID"; do
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
             kill -KILL "$pid" 2>/dev/null || true
         fi
     done
-    for pid in "$PUB_PID" "$SUB_PID" "$BROKER_PID"; do
+    for pid in "$DUP_PID" "$PUB_PID" "$SUB_PID" "$BROKER_PID"; do
         if [[ -n "$pid" ]]; then
             wait "$pid" 2>/dev/null || true
         fi
@@ -52,7 +53,7 @@ trap cleanup EXIT
 
 dump_diagnostics() {
     echo "mqtt-broker-e2e: diagnostics from $WORK_DIR" >&2
-    for file in broker.log sub.out sub.err pub.out pub.err; do
+    for file in broker.log sub.out sub.err dup.out dup.err pub.out pub.err; do
         if [[ -f "$WORK_DIR/$file" ]]; then
             echo "==> $file" >&2
             sed -n '1,240p' "$WORK_DIR/$file" >&2
@@ -108,7 +109,7 @@ if [[ -n "${HEW_MQTT_BROKER_BIN:-}" ]]; then
     [[ -x "$BROKER_BIN" ]] ||
         fail "HEW_MQTT_BROKER_BIN is not executable: $BROKER_BIN"
 else
-    HEW="${HEW_BIN:-$REPO_ROOT/build/bin/hew}"
+    HEW="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
     [[ -x "$HEW" ]] || fail "Hew compiler is not executable: $HEW"
     BROKER_BIN="$WORK_DIR/mqtt_broker"
     "$HEW" build "$REPO_ROOT/examples/mqtt_broker.hew" -o "$BROKER_BIN" ||
@@ -116,10 +117,11 @@ else
 fi
 
 PAYLOAD="hew-mqtt-delivery-$PORT"
+REJECTED_PAYLOAD="hew-mqtt-duplicate-must-not-deliver-$PORT"
 TOPIC="hew/rc1/e2e"
+DUPLICATE_ID="hew-duplicate-$PORT"
+PUBLISHER_ID="hew-publisher-$PORT"
 FORGED_CONNECT_PROBES=32
-MALFORMED_SINGLE_PROBES=7
-EXPECTED_DISCONNECTS=$((FORGED_CONNECT_PROBES + MALFORMED_SINGLE_PROBES + 3))
 
 "$BROKER_BIN" "$PORT" >"$WORK_DIR/broker.log" 2>&1 &
 BROKER_PID=$!
@@ -196,6 +198,8 @@ kill -0 "$BROKER_PID" 2>/dev/null ||
 mosquitto_sub \
     -h 127.0.0.1 \
     -p "$PORT" \
+    -V mqttv311 \
+    -i "$DUPLICATE_ID" \
     -t "$TOPIC" \
     -C 1 \
     -W 10 \
@@ -205,9 +209,41 @@ SUB_PID=$!
 wait_for_log "SUBSCRIBE processed" ||
     fail "subscriber did not complete CONNECT/SUBSCRIBE within 10 seconds"
 
+# A second real MQTT client claiming the live subscriber's ClientId must be
+# rejected atomically. The first handler must remain authoritative for its
+# subscription and receive the later publication from a distinct client.
 mosquitto_pub \
     -h 127.0.0.1 \
     -p "$PORT" \
+    -V mqttv311 \
+    -i "$DUPLICATE_ID" \
+    -t "$TOPIC" \
+    -m "$REJECTED_PAYLOAD" \
+    >"$WORK_DIR/dup.out" \
+    2>"$WORK_DIR/dup.err" &
+DUP_PID=$!
+wait_for_log "duplicate client_id=$DUPLICATE_ID rejected" ||
+    fail "broker did not reject the duplicate ClientId within 10 seconds"
+
+duplicate_status=0
+wait "$DUP_PID" || duplicate_status=$?
+DUP_PID=""
+if [[ "$duplicate_status" == "0" ]]; then
+    fail "duplicate ClientId publisher reported success"
+fi
+grep -qi "identifier rejected" "$WORK_DIR/dup.err" ||
+    fail "Mosquitto did not observe CONNACK identifier-rejected"
+if grep -qx "$REJECTED_PAYLOAD" "$WORK_DIR/sub.out"; then
+    fail "duplicate ClientId redirected a publication to the live subscriber"
+fi
+kill -0 "$SUB_PID" 2>/dev/null ||
+    fail "original subscriber was disconnected by duplicate ClientId rejection"
+
+mosquitto_pub \
+    -h 127.0.0.1 \
+    -p "$PORT" \
+    -V mqttv311 \
+    -i "$PUBLISHER_ID" \
     -t "$TOPIC" \
     -m "$PAYLOAD" \
     >"$WORK_DIR/pub.out" \
@@ -233,18 +269,34 @@ wait_for_log "PUBLISH topic=$TOPIC qos=0" 50 ||
 wait_for_log "\\[router\\] publish topic=$TOPIC" 50 ||
     fail "router did not fan out the publication"
 
+if ! wait "$PUB_PID"; then
+    fail "publisher exited unsuccessfully"
+fi
+PUB_PID=""
+if ! wait "$SUB_PID"; then
+    fail "subscriber exited unsuccessfully"
+fi
+SUB_PID=""
+
+# The last router mutation is the authority, not a count of log messages.
+# Every registered handler must remove exactly its own immutable session row,
+# and the final row state after both real clients exit must be empty.
+router_state=""
 for ((i = 0; i < 50; i++)); do
-    disconnects="$(grep -c "\\[router\\] client disconnected" "$WORK_DIR/broker.log" || true)"
-    if [[ "$disconnects" -ge "$EXPECTED_DISCONNECTS" ]]; then
+    router_state="$(
+        grep "\\[router\\] state event=" "$WORK_DIR/broker.log" |
+            tail -n 1 || true
+    )"
+    if [[ "$router_state" == *"clients=0 subscriptions=0" ]]; then
         break
     fi
     sleep 0.1
 done
-[[ "${disconnects:-0}" == "$EXPECTED_DISCONNECTS" ]] ||
-    fail "malformed probes and both MQTT clients did not complete disconnect cleanup"
-registrations="$(grep -c "\\[router\\] client registered" "$WORK_DIR/broker.log" || true)"
-[[ "$registrations" == "$EXPECTED_DISCONNECTS" ]] ||
-    fail "router registration/disconnect accounting drifted: registrations=$registrations disconnects=$disconnects"
+[[ "$router_state" == *"clients=0 subscriptions=0" ]] ||
+    fail "router retained client/subscription rows after all clients exited: $router_state"
+if grep -q "\\[router\\] state event=disconnect .*removed_clients=0" "$WORK_DIR/broker.log"; then
+    fail "router observed a disconnect without removing its session row"
+fi
 
 if grep -Eq "PANIC:|panicked" "$WORK_DIR/broker.log"; then
     fail "broker logged an actor panic while handling the probe sequence"

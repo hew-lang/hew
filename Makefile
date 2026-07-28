@@ -239,7 +239,7 @@ observe-functional-test: hew-native observe $(LIBHEW_READY)
 # clients are an explicit external prerequisite, so this is not folded into the
 # hermetic workspace test lane.
 mqtt-broker-e2e: hew-native $(LIBHEW_READY)
-	HEW_BIN="$(BUILD_DIR)/bin/hew" scripts/mqtt-broker-e2e.sh
+	HEW_BIN="$(DEBUG_DIR)/hew" scripts/mqtt-broker-e2e.sh
 
 # Real multi-process proof that `hew_testutil::ensure_hew_lib_built` closes
 # the `libhew.a` uplift race: real `cargo build -p hew-lib` writers, a real

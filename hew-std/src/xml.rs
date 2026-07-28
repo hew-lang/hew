@@ -632,6 +632,71 @@ mod tests {
     use super::*;
     use std::ffi::CString;
 
+    /// Establish that an XML string export transfers one independently
+    /// releasable owner to its caller.
+    ///
+    /// Two simultaneously-live calls must return distinct allocations (R1),
+    /// each allocation must already be unique at handoff (R2), and releasing
+    /// both must leave the source node usable for a third equivalent call
+    /// (R3). Together these are the executable authority for the
+    /// `result-retention = "transferred"` rows on the four XML string
+    /// producers.
+    fn assert_string_result_is_transferred(
+        symbol: &str,
+        expected: &str,
+        call: impl Fn() -> *mut c_char,
+    ) {
+        let first = call();
+        let second = call();
+        assert!(
+            !first.is_null() && !second.is_null(),
+            "{symbol}: expected two live results"
+        );
+        assert_ne!(
+            first, second,
+            "{symbol}: two live results share an address, so the export retained \
+             or re-borrowed its result"
+        );
+
+        for (label, ptr) in [("first", first), ("second", second)] {
+            // SAFETY: each pointer is a live header-aware string returned by
+            // one of the XML exports under test.
+            let unique = unsafe { hew_cabi::cabi::cstring_ensure_unique(ptr) };
+            assert_eq!(
+                unique, ptr,
+                "{symbol}: the {label} result was not solely owned at handoff"
+            );
+            // SAFETY: `ptr` remains live because the uniqueness probe returned
+            // it unchanged.
+            let actual = unsafe { CStr::from_ptr(ptr) }
+                .to_str()
+                .expect("XML is UTF-8");
+            assert_eq!(actual, expected);
+        }
+
+        // SAFETY: R2 established that each result is a distinct sole owner.
+        unsafe {
+            hew_xml_string_free(first);
+            hew_xml_string_free(second);
+        }
+
+        let third = call();
+        assert!(
+            !third.is_null(),
+            "{symbol}: source did not survive releases"
+        );
+        // SAFETY: `third` is a live result from the same XML export.
+        let actual = unsafe { CStr::from_ptr(third) }
+            .to_str()
+            .expect("XML is UTF-8");
+        assert_eq!(
+            actual, expected,
+            "{symbol}: releasing earlier results changed the source"
+        );
+        // SAFETY: `third` is the export's fresh sole-owner result.
+        unsafe { hew_xml_string_free(third) };
+    }
+
     /// Helper: parse an XML string and return the owned pointer.
     fn parse(xml: &str) -> *mut HewXmlNode {
         let c = CString::new(xml).unwrap();
@@ -697,6 +762,39 @@ mod tests {
 
             hew_xml_free(node);
         }
+    }
+
+    #[test]
+    fn string_results_are_transferred_to_the_caller() {
+        let node = parse(r#"<item id="42">hello</item>"#);
+        assert!(!node.is_null());
+        let id = CString::new("id").unwrap();
+
+        // SAFETY: `node` is live for the duration of every call and `id` is a
+        // valid NUL-terminated attribute name.
+        assert_string_result_is_transferred("hew_xml_get_tag", "item", || unsafe {
+            hew_xml_get_tag(node)
+        });
+        assert_string_result_is_transferred("hew_xml_get_text", "hello", || {
+            // SAFETY: `node` remains live until the final free below.
+            unsafe { hew_xml_get_text(node) }
+        });
+        assert_string_result_is_transferred("hew_xml_get_attribute", "42", || {
+            // SAFETY: `node` is live and `id` is NUL-terminated.
+            unsafe { hew_xml_get_attribute(node, id.as_ptr()) }
+        });
+        assert_string_result_is_transferred(
+            "hew_xml_to_string",
+            r#"<item id="42">hello</item>"#,
+            || {
+                // SAFETY: `node` remains live until the final free below.
+                unsafe { hew_xml_to_string(node) }
+            },
+        );
+
+        // SAFETY: the string-result probes borrow the node and release only
+        // their own returned buffers.
+        unsafe { hew_xml_free(node) };
     }
 
     #[test]

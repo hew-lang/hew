@@ -5256,6 +5256,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_xml_get_child"
@@ -5270,6 +5271,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_xml_get_text"
@@ -5277,6 +5279,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_xml_is_element"
@@ -5306,6 +5309,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # regex — hew-std/src/regex.rs. new/clone return Box'd HewRegex handles
 # (hew_regex_free). Match/capture entries borrow the regex and text; the

@@ -8126,6 +8126,7 @@ mod tests {
     fn actor_is_parked_after_sleep_request_in_dispatch() {
         // Declare items before any statements to satisfy `items_after_statements`.
         static DISPATCHED: AtomicI32 = AtomicI32::new(0);
+        static REQUESTED_DEADLINE_MS: AtomicU64 = AtomicU64::new(0);
         // SAFETY: `hew_now_ms` is safe to call from dispatch; `request_sleep`
         // is designed to be called from within a dispatch handler.
         unsafe extern "C-unwind" fn sleeping_dispatch(
@@ -8143,12 +8144,16 @@ mod tests {
             // deadline is now + 500.
             // SAFETY: hew_now_ms is safe to call from within dispatch.
             let now = unsafe { hew_now_ms() };
-            request_sleep(now + 500);
+            let deadline_ms = now + 500;
+            REQUESTED_DEADLINE_MS.store(deadline_ms, Ordering::Release);
+            request_sleep(deadline_ms);
 
             std::ptr::null_mut()
         }
 
         let _guard = crate::runtime_test_guard();
+        DISPATCHED.store(0, Ordering::Relaxed);
+        REQUESTED_DEADLINE_MS.store(0, Ordering::Relaxed);
         // SAFETY: Serialized by TEST_LOCK — no concurrent access.
         unsafe { reset_globals() };
         hew_sched_init();
@@ -8170,15 +8175,6 @@ mod tests {
         // SAFETY: actor has a valid mailbox.
         unsafe { queue_wasm_message(a_ptr, 42) };
 
-        // Snapshot the clock just before the tick drives the dispatch.
-        // sleeping_dispatch calls request_sleep(now + 500); the wheel entry is
-        // inserted with delay_ms == 500, firing at exactly t0 + 500. Under the
-        // wasm32-pinned virtual clock every read returns the same value, so t0
-        // equals the dispatch's `now` deterministically; on native the reads are
-        // real-clock but the fast host keeps them within the same millisecond.
-        // SAFETY: hew_now_ms has no preconditions (pinned to VIRTUAL_BASE_MS on wasm32).
-        let t0 = unsafe { hew_now_ms() };
-
         // Run one tick.
         // SAFETY: Single-threaded test.
         let _ = unsafe { hew_wasm_sched_tick(1) };
@@ -8199,10 +8195,12 @@ mod tests {
             "actor should be in sleep queue"
         );
 
-        // The parked deadline is t0 + 500 (sleeping_dispatch sets
-        // PENDING_SLEEP_DEADLINE_MS = hew_now_ms() + 500 ≈ t0 + 500).
-        // Drive the wheel to just before and exactly at that deadline.
-        let deadline_ms = t0 + 500;
+        // Drive the wheel to just before and exactly at the deadline requested
+        // inside dispatch. On native hosts the monotonic clock can advance
+        // between test setup and dispatch, so a pre-dispatch estimate is not
+        // authoritative.
+        let deadline_ms = REQUESTED_DEADLINE_MS.load(Ordering::Acquire);
+        assert_ne!(deadline_ms, 0, "dispatch must publish its sleep deadline");
 
         // One ms before the parked deadline: actor should NOT wake yet.
         // SAFETY: Single-threaded test.

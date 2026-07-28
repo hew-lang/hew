@@ -4030,6 +4030,10 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // Process-unique positive identity for std::arena::Arena<T>. Zero is
         // the fail-closed exhaustion sentinel.
         "hew_arena_instance_id_new" => i64_ty.fn_type(&[], false),
+        // Process-unique positive generation for an inserted std::arena key.
+        // Distinct generations keep independently-mutated Arena snapshots from
+        // issuing aliases. Zero is the fail-closed exhaustion sentinel.
+        "hew_arena_key_generation_new" => i64_ty.fn_type(&[], false),
         // User-metric scalar emit path (#1862). Bodies in
         // `hew-runtime/src/metrics.rs`. A name comes in as `*const c_char` and
         // the slot handle goes out as `i64` (>= 0 valid, -1 on failure); the

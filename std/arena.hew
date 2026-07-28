@@ -1,12 +1,15 @@
 //! Generational-index slotmap (`Arena<T>`).
 //!
 //! An `Arena<T>` is an owned, `Vec`-backed store that hands out stable,
-//! generation-checked handles (`Key<T>`) instead of pointers. Insert and
-//! remove are O(1); a key keeps working across unrelated mutations and fails
-//! closed once the value it named is removed, even if the slot is later
-//! reused. This is the primitive for stable references under the value model:
-//! graph/tree node stores, ECS-style component tables, interner back-stores,
-//! and handle registries.
+//! generation-checked handles (`Key<T>`) instead of pointers. Arena clones are
+//! independent value snapshots: keys that predate the clone work in both
+//! snapshots, while later divergent inserts receive distinct generations.
+//! Insertion and removal use O(1) slot bookkeeping; returning an owned `T`
+//! follows the value model and may additionally cost O(size of T). A key keeps
+//! working across unrelated mutations and fails closed once the value it named
+//! is removed, even if the slot is later reused. This is the primitive for
+//! stable references under the value model: graph/tree node stores, ECS-style
+//! component tables, interner back-stores, and handle registries.
 //!
 //! # Examples
 //!
@@ -29,23 +32,23 @@
 /// closed forever — `get` returns `None` even after the slot is reused by a
 /// later `insert`, because that reuse issues a fresh key with a higher
 /// generation. The `T` tag prevents cross-element-type use, and the instance
-/// identity prevents a same-typed arena from accepting an issued key.
+/// identity prevents an independently-constructed same-typed arena from
+/// accepting an issued key.
 pub type Key<T> {
     arena_id: i64;
     index: i64;
     generation: i64;
 }
 
-// A slot in the backing store. `value: None` marks the slot free; the slot's
-// `generation` is bumped on each remove so every previously-issued `Key` for
-// that index mismatches. The next `insert` reusing the slot hands out the
-// already-bumped generation.
+// A slot in the backing store. `value: None` marks the slot free. Every
+// `insert` mints a process-unique generation, so slot reuse — including reuse
+// in divergent Arena snapshots — cannot recreate an issued `Key`.
 type Slot<T> {
     generation: i64;
     value: Option<T>;
 }
 
-/// A generational-index slotmap with O(1) insert and remove.
+/// A generational-index slotmap with O(1) slot bookkeeping.
 ///
 /// Construct with `arena.new()`. Values are owned by the arena; accessors
 /// return `Option<T>` copies under the value model, never references.
@@ -72,23 +75,22 @@ pub fn new<T>() -> Arena<T> {
 impl<T> Arena<T> {
     /// Insert `value` and return a fresh `Key<T>` naming it.
     ///
-    /// Reuses a freed slot when one is available (issuing the slot's current,
-    /// already-bumped generation); otherwise appends a new slot at generation
-    /// zero. O(1).
+    /// Reuses a freed slot when one is available; otherwise appends a new slot.
+    /// Every insertion receives a process-unique generation. O(1).
     fn insert(self, value: T) -> Key<T> {
+        let generation = unsafe { hew_arena_key_generation_new() };
+        if generation == 0 {
+            panic("arena.insert: key generation space exhausted");
+        }
         if self.free.is_empty() {
-            self.slots.push(Slot { generation: 0, value: Some(value) });
+            self.slots.push(Slot { generation: generation, value: Some(value) });
             Key {
                 arena_id: self.arena_id,
                 index: self.slots.len() - 1,
-                generation: 0,
+                generation: generation,
             }
         } else {
             let index = self.free.pop();
-            let generation = match self.slots.get(index) {
-                Some(slot) => slot.generation,
-                None => 0,
-            };
             self.slots.set(index, Slot { generation: generation, value: Some(value) });
             Key {
                 arena_id: self.arena_id,
@@ -120,10 +122,10 @@ impl<T> Arena<T> {
     }
     /// Remove and return the value named by `key`.
     ///
-    /// On a live match: bumps the slot's generation, frees the slot, and
-    /// returns `Some(value)`. On a stale, already-removed, or out-of-range
-    /// key: returns `None`. Double-remove is idempotent — the second call
-    /// returns `None`.
+    /// On a live match: frees the slot and returns `Some(value)`. The next
+    /// insertion mints a fresh generation. On a stale, already-removed, or
+    /// out-of-range key: returns `None`. Double-remove is idempotent — the
+    /// second call returns `None`.
     fn remove(self, key: Key<T>) -> Option<T> {
         if key.arena_id != self.arena_id {
             return None;
@@ -131,7 +133,7 @@ impl<T> Arena<T> {
         match self.slots.get(key.index) {
             Some(slot) => match slot.value {
                 Some(value) => if slot.generation == key.generation {
-                    self.slots.set(key.index, Slot { generation: slot.generation + 1, value: None });
+                    self.slots.set(key.index, Slot { generation: slot.generation, value: None });
                     self.free.push(key.index);
                     Some(value)
                 } else {
@@ -154,4 +156,5 @@ impl<T> Arena<T> {
 
 extern "C" {
     fn hew_arena_instance_id_new() -> i64;
+    fn hew_arena_key_generation_new() -> i64;
 }

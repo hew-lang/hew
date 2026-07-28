@@ -14,6 +14,7 @@ struct RouteEntry {
     route_slot: u16,
     session_incarnation: u32,
     conn: c_int,
+    publication_token: u64,
 }
 
 #[derive(Debug)]
@@ -117,6 +118,7 @@ pub(crate) unsafe fn hew_routing_add_route(
     route_slot: u16,
     session_incarnation: u32,
     conn: c_int,
+    publication_token: u64,
 ) -> bool {
     if table.is_null() || route_slot == 0 || session_incarnation == 0 {
         return false;
@@ -150,12 +152,17 @@ pub(crate) unsafe fn hew_routing_add_route(
             route_slot,
             session_incarnation,
             conn,
+            publication_token,
         },
     );
     true
 }
 
-/// Remove a route only when the connection still owns it.
+/// Remove a route only when the exact connection publication still owns it.
+///
+/// Transport connection ids are recycled. Matching the publication token as
+/// well prevents a delayed remover from dropping a successor's route after it
+/// reuses the same numeric id.
 ///
 /// A normal connection loss leaves the configured identity current, so a later
 /// lookup classifies as `Partition`, not `StaleRef`.
@@ -167,6 +174,7 @@ pub(crate) unsafe fn hew_routing_remove_route_if_conn(
     table: *mut HewRoutingTable,
     node_id: NodeId,
     conn: c_int,
+    publication_token: u64,
 ) -> bool {
     if table.is_null() {
         return false;
@@ -177,7 +185,7 @@ pub(crate) unsafe fn hew_routing_remove_route_if_conn(
     let Some(entry) = state.by_node.get(&node_id).copied() else {
         return false;
     };
-    if entry.conn != conn {
+    if entry.conn != conn || entry.publication_token != publication_token {
         return false;
     }
     state.by_node.remove(&node_id);
@@ -352,7 +360,7 @@ mod tests {
                 LocationRoute::StaleRef
             );
 
-            assert!(hew_routing_add_route(table, remote, 9, 5, 55));
+            assert!(hew_routing_add_route(table, remote, 9, 5, 55, 1));
             assert_eq!(
                 hew_routing_lookup_location(table, location(remote, 42, 5)),
                 LocationRoute::Remote {
@@ -366,7 +374,7 @@ mod tests {
                 LocationRoute::StaleRef
             );
 
-            assert!(hew_routing_remove_route_if_conn(table, remote, 55));
+            assert!(hew_routing_remove_route_if_conn(table, remote, 55, 1));
             assert_eq!(
                 hew_routing_lookup_location(table, location(remote, 42, 5)),
                 LocationRoute::Partition
@@ -375,10 +383,52 @@ mod tests {
                 hew_routing_lookup_location(table, location(remote, 42, 4)),
                 LocationRoute::StaleRef
             );
-            assert!(hew_routing_add_route(table, remote, 9, 6, 56));
+            assert!(hew_routing_add_route(table, remote, 9, 6, 56, 2));
             assert_eq!(
                 hew_routing_lookup_location(table, location(remote, 42, 5)),
                 LocationRoute::StaleRef
+            );
+            hew_routing_table_free(table);
+        }
+    }
+
+    /// A delayed removal belongs to one exact route publication, not merely to
+    /// its recycled transport id.
+    ///
+    /// Counterfactual: matching only `conn` lets the first removal below erase
+    /// the successor route because both publications deliberately use id 55.
+    #[test]
+    fn stale_publication_cannot_remove_recycled_conn_route() {
+        let local = node(1);
+        let remote = node(2);
+        let table = hew_routing_table_new(7, Some(local), Some(1), &[(9, remote)]);
+
+        // SAFETY: table is live for the test.
+        unsafe {
+            assert!(hew_routing_add_route(table, remote, 9, 5, 55, 100));
+            assert!(hew_routing_add_route(table, remote, 9, 6, 55, 200));
+
+            assert!(
+                !hew_routing_remove_route_if_conn(table, remote, 55, 100),
+                "the stale publication must not remove its recycled-id successor"
+            );
+            assert_eq!(
+                hew_routing_lookup_location(table, location(remote, 42, 6)),
+                LocationRoute::Remote {
+                    actor_id: crate::pid::hew_pid_make(9, 42),
+                    route_slot: 9,
+                    conn: 55,
+                },
+                "the successor route must remain live"
+            );
+
+            assert!(
+                hew_routing_remove_route_if_conn(table, remote, 55, 200),
+                "the exact successor publication must remove its own route"
+            );
+            assert_eq!(
+                hew_routing_lookup_location(table, location(remote, 42, 6)),
+                LocationRoute::Partition
             );
             hew_routing_table_free(table);
         }
@@ -393,8 +443,8 @@ mod tests {
 
         // SAFETY: table is live for the test.
         unsafe {
-            assert!(hew_routing_add_route(table, old, 9, 4, 40));
-            assert!(hew_routing_add_route(table, new, 9, 1, 41));
+            assert!(hew_routing_add_route(table, old, 9, 4, 40, 1));
+            assert!(hew_routing_add_route(table, new, 9, 1, 41, 2));
             assert_eq!(
                 hew_routing_lookup_location(table, location(old, 8, 4)),
                 LocationRoute::StaleRef
@@ -424,7 +474,7 @@ mod tests {
         // SAFETY: table is live for the test.
         unsafe {
             assert!(
-                !hew_routing_add_route(table, remote, 7, 5, 55),
+                !hew_routing_add_route(table, remote, 7, 5, 55, 1),
                 "a peer must not register on the local route slot"
             );
             assert_eq!(
@@ -434,7 +484,7 @@ mod tests {
             );
             // The neighbouring slot is unaffected: the refusal is exact, not a
             // blanket rejection that would strand every peer.
-            assert!(hew_routing_add_route(table, remote, 8, 5, 55));
+            assert!(hew_routing_add_route(table, remote, 8, 5, 55, 2));
             assert_eq!(
                 hew_routing_lookup_location(table, location(remote, 42, 5)),
                 LocationRoute::Remote {
@@ -463,11 +513,11 @@ mod tests {
         unsafe {
             for reserved in [0_u16, 7] {
                 assert!(
-                    !hew_routing_add_route(table, remote, reserved, 5, 55),
+                    !hew_routing_add_route(table, remote, reserved, 5, 55, 1),
                     "route slot {reserved} is reserved and must not be registrable"
                 );
             }
-            assert!(hew_routing_add_route(table, remote, 8, 5, 55));
+            assert!(hew_routing_add_route(table, remote, 8, 5, 55, 2));
             let LocationRoute::Remote { actor_id, .. } =
                 hew_routing_lookup_location(table, location(remote, 42, 5))
             else {

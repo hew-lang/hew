@@ -258,6 +258,28 @@ fn string_share_sink_places(instr: &Instr) -> Vec<Place> {
         _ => Vec::new(),
     }
 }
+/// Whether a path-sensitive mailbox-owner flag is definitely armed before an
+/// instruction in the same block.
+///
+/// A consuming `BindingRef` writes `1` immediately before lowering its owning
+/// sink. Looking only backward within the block is deliberately conservative:
+/// if a future lowering separates the write from the sink across a CFG edge,
+/// this returns false and the string derivation retains or excludes the source
+/// instead of assuming that a scope-exit drop will be suppressed.
+fn actor_message_cow_flag_armed_before(
+    block: &BasicBlock,
+    instr_index: usize,
+    flag: Place,
+) -> bool {
+    block.instructions[..instr_index]
+        .iter()
+        .rev()
+        .find_map(|instr| match instr {
+            Instr::ConstI64 { dest, value } if *dest == flag => Some(*value == 1),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
 fn apply_string_retain_sites(
     blocks: &mut [BasicBlock],
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
@@ -335,6 +357,7 @@ pub(super) fn derive_cow_sole_owner(
     locals: &[ResolvedTy],
     borrowed_param_locals: &HashSet<u32>,
     parameter_locals: &HashSet<u32>,
+    actor_message_cow_drop_flags: &HashMap<BindingId, Place>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
     extern_contracts: &crate::return_provenance::ExternContractTable,
@@ -472,6 +495,21 @@ pub(super) fn derive_cow_sole_owner(
                                         *src,
                                         Vec::new(),
                                     ));
+                                } else if let Some(flag) =
+                                    actor_message_cow_drop_flags.get(&binding)
+                                {
+                                    if !actor_message_cow_flag_armed_before(
+                                        block,
+                                        instr_index,
+                                        *flag,
+                                    ) {
+                                        pending_share_sites.push((
+                                            block.id,
+                                            instr_index,
+                                            *src,
+                                            Vec::new(),
+                                        ));
+                                    }
                                 } else {
                                     handoff_bindings.insert(binding);
                                 }
@@ -500,7 +538,21 @@ pub(super) fn derive_cow_sole_owner(
                         alias_of.contains_key(&dest_local) && matches!(dest, Place::Local(_))
                     });
                     if src_is_member && !dest_is_member {
-                        note_escape(src_local, &mut excluded_roots);
+                        let root = alias_of.get(&src_local).copied().unwrap_or(src_local);
+                        let binding = candidate_local_to_binding.get(&root).copied();
+                        if let Some(flag) =
+                            binding.and_then(|id| actor_message_cow_drop_flags.get(&id))
+                        {
+                            if !actor_message_cow_flag_armed_before(block, instr_index, *flag) {
+                                // This is a copy into a new owner, not a
+                                // path-marked handoff. Mint that owner
+                                // explicitly so the guarded source drop
+                                // remains balanced.
+                                pending_share_sites.push((block.id, instr_index, *src, Vec::new()));
+                            }
+                        } else {
+                            note_escape(src_local, &mut excluded_roots);
+                        }
                     }
                 }
                 continue;
@@ -523,7 +575,22 @@ pub(super) fn derive_cow_sole_owner(
                     if borrowed_alias_of.contains_key(&local) {
                         pending_share_sites.push((block.id, instr_index, field.src, Vec::new()));
                     } else if alias_of.contains_key(&local) {
-                        note_escape(local, &mut excluded_roots);
+                        let root = alias_of.get(&local).copied().unwrap_or(local);
+                        let binding = candidate_local_to_binding.get(&root).copied();
+                        if let Some(flag) =
+                            binding.and_then(|id| actor_message_cow_drop_flags.get(&id))
+                        {
+                            if !actor_message_cow_flag_armed_before(block, instr_index, *flag) {
+                                pending_share_sites.push((
+                                    block.id,
+                                    instr_index,
+                                    field.src,
+                                    Vec::new(),
+                                ));
+                            }
+                        } else {
+                            note_escape(local, &mut excluded_roots);
+                        }
                     }
                 }
             }
@@ -573,6 +640,17 @@ pub(super) fn derive_cow_sole_owner(
                         for value in values {
                             pending_share_sites.push((block.id, instr_index, value, Vec::new()));
                         }
+                    } else if let Some(flag) = actor_message_cow_drop_flags.get(&binding) {
+                        if !actor_message_cow_flag_armed_before(block, instr_index, *flag) {
+                            for value in values {
+                                pending_share_sites.push((
+                                    block.id,
+                                    instr_index,
+                                    value,
+                                    Vec::new(),
+                                ));
+                            }
+                        }
                     } else {
                         handoff_bindings.insert(binding);
                         for value in values.into_iter().skip(1) {
@@ -611,7 +689,16 @@ pub(super) fn derive_cow_sole_owner(
                     if alias_of.contains_key(&local)
                         && matches!(place, Place::Local(_) | Place::ReturnSlot)
                     {
-                        note_escape(local, &mut excluded_roots);
+                        let root = alias_of.get(&local).copied().unwrap_or(local);
+                        let binding = candidate_local_to_binding.get(&root).copied();
+                        let guarded = binding
+                            .and_then(|id| actor_message_cow_drop_flags.get(&id))
+                            .is_some_and(|flag| {
+                                actor_message_cow_flag_armed_before(block, instr_index, *flag)
+                            });
+                        if !guarded {
+                            note_escape(local, &mut excluded_roots);
+                        }
                     }
                 }
             }
@@ -631,7 +718,20 @@ pub(super) fn derive_cow_sole_owner(
                         if alias_of.contains_key(&local)
                             && matches!(place, Place::Local(_) | Place::ReturnSlot)
                         {
-                            note_escape(local, &mut excluded_roots);
+                            let root = alias_of.get(&local).copied().unwrap_or(local);
+                            let binding = candidate_local_to_binding.get(&root).copied();
+                            let guarded = binding
+                                .and_then(|id| actor_message_cow_drop_flags.get(&id))
+                                .is_some_and(|flag| {
+                                    actor_message_cow_flag_armed_before(
+                                        block,
+                                        block.instructions.len(),
+                                        *flag,
+                                    )
+                                });
+                            if !guarded {
+                                note_escape(local, &mut excluded_roots);
+                            }
                         }
                     }
                 }
@@ -2345,6 +2445,7 @@ pub(super) fn finalize_string_ownership(
         &builder.locals,
         &builder.borrowed_string_param_locals,
         &builder.parameter_locals,
+        &builder.actor_message_cow_drop_flags,
         &builder.module_fn_names,
         &builder.module_generic_fn_names,
         &builder.call_scrutinee_provenance.extern_table,
@@ -2364,7 +2465,8 @@ pub(super) fn finalize_string_ownership(
             if matches!(
                 state,
                 dataflow::BindingState::Consumed(_) | dataflow::BindingState::MaybeConsumed(_)
-            ) {
+            ) && !builder.actor_message_cow_drop_flags.contains_key(binding)
+            {
                 derivation.allowed.remove(binding);
             }
         }
@@ -4656,6 +4758,7 @@ mod cow_sole_owner_derivation {
             &[],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4712,6 +4815,7 @@ mod cow_sole_owner_derivation {
             &[],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4765,6 +4869,7 @@ mod cow_sole_owner_derivation {
             &[],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4812,6 +4917,7 @@ mod cow_sole_owner_derivation {
             &[],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4862,6 +4968,7 @@ mod cow_sole_owner_derivation {
             ],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4896,6 +5003,7 @@ mod cow_sole_owner_derivation {
             &[ResolvedTy::String, ResolvedTy::String, ResolvedTy::String],
             &HashSet::from([2]),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),
@@ -4940,6 +5048,7 @@ mod cow_sole_owner_derivation {
             ],
             &HashSet::new(),
             &HashSet::new(),
+            &HashMap::new(),
             &HashSet::from(["hew_string_drop".to_string()]),
             &HashSet::new(),
             &crate::return_provenance::ExternContractTable::default(),

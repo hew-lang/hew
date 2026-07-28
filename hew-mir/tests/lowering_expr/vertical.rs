@@ -1762,6 +1762,116 @@ fn recv_handler_conditional_string_transfer_uses_guarded_drop() {
     }
 }
 
+/// A path-sensitive mailbox drop flag cannot erase the ordinary alias verdict.
+/// On the `Wrap` branch the binding is only read into `RecordInit`, so the flag
+/// remains zero and the handler's guarded scope-exit drop will run. That
+/// aggregate must receive its own retain before construction. On the direct
+/// state-transfer branch, the consuming `BindingRef` arms the flag and no
+/// retain is needed.
+#[test]
+fn recv_handler_conditional_record_ingress_retains_before_guarded_drop() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var held: Wrap;
+            var last: string;
+            receive fn route(label: string, wrap: bool) {
+                if wrap {
+                    held = Wrap { name: label };
+                } else {
+                    last = label;
+                }
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Fan__recv__route")
+        .expect("receive handler raw MIR present");
+    let record_block = raw
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .instructions
+                .iter()
+                .any(|instr| matches!(instr, Instr::RecordInit { .. }))
+        })
+        .expect("record-ingress branch present");
+    let record_index = record_block
+        .instructions
+        .iter()
+        .position(|instr| matches!(instr, Instr::RecordInit { .. }))
+        .expect("record init index");
+    assert!(
+        record_block.instructions[..record_index]
+            .iter()
+            .any(|instr| matches!(
+                instr,
+                Instr::StringRetain {
+                    value: Place::Local(0)
+                }
+            )),
+        "the unconsumed mailbox string copied into a record must be retained \
+         before the aggregate becomes an owner: {:?}",
+        record_block.instructions
+    );
+
+    let direct_store_block = raw
+        .blocks
+        .iter()
+        .find(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::ActorStateFieldStore {
+                        field_offset: hew_mir::FieldOffset(1),
+                        src: Place::Local(0)
+                    }
+                )
+            })
+        })
+        .expect("direct state-transfer branch present");
+    assert!(
+        direct_store_block
+            .instructions
+            .iter()
+            .any(|instr| matches!(instr, Instr::ConstI64 { value: 1, .. })),
+        "the direct ownership-transfer branch must arm its drop flag: {:?}",
+        direct_store_block.instructions
+    );
+    assert!(
+        direct_store_block
+            .instructions
+            .iter()
+            .all(|instr| !matches!(instr, Instr::StringRetain { .. })),
+        "an armed direct handoff must not mint an unbalanced extra owner: {:?}",
+        direct_store_block.instructions
+    );
+
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "Fan__recv__route")
+        .expect("receive handler elaborated MIR present");
+    assert!(
+        handler
+            .drop_plans
+            .iter()
+            .any(|(_, plan)| plan.drops.iter().any(|drop| matches!(
+                drop.kind,
+                hew_mir::DropKind::CowHeap { .. }
+            ) && drop.guard.is_some())),
+        "the retained read branch and armed handoff branch must converge on one \
+         guarded source drop: {:?}",
+        handler.drop_plans
+    );
+}
+
 /// #2747 — a by-value owned-aggregate RECORD message param delivered to an actor
 /// `receive fn` and only BORROWED (`b.payload.len()`) is a transient
 /// read-and-discard the handler frame solely owns: the mailbox `memcpy`

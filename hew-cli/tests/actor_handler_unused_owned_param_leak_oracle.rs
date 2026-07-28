@@ -156,6 +156,29 @@ fn main() -> i64 {\n\
 \x20   if relayed == 40 && consumed == 40 { 0 } else { 81 }\n\
 }\n";
 
+const CONDITIONAL_RECORD_INGRESS_POISON_SOURCE: &str = "\
+type Wrap { name: string }\n\
+actor Fan {\n\
+\x20   var seen: i64;\n\
+\x20   var held: Wrap;\n\
+\x20   var last: string;\n\
+\x20   receive fn route(label: string, mode: i64) {\n\
+\x20       if mode == 0 { held = Wrap { name: label }; }\n\
+\x20       else { last = label; }\n\
+\x20       seen = seen + 1;\n\
+\x20   }\n\
+\x20   receive fn total() -> i64 { seen + held.name.len() + last.len() }\n\
+}\n\
+fn main() -> i64 {\n\
+\x20   let fan = spawn Fan(seen: 0, held: Wrap { name: \"held\" }, last: \"last\");\n\
+\x20   var i: i64 = 0;\n\
+\x20   while i < 40 {\n\
+\x20       fan.route(\"payload\".to_upper(), i % 2);\n\
+\x20       i = i + 1;\n\
+\x20   }\n\
+\x20   match await fan.total() { Ok(n) => if n > 40 { 0 } else { 83 }, Err(_) => 84 }\n\
+}\n";
+
 macro_rules! macos_slope_test {
     ($name:ident, $label:literal, $source:ident) => {
         #[cfg_attr(
@@ -213,6 +236,33 @@ fn forwarded_param_survives_without_handler_double_drop() {
         Some(0),
         "forwarded mailbox ownership must transfer exactly once; an extra \
          handler drop corrupts the consumer's retained string:\n{}",
+        describe_output(&output)
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator control uses the Darwin malloc diagnostics"
+)]
+#[test]
+fn conditional_record_ingress_retains_before_handler_drop() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("actor-handler-conditional-record-ingress-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        CONDITIONAL_RECORD_INGRESS_POISON_SOURCE,
+        dir.path(),
+        "conditional_record_ingress",
+    );
+    let output = run_under_malloc_scribble(&bin);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "record ingress on the unconsumed branch must retain before the \
+         handler's guarded source drop; otherwise actor state observes a \
+         double-free or corrupted string:\n{}",
         describe_output(&output)
     );
 }

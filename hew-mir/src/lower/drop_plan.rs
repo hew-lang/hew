@@ -339,17 +339,19 @@ pub(super) fn elaborate(
     // variant, return, and live-local co-owner mints carry explicit
     // `StringRetain` markers. Last-use handoffs keep one owner and emit no
     // retain. The marker sites and this drop allow-set come from the same MIR
-    // derivation, so emission and admission cannot drift. A flagged actor
-    // message string is the sole exception to the static consume exclusion:
-    // its runtime flag distinguishes the branch that transferred ownership
-    // from the branch on which the handler still owns the payload.
+    // derivation, so emission and admission cannot drift. For a flagged actor
+    // message string, that same derivation admits the guarded drop only when
+    // every owner-minting use is either preceded by the path-local transfer
+    // flag or receives an explicit retain. A read-only aggregate ingress must
+    // therefore retain; it cannot override the alias verdict merely because
+    // some sibling path consumes the binding.
     //
     // Consume facts narrow the allow-set further: a binding `Consumed` or
     // `MaybeConsumed` at any block exit is removed, because `enumerate_exits`
     // treats `MaybeConsumed` as Live (the move-checker rejects that only for
     // `MustConsume`/Linear types, not CoW values) and would otherwise fire the
     // drop on a branch where the buffer was already moved out.
-    let mut cow_drop_allowed = if let Some(precomputed) = precomputed_cow_drop_allowed {
+    let cow_drop_allowed = if let Some(precomputed) = precomputed_cow_drop_allowed {
         precomputed.clone()
     } else {
         let mut derived = derive_cow_sole_owner(
@@ -361,6 +363,7 @@ pub(super) fn elaborate(
             &builder.locals,
             &builder.borrowed_string_param_locals,
             &builder.parameter_locals,
+            &builder.actor_message_cow_drop_flags,
             &builder.module_fn_names,
             &builder.module_generic_fn_names,
             &builder.call_scrutinee_provenance.extern_table,
@@ -389,19 +392,6 @@ pub(super) fn elaborate(
         }
         derived
     };
-    // Re-admit a conditionally-consumed mailbox string after the static scan.
-    // `maybe_alloc_actor_message_cow_drop_flag` admits only a registered
-    // scope-exit owner with the wired leaf release, and each BindingRef consume
-    // sets that same flag before the handoff. The guarded drop therefore fires
-    // only on the runtime path where the handler still owns the delivery.
-    for (binding, _, ty) in &owned_locals_snapshot {
-        if builder.actor_message_cow_drop_flags.contains_key(binding)
-            && cow_value_leaf_drop_symbol(ty).is_some()
-        {
-            cow_drop_allowed.insert(*binding);
-        }
-    }
-
     // W5.020 — fail-closed sole-owner allow-set for heap-owning enum
     // composite bindings (`Result<T, string>` / `Option<string>` / user enums
     // with an owned-payload variant). A composite is admitted for the tag-aware

@@ -295,10 +295,11 @@ pub unsafe extern "C" fn hew_toml_array_get(
 /// Serialize a TOML value back to a TOML-formatted string.
 ///
 /// Returns a header-aware, NUL-terminated Hew string. The caller must release
-/// it with `hew_string_drop`. Returns an empty string if `val` is null or
-/// serialization fails, and records the reason in the serialize slot so an
-/// empty document (a valid table with no keys) stays distinguishable from a
-/// root TOML cannot represent.
+/// every non-null result with `hew_string_drop`. Returns an empty string if
+/// `val` is null or serialization fails, and records the reason in the
+/// serialize slot so an empty document (a valid table with no keys) stays
+/// distinguishable from a root TOML cannot represent. Returns null if
+/// allocating an output string fails.
 ///
 /// # Safety
 ///

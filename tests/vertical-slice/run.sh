@@ -851,6 +851,8 @@ run_accept_expect_stdout "generic_aggregate_eq"
 # consumer of the generic Vec<Composite<T>> codegen path. Each fixture asserts
 # exact/boundary/negative values — stale-key None, generation +1, exact len.
 run_accept_expect_stdout "arena_insert_get_roundtrip"
+run_accept_expect_stdout "arena_key_vec_roundtrip"
+run_accept_expect_stdout "arena_key_hashmap_roundtrip"
 run_accept_expect_stdout "arena_remove_stale_key"
 run_accept_expect_stdout "arena_generation_reuse"
 run_accept_expect_stdout "arena_len_live_count"

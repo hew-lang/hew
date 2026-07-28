@@ -12,9 +12,10 @@
 //! fail-closed escape-scan `derive_local_collection_drop_allowed`
 //! (`hew-mir/src/lower.rs`), which excludes any candidate read by an
 //! unclassified runtime call as an owning escape. `hew_vec_clone_owned` was
-//! ABSENT from the receiver-borrow allow-list (`is_vec_receiver_borrow_symbol`)
-//! even though its siblings `hew_vec_clone` / `hew_vec_clone_layout` were
-//! present, so a local owned-element Vec used as the receiver of `.clone()` was
+//! ABSENT from the typed receiver-borrow contract
+//! (`callee_ownership_contract` → `ReceiverOwnership::Borrows`) even though its
+//! siblings `hew_vec_clone` / `hew_vec_clone_layout` were present, so a local
+//! owned-element Vec used as the receiver of `.clone()` was
 //! treated as escaped, dropped from `owned_vec_drop_allowed`, and never freed.
 //! The clone RESULT was released, but the ORIGINAL handle (its buffer, every
 //! inner collection handle/buffer, and every element string) leaked on each

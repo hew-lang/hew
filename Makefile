@@ -51,6 +51,8 @@
 #   make test-parser       — parser + lexer crate tests (narrow)
 #   make test-types        — type-checker + parser + lexer crate tests (narrow)
 #   make test-cli          — CLI crate tests (narrow)
+#   make macos-leak-oracle — ratcheted local leaks(1) + poisoned-allocator corpus
+#   make test-leak-oracle-selftest — fail-closed leak runner/harness counterfactuals
 #   make test-cabi         — C-ABI crate tests (narrow; excluded from the workspace run)
 #   make test-compiler-pipeline — compiler ladder + CLI pipeline tests (narrow)
 #   make test-vertical-slice — end-to-end Hew compiler oracle
@@ -69,7 +71,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
+.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -725,6 +727,24 @@ test-types:
 test-cli:
 	cargo nextest run --profile ci -p hew-cli -p adze-cli
 
+# Canonical local macOS memory authority. This is deliberately named as a local
+# authority, not a CI `test-*` gate: hosted macOS processes cannot grant
+# leaks(1) the task port it needs. The runner rejects a non-Darwin host,
+# a missing leaks(1), an empty/shrunken inventory, any unexpected selected
+# binary, and the absence of ffi_link_e2e's real allocator slope probe. It runs
+# ignored tests too, so a newly ignored memory verdict cannot disappear behind
+# a green nextest summary.
+macos-leak-oracle: test-leak-oracle-selftest hew-native
+	scripts/macos-leak-oracle.sh
+
+# Platform-independent teeth for the leak harness and the runner's inventory
+# contract. The Rust counterfactuals inject missing/declined/malformed/timed-out
+# inspector commands and incomplete work witnesses; the shell counterfactuals
+# prove empty/shrunken inventories and a missing ffi authority are red.
+test-leak-oracle-selftest:
+	cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed
+	scripts/tests/test_macos_leak_oracle_runner.sh
+
 # The C-ABI crate, run on its own.
 #
 # Every workspace-wide nextest invocation excludes hew-cabi: its `#[cfg(test)]`
@@ -1161,7 +1181,7 @@ lint: runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity
 # enumerates a corpus and then compares over it proves nothing when the
 # enumeration is empty; scripts/corpus-floors.tsv is where each such gate
 # records the size it expects to find.
-corpus-floor-check:
+corpus-floor-check: test-leak-oracle-selftest
 	bash scripts/tests/test_corpus_floor.sh
 	bash scripts/check-corpus-floors.sh
 

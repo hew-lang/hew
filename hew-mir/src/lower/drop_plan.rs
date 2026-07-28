@@ -5081,9 +5081,10 @@ fn build_lifo_drops(
             // the allow-set leaks (as before this fix); it never double-frees.
             // The default for any binding the prover did not positively clear
             // is exclusion, so an un-enumerated future alias producer cannot
-            // re-open the double-free. Aggregate/container `CowValue` self-drops
-            // (Vec, HashMap, HashSet, Tuple, Array, Bytes) are deferred to the
-            // retain-on-share follow-on and remain no-ops here.
+            // re-open the double-free. Aggregate/container `CowValue` drops
+            // (Vec, HashMap, HashSet, composite tuples/records, Bytes) are
+            // admitted by their separate structural authorities and
+            // interception arms; they remain no-ops in THIS scalar-leaf path.
             // LESSONS: cleanup-all-exits, raii-null-after-move,
             // boundary-fail-closed.
             ValueClass::CowValue => {
@@ -5109,15 +5110,13 @@ fn build_lifo_drops(
 }
 /// W5-011 P3 (Slice 2). Map a `CowValue` leaf type to its C-ABI runtime
 /// release symbol for function-scope drop elaboration, or `None` for types
-/// whose scope-exit drop is deferred to a later slice.
+/// outside this scalar-leaf authority.
 ///
-/// Slice 2 is intentionally restricted to the single `string` leaf — the
-/// accumulating helper-local leak this fix targets. Aggregate and container
-/// `CowValue` leaves (`Vec`, `HashMap`, `HashSet`, tuples, arrays) own nested
-/// heap that, without retain-on-share at element-ingress sites, cannot be
-/// released here without risking a double-free against the container's own
-/// element-release path; they stay `None` (leak-as-before, never double-free)
-/// until the retain-on-share spine lands.
+/// This picker is intentionally restricted to the single `string` leaf.
+/// Aggregate/container shapes are not scalar leaves: their scope-exit releases
+/// are admitted by the `binding_ty_is_*_vec`, structural composite, and local
+/// collection authorities. Keeping them `None` here is delegation, not an
+/// assertion that those values receive no release.
 ///
 /// `Bytes` is deliberately absent TOO, but for a different reason: its
 /// scope-exit drop is live, with its own dedicated admission authority

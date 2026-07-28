@@ -22,6 +22,8 @@ mod float_emission;
 mod hashmap_hashset_local_drop_emission;
 #[path = "emission/hashmap_layout_emission.rs"]
 mod hashmap_layout_emission;
+#[path = "emission/http_ws_string_result_emission.rs"]
+mod http_ws_string_result_emission;
 #[path = "emission/identity_emission.rs"]
 mod identity_emission;
 #[path = "emission/mem_floor_intrinsic_emission.rs"]

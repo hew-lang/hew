@@ -118,6 +118,10 @@ pub mod tls;
 pub mod url;
 #[cfg(not(target_family = "wasm"))]
 pub mod websocket;
+// Producer-specific R1/R2/R3 proofs for WebSocket message/error string
+// results. Kept separate from the batch string/last-error family modules.
+#[cfg(all(test, not(target_family = "wasm")))]
+mod websocket_string_result_retention;
 
 // text
 #[cfg(not(target_family = "wasm"))]

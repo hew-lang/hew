@@ -65,6 +65,18 @@ test-threads = "num-cpus"
 filter = "binary(eval_e2e)"
 test-group = "subprocess-intensive"
 
+[[profile.default.overrides]]
+# This executable ownership oracle runs a complete compiler + codegen + native
+# link + actor execution under a strict 30-second child deadline. On a hosted
+# runner the same healthy test twice exhausted that deadline while competing
+# with the full workspace's other LLVM/link subprocesses; isolated exact-host
+# runs completed in under a second. Reserve the whole nextest thread pool for
+# this one compiler subprocess so the deadline continues to mean "the ownership
+# oracle hung", not "the compiler was starved". The executable keeps strict
+# free_cstring abort and value assertions and carries no retry.
+filter = "binary(run_e2e) and test(/^run_actor_sent_string_not_double_freed$/)"
+threads-required = "num-test-threads"
+
 [profile.ci]
 # CI profile: runs all tests and produces JUnit XML for GitHub Actions reporting.
 # `test_runner_e2e` used to be excluded here against "the ctest E2E suite";

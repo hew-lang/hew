@@ -2814,6 +2814,17 @@ pub(crate) fn build_call_scrutinee_provenance(
                 .filter(|mono| owned_string_return_carriers.contains(&mono.key.origin))
                 .map(|mono| mono.mangled_name.clone()),
         )
+        // Audited extern transfers carry the same caller-side one-share
+        // postcondition. They have no Hew body and therefore no `origin_fns`
+        // row, so include their declared symbols explicitly; otherwise the
+        // fail-closed terminator classifier drops the established authority
+        // for measured producers such as `hew_stream_last_error`.
+        .chain(
+            extern_names
+                .iter()
+                .filter(|name| extern_table.extern_return_is_audited_fresh_owner(name))
+                .cloned(),
+        )
         .collect();
     CallScrutineeProvenance {
         provenance,

@@ -511,6 +511,31 @@ fn canary5_discarded_producer_releases_once() {
     );
 }
 
+#[test]
+fn discarded_audited_runtime_string_result_releases_once() {
+    let pl = pipeline_with_tc(
+        r#"
+extern "C" {
+    fn hew_stream_last_error() -> string;
+}
+
+fn drain_error() {
+    unsafe {
+        let _ = hew_stream_last_error();
+    }
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        inline_string_drops(&pl, "drain_error"),
+        1,
+        "an audited runtime extern with a measured transferred string result \
+         still needs one caller-side drop when discarded"
+    );
+    assert_eq!(return_exit_string_drops(&pl, "drain_error"), 0);
+}
+
 // ---------------------------------------------------------------------------
 // Index-form canaries (`vec-generic-index` lane). `xs[i]` over `Vec<string>`
 // lowers to the same `hew_vec_get_str` retained owner as `.get(i)`, so the

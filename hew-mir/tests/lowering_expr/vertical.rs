@@ -992,8 +992,11 @@ fn conditional_heap_resource_move_keeps_flag_guarded_record_drop() {
 
 /// A direct String-record construction can satisfy the syntactic ingress proof
 /// used by the conditional-record protocol even when its declared type is a
-/// `#[resource]`. The marker is authoritative: this binding gets exactly the
-/// affine/resource flag, never a second zero-only conditional-record flag.
+/// `#[resource]`. The marker is authoritative for the flag: this binding gets
+/// exactly the affine/resource guard, never a second zero-only
+/// conditional-record flag. Because the record owns a string field, teardown
+/// still uses the recursive `RecordInPlace` helper rather than the scalar
+/// close-only path.
 #[test]
 fn direct_string_resource_move_has_only_resource_flag_authority() {
     let p = lower_source(
@@ -1031,19 +1034,20 @@ fn direct_string_resource_move_has_only_resource_flag_authority() {
         .iter()
         .flat_map(|(_, plan)| &plan.drops)
         .collect::<Vec<_>>();
-    let resource_guard = drops
+    let affine_guard = drops
         .iter()
         .find_map(|drop| {
-            (drop.kind == hew_mir::DropKind::Resource)
+            (drop.kind == hew_mir::DropKind::RecordInPlace)
                 .then_some(drop.guard)
                 .flatten()
         })
-        .expect("the conditional resource transfer needs one resource guard");
+        .expect("the conditional resource transfer needs one affine guard");
     assert!(
         drops
             .iter()
-            .all(|drop| drop.kind != hew_mir::DropKind::RecordInPlace),
-        "a resource marker must never acquire RecordInPlace authority: \
+            .all(|drop| drop.kind != hew_mir::DropKind::Resource),
+        "a field-bearing resource must not bypass recursive teardown through \
+         the scalar close-only path: \
          {run:#?}"
     );
 
@@ -1063,7 +1067,7 @@ fn direct_string_resource_move_has_only_resource_flag_authority() {
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(
         zero_init_places,
-        std::collections::HashSet::from([resource_guard]),
+        std::collections::HashSet::from([affine_guard]),
         "the resource binding must not receive a second, zero-only \
          conditional-record flag: {checked:#?}"
     );
@@ -1074,7 +1078,7 @@ fn direct_string_resource_move_has_only_resource_flag_authority() {
             .flat_map(|block| &block.instructions)
             .any(|instr| matches!(
                 instr,
-                Instr::ConstI64 { dest, value: 1 } if *dest == resource_guard
+                Instr::ConstI64 { dest, value: 1 } if *dest == affine_guard
             )),
         "the direct transfer must execute the resource flag handoff: \
          {checked:#?}"

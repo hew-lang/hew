@@ -1207,6 +1207,7 @@ fn publish_identity_connection_established(
                     peer_route_slot,
                     peer_session_incarnation,
                     conn_id,
+                    publication_token,
                 )
             }
         };
@@ -1388,7 +1389,12 @@ fn retire_identity_connection_publication(
         if !mgr.routing_table.is_null() {
             // SAFETY: pointer validity is checked by the callee.
             let _ = unsafe {
-                hew_routing_remove_route_if_conn(mgr.routing_table, peer_identity, conn_id)
+                hew_routing_remove_route_if_conn(
+                    mgr.routing_table,
+                    peer_identity,
+                    conn_id,
+                    publication_token,
+                )
             };
         }
     }
@@ -1866,8 +1872,7 @@ fn install_connection_actor(
                 }
             }
             None => {
-                // SAFETY: mgr.transport is valid per caller contract of hew_connmgr_add.
-                unsafe { close_transport_conn(mgr.transport, conn_id) };
+                unreachable!("an actor is consumed only on the successful install path");
             }
         }
     }
@@ -4670,7 +4675,12 @@ fn remove_connection(
         if let Some(peer_identity) = peer_identity {
             // SAFETY: routing_table is valid per manager contract.
             let _ = unsafe {
-                hew_routing_remove_route_if_conn(mgr.routing_table, peer_identity, conn_id)
+                hew_routing_remove_route_if_conn(
+                    mgr.routing_table,
+                    peer_identity,
+                    conn_id,
+                    publication_token,
+                )
             };
         }
     }

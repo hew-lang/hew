@@ -316,12 +316,12 @@ impl std::fmt::Debug for AliasBits {
 pub type ReturnProvenance = AliasBits;
 
 // ---------------------------------------------------------------------------
-// The parameterized leaf walk — ONE authority, two policies
+// The parameterized leaf walk — one structural authority
 // ---------------------------------------------------------------------------
 
-/// The interprocedural resolution of a `Call` callee, shared shape for both
-/// policies. The shared walk owns the recursion; the policy only classifies the
-/// callee.
+/// The interprocedural resolution of a `Call` callee, shared by every leaf
+/// policy. The shared walk owns the recursion; the policy only classifies the
+/// callee and leaf kinds whose meaning depends on the question being asked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CallClass {
     /// The callee is proven to hand back a fresh owner regardless of arguments
@@ -338,10 +338,11 @@ pub enum CallClass {
     Opaque,
 }
 
-/// The leaf/callee decisions that differ between the Coarse (byte-identical to
-/// today) and Precise (#2648) walks. The structural arms (wrappers, aggregates,
-/// projections, the fresh `Index`/`Slice`/`Literal`/`RecordCloneCall` leaves)
-/// are policy-independent and live in [`return_alias_bits`].
+/// The leaf/callee decisions that differ among consumers of the shared
+/// structural walk. Wrappers, aggregates, projections, and control-flow unions
+/// live in [`return_alias_bits`]; the hooks below classify leaves whose meaning
+/// depends on whether the consumer is proving non-aliasing or a releasable
+/// producer.
 pub trait LeafPolicy {
     /// Resolve a `Call`'s callee to its [`CallClass`].
     fn classify_call(&self, callee: &HirExpr) -> CallClass;
@@ -351,6 +352,24 @@ pub trait LeafPolicy {
     /// returns `{OPAQUE}` unconditionally (today's `_ => true`); Precise applies
     /// the delta leaf rules.
     fn leaf_bits(&self, expr: &HirExpr) -> AliasBits;
+
+    /// Classify a leaf that materializes its own value (`Literal`, `Index`,
+    /// `Slice`, or `RecordCloneCall`). Return-provenance policies treat these as
+    /// non-aliasing by default. Producer-provenance consumers may override this:
+    /// for example, a static string literal does not materialize a caller-owned
+    /// allocation and therefore must remain opaque to an owner mint.
+    fn materialized_leaf_bits(&self, expr: &HirExpr) -> AliasBits {
+        let _ = expr;
+        AliasBits::EMPTY
+    }
+
+    /// Whether the scoped walk may see through an immutable `let` binding to
+    /// its initializer. Return-provenance policies need this to follow values
+    /// across local aliases. A consumer minting an anonymous temporary owner
+    /// may disable it because the named binding already carries its own owner.
+    fn see_through_immutable_binding(&self) -> bool {
+        true
+    }
 
     /// Bits contributed by an ABSENT value position inside `enclosing` — a
     /// tail-less block (a diverging `{ return …; }` match arm), an else-less
@@ -490,13 +509,15 @@ fn return_alias_bits_scoped<P: LeafPolicy>(
             None => policy.missing_position_bits(expr),
             Some(v) => return_alias_bits_scoped(v, policy, scope),
         },
-        // Fresh leaves — never a caller-owned alias. A `.clone()` is a deep copy;
-        // a `Vec<T>` element load / slice is an independent heap element; a
-        // literal owns nothing borrowed.
+        // Materialized leaves. Return-alias policies classify these as fresh:
+        // a `.clone()` is a deep copy, a `Vec<T>` element load / slice is an
+        // independent heap element, and a literal aliases no parameter.
+        // Producer-provenance consumers may be stricter (a static string
+        // literal, for example, carries no caller-owned allocation to release).
         HirExprKind::RecordCloneCall { .. }
         | HirExprKind::Index { .. }
         | HirExprKind::Slice { .. }
-        | HirExprKind::Literal(_) => AliasBits::EMPTY,
+        | HirExprKind::Literal(_) => policy.materialized_leaf_bits(expr),
         // A construction aliases a parameter iff one of its owned operands does
         // — unless the construction is an ADOPTION, in which case the value's
         // whole release is the type's declared close and no compiler-generated
@@ -546,10 +567,16 @@ fn return_alias_bits_scoped<P: LeafPolicy>(
         HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(id),
             ..
-        } => scope
-            .and_then(|s| s.resolve(*id))
-            .and_then(|block| see_through_let_binding_bits(block, *id, policy, scope, None))
-            .unwrap_or_else(|| policy.leaf_bits(expr)),
+        } => {
+            if policy.see_through_immutable_binding() {
+                scope
+                    .and_then(|s| s.resolve(*id))
+                    .and_then(|block| see_through_let_binding_bits(block, *id, policy, scope, None))
+                    .unwrap_or_else(|| policy.leaf_bits(expr))
+            } else {
+                policy.leaf_bits(expr)
+            }
+        }
         // Every other form (a `Binary`, a method call, a deref, any unmodelled
         // shape) is not provably fresh → the policy's leaf.
         _ => policy.leaf_bits(expr),

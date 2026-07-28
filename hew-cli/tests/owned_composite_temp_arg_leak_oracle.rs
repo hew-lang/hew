@@ -108,6 +108,35 @@ fn string_temp_source(frames: usize) -> String {
     )
 }
 
+/// A measured transferred extern string result behind the checker-only
+/// `unsafe { ... }` value wrapper. HIR carries that wrapper as a block value;
+/// the caller-side temp classifier must preserve the enclosed tail call's
+/// audited ownership provenance and release each serialization after `h`
+/// borrows it. Before the transparent-tail fix this leaked one allocation per
+/// iteration while the plain Hew-forwarder spelling stayed flat.
+fn unsafe_extern_string_temp_source(frames: usize) -> String {
+    format!(
+        "#[opaque]\n\
+         type NodeHandle {{}}\n\
+         extern \"C\" {{\n\
+         \x20   fn hew_xml_parse(xml: string) -> NodeHandle;\n\
+         \x20   fn hew_xml_to_string(node: NodeHandle) -> string;\n\
+         \x20   fn hew_xml_free(node: NodeHandle);\n\
+         }}\n\
+         fn h(s: string) -> i64 {{ s.len() }}\n\
+         fn main() -> i64 {{\n\
+         \x20   let node = unsafe {{ hew_xml_parse(\"<root>payload</root>\") }};\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   for i in 0..{frames} {{\n\
+         \x20       total = total + h(unsafe {{ hew_xml_to_string(node) }});\n\
+         \x20   }}\n\
+         \x20   unsafe {{ hew_xml_free(node) }};\n\
+         \x20   if total != {frames} * 20 {{ return 82; }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 /// NAMED-local canary (record): `let r = Rec { .. }; g(r)`. The #2735 named path
 /// — must stay leak-0/flat, proving #2743's temporary mint did not regress it.
 fn record_named_canary_source(frames: usize) -> String {
@@ -234,6 +263,30 @@ fn enum_temp_arg_does_not_double_free() {
 #[test]
 fn string_temp_arg_does_not_double_free() {
     assert_no_double_free("string_temp_df", &string_temp_source(50));
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn unsafe_extern_string_temp_arg_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "unsafe_extern_string_temp",
+        unsafe_extern_string_temp_source,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn unsafe_extern_string_temp_arg_does_not_double_free() {
+    assert_no_double_free(
+        "unsafe_extern_string_temp_df",
+        &unsafe_extern_string_temp_source(50),
+    );
 }
 
 #[cfg_attr(

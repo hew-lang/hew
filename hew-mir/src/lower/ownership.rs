@@ -37,6 +37,64 @@ impl WholeParamEmbedClass {
     }
 }
 
+/// Producer-provenance policy for an anonymous owned-string value passed
+/// directly to a borrowing call parameter.
+///
+/// This consumes the shared scoped value-flow walk, so blocks, `if` branches,
+/// and `match` arms use the same exhaustive path union as the module
+/// return-provenance authority. `EMPTY` means every reachable value path
+/// constructs or transfers exactly one caller-releasable string share. A named
+/// local is deliberately opaque here because its ordinary scope owner already
+/// carries the release. Any static literal, parameter root, mutable alias,
+/// indirect call, or unmodelled leaf likewise contributes `OPAQUE` and
+/// withholds the synthetic owner.
+struct BorrowedStringTempProducerPolicy<'a> {
+    builder: &'a Builder,
+}
+
+impl crate::return_provenance::LeafPolicy for BorrowedStringTempProducerPolicy<'_> {
+    fn classify_call(&self, callee: &HirExpr) -> crate::return_provenance::CallClass {
+        if self.builder.call_produces_fresh_owned_string(callee)
+            || self.builder.user_call_produces_owned_string_carrier(callee)
+        {
+            crate::return_provenance::CallClass::Fresh
+        } else {
+            crate::return_provenance::CallClass::Opaque
+        }
+    }
+
+    fn leaf_bits(&self, expr: &HirExpr) -> crate::return_provenance::AliasBits {
+        if matches!(
+            &expr.kind,
+            HirExprKind::Binary {
+                op: super::BinaryOp::Add,
+                ..
+            }
+        ) && matches!(self.builder.subst_ty(&expr.ty), ResolvedTy::String)
+        {
+            // String `Add` lowers to `hew_string_concat`, which allocates a
+            // fresh rc==1 buffer and only borrows its operands.
+            crate::return_provenance::AliasBits::EMPTY
+        } else {
+            crate::return_provenance::AliasBits::OPAQUE
+        }
+    }
+
+    fn materialized_leaf_bits(&self, _expr: &HirExpr) -> crate::return_provenance::AliasBits {
+        // In particular, string literals are static/interned. The other shared
+        // materialized leaves were not admitted by this temp-owner seam before
+        // the scoped walk, so keep them fail-closed too.
+        crate::return_provenance::AliasBits::OPAQUE
+    }
+
+    fn see_through_immutable_binding(&self) -> bool {
+        // A named local already participates in the ordinary scope-owner
+        // ledger. Seeing through it here would mint a second owner for the same
+        // value at the borrowing call boundary.
+        false
+    }
+}
+
 impl Builder {
     /// The ownership classify context over this builder's live registries — the
     /// same three tables the drop derivations read, bundled so
@@ -297,13 +355,20 @@ impl Builder {
     /// it. Minting a synthetic owner over the temporary's MIR local (at the call
     /// site) routes it through the identical `owned_locals` machinery.
     ///
-    /// ## Why the top-level producer allowlist is sound
+    /// ## Why the producer proofs are sound
     ///
-    /// A fresh top-level constructor/producer (`StructInit` / `TupleLiteral` /
-    /// `MachineVariantCtor` enum ctor / a string-producing `Binary`/`Unary`
-    /// concat / an explicit `RecordCloneCall`) allocates an aggregate that SOLELY
-    /// owns itself, PROVIDED nothing ownership-opaque is embedded in it. The
-    /// synthetic owner then flows through the SAME
+    /// A string consumes the shared scoped value-flow walk with the narrow
+    /// [`BorrowedStringTempProducerPolicy`]: every reachable block tail / `if`
+    /// branch / `match` arm must be an audited transferred call or a
+    /// fresh-allocating concat. This is why an `unsafe` block wrapper cannot hide
+    /// the measured extern producer, while a mixed borrowed branch still vetoes
+    /// the mint.
+    ///
+    /// A fresh top-level composite constructor/producer (`StructInit` /
+    /// `TupleLiteral` / `MachineVariantCtor` enum ctor / an explicit
+    /// `RecordCloneCall`) allocates an aggregate that SOLELY owns itself,
+    /// PROVIDED nothing ownership-opaque is embedded in it. The synthetic owner
+    /// then flows through the SAME
     /// `derive_{record,tuple,enum}_composite_drop_allowed` / `derive_cow_sole_owner`
     /// prover as a `let`-bound composite, so field/element provenance (a moved-in
     /// vs cloned field) is decided by that authority exactly as for the named
@@ -335,7 +400,34 @@ impl Builder {
         if !crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts) {
             return None;
         }
-        let is_fresh_producer = match &arg.kind {
+        // String ownership is value-flow, not top-level syntax. Ask the shared
+        // scoped provenance walk with the producer policy above so wrapper
+        // blocks and exhaustive control-flow unions neither hide a measured
+        // producer nor launder a borrowed/opaque path.
+        if matches!(ty, ResolvedTy::String) {
+            let policy = BorrowedStringTempProducerPolicy { builder: self };
+            return crate::return_provenance::return_alias_bits(arg, &policy)
+                .is_fresh()
+                .then_some(ty);
+        }
+        // `unsafe { value }` is checker-only clearance: HIR deliberately erases
+        // the unsafe marker and carries the value as a `Block`. A value-producing
+        // block's ownership comes from its tail even when preceding statements
+        // have side effects, so look through every type-preserving block tail.
+        // The producer allowlist below still classifies the TAIL itself: a block
+        // does not become fresh merely because its result type owns heap, and a
+        // binding, static literal or opaque call remains rejected.
+        let mut producer = arg;
+        while let HirExprKind::Block(block) = &producer.kind {
+            let Some(tail) = block.tail.as_deref() else {
+                break;
+            };
+            if self.subst_ty(&producer.ty) != self.subst_ty(&tail.ty) {
+                break;
+            }
+            producer = tail;
+        }
+        let is_fresh_producer = match &producer.kind {
             // A fresh CONTAINER. Its own allocation is fresh by construction,
             // but that is not the whole question: the mint is over the whole
             // TREE, because every composite release here is recursive. A
@@ -350,111 +442,17 @@ impl Builder {
             | HirExprKind::TupleLiteral { .. }
             | HirExprKind::MachineVariantCtor { .. }
             | HirExprKind::RecordCloneCall { .. } => {
-                self.value_is_free_of_opaque_foreign_provenance(arg)
+                self.value_is_free_of_opaque_foreign_provenance(producer)
             }
-            // U6 — a string-producing concat/interpolation allocates a fresh
-            // buffer; a bare string `Literal` is excluded above by being a
-            // non-producer arm (it interns a static — freeing it is unsound).
-            //
-            // This arm does NOT ask the authority, and that is deliberate: it is
-            // closed by a TYPE-AND-OPERATOR exclusion instead, because asking
-            // would be wrong here. `f"{h}"` over a proven-foreign `h` still
-            // produces a fresh domestic buffer; a strict query over the operand
-            // tree would answer OPAQUE and withhold the mint, leaking the
-            // concat result. The value minted is never the operand.
-            //
-            // The exclusion, stated mechanically:
-            //   * the only `BinaryOp` that can carry `ResolvedTy::String` is
-            //     `Add` (concat) — every other operator is either arithmetic,
-            //     bitwise, comparison (`bool`), logical (`bool`), or a range;
-            //   * a string-typed `Add` lowers to `hew_string_concat`, which
-            //     `malloc`s a fresh rc==1 buffer and memcpys bytes OUT OF its
-            //     borrowed operands. The result pointer is provably not any
-            //     operand's pointer, so no foreign allocation can be the minted
-            //     value regardless of operand provenance;
-            //   * no `UnaryOp` produces a string at all (`Not`/`BitNot` are
-            //     integral or `bool`, `Negate` is numeric, `RawDeref` never
-            //     reaches MIR). The arm is unreachable at string type.
-            //
-            // Both halves are pinned by a `debug_assert` that FIRES if a shape
-            // outside the exclusion ever arrives, rather than silently minting.
-            HirExprKind::Binary { op, .. } => {
-                let concat = matches!(ty, ResolvedTy::String) && matches!(op, super::BinaryOp::Add);
-                debug_assert!(
-                    concat || !matches!(ty, ResolvedTy::String),
-                    "a string-typed `Binary` reached the temp-owner mint with \
-                     operator {op:?}, which is not the fresh-allocating concat: \
-                     the U6 type-and-operator exclusion no longer holds and the \
-                     minted value may be an operand rather than a fresh buffer"
-                );
-                concat
-            }
-            HirExprKind::Unary { .. } => {
-                debug_assert!(
-                    !matches!(ty, ResolvedTy::String),
-                    "a string-typed `Unary` reached the temp-owner mint; no \
-                     unary operator allocates a string, so the U6 exclusion no \
-                     longer holds"
-                );
-                false
-            }
-            // A string-returning direct `Call` whose callee carries the runtime
-            // `produces_fresh_owned_string` contract: the `cstring` transforms
-            // (`to_upper`/`to_lower`/`trim`/`repeat`, lowered through their
-            // `RewriteToFunction` c-symbol) and an f-string interpolation (a
-            // `Call`-chain of `string_concat`, `hew-hir/src/lower.rs`). Each
-            // hands the caller a genuinely fresh rc==1 buffer it solely owns —
-            // the last leaking #2428 shape, before this arm the `_ => false`
-            // catch-all skipped the #2743/#2745 caller-side temp mint and the
-            // buffer leaked (32 B/call). The runtime contract is the EXACT
-            // fresh-vs-non-fresh discriminator: a call returning a BORROWED /
-            // interior-alias string (`ResultOwnership::Borrowed`) or an
-            // un-catalogued USER function (`FAIL_CLOSED`) is NOT
-            // `produces_fresh_owned_string`, so it fails closed here (leak,
-            // never a caller-side double-free). Registration alone never forces
-            // the drop — the SAME string sole-owner prover then gates it, so a
-            // fresh result that ESCAPES (consumed/returned) is still excluded.
-            //
-            // A string-returning USER function has no runtime contract row, so
-            // the runtime discriminator alone leaves its result temp unminted —
-            // `println(f"v={mk(i)}")` lowers the interpolation operand to
-            // `mk(i)`'s result passed straight into the `Display::fmt` shim, a
-            // fresh rc==1 buffer nobody owned. The composite arm below already
-            // consults the module freshness fixpoint for exactly this question;
-            // `user_call_produces_owned_string_carrier` gives the string arm a
-            // distinct return-carrier authority. It admits both fresh results
-            // and parameter-derived results whose callee retained exactly one
-            // return share, without claiming that the pointer is fresh.
-            HirExprKind::Call { callee, .. } => {
-                if matches!(ty, ResolvedTy::String) {
-                    Self::call_produces_fresh_owned_string(callee)
-                        || self.user_call_produces_owned_string_carrier(callee)
-                } else {
-                    // A composite (record/tuple/enum) result: admit a PROVEN-fresh
-                    // producer, gated by the SAME authority every other
-                    // "may I drop this call result" consumer reads
-                    // (`callee_returns_fresh_owner` over
-                    // `FreshOwnerVerdicts`). A callee whose freshness verdict
-                    // is `false` — because a return path forwards, projects, or
-                    // launders a by-value param (#2648), OR because it launders
-                    // an ownership-opaque extern's return through any number of
-                    // Hew frames — stays excluded (leak, never a caller-side
-                    // double-free). The mint caller then gates the actual drop on
-                    // `proven_borrow_args` (borrow vs consume), so a CONSUMING
-                    // composite callee's temp is never double-registered, and a
-                    // fresh result that ESCAPES is still excluded by the sole-owner
-                    // prover exactly as for the named `let x = mk(); g(x)` shape.
-                    //
-                    // A declared `extern "C"` callee is vetoed inside the
-                    // authority, by NAME (its call site's resolved id is a
-                    // placeholder). The aggregate-constructor / runtime-primitive
-                    // fallback survives because only extern names are vetoed.
-                    callee_returns_fresh_owner(
-                        callee,
-                        &self.call_scrutinee_provenance.fresh_owner_verdicts,
-                    )
-                }
-            }
+            // A composite (record/tuple/enum) result: admit a PROVEN-fresh
+            // producer, gated by the SAME authority every other
+            // "may I drop this call result" consumer reads
+            // (`callee_returns_fresh_owner` over `FreshOwnerVerdicts`). Strings
+            // returned above after their scoped producer-provenance query.
+            HirExprKind::Call { callee, .. } => callee_returns_fresh_owner(
+                callee,
+                &self.call_scrutinee_provenance.fresh_owner_verdicts,
+            ),
             _ => false,
         };
         is_fresh_producer.then_some(ty)
@@ -542,16 +540,19 @@ impl Builder {
             warrant,
         );
     }
-    /// Whether a direct-`Call` callee resolves to a runtime symbol carrying the
-    /// `produces_fresh_owned_string` ownership contract. The symbol is resolved
-    /// from the callee identity exactly as value-lowering does
-    /// (`runtime_symbol_for_call_expr`): a `ResolvedRef::Builtin` family via its
-    /// catalog `c_symbol()`, every other resolved callee via the checker-minted
-    /// callee name — the `RewriteToFunction` c-symbol for a method rewrite (e.g.
-    /// `hew_string_to_uppercase`), or the catalog presentation name for f-string
-    /// concat (`string_concat`). Both spellings are dual-listed in
-    /// `callee_ownership_contract`.
-    fn call_produces_fresh_owned_string(callee: &HirExpr) -> bool {
+    /// Whether a direct `Call` has an audited fresh-owned-string result.
+    ///
+    /// Runtime primitives read the hand-written result contract used by MIR
+    /// lowering. Declared externs read the generated ownership table instead:
+    /// a measured `result = "fresh"` / transferred row is the positive proof
+    /// that its caller receives exactly one releasable share. Both authorities
+    /// fail closed for an absent symbol.
+    ///
+    /// The symbol is resolved from the callee identity exactly as value
+    /// lowering does (`runtime_symbol_for_call_expr`): a
+    /// `ResolvedRef::Builtin` family via its catalog `c_symbol()`, every other
+    /// resolved callee via the checker-minted callee name.
+    fn call_produces_fresh_owned_string(&self, callee: &HirExpr) -> bool {
         let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
             return false;
         };
@@ -560,6 +561,10 @@ impl Builder {
             _ => name.as_str(),
         };
         crate::runtime_symbols::callee_ownership_contract(symbol).produces_fresh_owned_string()
+            || self
+                .call_scrutinee_provenance
+                .extern_table
+                .extern_return_is_audited_fresh_owner(symbol)
     }
     /// The symbol a direct-`Call` callee is keyed by: a `ResolvedRef::Builtin`
     /// family via its catalog `c_symbol()`, every other resolved callee via the
@@ -577,9 +582,9 @@ impl Builder {
             _ => name.as_str(),
         }
     }
-    /// Whether a `string`-returning direct-`Call` callee is a USER function the
-    /// module return-carrier authority proves hands back exactly one
-    /// independently releasable share.
+    /// Whether a `string`-returning direct-`Call` callee is a non-runtime
+    /// function the module return-carrier authority proves hands back exactly
+    /// one independently releasable share.
     ///
     /// The runtime `produces_fresh_owned_string` contract only covers catalogued
     /// symbols; a user function (`fn mk(i: i64) -> string { f"tok{i}" }`, a
@@ -595,21 +600,15 @@ impl Builder {
     /// * a KNOWN runtime symbol is rejected here outright, so the runtime
     ///   contract keeps its veto — a catalogued callee returning a BORROWED or
     ///   receiver-interior-alias string can never be laundered into a mint;
-    /// * every OTHER shape must satisfy [`callee_returns_fresh_owner`]
-    ///   against the module's fresh-owner authority
-    ///   (`CallScrutineeProvenance::fresh_owner_verdicts`). That single object
-    ///   carries BOTH
-    ///   vetoes: a declared `extern "C"` callee is rejected by NAME unless the
-    ///   audited extern contract table proves its return is a fresh `+1` owner
-    ///   (interim: no heap-returning extern carries such a row, so every one is
-    ///   ownership-OPAQUE), and a Hew callee is rejected unless the module-global
-    ///   least-fixpoint proved its body fresh (generic origins included) AND free
-    ///   of opaque-extern laundering on every return path. The authority has no
-    ///   permissive cross-ABI fallback: a body-less, un-analysed resolved item
-    ///   is not a proof of freshness and reads `false`. So a Hew wrapper
-    ///   (`fn w() -> string { unsafe { host_string() } }`), a wrapper of a
-    ///   wrapper, a generic wrapper and a recursive-looking wrapper all stay
-    ///   rejected.
+    /// * every OTHER shape must satisfy the module return-carrier or fresh-owner
+    ///   authority. Those authorities carry BOTH vetoes: a declared `extern "C"`
+    ///   callee is rejected by NAME unless the
+    ///   audited extern contract table proves its return is a fresh `+1` owner,
+    ///   and a Hew callee is rejected unless the module-global least-fixpoint
+    ///   proved its body fresh (generic origins included) AND free of unmeasured
+    ///   opaque-extern laundering on every return path. The authority has no
+    ///   permissive cross-ABI fallback: a body-less, unanalysed resolved item is
+    ///   not a proof of freshness and reads `false`.
     ///
     /// Unlike the fresh-owner query, the return-carrier query admits a
     /// `ParamsOnly` body. String lowering turns each admitted parameter-derived

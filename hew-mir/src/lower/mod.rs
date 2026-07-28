@@ -38,8 +38,8 @@ use crate::model::{
     IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaCapture, MirCheck, MirConst,
     MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, PointerWidth,
     ProjectedPayloadRejectReason, RawMirFunction, RecordLayout, SelectArm, SelectArmKind,
-    SendAliasMode, SourceOrigin, SpawnEnvFieldOwnership, StableActorRole, Strategy, SuspendKind,
-    Terminator, ThirFunction, TraitObjectStorage, TrapKind,
+    SendAliasMode, SourceOrigin, SpawnEnvFieldOwnership, StableActorRole, Strategy,
+    StringRetainCondition, SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
 use crate::ownership::LayoutClass;
@@ -6745,6 +6745,7 @@ struct StringRetainSite {
     block: u32,
     instr_index: usize,
     value: Place,
+    condition: StringRetainCondition,
     required_bindings: Vec<BindingId>,
 }
 

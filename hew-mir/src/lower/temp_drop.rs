@@ -11,7 +11,7 @@ use super::{
     ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
     BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, HashMap, HashSet, Instr,
     IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction, ResolvedTy,
-    SiteId, StringDropDerivation, StringRetainSite, SuspendKind, Terminator,
+    SiteId, StringDropDerivation, StringRetainCondition, StringRetainSite, SuspendKind, Terminator,
 };
 
 pub(super) fn finalize_string_local_share_intents(
@@ -285,12 +285,12 @@ fn apply_string_retain_sites(
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
     retain_sites: &[StringRetainSite],
 ) {
-    let mut before: HashMap<(u32, usize), Vec<Place>> = HashMap::new();
+    let mut before: HashMap<(u32, usize), Vec<(Place, StringRetainCondition)>> = HashMap::new();
     for site in retain_sites {
         before
             .entry((site.block, site.instr_index))
             .or_default()
-            .push(site.value);
+            .push((site.value, site.condition));
     }
 
     let old_spans = std::mem::take(instr_spans);
@@ -304,9 +304,12 @@ fn apply_string_retain_sites(
                 .get(&(block.id, u32::try_from(old_index).unwrap_or(u32::MAX)))
                 .copied();
             if let Some(values) = before.get(&(block.id, old_index)) {
-                for value in values {
+                for (value, condition) in values {
                     let new_index = u32::try_from(rewritten.len()).unwrap_or(u32::MAX);
-                    rewritten.push(Instr::StringRetain { value: *value });
+                    rewritten.push(Instr::StringRetain {
+                        value: *value,
+                        condition: *condition,
+                    });
                     if let Some(span) = span {
                         new_spans.insert((block.id, new_index), span);
                     }
@@ -472,6 +475,7 @@ pub(super) fn derive_cow_sole_owner(
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
     let mut pending_share_sites: Vec<(u32, usize, Place, Vec<BindingId>)> = Vec::new();
+    let mut conditional_share_sites: Vec<StringRetainSite> = Vec::new();
     let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
         if let Some(&root) = alias_of.get(&local) {
             excluded.insert(root);
@@ -637,6 +641,53 @@ pub(super) fn derive_cow_sole_owner(
                     };
                     let source_local = base_local(values[0]).unwrap_or(root);
                     if share_needs_retain(source_local, block.id, instr_index) {
+                        // A loop-carried message string copied into the same
+                        // actor-state record field needs a retain only when the
+                        // destination leaf changes. The record overwrite helper
+                        // neutralizes equal old/new aliases instead of dropping
+                        // them, so an unconditional retain here leaks one
+                        // reference on every repeated equal store.
+                        //
+                        // Keep this narrowly on the direct adjacent
+                        // RecordInit→ActorStateFieldStore shape. Acyclic
+                        // ingress retains unconditionally, preserving the
+                        // conditional-branch owner fix; every unproved cyclic
+                        // shape also retains unconditionally (leak-over-UAF).
+                        let conditional_record_ingress = if cyclic_blocks.contains(&block.id) {
+                            match (instr, block.instructions.get(instr_index + 1)) {
+                                (
+                                    Instr::RecordInit { fields, dest, .. },
+                                    Some(Instr::ActorStateFieldStore {
+                                        field_offset: state_field,
+                                        src,
+                                    }),
+                                ) if src == dest => Some((fields, *state_field)),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        if let Some((fields, state_field)) = conditional_record_ingress {
+                            for (record_field, value) in fields {
+                                let Some(local) = base_local(*value) else {
+                                    continue;
+                                };
+                                if alias_of.get(&local).copied() == Some(root) {
+                                    conditional_share_sites.push(StringRetainSite {
+                                        block: block.id,
+                                        instr_index,
+                                        value: *value,
+                                        condition:
+                                            StringRetainCondition::ActorStateRecordFieldDiffers {
+                                                state_field,
+                                                record_field: *record_field,
+                                            },
+                                        required_bindings: Vec::new(),
+                                    });
+                                }
+                            }
+                            continue;
+                        }
                         for value in values {
                             pending_share_sites.push((block.id, instr_index, value, Vec::new()));
                         }
@@ -760,10 +811,12 @@ pub(super) fn derive_cow_sole_owner(
                 block,
                 instr_index,
                 value,
+                condition: StringRetainCondition::Always,
                 required_bindings,
             },
         )
         .collect::<Vec<_>>();
+    retain_sites.extend(conditional_share_sites);
 
     // Returning a by-value parameter duplicates the caller's live reference.
     for block in blocks {
@@ -780,6 +833,7 @@ pub(super) fn derive_cow_sole_owner(
                     block: block.id,
                     instr_index,
                     value: *src,
+                    condition: StringRetainCondition::Always,
                     required_bindings: Vec::new(),
                 });
             }
@@ -817,6 +871,7 @@ pub(super) fn derive_cow_sole_owner(
                     block: block.id,
                     instr_index,
                     value: *src,
+                    condition: StringRetainCondition::Always,
                     required_bindings: Vec::new(),
                 });
             } else {
@@ -831,6 +886,7 @@ pub(super) fn derive_cow_sole_owner(
                     block: block.id,
                     instr_index,
                     value: *src,
+                    condition: StringRetainCondition::Always,
                     required_bindings: Vec::new(),
                 });
             }
@@ -4932,6 +4988,7 @@ mod cow_sole_owner_derivation {
                 block: 0,
                 instr_index: 0,
                 value: Place::Local(60),
+                condition: StringRetainCondition::Always,
                 required_bindings: Vec::new(),
             }]
         );
@@ -4980,6 +5037,7 @@ mod cow_sole_owner_derivation {
                 block: 0,
                 instr_index: 0,
                 value: Place::Local(3),
+                condition: StringRetainCondition::Always,
                 required_bindings: Vec::new(),
             }]
         );
@@ -5014,6 +5072,7 @@ mod cow_sole_owner_derivation {
                 block: 0,
                 instr_index: 0,
                 value: Place::Local(2),
+                condition: StringRetainCondition::Always,
                 required_bindings: Vec::new(),
             }]
         );

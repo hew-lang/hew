@@ -71,9 +71,9 @@ pub use model::{
     ModuleCapabilities, Place, PointerWidth, PolymorphicMirFunction, PoolCount,
     PreparedCarrierBoundary, ProjectedPayloadRejectReason, RawMirFunction, RecordLayout,
     RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, SendAliasMode, SourceOrigin,
-    SpawnEnvFieldOwnership, StableActorRole, Strategy, SupervisorChildLayout,
-    SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator, ThirFunction,
-    TraitObjectStorage, TrapKind, WitnessOperand, GEN_BODY_PREFIX,
+    SpawnEnvFieldOwnership, StableActorRole, Strategy, StringRetainCondition,
+    SupervisorChildLayout, SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator,
+    ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand, GEN_BODY_PREFIX,
 };
 pub use ownership::{
     AbiClass, CowHeapRelease, DropClass, FailClosedReason, HandleRole, HeapLeaf,

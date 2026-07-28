@@ -497,7 +497,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             ..
         } => vec![*dest, *operand, *overflow_flag],
         Instr::Move { dest, src } => vec![*dest, *src],
-        Instr::BytesRetain { value } | Instr::StringRetain { value } => vec![*value],
+        Instr::BytesRetain { value } | Instr::StringRetain { value, .. } => vec![*value],
         Instr::NumericCast { dest, src, .. }
         | Instr::SaturatingWidthCast { dest, src, .. }
         | Instr::TryWidthCast { dest, src, .. } => {

@@ -75,7 +75,7 @@ use hew_mir::{
     FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind,
     IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
     RawMirFunction, RecordLayout, RegexLiteral, SourceOrigin, StateFieldCloneKind,
-    SupervisorChildLayout, SuspendKind, Terminator, TrapKind,
+    StringRetainCondition, SupervisorChildLayout, SuspendKind, Terminator, TrapKind,
 };
 pub(crate) use hew_types::short_name;
 use hew_types::{
@@ -13594,8 +13594,23 @@ fn lower_instruction_with_cancel_drops(
             retain_bytes_value(fn_ctx, *value, "mir_share")?;
             let _ = ctx;
         }
-        Instr::StringRetain { value } => {
-            retain_string_value(fn_ctx, *value, "mir_share")?;
+        Instr::StringRetain { value, condition } => {
+            match condition {
+                StringRetainCondition::Always => {
+                    retain_string_value(fn_ctx, *value, "mir_share")?;
+                }
+                StringRetainCondition::ActorStateRecordFieldDiffers {
+                    state_field,
+                    record_field,
+                } => {
+                    retain_string_if_actor_state_record_field_differs(
+                        fn_ctx,
+                        *value,
+                        *state_field,
+                        *record_field,
+                    )?;
+                }
+            }
             let _ = ctx;
         }
         Instr::Move { dest, src } => {
@@ -15764,6 +15779,177 @@ fn retain_string_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> Cod
             &format!("{label}_string_retain"),
         )
         .llvm_ctx_with(|| format!("hew_string_clone retain for {label}"))?;
+    Ok(())
+}
+
+/// Retain a loop-carried message string only when the actor-state record leaf
+/// receiving it does not already hold the same handle.
+///
+/// `ActorStateFieldStore`'s record overwrite helper releases a differing old
+/// leaf and neutralizes an equal old/new alias. Pairing that helper with this
+/// conditional retain keeps the owner count balanced across zero, one, or
+/// arbitrarily many loop iterations: the first/differing store mints the
+/// state's owner, while repeated equal stores mint nothing.
+fn retain_string_if_actor_state_record_field_differs(
+    fn_ctx: &FnCtx<'_, '_>,
+    value: Place,
+    state_field: FieldOffset,
+    record_field: FieldOffset,
+) -> CodegenResult<()> {
+    if !is_string_const_ty(place_resolved_ty(fn_ctx, value)?) {
+        return Err(CodegenError::FailClosed(format!(
+            "conditional StringRetain value is not string-typed: {value:?}"
+        )));
+    }
+
+    let state_ty = fn_ctx.actor_state_ty.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "conditional StringRetain has no registered actor state type".into(),
+        )
+    })?;
+    let state_idx = state_field.0;
+    let state_element_tys = state_ty.get_field_types();
+    let state_field_ty = *state_element_tys.get(state_idx as usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "conditional StringRetain state field {state_idx} is out of bounds for state \
+                 with {} fields",
+            state_element_tys.len()
+        ))
+    })?;
+    let BasicTypeEnum::StructType(record_ty) = state_field_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "conditional StringRetain state field {state_idx} is not a record: \
+             {state_field_ty:?}"
+        )));
+    };
+    let state_kinds = fn_ctx.actor_state_field_kinds.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "conditional StringRetain has no actor state field-kind table".into(),
+        )
+    })?;
+    if !matches!(
+        state_kinds.get(state_idx as usize),
+        Some(StateFieldCloneKind::UserRecord { .. })
+    ) {
+        return Err(CodegenError::FailClosed(format!(
+            "conditional StringRetain state field {state_idx} is not classified as a user record"
+        )));
+    }
+
+    let record_idx = record_field.0;
+    let record_element_tys = record_ty.get_field_types();
+    let old_field_ty = *record_element_tys.get(record_idx as usize).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "conditional StringRetain record field {record_idx} is out of bounds for record \
+                 with {} fields",
+            record_element_tys.len()
+        ))
+    })?;
+    let BasicTypeEnum::PointerType(_) = old_field_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "conditional StringRetain record field {record_idx} is not pointer-typed: \
+             {old_field_ty:?}"
+        )));
+    };
+
+    let state_ptr = current_actor_state_ptr(fn_ctx)?;
+    let state_field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(
+            state_ty,
+            state_ptr,
+            state_idx,
+            &format!("string_share_state_f{state_idx}_ptr"),
+        )
+        .llvm_ctx("conditional StringRetain state-field gep")?;
+    let old_field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(
+            record_ty,
+            state_field_ptr,
+            record_idx,
+            &format!("string_share_state_f{state_idx}_record_f{record_idx}_ptr"),
+        )
+        .llvm_ctx("conditional StringRetain record-field gep")?;
+    let old_value = fn_ctx
+        .builder
+        .build_load(
+            old_field_ty,
+            old_field_ptr,
+            &format!("string_share_state_f{state_idx}_record_f{record_idx}_old"),
+        )
+        .llvm_ctx("conditional StringRetain old-field load")?
+        .into_pointer_value();
+    let (value_ptr, value_ty) = place_pointer(fn_ctx, value)?;
+    if value_ty != old_field_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "conditional StringRetain value type {value_ty:?} does not match actor-state record \
+             leaf type {old_field_ty:?}"
+        )));
+    }
+    let new_value = fn_ctx
+        .builder
+        .build_load(
+            value_ty,
+            value_ptr,
+            &format!("string_share_state_f{state_idx}_record_f{record_idx}_new"),
+        )
+        .llvm_ctx("conditional StringRetain new-value load")?
+        .into_pointer_value();
+    let differs = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::NE,
+            fn_ctx
+                .builder
+                .build_ptr_to_int(
+                    old_value,
+                    fn_ctx.ctx.i64_type(),
+                    &format!("string_share_state_f{state_idx}_record_f{record_idx}_old_int"),
+                )
+                .llvm_ctx("conditional StringRetain old ptr-to-int")?,
+            fn_ctx
+                .builder
+                .build_ptr_to_int(
+                    new_value,
+                    fn_ctx.ctx.i64_type(),
+                    &format!("string_share_state_f{state_idx}_record_f{record_idx}_new_int"),
+                )
+                .llvm_ctx("conditional StringRetain new ptr-to-int")?,
+            &format!("string_share_state_f{state_idx}_record_f{record_idx}_differs"),
+        )
+        .llvm_ctx("conditional StringRetain old/new compare")?;
+
+    let current = fn_ctx.builder.get_insert_block().ok_or_else(|| {
+        CodegenError::FailClosed("conditional StringRetain has no insertion block".into())
+    })?;
+    let parent = current.get_parent().ok_or_else(|| {
+        CodegenError::FailClosed("conditional StringRetain block has no parent function".into())
+    })?;
+    let retain_bb = fn_ctx.ctx.append_basic_block(
+        parent,
+        &format!("string_share_state_f{state_idx}_record_f{record_idx}_retain"),
+    );
+    let continue_bb = fn_ctx.ctx.append_basic_block(
+        parent,
+        &format!("string_share_state_f{state_idx}_record_f{record_idx}_continue"),
+    );
+    fn_ctx
+        .builder
+        .build_conditional_branch(differs, retain_bb, continue_bb)
+        .llvm_ctx("conditional StringRetain branch")?;
+
+    fn_ctx.builder.position_at_end(retain_bb);
+    retain_string_value(
+        fn_ctx,
+        value,
+        &format!("state_f{state_idx}_record_f{record_idx}_share"),
+    )?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(continue_bb)
+        .llvm_ctx("conditional StringRetain join")?;
+    fn_ctx.builder.position_at_end(continue_bb);
     Ok(())
 }
 

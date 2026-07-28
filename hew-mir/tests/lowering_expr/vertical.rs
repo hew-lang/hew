@@ -1813,7 +1813,8 @@ fn recv_handler_conditional_record_ingress_retains_before_guarded_drop() {
             .any(|instr| matches!(
                 instr,
                 Instr::StringRetain {
-                    value: Place::Local(0)
+                    value: Place::Local(0),
+                    condition: hew_mir::StringRetainCondition::Always,
                 }
             )),
         "the unconsumed mailbox string copied into a record must be retained \
@@ -1868,6 +1869,98 @@ fn recv_handler_conditional_record_ingress_retains_before_guarded_drop() {
             ) && drop.guard.is_some())),
         "the retained read branch and armed handoff branch must converge on one \
          guarded source drop: {:?}",
+        handler.drop_plans
+    );
+}
+
+/// A cyclic record ingress cannot retain on every execution: the actor-state
+/// overwrite helper neutralizes an equal old/new string leaf, so a second
+/// unconditional retain would have no balancing release. The MIR marker
+/// therefore carries the exact destination leaf and codegen retains only when
+/// that leaf differs. This leaves the acyclic conditional-branch case above on
+/// its unconditional retain.
+#[test]
+fn recv_handler_loop_carried_record_ingress_retains_only_when_state_leaf_differs() {
+    let pipeline = lower_source(
+        r"
+        type Wrap { name: string }
+        actor Fan {
+            var seen: i64;
+            var held: Wrap;
+            receive fn route(label: string, count: i64) {
+                var i = 0;
+                while i < count {
+                    held = Wrap { name: label };
+                    i = i + 1;
+                }
+                seen = seen + 1;
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "Fan__recv__route")
+        .expect("receive handler raw MIR present");
+    let record_block = raw
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .instructions
+                .iter()
+                .any(|instr| matches!(instr, Instr::RecordInit { .. }))
+        })
+        .expect("loop record-ingress block present");
+    let record_index = record_block
+        .instructions
+        .iter()
+        .position(|instr| matches!(instr, Instr::RecordInit { .. }))
+        .expect("record init index");
+    assert!(
+        matches!(
+            record_block.instructions[..record_index].last(),
+            Some(Instr::StringRetain {
+                value: Place::Local(0),
+                condition: hew_mir::StringRetainCondition::ActorStateRecordFieldDiffers {
+                    state_field: hew_mir::FieldOffset(1),
+                    record_field: hew_mir::FieldOffset(0),
+                },
+            })
+        ),
+        "loop-carried ingress must compare the existing held.name leaf before \
+         retaining the mailbox string: {:?}",
+        record_block.instructions
+    );
+    assert!(
+        !record_block.instructions.iter().any(|instr| matches!(
+            instr,
+            Instr::StringRetain {
+                condition: hew_mir::StringRetainCondition::Always,
+                ..
+            }
+        )),
+        "the cyclic ingress must not also mint an unconditional owner: {:?}",
+        record_block.instructions
+    );
+
+    let handler = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "Fan__recv__route")
+        .expect("receive handler elaborated MIR present");
+    assert!(
+        handler.drop_plans.iter().any(|(exit, plan)| matches!(
+            exit,
+            hew_mir::ExitPath::Return { .. }
+        ) && plan
+            .drops
+            .iter()
+            .any(|drop| matches!(drop.kind, hew_mir::DropKind::CowHeap { .. }))),
+        "zero iterations must still release the mailbox string through the \
+         handler-exit drop: {:?}",
         handler.drop_plans
     );
 }

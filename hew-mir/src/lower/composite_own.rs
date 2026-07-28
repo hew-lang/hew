@@ -4887,7 +4887,7 @@ fn retained_string_values_before(block: &BasicBlock, instr_index: usize) -> Hash
             )
         })
         .filter_map(|instr| match instr {
-            Instr::StringRetain { value } => Some(*value),
+            Instr::StringRetain { value, .. } => Some(*value),
             _ => None,
         })
         .collect()

@@ -408,6 +408,7 @@ pub(super) fn elaborate(
         &builder.binding_locals,
         &builder.binding_scope,
         &builder.transient_local_scopes,
+        &builder.scope_info,
         &builder.locals,
         &builder.record_field_orders,
         &builder.enum_layouts,

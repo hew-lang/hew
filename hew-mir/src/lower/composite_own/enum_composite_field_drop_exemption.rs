@@ -19,6 +19,52 @@ fn row_ty() -> ResolvedTy {
     ResolvedTy::named_user("Row", vec![])
 }
 
+fn scope(parent: Option<ScopeId>) -> ScopeInfoEntry {
+    ScopeInfoEntry {
+        parent,
+        min_start: 0,
+        max_end: 0,
+    }
+}
+
+#[test]
+fn payload_handoff_scope_order_accepts_only_same_or_lexically_nested_destinations() {
+    let root = ScopeId(10);
+    let child = ScopeId(20);
+    let grandchild = ScopeId(30);
+    let unrelated = ScopeId(40);
+    let cycle_a = ScopeId(50);
+    let cycle_b = ScopeId(60);
+    let cycle_c = ScopeId(70);
+    let scope_info = [
+        (root, scope(None)),
+        (child, scope(Some(root))),
+        (grandchild, scope(Some(child))),
+        (unrelated, scope(None)),
+        (cycle_a, scope(Some(cycle_b))),
+        (cycle_b, scope(Some(cycle_c))),
+        (cycle_c, scope(Some(cycle_a))),
+    ]
+    .into_iter()
+    .collect();
+
+    assert!(scope_is_same_or_nested(root, root, &scope_info));
+    assert!(scope_is_same_or_nested(child, root, &scope_info));
+    assert!(scope_is_same_or_nested(grandchild, root, &scope_info));
+    assert!(!scope_is_same_or_nested(root, child, &scope_info));
+    assert!(!scope_is_same_or_nested(unrelated, root, &scope_info));
+    assert!(!scope_is_same_or_nested(ScopeId(80), root, &scope_info));
+    assert!(!scope_is_same_or_nested(
+        ScopeId(80),
+        ScopeId(80),
+        &scope_info
+    ));
+    assert!(!scope_is_same_or_nested(cycle_a, root, &scope_info));
+    assert!(!scope_is_same_or_nested(cycle_a, cycle_b, &scope_info));
+    assert!(!scope_is_same_or_nested(cycle_b, cycle_a, &scope_info));
+    assert!(!scope_is_same_or_nested(cycle_a, cycle_a, &scope_info));
+}
+
 fn derive(instrs: Vec<Instr>) -> (BindingId, HashSet<BindingId>) {
     let b = BindingId(1);
     let owned = vec![(b, "o".to_string(), opt_ty())];
@@ -76,6 +122,7 @@ fn derive(instrs: Vec<Instr>) -> (BindingId, HashSet<BindingId>) {
         &HashMap::new(),
         &owned,
         &binding_locals,
+        &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
         &local_tys,
@@ -145,6 +192,7 @@ fn derive_string_payload_handoff(instructions: Vec<Instr>) -> (BindingId, HashSe
         &[(parent, "box".to_string(), box_ty.clone())],
         &binding_locals,
         &binding_scope,
+        &HashMap::new(),
         &HashMap::new(),
         &[box_ty, ResolvedTy::String, ResolvedTy::String],
         &HashMap::new(),
@@ -289,6 +337,7 @@ fn derive_bytes_payload_parent(instructions: Vec<Instr>) -> (BindingId, HashSet<
         &[(parent, "box".to_string(), box_ty.clone())],
         &binding_locals,
         &binding_scope,
+        &HashMap::new(),
         &HashMap::new(),
         &[box_ty, ResolvedTy::Bytes, ResolvedTy::Bytes],
         &HashMap::new(),
@@ -744,6 +793,8 @@ fn nested_enum_payload_candidate_never_duplicates_its_parent_owner() {
     let consumed_parent = BindingId(5);
     let consumed = BindingId(6);
     let unsafe_forwarded = BindingId(7);
+    let arm_scope = ScopeId(10);
+    let nested_arm_scope = ScopeId(11);
     let layouts = vec![
         crate::model::EnumLayout {
             name: "Outer".to_string(),
@@ -850,8 +901,16 @@ fn nested_enum_payload_candidate_never_duplicates_its_parent_owner() {
         ]
         .into_iter()
         .collect(),
+        &[(consumed, arm_scope), (forwarded, nested_arm_scope)]
+            .into_iter()
+            .collect(),
         &HashMap::new(),
-        &HashMap::new(),
+        &[
+            (arm_scope, scope(None)),
+            (nested_arm_scope, scope(Some(arm_scope))),
+        ]
+        .into_iter()
+        .collect(),
         &[
             outer.clone(),
             inner.clone(),
@@ -970,6 +1029,7 @@ fn depth_two_nested_enum_payload_candidate_does_not_duplicate_outer_owner() {
         &[(parent, Place::Local(0)), (nested, Place::Local(2))]
             .into_iter()
             .collect(),
+        &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
         &[outer, middle, inner],
@@ -1093,6 +1153,7 @@ fn nested_enum_tuple_field_transfer_requires_ancestor_and_field_neutralization()
         ]
         .into_iter()
         .collect(),
+        &HashMap::new(),
         &HashMap::new(),
         &HashMap::new(),
         &[

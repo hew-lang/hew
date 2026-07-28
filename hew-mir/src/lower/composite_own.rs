@@ -24,7 +24,8 @@ use super::{
     vec_iter_record_init_vec_source, AggregateOwner, BTreeMap, BasicBlock, BindingId, Builder,
     BytesDropDerivation, BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership,
     FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement, Place,
-    ResolvedTy, RootScan, ScopeId, SuspendKind, Terminator, FOR_ITER_CURSOR_NAME_PREFIX,
+    ResolvedTy, RootScan, ScopeId, ScopeInfoEntry, SuspendKind, Terminator,
+    FOR_ITER_CURSOR_NAME_PREFIX,
 };
 use bytes_payload_handoff::provable_bytes_payload_handoff_sites;
 #[cfg(test)]
@@ -46,6 +47,33 @@ fn initializes_generator_env_snapshot(instr: &Instr, env_locals: &HashSet<u32>) 
         Instr::RecordInit { dest, .. }
             if base_local(*dest).is_some_and(|local| env_locals.contains(&local))
     )
+}
+
+/// Whether `destination` closes no later than `source`.
+///
+/// Scope ids are opaque identities, so lexical containment must follow the
+/// builder's parent graph. Missing or cyclic ancestry fails closed.
+fn scope_is_same_or_nested(
+    destination: ScopeId,
+    source: ScopeId,
+    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
+) -> bool {
+    let mut current = destination;
+    let mut visited = HashSet::new();
+    let mut contains_source = false;
+    loop {
+        if !visited.insert(current) {
+            return false;
+        }
+        contains_source |= current == source;
+        let Some(entry) = scope_info.get(&current) else {
+            return false;
+        };
+        let Some(parent) = entry.parent else {
+            return contains_source;
+        };
+        current = parent;
+    }
 }
 
 /// Prove retained string field-load destinations are predicate-only owners.
@@ -1214,6 +1242,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
     binding_locals: &HashMap<BindingId, Place>,
     binding_scope: &HashMap<BindingId, ScopeId>,
     transient_local_scopes: &HashMap<u32, ScopeId>,
+    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
     local_tys: &[ResolvedTy],
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
@@ -1288,18 +1317,24 @@ pub(super) fn derive_enum_composite_drop_allowed(
     let retained_string_moves = corroborated_retained_string_move_sites(blocks, local_tys);
     let retained_bytes_moves = corroborated_retained_bytes_move_sites(blocks, local_tys);
 
+    // A payload hand-off can stay within the parent composite's lifetime only
+    // when the destination binding closes no later than the source binder. A
+    // same-scope destination qualifies, as does a binding declared in a
+    // lexically nested scope. Walk the real scope graph instead of relying on
+    // ScopeId ordering: ids are identities, not a nesting metric. Missing or
+    // cyclic ancestry fails closed.
     // Payload-binder set: destinations of `Move { dest, src: interior
     // projection of an alias-set local }` — the match/while-let destructure
     // binders. Each entry remembers the SOURCE binder's declaring scope so
     // the onward-propagation step (next loop) can reject moves that hand
-    // the buffer to a binding in a DIFFERENT scope — which is precisely the
+    // the buffer to an OUTER or unrelated scope — which is precisely the
     // outer/surviving-local escape shape (`var carry; while { match opt {
     // Some(item) => { carry = item; ... } } }` — `carry` lives past the
     // back-edge that would drop the payload, so admitting EnumInPlace would
     // free the buffer while `carry` still aliases it). MIR temps with no
     // scope mapping inherit the source binder's scope on propagation; HIR
-    // bindings whose scope does not match are filtered out and the source
-    // escape scan below treats the move as an unbound-destination escape.
+    // bindings whose scope is not the same or nested are filtered out and the
+    // source escape scan below treats the move as an unbound-destination escape.
     let mut payload_binders: HashMap<u32, Option<ScopeId>> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {
@@ -1368,16 +1403,16 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         if !local_is_heap_owning(dl) {
                             continue;
                         }
-                        // Same-scope discipline. A `Move` into a HIR binding
-                        // is only a benign onward hand-off when the binding
-                        // is declared in the SAME scope as the originating
-                        // destructure binder — i.e. the binding closes (and
-                        // its drop fires) before the surrounding loop's
-                        // back-edge re-enters and overwrites the source
-                        // composite's slot. A different-scope binding lives
-                        // past that back-edge and the EnumInPlace would
-                        // free its buffer while it still aliased the
-                        // pointer (use-after-free). MIR temps (no entry in
+                        // Same-or-nested-scope discipline. A `Move` into a HIR
+                        // binding is a benign onward hand-off when the binding
+                        // is declared in the same scope as the originating
+                        // destructure binder or in one of its lexical children:
+                        // the destination then closes no later than the source.
+                        // A destination in an outer or unrelated scope may live
+                        // past the back-edge that overwrites the source
+                        // composite's slot; admitting EnumInPlace there would
+                        // free a buffer while the destination still aliases it.
+                        // MIR temps (no entry in
                         // `local_scope`) have no own lifetime longer than
                         // the statement that produced them, so they inherit
                         // the source scope and propagate freely. A `None`
@@ -1387,7 +1422,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
                         // same-arm binder propagates freely too.
                         let propagate = match (src_scope, local_scope.get(&dl).copied()) {
                             (None, _) | (_, None) => true,
-                            (Some(s), Some(d)) => s == d,
+                            (Some(s), Some(d)) => scope_is_same_or_nested(d, s, scope_info),
                         };
                         if propagate {
                             // Carry `dl`'s own scope onward when it has one, so

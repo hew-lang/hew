@@ -43,6 +43,8 @@ mod gen_block_mir_lowering;
 mod generic_record_layout_test;
 #[path = "lowering_expr/hashmap_hashset_local_drop.rs"]
 mod hashmap_hashset_local_drop;
+#[path = "lowering_expr/http_ws_string_temp_drop_canary.rs"]
+mod http_ws_string_temp_drop_canary;
 #[path = "lowering_expr/identity_lowering.rs"]
 mod identity_lowering;
 #[path = "lowering_expr/lambda_captures.rs"]

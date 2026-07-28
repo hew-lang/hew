@@ -7,3 +7,8 @@
 pub mod client;
 pub mod headers_vec;
 pub mod server;
+
+// Producer-specific R1/R2/R3 ownership proofs for the seven HTTP string
+// accessors whose classification carries `result-retention = "transferred"`.
+#[cfg(test)]
+mod string_result_retention;

@@ -1316,13 +1316,16 @@ pub(super) fn compute_projection_alias_taint(
 /// load. The destination is then the sole owner of those bits, not an interior
 /// alias of the aggregate root.
 pub(super) fn aggregate_projection_transfer_dests(blocks: &[BasicBlock]) -> HashSet<u32> {
-    let neutralized: HashSet<(Place, Vec<u32>)> = blocks
+    let neutralized: HashSet<(Place, u32)> = blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instr| match instr {
-            Instr::AggregateProjectionNeutralize { root, fields } => Some((*root, fields.clone())),
+            Instr::AggregateProjectionNeutralize { root, fields } => {
+                Some((*root, fields.as_slice()))
+            }
             _ => None,
         })
+        .flat_map(|(root, fields)| fields.iter().copied().map(move |field| (root, field)))
         .collect();
     blocks
         .iter()
@@ -1332,16 +1335,59 @@ pub(super) fn aggregate_projection_transfer_dests(blocks: &[BasicBlock]) -> Hash
                 record,
                 field_offset,
                 dest,
-            } if neutralized.contains(&(*record, vec![field_offset.0])) => base_local(*dest),
+            } if neutralized.contains(&(*record, field_offset.0)) => base_local(*dest),
             Instr::TupleFieldLoad {
                 tuple,
                 field_index,
                 dest,
-            } if neutralized.contains(&(*tuple, vec![*field_index])) => base_local(*dest),
+            } if neutralized.contains(&(*tuple, *field_index)) => base_local(*dest),
             _ => None,
         })
         .collect()
 }
+
+#[cfg(test)]
+mod aggregate_projection_transfer_dest_tests {
+    use super::*;
+
+    #[test]
+    fn multi_field_neutralize_marks_each_loaded_destination() {
+        let blocks = [BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(1),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(10),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(1),
+                    field_offset: FieldOffset(1),
+                    dest: Place::Local(11),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(1),
+                    field_offset: FieldOffset(2),
+                    dest: Place::Local(12),
+                },
+                Instr::AggregateProjectionNeutralize {
+                    root: Place::Local(1),
+                    fields: vec![0, 2],
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        assert_eq!(
+            aggregate_projection_transfer_dests(&blocks),
+            HashSet::from([10, 12]),
+            "every explicitly neutralized field load is a transferred owner, \
+             while an adjacent live field remains an interior alias"
+        );
+    }
+}
+
 /// Interior-alias taint for the COLLECTION / owned-vector sole-owner provers:
 /// the locals that hold an interior pointer of a still-live aggregate and must
 /// therefore never earn an independent scope-exit free.

@@ -24,6 +24,7 @@
 #   make adze         — just the package manager
 #   make observe      — just the TUI observer (hew-observe)
 #   make observe-functional-test — HTTP-backed functional observe harness
+#   make mqtt-broker-e2e       — real MQTT broker publish/delivery oracle
 #   make libhew-link-race-test   — real multi-process libhew.a bootstrap-race proof
 #   make runtime      — just libhew_runtime.a
 #   make stdlib       — all stdlib packages + combine into libhew.a
@@ -67,7 +68,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
+.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
 .PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -233,6 +234,12 @@ observe:
 
 observe-functional-test: hew-native observe $(LIBHEW_READY)
 	cargo test -p hew-observe --test functional -- --ignored --nocapture
+
+# Opt-in real-client proof for the advertised pure-Hew MQTT broker. Mosquitto
+# clients are an explicit external prerequisite, so this is not folded into the
+# hermetic workspace test lane.
+mqtt-broker-e2e: hew-native $(LIBHEW_READY)
+	HEW_BIN="$(BUILD_DIR)/bin/hew" scripts/mqtt-broker-e2e.sh
 
 # Real multi-process proof that `hew_testutil::ensure_hew_lib_built` closes
 # the `libhew.a` uplift race: real `cargo build -p hew-lib` writers, a real

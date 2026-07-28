@@ -62,4 +62,12 @@ fn main() {
 
     let array_wrapper = ArrayWrapper { values: [LinearTicket { id: 6 }] };
     let _array_copy = array_wrapper.clone();
+
+    var resources: Vec<ResourceToken> = Vec::new();
+    resources.push(ResourceToken { id: 7 });
+    let _resources_copy = resources.clone();
+
+    var tickets: HashMap<string, LinearTicket> = HashMap::new();
+    tickets.insert("one", LinearTicket { id: 8 });
+    let _tickets_copy = clone tickets;
 }

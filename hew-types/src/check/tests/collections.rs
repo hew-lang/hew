@@ -638,6 +638,68 @@ fn generic_record_clone_rejects_substituted_affine_fields() {
     );
 }
 
+#[test]
+fn builtin_container_clone_rejects_affine_payloads() {
+    let output = check_source(
+        r#"
+        #[resource]
+        type ResourceToken { id: i64 }
+        impl ResourceToken {
+            fn close(self) {}
+        }
+
+        #[linear]
+        type LinearTicket { id: i64 }
+        impl LinearTicket {
+            fn redeem(consuming self) -> i64 { self.id }
+        }
+
+        fn main() {
+            var resources: Vec<ResourceToken> = Vec::new();
+            resources.push(ResourceToken { id: 1 });
+            let _resources_copy = resources.clone();
+
+            var tickets: HashMap<string, LinearTicket> = HashMap::new();
+            tickets.insert("one", LinearTicket { id: 2 });
+            let _tickets_copy = clone tickets;
+
+            let optional: Option<ResourceToken> = Some(ResourceToken { id: 3 });
+            let _optional_copy = optional.clone();
+
+            let (sender, _receiver): (
+                channel.Sender<ResourceToken>,
+                channel.Receiver<ResourceToken>,
+            ) = channel.new(8);
+            let _sender_copy = sender.clone();
+        }
+        "#,
+    );
+
+    let affine_clone_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| error.message.contains("cannot be cloned"))
+        .collect();
+    assert_eq!(
+        affine_clone_errors.len(),
+        3,
+        "builtin clone dispatch must not bypass affine payload checks: {:#?}",
+        output.errors
+    );
+    for receiver in [
+        "Vec<ResourceToken>",
+        "HashMap<string, LinearTicket>",
+        "Option<ResourceToken>",
+    ] {
+        assert!(
+            affine_clone_errors
+                .iter()
+                .any(|error| error.message.contains(receiver)),
+            "missing affine clone rejection for {receiver}: {affine_clone_errors:#?}"
+        );
+    }
+}
+
 fn record_type_def_with_field(name: &str, field_name: &str, field_ty: Ty) -> TypeDef {
     TypeDef {
         kind: TypeDefKind::Record,

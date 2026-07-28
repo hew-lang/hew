@@ -2885,6 +2885,8 @@ impl Checker {
                             | BuiltinType::HewActor
                             | BuiltinType::Rc
                             | BuiltinType::Weak
+                            | BuiltinType::Sender
+                            | BuiltinType::Receiver
                     )
                 ) {
                     return None;
@@ -6742,6 +6744,29 @@ impl Checker {
                     // suspending form (it no longer strands a worker).
                     self.warn_if_blocking_handle_method(name, method, span);
                 }
+            }
+        }
+        // Built-in container methods resolve before the user-record fallback
+        // below, so their `clone` implementations must consult the same affine
+        // payload authority explicitly. Without this gate, `Vec<Resource>` or
+        // `HashMap<K, Linear>` can duplicate an exact-once value even though a
+        // record containing that same container is correctly rejected.
+        if method == "clone"
+            && args.is_empty()
+            && matches!(
+                &resolved,
+                Ty::Named {
+                    builtin: Some(_),
+                    ..
+                }
+            )
+        {
+            if let Some((type_name, marker)) = self
+                .ty_clone_contains_affine_value(&resolved, &mut std::collections::HashSet::new())
+            {
+                let receiver_name = resolved.user_facing().to_string();
+                self.report_affine_record_clone_error(&receiver_name, &type_name, marker, span);
+                return Ty::Error;
             }
         }
 

@@ -47,6 +47,123 @@ fn pipeline(source: &str) -> IrPipeline {
     mir
 }
 
+fn pipeline_allowing_mir_diagnostics(source: &str) -> IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        hir.diagnostics
+    );
+    lower_hir_module(&hir.module)
+}
+
+#[test]
+fn affine_vec_iter_snapshot_is_rejected_before_runtime_clone() {
+    let pipeline = pipeline_allowing_mir_diagnostics(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(file: File) { } }
+        type Holder { file: File }
+
+        fn main() {
+            let file = File { fd: 7 };
+            let holder = Holder { file: file };
+            let values: Vec<Holder> = [holder];
+            let _cursor = values.iter();
+        }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct == "`Vec<Holder>` clone"
+        ) && diagnostic
+            .note
+            .contains("resource `File` has an affine close contract")),
+        "Vec::iter must not synthesize an affine Vec clone: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn affine_vec_index_remains_borrow_only() {
+    let pipeline = pipeline(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(file: File) { } }
+        type Holder { file: File }
+
+        fn main() -> i64 {
+            let file = File { fd: 7 };
+            let holder = Holder { file: file };
+            let values: Vec<Holder> = [holder];
+            let first = values[0];
+            first.file.fd
+        }
+        ",
+    );
+    let calls = call_symbols(&pipeline, "main");
+    assert!(
+        calls.contains(&"hew_vec_get_ptr"),
+        "resource-containing Vec indexing must remain a borrow: {calls:?}"
+    );
+    assert!(
+        !calls.contains(&"hew_vec_get_clone"),
+        "resource-containing Vec indexing must not clone out an owner: {calls:?}"
+    );
+}
+
+#[test]
+fn affine_vec_get_stays_on_clone_out_guard() {
+    let pipeline = pipeline_allowing_mir_diagnostics(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(file: File) { } }
+        type Holder { file: File }
+
+        fn main() {
+            let file = File { fd: 7 };
+            let holder = Holder { file: file };
+            let values: Vec<Holder> = [holder];
+            let _value = values.get(0);
+        }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct == "`VecIter<Holder>` clone-out"
+        ) && diagnostic
+            .note
+            .contains("resource `File` has an affine close contract")),
+        "Vec::get must retain its element clone-out guard: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
 fn call_symbols<'a>(pipeline: &'a IrPipeline, function: &str) -> Vec<&'a str> {
     let function = pipeline
         .raw_mir

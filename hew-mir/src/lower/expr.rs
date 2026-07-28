@@ -1026,7 +1026,7 @@ impl Builder {
     /// classifier's descriptor view rather than maintaining a second clone
     /// classifier here.  Field names are carried only to preserve the shared
     /// `RecordLayout` shape; clone totality depends on the field types.
-    fn validate_vec_get_clone_element(&self, elem_ty: &ResolvedTy) -> Result<(), String> {
+    fn validate_vec_clone_element(&self, elem_ty: &ResolvedTy) -> Result<(), String> {
         let concrete = self.subst_ty(elem_ty);
         let mut visiting_markers = HashSet::new();
         if let Some(blocker) =
@@ -5071,7 +5071,7 @@ impl Builder {
                     let Some(elem_ty) = receiver_args.first() else {
                         unreachable!("a resolved Vec receiver always carries one element argument");
                     };
-                    if let Err(reason) = self.validate_vec_get_clone_element(elem_ty) {
+                    if let Err(reason) = self.validate_vec_clone_element(elem_ty) {
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
@@ -5084,6 +5084,54 @@ impl Builder {
                                 "`VecIter::next()` must clone each element into an independent \
                                  owner, but {reason}; the concrete generic instantiation is \
                                  rejected before the runtime clone choke"
+                            ),
+                        });
+                        return None;
+                    }
+                }
+
+                // A whole-Vec clone has the same semantic precondition as an
+                // element clone-out: every stored element must have a real
+                // clone/retain operation. `Vec::iter()` synthesizes this call
+                // for a place receiver, so guarding only explicit `.clone()`
+                // leaves an affine cursor snapshot reachable even when no
+                // `next()` call is emitted.
+                if matches!(
+                    callee.as_str(),
+                    "hew_vec_clone" | "hew_vec_clone_layout" | "hew_vec_clone_owned"
+                ) {
+                    let concrete_receiver = self.subst_ty(&receiver.ty);
+                    let ResolvedTy::Named {
+                        args: receiver_args,
+                        builtin: Some(hew_types::BuiltinType::Vec),
+                        ..
+                    } = &concrete_receiver
+                    else {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "Vec clone on a non-Vec receiver".to_string(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "`{callee}` requires a concrete `Vec<E>` receiver, but MIR \
+                                 substitution produced `{concrete_receiver}`"
+                            ),
+                        });
+                        return None;
+                    };
+                    let Some(elem_ty) = receiver_args.first() else {
+                        unreachable!("a resolved Vec receiver always carries one element argument");
+                    };
+                    if let Err(reason) = self.validate_vec_clone_element(elem_ty) {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!("`Vec<{}>` clone", elem_ty.user_facing()),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "`Vec::clone()` / `Vec::iter()` must duplicate every element \
+                                 into an independent owner, but {reason}; the clone is rejected \
+                                 before it reaches the runtime"
                             ),
                         });
                         return None;

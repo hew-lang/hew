@@ -330,14 +330,12 @@ These gaps are explicitly deferred and tracked here:
 | Ed25519 signing parity | A wasm32-compatible key generation, signing, and verification implementation | `WASM-TODO(crypto-sign):` |
 | Imported-module diagnostic source loading without native filesystem access | A host-provided source map for WASM and no-filesystem diagnostic rendering | `WASM-TODO(diagnostic-source-map):` |
 | Duplex channel parity | A cooperative WASM implementation of the native dual-queue Duplex runtime | `WASM-TODO(duplex):` |
-| Owned dynamic trait-object lowering on wasm32 | Target-width vtable layout and wasm32 dyn-box allocation/drop lowering | `WASM-TODO(dyn-trait-objects):` |
+| Returned dynamic trait objects across function boundaries | Heap-promotion of coercion-site concrete storage before the fat pointer escapes its defining frame; return signatures fail closed until that lowering exists | `WASM-TODO(dyn-trait-returns):` |
 | Outbound HTTP client parity | A browser/WASI request bridge for the native-only HTTP client wrapper | `WASM-TODO(http-client):` |
 | Lambda-actor construction parity | A cooperative WASM implementation of the native lambda-actor runtime | `WASM-TODO(lambda-actors):` |
-| Target-width runtime layout descriptors | wasm32-correct descriptor shape and element-size arithmetic for layout-aware collection operations | `WASM-TODO(layout-width):` |
 | Runtime profiler parity | A WASM sampling and dashboard design without native OS threads or an embedded HTTP server | `WASM-TODO(profiler):` |
 | Structured classification for newly encountered native-only runtime symbols | An explicit capability-family mapping before a new excluded symbol can use the generic diagnostic branch | `WASM-TODO(runtime-substrate-classification):` |
 | WASM actor-trap reporting parity | Per-kind trap reporting and actor-crash recovery without native POSIX or SEH signal recovery | `WASM-TODO(runtime-traps):` |
-| Record and enum deep-clone lowering in sandbox bytecode | Sandbox VM clone opcodes and structural rollback/drop parity for owned fields | `WASM-TODO(sandbox-clone):` |
 | SMTP client parity | A wasm32 transport bridge for the native-only SMTP wrapper | `WASM-TODO(smtp):` |
 | Shared suspending receive carrier parity | WASM continuation routing for for-await over channel and stream receive operations | `WASM-TODO(suspending-receive):` |
 | Execution-context select suspension parity | A WASM readiness waitset and non-recursive resume path for suspending select | `WASM-TODO(suspending-select):` |

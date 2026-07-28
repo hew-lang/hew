@@ -99,6 +99,11 @@ mod net_error_slot_test_support;
 // `hew-runtime/tests/last_error_result_retention.rs`.
 #[cfg(all(test, not(target_family = "wasm")))]
 mod last_error_retention;
+// Measured retention of native OS/I/O `-> string` exports.  This remains a
+// family-specific oracle so the `*_last_error` suite retains its narrow slot
+// semantics and the direct input-state witnesses stay legible.
+#[cfg(all(test, not(target_family = "wasm")))]
+mod os_io_string_retention;
 #[cfg(not(target_family = "wasm"))]
 pub mod quic;
 #[cfg(not(target_family = "wasm"))]

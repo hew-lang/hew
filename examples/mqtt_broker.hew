@@ -6,7 +6,8 @@
 // Uses bytes type for all TCP I/O.
 //
 // Architecture:
-//   main          — accept loop; spawns ClientHandler per connection
+//   main          — constructs the actor graph and keeps the process alive
+//   Acceptor      — accept loop; spawns ClientHandler per connection
 //   ClientHandler — owns one connection, handles inbound and outbound messages
 //   Router        — tracks clients and subscriptions, fans out publishes
 //
@@ -77,7 +78,7 @@ fn read_varint_len(data: bytes, offset: i64) -> i64 {
             return count;
         }
         if count == 4 {
-            return 0;
+            return -1;
         }
     }
     0
@@ -192,6 +193,11 @@ actor ClientHandler {
                 break;
             }
             let vl: i64 = read_varint_len(buf, 1);
+            if vl < 0 {
+                connected = false;
+                println(f"[mqtt] malformed remaining length for {client_id}");
+                break;
+            }
             if vl == 0 {
                 break;
             }

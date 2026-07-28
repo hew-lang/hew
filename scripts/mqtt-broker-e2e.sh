@@ -123,6 +123,31 @@ BROKER_PID=$!
 wait_for_log "MQTT broker ready" ||
     fail "broker did not become ready within 10 seconds"
 
+# A fifth Remaining Length byte is forbidden by MQTT 3.1.1. The broker must
+# close the offending connection instead of retaining its unbounded prefix,
+# and the acceptor must remain available for subsequent valid clients.
+perl -MIO::Socket::INET -e '
+    $SIG{ALRM} = sub { die "timed out waiting for malformed connection close\n" };
+    alarm 3;
+    my $socket = IO::Socket::INET->new(
+        PeerAddr => "127.0.0.1",
+        PeerPort => $ARGV[0],
+        Proto => "tcp",
+    ) or die "malformed probe connect: $!\n";
+    print {$socket} pack("C*", 0x30, 0x80, 0x80, 0x80, 0x80)
+        or die "malformed probe write: $!\n";
+    shutdown($socket, 1) or die "malformed probe shutdown: $!\n";
+    my $read = sysread($socket, my $byte, 1);
+    die "malformed probe read: $!\n" unless defined $read;
+    die "broker retained malformed connection\n" unless $read == 0;
+    alarm 0;
+' "$PORT" ||
+    fail "malformed Remaining Length was not rejected"
+wait_for_log "malformed remaining length" ||
+    fail "broker did not classify the malformed Remaining Length"
+kill -0 "$BROKER_PID" 2>/dev/null ||
+    fail "broker exited after rejecting malformed Remaining Length"
+
 mosquitto_sub \
     -h 127.0.0.1 \
     -p "$PORT" \

@@ -167,10 +167,7 @@ pub fn maybe_start() {
     // Guard: if the profiler is also active and draining traces, refuse to
     // start to avoid silent event loss. The user must choose one path.
     #[cfg(feature = "profiler")]
-    if std::env::var("HEW_PPROF")
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
-    {
+    if std::env::var("HEW_PPROF").is_ok_and(|v| !v.trim().is_empty()) {
         eprintln!(
             "[hew-otel] WARNING: both HEW_PPROF and HEW_OTEL_ENDPOINT are set. \
              Both consumers share the same trace-event ring buffer and will each \
@@ -494,10 +491,7 @@ fn post_spans(endpoint: &str, json: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
-    use crate::tracing::{SPAN_BEGIN, SPAN_END, SPAN_SPAWN};
 
     fn make_event(
         span_id: u64,
@@ -694,11 +688,11 @@ mod tests {
         let expected_end = (2_000_000_000_u64 + offset).to_string();
 
         assert!(
-            json.contains(&format!("\"{}\"", expected_start)),
+            json.contains(&format!("\"{expected_start}\"")),
             "start timestamp should have epoch offset applied"
         );
         assert!(
-            json.contains(&format!("\"{}\"", expected_end)),
+            json.contains(&format!("\"{expected_end}\"")),
             "end timestamp should have epoch offset applied"
         );
         assert!(is_valid_json(&json));

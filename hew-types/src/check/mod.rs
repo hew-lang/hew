@@ -569,6 +569,7 @@ impl Checker {
         // post-substitution snapshot after the checked-output boundary pass, so
         // restore it into the checker before draining those deferred queues.
         self.type_defs = resolved_type_defs.clone();
+        self.finalize_builtin_clone_admission();
         let mut resolved_lowering_facts = self.finalize_lowering_facts();
         admissibility::validate_lowering_facts_output_contract(
             &mut resolved_lowering_facts,

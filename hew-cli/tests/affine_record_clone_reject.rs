@@ -59,6 +59,17 @@ fn main() -> i64 {
     var tickets: HashMap<string, LinearTicket> = HashMap::new();
     tickets.insert("one", LinearTicket { id: 62 });
     let _tickets_copy = clone tickets;
+
+    var late_resources = Vec::new();
+    var i = 0;
+    while i < 2 {
+        if i == 1 {
+            let _late_copy = late_resources.clone();
+        } else {
+            late_resources.push(ResourceToken { id: 63 });
+        }
+        i = i + 1;
+    }
     0
 }
 "#,
@@ -89,7 +100,7 @@ fn main() -> i64 {
     );
     assert_eq!(
         combined.matches("cannot be cloned").count(),
-        6,
+        7,
         "record and builtin-container dispatch must reject affine clones: {combined}"
     );
     assert!(

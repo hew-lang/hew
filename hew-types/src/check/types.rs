@@ -1847,6 +1847,20 @@ pub(super) struct DeferredVecAdmission {
     pub(super) source_module: Option<String>,
 }
 
+/// A built-in value-container clone whose receiver still contains an
+/// inference variable at the call site.
+///
+/// Source-order checking is not execution order: a clone in the first branch
+/// visited by the checker can execute after another branch has populated the
+/// same container. The receiver must therefore be rechecked for transitive
+/// affine payloads after inference has settled.
+#[derive(Debug, Clone)]
+pub(super) struct DeferredBuiltinCloneAdmission {
+    pub(super) span: Span,
+    pub(super) receiver_ty: Ty,
+    pub(super) source_module: Option<String>,
+}
+
 /// A channel method call rewrite deferred until after all inference has settled.
 ///
 /// Recorded when a `Sender<T>::send` / `Receiver<T>::recv` / `try_recv` call is
@@ -2424,6 +2438,9 @@ pub struct Checker {
     /// completes. Keyed by span to suppress duplicates from repeated traversals
     /// of the same site.
     pub(super) deferred_vec_admission: HashMap<SpanKey, DeferredVecAdmission>,
+    /// Built-in value-container clone checks deferred until after inference.
+    /// Keyed by clone call-site span.
+    pub(super) deferred_builtin_clone_admission: HashMap<SpanKey, DeferredBuiltinCloneAdmission>,
     /// Channel method call rewrites deferred until after inference completes.
     /// Keyed by call-site span so repeated traversal of the same site is
     /// idempotent (last write wins, which is fine since the inner type is the
@@ -3267,6 +3284,7 @@ impl Checker {
             hashmap_layout_facts: HashMap::new(),
             hashset_layout_facts: HashMap::new(),
             deferred_vec_admission: HashMap::new(),
+            deferred_builtin_clone_admission: HashMap::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),

@@ -671,6 +671,43 @@ fn builtin_container_clone_rejects_affine_payloads() {
                 channel.Receiver<ResourceToken>,
             ) = channel.new(8);
             let _sender_copy = sender.clone();
+
+            // Checker visitation order differs from runtime order here. The
+            // clone arm is checked while `late_values` is still Vec<Var>, but
+            // the first runtime iteration populates it through the else arm
+            // before the second iteration clones it.
+            var late_values = Vec::new();
+            var i = 0;
+            while i < 2 {
+                if i == 1 {
+                    let _late_copy = late_values.clone();
+                } else {
+                    late_values.push(ResourceToken { id: 4 });
+                }
+                i = i + 1;
+            }
+
+            var late_tickets = HashMap::new();
+            i = 0;
+            while i < 2 {
+                if i == 1 {
+                    let _late_map_copy = late_tickets.clone();
+                } else {
+                    late_tickets.insert("two", LinearTicket { id: 5 });
+                }
+                i = i + 1;
+            }
+
+            var late_optional = None;
+            i = 0;
+            while i < 2 {
+                if i == 1 {
+                    let _late_optional_copy = late_optional.clone();
+                } else {
+                    late_optional = Some(ResourceToken { id: 6 });
+                }
+                i = i + 1;
+            }
         }
         "#,
     );
@@ -682,7 +719,7 @@ fn builtin_container_clone_rejects_affine_payloads() {
         .collect();
     assert_eq!(
         affine_clone_errors.len(),
-        3,
+        6,
         "builtin clone dispatch must not bypass affine payload checks: {:#?}",
         output.errors
     );

@@ -15,11 +15,11 @@ use super::{
     retained_string_terminator_drop_safe, shift_instr_spans_on_insert, short_name,
     string_binder_read_is_user_fn_borrow, string_field_load_producer_dest,
     terminator_escape_places, terminator_source_places, ty_is_heap_owning_enum_composite,
-    ty_is_heap_owning_tuple, ty_is_owned_handle_leaf, vec_iter_record_init_vec_source,
-    AggregateOwner, BTreeMap, BasicBlock, BindingId, BytesDropDerivation, BytesRetainPlacement,
-    BytesRetainSite, ClosureEnvFieldOwnership, FieldBinderProvenance, FieldOffset, HashMap,
-    HashSet, Instr, MirCheck, MirStatement, Place, ResolvedTy, RootScan, ScopeId, SuspendKind,
-    Terminator, FOR_ITER_CURSOR_NAME_PREFIX,
+    ty_is_heap_owning_tuple, ty_is_owned_handle_leaf, user_record_layout_key,
+    vec_iter_record_init_vec_source, AggregateOwner, BTreeMap, BasicBlock, BindingId, Builder,
+    BytesDropDerivation, BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership,
+    FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement, Place,
+    ResolvedTy, RootScan, ScopeId, SuspendKind, Terminator, FOR_ITER_CURSOR_NAME_PREFIX,
 };
 
 fn generator_env_snapshot_init_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
@@ -3074,6 +3074,608 @@ pub(super) fn derive_local_bytes_drop_allowed(
 /// the tuple is an INTERIOR read (it seeds an element binder for the escape
 /// rule, it does not escape the whole tuple). LESSONS:
 /// drop-allowset-from-value-flow, raii-null-after-move, cleanup-all-exits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct InstrSite {
+    block: u32,
+    index: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TupleProjectionLoad {
+    source: Place,
+    dest: u32,
+    site: InstrSite,
+}
+
+#[derive(Debug, Clone)]
+struct TupleProjectionForwardTransfer {
+    root: u32,
+    seed: u32,
+    carrier: u32,
+    final_owner: u32,
+    neutralize_site: InstrSite,
+    cleanup_sites: Vec<InstrSite>,
+    overwrite_site: InstrSite,
+    forward_site: InstrSite,
+}
+
+#[derive(Default)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields name the four distinct tuple-proof gate authorities"
+)]
+struct TupleProjectionForwardProofs {
+    owner_exempt_roots: HashMap<u32, HashSet<u32>>,
+    release_exempt_roots: HashMap<u32, HashSet<u32>>,
+    cleanup_exempt_roots: HashMap<InstrSite, HashSet<u32>>,
+    forward_exempt_roots: HashMap<InstrSite, HashSet<u32>>,
+}
+
+fn exclude_tuple_roots_except(
+    alias_of: &HashMap<u32, u32>,
+    excluded_roots: &mut HashSet<u32>,
+    exempt_roots: Option<&HashSet<u32>>,
+) {
+    for &root in alias_of.values() {
+        if !exempt_roots.is_some_and(|roots| roots.contains(&root)) {
+            excluded_roots.insert(root);
+        }
+    }
+}
+
+fn whole_local_write_sites(blocks: &[BasicBlock], local: u32) -> Option<Vec<InstrSite>> {
+    let mut sites = Vec::new();
+    for block in blocks {
+        for (index, instr) in block.instructions.iter().enumerate() {
+            for place in crate::dataflow::instr_reads_writes(instr).1 {
+                if base_local(place) == Some(local) {
+                    if place != Place::Local(local) {
+                        return None;
+                    }
+                    sites.push(InstrSite {
+                        block: block.id,
+                        index,
+                    });
+                }
+            }
+        }
+        if crate::dataflow::terminator_write_places(&block.terminator)
+            .into_iter()
+            .any(|place| base_local(place) == Some(local))
+        {
+            return None;
+        }
+    }
+    Some(sites)
+}
+
+fn instr_references_local(instr: &Instr, local: u32) -> bool {
+    let (reads, writes) = crate::dataflow::instr_reads_writes(instr);
+    reads
+        .into_iter()
+        .chain(writes)
+        .any(|place| base_local(place) == Some(local))
+}
+
+fn cleanup_field_drop_base(instr: &Instr) -> Option<Place> {
+    match instr {
+        Instr::FieldDropInPlace { base, .. } => Some(*base),
+        // Assignment-overwrite cleanup of a record carrier uses this older,
+        // equivalent in-place field-release encoding.
+        Instr::RecordFieldDrop { record, .. } => Some(*record),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CleanupField {
+    address: crate::model::FieldAddr,
+    ty: ResolvedTy,
+}
+
+fn carrier_cleanup_fields(
+    carrier: u32,
+    local_tys: &[ResolvedTy],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &[crate::model::EnumLayout],
+) -> Option<HashSet<CleanupField>> {
+    let carrier_ty = local_tys.get(carrier as usize)?;
+    let fields: Vec<_> = if let ResolvedTy::Tuple(elements) = carrier_ty {
+        elements
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| {
+                u32::try_from(index)
+                    .ok()
+                    .map(|index| (crate::model::FieldAddr::Tuple(index), ty))
+            })
+            .collect::<Option<Vec<_>>>()?
+    } else {
+        let key = user_record_layout_key(carrier_ty)?;
+        record_field_orders
+            .get(&key)
+            .or_else(|| {
+                let bare = short_name(&key);
+                (bare != key)
+                    .then(|| record_field_orders.get(bare))
+                    .flatten()
+            })?
+            .iter()
+            .enumerate()
+            .map(|(index, (_, ty))| {
+                u32::try_from(index)
+                    .ok()
+                    .map(|index| (crate::model::FieldAddr::Record(FieldOffset(index)), ty))
+            })
+            .collect::<Option<Vec<_>>>()?
+    };
+    Some(
+        fields
+            .into_iter()
+            .filter(|(_, ty)| crate::model::ty_owns_heap_mir(ty, record_field_orders, enum_layouts))
+            .map(|(address, ty)| CleanupField {
+                address,
+                ty: ty.clone(),
+            })
+            .collect(),
+    )
+}
+
+fn record_field_drop_contract_is_valid(
+    ty: &ResolvedTy,
+    drop_fn: &crate::model::DropFnSpec,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &[crate::model::EnumLayout],
+) -> bool {
+    let crate::model::DropFnSpec::Release(symbol) = drop_fn else {
+        return false;
+    };
+    let builder = Builder {
+        record_field_orders: record_field_orders.clone(),
+        enum_layouts: enum_layouts.to_vec(),
+        ..Builder::default()
+    };
+    matches!(
+        builder.project_field_inline_drop_symbol(ty),
+        crate::ownership::ReleaseSymbolVerdict::Wired(expected) if expected == *symbol
+    )
+}
+
+fn complete_carrier_cleanup_sites(
+    cleanup_block: &BasicBlock,
+    carrier: u32,
+    local_tys: &[ResolvedTy],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &[crate::model::EnumLayout],
+) -> Option<Vec<InstrSite>> {
+    let expected = carrier_cleanup_fields(carrier, local_tys, record_field_orders, enum_layouts)?;
+    let mut observed = HashSet::new();
+    let mut sites = Vec::new();
+    for (index, instr) in cleanup_block.instructions.iter().enumerate() {
+        let field = match instr {
+            Instr::FieldDropInPlace {
+                base: Place::Local(base),
+                field,
+                ty,
+            } if *base == carrier => CleanupField {
+                address: *field,
+                ty: ty.clone(),
+            },
+            Instr::RecordFieldDrop {
+                record: Place::Local(record),
+                field_offset,
+                ty,
+                drop_fn,
+            } if *record == carrier
+                && record_field_drop_contract_is_valid(
+                    ty,
+                    drop_fn,
+                    record_field_orders,
+                    enum_layouts,
+                ) =>
+            {
+                CleanupField {
+                    address: crate::model::FieldAddr::Record(*field_offset),
+                    ty: ty.clone(),
+                }
+            }
+            _ => return None,
+        };
+        if !expected.contains(&field) || !observed.insert(field) {
+            return None;
+        }
+        sites.push(InstrSite {
+            block: cleanup_block.id,
+            index,
+        });
+    }
+    (observed == expected).then_some(sites)
+}
+
+fn terminator_references_local(
+    terminator: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+    local: u32,
+) -> bool {
+    terminator_source_places(terminator, suspend_kind)
+        .into_iter()
+        .chain(crate::dataflow::terminator_write_places(terminator))
+        .any(|place| base_local(place) == Some(local))
+}
+
+fn corroborates_tuple_projection_chain(
+    blocks: &[BasicBlock],
+    root: Place,
+    fields: &[u32],
+    seed: Place,
+) -> Option<Vec<TupleProjectionLoad>> {
+    if fields.is_empty() {
+        return None;
+    }
+    let Place::Local(seed) = seed else {
+        return None;
+    };
+    let mut cursor = Place::Local(seed);
+    let mut reverse_chain = Vec::new();
+    for expected_field in fields.iter().rev().copied() {
+        let matches: Vec<_> = blocks
+            .iter()
+            .flat_map(|block| {
+                block
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(index, instr)| {
+                        let Instr::TupleFieldLoad {
+                            tuple,
+                            field_index,
+                            dest,
+                        } = instr
+                        else {
+                            return None;
+                        };
+                        let Place::Local(dest_local) = *dest else {
+                            return None;
+                        };
+                        (*dest == cursor && *field_index == expected_field).then_some(
+                            TupleProjectionLoad {
+                                source: *tuple,
+                                dest: dest_local,
+                                site: InstrSite {
+                                    block: block.id,
+                                    index,
+                                },
+                            },
+                        )
+                    })
+            })
+            .collect();
+        let [load] = matches.as_slice() else {
+            return None;
+        };
+        reverse_chain.push(*load);
+        cursor = load.source;
+    }
+    if cursor != root {
+        return None;
+    }
+    reverse_chain.reverse();
+    (reverse_chain
+        .windows(2)
+        .all(|loads| loads[1].source == Place::Local(loads[0].dest)))
+    .then_some(reverse_chain)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the sequential fail-closed proof keeps every CFG, definition, and access \
+              condition adjacent to the authority it validates"
+)]
+fn derive_tuple_projection_forward_transfers(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    root_aliases: &HashMap<u32, u32>,
+    local_tys: &[ResolvedTy],
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &[crate::model::EnumLayout],
+) -> TupleProjectionForwardProofs {
+    let mut proofs = TupleProjectionForwardProofs::default();
+    // Suspension carries hidden resume-edge writes in the side table. This proof
+    // does not classify those writes, so every coroutine shape remains denied.
+    if !suspend_kinds.is_empty()
+        || blocks.iter().any(|block| {
+            matches!(
+                block.terminator,
+                Terminator::Suspend { .. }
+                    | Terminator::SuspendingScopeDeadline { .. }
+                    | Terminator::SuspendingSelect { .. }
+            )
+        })
+    {
+        return proofs;
+    }
+
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|block| (block.id, block)).collect();
+    if by_id.len() != blocks.len() {
+        return proofs;
+    }
+    let mut predecessors: HashMap<u32, HashSet<u32>> = HashMap::new();
+    for block in blocks {
+        for successor in block.successors() {
+            predecessors.entry(successor).or_default().insert(block.id);
+        }
+    }
+
+    let mut transfers = Vec::new();
+    for neutralize_block in blocks {
+        for (neutralize_index, instr) in neutralize_block.instructions.iter().enumerate() {
+            let Instr::AggregateProjectionNeutralize {
+                root,
+                fields,
+                transferee,
+            } = instr
+            else {
+                continue;
+            };
+            let (Place::Local(root), Place::Local(seed)) = (*root, *transferee) else {
+                continue;
+            };
+            let Some(&candidate_root) = root_aliases.get(&root) else {
+                continue;
+            };
+            if root == seed {
+                continue;
+            }
+            let neutralize_site = InstrSite {
+                block: neutralize_block.id,
+                index: neutralize_index,
+            };
+            let Some(chain) = corroborates_tuple_projection_chain(
+                blocks,
+                Place::Local(root),
+                fields,
+                Place::Local(seed),
+            ) else {
+                continue;
+            };
+            let Some(seed_site) = chain.last().map(|load| load.site) else {
+                continue;
+            };
+            if chain.iter().any(|load| {
+                load.site.block != neutralize_site.block || load.site.index >= neutralize_site.index
+            }) || !chain
+                .windows(2)
+                .all(|loads| loads[0].site.index < loads[1].site.index)
+                || chain.iter().any(|load| {
+                    whole_local_write_sites(blocks, load.dest).as_deref() != Some(&[load.site])
+                })
+            {
+                continue;
+            }
+            let Terminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } = neutralize_block.terminator
+            else {
+                continue;
+            };
+            if then_target == else_target {
+                continue;
+            }
+
+            let Some((cleanup_block, join_block)) =
+                [(then_target, else_target), (else_target, then_target)]
+                    .into_iter()
+                    .find_map(|(cleanup, join)| {
+                        matches!(
+                            by_id.get(&cleanup).map(|block| &block.terminator),
+                            Some(Terminator::Goto { target }) if *target == join
+                        )
+                        .then_some((cleanup, join))
+                    })
+            else {
+                continue;
+            };
+            if predecessors.get(&cleanup_block) != Some(&HashSet::from([neutralize_block.id]))
+                || predecessors.get(&join_block)
+                    != Some(&HashSet::from([neutralize_block.id, cleanup_block]))
+            {
+                continue;
+            }
+            if [neutralize_block.id, cleanup_block, join_block]
+                .into_iter()
+                .any(|block| blocks_reachable_from(blocks, block).contains(&block))
+            {
+                continue;
+            }
+            let join_reachable = blocks_reachable_from(blocks, join_block);
+            if join_reachable.contains(&neutralize_block.id)
+                || join_reachable.contains(&cleanup_block)
+                || join_reachable.contains(&join_block)
+            {
+                continue;
+            }
+            let Some(join) = by_id.get(&join_block) else {
+                continue;
+            };
+
+            for (overwrite_index, overwrite) in join.instructions.iter().enumerate() {
+                let Instr::Move {
+                    dest: Place::Local(carrier),
+                    src: Place::Local(move_seed),
+                } = overwrite
+                else {
+                    continue;
+                };
+                if *move_seed != seed || *carrier == root || *carrier == seed {
+                    continue;
+                }
+                let overwrite_site = InstrSite {
+                    block: join_block,
+                    index: overwrite_index,
+                };
+                let Some(carrier_defs) = whole_local_write_sites(blocks, *carrier) else {
+                    continue;
+                };
+                if carrier_defs.len() != 2 || !carrier_defs.contains(&overwrite_site) {
+                    continue;
+                }
+                let Some(initialization_site) = carrier_defs
+                    .iter()
+                    .copied()
+                    .find(|site| *site != overwrite_site)
+                    .filter(|site| {
+                        site.block == neutralize_block.id && site.index < neutralize_index
+                    })
+                else {
+                    continue;
+                };
+                let Some(cleanup_sites) = complete_carrier_cleanup_sites(
+                    by_id[&cleanup_block],
+                    *carrier,
+                    local_tys,
+                    record_field_orders,
+                    enum_layouts,
+                ) else {
+                    continue;
+                };
+
+                let Some((forward_index, final_owner)) = join
+                    .instructions
+                    .iter()
+                    .enumerate()
+                    .skip(overwrite_index.saturating_add(1))
+                    .find_map(|(index, instr)| {
+                        if !instr_references_local(instr, *carrier) {
+                            return None;
+                        }
+                        match instr {
+                            Instr::Move {
+                                dest: Place::Local(final_owner),
+                                src: Place::Local(move_carrier),
+                            } if *move_carrier == *carrier => Some((index, *final_owner)),
+                            _ => None,
+                        }
+                    })
+                else {
+                    continue;
+                };
+                if final_owner == root || final_owner == seed || final_owner == *carrier {
+                    continue;
+                }
+                let forward_site = InstrSite {
+                    block: join_block,
+                    index: forward_index,
+                };
+                if whole_local_write_sites(blocks, final_owner).as_deref() != Some(&[forward_site])
+                {
+                    continue;
+                }
+
+                let carrier_accesses_are_exact = blocks.iter().all(|block| {
+                    !terminator_references_local(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        *carrier,
+                    ) && block.instructions.iter().enumerate().all(|(index, instr)| {
+                        if !instr_references_local(instr, *carrier) {
+                            return true;
+                        }
+                        let site = InstrSite {
+                            block: block.id,
+                            index,
+                        };
+                        (site == initialization_site
+                            && crate::dataflow::instr_reads_writes(instr)
+                                .0
+                                .into_iter()
+                                .all(|place| base_local(place) != Some(*carrier)))
+                            || (cleanup_sites.contains(&site)
+                                && cleanup_field_drop_base(instr) == Some(Place::Local(*carrier)))
+                            || site == overwrite_site
+                            || site == forward_site
+                    })
+                });
+                if !carrier_accesses_are_exact {
+                    continue;
+                }
+                let seed_accesses_are_exact = blocks.iter().all(|block| {
+                    !terminator_references_local(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        seed,
+                    ) && block.instructions.iter().enumerate().all(|(index, instr)| {
+                        !instr_references_local(instr, seed)
+                            || InstrSite {
+                                block: block.id,
+                                index,
+                            } == seed_site
+                            || InstrSite {
+                                block: block.id,
+                                index,
+                            } == overwrite_site
+                    })
+                });
+                if !seed_accesses_are_exact {
+                    continue;
+                }
+
+                transfers.push(TupleProjectionForwardTransfer {
+                    root: candidate_root,
+                    seed,
+                    carrier: *carrier,
+                    final_owner,
+                    neutralize_site,
+                    cleanup_sites,
+                    overwrite_site,
+                    forward_site,
+                });
+            }
+        }
+    }
+
+    for transfer in transfers {
+        let TupleProjectionForwardTransfer {
+            root,
+            seed,
+            carrier,
+            final_owner,
+            neutralize_site,
+            cleanup_sites,
+            overwrite_site,
+            forward_site,
+        } = transfer;
+        debug_assert_ne!(seed, carrier);
+        debug_assert_ne!(neutralize_site, overwrite_site);
+        proofs
+            .owner_exempt_roots
+            .entry(final_owner)
+            .or_default()
+            .insert(root);
+        for local in [carrier, final_owner] {
+            proofs
+                .release_exempt_roots
+                .entry(local)
+                .or_default()
+                .insert(root);
+        }
+        for site in cleanup_sites {
+            proofs
+                .cleanup_exempt_roots
+                .entry(site)
+                .or_default()
+                .insert(root);
+        }
+        proofs
+            .forward_exempt_roots
+            .entry(forward_site)
+            .or_default()
+            .insert(root);
+    }
+    proofs
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "four sequential single-purpose passes (candidate collection, \
@@ -3171,9 +3773,6 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             break;
         }
     }
-    let transferred_projection_closure =
-        forward_move_closure(blocks, &aggregate_projection_transfer_dests(blocks));
-    elem_binders.retain(|local| !transferred_projection_closure.contains(local));
     let predicate_string_temps = predicate_string_temp_drop_proof(blocks, local_tys);
     elem_binders.retain(|local| !predicate_string_temps.contains(local));
 
@@ -3192,6 +3791,17 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             elem_binders.insert(alias_local);
         }
     }
+    let transferred_projection_closure =
+        forward_move_closure(blocks, &aggregate_projection_transfer_dests(blocks));
+    elem_binders.retain(|local| !transferred_projection_closure.contains(local));
+    let tuple_projection_forward_proofs = derive_tuple_projection_forward_transfers(
+        blocks,
+        suspend_kinds,
+        &alias_of,
+        local_tys,
+        record_field_orders,
+        enum_layouts,
+    );
     let retained_string_element_aliases = retained_string_field_load_aliases(blocks, local_tys);
     elem_binders.retain(|local| !retained_string_element_aliases.contains(local));
     let retained_bytes_element_seeds: HashSet<u32> = blocks
@@ -3348,10 +3958,13 @@ pub(super) fn derive_tuple_composite_drop_allowed(
     }
     for &binder in &elem_binders {
         if release_owner_bases.contains(&binder) {
-            for &root in alias_of.values() {
-                excluded_roots.insert(root);
-            }
-            break;
+            exclude_tuple_roots_except(
+                &alias_of,
+                &mut excluded_roots,
+                tuple_projection_forward_proofs
+                    .release_exempt_roots
+                    .get(&binder),
+            );
         }
     }
 
@@ -3380,19 +3993,14 @@ pub(super) fn derive_tuple_composite_drop_allowed(
     // `stream.pipe` pair specifically the shared backing is reclaimed when one
     // half closes, so `leaks` observes none; the invariant proven is no
     // double-free.) Precise per-element attribution is a v0.5.1 follow-on.
-    let note_elem_escape = |excluded: &mut HashSet<u32>| {
-        for &root in alias_of.values() {
-            excluded.insert(root);
-        }
-    };
     for block in blocks {
-        for instr in &block.instructions {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
             if initializes_generator_env_snapshot(instr, &generator_env_inits) {
                 continue;
             }
             // Direct prover-exclusion rule for the no-temp field-addressed
             // drop, the tuple twin of `derive_owned_record_drop_allowed`'s: a
-            // `FieldDropInPlace` whose base is an alias-set member is BOTH
+            // field drop whose base is an alias-set member is BOTH
             // the element extraction AND its release, mints no load dest and
             // no `Drop` place, and so — with bitcopy-only sibling binders —
             // seeds neither `elem_binders` nor `release_owner_bases`. Without
@@ -3412,19 +4020,38 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             // depends on — exempting the op there WITHOUT resolving binder
             // bases here would trade the old over-exclusion leak for a
             // composite re-walk double-free.
-            if let Instr::FieldDropInPlace { base, .. } = instr {
-                if let Some(l) = base_local(*base) {
-                    if alias_of.contains_key(&l) {
+            if let Some(base) = cleanup_field_drop_base(instr) {
+                let cleanup_exempt_roots = tuple_projection_forward_proofs
+                    .cleanup_exempt_roots
+                    .get(&InstrSite {
+                        block: block.id,
+                        index: instr_index,
+                    });
+                if let Some(l) = base_local(base) {
+                    if let Some(&root) = alias_of.get(&l) {
+                        if cleanup_exempt_roots.is_some_and(|roots| roots.contains(&root)) {
+                            continue;
+                        }
                         note_alias_escape(l, &mut excluded_roots);
                     }
                     if is_escape_binder(l) {
-                        note_elem_escape(&mut excluded_roots);
+                        exclude_tuple_roots_except(
+                            &alias_of,
+                            &mut excluded_roots,
+                            cleanup_exempt_roots,
+                        );
                     }
                 }
             }
             // A `Move` discriminates a benign whole-value hand-off (dest is
             // another alias member) from a real whole-tuple escape.
             if let Instr::Move { dest, src } = instr {
+                let forward_exempt_roots = tuple_projection_forward_proofs
+                    .forward_exempt_roots
+                    .get(&InstrSite {
+                        block: block.id,
+                        index: instr_index,
+                    });
                 let src_local = base_local(*src);
                 let dest_local = base_local(*dest);
                 if let Some(sl) = src_local {
@@ -3435,14 +4062,21 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                     });
                     // ReturnSlot dest is never an alias member, so a
                     // Move { dest: ReturnSlot, src: member } excludes the root.
-                    if src_is_member && !dest_is_member {
+                    if src_is_member
+                        && !dest_is_member
+                        && !forward_exempt_roots.is_some_and(|roots| roots.contains(&alias_of[&sl]))
+                    {
                         note_alias_escape(sl, &mut excluded_roots);
                     }
                     if is_escape_binder(sl) {
                         let benign = dest_local.is_some_and(is_escape_binder)
                             && matches!(dest, Place::Local(_));
                         if !benign {
-                            note_elem_escape(&mut excluded_roots);
+                            exclude_tuple_roots_except(
+                                &alias_of,
+                                &mut excluded_roots,
+                                forward_exempt_roots,
+                            );
                         }
                     }
                 }
@@ -3462,6 +4096,7 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                     | Instr::Drop { .. }
                     | Instr::TupleFieldLoad { .. }
                     | Instr::RecordFieldLoad { .. }
+                    | Instr::RecordFieldDrop { .. }
                     | Instr::AggregateProjectionNeutralize { .. }
                     // `FieldDropInPlace` is an interior field op (uses base, no
                     // dest, no alias); its composite-suppression semantics are
@@ -3482,7 +4117,11 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                             note_alias_escape(l, &mut excluded_roots);
                         }
                         if is_escape_binder(l) && !binder_read_is_borrow_safe_instr(instr, l) {
-                            note_elem_escape(&mut excluded_roots);
+                            exclude_tuple_roots_except(
+                                &alias_of,
+                                &mut excluded_roots,
+                                tuple_projection_forward_proofs.owner_exempt_roots.get(&l),
+                            );
                         }
                     }
                 }
@@ -3532,7 +4171,11 @@ pub(super) fn derive_tuple_composite_drop_allowed(
                         l,
                     )
                 {
-                    note_elem_escape(&mut excluded_roots);
+                    exclude_tuple_roots_except(
+                        &alias_of,
+                        &mut excluded_roots,
+                        tuple_projection_forward_proofs.owner_exempt_roots.get(&l),
+                    );
                 }
             }
         }
@@ -7108,6 +7751,575 @@ mod tuple_composite_field_drop_exclusion {
             "a FieldDropInPlace against an element binder freed part of the \
              tuple root's storage through the binder's byte-alias; the root \
              must be excluded (leak-not-double-free); got {allowed:?}"
+        );
+    }
+}
+#[cfg(test)]
+mod tuple_projection_forward_transfer_proof {
+    use super::*;
+
+    fn field_drop(base: u32, field: u32, ty: ResolvedTy) -> Instr {
+        Instr::FieldDropInPlace {
+            base: Place::Local(base),
+            field: crate::model::FieldAddr::Tuple(field),
+            ty,
+        }
+    }
+
+    fn blocks() -> Vec<BasicBlock> {
+        vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::TupleConstruct {
+                        elements: vec![],
+                        dest: Place::Local(2),
+                    },
+                    Instr::TupleFieldLoad {
+                        tuple: Place::Local(0),
+                        field_index: 0,
+                        dest: Place::Local(1),
+                    },
+                    Instr::AggregateProjectionNeutralize {
+                        root: Place::Local(0),
+                        fields: vec![0],
+                        transferee: Place::Local(1),
+                    },
+                ],
+                terminator: Terminator::Branch {
+                    cond: Place::Local(9),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![
+                    field_drop(2, 0, ResolvedTy::String),
+                    field_drop(2, 1, ResolvedTy::String),
+                ],
+                terminator: Terminator::Goto { target: 2 },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![
+                    Instr::Move {
+                        dest: Place::Local(2),
+                        src: Place::Local(1),
+                    },
+                    Instr::Move {
+                        dest: Place::Local(3),
+                        src: Place::Local(2),
+                    },
+                ],
+                terminator: Terminator::Return,
+            },
+        ]
+    }
+
+    fn proves(blocks: &[BasicBlock]) -> bool {
+        proves_with(
+            blocks,
+            &[
+                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+                ResolvedTy::String,
+                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::String]),
+                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::String]),
+            ],
+            &HashMap::new(),
+        )
+    }
+
+    fn proves_with(
+        blocks: &[BasicBlock],
+        local_tys: &[ResolvedTy],
+        record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    ) -> bool {
+        derive_tuple_projection_forward_transfers(
+            blocks,
+            &HashMap::new(),
+            &[(0, 0)].into_iter().collect(),
+            local_tys,
+            record_field_orders,
+            &[],
+        )
+        .owner_exempt_roots
+        .get(&3)
+        .is_some_and(|roots| roots.contains(&0))
+    }
+
+    #[test]
+    fn exact_tuple_projection_forwarding_is_proven() {
+        assert!(
+            proves(&blocks()),
+            "the exact branch-cleanup-join forwarding shape must earn its scoped proof"
+        );
+    }
+
+    #[test]
+    fn partial_duplicate_mismatched_or_extra_cleanup_rejects() {
+        let mut partial = blocks();
+        partial[1].instructions.pop();
+        assert!(
+            !proves(&partial),
+            "a partial carrier cleanup must not grant a forwarding exemption"
+        );
+
+        let mut duplicate = blocks();
+        duplicate[1]
+            .instructions
+            .push(field_drop(2, 1, ResolvedTy::String));
+        assert!(
+            !proves(&duplicate),
+            "a duplicate carrier field cleanup must fail closed"
+        );
+
+        let mut wrong_address_kind = blocks();
+        let Instr::FieldDropInPlace { field, .. } = &mut wrong_address_kind[1].instructions[0]
+        else {
+            panic!("fixture cleanup must remain a field drop");
+        };
+        *field = crate::model::FieldAddr::Record(FieldOffset(0));
+        assert!(
+            !proves(&wrong_address_kind),
+            "a tuple carrier cleanup must use tuple field addresses"
+        );
+
+        let mut wrong_declared_type = blocks();
+        let Instr::FieldDropInPlace { ty, .. } = &mut wrong_declared_type[1].instructions[0] else {
+            panic!("fixture cleanup must remain a field drop");
+        };
+        *ty = ResolvedTy::I64;
+        assert!(
+            !proves(&wrong_declared_type),
+            "a cleanup declared type must exactly match its carrier field"
+        );
+
+        let mut extra = blocks();
+        extra[1]
+            .instructions
+            .push(field_drop(2, 2, ResolvedTy::String));
+        assert!(
+            !proves(&extra),
+            "an extra carrier cleanup field must fail closed"
+        );
+    }
+
+    #[test]
+    fn record_carrier_cleanup_uses_declared_order_and_leaf_contract() {
+        let mut cfg = blocks();
+        cfg[1].instructions = vec![
+            Instr::RecordFieldDrop {
+                record: Place::Local(2),
+                field_offset: FieldOffset(0),
+                ty: ResolvedTy::String,
+                drop_fn: crate::model::DropFnSpec::Release("hew_string_drop"),
+            },
+            Instr::FieldDropInPlace {
+                base: Place::Local(2),
+                field: crate::model::FieldAddr::Record(FieldOffset(1)),
+                ty: ResolvedTy::String,
+            },
+        ];
+        let record_ty = ResolvedTy::named_user("Carrier", vec![]);
+        let local_tys = vec![
+            ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+            ResolvedTy::String,
+            record_ty.clone(),
+            record_ty,
+        ];
+        let record_field_orders = [(
+            "Carrier".to_string(),
+            vec![
+                ("first".to_string(), ResolvedTy::String),
+                ("second".to_string(), ResolvedTy::String),
+            ],
+        )]
+        .into_iter()
+        .collect();
+        assert!(
+            proves_with(&cfg, &local_tys, &record_field_orders),
+            "a record carrier must clean every declared heap-owning field exactly once"
+        );
+
+        let Instr::RecordFieldDrop { drop_fn, .. } = &mut cfg[1].instructions[0] else {
+            panic!("fixture cleanup must remain a RecordFieldDrop");
+        };
+        *drop_fn = crate::model::DropFnSpec::Release("hew_bytes_drop");
+        assert!(
+            !proves_with(&cfg, &local_tys, &record_field_orders),
+            "RecordFieldDrop must retain its Bytes leaf release-contract validation"
+        );
+    }
+
+    #[test]
+    fn record_field_drop_contract_requires_an_exact_leaf_symbol() {
+        let release = |symbol| crate::model::DropFnSpec::Release(symbol);
+        let vec_string =
+            ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::String]);
+
+        assert!(record_field_drop_contract_is_valid(
+            &ResolvedTy::String,
+            &release("hew_string_drop"),
+            &HashMap::new(),
+            &[],
+        ));
+        assert!(record_field_drop_contract_is_valid(
+            &ResolvedTy::Bytes,
+            &release("hew_bytes_drop"),
+            &HashMap::new(),
+            &[],
+        ));
+        assert!(!record_field_drop_contract_is_valid(
+            &ResolvedTy::String,
+            &release("hew_hashmap_free_layout"),
+            &HashMap::new(),
+            &[],
+        ));
+        assert!(!record_field_drop_contract_is_valid(
+            &ResolvedTy::String,
+            &release("hew_vec_free"),
+            &HashMap::new(),
+            &[],
+        ));
+        assert!(!record_field_drop_contract_is_valid(
+            &vec_string,
+            &release("hew_string_drop"),
+            &HashMap::new(),
+            &[],
+        ));
+        assert!(record_field_drop_contract_is_valid(
+            &vec_string,
+            &release("hew_vec_free"),
+            &HashMap::new(),
+            &[],
+        ));
+        assert!(!record_field_drop_contract_is_valid(
+            &ResolvedTy::Tuple(vec![ResolvedTy::String]),
+            &release("hew_string_drop"),
+            &HashMap::new(),
+            &[],
+        ));
+    }
+
+    #[test]
+    fn carrier_third_write_rejects() {
+        let mut cfg = blocks();
+        cfg[2].instructions.push(Instr::ConstI64 {
+            dest: Place::Local(2),
+            value: 0,
+        });
+        assert!(!proves(&cfg), "a third carrier definition must fail closed");
+    }
+
+    #[test]
+    fn final_owner_second_write_rejects() {
+        let mut cfg = blocks();
+        cfg[2].instructions.push(Instr::ConstI64 {
+            dest: Place::Local(3),
+            value: 0,
+        });
+        assert!(!proves(&cfg), "the final owner must be uniquely written");
+    }
+
+    #[test]
+    fn two_forward_destinations_reject() {
+        let mut cfg = blocks();
+        cfg[2].instructions.push(Instr::Move {
+            dest: Place::Local(4),
+            src: Place::Local(2),
+        });
+        assert!(!proves(&cfg), "a second carrier forward must fail closed");
+    }
+
+    #[test]
+    fn extra_cleanup_or_join_predecessor_rejects() {
+        let mut cleanup_pred = blocks();
+        cleanup_pred.push(BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 1 },
+        });
+        assert!(
+            !proves(&cleanup_pred),
+            "cleanup must have only the neutralize predecessor"
+        );
+
+        let mut join_pred = blocks();
+        join_pred.push(BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 2 },
+        });
+        assert!(
+            !proves(&join_pred),
+            "join must have only the neutralize and cleanup predecessors"
+        );
+    }
+
+    #[test]
+    fn cleanup_carrier_read_foreign_drop_or_unrecorded_access_rejects() {
+        let mut carrier_read = blocks();
+        carrier_read[1].instructions.push(Instr::IntAdd {
+            dest: Place::Local(8),
+            lhs: Place::Local(2),
+            rhs: Place::Local(9),
+        });
+        assert!(
+            !proves(&carrier_read),
+            "a cleanup carrier read outside FieldDropInPlace must fail closed"
+        );
+
+        let mut foreign_drop = blocks();
+        foreign_drop[1]
+            .instructions
+            .push(field_drop(8, 1, ResolvedTy::String));
+        assert!(
+            !proves(&foreign_drop),
+            "a cleanup drop through a foreign base must fail closed"
+        );
+
+        let mut cleanup_move = blocks();
+        cleanup_move[1].instructions.push(Instr::Move {
+            dest: Place::Local(8),
+            src: Place::Local(2),
+        });
+        assert!(
+            !proves(&cleanup_move),
+            "an unrecorded cleanup carrier move must fail closed"
+        );
+    }
+
+    #[test]
+    fn root_path_mismatch_or_multiply_defined_seed_rejects() {
+        let mut path_mismatch = blocks();
+        let Instr::AggregateProjectionNeutralize { fields, .. } =
+            &mut path_mismatch[0].instructions[2]
+        else {
+            panic!("fixture neutralize must remain at its recorded site");
+        };
+        *fields = vec![1];
+        assert!(
+            !proves(&path_mismatch),
+            "the neutralize path must exactly corroborate the TupleFieldLoad chain"
+        );
+
+        let mut multiple_seed_defs = blocks();
+        multiple_seed_defs[2].instructions.push(Instr::ConstI64 {
+            dest: Place::Local(1),
+            value: 0,
+        });
+        assert!(
+            !proves(&multiple_seed_defs),
+            "a multiply-defined projection seed must fail closed"
+        );
+    }
+
+    fn nested_blocks() -> Vec<BasicBlock> {
+        vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::TupleConstruct {
+                        elements: vec![],
+                        dest: Place::Local(2),
+                    },
+                    Instr::TupleFieldLoad {
+                        tuple: Place::Local(0),
+                        field_index: 0,
+                        dest: Place::Local(1),
+                    },
+                    Instr::TupleFieldLoad {
+                        tuple: Place::Local(1),
+                        field_index: 1,
+                        dest: Place::Local(3),
+                    },
+                    Instr::AggregateProjectionNeutralize {
+                        root: Place::Local(0),
+                        fields: vec![0, 1],
+                        transferee: Place::Local(3),
+                    },
+                ],
+                terminator: Terminator::Branch {
+                    cond: Place::Local(9),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![
+                    field_drop(2, 0, ResolvedTy::String),
+                    field_drop(2, 1, ResolvedTy::String),
+                ],
+                terminator: Terminator::Goto { target: 2 },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![
+                    Instr::Move {
+                        dest: Place::Local(2),
+                        src: Place::Local(3),
+                    },
+                    Instr::Move {
+                        dest: Place::Local(5),
+                        src: Place::Local(2),
+                    },
+                ],
+                terminator: Terminator::Return,
+            },
+        ]
+    }
+
+    fn nested_proves(blocks: &[BasicBlock]) -> bool {
+        let inner = ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::String]);
+        let root = ResolvedTy::Tuple(vec![inner.clone(), ResolvedTy::I64]);
+        derive_tuple_projection_forward_transfers(
+            blocks,
+            &HashMap::new(),
+            &[(0, 0)].into_iter().collect(),
+            &[
+                root,
+                inner.clone(),
+                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::String]),
+                ResolvedTy::String,
+                inner,
+                ResolvedTy::String,
+            ],
+            &HashMap::new(),
+            &[],
+        )
+        .owner_exempt_roots
+        .get(&5)
+        .is_some_and(|roots| roots.contains(&0))
+    }
+
+    #[test]
+    fn clean_two_hop_projection_chain_is_proven() {
+        assert!(
+            nested_proves(&nested_blocks()),
+            "a unique, in-order root-to-intermediate-to-seed chain must earn its scoped proof"
+        );
+    }
+
+    #[test]
+    fn out_of_order_or_overwritten_nested_projection_chain_rejects() {
+        let mut out_of_order = nested_blocks();
+        out_of_order[0].instructions.swap(1, 2);
+        assert!(
+            !nested_proves(&out_of_order),
+            "nested projection definitions must occur strictly root-to-leaf before neutralization"
+        );
+
+        let mut overwritten = nested_blocks();
+        let matching_root_projection = overwritten[0].instructions.remove(1);
+        overwritten[0].instructions.insert(
+            1,
+            Instr::TupleFieldLoad {
+                tuple: Place::Local(4),
+                field_index: 0,
+                dest: Place::Local(1),
+            },
+        );
+        overwritten[0]
+            .instructions
+            .insert(3, matching_root_projection);
+        let type_classes = hew_hir::TypeClassTable::new();
+        assert!(
+            crate::dataflow::analyze(&overwritten, &type_classes, &[])
+                .checks
+                .is_empty(),
+            "the adversarial chain must be accepted by the checked-MIR dataflow authority"
+        );
+        assert!(
+            !nested_proves(&overwritten),
+            "a foreign intermediate load used to produce the seed, then overwritten by the \
+             matching root projection, must not earn the forwarding exemption"
+        );
+    }
+
+    #[test]
+    fn cfg_cycle_suspend_or_backedge_rejects() {
+        let mut cycle = blocks();
+        cycle[2].terminator = Terminator::Goto { target: 0 };
+        assert!(!proves(&cycle), "a proof-region CFG cycle must fail closed");
+
+        let mut suspend = blocks();
+        suspend.push(BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Suspend {
+                resume: 3,
+                cleanup: 3,
+                is_final: false,
+            },
+        });
+        assert!(
+            !proves(&suspend),
+            "an unclassified suspend carrier must fail closed"
+        );
+
+        let mut backedge = blocks();
+        backedge[2].terminator = Terminator::Goto { target: 3 };
+        backedge.push(BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 1 },
+        });
+        assert!(
+            !proves(&backedge),
+            "a join backedge into the proof region must fail closed"
+        );
+    }
+
+    #[test]
+    fn ordinary_unique_same_block_forwarding_remains_admitted() {
+        let binding = BindingId(1);
+        let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]);
+        let allowed = derive_tuple_composite_drop_allowed(
+            &[BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![
+                    Instr::TupleFieldLoad {
+                        tuple: Place::Local(0),
+                        field_index: 0,
+                        dest: Place::Local(1),
+                    },
+                    Instr::AggregateProjectionNeutralize {
+                        root: Place::Local(0),
+                        fields: vec![0],
+                        transferee: Place::Local(1),
+                    },
+                    Instr::Move {
+                        dest: Place::Local(2),
+                        src: Place::Local(1),
+                    },
+                ],
+                terminator: Terminator::Return,
+            }],
+            &HashMap::new(),
+            &[(binding, "pair".to_string(), tuple_ty.clone())],
+            &[(binding, Place::Local(0))].into_iter().collect(),
+            &[tuple_ty, ResolvedTy::String, ResolvedTy::String],
+            &HashMap::new(),
+            &[],
+            &[],
+            &HashMap::new(),
+        );
+        assert!(
+            allowed.contains(&binding),
+            "the cross-block proof must not change ordinary same-block forwarding"
         );
     }
 }

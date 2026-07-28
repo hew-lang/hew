@@ -168,36 +168,37 @@ fn main() {
 }
 "#;
 
-const FORWARD_REBIND_SIBLING_SOURCE: &str = r#"
+const FORWARD_REBIND_HELPER_SIBLING_SOURCE: &str = r#"
 record Holder {
     items: Vec<string>,
     tag: string,
 }
 
-fn main() {
-    let pair = (Holder { items: ["transferred"], tag: "tag" }, [1, 2]);
+fn helper(i: i64) -> i64 {
+    let pair: (Holder, Vec<string>) = (
+        Holder { items: ["transferred"], tag: "tag" },
+        ["left", "right"],
+    );
     var owner = Holder { items: [], tag: "" };
     owner = pair.0;
     let rebound = owner;
-    if rebound.items[0] != "transferred" || pair.1.len() != 2 {
-        return;
+    if rebound.items[0] != "transferred"
+        || rebound.tag != "tag"
+        || pair.1[0] != "left"
+        || pair.1[1] != "right"
+        || pair.1.len() != 2 {
+        return -1000;
     }
-    print("OK");
-}
-"#;
-
-const FORWARD_REBIND_CONTROL_SOURCE: &str = r#"
-record Holder {
-    items: Vec<string>,
-    tag: string,
+    rebound.items[0].len() + rebound.tag.len() + pair.1[0].len() + pair.1[1].len() + pair.1.len() + i
 }
 
-fn main() {
-    let pair = (Holder { items: ["transferred"], tag: "tag" }, [1, 2]);
-    if pair.0.items[0] != "transferred" || pair.1.len() != 2 {
-        return;
+fn main() -> i64 {
+    var checksum = 0;
+    for frame in 0..64 {
+        checksum = checksum + helper(frame);
     }
-    print("OK");
+    println(f"checksum={checksum}");
+    if checksum == 3616 { 0 } else { 91 }
 }
 "#;
 
@@ -317,54 +318,35 @@ fn transferred_record_and_tuple_siblings_remain_live_until_single_drop() {
     ignore = "the poisoned allocator contract is macOS-only; a host that cannot run it must record a SKIP, never a silent pass"
 )]
 #[test]
-fn forward_rebind_transfer_drops_transferred_field_once_and_sibling_fields() {
+fn helper_frame_forward_rebind_releases_transferred_and_sibling_vecs() {
     require_codegen();
 
     let dir = tempfile::Builder::new()
-        .prefix("tuple-record-forward-rebind-")
+        .prefix("tuple-record-forward-rebind-helper-")
         .tempdir()
         .expect("tempdir");
     let bin = compile_to_native(
-        FORWARD_REBIND_SIBLING_SOURCE,
+        FORWARD_REBIND_HELPER_SIBLING_SOURCE,
         dir.path(),
-        "forward_rebind_sibling",
-    );
-    let control_bin = compile_to_native(
-        FORWARD_REBIND_CONTROL_SOURCE,
-        dir.path(),
-        "forward_rebind_control",
+        "forward_rebind_helper_sibling",
     );
     let output = run_under_malloc_scribble(&bin);
-    let control_output = run_under_malloc_scribble(&control_bin);
 
     assert!(
         output.status.success(),
-        "forward rebind of a corroborated projection transfer must not double-free:\n{}",
+        "forward rebind of a corroborated projection transfer must not double-free or \
+         poison the helper's transferred payload or sibling Vec:\n{}",
         describe_output(&output)
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "OK",
-        "all transferred and sibling values must remain readable before one final drop"
-    );
-    assert!(
-        control_output.status.success(),
-        "the non-transfer control must run cleanly:\n{}",
-        describe_output(&control_output)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&control_output.stdout),
-        "OK",
-        "the allocation-equivalent control must complete its visible work witness"
+        "checksum=3616\n",
+        "64 helper calls must read both the transferred data and sibling Vec before \
+         producing the exact work checksum"
     );
     assert_eq!(
         measure_leaks_exact(&bin),
         (0, 0),
-        "the transferred field and tuple sibling fields must release exactly once"
-    );
-    assert_eq!(
-        measure_leaks_exact(&control_bin),
-        (0, 0),
-        "the allocation-equivalent control must release every allocation"
+        "each helper frame must release the transferred data and sibling Vec allocations"
     );
 }

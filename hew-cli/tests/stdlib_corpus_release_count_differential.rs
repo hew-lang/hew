@@ -317,11 +317,28 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     // into `Version` rather than parsing and dropping them, while
     // `matches_single` deliberately converges its old early returns on one
     // final result, removing duplicate path-local drop-plan entries.
+    //
+    // 73 was wrong; 82 is the accounted count. The pre-migration baseline of
+    // 86 (`fixtures/release-count-baseline.tsv`) held ten `req_ver`
+    // return-plan sites under that older function shape. A later
+    // source/control-flow migration changed the plan topology, and under the
+    // new shape the scanner token-ownership leak this range fixes was
+    // silently discarding every one of `req_ver`'s releases. In the broken
+    // base's 25/24/24/0 shape, each match call leaked the `req_ver` `Version`
+    // record, represented by multiple allocator nodes per record. The repair
+    // restores `req_ver`'s release at the one normal-return plan plus eight
+    // cancel/unwind plans — nine sites, not all ten. Head totals 82
+    // (25/24/24/9) against the broken merge base's 73 (25/24/24/0): the three
+    // other co-resident locals are unaffected by the fix, and `req_ver` goes
+    // from 0 to 9. See `hew-cli/tests/semver_matches_leak_oracle.rs` for the
+    // durable, continuously-run proof that `matches_single` is exactly
+    // leak-free across all eight operators plus the unmatched-operator
+    // fallthrough.
     (
         "std/text/semver/semver.hew",
         "matches_single",
-        73,
-        "comparison branches converge on one exit instead of duplicating path-local drop plans; the same owned values are discharged on that shared exit",
+        82,
+        "pre-migration baseline of 86 held ten `req_ver` return-plan sites under an older function shape; a later source/control-flow migration changed the plan topology, and the scanner ownership repair restores `req_ver`'s release at the one normal-return plan plus eight cancel/unwind plans, giving 82 (25/24/24/9) against the broken merge base's 73 (25/24/24/0) — see `semver_matches_leak_oracle.rs` for the leak-free proof",
     ),
     (
         "std/text/semver/semver.hew",

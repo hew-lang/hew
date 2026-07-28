@@ -6525,31 +6525,34 @@ fn main() {}
 
     #[test]
     fn a_fresh_result_without_a_measured_retention_is_refused() {
-        // `hew_file_read` is audited `result = "fresh"`, released by
-        // `hew_string_drop`, shallow — identical on every axis Clause A reads.
+        // `hew_string_to_bytes` is audited `result = "fresh"`, released by
+        // `hew_bytes_drop`, shallow — identical on every axis Clause A reads.
+        // It is deliberately outside the measured string-result program, so
+        // this negative remains about the default retention rule rather than
+        // an active subsystem lane that could be promoted as a family.
         // It is refused for the one reason that matters: nobody has established
         // that the callee keeps no pointer into what it returned. Absence is
         // the answer "not established", and that costs a leak rather than a
         // double free.
         const SOURCE: &str = r#"extern "C" {
-    fn hew_file_read(path: string) -> string;
+    fn hew_string_to_bytes(input: string) -> bytes;
 }
 fn main() {}
 "#;
-        let contract = crate::ffi_contracts::extern_ownership_contract("hew_file_read")
+        let contract = crate::ffi_contracts::extern_ownership_contract("hew_string_to_bytes")
             .contract()
-            .expect("guard: hew_file_read must be audited, or this proves nothing");
+            .expect("guard: hew_string_to_bytes must be audited, or this proves nothing");
         assert_eq!(
             contract.result,
             crate::ffi_contracts::ExternResultOwnership::Fresh
         );
-        assert_eq!(contract.release_symbol, STRING_RELEASE_SYMBOL);
+        assert_eq!(contract.release_symbol, BYTES_RELEASE_SYMBOL);
         assert_eq!(
             contract.result_retention,
             crate::ffi_contracts::ExternResultRetention::Unspecified
         );
         assert!(
-            !table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_file_read"),
+            !table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_string_to_bytes"),
             "`fresh` says the allocation is new, not that the callee stopped \
              referring to it; only the retention axis answers that"
         );

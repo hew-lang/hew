@@ -4531,7 +4531,7 @@ impl Builder {
                 // (no drop obligation). A self-send (`this.go()`) lowers its
                 // receiver through here and the resulting Place becomes the
                 // `Terminator::Send` actor target via `lower_actor_send`.
-                Some(self.emit_actor_self_handle())
+                Some(self.emit_actor_self_handle_typed(&expr.ty))
             }
             HirExprKind::ActorSend {
                 receiver,
@@ -9146,23 +9146,27 @@ impl Builder {
     /// Synthesize the current actor's own handle via the `hew_actor_self()`
     /// runtime primitive and return the `Place` holding it.
     ///
-    /// The result is a *borrowed* `*mut HewActor` typed `LocalPid<Unit>` (no
-    /// ownership transfer), so the destination local carries no drop obligation
-    /// — `alloc_local` records type bookkeeping only and never registers a drop.
-    /// This is the single self-handle emitter shared by `link`/`monitor`/
-    /// `unlink` (which pass it as the implicit `self` first ABI argument) and by
-    /// the `HirExprKind::ActorSelf` value arm (`this` used as a value). Keeping
-    /// one emitter avoids the divergent self-handle synthesis the value-class
-    /// and ABI agreement invariants warn against.
+    /// The implicit ABI-only callers do not dispatch through the pid's actor
+    /// protocol, so their result uses the erased `LocalPid<Unit>` tag. A
+    /// value-position `this` must instead call [`Self::emit_actor_self_handle_typed`]
+    /// with the checker/HIR-provided `LocalPid<ConcreteActor>` type: downstream
+    /// consumers such as `conn.attach(this)` use that tag to resolve the actor's
+    /// protocol descriptor and message ids.
     pub(crate) fn emit_actor_self_handle(&mut self) -> Place {
-        let self_handle = self.alloc_local(ResolvedTy::Named {
+        self.emit_actor_self_handle_typed(&ResolvedTy::Named {
             name: hew_types::BuiltinType::LocalPid
                 .canonical_name()
                 .to_string(),
             args: vec![ResolvedTy::Unit],
             builtin: Some(hew_types::BuiltinType::LocalPid),
             is_opaque: false,
-        });
+        })
+    }
+
+    /// Synthesize a value-position actor self handle while preserving its
+    /// checker-authoritative concrete `LocalPid<Actor>` tag.
+    fn emit_actor_self_handle_typed(&mut self, self_ty: &ResolvedTy) -> Place {
+        let self_handle = self.alloc_local(self_ty.clone());
         self.push_runtime_call("hew_actor_self", vec![], Some(self_handle));
         self_handle
     }

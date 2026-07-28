@@ -76,6 +76,13 @@ enum FileCounts {
 const BASELINE: &str = "hew-cli/tests/fixtures/release-count-baseline.tsv";
 const REJECTED: &str = "REJECTED";
 
+/// Files whose source changed after the corpus-wide baseline was anchored and
+/// whose complete positive-count block was therefore recaptured. The global
+/// differential deliberately permits new release cells (the fix direction),
+/// but a source refresh must not omit one of its new functions from future
+/// regression coverage.
+const SOURCE_REFRESHED_BASELINE_FILES: &[&str] = &["examples/mqtt_broker.hew"];
+
 /// Cells that stand BELOW the `main` baseline on purpose, each with the reason.
 ///
 /// This is the "without a stated reason" clause, written down. An entry here is
@@ -493,6 +500,28 @@ fn every_accounted_shortfall_is_a_real_shortfall() {
             reason.len() > 80,
             "{file}::{function}: \"without a stated reason\" means the reason has to \
              say something"
+        );
+    }
+}
+
+#[test]
+fn source_refreshed_baseline_blocks_are_complete() {
+    let baseline = load_baseline();
+    for file in SOURCE_REFRESHED_BASELINE_FILES {
+        let measured = match counts_for(&repo_root().join(file)) {
+            FileCounts::Functions(per) => per
+                .into_iter()
+                .filter(|(_, count)| *count > 0)
+                .collect::<BTreeMap<_, _>>(),
+            FileCounts::Rejected => panic!("{file} is rejected after its baseline was refreshed"),
+        };
+        let Some(FileCounts::Functions(recorded)) = baseline.get(*file) else {
+            panic!("{file} has no accepted block in the release-count baseline");
+        };
+        assert_eq!(
+            recorded, &measured,
+            "{file} changed after its baseline block was refreshed; recapture every \
+             positive release-count cell so a new function cannot remain unguarded"
         );
     }
 }

@@ -1414,7 +1414,7 @@ mod aggregate_projection_transfer_dest_tests {
     }
 
     #[test]
-    fn mismatched_transferee_path_earns_no_transfer_authority() {
+    fn mismatched_field_path_earns_no_transfer_authority() {
         let blocks = [BasicBlock {
             id: 0,
             statements: vec![],
@@ -1441,6 +1441,126 @@ mod aggregate_projection_transfer_dest_tests {
         assert!(
             aggregate_projection_transfer_dests(&blocks).is_empty(),
             "a declared neutralize path that does not reach its transferee must fail closed"
+        );
+    }
+
+    #[test]
+    fn wrong_transferee_earns_no_transfer_authority() {
+        let blocks = [BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::RecordFieldLoad {
+                    record: Place::Local(1),
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(10),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(10),
+                    field_offset: FieldOffset(1),
+                    dest: Place::Local(11),
+                },
+                Instr::RecordFieldLoad {
+                    record: Place::Local(10),
+                    field_offset: FieldOffset(2),
+                    dest: Place::Local(12),
+                },
+                Instr::AggregateProjectionNeutralize {
+                    root: Place::Local(1),
+                    fields: vec![0, 1],
+                    transferee: Place::Local(12),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        assert!(
+            aggregate_projection_transfer_dests(&blocks).is_empty(),
+            "authority for one sibling must not exempt a different field-load destination"
+        );
+    }
+
+    #[test]
+    fn multiply_defined_projection_destination_fails_closed() {
+        let blocks = [BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::TupleFieldLoad {
+                    tuple: Place::Local(1),
+                    field_index: 0,
+                    dest: Place::Local(10),
+                },
+                Instr::TupleFieldLoad {
+                    tuple: Place::Local(2),
+                    field_index: 0,
+                    dest: Place::Local(10),
+                },
+                Instr::AggregateProjectionNeutralize {
+                    root: Place::Local(1),
+                    fields: vec![0],
+                    transferee: Place::Local(10),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        assert!(
+            aggregate_projection_transfer_dests(&blocks).is_empty(),
+            "a multiply-defined transferee cannot be corroborated to one aggregate root"
+        );
+    }
+
+    #[test]
+    fn only_corroborated_transfer_removes_projection_alias_taint() {
+        let transferred = [BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::TupleFieldLoad {
+                    tuple: Place::Local(1),
+                    field_index: 0,
+                    dest: Place::Local(10),
+                },
+                Instr::AggregateProjectionNeutralize {
+                    root: Place::Local(1),
+                    fields: vec![0],
+                    transferee: Place::Local(10),
+                },
+                Instr::Move {
+                    dest: Place::Local(20),
+                    src: Place::Local(10),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+        let missing_authority = [BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::TupleFieldLoad {
+                    tuple: Place::Local(1),
+                    field_index: 0,
+                    dest: Place::Local(10),
+                },
+                Instr::Move {
+                    dest: Place::Local(20),
+                    src: Place::Local(10),
+                },
+            ],
+            terminator: Terminator::Return,
+        }];
+
+        let transferred_taint = compute_collection_interior_alias_taint(&transferred);
+        assert!(
+            !transferred_taint.contains(&10) && !transferred_taint.contains(&20),
+            "a corroborated field transfer makes both the load and its assigned owner sole owners"
+        );
+
+        let missing_taint = compute_collection_interior_alias_taint(&missing_authority);
+        assert!(
+            missing_taint.contains(&10) && missing_taint.contains(&20),
+            "without explicit transfer authority, projection taint must propagate fail closed"
         );
     }
 }

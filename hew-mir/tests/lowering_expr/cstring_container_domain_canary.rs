@@ -26,7 +26,9 @@
 //!
 //! Header-awareness is settled, but MIR lowering must only emit a
 //! String-element accessor when it also balances that accessor's ownership
-//! contract. `hew_vec_get_str` returns a retained/header-aware owner; a lowered
+//! contract. Ordinary `xs[i]` uses `hew_vec_get_str`, which returns a
+//! retained/header-aware owner. `VecIter::next` uses the iterator-only generic
+//! `hew_vec_get_clone`, which likewise produces an independent owner. A lowered
 //! `for word in words` binding must therefore be followed by exactly one
 //! `hew_string_drop` after the loop body uses `word`. Two reasons keep this
 //! guard load-bearing post-P2b-maps:
@@ -35,8 +37,9 @@
 //!    returns a retained owner. Emitting it without a balancing release would
 //!    leak every accessed element; emitting a drop on a borrowed/aliased value
 //!    would double-free. The emitters are fail-closed per position:
-//!    - **for-in** pairs the per-iteration binding with one `hew_string_drop`
-//!      (escape-scanned: suppressed when the element is moved out of the body).
+//!    - **for-in** clones each yield through `hew_vec_get_clone` and pairs the
+//!      per-iteration binding with one `hew_string_drop` (escape-scanned:
+//!      suppressed when the element is moved out of the body).
 //!    - **scalar `xs[i]` in DISCARD, BOUND, and NESTED positions** all route
 //!      through the same retained getter and are released exactly once by the
 //!      general owned-`string` temporary substrate:
@@ -61,7 +64,7 @@
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::runtime_symbols::is_known_runtime_symbol;
-use hew_mir::{lower_hir_module, Instr, IrPipeline, MirDiagnosticKind};
+use hew_mir::{lower_hir_module, Instr, IrPipeline, MirDiagnosticKind, Terminator};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 /// Lower a Hew source string through the full type-checked HIR→MIR pipeline.
@@ -98,6 +101,19 @@ fn emitted_runtime_symbols(pl: &IrPipeline) -> Vec<String> {
     out
 }
 
+/// Collect runtime-ABI instructions and ordinary MIR call terminators.
+fn emitted_call_symbols(pl: &IrPipeline) -> Vec<String> {
+    let mut out = emitted_runtime_symbols(pl);
+    for function in &pl.raw_mir {
+        for block in &function.blocks {
+            if let Terminator::Call { callee, .. } = &block.terminator {
+                out.push(callee.clone());
+            }
+        }
+    }
+    out
+}
+
 /// Premise of the domain separation: the String-element vec *getter* exists in
 /// the runtime-ABI allowlist and may be emitted only when the retained owner is
 /// balanced; the String *pop* accessor is not even allowlisted (a stronger
@@ -120,11 +136,11 @@ fn string_element_vec_accessors_are_allowlisted_but_guarded() {
     );
 }
 
-/// `for word in words` over `Vec<string>` may lower to `hew_vec_get_str`, but
-/// only if the retained per-iteration owner is balanced with exactly one
-/// `hew_string_drop` after the body uses `word`.
+/// `for word in words` over `Vec<string>` lowers through the iterator-only
+/// `hew_vec_get_clone`, and the cloned per-iteration owner is balanced with
+/// exactly one `hew_string_drop` after the body uses `word`.
 #[test]
-fn vec_string_for_in_emits_retained_getter_with_iteration_drop() {
+fn vec_string_for_in_emits_clone_getter_with_iteration_drop() {
     // `println(count)` (a direct scalar print) rather than an f-string: the
     // fixture's subject is the for-in retained-getter drop, and an
     // interpolated `f"count={count}"` tail would add its OWN
@@ -146,11 +162,18 @@ fn vec_string_for_in_emits_retained_getter_with_iteration_drop() {
         }"#,
     );
 
-    let symbols = emitted_runtime_symbols(&pl);
+    let symbols = emitted_call_symbols(&pl);
     assert!(
-        symbols.iter().any(|s| s == "hew_vec_get_str"),
-        "Vec<string> for-in must lower through the real retained getter, not \
+        symbols.iter().any(|s| s == "hew_vec_get_clone"),
+        "Vec<string> for-in must lower through the iterator clone-out getter, not \
         a fake-green literal/range/get workaround; symbols: {symbols:?}",
+    );
+    assert!(
+        !symbols
+            .iter()
+            .any(|s| s == "hew_vec_get_str" || s == "hew_vec_get_owned"),
+        "Vec<string> for-in must not borrow or use the ordinary-index getter; \
+         symbols: {symbols:?}",
     );
     assert!(
         !symbols.iter().any(|s| s == "hew_vec_pop_str"),
@@ -179,7 +202,7 @@ fn vec_string_for_in_emits_retained_getter_with_iteration_drop() {
     assert_eq!(
         string_drops,
         vec![hew_mir::DropFnSpec::Release("hew_string_drop")],
-        "hew_vec_get_str returns a retained owner; the for-in word binding must \
+        "hew_vec_get_clone returns an independent owner; the for-in word binding must \
         receive exactly one explicit hew_string_drop after the body, not leak \
         or double-drop. Full drop list: {string_drops:?}; diagnostics: {:?}",
         pl.diagnostics,
@@ -245,6 +268,13 @@ fn emits_vec_get_str(pl: &IrPipeline) -> bool {
         .any(|s| s == "hew_vec_get_str")
 }
 
+/// `VecIter::next` must use the iterator-only clone-out getter.
+fn emits_vec_get_clone(pl: &IrPipeline) -> bool {
+    emitted_call_symbols(pl)
+        .iter()
+        .any(|s| s == "hew_vec_get_clone")
+}
+
 /// A BRANCHED body (`if/else`, both arms reading the binding by-value via string
 /// concat) lowers without an NYI and places the post-body retained-element drop
 /// at the branch-join block reached once per iteration regardless of which arm
@@ -269,8 +299,8 @@ fn vec_string_for_in_branched_body_drops_once_at_join() {
     );
     assert!(!has_nyi(&pl), "branched body NYI: {:?}", pl.diagnostics);
     assert!(
-        emits_vec_get_str(&pl),
-        "branched body must use the retained getter"
+        emits_vec_get_clone(&pl),
+        "branched body must use the clone-out getter"
     );
     assert_eq!(
         string_drop_count(&pl),
@@ -306,7 +336,7 @@ fn vec_string_for_in_continue_drops_on_edge_and_fallthrough() {
         }"#,
     );
     assert!(!has_nyi(&pl), "continue body NYI: {:?}", pl.diagnostics);
-    assert!(emits_vec_get_str(&pl));
+    assert!(emits_vec_get_clone(&pl));
     assert_eq!(
         string_drop_count(&pl),
         3,
@@ -336,7 +366,7 @@ fn vec_string_for_in_break_drops_on_edge_and_fallthrough() {
         }"#,
     );
     assert!(!has_nyi(&pl), "break body NYI: {:?}", pl.diagnostics);
-    assert!(emits_vec_get_str(&pl));
+    assert!(emits_vec_get_clone(&pl));
     assert_eq!(
         string_drop_count(&pl),
         3,
@@ -370,7 +400,7 @@ fn vec_string_for_in_unused_binding_drops_once() {
         "unused-binding body NYI: {:?}",
         pl.diagnostics
     );
-    assert!(emits_vec_get_str(&pl));
+    assert!(emits_vec_get_clone(&pl));
     assert_eq!(
         string_drop_count(&pl),
         1,
@@ -405,7 +435,10 @@ fn vec_string_for_in_returned_binding_suppresses_drop() {
         "an escaping (returned) element is a legitimate shape, not an NYI: {:?}",
         pl.diagnostics,
     );
-    assert!(emits_vec_get_str(&pl), "the getter still lowers");
+    assert!(
+        emits_vec_get_clone(&pl),
+        "the clone-out getter still lowers"
+    );
     assert_eq!(
         string_drop_count(&pl),
         0,

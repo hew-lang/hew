@@ -362,81 +362,53 @@ pub fn terminator_source_places(
         }
     }
 }
-pub(super) fn hir_expr_contains_synthetic_vec_string_index(expr: &HirExpr) -> bool {
+/// True when the scrutinee carries the `VecIter::next` desugar's synthetic
+/// `let __hew_iter_value_N = iter.vec.get(iter.idx)` clone-out read.
+///
+/// This is intentionally keyed on the typed Vec/Get family and the fixed
+/// synthetic binding name, not merely on `hew_vec_get_clone`: a source-level
+/// `match xs.get(i)` is also a fresh result but is not an iterator frame whose
+/// payload follows the per-iteration body/edge lifecycle.
+pub(super) fn hir_expr_contains_synthetic_vec_get_clone(expr: &HirExpr) -> bool {
     match &expr.kind {
         HirExprKind::Block(block) => {
             block
                 .statements
                 .iter()
-                .any(hir_stmt_is_synthetic_vec_string_index)
+                .any(hir_stmt_is_synthetic_vec_get_clone)
                 || block
                     .tail
                     .as_deref()
-                    .is_some_and(hir_expr_contains_synthetic_vec_string_index)
+                    .is_some_and(hir_expr_contains_synthetic_vec_get_clone)
         }
         HirExprKind::If {
             condition,
             then_expr,
             else_expr,
         } => {
-            hir_expr_contains_synthetic_vec_string_index(condition)
-                || hir_expr_contains_synthetic_vec_string_index(then_expr)
+            hir_expr_contains_synthetic_vec_get_clone(condition)
+                || hir_expr_contains_synthetic_vec_get_clone(then_expr)
                 || else_expr
                     .as_deref()
-                    .is_some_and(hir_expr_contains_synthetic_vec_string_index)
+                    .is_some_and(hir_expr_contains_synthetic_vec_get_clone)
         }
         _ => false,
     }
 }
-fn hir_stmt_is_synthetic_vec_string_index(stmt: &HirStmt) -> bool {
+fn hir_stmt_is_synthetic_vec_get_clone(stmt: &HirStmt) -> bool {
     matches!(
         &stmt.kind,
         HirStmtKind::Let(binding, Some(value))
             if binding.name.starts_with("__hew_iter_value_")
-                && matches!(binding.ty, ResolvedTy::String)
-                && matches!(value.kind, HirExprKind::Index { .. })
-                && matches!(value.ty, ResolvedTy::String)
-    )
-}
-/// Element-type-AGNOSTIC companion to
-/// [`hir_expr_contains_synthetic_vec_string_index`]: true when the scrutinee
-/// carries the `for x in <vec>` desugar's synthetic `let __hew_iter_value_N =
-/// <vec>[i]` binding for ANY element type (owned tuple / record / enum, not
-/// just `string`). Used SOLELY by the #2523 provenance-skip decision: every
-/// such element is a FRESH, solely-owned per-frame value the iteration handed
-/// the body, never a projection of a re-readable aggregate that retains the
-/// bits, so a move-out (`let (k, val) = pair`, `return pair`) is a legitimate
-/// ownership transfer that must not route through default-deny. The
-/// string-specific disposition logic keeps its own narrower detector.
-pub(super) fn hir_expr_contains_synthetic_vec_index(expr: &HirExpr) -> bool {
-    match &expr.kind {
-        HirExprKind::Block(block) => {
-            block.statements.iter().any(hir_stmt_is_synthetic_vec_index)
-                || block
-                    .tail
-                    .as_deref()
-                    .is_some_and(hir_expr_contains_synthetic_vec_index)
-        }
-        HirExprKind::If {
-            condition,
-            then_expr,
-            else_expr,
-        } => {
-            hir_expr_contains_synthetic_vec_index(condition)
-                || hir_expr_contains_synthetic_vec_index(then_expr)
-                || else_expr
-                    .as_deref()
-                    .is_some_and(hir_expr_contains_synthetic_vec_index)
-        }
-        _ => false,
-    }
-}
-fn hir_stmt_is_synthetic_vec_index(stmt: &HirStmt) -> bool {
-    matches!(
-        &stmt.kind,
-        HirStmtKind::Let(binding, Some(value))
-            if binding.name.starts_with("__hew_iter_value_")
-                && matches!(value.kind, HirExprKind::Index { .. })
+                && matches!(
+                    value.kind,
+                    HirExprKind::ResolvedImplCall {
+                        target_family:
+                            hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
+                        ref target_symbol,
+                        ..
+                    } if target_symbol == "hew_vec_get_clone"
+                )
     )
 }
 pub(super) fn place_refs_local(place: Place, local: u32) -> bool {

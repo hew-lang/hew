@@ -73,6 +73,7 @@ mod split_consume;
 mod suspend_places;
 mod task;
 mod temp_drop;
+mod vec_index;
 
 use self::pattern::{project_match_ownership_mode, ProjectMatchOwnershipMode};
 
@@ -156,9 +157,8 @@ pub use self::suspend_places::terminator_source_places;
 #[cfg(not(test))]
 use self::suspend_places::{
     generator_yield_instr_escapes, generator_yield_terminator_escapes,
-    hir_expr_contains_synthetic_vec_index, hir_expr_contains_synthetic_vec_string_index,
-    instr_escape_places, option_payload_ty, place_refs_local, retained_string_terminator_drop_safe,
-    terminator_escape_places,
+    hir_expr_contains_synthetic_vec_get_clone, instr_escape_places, option_payload_ty,
+    place_refs_local, retained_string_terminator_drop_safe, terminator_escape_places,
 };
 #[cfg(not(test))]
 use self::temp_drop::{
@@ -749,21 +749,54 @@ struct Builder {
     /// the scope-exit drop is emitted so the function-exit pass cannot
     /// double-free (the drop also null-stores the slot as defence-in-depth).
     pub(crate) scope_generator_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
-    /// Sole-owner `for x in …` cursor (`VecIter<T>`) bindings tagged with the
-    /// for-in block scope they were declared in, so a per-scope-exit
-    /// `__hew_record_drop_inplace_VecIter$$T` (freeing the cursor's `vec` field
-    /// via `hew_vec_free`) fires when the scope closes — releasing the handle on
-    /// every outer iteration of an enclosing loop, the case the function-exit
-    /// LIFO drop misses. Mirrors `scope_generator_bindings`. Registered ONLY for
-    /// cursors that solely own their handle (rvalue / `to_vec()` / consumed
-    /// `into_iter()` source — see `vec_iter_let_cursor_owns_handle`); a `CowShare`
-    /// place source (`for x in v`) is NOT registered because the source binding
-    /// keeps its own drop and the cursor only borrows (freeing here would
-    /// double-free and dangle a post-loop `v` read). Entries are removed from
-    /// `owned_locals` once the scope-exit drop is emitted so the function-exit
-    /// pass cannot double-free; the inline `Instr::Drop` null-stores the slot as
-    /// defence in depth (`raii-null-after-move`).
+    /// First-class and synthetic `VecIter<T>` bindings tagged with their
+    /// declaration scope. Every entry has a parallel runtime bit in
+    /// `vec_iter_drop_flags`; the scope/exit edge releases `cursor.vec` only
+    /// when that bit says the binding is the current owner. Borrowing
+    /// topologies remain in the lexical ledger with a moved bit, while rvalue
+    /// snapshots start owned. Keeping both sides of a transfer registered is
+    /// essential: only the executed branch updates their bits.
+    ///
+    /// `VecIter` bindings are deliberately excluded from `owned_locals`; this
+    /// guarded inline-field mechanism is their sole drop authority, so no
+    /// unconditional `RecordInPlace` exit-plan drop can compete.
     pub(crate) scope_vec_iter_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// Runtime ownership bit for every first-class `VecIter<T>` local.
+    ///
+    /// `0` means this binding currently owns its `vec` snapshot and must release
+    /// it; `1` means ownership moved elsewhere (or the cursor was born as a
+    /// borrowing topology). Unlike the declaration ledger above, these bits are
+    /// mutated by instructions on the actual CFG path, so a transfer in one
+    /// branch cannot erase the source obligation on an untaken sibling path.
+    /// A consuming `BindingRef` marks the source moved on that path; a let/var or
+    /// assignment destination then starts owned. Fresh cursor reassignment
+    /// likewise re-arms the destination after releasing its old snapshot.
+    pub(crate) vec_iter_drop_flags: HashMap<hew_hir::BindingId, Place>,
+    /// Runtime ownership sidecar currently receiving a `VecIter<T>` expression
+    /// result.
+    ///
+    /// The outer ownership boundary allocates the bit; recursively lowered
+    /// if/match arms and block tails reuse it, so each executed value-producing
+    /// path writes whether its result owns the cursor snapshot. Unrelated reads
+    /// never write it because only `lower_value_for_move` result expressions
+    /// participate.
+    pub(crate) vec_iter_move_result_flags: Vec<Place>,
+    /// Whether the parallel result-sidecar frame crosses a proven ownership
+    /// sink. `true` is reserved for let/assignment/return or another explicit
+    /// owning destination. Composite value-security lowering and unknown
+    /// closure/borrow calls use `false`, preserving a binding source while
+    /// still describing whether a fresh expression result owns a snapshot.
+    pub(crate) vec_iter_move_result_transfers: Vec<bool>,
+    /// Direct binding-reference sites currently crossing a `VecIter<T>`
+    /// ownership boundary. HIR may retain `Read` intent for a match arm even
+    /// though its value moves; this exact-site stack distinguishes that result
+    /// transfer from unrelated cursor reads nested in a composite expression.
+    pub(crate) vec_iter_direct_move_sites: Vec<hew_hir::SiteId>,
+    /// Ownership sidecar produced for each lowered `VecIter<T>` expression.
+    /// Let/var and assignment destinations copy this bit after moving the value
+    /// bytes, preserving both owning and borrowing topologies through composite
+    /// if/match/block results.
+    pub(crate) vec_iter_value_drop_flags: HashMap<hew_hir::SiteId, Place>,
     /// `Stream<T>` / `Receiver<T>` for-await cursor bindings tagged with the
     /// block scope they were declared in, so a per-scope-exit close
     /// (`hew_stream_close` / `hew_channel_receiver_close`) fires when that scope
@@ -983,9 +1016,11 @@ struct Builder {
     /// Built from `HirItem::Record` items in `lower_hir_module` and threaded
     /// through to the builder.
     ///
-    /// Tuple records have an empty field list by design (`HirRecordDecl.fields`
-    /// is empty for tuple records — their constructor is a `Call`, not a
-    /// `StructInit`). They will never be looked up here.
+    /// Tuple records use synthetic ordinal field names paired with the
+    /// authoritative `HirRecordDecl.positional_field_tys`. Their constructor
+    /// remains a `Call`, not a `StructInit`, and the checker still exposes no
+    /// named/indexed field access; the entries support structural ownership
+    /// classification only.
     pub(crate) record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>>,
     pub(crate) actor_layouts: HashMap<String, ActorLayout>,
     /// Supervisor-layout map, mirroring `actor_layouts` for supervisor types.
@@ -1750,8 +1785,8 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // declaration order. Used by StructInit and FieldAccess lowering to resolve
     // a field name to its 0-based FieldOffset and to look up field types for
     // intermediate place allocation during functional-update desugaring. Tuple
-    // records have an empty field list and their constructor is a Call, not a
-    // StructInit, so they never appear here.
+    // records contribute synthetic ordinal names for structural ownership
+    // classification; their constructor remains a Call, not a StructInit.
     let mut record_field_orders: HashMap<String, Vec<(String, ResolvedTy)>> = HashMap::new();
     let mut record_layouts: Vec<crate::model::RecordLayout> = Vec::new();
     let mut actor_layouts: Vec<crate::model::ActorLayout> = Vec::new();
@@ -1839,20 +1874,23 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                 if !decl.type_params.is_empty() {
                     continue;
                 }
-                let fields: Vec<(String, ResolvedTy)> = decl
-                    .fields
-                    .iter()
-                    .map(|f| (f.name.clone(), f.ty.clone()))
-                    .collect();
-                // Named-form records have a non-empty `fields` list;
-                // tuple-form records have an empty list (their positional
-                // layout lives on the parser's `RecordKind::Tuple`
-                // discriminator and is not promoted into HIR fields). Tuple
-                // records construct via `Expr::Call`, never via
-                // `StructInit`, so they need no layout descriptor in this
-                // slice — codegen will fail-closed on any
-                // `ResolvedTy::Named` reach-through that names a tuple
-                // record.
+                let fields: Vec<(String, ResolvedTy)> = if decl.fields.is_empty() {
+                    // Tuple records deliberately expose no named fields in
+                    // HIR, but their positional payload is real stored value
+                    // state. Synthetic numeric names preserve declaration
+                    // order for layout/classification without enabling field
+                    // access (the checker continues to reject `.0`/`.1`).
+                    decl.positional_field_tys
+                        .iter()
+                        .enumerate()
+                        .map(|(index, ty)| (index.to_string(), ty.clone()))
+                        .collect()
+                } else {
+                    decl.fields
+                        .iter()
+                        .map(|f| (f.name.clone(), f.ty.clone()))
+                        .collect()
+                };
                 let layout_key = type_layout_key(&decl.name, decl.qualified_name());
                 if !fields.is_empty() {
                     record_layouts.push(crate::model::RecordLayout {
@@ -6714,6 +6752,13 @@ impl Builder {
             self.stmt(stmt);
         }
         if let Some(tail) = &func.body.tail {
+            let returned_binding = match &tail.kind {
+                HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(binding),
+                    ..
+                } => Some(*binding),
+                _ => None,
+            };
             // Stage 2 (gdb `-g`): attribute the tail expression's instructions
             // (including the `Move` into the return slot below) to its own line
             // so a tail value-expression is a distinct step.
@@ -6760,6 +6805,9 @@ impl Builder {
                 }
             }
             self.emit_pending_defers(func.body.scope);
+            if !self.cursor_unreachable {
+                self.emit_vec_iter_drops_for_exit_edge_except(0, returned_binding);
+            }
             self.statements.push(MirStatement::Return {
                 site: Some(tail.site),
                 ty: self.subst_ty(&tail.ty),
@@ -6795,6 +6843,7 @@ impl Builder {
             // covers every other implicit-unit-return shape.
             if !self.cursor_unreachable {
                 self.emit_pending_defers(func.body.scope);
+                self.emit_vec_iter_drops_for_exit_edge(0);
             }
         }
         self.active_scopes.pop();

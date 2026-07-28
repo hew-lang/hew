@@ -385,11 +385,105 @@ impl Builder {
     /// create a second drop authority. Borrow and projection roots bypass this
     /// funnel and continue through `lower_value`.
     pub(crate) fn lower_value_for_move(&mut self, expr: &HirExpr) -> Option<Place> {
+        self.lower_value_with_vec_iter_transfer(expr, true)
+    }
+
+    /// Lower a `VecIter<T>` value for a non-owning read context while retaining
+    /// an expression-result ownership sidecar. Binding leaves remain borrowed
+    /// and keep their source owner bit; fresh leaves are marked owned so a
+    /// discarded result can release its temporary snapshot.
+    pub(crate) fn lower_vec_iter_value_for_read(&mut self, expr: &HirExpr) -> Option<Place> {
+        self.lower_value_with_vec_iter_transfer(expr, false)
+    }
+
+    /// Lower a composite arm or block tail under the ownership mode established
+    /// by its outer expression. With no outer mode, this is value-security
+    /// lowering only: copying into the result local is not itself proof that the
+    /// source binding was consumed.
+    pub(crate) fn lower_composite_result_value(&mut self, expr: &HirExpr) -> Option<Place> {
+        if self
+            .vec_iter_cursor_release_symbol(&self.subst_ty(&expr.ty))
+            .is_some()
+            && self.vec_iter_move_result_flags.is_empty()
+        {
+            self.lower_vec_iter_value_for_read(expr)
+        } else {
+            self.lower_value_for_move(expr)
+        }
+    }
+
+    fn lower_value_with_vec_iter_transfer(
+        &mut self,
+        expr: &HirExpr,
+        requested_transfer: bool,
+    ) -> Option<Place> {
         if self.reject_capture_env_whole_escape_expr(expr) {
             return None;
         }
-        let value = self.lower_value(expr)?;
-        Some(self.transfer_owned_carrier_value(expr, value))
+        let vec_iter_move = self
+            .vec_iter_cursor_release_symbol(&self.subst_ty(&expr.ty))
+            .is_some();
+        let mut pushed_result_flag = false;
+        let mut result_flag = None;
+        if vec_iter_move {
+            let flag = if let Some(flag) = self.vec_iter_move_result_flags.last().copied() {
+                flag
+            } else {
+                pushed_result_flag = true;
+                let flag = self.alloc_local(ResolvedTy::I64);
+                self.vec_iter_move_result_flags.push(flag);
+                self.vec_iter_move_result_transfers.push(requested_transfer);
+                flag
+            };
+            result_flag = Some(flag);
+            // Composite result paths overwrite this initialization in their
+            // recursively lowered arm/tail. Direct fresh producers keep it.
+            let owns_snapshot = self.vec_iter_value_is_owned(expr);
+            self.push_instr(Instr::ConstI64 {
+                dest: flag,
+                value: i64::from(!owns_snapshot),
+            });
+            self.vec_iter_value_drop_flags.insert(expr.site, flag);
+        }
+        let effective_transfer = !vec_iter_move
+            || self
+                .vec_iter_move_result_transfers
+                .last()
+                .copied()
+                .unwrap_or(requested_transfer);
+        let direct_binding = vec_iter_move
+            && effective_transfer
+            && matches!(expr.kind, HirExprKind::BindingRef { .. });
+        if direct_binding {
+            self.vec_iter_direct_move_sites.push(expr.site);
+        }
+        let value = self.lower_value(expr);
+        if direct_binding {
+            self.vec_iter_direct_move_sites.pop();
+        }
+        if pushed_result_flag {
+            self.vec_iter_move_result_flags.pop();
+            self.vec_iter_move_result_transfers.pop();
+        }
+        let value = value?;
+        if vec_iter_move && !effective_transfer {
+            return Some(value);
+        }
+        let transfers_carrier = vec_iter_move && self.owned_carrier_neutralize.contains_key(&value);
+        let transferred = self.transfer_owned_carrier_value(expr, value);
+        if transfers_carrier {
+            // A callee-owned aggregate parameter is an owner even though it has
+            // no VecIter binding sidecar of its own. Once the carrier funnel
+            // moves it to a fresh local and neutralizes the parameter slot, that
+            // destination owns the cursor snapshot.
+            if let Some(flag) = result_flag {
+                self.push_instr(Instr::ConstI64 {
+                    dest: flag,
+                    value: 0,
+                });
+            }
+        }
+        Some(transferred)
     }
 
     /// Transfer one carrier-tracked place into an owning sink. Whole carriers
@@ -525,6 +619,11 @@ impl Builder {
     pub(crate) fn lower_method_arg_value(&mut self, arg: &HirExpr, is_move: bool) -> Option<Place> {
         if is_move {
             self.lower_value_for_move(arg)
+        } else if self
+            .vec_iter_cursor_release_symbol(&self.subst_ty(&arg.ty))
+            .is_some()
+        {
+            self.lower_vec_iter_value_for_read(arg)
         } else {
             self.lower_value(arg)
         }

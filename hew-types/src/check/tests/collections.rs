@@ -1113,6 +1113,203 @@ fn vec_record_closure_collection_field_fails_closed() {
 }
 
 #[test]
+fn vec_iter_clone_totality_accepts_nested_owned_collections() {
+    let output = check_source(
+        r"
+        fn scan(
+            rows: Vec<Vec<string>>,
+            maps: Vec<HashMap<string, Vec<string>>>,
+            sets: Vec<HashSet<string>>,
+            refs: Vec<Rc<string>>,
+            weak_refs: Vec<Weak<string>>,
+            pairs: Vec<(string, string)>,
+        ) {
+            for row in rows {
+                let _ = row.len();
+            }
+            for map in maps.iter() {
+                let _ = map.len();
+            }
+            var it = sets.into_iter();
+            let _ = it.next();
+            for retained in refs {
+                let _ = retained;
+            }
+            for retained in weak_refs.iter() {
+                let _ = retained;
+            }
+            for pair in pairs.iter() {
+                let _ = pair.0.len();
+            }
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "nested collections, Rc/Weak, and owned tuples have semantic clone/drop paths: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_iter_clone_totality_defers_genuine_function_type_parameter() {
+    let output = check_source(
+        r"
+        fn count<T>(items: Vec<T>) -> i64 {
+            var count = 0;
+            for _item in items {
+                count = count + 1;
+            }
+            count
+        }
+
+        fn main() {
+            let items: Vec<i64> = Vec::new();
+            let _ = count(items);
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "a genuine generic parameter must be checked after concrete \
+         monomorphisation, not rejected as an unregistered nominal: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_iter_clone_totality_rejects_direct_function_element() {
+    let output = check_source(
+        r"
+        fn scan(callbacks: Vec<fn(i64) -> i64>) {
+            for callback in callbacks {
+                let _ = callback;
+            }
+        }
+        ",
+    );
+
+    let matching: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| {
+            error
+                .message
+                .contains("`VecIter<fn(i64) -> i64>` is not supported")
+                && error
+                    .message
+                    .contains("has no semantic clone/retain operation")
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "direct iteration over a function/closure element must fail once at the clone-totality boundary: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_iter_clone_totality_rejects_opaque_resource_element() {
+    let output = check_source(
+        r"
+        #[resource]
+        #[opaque]
+        type Handle {}
+
+        fn scan(handles: Vec<Handle>) {
+            var it = handles.iter();
+            let _ = it.next();
+        }
+        ",
+    );
+
+    let matching: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| {
+            error.message.contains("`VecIter<Handle>` is not supported")
+                && error.message.contains("opaque/resource handle `Handle`")
+                && error
+                    .message
+                    .contains("has no semantic clone/retain operation")
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "opaque/resource elements must fail once before VecIter clone-out lowering: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_iter_clone_totality_rejects_function_inside_positional_record() {
+    let output = check_source(
+        r"
+        record Callback(fn(i64) -> i64);
+
+        fn scan(callbacks: Vec<Callback>) {
+            for callback in callbacks.iter() {
+                let _ = callback;
+            }
+        }
+        ",
+    );
+
+    let matching: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| {
+            error
+                .message
+                .contains("`VecIter<Callback>` is not supported")
+                && error.message.contains("fn(i64) -> i64")
+                && error
+                    .message
+                    .contains("has no semantic clone/retain operation")
+        })
+        .collect();
+    assert_eq!(
+        matching.len(),
+        1,
+        "positional record constructor payloads must participate in clone-totality: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_iter_clone_totality_rejects_qualified_opaque_name() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.user_opaque_type_names.insert("Handle".to_string());
+    let ty = Ty::Named {
+        name: "pkg.Handle".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+
+    assert!(
+        !checker.validate_vec_iter_element_clone_type(&ty, &Span::from(0..0)),
+        "a qualified use must resolve against the declaration-local opaque name"
+    );
+    assert_eq!(
+        checker.errors.len(),
+        1,
+        "qualified opaque rejection must remain a single boundary diagnostic: {:#?}",
+        checker.errors
+    );
+    assert!(
+        checker.errors[0]
+            .message
+            .contains("opaque/resource handle `pkg.Handle`"),
+        "diagnostic must retain the resolved qualified identity: {:#?}",
+        checker.errors
+    );
+}
+
+#[test]
 fn vec_indirect_enum_element_rejected_at_checker_boundary() {
     // #2647 — checker/MIR Vec-element admission convergence. An `indirect enum`
     // element takes the `Ptr` token in `classify_element` (its `Vec` buffer is

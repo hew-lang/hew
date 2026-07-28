@@ -3932,7 +3932,11 @@ impl Checker {
         }
     }
 
-    fn type_param_has_marker_bound(&self, param_name: &str, marker: MarkerTrait) -> bool {
+    pub(super) fn type_param_has_marker_bound(
+        &self,
+        param_name: &str,
+        marker: MarkerTrait,
+    ) -> bool {
         let marker_name = marker.to_string();
         for frame in self.current_type_param_bounds.iter().rev() {
             if let Some(bounds) = frame.bounds.get(param_name) {
@@ -5456,6 +5460,9 @@ impl Checker {
             "into_iter" => {
                 self.check_arity(args, 0, "`Vec::into_iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
+                if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
+                    return Ty::Error;
+                }
                 if let Ok(elem_resolved) = ResolvedTy::from_ty(&resolved_elem) {
                     self.record_method_call_receiver_kind(
                         span,
@@ -5505,6 +5512,9 @@ impl Checker {
                 // its `keys()`/`values()` projections.
                 self.check_arity(args, 0, "`Vec::iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
+                if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
+                    return Ty::Error;
+                }
                 if let Ok(elem_resolved) = ResolvedTy::from_ty(&resolved_elem) {
                     let clone_span = span.start..span.start;
                     let vec_ty = self.make_vec_type(resolved_elem.clone(), &clone_span);
@@ -8158,6 +8168,9 @@ impl Checker {
                             }
                         } else if method_owner == "VecIter" && method == "next" {
                             if let Some(elem_ty) = type_args.first() {
+                                if !self.validate_vec_iter_element_clone_type(elem_ty, span) {
+                                    return Ty::Error;
+                                }
                                 if let Ok(elem_resolved) =
                                     ResolvedTy::from_ty(&self.subst.resolve(elem_ty))
                                 {

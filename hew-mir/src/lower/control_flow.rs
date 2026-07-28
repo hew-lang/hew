@@ -1528,7 +1528,7 @@ impl Builder {
             self.stmt(stmt);
         }
         let then_value = if let Some(tail) = &body.tail {
-            self.lower_value_for_move(tail)
+            self.lower_composite_result_value(tail)
         } else {
             None
         };
@@ -1566,7 +1566,7 @@ impl Builder {
                 self.stmt(stmt);
             }
             let else_value = if let Some(tail) = &eb.tail {
-                self.lower_value_for_move(tail)
+                self.lower_composite_result_value(tail)
             } else {
                 None
             };

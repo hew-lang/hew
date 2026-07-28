@@ -829,6 +829,62 @@ fn run_generic_vec_for_in_count_across_element_abis() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
+/// A generic Vec iteration body is admitted before its `T` is known, then the
+/// concrete monomorphisation must discharge clone totality.  A resource handle
+/// has an inverse drop but no semantic clone, so `count<Handle>` fails at the
+/// MIR boundary instead of sending a shallow handle copy to
+/// `hew_vec_get_clone`.
+#[test]
+fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
+    require_codegen();
+
+    let dir = support::tempdir();
+    let source = repo_root()
+        .join("tests/vertical-slice/reject/for_in_generic_vec_resource_instantiation.hew");
+    let output = Command::new(hew_binary())
+        .args([
+            "compile",
+            "--emit-dir",
+            dir.path().to_str().expect("emit-dir utf-8"),
+            source.to_str().expect("source utf-8"),
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke hew compile");
+
+    assert!(
+        !output.status.success(),
+        "a resource-valued VecIter monomorphisation must fail closed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("VecIter<Handle>")
+            && combined.contains("resource `Handle` has an affine close contract"),
+        "expected the direct resource-record clone-totality diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("VecIter<Wrapper>")
+            && combined.contains("resource `Handle` has an affine close contract"),
+        "expected the nested resource-record clone-totality diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("VecIter<PositionalWrapper>")
+            && combined.contains("resource `Handle` has an affine close contract"),
+        "expected the positional resource-record clone-totality diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("VecIter<link_monitor.MonitorRef>")
+            && combined.contains("resource `link_monitor.MonitorRef` has an affine close contract"),
+        "expected the builtin resource-record clone-totality diagnostic; got: {combined}"
+    );
+}
+
 /// Compile `tests/vertical-slice/accept/<fixture>.hew` to a native binary via
 /// `hew compile --emit-dir` and return the binary path `hew compile` reports.
 /// Bypasses `hew run`'s interpreter path entirely, so a scope-exit double

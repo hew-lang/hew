@@ -116,13 +116,11 @@ pub struct IrPipeline {
     /// `ResolvedTy::Named { name, .. }` of record-typed locals to the
     /// corresponding struct layout for alloca / GEP emission.
     ///
-    /// Tuple-form records (`record Pair(i64, i64)`) are NOT included here:
-    /// their `HirRecordDecl.fields` is empty (the parser keeps positional
-    /// fields on the `RecordKind::Tuple` discriminator, which the HIR lowerer
-    /// does not promote into `HirField`s). Tuple records construct via
-    /// `Expr::Call`, not `StructInit`, so they never produce `RecordInit`
-    /// or `RecordFieldLoad` instructions and need no codegen layout entry
-    /// in this slice.
+    /// Tuple-form records (`record Pair(i64, i64)`) carry synthetic numeric
+    /// field names with their authoritative positional payload types. They
+    /// still construct via `Expr::Call`, not `StructInit`, and the checker
+    /// does not expose named/indexed field access; the descriptor exists so
+    /// structural clone/drop classification sees their stored values.
     pub record_layouts: Vec<RecordLayout>,
     /// Layout descriptors for every actor declaration in the module. Populated
     /// by `lower_hir_module` from `HirItem::Actor` declarations in source
@@ -6266,15 +6264,13 @@ pub enum ExitPath {
 ///   value's type in codegen before any call is emitted — the string is
 ///   a C-ABI name consumed at the declare edge, never a dispatch key.
 /// - [`DropFnSpec::InPlace`] — a whole-value in-place composite release
-///   for a registered heap-owning record/enum, routed to the synthesised
-///   `__hew_record_drop_inplace_<R>` / `__hew_enum_drop_inplace_<E>`
-///   thunk. No symbol travels in MIR: codegen derives the helper from
-///   the drop's carried type (the same resolution the
-///   `DropKind::RecordInPlace` / `DropKind::EnumInPlace` plan arms use),
-///   so type↔helper congruence holds by construction. Emitted only by
-///   the yield/recv release seam (`generator_yield_drop_symbol`'s
-///   `WiredInPlace` verdict) for the per-yield producer/consumer copies
-///   of a composite stream element.
+///   for a registered heap-owning record/enum or a structural tuple/array.
+///   Named composites route to their synthesised drop thunk; structural
+///   aggregates use the recursive field walk. No symbol travels in MIR:
+///   codegen derives the ritual from the drop's carried type, so type↔helper
+///   congruence holds by construction. Emitted only by the yield/recv release
+///   seam (`generator_yield_drop_symbol`'s `WiredInPlace` verdict) for the
+///   per-yield producer/consumer copies of a composite stream element.
 /// - [`DropFnSpec::UserClose`] — a user `#[resource]` `close` method,
 ///   addressed by its generated `<Type>::<method>` symbol. Open set by
 ///   nature (the generated-object symbol IS the linker-edge name);
@@ -6289,8 +6285,8 @@ pub enum DropFnSpec {
     /// Cow-heap / fresh-value release C symbol (closed MIR-side
     /// selection; codegen validates type↔symbol congruence).
     Release(&'static str),
-    /// In-place composite release through the synthesised record/enum
-    /// drop thunk (helper derived from the drop's `ty` at codegen).
+    /// In-place composite release through a synthesised named-composite thunk
+    /// or the structural aggregate walker (derived from `ty` at codegen).
     InPlace(crate::ownership::InPlaceReleaseKind),
     /// User `#[resource]` close method (`<Type>::<method>` generated
     /// symbol — the open-set linker-edge arm).

@@ -1,7 +1,8 @@
 use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
-    callee_returns_fresh_owner, callee_returns_retained_string_owner, machine_layout_name_matches,
-    mangle_layout_key, monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
+    callee_returns_fresh_owner, callee_returns_retained_string_owner,
+    hir_expr_contains_synthetic_vec_get_clone, machine_layout_name_matches, mangle_layout_key,
+    monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
     ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
@@ -250,17 +251,13 @@ impl Builder {
             } => None,
             _ => return None,
         };
-        // Recv-next / vec-string-iter-next scrutinees already carry their own
-        // per-iteration release discipline (`Disposition::BodyEndReleased` on
-        // the Some-arm payload binder); their codegen-materialised `Option`
-        // shell owns no heap beyond that payload. Registering a second owner
-        // here would double-release the payload. (A generator `.next()`
-        // scrutinee is `HirExprKind::GeneratorNext`, not `Call`, so the shape
-        // gate above already excludes it.)
-        if callee.is_some()
-            && (Self::is_recv_next_scrutinee(scrutinee)
-                || self.is_vec_string_iter_next_scrutinee(scrutinee))
-        {
+        // Recv-next scrutinees already carry their own per-iteration release
+        // discipline (`Disposition::BodyEndReleased` on the Some-arm payload
+        // binder); their codegen-materialised `Option` shell owns no heap beyond
+        // that payload. Registering a second owner here would double-release
+        // it. VecIter clone-out is a `ResolvedImplCall`, and generator `.next()`
+        // is `GeneratorNext`, so the shape gate above already excludes both.
+        if callee.is_some() && Self::is_recv_next_scrutinee(scrutinee) {
             return None;
         }
         // Runtime-symbol / builtin producers have per-symbol ownership
@@ -1054,6 +1051,17 @@ impl Builder {
             )
         );
         if !caller_owned {
+            return None;
+        }
+        let ty = self.subst_ty(&expr.ty);
+        ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts)
+            .then_some(ty)
+    }
+    /// The discarded result of the synthetic `VecIter::next` state machine,
+    /// when its `Option<T>` payload owns heap and therefore needs an immediate
+    /// recursive in-place drop before the reusable result slot is forgotten.
+    pub(crate) fn discarded_vec_iter_next_owned_ty(&self, expr: &HirExpr) -> Option<ResolvedTy> {
+        if !hir_expr_contains_synthetic_vec_get_clone(expr) {
             return None;
         }
         let ty = self.subst_ty(&expr.ty);

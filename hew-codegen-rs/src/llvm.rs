@@ -19873,6 +19873,10 @@ fn lower_inline_drop(
                 emit_record_inplace_drop_call(fn_ctx, place, ty)?
             }
             hew_mir::InPlaceReleaseKind::Enum => emit_enum_inplace_drop_call(fn_ctx, place, ty)?,
+            hew_mir::InPlaceReleaseKind::AggregateRecursive => {
+                let (slot, _) = place_pointer(fn_ctx, place)?;
+                emit_aggregate_recursive_drop(fn_ctx, slot, ty, 0, "inline_aggregate_drop")?;
+            }
         }
         let slot_llvm_ty = resolve_ty(fn_ctx.ctx, fn_ctx.target_data, ty, fn_ctx.record_layouts)?;
         let (slot, _) = place_pointer(fn_ctx, place)?;
@@ -21929,6 +21933,8 @@ fn is_known_cow_heap_drop_symbol(symbol: &str) -> bool {
             | "hew_vec_free_owned"
             | HASHMAP_FREE_LAYOUT_SYMBOL
             | HASHSET_FREE_LAYOUT_SYMBOL
+            | "hew_rc_drop"
+            | "hew_weak_drop_rc"
             // Generator<Y, R> / AsyncGenerator<Y> value release: destroy the
             // coro frame + free the companion (the coro substrate's single
             // teardown owner).

@@ -32,5 +32,7 @@ mod static_trait_dispatch_mir;
 mod trait_default_method_mir;
 #[path = "lowering_calls/user_fn_call.rs"]
 mod user_fn_call;
+#[path = "lowering_calls/vec_iter_clone_out.rs"]
+mod vec_iter_clone_out;
 #[path = "lowering_calls/vec_resolved_impl_call.rs"]
 mod vec_resolved_impl_call;

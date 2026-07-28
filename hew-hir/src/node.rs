@@ -792,6 +792,13 @@ pub struct HirRecordDecl {
     /// qualify to their bare name. The decl `name` stays bare in both cases.
     pub defining_module: Option<String>,
     pub type_params: Vec<String>,
+    /// Positional payload types in declaration order for tuple-form records
+    /// (`record Pair(i64, string)`). Empty for named-form records.
+    ///
+    /// Kept separate from [`Self::fields`] so tuple records do not acquire
+    /// named-field access, while downstream layout/classification passes still
+    /// receive their authoritative stored payload shape.
+    pub positional_field_tys: Vec<ResolvedTy>,
     pub fields: Vec<HirField>,
     pub span: Span,
 }

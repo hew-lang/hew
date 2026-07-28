@@ -849,6 +849,7 @@ fn collect_inline_inplace_drop_seeds(
                         };
                         (true, key)
                     }
+                    crate::InPlaceReleaseKind::AggregateRecursive => (false, None),
                 };
                 if let Some(key) = key {
                     if seen.insert((is_enum, key.clone())) {

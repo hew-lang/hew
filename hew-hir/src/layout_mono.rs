@@ -177,16 +177,24 @@ pub fn run_layout_mono_pass(
         match item {
             HirItem::Record(r) => {
                 all_type_params.extend(r.type_params.iter().cloned());
+                let fields = if r.fields.is_empty() {
+                    r.positional_field_tys
+                        .iter()
+                        .enumerate()
+                        .map(|(index, ty)| (index.to_string(), ty.clone()))
+                        .collect()
+                } else {
+                    r.fields
+                        .iter()
+                        .map(|f| (f.name.clone(), f.ty.clone()))
+                        .collect()
+                };
                 record_decls.insert(
                     r.name.clone(),
                     RecordDecl {
                         id: r.id,
                         type_params: r.type_params.clone(),
-                        fields: r
-                            .fields
-                            .iter()
-                            .map(|f| (f.name.clone(), f.ty.clone()))
-                            .collect(),
+                        fields,
                     },
                 );
             }
@@ -265,11 +273,18 @@ pub fn run_layout_mono_pass(
                     .or_insert_with(|| RecordDecl {
                         id: r.id,
                         type_params: r.type_params.clone(),
-                        fields: r
-                            .fields
-                            .iter()
-                            .map(|f| (f.name.clone(), f.ty.clone()))
-                            .collect(),
+                        fields: if r.fields.is_empty() {
+                            r.positional_field_tys
+                                .iter()
+                                .enumerate()
+                                .map(|(index, ty)| (index.to_string(), ty.clone()))
+                                .collect()
+                        } else {
+                            r.fields
+                                .iter()
+                                .map(|f| (f.name.clone(), f.ty.clone()))
+                                .collect()
+                        },
                     });
             }
             HirItem::TypeDecl(td) => {

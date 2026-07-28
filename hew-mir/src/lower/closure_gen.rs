@@ -2525,6 +2525,9 @@ impl Builder {
         let drop_kind = match kind {
             crate::ownership::InPlaceReleaseKind::Record => DropKind::RecordInPlace,
             crate::ownership::InPlaceReleaseKind::Enum => DropKind::EnumInPlace,
+            crate::ownership::InPlaceReleaseKind::AggregateRecursive => {
+                DropKind::AggregateRecursive
+            }
         };
         self.suspend_abandon_extra_drops
             .entry(suspend_block)

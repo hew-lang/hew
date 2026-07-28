@@ -7129,19 +7129,20 @@ mod drop_admission_type_shape_pins {
                 Wired("hew_bytes_drop"),
                 Wired("hew_bytes_drop"),
             ),
-            // HashMap/HashSet yields have no validated consumer-drop path —
-            // they leak-as-before (a frozen NoDropPath), never risk a
-            // double-free.
+            // VecIter clone-out and the existing generator/receiver frame
+            // contracts hand these collection values to the body as sole
+            // owners. Their layout-aware releases close the common per-yield
+            // lifecycle.
             (
-                "HashMap (yield leak-as-before)",
+                "HashMap",
                 hashmap_str_i64(),
-                NoDropPath,
+                Wired("hew_hashmap_free_layout"),
                 Wired("hew_hashmap_free_layout"),
             ),
             (
-                "HashSet (yield leak-as-before)",
+                "HashSet",
                 hashset_i64(),
-                NoDropPath,
+                Wired("hew_hashset_free_layout"),
                 Wired("hew_hashset_free_layout"),
             ),
             (

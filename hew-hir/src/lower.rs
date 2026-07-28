@@ -10323,11 +10323,11 @@ impl LowerCtx {
 
     /// Lower a `record` declaration into `HirRecordDecl`.
     ///
-    /// Only named-form records produce a field list; tuple-form records have an
-    /// empty field list (`HirRecordDecl.fields` is empty) because their
-    /// constructor is a `Call` (`R(a, b)`) rather than a `StructInit`
-    /// (`R { x: a, y: b }`). Tuple records are never looked up in the
-    /// `record_field_orders` table — the MIR producer only handles named-form.
+    /// Only named-form records produce a named field list. Tuple-form records
+    /// keep `HirRecordDecl.fields` empty because their constructor is a `Call`
+    /// (`R(a, b)`) rather than a `StructInit` (`R { x: a, y: b }`), while
+    /// `HirRecordDecl.positional_field_tys` preserves the stored payload shape
+    /// for downstream layout and clone/drop classification.
     fn lower_record_decl(
         &mut self,
         decl: &RecordDecl,
@@ -10337,20 +10337,30 @@ impl LowerCtx {
             params.iter().map(|p| p.name.clone()).collect()
         });
 
-        let fields: Vec<HirField> = match &decl.kind {
-            RecordKind::Named(record_fields) => record_fields
-                .iter()
-                .map(|rf| HirField {
-                    name: rf.name.clone(),
-                    ty: self.lower_type(&rf.ty),
-                    default: None,
-                    is_mutable: false,
-                    span: rf.span.clone(),
-                })
-                .collect(),
-            // Tuple records have no named fields; their constructor fn handles
-            // positional argument binding.
-            RecordKind::Tuple(_) => vec![],
+        let (fields, positional_field_tys): (Vec<HirField>, Vec<ResolvedTy>) = match &decl.kind {
+            RecordKind::Named(record_fields) => (
+                record_fields
+                    .iter()
+                    .map(|rf| HirField {
+                        name: rf.name.clone(),
+                        ty: self.lower_type(&rf.ty),
+                        default: None,
+                        is_mutable: false,
+                        span: rf.span.clone(),
+                    })
+                    .collect(),
+                Vec::new(),
+            ),
+            // Tuple records have no named fields; retain their payload types
+            // separately so layout consumers can classify the stored value
+            // without exposing `.0`/`.1` field access.
+            RecordKind::Tuple(positional_types) => (
+                Vec::new(),
+                positional_types
+                    .iter()
+                    .map(|ty| self.lower_type(ty))
+                    .collect(),
+            ),
         };
 
         // Reuse the stable ItemId pre-allocated during the record/
@@ -10370,6 +10380,7 @@ impl LowerCtx {
             // so today every lowered record is root-identity.
             defining_module: None,
             type_params,
+            positional_field_tys,
             fields,
             span,
         }
@@ -19537,6 +19548,39 @@ impl LowerCtx {
         )
     }
 
+    /// Build the iterator-only clone-out read used by `VecIter::next`.
+    ///
+    /// This deliberately does not use [`HirExprKind::Index`]: ordinary
+    /// `xs[i]` preserves its established element-class semantics, including
+    /// borrowed nested-collection handles. An iterator yield must instead be
+    /// an independent owner because the cursor keeps and later releases its
+    /// snapshot. `Vec::get` is the existing descriptor-backed clone choke and
+    /// returns the owned value directly in `Option<T>`.
+    fn make_vec_iter_get_clone_call(
+        &mut self,
+        vec_expr: HirExpr,
+        index: HirExpr,
+        elem_ty: &ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
+        let option_ty = Self::resolved_option_ty(elem_ty.clone());
+        self.make_expr(
+            HirExprKind::ResolvedImplCall {
+                receiver: Box::new(vec_expr),
+                impl_id: ImplId(u32::MAX),
+                method_name: "get".to_string(),
+                target_symbol: "hew_vec_get_clone".to_string(),
+                target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
+                type_args: vec![Self::resolved_ty_pattern(elem_ty)],
+                args: vec![index],
+                ret_ty: option_ty.clone(),
+            },
+            option_ty,
+            IntentKind::Read,
+            span,
+        )
+    }
+
     fn resolved_option_elem_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
         let ResolvedTy::Named {
             name,
@@ -20276,19 +20320,16 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let value_expr = self.make_expr(
-            HirExprKind::Index {
-                container: Box::new(vec_read_for_get),
-                index: Box::new(idx_read_for_get),
-            },
-            elem_ty.clone(),
-            IntentKind::Read,
+        let value_expr = self.make_vec_iter_get_clone_call(
+            vec_read_for_get,
+            idx_read_for_get,
+            elem_ty,
             span.clone(),
         );
         let value_binding_name = format!("__hew_iter_value_{}", self.ids.binding().0);
         let value_binding = self.bind(
             value_binding_name.clone(),
-            elem_ty.clone(),
+            option_ty.clone(),
             false,
             span.clone(),
         );
@@ -20353,14 +20394,17 @@ impl LowerCtx {
         let value_ref = self.make_binding_ref(
             value_binding_name,
             value_binding_id,
-            elem_ty.clone(),
-            IntentKind::Read,
+            option_ty.clone(),
+            // Transfer the freshly materialised Option<T> into the synthetic
+            // `else` result. A Read would leave the intermediate binding live
+            // in MIR's drop ledger after its bits move to the match scrutinee,
+            // releasing the Some payload before the loop body can own it.
+            IntentKind::Consume,
             span.clone(),
         );
-        let some_expr = self.make_option_ctor("Some", Some(value_ref), elem_ty, span.clone());
         let else_block = self.make_unit_block(
             vec![value_stmt, assign_stmt],
-            Some(some_expr),
+            Some(value_ref),
             option_ty.clone(),
             span.clone(),
         );

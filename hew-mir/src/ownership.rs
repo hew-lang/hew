@@ -477,6 +477,9 @@ pub enum InPlaceReleaseKind {
     Record,
     /// A registered heap-owning enum (tagged-union composite).
     Enum,
+    /// A structural tuple/array whose owned leaves are released recursively
+    /// from the value's inline storage.
+    AggregateRecursive,
 }
 
 // ──────────────────────────────── provenance ─────────────────────────────

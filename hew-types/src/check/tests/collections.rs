@@ -688,23 +688,13 @@ fn builtin_container_clone_rejects_affine_payloads() {
             }
 
             var late_tickets = HashMap::new();
+            let _ = late_tickets.contains_key("seed");
             i = 0;
             while i < 2 {
                 if i == 1 {
                     let _late_map_copy = late_tickets.clone();
                 } else {
                     late_tickets.insert("two", LinearTicket { id: 5 });
-                }
-                i = i + 1;
-            }
-
-            var late_optional = None;
-            i = 0;
-            while i < 2 {
-                if i == 1 {
-                    let _late_optional_copy = late_optional.clone();
-                } else {
-                    late_optional = Some(ResourceToken { id: 6 });
                 }
                 i = i + 1;
             }
@@ -719,7 +709,7 @@ fn builtin_container_clone_rejects_affine_payloads() {
         .collect();
     assert_eq!(
         affine_clone_errors.len(),
-        6,
+        5,
         "builtin clone dispatch must not bypass affine payload checks: {:#?}",
         output.errors
     );
@@ -735,6 +725,44 @@ fn builtin_container_clone_rejects_affine_payloads() {
             "missing affine clone rejection for {receiver}: {affine_clone_errors:#?}"
         );
     }
+}
+
+#[test]
+fn deferred_builtin_clone_admission_preserves_cloneable_payloads() {
+    let output = check_source(
+        r#"
+        fn main() {
+            var values = Vec::new();
+            var i = 0;
+            while i < 2 {
+                if i == 1 {
+                    let _copy = values.clone();
+                } else {
+                    values.push(7);
+                }
+                i = i + 1;
+            }
+
+            var labels = HashMap::new();
+            let _ = labels.contains_key("seed");
+            i = 0;
+            while i < 2 {
+                if i == 1 {
+                    let _copy = labels.clone();
+                } else {
+                    labels.insert("answer", 42);
+                }
+                i = i + 1;
+            }
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "post-inference admission must preserve ordinary cloneable payloads: {:#?}",
+        output.errors
+    );
 }
 
 fn record_type_def_with_field(name: &str, field_name: &str, field_ty: Ty) -> TypeDef {

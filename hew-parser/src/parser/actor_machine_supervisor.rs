@@ -39,6 +39,7 @@ impl Parser<'_> {
             if doc_comment.is_none() {
                 doc_comment = self.collect_doc_comments();
             }
+            self.reject_resource_marker_attributes(&attrs);
 
             // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
             // methods — not on actor body members (init, receive fn,

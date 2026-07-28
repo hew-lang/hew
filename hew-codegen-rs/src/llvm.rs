@@ -25349,11 +25349,12 @@ fn validate_generator_env_plan<'ctx>(
                     "generator env `{name}` LLVM layout has no field {field_idx}"
                 ))
             })?;
-        let expected_llvm = resolve_ty(
+        let expected_llvm = resolve_value_ty(
             fn_ctx.ctx,
             fn_ctx.target_data,
             field_ty,
             fn_ctx.record_layouts,
+            fn_ctx.enum_layouts,
         )?;
         if actual_llvm != expected_llvm {
             return Err(CodegenError::FailClosed(format!(
@@ -25524,6 +25525,22 @@ fn emit_generator_env_owned_fields<'ctx>(
     for (step_idx, (field_idx, kind)) in cloned.iter().enumerate() {
         fn_ctx.builder.position_at_end(clone_bbs[step_idx]);
         let next_bb = clone_bbs.get(step_idx + 1).copied().unwrap_or(success_bb);
+        if let StateFieldCloneKind::Enum { name } = kind {
+            let field_ty = env_struct
+                .get_field_type_at_index(*field_idx)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "generator env enum clone: environment {env_struct:?} has no field at \
+                         index {field_idx}"
+                    ))
+                })?;
+            if matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "generator env enum clone: field {field_idx} of {env_struct:?} is a \
+                     pointer-backed `{name}` value, but no indirect-enum deep-clone helper exists"
+                )));
+            }
+        }
         emit_field_clone_step(
             fn_ctx.ctx,
             fn_ctx.llvm_mod,
@@ -31033,10 +31050,15 @@ fn build_module<'ctx>(
     build_module_for_target(ctx, pipeline, name, None, None)
 }
 
-/// Return the anonymous multi-field record layouts carried by local actor
-/// messages. Their fields cross the same value ABI as single message arguments;
-/// user records and all other embedded layouts retain their inline form.
-fn actor_message_value_record_names(pipeline: &IrPipeline) -> CodegenResult<HashSet<String>> {
+/// Return compiler-generated record layouts whose fields carry independent
+/// values across an ownership boundary rather than inline aggregate members.
+///
+/// Local actor-message payload records and generator capture environments both
+/// store the value ABI representation of each source. This matters for an
+/// `indirect enum`: its value is a heap-node pointer, while an ordinary user
+/// record field may use the enum's inline tagged-union layout. User records and
+/// all other embedded layouts retain their inline form.
+fn value_abi_record_names(pipeline: &IrPipeline) -> CodegenResult<HashSet<String>> {
     let records: HashMap<&str, &RecordLayout> = pipeline
         .record_layouts
         .iter()
@@ -31045,7 +31067,7 @@ fn actor_message_value_record_names(pipeline: &IrPipeline) -> CodegenResult<Hash
     let mut names = HashSet::new();
 
     for function in &pipeline.raw_mir {
-        let mut record_payload = |value: Place| -> CodegenResult<()> {
+        let record_payload = |value: Place, names: &mut HashSet<String>| -> CodegenResult<()> {
             let Place::Local(local) = value else {
                 return Ok(());
             };
@@ -31068,26 +31090,33 @@ fn actor_message_value_record_names(pipeline: &IrPipeline) -> CodegenResult<Hash
 
         for block in &function.blocks {
             match &block.terminator {
+                Terminator::MakeGenerator { env: Some(env), .. } => {
+                    if let ResolvedTy::Named { name, .. } = &env.ty {
+                        if records.contains_key(name.as_str()) {
+                            names.insert(name.clone());
+                        }
+                    }
+                }
                 Terminator::Send { value, .. } | Terminator::Ask { value, .. } => {
-                    record_payload(*value)?;
+                    record_payload(*value, &mut names)?;
                 }
                 Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
                     for arm in arms {
                         if let hew_mir::SelectArmKind::ActorAsk { value, .. } = &arm.kind {
-                            record_payload(*value)?;
+                            record_payload(*value, &mut names)?;
                         }
                     }
                 }
                 Terminator::Join { branches, .. } => {
                     for branch in branches {
-                        record_payload(branch.value)?;
+                        record_payload(branch.value, &mut names)?;
                     }
                 }
                 Terminator::Suspend { .. } => {
                     if let Some(SuspendKind::Ask { value, .. }) =
                         function.suspend_kinds.get(&block.id)
                     {
-                        record_payload(*value)?;
+                        record_payload(*value, &mut names)?;
                     }
                 }
                 _ => {}
@@ -31238,14 +31267,14 @@ fn build_module_for_target<'ctx>(
         &pipeline.machine_layouts,
         &pipeline.opaque_handle_names,
     )?;
-    let actor_message_value_records = actor_message_value_record_names(pipeline)?;
+    let value_abi_records = value_abi_record_names(pipeline)?;
     crate::layout::fill_record_layout_bodies(
         ctx,
         &pipeline.record_layouts,
         &record_layouts,
         &target_data,
         &pipeline.enum_layouts,
-        &actor_message_value_records,
+        &value_abi_records,
     )?;
     // Build a quick lookup from record name → field ResolvedTys, shared by
     // every per-function lowering context. The synthesis path consults this

@@ -3816,6 +3816,76 @@ fn generator_env_move_skips_clone_but_keeps_drop_and_rollback() {
 }
 
 #[test]
+fn generator_env_pointer_backed_indirect_enum_clone_fails_closed() {
+    let enum_layout = fixture_indirect_node_layout();
+    let env_name = "__hew_gen_env_indirect_clone_backstop";
+    let env_ty = ResolvedTy::named_user(env_name, vec![]);
+    let tree_ty = ResolvedTy::named_user("Node", vec![]);
+    let ctx = Context::create();
+    let mut harness = build_harness(&ctx, &[], std::slice::from_ref(&enum_layout));
+    let env_struct = ctx.opaque_struct_type(env_name);
+    env_struct.set_body(&[ctx.ptr_type(AddressSpace::default()).into()], false);
+    harness
+        .record_layouts
+        .insert(env_name.to_string(), env_struct);
+    harness
+        .record_field_resolved_tys
+        .insert(env_name.to_string(), vec![tree_ty]);
+
+    let module = ctx.create_module("generator_env_indirect_clone_backstop");
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.enum_layouts = std::slice::from_ref(&enum_layout);
+    alloc_local(&mut fn_ctx, 0, env_ty.clone());
+    let (src, _) = fn_ctx.locals[&0];
+    let dst = fn_ctx
+        .builder
+        .build_alloca(env_struct, "heap_env")
+        .expect("env destination alloca");
+    let companion = fn_ctx
+        .builder
+        .build_alloca(ctx.i8_type().array_type(64), "companion")
+        .expect("companion storage");
+    fn_ctx
+        .builder
+        .build_memcpy(dst, 1, src, 1, env_struct.size_of().expect("env size"))
+        .expect("shallow seed memcpy");
+    let record_layouts = codegen_record_layouts(&fn_ctx);
+    let tree_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        &ResolvedTy::named_user("Node", vec![]),
+        &record_layouts,
+        std::slice::from_ref(&enum_layout),
+        &[],
+        &[],
+    )
+    .expect("indirect enum must classify as an owned snapshot");
+    let plan = hew_mir::GeneratorEnvPlan {
+        place: Place::Local(0),
+        ty: env_ty,
+        fields: vec![hew_mir::GeneratorEnvFieldPlan::Owned(tree_plan)],
+    };
+
+    let err = emit_generator_env_owned_fields(
+        &fn_ctx,
+        "__hew_gen_body_indirect_clone_backstop",
+        &plan,
+        env_struct,
+        src,
+        dst,
+        companion,
+    )
+    .expect_err("pointer-backed indirect-enum snapshot must fail closed");
+    assert!(
+        matches!(
+            err,
+            CodegenError::FailClosed(ref message)
+                if message.contains("pointer-backed")
+                    && message.contains("no indirect-enum deep-clone helper")
+        ),
+        "unexpected clone backstop diagnostic: {err:?}"
+    );
+}
+
+#[test]
 fn generator_out_drop_thunk_tracks_closure_env_box_ownership() {
     let ctx = Context::create();
     let m = ctx.create_module("generator_closure_out_drop_test");
@@ -10988,6 +11058,111 @@ fn main() {
         hew_hir::TargetArch::host(),
     );
     hew_mir::lower_hir_module(&output.module)
+}
+
+#[test]
+fn generator_env_indirect_enum_field_uses_value_abi_pointer_layout() {
+    let source = r#"
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+actor Streamer {
+    receive gen fn emit(tree: Tree) -> i64 {
+        yield 1;
+        match tree {
+            Leaf(value) => yield value,
+            Node(_, _) => yield 2,
+        }
+    }
+}
+
+fn main() {
+    let streamer = spawn Streamer();
+    let tree = Node(Leaf(1), Leaf(2));
+    let _stream = streamer.emit(tree);
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &tc_output,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&tc_output);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "receive-generator indirect-enum pipeline must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let env_name = pipeline
+        .raw_mir
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .find_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => match &env.ty {
+                ResolvedTy::Named { name, .. } => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("receive generator must carry a named environment");
+    let value_abi_records =
+        value_abi_record_names(&pipeline).expect("value-ABI record discovery must succeed");
+    assert!(
+        value_abi_records.contains(env_name),
+        "generator environment `{env_name}` must be classified as a value-ABI record"
+    );
+    let env_layout = pipeline
+        .record_layouts
+        .iter()
+        .find(|layout| layout.name == env_name)
+        .expect("generator environment record layout");
+    let tree_field = env_layout
+        .field_tys
+        .iter()
+        .position(|ty| matches!(ty, ResolvedTy::Named { name, .. } if name == "Tree"))
+        .expect("generator environment must contain the captured Tree");
+
+    let ctx = Context::create();
+    let target_data = host_target_data();
+    let layouts = crate::layout::predeclare_named_layouts(
+        &ctx,
+        &pipeline.record_layouts,
+        &pipeline.enum_layouts,
+        &pipeline.machine_layouts,
+        &pipeline.opaque_handle_names,
+    )
+    .expect("named layouts must predeclare");
+    crate::layout::fill_record_layout_bodies(
+        &ctx,
+        &pipeline.record_layouts,
+        &layouts,
+        &target_data,
+        &pipeline.enum_layouts,
+        &value_abi_records,
+    )
+    .expect("generator environment body must use value-ABI field lowering");
+    let tree_field = u32::try_from(tree_field).expect("field index fits u32");
+    assert!(
+        matches!(
+            layouts[env_name].get_field_type_at_index(tree_field),
+            Some(BasicTypeEnum::PointerType(_))
+        ),
+        "captured indirect enum must occupy a pointer field in the generator environment"
+    );
 }
 
 /// S2/E9: a real `SuspendingAsk` carrier (the `await` in `Coordinator.run`)

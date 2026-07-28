@@ -1791,6 +1791,7 @@ impl Builder {
         let mut env_ty: Option<ResolvedTy> = None;
         let mut env_capture_field_tys: Vec<ResolvedTy> = Vec::new();
         let mut env_field_plans: Vec<GeneratorEnvFieldPlan> = Vec::new();
+        let mut env_moved_bindings: Vec<BindingId> = Vec::new();
         // Capture bindings rejected below as inadmissible to the owned env. Each
         // gets a root `NotYetImplemented`; the body sub-builder reads this set
         // to suppress the downstream `InitialisedBeforeUse`/`UnresolvedPlace`
@@ -1863,7 +1864,7 @@ impl Builder {
                             && capture_field_plan.is_some() =>
                     {
                         init_fields.push((offset, src));
-                        field_tys.push(ty);
+                        field_tys.push(ty.clone());
                         let mut field_plan =
                             capture_field_plan.expect("generator env plan guard checked");
                         // A receive-generator shell owns each mailbox-delivered
@@ -1886,7 +1887,39 @@ impl Builder {
                         if transfers_mailbox_owner {
                             if let GeneratorEnvFieldPlan::Owned(plan) = field_plan {
                                 field_plan = GeneratorEnvFieldPlan::OwnedMove(plan);
+                                env_moved_bindings.push(capture.binding);
                             }
+                        }
+                        // Generator environments store each capture in its value-ABI
+                        // representation. An indirect enum is therefore a heap-node
+                        // pointer, but the only enum snapshot helper clones an INLINE
+                        // tagged union. `OwnedMove` needs no clone and is sound; an
+                        // ordinary borrowed/source snapshot must fail closed until a
+                        // pointer-backed indirect-enum deep-clone helper exists.
+                        if matches!(field_plan, GeneratorEnvFieldPlan::Owned(_))
+                            && crate::lower::drop_plan::ty_is_indirect_enum(&ty, &self.enum_layouts)
+                        {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "the cloned capture of indirect enum `{}` into a generator",
+                                        capture.name
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: format!(
+                                    "cannot snapshot `{}` (type `{}`) into a generator: its \
+                                     value-ABI slot is a heap-node pointer, and no total \
+                                     pointer-backed indirect-enum clone helper exists. A \
+                                     receive-generator mailbox owner may move the value into the \
+                                     environment, but borrowed captures must remain fail-closed.",
+                                    capture.name,
+                                    ty.user_facing()
+                                ),
+                            });
+                            poisoned_captures.insert(capture.binding);
+                            all_materialisable = false;
+                            continue;
                         }
                         env_field_plans.push(field_plan);
                     }
@@ -2016,6 +2049,16 @@ impl Builder {
                     fields: init_fields,
                     dest,
                 });
+                // `OwnedMove` is a genuine whole-value escape from the
+                // receive-handler shell into the heap environment. Record the
+                // transfer in the ownership ledger after the all-or-nothing
+                // environment construction succeeds so no shell-side
+                // scope-exit authority can release the same payload. `Owned`
+                // snapshot sources are deliberately absent: they retain their
+                // own drop while codegen constructs an independent clone.
+                for binding in env_moved_bindings {
+                    self.mark_binding_moved(binding);
+                }
                 env_place = Some(dest);
                 env_ty = Some(env_resolved_ty);
             }

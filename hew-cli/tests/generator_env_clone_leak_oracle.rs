@@ -398,6 +398,145 @@ fn main() {
     .replace("__FRAMES__", &frames.to_string())
 }
 
+fn actor_record_param_source(frames: usize) -> String {
+    r#"
+record Payload {
+    label: string,
+    data: bytes,
+    pair: (string, i64),
+}
+
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+actor Streamer {
+    var state: string;
+    receive gen fn emit(payload: Payload, tree: Tree, n: i64) -> i64 {
+        var i: i64 = 0;
+        if n > 0 {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len();
+            i = 1;
+        }
+        let tree_kind = match tree {
+            Leaf(_) => 1,
+            Node(_, _) => 2,
+        };
+        while i < n {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len() + i + tree_kind;
+            i = i + 1;
+        }
+    }
+    receive gen fn endless(payload: Payload, tree: Tree) -> i64 {
+        yield payload.label.len() + payload.data.len()
+            + payload.pair.0.len() + state.len();
+        let tree_kind = match tree {
+            Leaf(_) => 1,
+            Node(_, _) => 2,
+        };
+        var i: i64 = 1;
+        loop {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len() + i + tree_kind;
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let streamer = spawn Streamer(state: "actor-state".to_upper());
+    var total: i64 = 0;
+    var frame: i64 = 0;
+    while frame < __FRAMES__ {
+        let payload = Payload {
+            label: "record-param".to_upper(),
+            data: "bytes-param".to_bytes(),
+            pair: ("tuple-param".to_upper(), frame),
+        };
+        let tree = Node(Leaf(frame), Leaf(frame + 1));
+        for await value in streamer.emit(payload, tree, 3) {
+            total = total + value;
+        }
+        let cancelled = Payload {
+            label: "record-param".to_upper(),
+            data: "bytes-param".to_bytes(),
+            pair: ("tuple-param".to_upper(), frame),
+        };
+        let cancelled_tree = Node(Leaf(frame), Leaf(frame + 1));
+        for await value in streamer.endless(cancelled, cancelled_tree) {
+            total = total + value;
+            break;
+        }
+        frame = frame + 1;
+    }
+    print(f"{frame}:{total}:OK");
+}
+"#
+    .replace("__FRAMES__", &frames.to_string())
+}
+
+const ACTOR_RECORD_PARAM_SUSPEND: &str = r#"
+record Payload {
+    label: string,
+    data: bytes,
+    pair: (string, i64),
+}
+
+indirect enum Tree {
+    Leaf(i64);
+    Node(Tree, Tree);
+}
+
+actor Streamer {
+    var state: string;
+    receive gen fn endless(payload: Payload, tree: Tree) -> i64 {
+        yield payload.label.len() + payload.data.len()
+            + payload.pair.0.len() + state.len();
+        let tree_kind = match tree {
+            Leaf(_) => 1,
+            Node(_, _) => 2,
+        };
+        var i: i64 = 1;
+        loop {
+            yield payload.label.len() + payload.data.len()
+                + payload.pair.0.len() + state.len() + i + tree_kind;
+            i = i + 1;
+        }
+    }
+}
+
+record AppConfig { label: string }
+
+supervisor App(config: AppConfig) {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child streamer: Streamer(state: config.label);
+}
+
+fn main() {
+    let config = AppConfig { label: "actor-state".to_upper() };
+    let sup = spawn App(config: config);
+    let streamer = sup.streamer;
+    let payload = Payload {
+        label: "record-param".to_upper(),
+        data: "bytes-param".to_bytes(),
+        pair: ("tuple-param".to_upper(), 0),
+    };
+    let tree = Node(Leaf(0), Leaf(1));
+    let stream = streamer.endless(payload, tree);
+    let first = await stream.recv();
+    match first {
+        Some(value) => print(f"{value}:"),
+        None => print("missing:"),
+    }
+    supervisor_stop(sup);
+    print("OK");
+}
+"#;
+
 fn run_exact(bin: &Path, expected: &str) {
     let output = Command::new(bin).output().expect("run compiled oracle");
     assert!(
@@ -495,6 +634,38 @@ fn generator_actor_param_transfer_has_zero_leak_slope() {
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
 )]
 #[test]
+fn generator_actor_record_param_transfer_has_zero_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "generator_actor_record_param_transfer",
+        actor_record_param_source,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn generator_actor_record_param_suspended_teardown_has_zero_leaks() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("generator-env-record-param-suspend-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        ACTOR_RECORD_PARAM_SUSPEND,
+        dir.path(),
+        "generator_actor_record_param_suspend",
+    );
+    run_exact(&bin, "45:OK");
+    assert_zero_leaks(&bin, "generator-actor-record-param-suspend");
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
 fn generator_and_closure_env_clone_are_malloc_scribble_clean() {
     require_codegen();
     let dir = tempfile::Builder::new()
@@ -516,6 +687,16 @@ fn generator_and_closure_env_clone_are_malloc_scribble_clean() {
             "generator_actor_param_transfer_scribble",
             actor_param_source(8),
             "8:288:OK",
+        ),
+        (
+            "generator_actor_record_param_transfer_scribble",
+            actor_record_param_source(8),
+            "8:1496:OK",
+        ),
+        (
+            "generator_actor_record_param_suspend_scribble",
+            ACTOR_RECORD_PARAM_SUSPEND.to_string(),
+            "45:OK",
         ),
     ] {
         let bin = compile_to_native(&source, dir.path(), name);

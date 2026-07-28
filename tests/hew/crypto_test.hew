@@ -1,6 +1,7 @@
 //! Behavioural tests for std::crypto::crypto.
 
 import std::crypto::crypto;
+
 import std::testing;
 
 fn message() -> bytes {

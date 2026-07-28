@@ -1,13 +1,16 @@
 //! Tests for the std::path pure helper functions.
 
 import std::fs;
+
 import std::path;
+
 import std::process;
+
 import std::testing;
+
 import std::time::datetime;
 
 // ── combine ─────────────────────────────────────────────────────────────
-
 #[test]
 fn test_combine_avoids_double_slash_when_left_has_trailing_slash() {
     testing.assert_eq_str(path.combine("/a/", "b"), "/a/b");
@@ -29,7 +32,6 @@ fn test_combine_returns_empty_string_when_both_inputs_are_empty() {
 }
 
 // ── dirname ─────────────────────────────────────────────────────────────
-
 #[test]
 fn test_dirname_returns_parent_for_simple_file_path() {
     testing.assert_eq_str(path.dirname("/home/user/file.txt"), "/home/user");
@@ -51,7 +53,6 @@ fn test_dirname_strips_trailing_slash_before_split() {
 }
 
 // ── basename ────────────────────────────────────────────────────────────
-
 #[test]
 fn test_basename_returns_final_component_for_standard_path() {
     testing.assert_eq_str(path.basename("/home/user/file.txt"), "file.txt");
@@ -73,7 +74,6 @@ fn test_basename_returns_empty_string_for_root() {
 }
 
 // ── extension ───────────────────────────────────────────────────────────
-
 #[test]
 fn test_extension_returns_standard_extension() {
     testing.assert_eq_str(path.extension("photo.jpg"), "jpg");
@@ -175,7 +175,6 @@ fn test_extension_with_heap_input() {
     testing.assert_eq_str(result2, "log");
 }
 
-
 // ── glob expansion truth ────────────────────────────────────────────────
 //
 // #22: a `glob(3)` walk that aborts (a matching directory the process cannot
@@ -183,7 +182,6 @@ fn test_extension_with_heap_input() {
 // completed walk that matched nothing returns.
 // #44: `GlobResult.get` narrowed the `i64` index to `i32` before the native
 // range check, so index `2^32` wrapped to slot 0 and returned a real path.
-
 fn glob_scratch_dir(name: string) -> string {
     f"tests/hew/_glob_{name}_{datetime.now_nanos()}"
 }
@@ -247,11 +245,26 @@ fn test_glob_try_get_rejects_a_wrapped_index() {
     let matches = path.glob("std/*.hew");
     testing.assert_true(matches.len() > 0);
     // 2^32 narrows to 0 under `index as i32`.
-    testing.assert_true(match matches.try_get(4294967296) { Some(_) => false, None => true });
+    testing.assert_true(match matches.try_get(4294967296) {
+        Some(_) => false,
+        None => true,
+    });
     // 2^32 - 1 narrows to -1.
-    testing.assert_true(match matches.try_get(4294967295) { Some(_) => false, None => true });
-    testing.assert_true(match matches.try_get(-1) { Some(_) => false, None => true });
-    testing.assert_true(match matches.try_get(matches.len()) { Some(_) => false, None => true });
-    testing.assert_true(match matches.try_get(0) { Some(_) => true, None => false });
+    testing.assert_true(match matches.try_get(4294967295) {
+        Some(_) => false,
+        None => true,
+    });
+    testing.assert_true(match matches.try_get(-1) {
+        Some(_) => false,
+        None => true,
+    });
+    testing.assert_true(match matches.try_get(matches.len()) {
+        Some(_) => false,
+        None => true,
+    });
+    testing.assert_true(match matches.try_get(0) {
+        Some(_) => true,
+        None => false,
+    });
     matches.close();
 }

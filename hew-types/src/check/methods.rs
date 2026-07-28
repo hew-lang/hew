@@ -21,6 +21,24 @@ use crate::method_resolution::{
 };
 use crate::BuiltinType;
 
+/// Resolve the closed set of compiler-lowered active transport attach methods.
+///
+/// The fully-qualified receiver identity is load-bearing. A user record may be
+/// named `Connection`, `TlsStream`, or `Conn`; admitting a short-name match
+/// would replace its ordinary inherent method with a runtime ABI call that
+/// expects an opaque transport handle and actor PID.
+fn transport_attach_runtime_symbol(receiver_name: &str, method: &str) -> Option<&'static str> {
+    if method != "attach" {
+        return None;
+    }
+    match receiver_name {
+        "net.Connection" => Some("hew_tcp_attach_local"),
+        "tls.TlsStream" => Some("hew_tls_attach_local"),
+        "websocket.Conn" => Some("hew_ws_attach_local"),
+        _ => None,
+    }
+}
+
 /// Peel the `Ok` payload type out of a `Result<T, E>` `Ty`. Returns `None` for a
 /// non-`Result` type or a malformed (wrong-arity) one. Used to recover the wire
 /// type from a `from_json`/`from_yaml` `Result<Self, string>` return so the codec
@@ -1728,16 +1746,8 @@ impl Checker {
         // transport protocol's handler `msg_id`s, and emits the real four-arg
         // runtime attach ABI. The source impl bodies are stubs, so these
         // explicit rewrites are the authority. Mirrors `RemotePid::send`.
-        if (name == "Connection" || name == "net.Connection") && method == "attach" {
-            self.record_runtime_method_call_rewrite(span, "hew_tcp_attach_local");
-            return;
-        }
-        if (name == "Conn" || name == "websocket.Conn") && method == "attach" {
-            self.record_runtime_method_call_rewrite(span, "hew_ws_attach_local");
-            return;
-        }
-        if (name == "TlsStream" || name == "tls.TlsStream") && method == "attach" {
-            self.record_runtime_method_call_rewrite(span, "hew_tls_attach_local");
+        if let Some(symbol) = transport_attach_runtime_symbol(name, method) {
+            self.record_runtime_method_call_rewrite(span, symbol);
             return;
         }
         if let Some(c_symbol) = self.module_registry.resolve_handle_method(name, method) {
@@ -9019,6 +9029,34 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
 mod tests {
     use super::*;
     use crate::module_registry::ModuleRegistry;
+
+    #[test]
+    fn transport_attach_rewrite_requires_authoritative_qualified_identity() {
+        for (receiver, symbol) in [
+            ("net.Connection", "hew_tcp_attach_local"),
+            ("tls.TlsStream", "hew_tls_attach_local"),
+            ("websocket.Conn", "hew_ws_attach_local"),
+        ] {
+            assert_eq!(
+                transport_attach_runtime_symbol(receiver, "attach"),
+                Some(symbol),
+                "canonical transport identity must retain its attach rewrite"
+            );
+            assert_eq!(
+                transport_attach_runtime_symbol(receiver, "close"),
+                None,
+                "only attach belongs to the compiler-lowered transport path"
+            );
+        }
+
+        for user_name in ["Connection", "TlsStream", "Conn"] {
+            assert_eq!(
+                transport_attach_runtime_symbol(user_name, "attach"),
+                None,
+                "a bare user type named {user_name} must keep ordinary method dispatch"
+            );
+        }
+    }
 
     /// A pending lowering fact whose element type resolves to `Ty::Error` must be
     /// dropped silently by `finalize_lowering_facts` without emitting a new error.

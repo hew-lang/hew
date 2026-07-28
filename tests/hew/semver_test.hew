@@ -2,10 +2,10 @@
 //! and to_string. Version is a value type; no explicit free() is required.
 
 import std::text::semver;
+
 import std::testing;
 
 // ── parse / accessors ─────────────────────────────────────────────────
-
 #[test]
 fn test_parse_simple_version_components() {
     let v = semver.parse("1.2.3");
@@ -47,10 +47,7 @@ fn test_parse_large_component_values() {
 fn test_unbounded_core_components_round_trip_and_compare_by_magnitude() {
     let huge = semver.parse("184467440737095516161844674407370955161.2.3");
     let smaller = semver.parse("99999999999999999999999999999999999999.9.9");
-    testing.assert_eq_str(
-        huge.to_string(),
-        "184467440737095516161844674407370955161.2.3",
-    );
+    testing.assert_eq_str(huge.to_string(), "184467440737095516161844674407370955161.2.3");
     testing.assert_eq(huge.compare(smaller), 1);
 }
 
@@ -59,14 +56,12 @@ fn test_unbounded_minor_and_patch_participate_in_precedence() {
     let minor_hi = semver.parse("1.100000000000000000000000000000000000000.0");
     let minor_lo = semver.parse("1.99999999999999999999999999999999999999.999");
     testing.assert_eq(minor_hi.compare(minor_lo), 1);
-
     let patch_hi = semver.parse("1.0.100000000000000000000000000000000000000");
     let patch_lo = semver.parse("1.0.99999999999999999999999999999999999999");
     testing.assert_eq(patch_hi.compare(patch_lo), 1);
 }
 
 // ── to_string ─────────────────────────────────────────────────────────
-
 #[test]
 fn test_to_string_round_trips_simple_version() {
     let v = semver.parse("1.2.3");
@@ -80,7 +75,6 @@ fn test_to_string_includes_pre_release() {
 }
 
 // ── compare ───────────────────────────────────────────────────────────
-
 #[test]
 fn test_compare_equal_versions_returns_zero() {
     let a = semver.parse("1.2.3");
@@ -118,7 +112,6 @@ fn test_compare_patch_difference() {
 }
 
 // ── matches ───────────────────────────────────────────────────────────
-
 #[test]
 fn test_matches_exact_version() {
     let v = semver.parse("1.2.3");
@@ -165,7 +158,6 @@ fn test_matches_lte_satisfied() {
 // previously misread due to an i32/i64 FFI ABI mismatch on
 // hew_string_compare (a negative strcmp result was zero-extended to a
 // large positive i64, so the `< 0` arm never fired).
-
 #[test]
 fn test_compare_prerelease_alpha_less_than_beta() {
     let a = semver.parse("1.0.0-alpha");
@@ -236,7 +228,6 @@ fn test_compare_prerelease_full_chain() {
 // These tests exercise the two explicit panic branches in the
 // implementation: missing first dot (no major separator) and missing
 // second dot (no minor.patch separator).
-
 #[test]
 #[should_panic]
 fn test_parse_panics_on_missing_first_dot() {

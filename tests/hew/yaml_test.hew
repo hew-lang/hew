@@ -1,15 +1,17 @@
 //! Behavioural tests for std::encoding::yaml.
 
 import std::encoding::yaml;
+
 import std::testing;
 
 // ── try_parse ─────────────────────────────────────────────────────────
-
 #[test]
 fn test_try_parse_valid_returns_ok() {
     let r = yaml.try_parse("name: Hew\nversion: 1");
     match r {
-        Ok(val) => { val.free(); },
+        Ok(val) => {
+            val.free();
+        },
         Err(_) => panic("expected Ok, got Err"),
     }
 }
@@ -19,13 +21,15 @@ fn test_try_parse_invalid_returns_err() {
     // A tab in indentation where YAML forbids it is a reliable parse error
     let r = yaml.try_parse("key:\n\t- bad_indent");
     match r {
-        Ok(val) => { val.free(); panic("expected Err, got Ok"); },
+        Ok(val) => {
+            val.free();
+            panic("expected Err, got Ok");
+        },
         Err(ParseError::Invalid(_)) => {},
     }
 }
 
 // ── from_int / get_int round-trip ─────────────────────────────────────
-
 #[test]
 fn test_from_int_get_int_round_trip() {
     let val = yaml.from_int(7);
@@ -34,7 +38,6 @@ fn test_from_int_get_int_round_trip() {
 }
 
 // ── object() builder + get_field ─────────────────────────────────────
-
 #[test]
 fn test_object_builder_string_field() {
     let obj = yaml.object().with_string("lang", "hew");
@@ -45,7 +48,6 @@ fn test_object_builder_string_field() {
 }
 
 // ── sequence + array_len ─────────────────────────────────────────────
-
 #[test]
 fn test_array_len() {
     let arr = yaml.array().push_int(1).push_int(2);
@@ -54,7 +56,6 @@ fn test_array_len() {
 }
 
 // ── stringify round-trip ──────────────────────────────────────────────
-
 #[test]
 fn test_stringify_produces_valid_yaml() {
     let obj = yaml.object().with_int("n", 3);
@@ -73,7 +74,6 @@ fn test_stringify_produces_valid_yaml() {
 }
 
 // ── Empty / scalar parses ─────────────────────────────────────────────
-
 #[test]
 fn test_try_parse_empty_string_returns_ok() {
     // serde_yaml parses "" as Null → Ok(val); type is null (array_len == -1).
@@ -130,7 +130,6 @@ fn test_try_parse_empty_mapping_missing_field_is_invalid() {
 }
 
 // ── from_* constructor round-trips ────────────────────────────────────
-
 #[test]
 fn test_from_float_stringify_exact() {
     // serde_yaml serializes 2.71 as "2.71\n".
@@ -166,7 +165,6 @@ fn test_null_value_stringify_exact() {
 }
 
 // ── Nested mapping walk — free leaf-first ────────────────────────────
-
 #[test]
 fn test_nested_mapping_descent_leaf_first_free() {
     // Parse "a:\n  b:\n    c: 7"; walk a → b → c; assert 7; free leaf-first.
@@ -189,7 +187,6 @@ fn test_nested_mapping_descent_leaf_first_free() {
 }
 
 // ── Sequence of mappings ─────────────────────────────────────────────
-
 #[test]
 fn test_sequence_of_mappings_walk() {
     // "- k: 1\n- k: 2\n- k: 3": for each index, array_get then get_field;
@@ -220,7 +217,6 @@ fn test_sequence_of_mappings_walk() {
 }
 
 // ── Missing field — null handle discipline ────────────────────────────
-
 #[test]
 fn test_missing_field_handle_is_invalid() {
     // get_field on absent key: Rust returns null_ptr. array_len on null
@@ -238,7 +234,6 @@ fn test_missing_field_handle_is_invalid() {
 }
 
 // ── Composed builder — child consumed by with() ───────────────────────
-
 #[test]
 fn test_builder_with_consumes_child() {
     // child consumed by with(); do not free child.
@@ -251,7 +246,6 @@ fn test_builder_with_consumes_child() {
 }
 
 // ── Composed array push — element consumed by push() ─────────────────
-
 #[test]
 fn test_builder_push_consumes_element() {
     // elem consumed by push(); do not free elem.
@@ -264,7 +258,6 @@ fn test_builder_push_consumes_element() {
 }
 
 // ── Nested builder → stringify → reparse ─────────────────────────────
-
 #[test]
 fn test_nested_builder_stringify_reparse() {
     // Build mapping {outer: {inner: 5}}.
@@ -288,14 +281,16 @@ fn test_nested_builder_stringify_reparse() {
 }
 
 // ── Additional negative: deterministic malformed input ────────────────
-
 #[test]
 fn test_try_parse_unclosed_flow_sequence_returns_err() {
     // "foo: [unclosed" has an unclosed flow sequence; serde_yaml
     // deterministically rejects this with a parse error.
     let r = yaml.try_parse("foo: [unclosed");
     match r {
-        Ok(val) => { val.free(); panic("expected Err for unclosed YAML flow sequence"); },
+        Ok(val) => {
+            val.free();
+            panic("expected Err for unclosed YAML flow sequence");
+        },
         Err(ParseError::Invalid(_)) => {},
     }
 }

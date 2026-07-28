@@ -156,7 +156,6 @@ fn test_child_drop_reaps_running_process() {
 // became a `Child` that was never backed by a process. Waiting on it or
 // killing it reported -1 forever with no way to tell that apart from a real
 // child that failed.
-
 #[test]
 fn test_try_start_argv_reports_a_missing_executable_as_launch_failed() {
     let args: Vec<string> = Vec::new();

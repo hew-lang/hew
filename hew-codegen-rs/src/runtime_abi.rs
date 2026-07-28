@@ -4502,8 +4502,10 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // close_id) -> c_int (`hew-std/src/{tls,websocket}.rs`). Their typed
         // Hew method surfaces are intercepted under `_local` pseudo names;
         // codegen resolves the concrete actor protocol IDs and calls these
-        // real four-argument runtime ABIs. The runtime keeps i64 parameters as
-        // a defensive range-check boundary for direct C callers.
+        // real four-argument runtime ABIs. The runtime accepts i64 message IDs
+        // and range-checks them before narrowing to the actor runtime's c_int
+        // protocol index, preventing wrapped IDs from selecting another
+        // handler.
         "hew_tls_attach" | "hew_ws_attach" => i32_ty.fn_type(
             &[ptr_ty.into(), ptr_ty.into(), i64_ty.into(), i64_ty.into()],
             false,

@@ -139,6 +139,24 @@ where
                 title: CowStr::Boxed(title.to_string().into_boxed_str()),
                 id: CowStr::Boxed(id.to_string().into_boxed_str()),
             })),
+            Event::Start(Tag::Heading {
+                level,
+                id: _,
+                classes: _,
+                attrs: _,
+            }) => out.push(Event::Start(Tag::Heading {
+                level,
+                id: None,
+                classes: Vec::new(),
+                // `ENABLE_HEADING_ATTRIBUTES` also accepts arbitrary authored
+                // attributes. pulldown-cmark HTML-escapes their spelling but
+                // emits the attributes themselves, so `{onclick=...}` remains
+                // an executable event handler. IDs, classes, and custom
+                // key/value pairs are all author-written attributes rather
+                // than Markdown-generated structure; sanitized headings keep
+                // none of them.
+                attrs: Vec::new(),
+            })),
             other => out.push(other),
         }
     }
@@ -318,6 +336,28 @@ mod tests {
             );
         }
         assert!(html.contains("Hello"), "text must be preserved: {html}");
+    }
+
+    #[test]
+    fn sanitizer_drops_custom_heading_attributes() {
+        // `Options::all()` enables pulldown-cmark's heading-attribute
+        // extension. The renderer escapes attribute values but would still
+        // emit `onclick` as an executable browser event handler unless the
+        // sanitized event stream removes custom attributes.
+        // SAFETY: test helper uses valid pointers.
+        let html = unsafe {
+            md_to_html_safe("# Safe heading {#kept .also-kept onclick=alert(1) data-note=hello}")
+        };
+        assert!(
+            html.contains("<h1>Safe heading</h1>"),
+            "heading structure and text must survive: {html}"
+        );
+        for forbidden in ["id=", "class=", "onclick", "data-note", "alert(1)"] {
+            assert!(
+                !html.contains(forbidden),
+                "custom heading attribute `{forbidden}` must not survive: {html}"
+            );
+        }
     }
 
     #[test]

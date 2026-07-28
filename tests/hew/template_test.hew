@@ -264,7 +264,6 @@ fn malformed_unexpected_end_returns_error() {
     }
 }
 
-
 // ── An `{{if}}` has at most one `{{else}}` ────────────────────────────
 fn expect_template_rejected(src: string, what: string) {
     let ctx = template.new_ctx();
@@ -287,10 +286,7 @@ fn test_render_rejects_a_duplicate_else_in_one_if() {
 
 #[test]
 fn test_render_rejects_a_duplicate_else_in_a_nested_if() {
-    expect_template_rejected(
-        "{{if .a}}{{if .b}}X{{else}}Y{{else}}Z{{end}}{{end}}",
-        "a nested duplicate else",
-    );
+    expect_template_rejected("{{if .a}}{{if .b}}X{{else}}Y{{else}}Z{{end}}{{end}}", "a nested duplicate else");
 }
 
 #[test]

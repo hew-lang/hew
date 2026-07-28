@@ -53,6 +53,17 @@ fn test_to_html_safe_drops_event_attributes_on_raw_html() {
 }
 
 #[test]
+fn test_to_html_safe_drops_custom_heading_attributes() {
+    let html = markdown.to_html_safe("# Safe {#kept .styled onclick=alert(1) data-note=hello}");
+    assert_contains(html, "<h1>Safe</h1>", "safe heading structure");
+    assert_absent(html, "id=", "a heading ID");
+    assert_absent(html, "class=", "a heading class");
+    assert_absent(html, "onclick", "a heading event handler");
+    assert_absent(html, "data-note", "a custom heading attribute");
+    assert_absent(html, "alert(1)", "a heading event-handler payload");
+}
+
+#[test]
 fn test_to_html_safe_refuses_a_dangerous_link_url() {
     let html = markdown.to_html_safe("[click](javascript:alert(1))");
     assert_absent(html, "javascript:", "a javascript: destination");

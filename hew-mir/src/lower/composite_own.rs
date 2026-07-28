@@ -1,3 +1,5 @@
+#[cfg(not(test))]
+use super::temp_drop::corroborated_retained_string_move_sites;
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
@@ -1277,6 +1279,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
             .iter()
             .map(|(local, scope)| (*local, *scope)),
     );
+    let retained_string_moves = corroborated_retained_string_move_sites(blocks, local_tys);
 
     // Payload-binder set: destinations of `Move { dest, src: interior
     // projection of an alias-set local }` — the match/while-let destructure
@@ -1327,12 +1330,20 @@ pub(super) fn derive_enum_composite_drop_allowed(
     loop {
         let mut changed = false;
         for block in blocks {
-            for instr in &block.instructions {
+            for (instr_index, instr) in block.instructions.iter().enumerate() {
                 if let Instr::Move { dest, src } = instr {
                     if let (Some(sl), Some(dl)) = (base_local(*src), base_local(*dest)) {
                         let Some(&src_scope) = payload_binders.get(&sl) else {
                             continue;
                         };
+                        // The exact preceding `StringRetain(src)` gives `dl`
+                        // an independent `+1`; it is no longer a byte-alias of
+                        // the parent's payload slot. Do not propagate payload
+                        // provenance across that corroborated edge. The helper
+                        // rejects mismatches, repeated writes, and CFG cycles.
+                        if retained_string_moves.contains(&(block.id, instr_index)) {
+                            continue;
+                        }
                         if payload_binders.contains_key(&dl) {
                             continue;
                         }
@@ -1595,7 +1606,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
         vec_iter_record_init_vec_source(instr).and_then(base_local) == Some(local)
     };
     for block in blocks {
-        for instr in &block.instructions {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
             if initializes_generator_env_snapshot(instr, &generator_env_inits) {
                 continue;
             }
@@ -1647,6 +1658,7 @@ pub(super) fn derive_enum_composite_drop_allowed(
             // discriminates a benign hand-off from a real escape, so it needs
             // its own analysis rather than the blanket source scan below.
             if let Instr::Move { dest, src } = instr {
+                let retained_string_move = retained_string_moves.contains(&(block.id, instr_index));
                 let src_local = base_local(*src);
                 let dest_local = base_local(*dest);
                 // (a) Whole-composite escape: an alias-set member read as a
@@ -1681,7 +1693,10 @@ pub(super) fn derive_enum_composite_drop_allowed(
                     // unexempted it wrongly excludes the parent composite from
                     // its `EnumInPlace` drop and leaks the inner payload (W5.020
                     // nested-payload leak).
-                    if payload_binders.contains_key(&sl) && !place_is_tag_read(*src) {
+                    if payload_binders.contains_key(&sl)
+                        && !place_is_tag_read(*src)
+                        && !retained_string_move
+                    {
                         let benign_handoff = dest_local
                             .is_some_and(|dl| payload_binders.contains_key(&dl))
                             && matches!(dest, Place::Local(_));

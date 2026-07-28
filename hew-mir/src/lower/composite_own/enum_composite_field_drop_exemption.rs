@@ -102,6 +102,113 @@ fn payload_destructure() -> Instr {
     }
 }
 
+fn derive_string_payload_handoff(instructions: Vec<Instr>) -> (BindingId, HashSet<BindingId>) {
+    let parent = BindingId(20);
+    let payload = BindingId(21);
+    let copy = BindingId(22);
+    let box_ty = ResolvedTy::named_user("TextBox", vec![]);
+    let binding_locals = HashMap::from([
+        (parent, Place::Local(0)),
+        (payload, Place::Local(1)),
+        (copy, Place::Local(2)),
+    ]);
+    let binding_scope = HashMap::from([
+        (parent, ScopeId(1)),
+        (payload, ScopeId(2)),
+        (copy, ScopeId(3)),
+    ]);
+    let layouts = vec![crate::model::EnumLayout {
+        name: "TextBox".to_string(),
+        tag_width: 1,
+        variants: vec![
+            crate::model::MachineVariantLayout {
+                name: "Text".to_string(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
+            },
+            crate::model::MachineVariantLayout {
+                name: "Empty".to_string(),
+                field_tys: vec![],
+                field_names: vec![],
+            },
+        ],
+        is_indirect: false,
+    }];
+    let allowed = derive_enum_composite_drop_allowed(
+        &[BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions,
+            terminator: Terminator::Return,
+        }],
+        &HashMap::new(),
+        &[(parent, "box".to_string(), box_ty.clone())],
+        &binding_locals,
+        &binding_scope,
+        &HashMap::new(),
+        &[box_ty, ResolvedTy::String, ResolvedTy::String],
+        &HashMap::new(),
+        &layouts,
+        &HashMap::new(),
+        &HashSet::new(),
+        &HashSet::new(),
+        &crate::return_provenance::ExternContractTable::default(),
+    );
+    (parent, allowed)
+}
+
+#[test]
+fn exact_retained_string_payload_handoff_keeps_parent_drop() {
+    let (parent, allowed) = derive_string_payload_handoff(vec![
+        Instr::Move {
+            dest: Place::Local(1),
+            src: Place::EnumVariant {
+                local: 0,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        },
+        Instr::StringRetain {
+            value: Place::Local(1),
+            condition: StringRetainCondition::Always,
+        },
+        Instr::Move {
+            dest: Place::Local(2),
+            src: Place::Local(1),
+        },
+    ]);
+    assert!(
+        allowed.contains(&parent),
+        "the parent still owns the original payload ref after the retained copy"
+    );
+}
+
+#[test]
+fn mismatched_string_payload_retain_stays_fail_closed() {
+    let (parent, allowed) = derive_string_payload_handoff(vec![
+        Instr::Move {
+            dest: Place::Local(1),
+            src: Place::EnumVariant {
+                local: 0,
+                variant_idx: 0,
+                field_idx: 0,
+            },
+        },
+        Instr::StringRetain {
+            value: Place::Local(2),
+            condition: StringRetainCondition::Always,
+        },
+        Instr::Move {
+            dest: Place::Local(2),
+            src: Place::Local(1),
+        },
+    ]);
+    assert!(
+        !allowed.contains(&parent),
+        "a mismatched retain cannot prove that the escaping payload handoff is independent"
+    );
+}
+
 /// A `FieldDropInPlace` discharging one skipped field of the payload
 /// binder frees payload leaves through the binder's byte-alias of the
 /// composite's storage — the composite must be EXCLUDED, or its

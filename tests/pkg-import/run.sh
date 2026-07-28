@@ -888,6 +888,29 @@ if grep -q "ResourceBoundaryParamMustConsume" <<<"${imported_trait_ok_out}"; the
 fi
 echo "PASS ${imported_trait_ok}"
 
+# Reject structural clone of package-imported, module-qualified affine record
+# identities. The marker registry accepts both bare declaration names and
+# qualified consumer spellings; both `.clone()` and prefix `clone` must consult
+# that same authority for `#[resource]` and `#[linear]`.
+qualified_affine_clone_reject="qualified_affine_record_clone_reject"
+qualified_affine_clone_out="$("${HEW}" check --pkg-path "${PKGS}" "${DIR}/${qualified_affine_clone_reject}.hew" 2>&1)" && {
+  echo "FAIL ${qualified_affine_clone_reject}: imported affine record clones unexpectedly typechecked" >&2
+  echo "${qualified_affine_clone_out}" >&2
+  exit 1
+}
+if [[ "$(grep -c "cannot be cloned" <<<"${qualified_affine_clone_out}")" -ne 4 ]]; then
+  echo "FAIL ${qualified_affine_clone_reject}: expected four clone rejections (two markers x two syntaxes)" >&2
+  echo "${qualified_affine_clone_out}" >&2
+  exit 1
+fi
+if ! grep -q 'affineclone.ResourceToken.*#\[resource\]' <<<"${qualified_affine_clone_out}" ||
+   ! grep -q 'affineclone.LinearTicket.*#\[linear\]' <<<"${qualified_affine_clone_out}"; then
+  echo "FAIL ${qualified_affine_clone_reject}: diagnostics lost the module-qualified affine identity" >&2
+  echo "${qualified_affine_clone_out}" >&2
+  exit 1
+fi
+echo "PASS ${qualified_affine_clone_reject}"
+
 # KNOWN-GAP REJECT PIN (#2653) — the boundary of the #2744 fix, NOT a
 # desired-behaviour test.
 #

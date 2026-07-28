@@ -97,6 +97,13 @@ pub(super) enum RecordCloneAdmissibility {
     /// The record can be cloned end-to-end via
     /// `__hew_record_clone_inplace_<R>`.
     Admissible,
+    /// The record itself, or a transitively reachable field/payload, carries an
+    /// affine `#[resource]` / `#[linear]` contract. Structural record clone
+    /// cannot invent a semantic duplicate for such a value.
+    AffineValue {
+        type_name: String,
+        marker: hew_parser::ast::ResourceMarker,
+    },
     /// The record (or a transitive field) contains an opaque handle; fail closed.
     OpaqueField { opaque_name: String },
     /// The record has un-substituted generic type parameters; not yet supported.
@@ -2543,6 +2550,16 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
+                    RecordCloneAdmissibility::AffineValue { type_name, marker } => {
+                        let receiver_name = receiver_ty.user_facing().to_string();
+                        self.report_affine_record_clone_error(
+                            &receiver_name,
+                            &type_name,
+                            marker,
+                            span,
+                        );
+                        return Ty::Error;
+                    }
                     RecordCloneAdmissibility::GenericRecord => {
                         self.report_error(
                             TypeErrorKind::UndefinedMethod,
@@ -2723,6 +2740,16 @@ impl Checker {
         _span: &Span,
     ) -> RecordCloneAdmissibility {
         use TypeDefKind::{Enum, Record, Struct};
+        let receiver_ty = Ty::Named {
+            name: name.to_string(),
+            args: type_args.to_vec(),
+            builtin: None,
+        };
+        if let Some((type_name, marker)) =
+            self.ty_clone_contains_affine_value(&receiver_ty, &mut std::collections::HashSet::new())
+        {
+            return RecordCloneAdmissibility::AffineValue { type_name, marker };
+        }
         let Some(type_def) = self.type_defs.get(name) else {
             // A bare type parameter (`x: T`) has no `type_defs` entry. When it
             // carries a `Clone` bound in scope (`fn f<T: Clone>(x: T)`), admit
@@ -2790,6 +2817,158 @@ impl Checker {
             return RecordCloneAdmissibility::OpaqueField { opaque_name };
         }
         RecordCloneAdmissibility::Admissible
+    }
+
+    fn report_affine_record_clone_error(
+        &mut self,
+        receiver_name: &str,
+        affine_name: &str,
+        marker: hew_parser::ast::ResourceMarker,
+        span: &Span,
+    ) {
+        let (attribute, contract) = match marker {
+            hew_parser::ast::ResourceMarker::Resource => (
+                "#[resource]",
+                "has an affine close contract and no semantic clone",
+            ),
+            hew_parser::ast::ResourceMarker::Linear => (
+                "#[linear]",
+                "must be consumed exactly once and has no semantic clone",
+            ),
+            hew_parser::ast::ResourceMarker::None => {
+                unreachable!("affine clone blocker cannot carry ResourceMarker::None")
+            }
+        };
+        let subject = if receiver_name == affine_name {
+            format!("type `{receiver_name}` is `{attribute}`")
+        } else {
+            format!("type `{receiver_name}` contains `{attribute}` value `{affine_name}`")
+        };
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!("{subject} and cannot be cloned: `{affine_name}` {contract}"),
+        );
+    }
+
+    /// Return the first `#[resource]` / `#[linear]` value reachable from a
+    /// structural record-clone receiver.
+    ///
+    /// Explicit record clone is a non-consuming read that creates a second
+    /// owner. That is valid only when every stored value has a semantic clone.
+    /// Resource/linear markers veto the operation even when their physical
+    /// fields are all bit-copy, and the veto descends through unmarked
+    /// records/enums/tuples/arrays so an affine value cannot hide in a wrapper.
+    fn ty_clone_contains_affine_value(
+        &self,
+        ty: &Ty,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<(String, hew_parser::ast::ResourceMarker)> {
+        use hew_parser::ast::ResourceMarker;
+
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        match &resolved {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                // These wrappers duplicate the OUTER handle semantically and
+                // do not clone their protocol/payload type argument. Keep them
+                // terminal, matching MIR's value-snapshot affine-marker proof.
+                if matches!(
+                    builtin,
+                    Some(
+                        BuiltinType::LocalPid
+                            | BuiltinType::RemotePid
+                            | BuiltinType::LambdaPid
+                            | BuiltinType::HewActor
+                            | BuiltinType::Rc
+                            | BuiltinType::Weak
+                    )
+                ) {
+                    return None;
+                }
+                if self.registry.is_resource(name) {
+                    return Some((name.clone(), ResourceMarker::Resource));
+                }
+                if self.registry.is_linear(name) {
+                    return Some((name.clone(), ResourceMarker::Linear));
+                }
+                // Built-in value containers (for example `Option<T>`,
+                // `Result<T, E>`, and `Vec<T>`) store their type arguments, so
+                // descend through them. User records are different: a generic
+                // argument may be a phantom tag (for example `Key<T>`), and
+                // only the instantiated declared fields/variants below are
+                // authoritative for whether a value is actually contained.
+                if builtin.is_some() {
+                    for arg in args {
+                        if let Some(blocker) = self.ty_clone_contains_affine_value(arg, visiting) {
+                            return Some(blocker);
+                        }
+                    }
+                }
+                let type_def = self.lookup_type_def(name)?;
+                let visit_key = resolved.user_facing().to_string();
+                if !visiting.insert(visit_key.clone()) {
+                    return None;
+                }
+                let blocker = type_def
+                    .fields
+                    .values()
+                    .map(|field_ty| {
+                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args)
+                    })
+                    .find_map(|field_ty| self.ty_clone_contains_affine_value(&field_ty, visiting))
+                    .or_else(|| {
+                        self.tuple_record_constructor_fields(name, &type_def)
+                            .iter()
+                            .find_map(|field_ty| {
+                                let field_ty = Self::instantiate_type_def_member(
+                                    field_ty,
+                                    &type_def.type_params,
+                                    args,
+                                );
+                                self.ty_clone_contains_affine_value(&field_ty, visiting)
+                            })
+                    })
+                    .or_else(|| {
+                        type_def
+                            .variants
+                            .values()
+                            .find_map(|variant| match variant {
+                                VariantDef::Unit => None,
+                                VariantDef::Tuple(fields) => fields.iter().find_map(|field_ty| {
+                                    let field_ty = Self::instantiate_type_def_member(
+                                        field_ty,
+                                        &type_def.type_params,
+                                        args,
+                                    );
+                                    self.ty_clone_contains_affine_value(&field_ty, visiting)
+                                }),
+                                VariantDef::Struct(fields) => {
+                                    fields.iter().find_map(|(_, field_ty)| {
+                                        let field_ty = Self::instantiate_type_def_member(
+                                            field_ty,
+                                            &type_def.type_params,
+                                            args,
+                                        );
+                                        self.ty_clone_contains_affine_value(&field_ty, visiting)
+                                    })
+                                }
+                            })
+                    });
+                visiting.remove(&visit_key);
+                blocker
+            }
+            Ty::Tuple(items) => items
+                .iter()
+                .find_map(|item| self.ty_clone_contains_affine_value(item, visiting)),
+            Ty::Array(elem, _) | Ty::Slice(elem) => {
+                self.ty_clone_contains_affine_value(elem, visiting)
+            }
+            _ => None,
+        }
     }
 
     /// Transitive, substitution-aware walk of a (possibly generic) record's
@@ -8475,6 +8654,16 @@ impl Checker {
                                         "type `{name}` contains an opaque field \
                                          `{opaque_name}` and cannot be cloned"
                                     ),
+                                );
+                                return Ty::Error;
+                            }
+                            RecordCloneAdmissibility::AffineValue { type_name, marker } => {
+                                let receiver_name = resolved.user_facing().to_string();
+                                self.report_affine_record_clone_error(
+                                    &receiver_name,
+                                    &type_name,
+                                    marker,
+                                    span,
                                 );
                                 return Ty::Error;
                             }

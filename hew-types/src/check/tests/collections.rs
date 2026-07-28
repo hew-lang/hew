@@ -526,6 +526,375 @@ fn generic_record_clone_concrete_instantiation_is_admissible() {
 }
 
 #[test]
+fn explicit_record_clone_rejects_resource_and_linear_in_both_syntaxes() {
+    let output = check_source(
+        r"
+        #[resource]
+        type ResourceToken { id: i64 }
+        impl ResourceToken {
+            fn close(self) {}
+        }
+
+        #[linear]
+        type LinearTicket { id: i64 }
+        impl LinearTicket {
+            fn redeem(consuming self) -> i64 { self.id }
+        }
+
+        fn main() {
+            let r1 = ResourceToken { id: 1 };
+            let _r1_copy = r1.clone();
+            let r2 = ResourceToken { id: 2 };
+            let _r2_copy = clone r2;
+
+            let l1 = LinearTicket { id: 3 };
+            let _l1_copy = l1.clone();
+            let _ = l1.redeem();
+            let l2 = LinearTicket { id: 4 };
+            let _l2_copy = clone l2;
+            let _ = l2.redeem();
+        }
+        ",
+    );
+
+    let affine_clone_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| error.message.contains("cannot be cloned"))
+        .collect();
+    assert_eq!(
+        affine_clone_errors.len(),
+        4,
+        "method and prefix clone must each reject resource and linear records: {:#?}",
+        output.errors
+    );
+    assert!(
+        affine_clone_errors.iter().any(|error| {
+            error.message.contains("`#[resource]`")
+                && error.message.contains("affine close contract")
+        }),
+        "resource rejection must name its close contract: {affine_clone_errors:#?}"
+    );
+    assert!(
+        affine_clone_errors.iter().any(|error| {
+            error.message.contains("`#[linear]`") && error.message.contains("consumed exactly once")
+        }),
+        "linear rejection must name its exact-once contract: {affine_clone_errors:#?}"
+    );
+}
+
+#[test]
+fn generic_record_clone_rejects_substituted_affine_fields() {
+    let output = check_source(
+        r"
+        #[resource]
+        type ResourceToken { id: i64 }
+        impl ResourceToken {
+            fn close(self) {}
+        }
+
+        #[linear]
+        type LinearTicket { id: i64 }
+        impl LinearTicket {
+            fn redeem(consuming self) -> i64 { self.id }
+        }
+
+        type Wrapper<T> { value: T }
+
+        fn main() {
+            let resource: Wrapper<ResourceToken> =
+                Wrapper { value: ResourceToken { id: 1 } };
+            let _resource_copy = resource.clone();
+
+            let linear: Wrapper<LinearTicket> =
+                Wrapper { value: LinearTicket { id: 2 } };
+            let _linear_copy = clone linear;
+        }
+        ",
+    );
+
+    let affine_clone_errors: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| error.message.contains("cannot be cloned"))
+        .collect();
+    assert_eq!(
+        affine_clone_errors.len(),
+        2,
+        "concrete generic substitutions must expose nested affine fields: {:#?}",
+        output.errors
+    );
+    assert!(
+        affine_clone_errors
+            .iter()
+            .any(|error| error.message.contains("ResourceToken")),
+        "resource substitution must be named: {affine_clone_errors:#?}"
+    );
+    assert!(
+        affine_clone_errors
+            .iter()
+            .any(|error| error.message.contains("LinearTicket")),
+        "linear substitution must be named: {affine_clone_errors:#?}"
+    );
+}
+
+fn record_type_def_with_field(name: &str, field_name: &str, field_ty: Ty) -> TypeDef {
+    TypeDef {
+        kind: TypeDefKind::Record,
+        name: name.to_string(),
+        type_params: vec![],
+        bounds: HashMap::new(),
+        fields: HashMap::from([(field_name.to_string(), field_ty)]),
+        variants: HashMap::new(),
+        methods: HashMap::new(),
+        doc_comment: None,
+        field_order: vec![field_name.to_string()],
+        is_indirect: false,
+    }
+}
+
+#[test]
+fn record_clone_affine_veto_recognizes_qualified_markers() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .registry
+        .register_resource_type("ResourceToken".to_string());
+    checker
+        .registry
+        .register_linear_type("LinearTicket".to_string());
+
+    let span = Span::from(0..0);
+    assert!(matches!(
+        checker.record_clone_admissibility("owner.ResourceToken", &[], &span),
+        RecordCloneAdmissibility::AffineValue {
+            marker: hew_parser::ast::ResourceMarker::Resource,
+            ..
+        }
+    ));
+    assert!(matches!(
+        checker.record_clone_admissibility("owner.LinearTicket", &[], &span),
+        RecordCloneAdmissibility::AffineValue {
+            marker: hew_parser::ast::ResourceMarker::Linear,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .registry
+        .register_resource_type("ResourceToken".to_string());
+    checker
+        .registry
+        .register_linear_type("LinearTicket".to_string());
+    checker.type_defs.insert(
+        "ResourceWrapper".to_string(),
+        record_type_def_with_field(
+            "ResourceWrapper",
+            "resource",
+            Ty::Named {
+                name: "owner.ResourceToken".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+        ),
+    );
+    checker.type_defs.insert(
+        "LinearWrapper".to_string(),
+        record_type_def_with_field(
+            "LinearWrapper",
+            "linear",
+            Ty::Named {
+                name: "owner.LinearTicket".to_string(),
+                args: vec![],
+                builtin: None,
+            },
+        ),
+    );
+    checker.type_defs.insert(
+        "SharedWrapper".to_string(),
+        record_type_def_with_field(
+            "SharedWrapper",
+            "shared",
+            Ty::rc(Ty::Named {
+                name: "owner.ResourceToken".to_string(),
+                args: vec![],
+                builtin: None,
+            }),
+        ),
+    );
+
+    let span = Span::from(0..0);
+    assert!(matches!(
+        checker.record_clone_admissibility("ResourceWrapper", &[], &span),
+        RecordCloneAdmissibility::AffineValue {
+            type_name,
+            marker: hew_parser::ast::ResourceMarker::Resource,
+        } if type_name == "owner.ResourceToken"
+    ));
+    assert!(matches!(
+        checker.record_clone_admissibility("LinearWrapper", &[], &span),
+        RecordCloneAdmissibility::AffineValue {
+            type_name,
+            marker: hew_parser::ast::ResourceMarker::Linear,
+        } if type_name == "owner.LinearTicket"
+    ));
+    assert!(matches!(
+        checker.record_clone_admissibility("SharedWrapper", &[], &span),
+        RecordCloneAdmissibility::Admissible
+    ));
+}
+
+#[test]
+fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .registry
+        .register_resource_type("ResourceToken".to_string());
+    checker
+        .registry
+        .register_linear_type("LinearTicket".to_string());
+    checker.type_defs.insert(
+        "Envelope".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Enum,
+            name: "Envelope".to_string(),
+            type_params: vec![],
+            bounds: HashMap::new(),
+            fields: HashMap::new(),
+            variants: HashMap::from([(
+                "Full".to_string(),
+                VariantDef::Tuple(vec![Ty::Named {
+                    name: "ResourceToken".to_string(),
+                    args: vec![],
+                    builtin: None,
+                }]),
+            )]),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec![],
+            is_indirect: false,
+        },
+    );
+    checker.type_defs.insert(
+        "TupleWrapper".to_string(),
+        record_type_def_with_field(
+            "TupleWrapper",
+            "value",
+            Ty::Tuple(vec![
+                Ty::I64,
+                Ty::Named {
+                    name: "Envelope".to_string(),
+                    args: vec![],
+                    builtin: None,
+                },
+            ]),
+        ),
+    );
+    checker.type_defs.insert(
+        "ArrayWrapper".to_string(),
+        record_type_def_with_field(
+            "ArrayWrapper",
+            "values",
+            Ty::Array(
+                Box::new(Ty::Named {
+                    name: "LinearTicket".to_string(),
+                    args: vec![],
+                    builtin: None,
+                }),
+                2,
+            ),
+        ),
+    );
+
+    let span = Span::from(0..0);
+    for name in ["Envelope", "TupleWrapper", "ArrayWrapper"] {
+        assert!(
+            matches!(
+                checker.record_clone_admissibility(name, &[], &span),
+                RecordCloneAdmissibility::AffineValue { .. }
+            ),
+            "{name} must expose its transitively stored affine value"
+        );
+    }
+}
+
+#[test]
+fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .registry
+        .register_resource_type("ResourceToken".to_string());
+    let resource = Ty::Named {
+        name: "ResourceToken".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+    checker.type_defs.insert(
+        "HandleWrapper".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Record,
+            name: "HandleWrapper".to_string(),
+            type_params: vec![],
+            bounds: HashMap::new(),
+            fields: HashMap::from([
+                ("rc".to_string(), Ty::rc(resource.clone())),
+                ("weak".to_string(), Ty::weak(resource.clone())),
+                ("local".to_string(), Ty::local_pid(resource.clone())),
+                ("remote".to_string(), Ty::remote_pid(resource.clone())),
+                (
+                    "lambda".to_string(),
+                    Ty::lambda_pid(resource.clone(), resource.clone()),
+                ),
+                (
+                    "actor".to_string(),
+                    Ty::builtin_named(BuiltinType::HewActor, vec![]),
+                ),
+            ]),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec![
+                "rc".to_string(),
+                "weak".to_string(),
+                "local".to_string(),
+                "remote".to_string(),
+                "lambda".to_string(),
+                "actor".to_string(),
+            ],
+            is_indirect: false,
+        },
+    );
+    checker.type_defs.insert(
+        "PhantomKey".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Record,
+            name: "PhantomKey".to_string(),
+            type_params: vec!["T".to_string()],
+            bounds: HashMap::new(),
+            fields: HashMap::from([("id".to_string(), Ty::I64)]),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec!["id".to_string()],
+            is_indirect: false,
+        },
+    );
+
+    let span = Span::from(0..0);
+    assert!(matches!(
+        checker.record_clone_admissibility("HandleWrapper", &[], &span),
+        RecordCloneAdmissibility::Admissible
+    ));
+    assert!(matches!(
+        checker.record_clone_admissibility("PhantomKey", &[resource], &span),
+        RecordCloneAdmissibility::Admissible
+    ));
+}
+
+#[test]
 fn generic_record_clone_opaque_instantiation_fails_closed() {
     // The opaque-leaf walk is substitution-aware: `Box<Handle>` instantiates
     // the declared field `item: T` to `item: Handle` before checking, so the

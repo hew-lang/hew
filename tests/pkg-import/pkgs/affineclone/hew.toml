@@ -1,0 +1,6 @@
+[package]
+name = "hew::affineclone"
+version = "0.1.0"
+description = "Qualified affine-record clone rejection fixture"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

@@ -980,7 +980,11 @@ impl Checker {
     /// Tuple-record payloads deliberately leave `TypeDef::fields` empty
     /// because `.0`/`.1` access is not exposed. Their constructor signature is
     /// nevertheless the authoritative positional layout.
-    fn tuple_record_constructor_fields(&self, name: &str, type_def: &TypeDef) -> Vec<Ty> {
+    pub(super) fn tuple_record_constructor_fields(
+        &self,
+        name: &str,
+        type_def: &TypeDef,
+    ) -> Vec<Ty> {
         if type_def.kind != TypeDefKind::Record || !type_def.fields.is_empty() {
             return Vec::new();
         }

@@ -4630,6 +4630,44 @@ if "${HEW}" check \
 fi
 grep -q 'contains an opaque field' "${reject_output}"
 
+# Affine records are move-only even when their physical fields are all
+# structurally cloneable. Both explicit clone spellings must reject resource
+# and linear identities before a RecordCloneInplace reaches MIR.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/affine_record_clone.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected affine_record_clone fixture to fail" >&2
+  exit 1
+fi
+if [[ "$(grep -c "cannot be cloned" "${reject_output}")" -ne 4 ]]; then
+  echo "expected four affine record-clone diagnostics" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+grep -q 'affine close contract' "${reject_output}"
+grep -q 'consumed exactly once' "${reject_output}"
+
+# The affine veto is transitive and substitution-aware: plain and generic
+# wrappers must not hide resource/linear fields behind a structurally cloneable
+# outer record.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/affine_record_clone_transitive.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected affine_record_clone_transitive fixture to fail" >&2
+  exit 1
+fi
+if [[ "$(grep -c "cannot be cloned" "${reject_output}")" -ne 6 ]]; then
+  echo "expected six transitive affine record-clone diagnostics" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+grep -q 'PlainWrapper.*ResourceToken' "${reject_output}"
+grep -q 'GenericWrapper<ResourceToken>.*ResourceToken' "${reject_output}"
+grep -q 'GenericWrapper<LinearTicket>.*LinearTicket' "${reject_output}"
+grep -q 'ResourceEnvelope.*ResourceToken' "${reject_output}"
+grep -q 'TupleWrapper.*ResourceToken' "${reject_output}"
+grep -q 'ArrayWrapper.*LinearTicket' "${reject_output}"
+
 # User-defined GENERIC record `clone` on an instantiation whose type parameter
 # resolves to an opaque handle (`Box<Handle>`) must be rejected too — the
 # admissibility opaque walk is substitution-aware (instantiates `item: T` to

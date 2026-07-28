@@ -1481,9 +1481,9 @@ pub struct HewActor {
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
-// All mutable shared fields use atomic types. Raw pointers are managed by
-// the scheduler/actor lifecycle which ensures exclusive access during
-// activation (CAS `RUNNABLE` → `RUNNING`).
+// All mutable shared fields use atomic types. Raw pointers are managed by the
+// scheduler/actor lifecycle, which ensures exclusive activation access (CAS
+// `RUNNABLE` → `RUNNING`).
 unsafe impl Send for HewActor {}
 // SAFETY: Concurrent reads/writes of shared mutable fields use atomics.
 // Raw-pointer fields are lifecycle-managed by scheduler CAS transitions.
@@ -5750,6 +5750,15 @@ unsafe fn finish_mailbox_enqueue_inner(
     a: &HewActor,
     close_terminal_handoff: bool,
 ) {
+    let observed = a.actor_state.load(Ordering::Acquire);
+    if observed != HewActorState::Idle as i32 {
+        if close_terminal_handoff {
+            // SAFETY: this producer just completed an enqueue against `a`.
+            unsafe { reclaim_terminal_enqueue_if_unowned(a) };
+        }
+        return;
+    }
+
     // Own the prospective queue entry before publishing Runnable. If the CAS
     // loses, dropping the unused entry releases the reference; if it wins,
     // ownership moves through the queue into `dispatch_active`.
@@ -5767,10 +5776,12 @@ unsafe fn finish_mailbox_enqueue_inner(
         a.idle_count.store(0, Ordering::Relaxed);
         a.hibernating.store(0, Ordering::Relaxed);
         scheduler::sched_enqueue_owned(queue_entry);
-    } else if close_terminal_handoff {
+    } else {
         drop(queue_entry);
-        // SAFETY: this producer just completed an enqueue against `a`.
-        unsafe { reclaim_terminal_enqueue_if_unowned(a) };
+        if close_terminal_handoff {
+            // SAFETY: this producer just completed an enqueue against `a`.
+            unsafe { reclaim_terminal_enqueue_if_unowned(a) };
+        }
     }
 }
 
@@ -9613,6 +9624,94 @@ mod tests {
             run_case(false, false);
             run_case(true, false);
             run_case(true, true);
+        }
+    }
+
+    /// The post-link handoff takes a scheduler lifetime pin only when it
+    /// actually observes `Idle` and may publish `Runnable`. An enqueue against
+    /// an already runnable/running actor belongs to that existing activation;
+    /// retaining and immediately releasing a speculative queue entry needlessly
+    /// touches the actor's shared lifetime counter. Terminal states still run
+    /// the reclaim handoff even though they likewise need no queue entry.
+    #[test]
+    fn post_enqueue_handoff_pins_only_an_observed_idle_actor() {
+        let _rt = crate::runtime_test_guard();
+        let _sched = crate::scheduler::NoWorkerSchedulerForTest::install();
+
+        for (id, state) in [
+            (28_311_700, HewActorState::Runnable),
+            (28_311_701, HewActorState::Running),
+        ] {
+            let (actor, mb) = make_stop_test_actor_with_id(id, state);
+            // Saturation makes any attempted speculative retain fail instead
+            // of allowing a retain/release pair to escape a final-value check.
+            // SAFETY: this isolated fixture is not visible to a scheduler.
+            unsafe {
+                (*actor).send_pin_count.store(u32::MAX, Ordering::Release);
+                finish_mailbox_enqueue_inner(actor, &*actor, true);
+                assert_eq!((*actor).send_pin_count.load(Ordering::Acquire), u32::MAX);
+                assert_eq!((*actor).actor_state.load(Ordering::Acquire), state as i32);
+                (*actor).send_pin_count.store(0, Ordering::Release);
+                drop(Box::from_raw(actor));
+                mailbox::hew_mailbox_free(mb);
+            }
+        }
+
+        let (terminal_actor, terminal_mb) =
+            make_stop_test_actor_with_id(28_311_702, HewActorState::Crashed);
+        let ch = reply_channel::hew_reply_channel_new();
+        assert!(!ch.is_null());
+        // SAFETY: the fresh channel and isolated terminal fixture remain live
+        // through the synchronous enqueue/reclaim handoff.
+        unsafe {
+            reply_channel::hew_reply_channel_retain(ch);
+            assert_eq!(
+                mailbox::hew_mailbox_send_with_reply(terminal_mb, 1, ptr::null_mut(), 0, ch.cast(),),
+                0
+            );
+            (*terminal_actor)
+                .send_pin_count
+                .store(u32::MAX, Ordering::Release);
+            finish_mailbox_enqueue_inner(terminal_actor, &*terminal_actor, true);
+            assert_eq!(
+                (*terminal_actor).send_pin_count.load(Ordering::Acquire),
+                u32::MAX,
+                "terminal reclaim must not acquire a scheduler queue pin"
+            );
+            assert!(
+                mailbox::ask_node_for_reply_channel_for_test(ch.cast()).is_null(),
+                "non-Idle terminal handoff must still retire the queued node"
+            );
+            assert!(reply_channel::hew_reply_channel_is_ready_for_test(ch));
+            assert_eq!(reply_channel::ref_count_for_test(ch), 1);
+
+            (*terminal_actor).send_pin_count.store(0, Ordering::Release);
+            reply_channel::hew_reply_channel_free(ch);
+            drop(Box::from_raw(terminal_actor));
+            mailbox::hew_mailbox_free(terminal_mb);
+        }
+
+        let (idle_actor, idle_mb) = make_stop_test_actor_with_id(28_311_703, HewActorState::Idle);
+        // SAFETY: the worker-less scheduler owns the resulting queue entry
+        // until this test explicitly discards it.
+        unsafe { finish_mailbox_enqueue_inner(idle_actor, &*idle_actor, true) };
+        // SAFETY: fixture remains live and exclusively test-owned.
+        let idle = unsafe { &*idle_actor };
+        assert_eq!(
+            idle.actor_state.load(Ordering::Acquire),
+            HewActorState::Runnable as i32
+        );
+        assert_eq!(
+            idle.send_pin_count.load(Ordering::Acquire),
+            1,
+            "an observed Idle actor must be pinned before queue publication"
+        );
+        assert!(scheduler::discard_queued_actor_for_test(idle_actor));
+        assert_eq!(idle.send_pin_count.load(Ordering::Acquire), 0);
+        // SAFETY: the only queue entry was discarded and the fixture is unused.
+        unsafe {
+            drop(Box::from_raw(idle_actor));
+            mailbox::hew_mailbox_free(idle_mb);
         }
     }
 

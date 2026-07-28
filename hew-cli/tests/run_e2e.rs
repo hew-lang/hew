@@ -2617,14 +2617,14 @@ fn check_carrier_conditional_consume_shared_exit_fails_closed() {
     );
 }
 
-/// The mailbox takes ownership of the buffer (no retain-on-send on the M-COW
-/// spine), so a sender that also scope-dropped it would free a buffer the live
-/// mailbox still owns — a use-after-free on the receiving side or a double-free
-/// when the handler later releases it. The fail-closed sole-owner derivation
-/// excludes the sent string because the send surfaces its backing local as a
-/// terminator/instr source operand (`terminator_source_places` /
-/// `instr_source_places`). A double-free trips the runtime's `free_cstring`
-/// sentinel (SIGABRT); a clean exit across many sends is the behavioural proof.
+/// A last-use string sent to an actor moves into the prepared outbound carrier
+/// and neutralizes the sender slot. The fixture's handler consumes that string
+/// into actor state; a FIFO ask verifies its exact length, and final actor
+/// teardown releases the receiver-owned buffer. If the sender also releases the
+/// prepared carrier after enqueue, teardown trips the runtime's `free_cstring`
+/// sentinel (SIGABRT). One transfer exercises the ownership edge completely;
+/// repeating it only amplifies runtime work under the shared subprocess
+/// deadline.
 #[test]
 fn run_actor_sent_string_not_double_freed() {
     require_codegen();
@@ -2638,8 +2638,8 @@ fn run_actor_sent_string_not_double_freed() {
 
     let output = run_bounded_hew_run(&source, repo_root());
 
-    // A double-free aborts the process (SIGABRT) via the runtime's
-    // `free_cstring` sentinel check, so `success()` is itself the proof.
+    // Wrong length returns non-zero; a double-free aborts via `free_cstring`.
+    // `success()` therefore preserves both the value and release oracles.
     assert!(
         output.status.success(),
         "actor_sent_string_not_double_freed should run cleanly (a double-free \

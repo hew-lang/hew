@@ -395,7 +395,10 @@ pub unsafe extern "C" fn hew_http_server_new(addr: *const c_char) -> *mut HewHtt
         }
         Err(err) => {
             let errno = io_errno_of(err.as_ref());
-            set_listen_error(errno, format!("http.listen: cannot bind `{addr_str}`"));
+            set_listen_error(
+                errno,
+                format!("http.listen: cannot bind `{addr_str}`: {err}"),
+            );
             std::ptr::null_mut()
         }
     }
@@ -1319,17 +1322,17 @@ mod tests {
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(srv.is_null(), "invalid address should return null");
         assert_eq!(hew_http_last_listen_errno(), -1);
-        assert_eq!(
-            http_last_error_text(),
-            "http.listen: cannot bind `not-a-valid-address`"
+        let detail = http_last_error_text();
+        let prefix = "http.listen: cannot bind `not-a-valid-address`: ";
+        assert!(detail.starts_with(prefix), "{detail}");
+        assert!(
+            detail.len() > prefix.len(),
+            "bind detail must include the underlying error: {detail}"
         );
         // Classification and detail are observational; neither read consumes
         // the actor-local pair needed by the Hew surface.
         assert_eq!(hew_http_last_listen_errno(), -1);
-        assert_eq!(
-            http_last_error_text(),
-            "http.listen: cannot bind `not-a-valid-address`"
-        );
+        assert_eq!(http_last_error_text(), detail);
     }
 
     // -- set_max_body -------------------------------------------------

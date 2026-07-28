@@ -47,13 +47,15 @@ def expect_status(
     *inventory: str,
     contains: str,
     timeout_seconds: str = "0.1",
+    excludes: tuple[str, ...] = (),
 ) -> None:
     result = invoke(compiler, *inventory, timeout_seconds=timeout_seconds)
     combined = result.stdout + result.stderr
-    if result.returncode != expected or contains not in combined:
+    unexpected = [text for text in excludes if text in combined]
+    if result.returncode != expected or contains not in combined or unexpected:
         raise AssertionError(
             f"expected status {expected} containing {contains!r}, "
-            f"got status {result.returncode}:\n{combined}"
+            f"excluding {unexpected!r}, got status {result.returncode}:\n{combined}"
         )
 
 
@@ -79,7 +81,7 @@ if sys.argv[2] != "--timeout":
     raise SystemExit(93)
 
 source = pathlib.Path(sys.argv[-1]).stem
-expected_timeout = "125ms" if source == "fractional" else "100ms"
+expected_timeout = "124ms" if source == "fractional" else "100ms"
 if sys.argv[3] != expected_timeout:
     print(f"unexpected timeout: {sys.argv[3]!r}, expected {expected_timeout!r}")
     raise SystemExit(94)
@@ -113,7 +115,7 @@ else:
             compiler,
             "--source",
             str(fractional),
-            timeout_seconds="0.125",
+            timeout_seconds="0.1234",
             contains="1 passed",
         )
 
@@ -203,6 +205,7 @@ else:
             "--source",
             str(hang),
             contains="timed out after 0.1s",
+            excludes=("exited with status",),
         )
 
         not_executable = root / "not-executable"

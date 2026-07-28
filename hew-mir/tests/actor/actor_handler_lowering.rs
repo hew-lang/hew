@@ -657,6 +657,58 @@ fn actor_receive_handlers_emit_actor_handler_functions_and_layout() {
     }
 }
 
+#[test]
+fn value_position_actor_self_preserves_concrete_local_pid_type() {
+    let mut ids = IdGen::default();
+    let pid_ty = local_pid_of("Echo");
+    let self_expr = HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: pid_ty.clone(),
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::ActorSelf,
+        span: 0..0,
+    };
+    let self_pid = receive(
+        "self_pid",
+        false,
+        vec![],
+        pid_ty.clone(),
+        block(&mut ids, vec![], Some(self_expr), pid_ty.clone()),
+    );
+    let echo = actor(&mut ids, "Echo", vec![self_pid]);
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(echo)]));
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "value-position actor self should lower without diagnostics: {:?}",
+        pipeline.diagnostics
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Echo__recv__self_pid")
+        .expect("self_pid handler MIR");
+    let self_dest = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find_map(|instruction| match instruction {
+            Instr::CallRuntimeAbi(call) if call.symbol() == "hew_actor_self" => call.dest(),
+            _ => None,
+        })
+        .expect("value-position `this` must call hew_actor_self with a destination");
+    let hew_mir::Place::Local(self_local) = self_dest else {
+        panic!("hew_actor_self destination must be a local, got {self_dest:?}");
+    };
+    assert_eq!(
+        handler.locals[self_local as usize], pid_ty,
+        "MIR must preserve the checker/HIR-provided LocalPid<Echo> tag; \
+         LocalPid<Unit> prevents conn.attach(this) from resolving Echo's protocol"
+    );
+}
+
 /// `#[every]` carry: the HIR `every_ns` nanosecond annotation must surface on
 /// the MIR `ActorHandlerLayout` as a millisecond interval, alongside the
 /// descriptor-derived `msg_type`, so spawn-site codegen can arm the periodic

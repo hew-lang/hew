@@ -1,6 +1,7 @@
 // A returned dyn value currently points at concrete storage in this callee's
-// frame. The signature must fail closed until the compiler heap-promotes that
-// storage and transfers drop authority to the caller.
+// frame. Direct and carrier-nested signatures must fail closed until the
+// compiler heap-promotes that storage and transfers drop authority to the
+// caller.
 
 trait Named {
     fn name(val: Self) -> string;
@@ -18,6 +19,10 @@ impl Named for Person {
 
 fn make_person() -> dyn Named {
     Person { name: "Ada" }
+}
+
+fn _maybe_person() -> Option<dyn Named> {
+    Some(Person { name: "Grace" })
 }
 
 fn main() {

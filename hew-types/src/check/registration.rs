@@ -5563,16 +5563,16 @@ impl Checker {
         });
         // A coercion to `dyn Trait` currently stores the fat pointer's data word
         // as an alias of concrete storage in the producing frame. Returning
-        // that pair would let the alias escape after the frame is gone. The
-        // runtime already has target-width box allocation primitives, but the
-        // compiler does not yet promote the concrete value and rewrite the data
-        // word at this boundary.
+        // that pair, directly or inside another carrier, would let the alias
+        // escape after the frame is gone. The runtime already has target-width
+        // box allocation primitives, but the compiler does not yet promote the
+        // concrete value and rewrite the data word at this boundary.
         //
         // WASM-TODO(dyn-trait-returns): heap-promote the concrete storage before
         // returning the fat pointer, then transfer its drop authority to the
         // caller. Until that lowering exists, reject the signature itself so
         // neither native nor wasm32 codegen can manufacture a dangling value.
-        if matches!(self.subst.resolve(&declared_return), Ty::TraitObject { .. }) {
+        if self.subst.resolve(&declared_return).contains_trait_object() {
             let error_span = fd
                 .return_type
                 .as_ref()

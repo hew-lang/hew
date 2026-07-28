@@ -807,6 +807,12 @@ impl Ty {
         matches!(self, Ty::Error) || self.any_child(&Ty::contains_error)
     }
 
+    /// Whether this type contains a dynamic trait object at any depth.
+    #[must_use]
+    pub fn contains_trait_object(&self) -> bool {
+        matches!(self, Ty::TraitObject { .. }) || self.any_child(&Ty::contains_trait_object)
+    }
+
     #[must_use]
     pub fn has_inference_var(&self) -> bool {
         match self {

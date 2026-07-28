@@ -474,6 +474,11 @@ struct Builder {
     /// Raw byte-copy sources that must be neutralized if their loaded value is
     /// moved onward by the callee.
     owned_carrier_neutralize: HashMap<Place, OwnedCarrierNeutralizeTarget>,
+    /// Basic blocks that have consumed each carrier authority. Lowering walks
+    /// sibling CFG arms sequentially, so the authority registry itself remains
+    /// stable; a transfer is rejected only when an earlier transfer can reach
+    /// the current block on the same runtime path.
+    owned_carrier_transferred_at: HashMap<Place, Vec<u32>>,
     /// Parameter slots this function does NOT own: by-value params that are
     /// neither consume-classified, nor registered owned carriers, nor
     /// mailbox-delivered (`ActorHandler`), nor #2732 enum-composite consumes.

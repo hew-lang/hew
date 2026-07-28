@@ -1,5 +1,5 @@
 use super::{
-    outbound_record_layouts, ty_is_indirect_enum, BindingId, Builder, CaptureEnvOwnedLoad,
+    outbound_record_layouts, ty_is_indirect_enum, BindingId, Builder, CaptureEnvOwnedLoad, HashSet,
     HirBinding, HirExpr, HirExprKind, Instr, MirDiagnostic, MirDiagnosticKind,
     OwnedCarrierNeutralizeTarget, OwnedCarrierParam, PendingOwnedCallArg, PendingOwnedCallSite,
     Place, SiteId, SnapshotFieldKind,
@@ -48,7 +48,7 @@ impl Builder {
         dest: Place,
         field_ty: &hew_types::ResolvedTy,
     ) {
-        let Some(authority) = self.owned_carrier_neutralize.get(&aggregate).cloned() else {
+        let Some(authority) = self.owned_carrier_authority(aggregate) else {
             return;
         };
         let record_layouts = outbound_record_layouts(self);
@@ -102,8 +102,8 @@ impl Builder {
     ) {
         let scrutinee = Place::Local(scrutinee_local);
         if !matches!(
-            self.owned_carrier_neutralize.get(&scrutinee),
-            Some(OwnedCarrierNeutralizeTarget::Whole(root)) if *root == scrutinee
+            self.owned_carrier_authority(scrutinee),
+            Some(OwnedCarrierNeutralizeTarget::Whole(root)) if root == scrutinee
         ) {
             return;
         }
@@ -351,9 +351,10 @@ impl Builder {
         value: Place,
         ty: &hew_types::ResolvedTy,
     ) -> Place {
-        let Some(target) = self.owned_carrier_neutralize.remove(&value) else {
+        let Some(target) = self.owned_carrier_authority(value) else {
             return value;
         };
+        self.record_owned_carrier_transfer(value);
         match target {
             OwnedCarrierNeutralizeTarget::Whole(source) => {
                 let dest = self.alloc_local(ty.clone());
@@ -375,6 +376,57 @@ impl Builder {
                 value
             }
         }
+    }
+
+    /// Whether an earlier transfer of `value` can reach the block currently
+    /// being lowered.
+    ///
+    /// Carrier authority is path-sensitive but MIR construction visits sibling
+    /// arms one after another. Removing an authority from a global Builder map
+    /// on the first arm suppresses the transfer in every later arm. Keep the
+    /// authority stable instead and use the already-sealed CFG to reject only
+    /// a second transfer on the same runtime path. A sibling arm has no path
+    /// from the first arm's body; a join or later block does.
+    fn owned_carrier_transfer_reaches_current(&self, value: Place) -> bool {
+        let Some(starts) = self.owned_carrier_transferred_at.get(&value) else {
+            return false;
+        };
+        let mut seen = HashSet::new();
+        let mut stack = starts.clone();
+        while let Some(block_id) = stack.pop() {
+            if block_id == self.current_block_id {
+                return true;
+            }
+            if !seen.insert(block_id) {
+                continue;
+            }
+            if let Some(block) = self
+                .pending_blocks
+                .iter()
+                .find(|block| block.id == block_id)
+            {
+                stack.extend(block.successors());
+            }
+        }
+        false
+    }
+
+    /// Active transfer authority for `value` on the current CFG path.
+    pub(crate) fn owned_carrier_authority(
+        &self,
+        value: Place,
+    ) -> Option<OwnedCarrierNeutralizeTarget> {
+        (!self.owned_carrier_transfer_reaches_current(value))
+            .then(|| self.owned_carrier_neutralize.get(&value).cloned())
+            .flatten()
+    }
+
+    /// Mark `value` consumed in the current basic block.
+    pub(crate) fn record_owned_carrier_transfer(&mut self, value: Place) {
+        self.owned_carrier_transferred_at
+            .entry(value)
+            .or_default()
+            .push(self.current_block_id);
     }
 
     fn transfer_owned_carrier_value(&mut self, expr: &HirExpr, value: Place) -> Place {
@@ -461,8 +513,8 @@ impl Builder {
                     // Projection carriers still transfer eagerly so their
                     // root-relative slot is neutralized once.
                     if matches!(
-                        self.owned_carrier_neutralize.get(&value),
-                        Some(OwnedCarrierNeutralizeTarget::Whole(root)) if *root == value
+                        self.owned_carrier_authority(value),
+                        Some(OwnedCarrierNeutralizeTarget::Whole(root)) if root == value
                     ) {
                         return Some(value);
                     }
@@ -483,7 +535,7 @@ impl Builder {
                     return None;
                 }
                 let value = self.lower_value(arg)?;
-                if self.owned_carrier_neutralize.contains_key(&value) {
+                if self.owned_carrier_authority(value).is_some() {
                     Some(value)
                 } else {
                     Some(self.transfer_owned_carrier_value(arg, value))

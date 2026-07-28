@@ -446,3 +446,168 @@ fn main() { println(drive(Door::Shut)); }
         );
     }
 }
+
+/// Sibling `if` arms start from the same owned-carrier authority. Lowering the
+/// first arm must not consume that compiler fact before the second arm is
+/// visited, otherwise the second returned Vec aliases a parameter that the
+/// terminal carrier drop has already freed.
+#[test]
+fn carrier_param_if_arms_each_neutralize_whole_slot() {
+    let p = pipeline_with_tc(
+        r"
+enum Slot { Filled(i64); Empty; }
+
+fn step(items: Vec<string>, i: i64) -> (Vec<string>, Slot) {
+    if i < 1 {
+        (items, Filled(i))
+    } else {
+        (items, Empty)
+    }
+}
+
+fn main() -> i64 {
+    let items: Vec<string> = Vec::new();
+    step(items, 1).0.len()
+}
+",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        p.diagnostics
+    );
+    let step = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "step")
+        .expect("raw fn step");
+    let neutralized_param_slots: Vec<_> = step
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::NeutralizePayloadSlot {
+                place: hew_mir::Place::Local(0),
+                transferee: Some(_),
+                ..
+            } => Some(()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        neutralized_param_slots.len(),
+        2,
+        "both mutually-exclusive return arms must transfer the Vec parameter"
+    );
+    assert_eq!(
+        step.blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(
+                instr,
+                Instr::ValueSnapshotDrop {
+                    value: hew_mir::Place::Local(0),
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "one terminal drop remains and observes a null slot on either returned arm"
+    );
+}
+
+/// A divergent arm does not reach the `if` join. Its transfer must not consume
+/// the authority used by the reachable sibling and the function's later tail.
+#[test]
+fn divergent_if_arm_preserves_reachable_carrier_authority() {
+    let p = pipeline_with_tc(
+        r"
+fn choose(items: Vec<string>, early: bool) -> Vec<string> {
+    if early {
+        return items;
+    }
+    items
+}
+
+fn main() -> i64 {
+    let items: Vec<string> = Vec::new();
+    choose(items, false).len()
+}
+",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        p.diagnostics
+    );
+    let choose = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "choose")
+        .expect("raw fn choose");
+    assert_eq!(
+        choose
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(
+                instr,
+                Instr::NeutralizePayloadSlot {
+                    place: hew_mir::Place::Local(0),
+                    transferee: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "the early return and reachable tail each need their own path-local transfer"
+    );
+}
+
+/// The same path fact applies to ordered match arms. A transfer in one body
+/// cannot suppress the mutually-exclusive body selected by the next predicate.
+#[test]
+fn carrier_param_match_arms_each_neutralize_whole_slot() {
+    let p = pipeline_with_tc(
+        r"
+fn choose(items: Vec<string>, tag: i64) -> Vec<string> {
+    match tag {
+        0 => items,
+        _ => items,
+    }
+}
+
+fn main() -> i64 {
+    let items: Vec<string> = Vec::new();
+    choose(items, 1).len()
+}
+",
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        p.diagnostics
+    );
+    let choose = p
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "choose")
+        .expect("raw fn choose");
+    assert_eq!(
+        choose
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .filter(|instr| matches!(
+                instr,
+                Instr::NeutralizePayloadSlot {
+                    place: hew_mir::Place::Local(0),
+                    transferee: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        2,
+        "both ordered match bodies start with the parameter's transfer authority"
+    );
+}

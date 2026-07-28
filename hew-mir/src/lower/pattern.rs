@@ -2123,9 +2123,9 @@ impl Builder {
     ) -> Option<u32> {
         let raw_place = self.lower_value(scrutinee)?;
         let place = if consume_owned {
-            match self.owned_carrier_neutralize.get(&raw_place) {
-                Some(super::OwnedCarrierNeutralizeTarget::Whole(root)) if *root == raw_place => {
-                    self.owned_carrier_neutralize.remove(&raw_place);
+            match self.owned_carrier_authority(raw_place) {
+                Some(super::OwnedCarrierNeutralizeTarget::Whole(root)) if root == raw_place => {
+                    self.record_owned_carrier_transfer(raw_place);
                     self.owned_carrier_consumed
                         .entry(raw_place)
                         .or_default()
@@ -2137,18 +2137,10 @@ impl Builder {
                     self.transfer_owned_carrier_place(raw_place, &scrutinee_ty)
                 }
                 None => {
-                    // A consuming match on a PARTITIONED sibling path already
-                    // took this whole carrier's authority (the first recording
-                    // removed the funnel entry above, so this arm sees `None`).
-                    // This match consumes on ITS path and must be recorded too:
-                    // an unrecorded site leaves its exit outside the consume
-                    // set, so the exit keeps the terminal snapshot drop over
-                    // fields the arm discharge already released — a double
-                    // release. Non-carrier scrutinees have no consumed entry
-                    // and pass through unrecorded, as before.
-                    if let Some(sites) = self.owned_carrier_consumed.get_mut(&raw_place) {
-                        sites.push((self.current_block_id, scrutinee.site));
-                    }
+                    // Either this is not a carrier or an earlier consume can
+                    // reach the current block. A mutually-exclusive sibling
+                    // remains available through the CFG reachability query
+                    // above and records its own consume site.
                     raw_place
                 }
             }

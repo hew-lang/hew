@@ -22,7 +22,7 @@
 //!
 //! The fix routes the field-binder escape scan through the SAME receiver-borrow
 //! authority the collection-LOCAL scan already uses
-//! (`is_vec_receiver_borrow_symbol` / `is_collection_receiver_borrow_callee`):
+//! (`callee_ownership_contract` → `ReceiverOwnership::Borrows`):
 //! a field-binder read ONLY as the borrowed receiver (arg[0]) of such a call is
 //! an interior borrow, not an escape, so the composite keeps its in-place drop
 //! and the inner collection is released exactly once.
@@ -381,8 +381,8 @@ fn assert_no_leak_over_control(shape_name: &str, fixture_source: &str) {
          the scalar-read control's floor of {control_leaks} (tolerance {FLOOR_TOLERANCE}). An \
          excess of {} nodes means the field-binder escape scan again treated the borrowed \
          collection receiver as an escape and excluded the composite from its in-place drop. The \
-         fix routes the field-binder scan through the receiver-borrow authority \
-         (`is_vec_receiver_borrow_symbol` / `is_collection_receiver_borrow_callee`) so a field \
+         fix routes the field-binder scan through the typed receiver-borrow authority \
+         (`callee_ownership_contract` → `ReceiverOwnership::Borrows`) so a field \
          read only as the borrowed receiver keeps the composite's drop. Re-run with \
          `MallocStackLogging=1 leaks --atExit -- {}` to see the leaked stack.",
         fixture_leaks.saturating_sub(control_leaks + FLOOR_TOLERANCE),

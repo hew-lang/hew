@@ -1,6 +1,6 @@
 mod support;
 
-use std::process::Command;
+use std::process::{Command, Output};
 
 use support::{hew_binary, require_codegen, strip_ansi};
 
@@ -9,6 +9,18 @@ fn write_fixture(content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let path = dir.path().join("fixture.hew");
     std::fs::write(&path, content).expect("cannot write fixture");
     (dir, path)
+}
+
+/// Run a generated fixture with an optional single-worker scheduler.  The
+/// bounded runner makes a lost reply a test failure instead of an orphaned
+/// compiler process.
+fn run_fixture(path: &std::path::Path, workers: Option<&str>, label: &str) -> Output {
+    let mut command = Command::new(hew_binary());
+    command.args(["run", path.to_str().unwrap()]);
+    if let Some(workers) = workers {
+        command.env("HEW_WORKERS", workers);
+    }
+    support::run_bounded_command(command, label)
 }
 
 /// A supervisor child declared with named init args propagates the seeded value
@@ -72,7 +84,12 @@ fn main() {
 /// The test exercises BOTH argument orders — natural (`a: 7, b: 99`) and
 /// reversed (`b: 99, a: 7`) — to confirm neither clobbers the other.
 ///
-/// Green condition: both runs exit 0 AND stdout contains "a=7 b=99".
+/// The actor replies only after it has printed and checked both fields.  That
+/// reply is the completion authority: unlike the old fixed sleeps, it cannot
+/// let `main` exit between enqueueing `report` and dispatching it.
+///
+/// Green condition: both orders, under the default pool and `HEW_WORKERS=1`,
+/// exit 0 AND stdout is exactly "a=7 b=99".
 #[test]
 fn supervisor_child_i32_fields_reversed_arg_order() {
     require_codegen();
@@ -80,26 +97,91 @@ fn supervisor_child_i32_fields_reversed_arg_order() {
     let source_natural = r#"actor Worker {
     let a: i32;
     let b: i32;
-    receive fn report() { print("a="); print(a); print(" b="); println(b); }
+    receive fn report() -> i64 {
+        print("a="); print(a); print(" b="); println(b);
+        if a == 7 && b == 99 { 0 } else { 1 }
+    }
 }
 supervisor Pool {
     strategy: one_for_one;
     intensity: 3 within 60s;
     child w: Worker(a: 7, b: 99);
 }
-fn main() {
+fn main() -> i64 {
     let sup = spawn Pool;
-    sleep(30ms);
     let w = sup.w;
-    w.report();
-    sleep(50ms);
+    match await w.report() {
+        Ok(status) => status,
+        Err(_) => 2,
+    }
 }
 "#;
 
     let source_reversed = r#"actor Worker {
     let a: i32;
     let b: i32;
-    receive fn report() { print("a="); print(a); print(" b="); println(b); }
+    receive fn report() -> i64 {
+        print("a="); print(a); print(" b="); println(b);
+        if a == 7 && b == 99 { 0 } else { 1 }
+    }
+}
+supervisor Pool {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(b: 99, a: 7);
+}
+fn main() -> i64 {
+    let sup = spawn Pool;
+    let w = sup.w;
+    match await w.report() {
+        Ok(status) => status,
+        Err(_) => 2,
+    }
+}
+"#;
+
+    for (label, source) in [("natural", source_natural), ("reversed", source_reversed)] {
+        let (_dir, path) = write_fixture(source);
+        for workers in [None, Some("1")] {
+            let pool = workers.unwrap_or("default");
+            let output = run_fixture(
+                &path,
+                workers,
+                &format!("i32 two-field oracle ({label} order, HEW_WORKERS={pool})"),
+            );
+            let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+            let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+            assert!(
+                output.status.success(),
+                "i32 two-field oracle ({label} order, HEW_WORKERS={pool}) must exit 0; \
+                 stdout: {stdout}; stderr: {stderr}"
+            );
+            assert_eq!(
+                stdout, "a=7 b=99\n",
+                "i32 two-field oracle ({label} order, HEW_WORKERS={pool}) \
+                 must observe the acknowledged field values"
+            );
+        }
+    }
+}
+
+/// The old `tell; sleep(50ms)` form has no completion authority: a loaded
+/// worker turn can still be pending when `main` exits.  This deliberately
+/// delayed handler is a counterfactual for the former 30 ms / 50 ms oracle;
+/// it must exit successfully with no report, proving that a quiet process is
+/// not evidence that a tell was handled.
+#[test]
+fn supervisor_child_i32_fixed_sleep_oracle_misses_delayed_turn() {
+    require_codegen();
+
+    let source = r#"actor Worker {
+    let a: i32;
+    let b: i32;
+    receive fn report() {
+        sleep(100ms);
+        print("a="); print(a); print(" b="); println(b);
+    }
 }
 supervisor Pool {
     strategy: one_for_one;
@@ -115,27 +197,75 @@ fn main() {
 }
 "#;
 
-    for (label, source) in [("natural", source_natural), ("reversed", source_reversed)] {
-        let (_dir, path) = write_fixture(source);
+    let (_dir, path) = write_fixture(source);
+    let output = run_fixture(
+        &path,
+        Some("1"),
+        "fixed-sleep counterfactual (HEW_WORKERS=1)",
+    );
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
-        let output = Command::new(hew_binary())
-            .args(["run", path.to_str().unwrap()])
-            .output()
-            .expect("hew binary must run");
+    assert!(
+        output.status.success(),
+        "fixed-sleep counterfactual should still exit 0; stderr: {stderr}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "the former fixed sleeps must miss a delayed report; got stdout: {stdout}"
+    );
+}
 
-        let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-        let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+/// An ask/reply oracle must reject a plausible but wrong field value.  The
+/// control uses the same reversed declaration order as the regression tooth,
+/// but deliberately supplies `b: 98`; a false green would hide the width/order
+/// wrong-code failure this test protects.
+#[test]
+fn supervisor_child_i32_ask_reply_oracle_discriminates_wrong_values() {
+    require_codegen();
 
-        assert!(
-            output.status.success(),
-            "i32 two-field oracle ({label} order) must exit 0; stderr: {stderr}"
-        );
-        assert!(
-            stdout.contains("a=7 b=99"),
-            "i32 two-field oracle ({label} order) must print 'a=7 b=99'; \
-             got stdout: {stdout}"
-        );
+    let source = r#"actor Worker {
+    let a: i32;
+    let b: i32;
+    receive fn report() -> i64 {
+        print("a="); print(a); print(" b="); println(b);
+        if a == 7 && b == 99 { 0 } else { 1 }
     }
+}
+supervisor Pool {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(b: 98, a: 7);
+}
+fn main() -> i64 {
+    let sup = spawn Pool;
+    let w = sup.w;
+    match await w.report() {
+        Ok(status) => status,
+        Err(_) => 2,
+    }
+}
+"#;
+
+    let (_dir, path) = write_fixture(source);
+    let output = run_fixture(
+        &path,
+        Some("1"),
+        "wrong-value ask/reply control (HEW_WORKERS=1)",
+    );
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "wrong-value ask/reply control must return its non-zero mismatch code; \
+         stdout: {stdout}; stderr: {stderr}"
+    );
+    assert_eq!(
+        stdout, "a=7 b=98\n",
+        "wrong-value ask/reply control must report the actual mismatching state"
+    );
 }
 
 /// Two i32 fields plus an i64 and a bool, seeded in fully reversed

@@ -572,10 +572,11 @@ examples/module_generic_boundaries/main.hew	main	1
 examples/mqtt_broker.hew	Acceptor__recv__start	9
 examples/mqtt_broker.hew	ClientHandler__recv__deliver	2
 examples/mqtt_broker.hew	ClientHandler__recv__on_data	128
+examples/mqtt_broker.hew	Connection::try_read	1
 examples/mqtt_broker.hew	Router__recv__claim_client_id	34
 examples/mqtt_broker.hew	Router__recv__client_disconnect	22
 examples/mqtt_broker.hew	Router__recv__publish	46
-examples/mqtt_broker.hew	Router__recv__register_client	23
+examples/mqtt_broker.hew	Router__recv__register_client	18
 examples/mqtt_broker.hew	Router__recv__subscribe	4
 examples/mqtt_broker.hew	Router__recv__unsubscribe	28
 examples/mqtt_broker.hew	build_publish	4
@@ -585,7 +586,7 @@ examples/mqtt_broker.hew	net$connect_timeout	23
 examples/mqtt_broker.hew	net$try_connect_timeout	5
 examples/mqtt_broker.hew	net$try_endpoint_port	2
 examples/mqtt_broker.hew	net$try_parse_bracketed_endpoint	16
-examples/mqtt_broker.hew	net$try_parse_endpoint	9
+examples/mqtt_broker.hew	net$try_parse_endpoint	10
 examples/mqtt_broker.hew	os$args	2
 examples/mqtt_broker.hew	read_mqtt_str	6
 examples/mqtt_broker.hew	string$count	8

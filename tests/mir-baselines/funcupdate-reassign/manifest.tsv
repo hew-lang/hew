@@ -1,6 +1,7 @@
 # Funcupdate / reassign elaborated-MIR golden baselines (#2648 interface pin, MIR half).
 #
-# generating-revision: 82a23b19b1a824a592c739a685c527d2c7efdab1
+# generating-revision: 427fe49fd (RC1 composed semantic tip; compilation was
+#   unblocked by the follow-up exhaustive Sender classification only)
 #   (rebased forward from 3683c2ac5; the closure/gen-fn string fixtures were
 #   regenerated to carry the A240 string copy-on-write drop plan — string shares
 #   are now Read/retain, so the source binding keeps a scope-exit drop and every
@@ -52,13 +53,24 @@
 #   funcupdate_owned_field_drop_test.elab.mir shifted, purely additively: 13
 #   `(none)`/terminal slots gain the already-declared record owner drop; no CFG,
 #   terminator, statement, value, or other fixture changes.
+#   Refreshed at the RC1 composed semantic tip for VecIter's corrected `next`
+#   contract. Only var_record_reassign_ownership_test.elab.mir changed: the
+#   `for x in values` checksum now preserves the `Option<i64>` produced by
+#   `hew_vec_get_clone`, consumes it at the match boundary, and carries the
+#   resulting explicit success/none CFG. The former baseline's `eval` nodes
+#   treated that call as unit/direct-i64, so it could not prove the iterator
+#   value path. This is a lowering/type-resolution correction, not an ownership
+#   relaxation: the changed chunk still has no release entries, and the
+#   fixture's reassign/actor Vec exactness tests retain the live owner proof.
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
-# normalization: two run-variance normalizations — (1) the dump's function
+# normalization: three run-variance normalizations — (1) the dump's function
 #   ORDER is nondeterministic (map iteration), so the harness splits both
 #   sides into per-function chunks (column-0 `fn ` lines) and sorts by
 #   signature line; (2) within each chunk, BindingId/SiteId values are
-#   renumbered in first-occurrence order. Within-chunk content order is
-#   preserved, so a reordered drop inside a chunk remains detectable.
+#   renumbered in first-occurrence order; (3) trailing newline bytes are
+#   discarded because the emitter may append one final blank line. Within-chunk
+#   content order is preserved, so a reordered drop inside a chunk remains
+#   detectable.
 #
 # Purpose: the Coarse freshness summary (`compute_fn_returns_fresh_owner` /
 # `return_value_may_alias_borrow`) feeds the destructive-funcupdate base gate

@@ -95,14 +95,14 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     (
         "examples/benchmarks/http_server.hew",
         "main",
-        5,
-        "the request loop and its owned path temporaries moved into serve_forever, so main no longer contains those syntactic release sites",
+        4,
+        "the request loop and its owned path temporaries moved into serve_forever; main retains only the error-arm reason/detail strings, each released on its normal and cancel exits",
     ),
     (
         "examples/benchmarks/http_server_expert.hew",
         "main",
-        9,
-        "the request loop and its owned path temporaries moved into serve_forever, so main no longer contains those syntactic release sites",
+        8,
+        "the request loop and its owned path temporaries moved into serve_forever; main retains addr across three live exits plus error-arm reason/detail strings on their normal and cancel exits",
     ),
     // SMTP constructors now return Result and transfer either the live
     // connection or error detail directly through the selected match arm.
@@ -136,8 +136,8 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     (
         "std/process.hew",
         "last_process_error",
-        0,
-        "both owned string inputs transfer directly into the selected ProcessError payload, leaving no untransferred Hew heap value to release",
+        1,
+        "the nonempty message transfers into ProcessError, while the empty-message arm transfers default_message and releases its now-unselected message buffer on that join edge",
     ),
     // SemVer numeric components are strings now. `try_parse` transfers them
     // into `Version` rather than parsing and dropping them, while

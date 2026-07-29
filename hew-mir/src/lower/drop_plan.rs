@@ -983,12 +983,15 @@ pub(super) fn elaborate(
     // arm) because on the return path the caller owns it. But a guard
     // early-return that exits BEFORE the aggregate is constructed still owns the
     // member locally and must release it — the `semver::try_parse` guard-return
-    // and `base64::decode` reject-path leaks. Restore the scope-exit drop on
-    // exactly the `Return` exits the member's transfer site provably cannot
-    // reach (the value is not yet handed off), and only where the dataflow
-    // proves it definitely `Live` (owned) at that exit. This is purely additive:
-    // it never removes an existing drop, and it emits one only where the value
-    // is provably the still-live sole owner, so it can leak-fix without any
+    // and `base64::decode` reject-path leaks. The same fact holds on an arm's
+    // `Goto` to the match/if join: when a sibling member is handed to the
+    // caller on the OTHER arm, the whole-function exclusion must not strand the
+    // still-live sibling on this arm. Restore the scope-exit drop on exactly the
+    // `Return` and arm-to-join `Goto` exits whose member transfer site provably
+    // cannot occur on this execution, and only where the dataflow proves it
+    // definitely `Live` (owned) at the source exit. This is purely additive: it
+    // never removes an existing drop, and it emits one only where the value is
+    // provably the still-live sole owner, so it can leak-fix without any
     // double-free. Scoped to leaf CoW values (`string` / `bytes`) whose release
     // is the unconditional `drop_kind_for` kind with no descriptor or
     // path-flag; a member of any other type stays under the path-insensitive
@@ -1015,17 +1018,108 @@ pub(super) fn elaborate(
             }
             member_transfer_reach.insert(*binding, reach);
         }
+        // The forward set above answers "has this member already been handed
+        // off?". A Goto needs the complementary question too: "can this edge
+        // still reach a hand-off later?". Build it by walking the CFG backwards
+        // from each transfer. An unresolved/ambiguous route stays in this set
+        // and therefore suppresses the re-admission (leak, never early free).
+        let mut reverse_cfg: HashMap<u32, Vec<u32>> = HashMap::new();
+        for block in &checked.blocks {
+            for successor in block.successors() {
+                reverse_cfg.entry(successor).or_default().push(block.id);
+            }
+        }
+        let mut member_transfer_predecessors: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, transfer_blocks) in &returned_member_transfer_blocks {
+            let mut predecessors = transfer_blocks.clone();
+            let mut worklist: Vec<u32> = transfer_blocks.iter().copied().collect();
+            while let Some(block) = worklist.pop() {
+                for predecessor in reverse_cfg.get(&block).into_iter().flatten() {
+                    if predecessors.insert(*predecessor) {
+                        worklist.push(*predecessor);
+                    }
+                }
+            }
+            member_transfer_predecessors.insert(*binding, predecessors);
+        }
+        // A Goto is not itself terminal. Even after ruling out a later return
+        // transfer, retain the blanket exclusion if the join can still READ the
+        // member. This makes the arm cleanup a last-use release rather than an
+        // eager free: a new lowering shape that keeps using a sibling after the
+        // join fails closed by leaking it instead of freeing it early.
+        let candidate_locals: HashMap<u32, BindingId> = returned_member_candidates
+            .iter()
+            .filter_map(|(binding, _name, _ty)| {
+                builder
+                    .binding_locals
+                    .get(binding)
+                    .and_then(|place| base_local(*place))
+                    .map(|local| (local, *binding))
+            })
+            .collect();
+        let mut member_read_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for block in &checked.blocks {
+            let sources = block
+                .instructions
+                .iter()
+                .flat_map(instr_source_places)
+                .chain(terminator_source_places(
+                    &block.terminator,
+                    builder.suspend_kinds.get(&block.id),
+                ));
+            for source in sources {
+                if let Some(binding) =
+                    base_local(source).and_then(|local| candidate_locals.get(&local))
+                {
+                    member_read_blocks
+                        .entry(*binding)
+                        .or_default()
+                        .insert(block.id);
+                }
+            }
+        }
+        let mut member_read_predecessors: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for (binding, read_blocks) in &member_read_blocks {
+            let mut predecessors = read_blocks.clone();
+            let mut worklist: Vec<u32> = read_blocks.iter().copied().collect();
+            while let Some(block) = worklist.pop() {
+                for predecessor in reverse_cfg.get(&block).into_iter().flatten() {
+                    if predecessors.insert(*predecessor) {
+                        worklist.push(*predecessor);
+                    }
+                }
+            }
+            member_read_predecessors.insert(*binding, predecessors);
+        }
         for (exit, plan) in &mut drop_plans {
-            let ExitPath::Return { block } = exit else {
-                continue;
+            let (block, is_goto) = match exit {
+                ExitPath::Return { block } => (*block, None),
+                ExitPath::Goto { block, target } => (*block, Some(*target)),
+                _ => continue,
             };
-            let Some(state_map) = dataflow_result.exit_states.get(block) else {
+            let Some(state_map) = dataflow_result.exit_states.get(&block) else {
                 continue;
             };
             for (binding, reach) in &member_transfer_reach {
                 // This exit is at or after the hand-off: caller owns the value.
-                if reach.contains(block) {
+                if reach.contains(&block) {
                     continue;
+                }
+                if let Some(target) = is_goto {
+                    // A normal continuation can still perform this member's
+                    // transfer: retain the blanket exclusion until then.
+                    if member_transfer_predecessors
+                        .get(binding)
+                        .is_some_and(|predecessors| predecessors.contains(&block))
+                    {
+                        continue;
+                    }
+                    if member_read_predecessors
+                        .get(binding)
+                        .is_some_and(|predecessors| predecessors.contains(&target))
+                    {
+                        continue;
+                    }
                 }
                 // Only re-admit where the value is definitely still owned. A
                 // `MaybeConsumed`/`Uninit`/`Consumed` state at this exit is

@@ -5255,6 +5255,19 @@ pub(super) fn derive_returned_member_transfer_blocks(
                 {
                     record(src, block.id, &mut transfer_blocks);
                 }
+                // A returned enum / Result constructor stores its member
+                // through an interior variant projection rather than a plain
+                // local move. This is the transfer boundary for the selected
+                // arm: without recording it, the path-sensitive re-admission
+                // cannot distinguish `Err(x)` from its `Ok(y)` sibling and
+                // leaves the untouched local excluded on both arm-to-join
+                // edges.
+                Instr::Move {
+                    dest: dest @ (Place::MachineVariant { .. } | Place::EnumVariant { .. }),
+                    src,
+                } if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) => {
+                    record(src, block.id, &mut transfer_blocks);
+                }
                 // Aggregate constructor whose dest reaches the return: each
                 // non-retained element/field source is handed off here.
                 Instr::TupleConstruct { elements, dest }

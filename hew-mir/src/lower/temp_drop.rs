@@ -916,6 +916,22 @@ pub(super) fn derive_cow_sole_owner(
         locals,
         false,
     );
+    // A generator capture `RecordInit` is not an owning aggregate sink. It is
+    // the synthetic stack alias shell consumed immediately by
+    // `MakeGenerator`, whose per-field plan mints the independent heap owner
+    // with one semantic clone (or transfers the sole owner for `OwnedMove`).
+    // Treating this constructor like an ordinary record ingress emits a second
+    // string-only retain before codegen's structural clone. The closure owner
+    // and generator owner then provide only two matching drops, leaving that
+    // redundant retain live. Track the MIR-declared env places so the general
+    // aggregate-share pass does not invent an owner at their `RecordInit`.
+    let generator_env_stack_locals: HashSet<u32> = blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => base_local(env.place),
+            _ => None,
+        })
+        .collect();
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
     let mut pending_share_sites: Vec<(u32, usize, Place, Vec<BindingId>)> = Vec::new();
@@ -1056,7 +1072,17 @@ pub(super) fn derive_cow_sole_owner(
                 }
             }
 
-            let share_places = string_share_sink_places(instr);
+            let is_generator_env_alias_shell = matches!(
+                instr,
+                Instr::RecordInit { dest, .. }
+                    if base_local(*dest)
+                        .is_some_and(|local| generator_env_stack_locals.contains(&local))
+            );
+            let share_places = if is_generator_env_alias_shell {
+                Vec::new()
+            } else {
+                string_share_sink_places(instr)
+            };
             if !share_places.is_empty() {
                 let mut candidate_groups: HashMap<u32, Vec<Place>> = HashMap::new();
                 let mut external_groups: HashMap<u32, (bool, Vec<Place>)> = HashMap::new();
@@ -6404,6 +6430,80 @@ mod cow_sole_owner_derivation {
                 condition: StringRetainCondition::Always,
                 required_bindings: Vec::new(),
             }]
+        );
+    }
+
+    #[test]
+    fn generator_env_alias_shell_defers_string_clone_to_make_generator() {
+        let source = BindingId(71);
+        let env_ty = ResolvedTy::named_user("__hew_gen_env_test_0", vec![]);
+        let owned = vec![(source, "source".to_string(), ResolvedTy::String)];
+        let binding_locals = HashMap::from([(source, Place::Local(3))]);
+        let mut constructor = block(vec![
+            Instr::RecordInit {
+                ty: env_ty.clone(),
+                fields: vec![(FieldOffset(0), Place::Local(3))],
+                dest: Place::Local(4),
+            },
+            // Keep the source live after the alias-shell construction. An
+            // ordinary RecordInit at this site must retain; MakeGenerator's
+            // declared structural clone is the independent owner here.
+            Instr::IntCmp {
+                dest: Place::Local(6),
+                pred: CmpPred::Eq,
+                lhs: Place::Local(3),
+                rhs: Place::Local(3),
+            },
+        ]);
+        constructor.terminator = Terminator::MakeGenerator {
+            dest: Place::Local(5),
+            body_fn: "__hew_gen_body_test_0".to_string(),
+            next: 1,
+            env: Some(crate::model::GeneratorEnvPlan {
+                place: Place::Local(4),
+                ty: env_ty.clone(),
+                fields: Vec::new(),
+            }),
+        };
+        let blocks = vec![
+            constructor,
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Return,
+            },
+        ];
+        let derivation = derive_cow_sole_owner(
+            &blocks,
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[
+                ResolvedTy::Unit,
+                ResolvedTy::Unit,
+                ResolvedTy::Unit,
+                ResolvedTy::String,
+                env_ty,
+                ResolvedTy::Unit,
+                ResolvedTy::Bool,
+            ],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+
+        assert!(
+            derivation.retain_sites.is_empty(),
+            "the generator stack env is an alias shell; MakeGenerator's field \
+             plan is the sole clone authority, got {:?}",
+            derivation.retain_sites
         );
     }
 

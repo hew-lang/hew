@@ -90,16 +90,6 @@ const SOURCE_REFRESHED_BASELINE_FILES: &[&str] = &["examples/mqtt_broker.hew"];
 /// release fails this test and forces the entry to be removed rather than
 /// letting the debt quietly become the new normal.
 const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
-    // The `Err(err)` binder is an interior byte-alias of the parent `Result`.
-    // The local-call snapshot is separately cloned, but the binder itself is
-    // not: dropping both binder and parent on cancellation walked the same
-    // `CronError` string twice.
-    (
-        "std/time/cron/cron.hew",
-        "Expr::next",
-        6,
-        "the nested CronError binder aliases its parent Result; suppressing its duplicate cancellation drop prevents a child-plus-parent double-free",
-    ),
     // The benchmark loops moved to `serve_forever`; these `main` functions now
     // own only listener construction and its typed failure branch.
     (

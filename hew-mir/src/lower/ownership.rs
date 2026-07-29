@@ -2601,6 +2601,20 @@ impl Builder {
         self.mark_binding_moved(id);
     }
     pub(crate) fn mark_binding_moved(&mut self, id: BindingId) {
+        // A parent overwrite can transfer an inline enum's old string payload
+        // into its projected arm binder (`flag = 0`). If that binder is then
+        // moved onward, it no longer owns the delayed release: re-arm the same
+        // guard on this exact runtime path so an arm-close / early-exit plan
+        // cannot release after the transferee. This must happen at the general
+        // consume seam rather than at the parent overwrite — a conditional
+        // consume leaves the sibling path at zero, where the binder still owns
+        // and must release the payload.
+        if let Some(flag) = self.projected_payload_overwrite_flags.get(&id).copied() {
+            self.instructions.push(Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            });
+        }
         // #2301 -- record the move-out at runtime for a binding that carries a
         // path-sensitive overwrite-release flag. Setting the flag on EVERY
         // consume retraction (the `ConsumedAt` disposition write below, every

@@ -2988,7 +2988,21 @@ pub(crate) fn resolve_ty<'ctx>(
     ) {
         return Ok(ctx.ptr_type(AddressSpace::default()).into());
     }
-    if let ResolvedTy::Named { name, args, .. } = ty {
+    if let ResolvedTy::Named {
+        name,
+        args,
+        builtin,
+        is_opaque,
+    } = ty
+    {
+        // A stamped user/imported opaque identity is pointer-shaped even when
+        // its short name collides with a registered builtin record layout
+        // (`#[opaque] type MonitorRef {}`). Typed identity outranks the
+        // short-name layout fallback; ordinary user records have
+        // `is_opaque: false` and still take the layout-first path below.
+        if builtin.is_none() && *is_opaque {
+            return Ok(ctx.ptr_type(AddressSpace::default()).into());
+        }
         if matches!(
             ty,
             ResolvedTy::Named {

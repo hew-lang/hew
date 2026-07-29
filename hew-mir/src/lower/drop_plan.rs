@@ -12,14 +12,13 @@ use super::{
     derive_tuple_composite_drop_allowed, instr_source_places, mangle_layout_key,
     place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
     retained_string_terminator_drop_safe, short_name, string_call_borrows,
-    terminator_is_suspend_carrier, terminator_source_places, user_record_layout_key,
-    vec_iter_record_init_vec_source, BTreeMap, BasicBlock, BindingId, BlockKind, Builder,
-    BuiltinType, CheckedMirFunction, ClosureEnvFieldOwnership, ClosurePairRhs, Disposition,
-    DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet,
-    HirExpr, HirExprKind, Instr, IntentKind, LambdaCapture, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, ResolvedRef, ResolvedTy,
-    ResourceMarker, ScopeId, SuspendKind, Terminator, TraitObjectStorage, ValueClass,
-    ENTRY_BLOCK_ID,
+    terminator_source_places, user_record_layout_key, vec_iter_record_init_vec_source, BTreeMap,
+    BasicBlock, BindingId, BlockKind, Builder, BuiltinType, CheckedMirFunction,
+    ClosureEnvFieldOwnership, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock, ElabDrop,
+    ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr, IntentKind,
+    LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction,
+    ResolvedRef, ResolvedTy, ResourceMarker, ScopeId, SuspendKind, Terminator, TraitObjectStorage,
+    ValueClass, ENTRY_BLOCK_ID,
 };
 
 /// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
@@ -2561,9 +2560,120 @@ fn terminator_mint_places(term: &Terminator) -> Vec<Place> {
             arms.iter().filter_map(|arm| arm.binding).collect()
         }
         Terminator::Join { result, .. } => vec![*result],
-        // No write slots (suspending carriers park state in the coro frame;
-        // functions containing them are excluded from this pass wholesale).
+        // No write slots. A bare Suspend's result writes occur only when the
+        // continuation resumes, so `suspend_resume_mint_places` applies them
+        // on that edge rather than to the pre-suspend frame state.
         _ => Vec::new(),
+    }
+}
+
+/// Normal (non-abandon) successors for ownership balance.
+///
+/// `BasicBlock::successors` includes a suspend carrier's cleanup target because
+/// other CFG passes need to see the physical coroutine switch. Ownership
+/// balance instead models `coro.destroy` as a terminal edge whose frame drops
+/// are carried by `ExitPath::Suspend`; propagating the parked frame state into
+/// `cleanup` would mix abandon-only execution into the resumed body.
+fn obligation_successors(block: &BasicBlock) -> Vec<u32> {
+    match &block.terminator {
+        Terminator::Suspend { resume, .. } => vec![*resume],
+        Terminator::SuspendingScopeDeadline {
+            timeout_body_block,
+            resume,
+            ..
+        } => vec![*timeout_body_block, *resume],
+        Terminator::SuspendingSelect { arms, resume, .. } => {
+            let mut successors: Vec<u32> = arms.iter().map(|arm| arm.body_block).collect();
+            successors.push(*resume);
+            successors
+        }
+        _ => block.successors(),
+    }
+}
+
+/// Destinations written by the suspend ramp only after case-0 resume.
+///
+/// These cannot be minted in the suspend block's common state: the destroy
+/// edge never initializes them, and charging them there would manufacture
+/// frame obligations on abandon.
+fn suspend_resume_mint_places(kind: &SuspendKind) -> Vec<Place> {
+    match kind {
+        SuspendKind::Ask {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        }
+        | SuspendKind::RemoteAsk {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        } => vec![*result_dest, *reply_dest, *error_dest],
+        SuspendKind::Read {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | SuspendKind::Accept {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | SuspendKind::StreamNext {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | SuspendKind::ChannelRecv {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        } => std::iter::once(*result_dest)
+            .chain(deadline_result_dest.iter().copied())
+            .chain(error_dest.iter().copied())
+            .collect(),
+        SuspendKind::CallClosure { result_dest, .. }
+        | SuspendKind::TaskAwait { result_dest, .. } => result_dest.iter().copied().collect(),
+        SuspendKind::RestartWait {
+            result_dest,
+            deadline_result_dest,
+            ..
+        } => std::iter::once(*result_dest)
+            .chain(deadline_result_dest.iter().copied())
+            .collect(),
+        SuspendKind::StreamSend { .. }
+        | SuspendKind::Sleep { .. }
+        | SuspendKind::SleepUntil { .. } => Vec::new(),
+    }
+}
+
+fn apply_suspend_resume_mints(
+    state: &mut ObligationMap,
+    predecessor: &BasicBlock,
+    successor: u32,
+    kind: Option<&SuspendKind>,
+    cx: &ObligationCtx<'_>,
+) {
+    let Terminator::Suspend { resume, .. } = &predecessor.terminator else {
+        return;
+    };
+    if *resume != successor {
+        return;
+    }
+    let Some(kind) = kind else {
+        return;
+    };
+    for write in suspend_resume_mint_places(kind) {
+        if let Some(local) = mint_target_local(write) {
+            if !cx.alias_to.contains_key(&local) && cx.tracked.contains_key(&local) {
+                state.insert(local, ObligationState::minted());
+            }
+        }
     }
 }
 
@@ -2782,14 +2892,6 @@ fn validate_obligation_balance_capped(
     if blocks.is_empty() || tracked_in.is_empty() {
         return findings;
     }
-    // Coroutine ramps park ownership in the coro frame across suspend
-    // points; the lite whole-local model excludes them (S2/OWN-V1 scope).
-    if blocks
-        .iter()
-        .any(|b| terminator_is_suspend_carrier(&b.terminator))
-    {
-        return findings;
-    }
 
     let alias_to = collect_payload_alias_map(blocks);
     // A payload-alias binder's discharges fold into its carrier; the binder
@@ -2884,13 +2986,18 @@ fn validate_obligation_balance_capped(
     // Scope-exit releases ride the NORMAL-continuation exit plans (a
     // `goto[bbN->bbM]` edge closing an inner scope carries real drops), so
     // those plans participate in the dataflow at their owning block.
-    // Exception edges (`Panic` / `Cancel`) fire only on unwind and `Return`
-    // plans are folded at the verdict — neither applies here.
+    // Exception edges (`Panic` / `Cancel`) fire only on unwind. `Return`
+    // and `Suspend` plans are folded at their terminal verdicts: a suspend
+    // plan belongs solely to the coro.destroy abandon edge and must never
+    // discharge the still-live frame state flowing into resume.
     let mut edge_drops: HashMap<u32, Vec<&ElabDrop>> = HashMap::new();
     for (exit, plan) in &elab.drop_plans {
         if matches!(
             exit,
-            ExitPath::Return { .. } | ExitPath::Panic { .. } | ExitPath::Cancel { .. }
+            ExitPath::Return { .. }
+                | ExitPath::Panic { .. }
+                | ExitPath::Cancel { .. }
+                | ExitPath::Suspend { .. }
         ) {
             continue;
         }
@@ -2910,12 +3017,34 @@ fn validate_obligation_balance_capped(
         }
     }
 
-    // Forward interval fixpoint over the raw CFG. Monotone: `lo` only
-    // decreases, `hi` only increases, `neutralized` only coarsens — all
-    // bounded, so the worklist terminates (loops included).
+    // Forward interval fixpoint over the normal/resume CFG. Suspend cleanup
+    // targets are excluded from predecessor and reachability construction:
+    // the abandon edge is terminal and checked against its plan below.
+    // Monotone: `lo` only decreases, `hi` only increases, `neutralized` only
+    // coarsens — all bounded, so the worklist terminates (loops included).
     let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
-    let preds = dataflow::build_preds(blocks);
-    let reachable = dataflow::reachable_from_entry(blocks);
+    let mut preds: HashMap<u32, Vec<u32>> = HashMap::new();
+    for block in blocks {
+        for successor in obligation_successors(block) {
+            preds.entry(successor).or_default().push(block.id);
+        }
+    }
+    let mut reachable: HashSet<u32> = HashSet::new();
+    let mut reach_stack = Vec::new();
+    if by_id.contains_key(&ENTRY_BLOCK_ID) {
+        reachable.insert(ENTRY_BLOCK_ID);
+        reach_stack.push(ENTRY_BLOCK_ID);
+    }
+    while let Some(block_id) = reach_stack.pop() {
+        let Some(block) = by_id.get(&block_id) else {
+            continue;
+        };
+        for successor in obligation_successors(block) {
+            if reachable.insert(successor) {
+                reach_stack.push(successor);
+            }
+        }
+    }
     let mut exit_states: HashMap<u32, ObligationMap> = HashMap::new();
     let mut worklist: VecDeque<u32> = dataflow::compute_rpo(blocks).into();
     let mut iterations: usize = 0;
@@ -2948,10 +3077,21 @@ fn validate_obligation_balance_capped(
             .unwrap_or(&empty)
             .iter()
             .filter(|p| reachable.contains(p))
-            .filter_map(|p| exit_states.get(p))
+            .filter_map(|p| {
+                let predecessor = by_id.get(p)?;
+                let mut state = exit_states.get(p)?.clone();
+                apply_suspend_resume_mints(
+                    &mut state,
+                    predecessor,
+                    bb_id,
+                    suspend_kinds.get(p),
+                    &cx,
+                );
+                Some(state)
+            })
             .fold(None::<ObligationMap>, |acc, m| match acc {
-                None => Some(m.clone()),
-                Some(cur) => Some(meet_obligation_maps(&cur, m)),
+                None => Some(m),
+                Some(cur) => Some(meet_obligation_maps(&cur, &m)),
             })
             .unwrap_or_default();
         let mut state = entry;
@@ -2967,22 +3107,25 @@ fn validate_obligation_balance_capped(
         let changed = exit_states.get(&bb_id) != Some(&state);
         exit_states.insert(bb_id, state);
         if changed {
-            for succ in block.successors() {
+            for succ in obligation_successors(block) {
                 worklist.push_back(succ);
             }
         }
     }
 
-    // Verdict per (Return exit, tracked local): fold the exit plan's drops
-    // into the exit block's post-terminator state, then check the interval.
+    // Verdict per terminal ownership edge: Return folds the ordinary function
+    // exit plan; Suspend folds the abandon-only frame plan. The default park
+    // edge is not terminal ownership transfer — the owner remains in frame.
     for (exit, plan) in &elab.drop_plans {
-        let ExitPath::Return { block } = exit else {
-            continue;
+        let (block, exit_label) = match exit {
+            ExitPath::Return { block } => (*block, "return"),
+            ExitPath::Suspend { block, .. } => (*block, "suspend-abandon"),
+            _ => continue,
         };
-        if !reachable.contains(block) {
+        if !reachable.contains(&block) {
             continue;
         }
-        let Some(block_state) = exit_states.get(block) else {
+        let Some(block_state) = exit_states.get(&block) else {
             continue;
         };
         let mut state = block_state.clone();
@@ -2997,11 +3140,11 @@ fn validate_obligation_balance_capped(
             if ob.hi == 0 {
                 findings.push(MirCheck::ObligationUnderReleased {
                     function: elab.name.clone(),
-                    block: *block,
+                    block,
                     name: name.clone(),
                     local_ty: local_types.get(root).cloned().unwrap_or_default(),
                     reason: format!(
-                        "owned local `{name}` reaches return[bb{block}] with zero \
+                        "owned local `{name}` reaches {exit_label}[bb{block}] with zero \
                          discharges on every path modelling: no terminal drop in \
                          this exit's plan and no ownership transfer before the \
                          exit (mint without discharge = leak)"
@@ -3010,11 +3153,11 @@ fn validate_obligation_balance_capped(
             } else if ob.max_definite >= OBLIGATION_COUNT_SATURATION {
                 findings.push(MirCheck::ObligationOverReleased {
                     function: elab.name.clone(),
-                    block: *block,
+                    block,
                     name: name.clone(),
                     reason: format!(
                         "owned local `{name}` accumulates {max_def}+ definite \
-                         discharges on a single path reaching return[bb{block}] \
+                         discharges on a single path reaching {exit_label}[bb{block}] \
                          (discharge interval [{lo}, {hi}], per-path definite max \
                          {max_def}): double release",
                         max_def = ob.max_definite,
@@ -8218,18 +8361,26 @@ mod obligation_balance_validator {
         plans: Vec<(ExitPath, DropPlan)>,
         tracked: &[(u32, &str)],
     ) -> Vec<MirCheck> {
+        run_with_suspend_kinds(&blocks, plans, tracked, &HashMap::new())
+    }
+
+    fn run_with_suspend_kinds(
+        blocks: &[BasicBlock],
+        plans: Vec<(ExitPath, DropPlan)>,
+        tracked: &[(u32, &str)],
+        suspend_kinds: &HashMap<u32, SuspendKind>,
+    ) -> Vec<MirCheck> {
         let elab = elab_with_plans(plans);
         let tracked: BTreeMap<u32, String> = tracked
             .iter()
             .map(|(local, name)| (*local, (*name).to_string()))
             .collect();
-        let suspend_kinds = HashMap::new();
         let params = HashSet::new();
         let local_types = BTreeMap::new();
         validate_obligation_balance_with(
             &elab,
-            &blocks,
-            &suspend_kinds,
+            blocks,
+            suspend_kinds,
             &tracked,
             &local_types,
             &params,
@@ -8774,10 +8925,11 @@ mod obligation_balance_validator {
         assert!(findings.is_empty(), "no mint, no obligation: {findings:?}");
     }
 
-    /// Functions carrying a suspend terminator are excluded wholesale (the
-    /// coro frame owns cross-suspend state; S2/OWN-V1 scope).
+    /// The abandon plan balances the parked frame, but it must not be charged
+    /// to the resume edge: that path still leaks when its return plan omits the
+    /// terminal drop.
     #[test]
-    fn suspending_function_is_excluded() {
+    fn suspend_resume_without_return_drop_is_under_release() {
         let blocks = vec![
             block(
                 0,
@@ -8790,11 +8942,160 @@ mod obligation_balance_validator {
             ),
             block(1, Vec::new(), Terminator::Return),
         ];
-        let plans = vec![(ExitPath::Return { block: 1 }, DropPlan::default())];
+        let plans = vec![
+            (
+                ExitPath::Suspend {
+                    block: 0,
+                    resume: 1,
+                    cleanup: 1,
+                },
+                DropPlan {
+                    drops: vec![plain_drop(Place::Local(1))],
+                },
+            ),
+            (ExitPath::Return { block: 1 }, DropPlan::default()),
+        ];
+        let findings = run(blocks, plans, &[(1, "framed")]);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::ObligationUnderReleased { block: 1, .. }]
+            ),
+            "only the resumed return edge is under-released: {findings:?}"
+        );
+    }
+
+    /// A return drop balances normal completion, but cannot compensate for an
+    /// abandon edge whose frame-cleanup plan omits the parked owner.
+    #[test]
+    fn suspend_abandon_without_frame_drop_is_under_release() {
+        let blocks = vec![
+            block(
+                0,
+                vec![mint(1)],
+                Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 1,
+                    is_final: false,
+                },
+            ),
+            block(1, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![
+            (
+                ExitPath::Suspend {
+                    block: 0,
+                    resume: 1,
+                    cleanup: 1,
+                },
+                DropPlan::default(),
+            ),
+            (
+                ExitPath::Return { block: 1 },
+                DropPlan {
+                    drops: vec![plain_drop(Place::Local(1))],
+                },
+            ),
+        ];
+        let findings = run(blocks, plans, &[(1, "framed")]);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::ObligationUnderReleased { block: 0, .. }]
+            ),
+            "only the abandon edge with no frame drop is under-released: {findings:?}"
+        );
+    }
+
+    /// Resume and abandon are mutually exclusive terminal ownership paths;
+    /// each one needs (and may safely carry) its own drop of the frame owner.
+    #[test]
+    fn suspend_resume_and_abandon_drops_balance() {
+        let blocks = vec![
+            block(
+                0,
+                vec![mint(1)],
+                Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 1,
+                    is_final: false,
+                },
+            ),
+            block(1, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![
+            (
+                ExitPath::Suspend {
+                    block: 0,
+                    resume: 1,
+                    cleanup: 1,
+                },
+                DropPlan {
+                    drops: vec![plain_drop(Place::Local(1))],
+                },
+            ),
+            (
+                ExitPath::Return { block: 1 },
+                DropPlan {
+                    drops: vec![plain_drop(Place::Local(1))],
+                },
+            ),
+        ];
         let findings = run(blocks, plans, &[(1, "framed")]);
         assert!(
             findings.is_empty(),
-            "suspend carriers are out of S1 scope: {findings:?}"
+            "resume and abandon each carry one terminal drop: {findings:?}"
+        );
+    }
+
+    /// A suspend result does not exist on abandon, but becomes a fresh owner
+    /// on case-0 resume and therefore needs a terminal drop on that path.
+    #[test]
+    fn suspend_result_mint_is_resume_edge_local() {
+        let blocks = vec![
+            block(
+                0,
+                Vec::new(),
+                Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            ),
+            block(1, Vec::new(), Terminator::Return),
+            block(2, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![
+            (
+                ExitPath::Suspend {
+                    block: 0,
+                    resume: 1,
+                    cleanup: 2,
+                },
+                DropPlan::default(),
+            ),
+            (ExitPath::Return { block: 1 }, DropPlan::default()),
+            (ExitPath::Return { block: 2 }, DropPlan::default()),
+        ];
+        let suspend_kinds = [(
+            0,
+            SuspendKind::Read {
+                conn: Place::Local(0),
+                result_dest: Place::Local(1),
+                deadline_result_dest: None,
+                error_dest: None,
+                to_string: true,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let findings = run_with_suspend_kinds(&blocks, plans, &[(1, "reply")], &suspend_kinds);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::ObligationUnderReleased { block: 1, .. }]
+            ),
+            "the resumed result is minted only on resume, never on abandon: {findings:?}"
         );
     }
 

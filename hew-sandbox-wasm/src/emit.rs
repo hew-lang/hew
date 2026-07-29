@@ -1984,8 +1984,12 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 let index_local = self.lower_expr(index)?;
                 let ty = self.ty_for_expr(expr);
                 let dst = self.temp_local(&ty, Some(span.clone()));
+                // Indexing has the native bounds-trap contract.  Keep it
+                // distinct from `Vec::get`, whose `vector.get` opcode
+                // materializes an Option and therefore needs the destination
+                // enum layout at runtime.
                 self.emit_instruction(
-                    "vector.get",
+                    "vector.index",
                     Some(dst.clone()),
                     vec![Operand::local(object_local), Operand::local(index_local)],
                     Some(span.clone()),

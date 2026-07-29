@@ -816,6 +816,28 @@ fn main() {
     }
 
     #[test]
+    fn vector_index_expression_emits_bounds_trapping_index_opcode() {
+        let source = r"
+fn main() {
+    let values: Vec<i64> = Vec::new();
+    values.push(7);
+    println(values[0]);
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let ops = all_instruction_ops(&bytecode);
+        assert!(ops.contains(&"vector.index"));
+        assert!(!ops.contains(&"vector.get"));
+    }
+
+    #[test]
     fn string_methods_emit_len_and_slice() {
         set_test_hewpath();
         let source = r#"

@@ -12082,6 +12082,77 @@ fn emit_field_drop_step_bytes_fail_closed_on_non_struct_field() {
 // closed on classification drift instead of emitting a walk over the
 // wrong shape.
 
+#[test]
+fn builtin_handle_field_overwrite_fails_closed_before_store() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("builtin_handle_field_overwrite_refusal");
+    let harness = build_harness(&ctx, &[], &[]);
+    let fn_ctx = make_test_fn_ctx(
+        &ctx,
+        &llvm_mod,
+        &harness,
+        "builtin_handle_field_overwrite_probe",
+    );
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let field_ptr = fn_ctx
+        .builder
+        .build_alloca(ptr_ty, "old_handle_slot")
+        .expect("old handle slot");
+    let src_ptr = fn_ctx
+        .builder
+        .build_alloca(ptr_ty, "new_handle_slot")
+        .expect("new handle slot");
+    let src_val = fn_ctx
+        .builder
+        .build_load(ptr_ty, src_ptr, "new_handle")
+        .expect("new handle load");
+
+    for kind in [
+        IoHandleKind::Stream,
+        IoHandleKind::Sink,
+        IoHandleKind::Generator,
+        IoHandleKind::CancellationToken,
+    ] {
+        let err = emit_field_overwrite_release(
+            &fn_ctx,
+            field_ptr,
+            ptr_ty.into(),
+            src_ptr,
+            src_val,
+            &StateFieldCloneKind::IoHandle { kind: kind.clone() },
+            "record_f0",
+            false,
+        )
+        .expect_err("un-clonable builtin handle overwrite must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => assert!(
+                msg.contains("source-slot neutralisation") && msg.contains(&format!("{kind:?}")),
+                "refusal must name the missing move protocol and handle kind; got: {msg}"
+            ),
+            other => panic!("expected FailClosed for {kind:?}, got {other:?}"),
+        }
+    }
+    emit_field_overwrite_release(
+        &fn_ctx,
+        field_ptr,
+        ptr_ty.into(),
+        src_ptr,
+        src_val,
+        &StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        },
+        "state_connection_f0",
+        false,
+    )
+    .expect("Connection carries no per-field close obligation");
+
+    finish_test_fn(&fn_ctx);
+    assert!(
+        llvm_mod.verify().is_ok(),
+        "defense-in-depth refusal must leave valid surrounding IR"
+    );
+}
+
 /// Give the in-place drop helper a trivial body so the module verifies
 /// (internal-linkage declarations without bodies are invalid IR; in the
 /// real pipeline `emit_state_clone_drop_synthesis` always emits the

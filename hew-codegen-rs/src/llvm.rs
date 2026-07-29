@@ -17270,8 +17270,24 @@ fn emit_field_overwrite_release(
                 "field overwrite `{label}` is not wired for aggregate kind {kind:?}"
             )))
         }
+        StateFieldCloneKind::IoHandle {
+            kind:
+                kind @ (IoHandleKind::Stream
+                | IoHandleKind::Sink
+                | IoHandleKind::Generator
+                | IoHandleKind::CancellationToken),
+        } => Err(CodegenError::FailClosed(format!(
+            "field overwrite `{label}` reached codegen for un-clonable builtin handle \
+             {kind:?}; MIR must reject the store until it carries source-slot \
+             neutralisation"
+        ))),
+        // Connection state teardown is actor-owned; this field kind carries no
+        // per-slot close, so replacing its pointer abandons no independent
+        // close obligation. Keep the established actor-state posture.
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        } => Ok(()),
         StateFieldCloneKind::BitCopy { .. }
-        | StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::Resource { .. }
         | StateFieldCloneKind::OpaqueHandle { .. } => Ok(()),

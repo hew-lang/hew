@@ -102,7 +102,8 @@ use self::composite_own::{
     derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
     derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
     detect_actor_state_handle_consume, detect_actor_state_resource_overwrite,
-    detect_opaque_resource_field_misuse, detect_unproven_aggregate_handle_double_free,
+    detect_builtin_handle_record_field_overwrite, detect_opaque_resource_field_misuse,
+    detect_unproven_aggregate_handle_double_free,
 };
 #[cfg(not(test))]
 use self::consts::{
@@ -5732,6 +5733,21 @@ pub(crate) fn lower_function(
         &builder.locals,
         &builder.binding_locals,
         &opaque_resource_names,
+    ) {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
+    // Builtin Stream/Sink/Generator/CancellationToken record fields have the
+    // same overwrite hazard as opaque resources.  Their drop direction is
+    // wired, but the replacement store has no source-slot neutralisation, so a
+    // release-before-store alone would merely trade the old-value leak for a
+    // double-close of the new handle. Refuse until a move/null protocol exists.
+    for check in detect_builtin_handle_record_field_overwrite(
+        &raw.blocks,
+        &builder.locals,
+        &builder.binding_locals,
+        &builder.record_field_orders,
     ) {
         if let Some(diag) = check_to_diagnostic(&check) {
             diagnostics.push(diag);

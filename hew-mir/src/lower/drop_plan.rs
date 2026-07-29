@@ -4552,15 +4552,15 @@ pub(super) fn drop_kind_for(
 /// `declare_function`'s flattened `<Self>::<method>` mangling and the spelling
 /// `resource_record_close` / `resource_drop_fn` use.
 ///
-/// Runtime-descriptor closes (where `RuntimeDropDescriptor::from_drop_fn_name`
-/// matches, e.g. a builtin handle with a C-ABI release) are excluded: the
-/// `Resource` drop arm calls the close as a user LLVM function, which a C-ABI
-/// runtime symbol would not resolve to. Those keep their existing path.
+/// This registry contains declarations, not resolved use-site types. A user
+/// resource is therefore always registered even when its short name and close
+/// method collide with a builtin runtime descriptor (`Receiver::close`,
+/// `MonitorRef::close`, ...). The resolved type's builtin discriminator is the
+/// sole authority that selects runtime-vs-user teardown later.
 pub(super) fn resource_opaque_close_registry(
     opaque_handle_names: &[String],
     type_classes: &hew_hir::TypeClassTable,
 ) -> Vec<(String, String)> {
-    use hew_types::runtime_call::RuntimeDropDescriptor;
     opaque_handle_names
         .iter()
         .filter_map(|name| {
@@ -4571,16 +4571,32 @@ pub(super) fn resource_opaque_close_registry(
                 .and_then(|entry| matches!(entry.0, ResourceMarker::Resource).then_some(entry))?;
             let close_method = close.as_ref()?;
             let symbol = format!("{short}::{close_method}");
-            // Open-set USER close only: a builtin runtime-descriptor close is a
-            // C-ABI symbol the `Resource` drop arm cannot call via
-            // `get_function`, so leave such a type on its existing path.
-            if RuntimeDropDescriptor::from_drop_fn_name(&symbol).is_some() {
-                return None;
-            }
             Some((name.clone(), symbol))
         })
         .collect()
 }
+
+fn builtin_resource_drop_descriptor(
+    builtin: BuiltinType,
+) -> Option<hew_types::runtime_call::RuntimeDropDescriptor> {
+    use hew_types::runtime_call::RuntimeDropDescriptor;
+    match builtin {
+        BuiltinType::Duplex => Some(RuntimeDropDescriptor::DuplexClose),
+        BuiltinType::Stream => Some(RuntimeDropDescriptor::StreamClose),
+        BuiltinType::Sink => Some(RuntimeDropDescriptor::SinkClose),
+        BuiltinType::Sender => Some(RuntimeDropDescriptor::SenderClose),
+        BuiltinType::Receiver => Some(RuntimeDropDescriptor::ReceiverClose),
+        BuiltinType::LambdaActorHandle | BuiltinType::LambdaPid => {
+            Some(RuntimeDropDescriptor::LambdaActorHandleClose)
+        }
+        BuiltinType::SendHalf => Some(RuntimeDropDescriptor::SendHalfClose),
+        BuiltinType::RecvHalf => Some(RuntimeDropDescriptor::RecvHalfClose),
+        BuiltinType::CancellationToken => Some(RuntimeDropDescriptor::CancellationTokenRelease),
+        BuiltinType::MonitorRef => Some(RuntimeDropDescriptor::MonitorRefClose),
+        _ => None,
+    }
+}
+
 pub(super) fn resource_drop_fn(
     ty: &ResolvedTy,
     type_classes: &hew_hir::TypeClassTable,
@@ -4591,18 +4607,14 @@ pub(super) fn resource_drop_fn(
             RuntimeDropDescriptor::CancellationTokenRelease,
         )),
         ResolvedTy::Named {
-            builtin: Some(BuiltinType::Stream),
+            builtin: Some(builtin),
             ..
-        } => Some(crate::model::DropFnSpec::Runtime(
-            RuntimeDropDescriptor::StreamClose,
-        )),
+        } => builtin_resource_drop_descriptor(*builtin).map(crate::model::DropFnSpec::Runtime),
         ResolvedTy::Named {
-            builtin: Some(BuiltinType::Sink),
+            name,
+            builtin: None,
             ..
-        } => Some(crate::model::DropFnSpec::Runtime(
-            RuntimeDropDescriptor::SinkClose,
-        )),
-        ResolvedTy::Named { name, .. } => {
+        } => {
             let short = short_name(name);
             let qualified_collision = short != name
                 && type_classes
@@ -4622,17 +4634,8 @@ pub(super) fn resource_drop_fn(
                     .or_else(|| type_classes.get_key_value(name))
             };
             class_entry.and_then(|(class_name, (_, close))| {
-                close.as_ref().map(|m| {
-                    // Classify the close ritual at production: the type-class
-                    // table's `<Type>::<method>` spelling lifts onto the typed
-                    // runtime drop descriptor for the closed builtin set; user
-                    // `#[resource]` close methods stay on the open-set
-                    // generated-symbol arm.
-                    let qualified = format!("{class_name}::{m}");
-                    RuntimeDropDescriptor::from_drop_fn_name(&qualified).map_or(
-                        crate::model::DropFnSpec::UserClose(qualified),
-                        crate::model::DropFnSpec::Runtime,
-                    )
+                close.as_ref().map(|method| {
+                    crate::model::DropFnSpec::UserClose(format!("{class_name}::{method}"))
                 })
             })
         }
@@ -4641,22 +4644,83 @@ pub(super) fn resource_drop_fn(
     }
 }
 #[cfg(test)]
-mod builtin_stream_resource_drop_fn {
+mod typed_resource_close_authority {
     use super::*;
     use hew_types::runtime_call::RuntimeDropDescriptor;
 
     #[test]
-    fn stream_and_sink_use_their_runtime_close_descriptors_without_type_class_entries() {
+    fn builtin_identity_selects_runtime_close_without_type_class_spelling() {
         let classes = hew_hir::TypeClassTable::new();
         for (builtin, expected) in [
+            (BuiltinType::Duplex, RuntimeDropDescriptor::DuplexClose),
             (BuiltinType::Stream, RuntimeDropDescriptor::StreamClose),
             (BuiltinType::Sink, RuntimeDropDescriptor::SinkClose),
+            (BuiltinType::Sender, RuntimeDropDescriptor::SenderClose),
+            (BuiltinType::Receiver, RuntimeDropDescriptor::ReceiverClose),
+            (
+                BuiltinType::LambdaActorHandle,
+                RuntimeDropDescriptor::LambdaActorHandleClose,
+            ),
+            (
+                BuiltinType::LambdaPid,
+                RuntimeDropDescriptor::LambdaActorHandleClose,
+            ),
+            (BuiltinType::SendHalf, RuntimeDropDescriptor::SendHalfClose),
+            (BuiltinType::RecvHalf, RuntimeDropDescriptor::RecvHalfClose),
+            (
+                BuiltinType::CancellationToken,
+                RuntimeDropDescriptor::CancellationTokenRelease,
+            ),
+            (
+                BuiltinType::MonitorRef,
+                RuntimeDropDescriptor::MonitorRefClose,
+            ),
         ] {
             let ty = ResolvedTy::named_builtin("Handle", builtin, vec![ResolvedTy::String]);
             assert!(matches!(
                 resource_drop_fn(&ty, &classes),
                 Some(crate::model::DropFnSpec::Runtime(actual)) if actual == expected
             ));
+        }
+    }
+
+    #[test]
+    fn descriptor_shaped_user_resources_remain_user_closes_and_registry_entries() {
+        let collisions = [
+            ("Duplex", "close"),
+            ("Stream", "close"),
+            ("Sink", "close"),
+            ("Sender", "close"),
+            ("Receiver", "close"),
+            ("LambdaActorHandle", "close"),
+            ("SendHalf", "close"),
+            ("RecvHalf", "close"),
+            ("CancellationToken", "release"),
+            ("MonitorRef", "close"),
+        ];
+        let mut classes = hew_hir::TypeClassTable::new();
+        for (name, method) in collisions {
+            classes.insert(
+                name.to_string(),
+                (ResourceMarker::Resource, Some(method.to_string())),
+            );
+        }
+        let opaque_names: Vec<_> = collisions
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        let registry = resource_opaque_close_registry(&opaque_names, &classes);
+        for (name, method) in collisions {
+            let symbol = format!("{name}::{method}");
+            assert!(
+                registry.contains(&(name.to_string(), symbol.clone())),
+                "user resource `{name}` must not be filtered by builtin-like spelling"
+            );
+            assert_eq!(
+                resource_drop_fn(&ResolvedTy::named_user(name, vec![]), &classes),
+                Some(crate::model::DropFnSpec::UserClose(symbol)),
+                "user resource `{name}` must retain generated-function close authority"
+            );
         }
     }
 }

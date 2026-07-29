@@ -1902,6 +1902,7 @@ pub fn lower_program_with_mono_cap(
     target_arch: TargetArch,
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
+    let file_import_module_idx = file_import_item_module_indices(program);
     ctx.seed_stdlib_fn_registry();
     let builtin_receiver_impl_program = builtin_receiver_impl_program();
     let builtin_receiver_impl_output = builtin_receiver_impl_program
@@ -1940,6 +1941,22 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.opaque_type_short_names,
         &mut ctx.non_opaque_type_short_names,
     );
+    ctx.root_opaque_type_short_names
+        .extend(
+            program
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, (item, _))| {
+                    if file_import_module_idx.contains_key(&idx) {
+                        return None;
+                    }
+                    let Item::TypeDecl(decl) = item else {
+                        return None;
+                    };
+                    decl.is_opaque.then(|| decl.name.clone())
+                }),
+        );
 
     let mut builtin_receiver_impl_method_symbols: HashSet<String> = HashSet::new();
 
@@ -2812,19 +2829,13 @@ pub fn lower_program_with_mono_cap(
     for (item, span) in &program.items {
         if let Item::TypeDecl(decl) = item {
             let hir_decl = ctx.lower_type_decl(decl, span.clone());
-            let builtin_registration =
-                crate::builtin_type_classes::builtin_type_registration(&hir_decl.name);
             let marker = hir_decl.marker;
             let close_method = if marker == ResourceMarker::Resource {
-                builtin_registration
-                    .and_then(|registration| registration.close_method.map(str::to_string))
-                    .or_else(|| {
-                        hir_decl
-                            .consuming_methods
-                            .iter()
-                            .find(|m| m.as_str() == "close")
-                            .cloned()
-                    })
+                hir_decl
+                    .consuming_methods
+                    .iter()
+                    .find(|m| m.as_str() == "close")
+                    .cloned()
                     // W3.030 Q-α-B: a `#[resource]` whose `close` lives in a
                     // sibling inherent-impl block must still register the
                     // close-method symbol so the MIR elaborator's
@@ -2992,24 +3003,16 @@ pub fn lower_program_with_mono_cap(
                             let hir_decl =
                                 ctx.lower_imported_type_decl(decl, span.clone(), module_short);
                             let close_method = if hir_decl.marker == ResourceMarker::Resource {
-                                crate::builtin_type_classes::builtin_type_registration(
-                                    &hir_decl.name,
-                                )
-                                .and_then(|registration| {
-                                    registration.close_method.map(str::to_string)
-                                })
-                                .or_else(|| {
-                                    hir_decl
-                                        .consuming_methods
-                                        .iter()
-                                        .find(|m| m.as_str() == "close")
-                                        .cloned()
-                                })
-                                .or_else(|| {
-                                    ctx.impl_close_methods
-                                        .get(&hir_decl.name)
-                                        .map(|_| "close".to_string())
-                                })
+                                hir_decl
+                                    .consuming_methods
+                                    .iter()
+                                    .find(|m| m.as_str() == "close")
+                                    .cloned()
+                                    .or_else(|| {
+                                        ctx.impl_close_methods
+                                            .get(&hir_decl.name)
+                                            .map(|_| "close".to_string())
+                                    })
                             } else {
                                 None
                             };
@@ -3313,7 +3316,6 @@ pub fn lower_program_with_mono_cap(
     // guards, closure facts, await reads, range bounds, channel/stream
     // rewrites, expr types) to resolve to the checker's facts. Genuine root
     // items stay at index 0. See `file_import_item_module_indices`.
-    let file_import_module_idx = file_import_item_module_indices(program);
     // Companion table: module_idx (1-based topo order) → FULL dotted module name
     // (e.g. "subpkg.helper"). Used alongside `file_import_module_idx` to set
     // `current_module_name` when lowering file-import items, mirroring the
@@ -5757,6 +5759,11 @@ struct LowerCtx {
     /// identity fact rather than a short-name heuristic.
     opaque_type_short_names: HashSet<String>,
     non_opaque_type_short_names: HashSet<String>,
+    /// Root-source opaque declarations, kept separate from imported compiler
+    /// carrier declarations. A root `#[opaque] type Receiver {}` shadows the
+    /// builtin by declaration identity even though its short name is registered
+    /// in the builtin catalog.
+    root_opaque_type_short_names: HashSet<String>,
     /// Mirrors `Checker::current_module_idx`: 0 for root items, N for the N-th
     /// non-root module's items (1-based, matching topo order).  Used by
     /// `mk_key` to produce module-scoped `SpanKey` lookups that agree with
@@ -5933,6 +5940,7 @@ impl LowerCtx {
             trait_declared_methods: HashMap::new(),
             opaque_type_short_names: HashSet::new(),
             non_opaque_type_short_names: HashSet::new(),
+            root_opaque_type_short_names: HashSet::new(),
             current_module_idx: 0,
             root_item_ids: HashSet::new(),
             lowering_injected_items: false,
@@ -9432,7 +9440,10 @@ impl LowerCtx {
                         )
                     })
             });
+        let root_user_opaque_shadow = self.current_module_name.is_none()
+            && self.root_opaque_type_short_names.contains(self_type_name);
         if !is_duration_ctor_block
+            && !root_user_opaque_shadow
             && decl.trait_bound.is_none()
             && hew_types::lookup_builtin_type(self_type_name).is_some()
         {
@@ -18822,6 +18833,16 @@ impl LowerCtx {
     /// that dispatcher under the line budget.
     fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
         let type_name = hew_types::short_name(name);
+        // Root source declarations outrank the builtin catalog. This check must
+        // precede builtin registration: a user `#[opaque] type Receiver {}`
+        // is a distinct nominal resource, not the std channel endpoint merely
+        // because the short spelling collides.
+        if self.current_module_name.is_none()
+            && !name.contains('.')
+            && self.root_opaque_type_short_names.contains(name)
+        {
+            return ResolvedTy::named_opaque(name.to_string(), args);
+        }
         if args.is_empty() {
             let canonical = self.canonical_current_module_record_name(name);
             if canonical != name && !self.resolves_to_opaque_handle(&canonical, type_name) {
@@ -18908,6 +18929,18 @@ impl LowerCtx {
             .into_iter()
             .map(|arg| self.qualify_current_module_record_ty(arg))
             .collect();
+        // `Ty::Named` intentionally has no opacity bit, so checker-authored
+        // expression facts lose that half of a root source declaration's
+        // identity when converted through `ResolvedTy::from_ty`. Restore it
+        // from the declaration registry at this single checker→HIR
+        // normalisation funnel. Builtin provenance remains authoritative:
+        // only a `builtin: None` bare root name can acquire the user-opaque
+        // discriminator.
+        let is_opaque = is_opaque
+            || (builtin.is_none()
+                && self.current_module_name.is_none()
+                && !name.contains('.')
+                && self.root_opaque_type_short_names.contains(&name));
         if builtin.is_some() || is_opaque {
             return ResolvedTy::Named {
                 name,
@@ -19101,7 +19134,13 @@ impl LowerCtx {
                     "string" => ResolvedTy::String,
                     "duration" => ResolvedTy::Duration,
                     "bytes" => ResolvedTy::Bytes,
-                    "CancellationToken" if args.is_empty() => ResolvedTy::CancellationToken,
+                    "CancellationToken"
+                        if args.is_empty()
+                            && !(self.current_module_name.is_none()
+                                && self.root_opaque_type_short_names.contains(name)) =>
+                    {
+                        ResolvedTy::CancellationToken
+                    }
                     "Unit" | "()" => ResolvedTy::Unit,
                     // `Task` is a compiler-internal value class with no user-source
                     // syntax. Writing `Task<T>` in any annotation position is a

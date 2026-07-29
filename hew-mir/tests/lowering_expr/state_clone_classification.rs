@@ -162,6 +162,75 @@ fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped(
 }
 
 #[test]
+fn root_opaque_resource_builtin_name_collisions_keep_user_identity() {
+    for (name, method) in [
+        ("Duplex", "close"),
+        ("Stream", "close"),
+        ("Sink", "close"),
+        ("Sender", "close"),
+        ("Receiver", "close"),
+        ("LambdaActorHandle", "close"),
+        ("SendHalf", "close"),
+        ("RecvHalf", "close"),
+        ("CancellationToken", "close"),
+        ("MonitorRef", "close"),
+    ] {
+        let source = format!(
+            r"
+#[resource]
+#[opaque]
+type {name} {{}}
+
+impl {name} {{
+    fn {method}(self) {{}}
+}}
+
+actor Keeper {{
+    let value: {name};
+}}
+
+fn main() {{}}
+"
+        );
+        let pipeline = lower_source(&source);
+        let keeper = pipeline
+            .actor_layouts
+            .iter()
+            .find(|actor| actor.name == "Keeper")
+            .expect("Keeper layout");
+        assert!(
+            matches!(
+                keeper.state_field_tys.as_slice(),
+                [ResolvedTy::Named {
+                    name: actual,
+                    builtin: None,
+                    is_opaque: true,
+                    ..
+                }] if actual == name
+            ),
+            "root opaque user `{name}` must outrank builtin registration: {:?}",
+            keeper.state_field_tys
+        );
+        assert_eq!(
+            keeper.state_field_clone_kinds.as_deref(),
+            Some(
+                &[StateFieldCloneKind::Resource {
+                    name: name.to_string(),
+                    close: ResourceCloseAuthority::User(format!("{name}::{method}")),
+                }][..]
+            ),
+            "root opaque user `{name}` must retain user-close authority"
+        );
+        assert!(
+            pipeline
+                .resource_opaque_close
+                .contains(&(name.to_string(), format!("{name}::{method}"))),
+            "root opaque user `{name}` must be present in the resource registry"
+        );
+    }
+}
+
+#[test]
 fn zero_state_actor_also_gets_paired_symbols() {
     // Plan §4.2: "Emit both `state_clone_fn` and `state_drop_fn`
     // registration unconditionally for every actor." Zero-state actors

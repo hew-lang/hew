@@ -90,6 +90,82 @@ fn actor_resource_state_closes_once() {{
     );
 }
 
+fn run_builtin_name_collision_teardown_oracle(type_name: &str) {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("actor-resource-state-collision-{type_name}-"))
+        .tempdir()
+        .expect("tempdir");
+    let marker = dir.path().join("closed.txt");
+    let source_path = dir.path().join(format!("{type_name}.hew"));
+    let marker_literal = hew_string_literal(&marker);
+    let source = format!(
+        r#"import std::fs;
+import std::testing;
+
+#[resource]
+#[opaque]
+type {type_name} {{}}
+
+impl {type_name} {{
+    fn close(self) {{
+        unsafe {{ hew_deque_free(self) }};
+        match fs.try_append("{marker_literal}", "closed\n") {{
+            Ok(_) => {{}},
+            Err(_) => panic("append close marker"),
+        }}
+    }}
+}}
+
+extern "C" {{
+    fn hew_deque_new() -> {type_name};
+    fn hew_deque_free(consume handle: {type_name});
+}}
+
+actor Keeper {{
+    let handle: {type_name};
+    receive fn ping() -> i64 {{ 1 }}
+}}
+
+#[test]
+fn colliding_resource_closes_once() {{
+    let keeper = spawn Keeper(handle: unsafe {{ hew_deque_new() }});
+    match await keeper.ping() {{
+        Ok(n) => testing.assert_eq(n, 1),
+        Err(_) => testing.assert_true(false),
+    }}
+}}
+"#
+    );
+    std::fs::write(&source_path, source).expect("write Hew source");
+
+    let output = Command::new(hew_binary())
+        .args([
+            "test",
+            "--no-color",
+            source_path.to_str().expect("source path utf-8"),
+        ])
+        .current_dir(repo_root())
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1")
+        .output()
+        .expect("run Hew test");
+    assert!(
+        output.status.success(),
+        "{type_name}: builtin-named user resource must compile and run as a user close;\n{}",
+        describe_output(&output)
+    );
+
+    let closes = std::fs::read_to_string(&marker)
+        .unwrap_or_else(|error| panic!("{type_name}: close marker was not written: {error}"));
+    assert_eq!(
+        closes, "closed\n",
+        "{type_name}: actor teardown must call the user close exactly once",
+    );
+}
+
 fn fn_body<'a>(ll: &'a str, symbol: &str) -> &'a str {
     let start = ll
         .match_indices("define ")
@@ -128,6 +204,16 @@ fn wrapped_resource_actor_state_still_closes_once_on_teardown() {
 }",
         "spawn Keeper(holder: Holder { dq: unsafe { hew_deque_new() } })",
     );
+}
+
+#[test]
+fn user_receiver_resource_shadow_closes_once_on_teardown() {
+    run_builtin_name_collision_teardown_oracle("Receiver");
+}
+
+#[test]
+fn user_monitor_ref_resource_shadow_closes_once_on_teardown() {
+    run_builtin_name_collision_teardown_oracle("MonitorRef");
 }
 
 #[test]

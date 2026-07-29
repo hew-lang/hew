@@ -6,11 +6,11 @@ use super::{
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BindingId, Builder, BuiltinType,
     ClosurePairIngress, CmpPred, DecisionFact, DischargeSite, Disposition, FieldLoadClass,
-    FreshVecGetCloneProjectionBase, HashMap, HashSet, HirBinding, HirBlock, HirExpr, HirExprKind,
-    HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic, MirDiagnosticKind, MirStatement,
-    OwnedLocalEntry, OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place, PlaceProvenance,
-    Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy, Terminator, ValueClass,
-    ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
+    FieldOffset, FreshVecGetCloneProjectionBase, HashMap, HashSet, HirBinding, HirBlock, HirExpr,
+    HirExprKind, HirStmtKind, Instr, IntentKind, LayoutClass, MirDiagnostic, MirDiagnosticKind,
+    MirStatement, OwnedLocalEntry, OwnerMintWarrant, OwnershipCtx, OwnershipDecision, Place,
+    PlaceProvenance, Projection, ResolvedRef, ResolvedTy, ResourceMarker, SiteId, Strategy,
+    Terminator, ValueClass, ValueOwnership, ValueProvenance, SYNTHETIC_CALL_SCRUTINEE_NAME,
     SYNTHETIC_COPY_IN_PARAM_TEMP_NAME, SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
     SYNTHETIC_OWNED_TEMP_BINDING_BASE, SYNTHETIC_VEC_GET_CLONE_PROJECTION_BASE_NAME,
     SYNTHETIC_WHILE_LET_ITERATION_NAME,
@@ -1545,6 +1545,104 @@ impl Builder {
             .any(|k| !matches!(k, crate::state_clone::StateFieldCloneKind::BitCopy { .. }));
         Ok(has_owned_field.then_some(kinds))
     }
+    /// Prove that one ordinary record-field overwrite preserves the enclosing
+    /// record's final ownership.
+    ///
+    /// The proof is intentionally narrow: only a registered inline enum field
+    /// with a total recursive clone/drop plan qualifies. Every formerly
+    /// unsupported overwrite (unknown/indirect/resource/mixed payload) keeps the
+    /// previous fail-closed owner exclusion in
+    /// `derive_owned_record_drop_allowed`.
+    pub(crate) fn record_field_store_preserves_record_owner(
+        &self,
+        record: Place,
+        field_offset: FieldOffset,
+    ) -> bool {
+        let Some(record_local) = base_local(record) else {
+            return false;
+        };
+        let Some(record_ty) = self.locals.get(record_local as usize) else {
+            return false;
+        };
+        let Some(record_key) = user_record_layout_key(record_ty) else {
+            return false;
+        };
+        let Some(fields) = self.lookup_record_field_order(&record_key) else {
+            return false;
+        };
+        let Some((_, field_ty)) = fields.get(field_offset.0 as usize) else {
+            return false;
+        };
+        let field_ty = self.normalize_machine_field_ty(field_ty);
+        let record_layouts = self.record_layouts_for_classification();
+        crate::state_clone::inline_enum_overwrite_drop_is_ready(
+            &field_ty,
+            &record_layouts,
+            &self.enum_layouts,
+            &self.opaque_handle_names,
+            &self.resource_opaque_close,
+            &self.resource_record_names_for_drop_readiness(),
+        )
+        .unwrap_or(false)
+    }
+    /// Narrow correction for generic records whose inline generic-enum field
+    /// owns heap even though the HIR value-class marker still says `BitCopy`.
+    ///
+    /// Copy classification and drop seeding both call this predicate. Keeping
+    /// those decisions coupled prevents a shallow `BorrowRead` copy from
+    /// aliasing an enum payload that the newly-admitted `RecordInPlace` drop
+    /// would later release.
+    pub(crate) fn record_with_ready_inline_enum_owned_field(&self, ty: &ResolvedTy) -> bool {
+        let Some(record_key) = user_record_layout_key(ty) else {
+            return false;
+        };
+        let Some(fields) = self.lookup_record_field_order(&record_key) else {
+            return false;
+        };
+        let record_layouts = self.record_layouts_for_classification();
+        let resource_record_names = self.resource_record_names_for_drop_readiness();
+        if !crate::state_clone::record_with_inline_enum_drop_is_ready(
+            ty,
+            &record_layouts,
+            &self.enum_layouts,
+            &self.opaque_handle_names,
+            &self.resource_opaque_close,
+            &resource_record_names,
+        )
+        .unwrap_or(false)
+        {
+            return false;
+        }
+        fields.iter().any(|(_, field_ty)| {
+            let field_ty = self.normalize_machine_field_ty(field_ty);
+            crate::state_clone::inline_enum_overwrite_drop_is_ready(
+                &field_ty,
+                &record_layouts,
+                &self.enum_layouts,
+                &self.opaque_handle_names,
+                &self.resource_opaque_close,
+                &resource_record_names,
+            )
+            .unwrap_or(false)
+                && crate::model::ty_owns_heap_mir(
+                    &field_ty,
+                    &self.record_field_orders,
+                    &self.enum_layouts,
+                )
+        })
+    }
+    fn resource_record_names_for_drop_readiness(&self) -> Vec<String> {
+        self.record_field_orders
+            .keys()
+            .filter(|name| {
+                self.type_classes
+                    .get(name.as_str())
+                    .or_else(|| self.type_classes.get(hew_types::short_name(name)))
+                    .is_some_and(|(marker, _)| matches!(marker, ResourceMarker::Resource))
+            })
+            .cloned()
+            .collect()
+    }
     /// True when `ty` is a user record admitted by the unified
     /// owned-aggregate-record authority. The single predicate the `decide`
     /// value-class gate and the drop-elaboration allow-set derivation share so
@@ -2139,7 +2237,14 @@ impl Builder {
         // `Strategy::UnknownBlocked`, failing the
         // `DecisionMapTotal` invariant for well-typed mono'd bodies.
         let resolved_ty = self.subst_ty(&expr.ty);
-        let value_class = if expr.value_class == ValueClass::Unknown {
+        let value_class = if self.record_with_ready_inline_enum_owned_field(&resolved_ty) {
+            // Generic enum origins can leave the HIR marker at `BitCopy` even
+            // after substitution reveals a heap-owning inline payload. Force
+            // the enclosing record onto the same deep-COW path its recursive
+            // clone/drop plan proves ready; the binder seed uses this exact
+            // predicate as well.
+            ValueClass::CowValue
+        } else if expr.value_class == ValueClass::Unknown {
             let inferred = ValueClass::of_ty(&resolved_ty, &self.type_classes);
             if inferred != ValueClass::Unknown {
                 inferred

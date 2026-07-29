@@ -484,6 +484,7 @@ impl Builder {
     /// follow a future seed-rule change).
     pub(crate) fn binding_seeds_drop_elaboration(&self, ty: &ResolvedTy) -> bool {
         binding_seeds_drop_elaboration(ty, &self.type_classes)
+            || self.record_with_ready_inline_enum_owned_field(ty)
     }
 
     /// Classify a `Vec<E>` element's scope-exit release by reading the single

@@ -195,6 +195,81 @@ fn generic_record_with_owned_field_admits_and_runs() {
     );
 }
 
+/// A generic record whose concrete inline-enum field owns a string must use the
+/// recursive record drop spine after both ordinary construction and repeated
+/// field overwrite. The MIR assertions cover normal, panic, and cancellation
+/// exits; the LLVM assertions prove both enclosing-record and nested-enum
+/// clone/drop thunks have bodies rather than declarations.
+#[test]
+fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
+    require_codegen();
+
+    let source = fixture_path("generic_enum_record_scope_drop.hew");
+    let mir = std::process::Command::new(hew_binary())
+        .args(["compile", "--dump-mir", "elab"])
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("dump elaborated MIR");
+    assert!(
+        mir.status.success(),
+        "generic enum-record MIR should elaborate; stderr: {}",
+        String::from_utf8_lossy(&mir.stderr)
+    );
+    let mir = String::from_utf8_lossy(&mir.stdout);
+    assert!(
+        mir.contains("return[bb4] ->\n      drop _8 ty=EnumHolder<string> kind=record_in_place")
+            && mir.contains(
+                "panic[bb6] ->\n      drop _8 ty=EnumHolder<string> kind=record_in_place"
+            )
+            && mir.contains(
+                "cancel[bb7] ->\n      drop _8 ty=EnumHolder<string> kind=record_in_place"
+            )
+            && mir.contains("drop _7 ty=EnumHolder<string> kind=record_in_place"),
+        "generic enum-record drop must cover overwrite, untouched, error, and cancel exits:\n{mir}"
+    );
+
+    let emit_dir = support::tempdir();
+    let compile = std::process::Command::new(hew_binary())
+        .args(["compile", "--emit-dir"])
+        .arg(emit_dir.path())
+        .arg(&source)
+        .current_dir(repo_root())
+        .output()
+        .expect("compile generic enum-record fixture");
+    assert!(
+        compile.status.success(),
+        "generic enum-record LLVM should compile; stderr: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let llvm = std::fs::read_to_string(emit_dir.path().join("generic_enum_record_scope_drop.ll"))
+        .expect("read generic enum-record LLVM");
+    for helper in [
+        "define internal i32 @\"__hew_record_clone_inplace_EnumHolder$$string\"",
+        "define internal i32 @\"__hew_enum_clone_inplace_Choice$$string\"",
+        "define internal void @\"__hew_record_drop_inplace_EnumHolder$$string\"",
+        "define internal void @\"__hew_enum_drop_inplace_Choice$$string\"",
+        "define internal void @\"__hew_enum_overwrite_release_Choice$$string\"",
+    ] {
+        assert!(
+            llvm.contains(helper),
+            "expected a bodied recursive helper `{helper}`"
+        );
+    }
+
+    let output = std::process::Command::new(emit_dir.path().join("generic_enum_record_scope_drop"))
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .output()
+        .expect("run generic enum-record fixture");
+    assert!(
+        output.status.success(),
+        "generic enum-record fixture should survive poisoned allocation; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+}
+
 /// F7: a return-type-polymorphic generic constructor — where `T` is determined
 /// by the EXPECTED RETURN TYPE at the call site (a `let` annotation, an
 /// enclosing fn's return type, or argument position) rather than by any call

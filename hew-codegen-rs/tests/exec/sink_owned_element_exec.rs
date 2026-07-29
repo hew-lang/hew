@@ -144,16 +144,43 @@ fn compile_expect_refusal(stem: &str, source: &str) -> String {
     String::from_utf8_lossy(&output.stderr).to_string()
 }
 
-/// Count direct `call ... @<symbol>(` sites across the WHOLE emitted module.
-/// The moved-handle close fires through the actor's `state_drop_fn`; the
-/// module-wide count must be EXACTLY ONE. A presence oracle (`contains`) is
-/// blind to a double-free masked by the runtime's null-guard — only the count
-/// distinguishes exactly-once.
-fn count_calls_in_module(ir: &str, symbol: &str) -> usize {
+/// Return one LLVM function body by symbol. Keeping an ownership assertion
+/// within the function that owns the handle prevents unrelated stdlib helpers
+/// from changing its count.
+fn llvm_function_body<'a>(ir: &'a str, function: &str) -> &'a str {
+    let needle = format!("@{function}(");
+    let start = ir
+        .find(&needle)
+        .unwrap_or_else(|| panic!("LLVM function `{function}` not found\n{ir}"));
+    let body = &ir[start..];
+    let end = body
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("LLVM function `{function}` has no closing brace\n{body}"));
+    &body[..end]
+}
+
+/// Count direct `call ... @<symbol>(` sites in the one LLVM function that owns
+/// the relevant handle. A presence oracle (`contains`) is blind to a
+/// double-free masked by the runtime's null-guard — this exact local count is
+/// not.
+fn count_calls_in_function(ir: &str, function: &str, symbol: &str) -> usize {
+    let body = llvm_function_body(ir, function);
     let needle = format!("@{symbol}(");
-    ir.lines()
+    body.lines()
         .filter(|line| line.contains(&needle) && line.contains("call "))
         .count()
+}
+
+#[test]
+fn close_count_is_scoped_to_its_owner_function() {
+    let ir = "define void @owner() {\n  call void @hew_sink_close(ptr null)\n}\n\
+              \ndefine void @unrelated() {\n  call void @hew_sink_close(ptr null)\n  call void @hew_sink_close(ptr null)\n}\n";
+    assert_eq!(count_calls_in_function(ir, "owner", "hew_sink_close"), 1);
+    assert_eq!(
+        count_calls_in_function(ir, "unrelated", "hew_sink_close"),
+        2,
+        "counterfactual: a second close in the owner must remain visible"
+    );
 }
 
 // ── Slice B: awaited non-byte send routing ────────────────────────────────
@@ -356,7 +383,7 @@ fn main() {
     );
     let ir = emit_llvm_ir("sink_half_ir", source);
     assert_eq!(
-        count_calls_in_module(&ir, "hew_sink_close"),
+        count_calls_in_function(&ir, "__hew_state_drop_Writer", "hew_sink_close"),
         1,
         "the moved Sink half must be closed EXACTLY once (state_drop_fn); a \
          second close is a double-free"
@@ -407,12 +434,12 @@ fn main() {
     );
     let ir = emit_llvm_ir("stream_half_ir", source);
     assert_eq!(
-        count_calls_in_module(&ir, "hew_stream_close"),
+        count_calls_in_function(&ir, "__hew_state_drop_Consumer", "hew_stream_close"),
         1,
         "the moved Stream half must be closed EXACTLY once (state_drop_fn)"
     );
     assert_eq!(
-        count_calls_in_module(&ir, "hew_sink_close"),
+        count_calls_in_function(&ir, "main", "hew_sink_close"),
         1,
         "the main-side local sink must be closed EXACTLY once"
     );

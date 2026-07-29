@@ -134,3 +134,39 @@ fn main() {
         describe_output(&output)
     );
 }
+
+#[test]
+fn ordinary_user_sender_receiver_shadows_remain_admitted() {
+    let output = check_source(
+        "user_channel_name_shadows",
+        r"
+type Sender { value: i64 }
+type Receiver { value: i64 }
+type SenderHolder { value: Sender }
+type ReceiverHolder { value: Receiver }
+
+fn overwrite_sender(a: Sender, b: Sender) -> i64 {
+    var holder = SenderHolder { value: a };
+    holder.value = b;
+    holder.value.value
+}
+
+fn overwrite_receiver(a: Receiver, b: Receiver) -> i64 {
+    var holder = ReceiverHolder { value: a };
+    holder.value = b;
+    holder.value.value
+}
+
+fn main() -> i64 {
+    overwrite_sender(Sender { value: 1 }, Sender { value: 2 })
+        + overwrite_receiver(Receiver { value: 3 }, Receiver { value: 4 })
+}
+",
+    );
+    assert!(
+        output.status.success(),
+        "source-qualified runtime diagnostics must not widen the gate over user \
+         Sender/Receiver records:\n{}",
+        describe_output(&output)
+    );
+}

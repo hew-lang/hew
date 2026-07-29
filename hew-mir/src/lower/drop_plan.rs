@@ -4210,6 +4210,24 @@ pub(super) fn ty_is_owned_handle_leaf(ty: &ResolvedTy) -> bool {
 /// builtin / named identity for the handle kinds the gate covers.
 pub(super) fn render_owned_handle_ty(ty: &ResolvedTy) -> String {
     match ty {
+        ResolvedTy::Named {
+            args,
+            builtin:
+                Some(builtin @ (hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver)),
+            ..
+        } => {
+            let family = match builtin {
+                hew_types::BuiltinType::Sender => "channel.Sender",
+                hew_types::BuiltinType::Receiver => "channel.Receiver",
+                _ => unreachable!("pattern admits only channel endpoint builtins"),
+            };
+            if args.is_empty() {
+                family.to_string()
+            } else {
+                let rendered: Vec<String> = args.iter().map(render_owned_handle_ty).collect();
+                format!("{family}<{}>", rendered.join(", "))
+            }
+        }
         ResolvedTy::Named { name, args, .. } if args.is_empty() => name.clone(),
         ResolvedTy::Named { name, args, .. } => {
             let rendered: Vec<String> = args.iter().map(render_owned_handle_ty).collect();

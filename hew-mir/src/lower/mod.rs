@@ -419,13 +419,12 @@ struct OwnedCarrierParam {
 /// as borrowed sources. This predicate is the single home for the decision
 /// — both admission halves consult it (`register_owned_call_carrier_param`
 /// on the callee, `prepare_owned_call_carriers` on the caller) so the two
-/// sides cannot drift apart. `lower_direct_call_args` deliberately does
-/// NOT consult it: forwarding an already-tracked carrier projection or
-/// payload binder into a String/Bytes-param callee still discharges
-/// through the funnel, and the transferred count is released by the
-/// binder/projection local's own elaborated drop while the callee borrows
-/// (the copy-in runtime symbols mint independent owners) — verified leak-
-/// and scribble-clean in both liveness directions.
+/// sides cannot drift apart. `lower_direct_call_args` also consults it only
+/// when forwarding an already-tracked carrier projection or payload binder:
+/// String/Bytes still discharge the enclosing carrier through the funnel, but
+/// the binder/projection local keeps the transferred count's elaborated drop
+/// while the callee borrows (copy-in sinks mint independent owners) — verified
+/// leak- and scribble-clean in both liveness directions.
 pub(crate) fn snapshot_root_outside_carrier_protocol(root: &SnapshotFieldKind) -> bool {
     matches!(
         root,
@@ -1483,11 +1482,13 @@ struct Builder {
     /// of the binder flips the flag back to one on that runtime path: release
     /// authority has moved onward, so a shared arm-close plan must skip it.
     pub(crate) projected_payload_overwrite_flags: HashMap<BindingId, Place>,
-    /// Binders for which lowering observed the parent-overwrite authority
-    /// transfer described by `projected_payload_overwrite_flags`. Kept
-    /// separate from the flag map so a binder whose parent is never
-    /// overwritten remains a plain non-owning projection alias.
-    pub(crate) projected_payload_overwrite_releases: HashSet<BindingId>,
+    /// Projected payload binders that can become the delayed sole release
+    /// authority on at least one runtime path. Parent overwrite is one such
+    /// transfer; forwarding a payload from an owned call carrier into a
+    /// borrow-spine callee is another. Kept separate from the flag map so a
+    /// binder whose parent remains the owner on every path stays a plain
+    /// non-owning projection alias.
+    pub(crate) projected_payload_delayed_releases: HashSet<BindingId>,
     /// Set while lowering a match-arm guard expression that
     /// can fall through to a later arm. A projected heap-payload binder consumed
     /// with this flag set is rejected fail-closed (`GuardedConsume`): its

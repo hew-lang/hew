@@ -6353,17 +6353,19 @@ pub struct ElabDrop {
     /// whole value is transferred on only some paths; for an inline enum
     /// consumed on one path and reassigned on another; or for a direct string
     /// payload binder that becomes the delayed release authority when its
-    /// parent enum is overwritten while the binder is live. Resource close
-    /// rituals are not runtime idempotent; conditional composites and delayed
-    /// payload releases need the same edge distinction so teardown runs only on
-    /// the path/generation that still owns the value.
+    /// parent enum is overwritten while the binder is live, or when its owned
+    /// carrier shell is neutralized to forward the payload through a borrowing
+    /// call. Resource close rituals are not runtime idempotent; conditional
+    /// composites and delayed payload releases need the same edge distinction
+    /// so teardown runs only on the path/generation that still owns the value.
     /// For ordinary conditional transfers, `flag` is an `i64` local
     /// initialised to 0 at the binding's introduction and set to 1 at each
     /// `IntentKind::Consume` use site. A delayed projected-payload flag uses
     /// the inverse history: it starts at 1 while the parent owns the payload
-    /// and becomes 0 when an overwrite transfers release authority to the
-    /// binder. In both protocols codegen gates the drop on `flag == 0`, so it
-    /// runs exactly on the path/generation represented by this `ElabDrop`.
+    /// and becomes 0 when an overwrite or borrowing forward transfers release
+    /// authority to the binder. In both protocols codegen gates the drop on
+    /// `flag == 0`, so it runs exactly on the path/generation represented by
+    /// this `ElabDrop`.
     /// The drop-plan validator re-derives only `kind` (via the Place-driven
     /// `drop_kind_for` SSOT) and never inspects `guard`, so this runtime-gating
     /// annotation is orthogonal to the structural drop-kind contract.

@@ -1667,10 +1667,10 @@ impl Builder {
                 }
                 let first_transfer = promoted.iter().all(|(payload_binding, _)| {
                     !self
-                        .projected_payload_overwrite_releases
+                        .projected_payload_delayed_releases
                         .contains(payload_binding)
                 });
-                self.projected_payload_overwrite_releases
+                self.projected_payload_delayed_releases
                     .extend(promoted.iter().map(|(payload_binding, _)| *payload_binding));
                 if first_transfer {
                     for (_, flag) in &promoted {

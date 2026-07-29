@@ -1285,13 +1285,13 @@ pub(super) fn elaborate(
         }
     }
 
-    // An in-arm parent overwrite transfers the old direct string payload's
-    // release authority to its still-live binder. Re-admit exactly those
-    // binders into the leaf drop class and remove their projection-alias
-    // suppression; their per-binder flag remains one on every path where the
-    // parent was not overwritten, so the resulting scope-exit drop is skipped
-    // there and cannot compete with the parent's recursive release.
-    cow_drop_allowed.extend(builder.projected_payload_overwrite_releases.iter().copied());
+    // A parent overwrite or borrow-spine call forwarding can transfer a direct
+    // string payload's release authority to its still-live binder. Re-admit
+    // exactly those delayed owners into the leaf drop class and remove their
+    // projection-alias suppression; their per-binder flag remains one on every
+    // path where no transfer occurred, so the resulting scope-exit drop is
+    // skipped there and cannot compete with the parent's recursive release.
+    cow_drop_allowed.extend(builder.projected_payload_delayed_releases.iter().copied());
     let mut projection_alias_tainted = compute_projection_alias_taint(
         &checked.blocks,
         &builder.match_project_consumed_binder_locals,
@@ -1300,7 +1300,7 @@ pub(super) fn elaborate(
     );
     projection_alias_tainted.retain(|local| {
         !builder
-            .projected_payload_overwrite_releases
+            .projected_payload_delayed_releases
             .iter()
             .any(|binding| {
                 builder

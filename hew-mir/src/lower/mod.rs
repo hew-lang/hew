@@ -1194,6 +1194,16 @@ struct Builder {
     /// final authority: a binder consumed by `=> y` is removed from the
     /// allow-set, so the drop won't double-free a moved-out payload.
     pub(crate) match_project_consumed_binder_locals: HashSet<u32>,
+    /// Match-arm payload binders whose active `(variant, field)` was proven a
+    /// fresh transferred return, while the enclosing enum was deliberately NOT
+    /// admitted as a whole owner. These locals are exempt from the ordinary
+    /// interior-projection alias seed: the shell has no drop obligation, so the
+    /// binder is the one and only owner of the selected field.
+    pub(crate) fresh_variant_payload_binder_locals: HashSet<u32>,
+    /// Binding ids paired with `fresh_variant_payload_binder_locals`. Record
+    /// drop admission is keyed by binding rather than local, so this is the
+    /// matching active-variant proof for recursive record payload teardown.
+    pub(crate) fresh_variant_payload_bindings: HashSet<BindingId>,
     /// Bindings that hold a closure value whose resolved invoke-shim carries a
     /// suspend terminator (the suspendable-callee discriminator). Populated by
     /// the `Let` handler from the shim's lowered MIR carriers — the SAME
@@ -5300,6 +5310,7 @@ pub(crate) fn lower_function(
     let projection_tainted = temp_drop::compute_projection_alias_taint(
         &blocks,
         &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
     );
     prepare_owned_call_carriers(&mut blocks, &mut builder, &projection_tainted);

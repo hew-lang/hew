@@ -32,7 +32,15 @@ fn one_frame() -> i64 {
         Ok(data) => data.len(),
         Err(reason) => reason.len(),
     };
-    arg.len() + env.len() + cwd.len() + home.len() + host.len() + temp.len() + process_len + codec_len
+    let process_discard = match process.try_run("printf discarded") {
+        Ok(_) => 1,
+        Err(_) => 0,
+    };
+    let codec_discard = match compress.try_gzip_decompress("not-a-gzip".to_bytes(), 1024) {
+        Ok(_) => 0,
+        Err(_) => 1,
+    };
+    arg.len() + env.len() + cwd.len() + home.len() + host.len() + temp.len() + process_len + codec_len + process_discard + codec_discard
 }
 
 fn main() -> i64 {

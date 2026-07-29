@@ -87,6 +87,32 @@ const SYMBOLS: &[&str] = &[
     "hew_compress_last_error",
 ];
 
+/// Complete-codegen counts: one declaration plus every shipped wrapper body
+/// retained by this witness. Pinning these exact values catches both a missing
+/// active-variant cleanup and an accidental second owner/release.
+const EXPECTED_SYMBOL_CALL_COUNTS: &[(&str, usize)] = &[
+    ("hew_args_get", 2),
+    ("hew_cwd", 3),
+    ("hew_env_get", 3),
+    ("hew_home_dir", 3),
+    ("hew_hostname", 3),
+    ("hew_temp_dir", 3),
+    ("hew_io_read_all", 3),
+    ("hew_io_read_line", 3),
+    ("hew_stream_collect_string", 2),
+    ("hew_process_result_stderr", 2),
+    ("hew_process_result_stdout", 2),
+    ("hew_file_read", 2),
+    ("hew_glob_error", 3),
+    ("hew_glob_get", 2),
+    ("hew_path_absolute", 3),
+    ("hew_dns_lookup_host", 3),
+    ("hew_dns_lookup_host_timed", 3),
+    ("hew_compress_last_error", 7),
+];
+
+const EXPECTED_STRING_RELEASES: usize = 760;
+
 #[test]
 fn shipped_os_io_wrappers_emit_all_measured_calls_and_caller_releases() {
     require_codegen();
@@ -110,18 +136,21 @@ fn shipped_os_io_wrappers_emit_all_measured_calls_and_caller_releases() {
     );
     let ir = std::fs::read_to_string(dir.path().join("os_io_retention.ll"))
         .expect("read generated LLVM IR");
-    for symbol in SYMBOLS {
-        let call = format!("@{symbol}(");
-        assert!(
-            ir.matches(&call).count() >= 2,
-            "{symbol} must appear as both declaration and emitted wrapper call; IR:\n{ir}"
+    assert_eq!(
+        SYMBOLS.len(),
+        EXPECTED_SYMBOL_CALL_COUNTS.len(),
+        "the exact-count table must cover every measured symbol"
+    );
+    for &(symbol, expected) in EXPECTED_SYMBOL_CALL_COUNTS {
+        let actual = ir.matches(&format!("@{symbol}(")).count();
+        assert_eq!(
+            actual, expected,
+            "{symbol} call count drifted in the complete wrapper witness"
         );
     }
     let releases = ir.matches("call void @hew_string_drop").count();
-    assert!(
-        releases >= SYMBOLS.len(),
-        "all {count} fresh string results must reach generated caller cleanup; found only {releases} \
-         `hew_string_drop` calls in the complete wrapper witness",
-        count = SYMBOLS.len()
+    assert_eq!(
+        releases, EXPECTED_STRING_RELEASES,
+        "complete wrapper witness string cleanup count drifted"
     );
 }

@@ -20,7 +20,8 @@ use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::model::RecordLayout;
 use hew_mir::{
     classify_actor_state_fields, classify_state_field_with_enum_layouts, lower_hir_module,
-    ty_contains_unclonable_opaque, ClassificationError, IoHandleKind, StateFieldCloneKind,
+    ty_contains_unclonable_opaque, ClassificationError, IoHandleKind, ResourceCloseAuthority,
+    StateFieldCloneKind,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -134,7 +135,7 @@ fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped(
 
     let resource_kind = StateFieldCloneKind::Resource {
         name: "Dq".to_string(),
-        close_symbol: "Dq::close".to_string(),
+        close: ResourceCloseAuthority::User("Dq::close".to_string()),
     };
     let direct = find_actor(&pipeline, "Direct");
     assert_eq!(
@@ -158,6 +159,75 @@ fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped(
         vec![("Dq".to_string(), "Dq::close".to_string())],
         "the shared resource registry must remain available to nested-record codegen",
     );
+}
+
+#[test]
+fn root_opaque_resource_builtin_name_collisions_keep_user_identity() {
+    for (name, method) in [
+        ("Duplex", "close"),
+        ("Stream", "close"),
+        ("Sink", "close"),
+        ("Sender", "close"),
+        ("Receiver", "close"),
+        ("LambdaActorHandle", "close"),
+        ("SendHalf", "close"),
+        ("RecvHalf", "close"),
+        ("CancellationToken", "close"),
+        ("MonitorRef", "close"),
+    ] {
+        let source = format!(
+            r"
+#[resource]
+#[opaque]
+type {name} {{}}
+
+impl {name} {{
+    fn {method}(self) {{}}
+}}
+
+actor Keeper {{
+    let value: {name};
+}}
+
+fn main() {{}}
+"
+        );
+        let pipeline = lower_source(&source);
+        let keeper = pipeline
+            .actor_layouts
+            .iter()
+            .find(|actor| actor.name == "Keeper")
+            .expect("Keeper layout");
+        assert!(
+            matches!(
+                keeper.state_field_tys.as_slice(),
+                [ResolvedTy::Named {
+                    name: actual,
+                    builtin: None,
+                    is_opaque: true,
+                    ..
+                }] if actual == name
+            ),
+            "root opaque user `{name}` must outrank builtin registration: {:?}",
+            keeper.state_field_tys
+        );
+        assert_eq!(
+            keeper.state_field_clone_kinds.as_deref(),
+            Some(
+                &[StateFieldCloneKind::Resource {
+                    name: name.to_string(),
+                    close: ResourceCloseAuthority::User(format!("{name}::{method}")),
+                }][..]
+            ),
+            "root opaque user `{name}` must retain user-close authority"
+        );
+        assert!(
+            pipeline
+                .resource_opaque_close
+                .contains(&(name.to_string(), format!("{name}::{method}"))),
+            "root opaque user `{name}` must be present in the resource registry"
+        );
+    }
 }
 
 #[test]
@@ -321,21 +391,21 @@ fn user_type_named_connection_classifies_as_user_record_not_iohandle() {
 }
 
 #[test]
-fn builtin_connection_without_record_layout_classifies_as_iohandle() {
-    // Direct-classifier test (no parser involvement) pinning the
-    // other half of the contract: when no user record shadows the
-    // name, `Named("Connection", [])` classifies as the IoHandle
-    // builtin. This is the surface Stage 2 will gate at supervisor-
-    // restart sites per plan §4.5 B.
+fn qualified_net_connection_without_record_layout_classifies_as_iohandle() {
+    // Direct-classifier test (no parser involvement) pinning both sides of the
+    // identity contract. The runtime handle is the exact stdlib source identity
+    // `net.Connection`; a foreign same-short-name type must not acquire its
+    // close/clone semantics merely because it has no record layout in this
+    // synthetic classifier call.
     let mut visited = HashSet::new();
     let result = hew_mir::classify_state_field(
         &ResolvedTy::Named {
-            name: "Connection".to_string(),
+            name: "net.Connection".to_string(),
             args: vec![],
             builtin: None,
-            is_opaque: false,
+            is_opaque: true,
         },
-        &[], // empty record_layouts → builtin path
+        &[],
         &mut visited,
     )
     .expect("classified");
@@ -344,6 +414,24 @@ fn builtin_connection_without_record_layout_classifies_as_iohandle() {
         StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Connection,
         },
+    );
+
+    let mut visited = HashSet::new();
+    assert_eq!(
+        hew_mir::classify_state_field(
+            &ResolvedTy::Named {
+                name: "foo.Connection".to_string(),
+                args: vec![],
+                builtin: None,
+                is_opaque: false,
+            },
+            &[],
+            &mut visited,
+        ),
+        Err(ClassificationError::MissingRecordLayout {
+            name: "foo.Connection".to_string(),
+        }),
+        "a foreign `foo.Connection` must not inherit `net.Connection` IO-handle semantics",
     );
 }
 

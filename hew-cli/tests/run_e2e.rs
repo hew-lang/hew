@@ -805,8 +805,11 @@ fn run_generic_vec_for_in_collect_scalar_and_record() {
 /// #1929 Stage 2: pure-iteration proof for the generic for-in. `count<T>`
 /// increments an `i64` accumulator once per yielded element without touching
 /// the element value, isolating the `VecIter` desugar from the element-write
-/// path. The loop runs exactly once per element across three element ABIs —
-/// `i64` (3), `string` (4), and the Copy value-record `Point` (2).
+/// path. The loop runs exactly once per element across four concrete
+/// identities — `i64` (3), `string` (4), the Copy value-record `Point` (2),
+/// and a user-authored clone-total `MonitorRef` shadow (1). The last case pins
+/// the positive half of the builtin-resource identity boundary exercised by
+/// the fail-closed test below.
 #[test]
 fn run_generic_vec_for_in_count_across_element_abis() {
     require_codegen();
@@ -879,9 +882,9 @@ fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
         "expected the positional resource-record clone-totality diagnostic; got: {combined}"
     );
     assert!(
-        combined.contains("VecIter<link_monitor.MonitorRef>")
-            && combined.contains("resource `link_monitor.MonitorRef` has an affine close contract"),
-        "expected the builtin resource-record clone-totality diagnostic; got: {combined}"
+        combined.contains("VecIter<MonitorRef>")
+            && combined.contains("resource `MonitorRef` has an affine close contract"),
+        "expected the canonical builtin resource-record clone-totality diagnostic; got: {combined}"
     );
 }
 
@@ -2617,14 +2620,14 @@ fn check_carrier_conditional_consume_shared_exit_fails_closed() {
     );
 }
 
-/// The mailbox takes ownership of the buffer (no retain-on-send on the M-COW
-/// spine), so a sender that also scope-dropped it would free a buffer the live
-/// mailbox still owns — a use-after-free on the receiving side or a double-free
-/// when the handler later releases it. The fail-closed sole-owner derivation
-/// excludes the sent string because the send surfaces its backing local as a
-/// terminator/instr source operand (`terminator_source_places` /
-/// `instr_source_places`). A double-free trips the runtime's `free_cstring`
-/// sentinel (SIGABRT); a clean exit across many sends is the behavioural proof.
+/// A last-use string sent to an actor moves into the prepared outbound carrier
+/// and neutralizes the sender slot. The fixture's handler consumes that string
+/// into actor state; a FIFO ask verifies its exact length, and final actor
+/// teardown releases the receiver-owned buffer. If the sender also releases the
+/// prepared carrier after enqueue, teardown trips the runtime's `free_cstring`
+/// sentinel (SIGABRT). One transfer exercises the ownership edge completely;
+/// repeating it only amplifies runtime work under the shared subprocess
+/// deadline.
 #[test]
 fn run_actor_sent_string_not_double_freed() {
     require_codegen();
@@ -2638,8 +2641,8 @@ fn run_actor_sent_string_not_double_freed() {
 
     let output = run_bounded_hew_run(&source, repo_root());
 
-    // A double-free aborts the process (SIGABRT) via the runtime's
-    // `free_cstring` sentinel check, so `success()` is itself the proof.
+    // Wrong length returns non-zero; a double-free aborts via `free_cstring`.
+    // `success()` therefore preserves both the value and release oracles.
     assert!(
         output.status.success(),
         "actor_sent_string_not_double_freed should run cleanly (a double-free \
@@ -4380,9 +4383,11 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
 
 /// Compile `source` with `--dump-mir elab` and return the number of owned
 /// HANDLE-place releases (`Duplex::close` `drop_fn` / `LambdaActorRelease` drop
-/// kind) in `callee`'s elaborated body. The oracle: a callee returning an
+/// kind) in `callee`'s *return plans*. The oracle: a callee returning an
 /// aggregate of owned handle-place members (`Duplex`/lambda-actor handles) must
-/// report ZERO — the members are handed to the caller.
+/// report ZERO on the successful return path — the members are handed to the
+/// caller. Other plans, such as an exhaustiveness-fallthrough panic, correctly
+/// release still-live handles.
 ///
 /// A separate counter from `callee_handle_close_drops` because handle-place
 /// members register in `binding_locals` as their handle Place (not a `Local`),
@@ -4391,6 +4396,36 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
 /// `SendHalf`/`RecvHalf`/`LambdaActorHandle` Place lowering is unwired), so
 /// the runtime negative-control the Stream/Sink shapes use is impossible — this
 /// dump-mir assertion is the only oracle.
+fn return_plan_marker_count(body: &str, marker: &str) -> usize {
+    let mut in_return_plan = false;
+    let mut count = 0;
+    for line in body.lines() {
+        if line.starts_with("    return[") {
+            in_return_plan = true;
+        } else if line.starts_with("    ") && line.contains("] ->") {
+            in_return_plan = false;
+        }
+        if in_return_plan {
+            count += line.matches(marker).count();
+        }
+    }
+    count
+}
+
+#[test]
+fn return_plan_marker_count_excludes_required_panic_cleanup() {
+    let body = "  drop_plans:\n    return[bb1] ->\n      (none)\n    panic[bb2] ->\n      drop lambda1 kind=lambda_actor_release\n    return[bb3] ->\n      drop lambda2 kind=lambda_actor_release\n";
+    assert_eq!(return_plan_marker_count(body, "lambda_actor_release"), 1);
+    assert_eq!(
+        return_plan_marker_count(
+            "  drop_plans:\n    return[bb1] ->\n      drop lambda1 kind=lambda_actor_release\n      drop lambda2 kind=lambda_actor_release\n",
+            "lambda_actor_release",
+        ),
+        2,
+        "counterfactual: a second successful-return release must remain visible"
+    );
+}
+
 fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
     let dir = support::tempdir();
     let hew_src = dir.path().join("oracle.hew");
@@ -4415,7 +4450,7 @@ fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
     let end = rest.find("\nfn ").map_or(rest.len(), |i| i);
     let body = &rest[..end];
     // Structured renderer emits `kind=lambda_actor_release` (not `LambdaActorRelease`).
-    body.matches("lambda_actor_release").count()
+    return_plan_marker_count(body, "lambda_actor_release")
 }
 
 /// Oracle: a `(Sink, Stream)` tuple let-bound then returned BY NAME

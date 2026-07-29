@@ -364,6 +364,7 @@ fn fs$read -> string
       drop _9 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb10] ->
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _2 ty=string kind=cow_heap(hew_string_drop)
     call[bb11 string_concat -> bb12] ->
       (none)
     call[bb12 string_concat -> bb13] ->
@@ -385,6 +386,7 @@ fn fs$read -> string
       drop _23 ty=string kind=cow_heap(hew_string_drop)
       drop _21 ty=string kind=cow_heap(hew_string_drop)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _2 ty=string kind=cow_heap(hew_string_drop)
     call[bb19 string_concat -> bb20] ->
       (none)
     call[bb20 string_concat -> bb21] ->
@@ -400,6 +402,7 @@ fn fs$read -> string
     cancel[bb24] ->
       drop _30 ty=string kind=cow_heap(hew_string_drop)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _2 ty=string kind=cow_heap(hew_string_drop)
 
 fn fs$try_read -> Result<string, IoError>
   statements:
@@ -449,9 +452,9 @@ fn fs$try_read -> Result<string, IoError>
     cancel[bb12] ->
       (none)
     goto[bb13->bb12] ->
-      (none)
+      drop _6 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb13] ->
-      (none)
+      drop _6 ty=string kind=cow_heap(hew_string_drop)
     goto[bb14->bb5] ->
       (none)
     cancel[bb14] ->
@@ -650,9 +653,9 @@ fn fs$try_read_bytes -> Result<bytes, IoError>
     call[bb7 fs$io_error_from_kind -> bb8] ->
       (none)
     goto[bb8->bb6] ->
-      (none)
+      drop _2 ty=bytes kind=cow_heap(hew_bytes_drop)
     cancel[bb8] ->
-      (none)
+      drop _2 ty=bytes kind=cow_heap(hew_bytes_drop)
 
 fn fs$write_bytes -> i64
   statements:
@@ -952,9 +955,9 @@ fn stream$pipe -> (Sink<string>, Stream<string>)
     branch[bb6: bb4/bb5] ->
       (none)
     goto[bb7->bb2] ->
-      (none)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb7] ->
-      (none)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
 
 fn stream$try_pipe -> Result<(Sink<string>, Stream<string>), string>
   statements:
@@ -1070,9 +1073,9 @@ fn stream$bytes_pipe -> (Sink<bytes>, Stream<bytes>)
     branch[bb6: bb4/bb5] ->
       (none)
     goto[bb7->bb2] ->
-      (none)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb7] ->
-      (none)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
 
 fn stream$try_bytes_pipe -> Result<(Sink<bytes>, Stream<bytes>), string>
   statements:
@@ -1545,3 +1548,5 @@ fn duration::fmt -> string
     return[bb1] ->
       (none)
 
+diagnostics:
+  diagnostic: ObligationUnderReleased Echo__recv__run bb1 input "owned local `input` reaches suspend-abandon[bb1] with zero discharges on every path modelling: no terminal drop in this exit's plan and no ownership transfer before the exit (mint without discharge = leak)" — "every heap-owning owned value must be released exactly once on every reachable exit path; this exit path never discharges the mint (leak). This is an advisory warning, not a build error — fix the drop plan (release on every exit) to silence it"

@@ -1078,3 +1078,253 @@ fn main() -> i64 {
         "the carrier param keeps its terminal snapshot drop"
     );
 }
+
+/// A carrier payload forwarded to a Hew-bodied `string` parameter crosses two
+/// ownership protocols: the enclosing enum is a consuming call carrier, while
+/// the leaf parameter remains a `CoW` borrow. Neutralizing the enum slot must
+/// therefore promote the projected binder to the delayed release authority.
+/// A read-only control leaves the enum shell owning; a true return-consume
+/// transfers onward and must not mint the binder drop.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the three-way MIR differential keeps forward, read, and consume ownership evidence together"
+)]
+fn carrier_payload_borrow_forward_promotes_exactly_one_delayed_owner() {
+    let pipeline = pipeline_with_tc(
+        r#"
+fn stash(s: string) -> i64 {
+    let v: Vec<string> = Vec::new();
+    v.push(s);
+    v.len()
+}
+
+fn forward(e: Result<string, string>) -> i64 {
+    match e { Ok(x) => stash(x), Err(y) => y.len() }
+}
+
+fn inspect(e: Result<string, string>) -> i64 {
+    match e { Ok(x) => x.len(), Err(y) => y.len() }
+}
+
+fn take(e: Result<string, string>) -> string {
+    match e { Ok(x) => x, Err(y) => y }
+}
+
+fn main() -> i64 {
+    let n = forward(Ok("a" + "b"));
+    let m = inspect(Ok("c" + "d"));
+    let s = take(Ok("e" + "f"));
+    n + m + s.len()
+}
+"#,
+    );
+
+    let forward = find_fn(&pipeline, "forward");
+    let forward_block = forward
+        .blocks
+        .iter()
+        .find(|block| {
+            matches!(
+                &block.terminator,
+                hew_mir::Terminator::Call { callee, .. } if callee == "stash"
+            )
+        })
+        .expect("forwarding call block");
+    let call_arg = match &forward_block.terminator {
+        hew_mir::Terminator::Call { args, .. } => args[0],
+        _ => unreachable!("block selected by call terminator"),
+    };
+    let binder = forward_block
+        .instructions
+        .iter()
+        .find_map(|instr| match instr {
+            Instr::Move { dest, src } if *dest == call_arg => Some(*src),
+            _ => None,
+        })
+        .expect("payload binder moved into call transport local");
+    assert!(
+        forward_block.instructions.iter().any(|instr| matches!(
+            instr,
+            Instr::NeutralizePayloadSlot {
+                transferee: Some(dest),
+                ..
+            } if *dest == call_arg
+        )),
+        "forwarding must neutralize the carrier payload slot into the call transport"
+    );
+
+    let forward_leaf_drops = all_drops(&pipeline, "forward")
+        .into_iter()
+        .filter(|drop| {
+            drop.ty == hew_types::ResolvedTy::String
+                && matches!(drop.kind, DropKind::CowHeap { .. })
+        })
+        .collect::<Vec<_>>();
+    let first_forward_drop = forward_leaf_drops
+        .first()
+        .expect("the forwarded payload needs a leaf release authority");
+    assert!(
+        forward_leaf_drops.iter().all(|drop| {
+            drop.place == first_forward_drop.place && drop.guard == first_forward_drop.guard
+        }),
+        "every normal/cancel exit must use the same single leaf release authority"
+    );
+    assert_eq!(
+        first_forward_drop.place, binder,
+        "the projected binder, not the transport local, owns the delayed release"
+    );
+    let delayed_guard = first_forward_drop
+        .guard
+        .expect("the projected binder release is path-gated");
+    assert!(
+        forward_block.instructions.iter().any(|instr| matches!(
+            instr,
+            Instr::ConstI64 { dest, value: 0 } if *dest == delayed_guard
+        )),
+        "the borrow-forward path must activate the binder's delayed release"
+    );
+
+    let inspect = find_fn(&pipeline, "inspect");
+    assert!(
+        inspect.blocks.iter().all(|block| block
+            .instructions
+            .iter()
+            .all(|instr| { !matches!(instr, Instr::NeutralizePayloadSlot { .. }) })),
+        "the non-forwarding read control must leave the enum shell owning"
+    );
+    assert!(
+        all_drops(&pipeline, "inspect")
+            .iter()
+            .all(|drop| drop.ty != hew_types::ResolvedTy::String),
+        "the non-forwarding control must not mint a competing payload-binder drop"
+    );
+
+    let take = find_fn(&pipeline, "take");
+    let consume_blocks = take
+        .blocks
+        .iter()
+        .filter(|block| {
+            block
+                .instructions
+                .iter()
+                .any(|instr| matches!(instr, Instr::NeutralizePayloadSlot { .. }))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        consume_blocks.len(),
+        2,
+        "both return-consume arms must transfer their payload onward"
+    );
+    assert!(
+        consume_blocks.iter().all(|block| block
+            .instructions
+            .iter()
+            .all(|instr| !matches!(instr, Instr::ConstI64 { value: 0, .. }))),
+        "a true consume must not reactivate the projected binder release"
+    );
+    assert!(
+        all_drops(&pipeline, "take")
+            .iter()
+            .all(|drop| drop.ty != hew_types::ResolvedTy::String),
+        "the return value, not either projected binder, owns each consumed payload"
+    );
+}
+
+/// `string.join` exposes the same carrier boundary through a `Vec<string>`
+/// projection: the indexed element becomes `result`, then a borrowing concat
+/// reads it before the assignment releases the old generation. Pin both sides
+/// of that exactly-once split. Removing the delayed exit release leaks on
+/// panic/cancel; duplicating it competes with itself on the same exit.
+#[test]
+fn vec_string_projection_forward_has_one_release_per_exit() {
+    let pipeline = pipeline_with_tc(
+        r#"
+fn join_like(parts: Vec<string>, sep: string) -> string {
+    let n = parts.len();
+    if n == 0 {
+        return "";
+    }
+    var result = parts[0];
+    for i in 1 .. n {
+        result = result + sep + parts[i];
+    }
+    result
+}
+
+fn main() -> i64 {
+    join_like(["a", "b"], ",").len()
+}
+"#,
+    );
+
+    let function = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "join_like")
+        .expect("join_like elaborated MIR");
+    let delayed = function
+        .drop_plans
+        .iter()
+        .flat_map(|(exit, plan)| {
+            plan.drops.iter().filter_map(move |drop| {
+                (drop.ty == hew_types::ResolvedTy::String
+                    && matches!(drop.kind, DropKind::CowHeap { .. }))
+                .then_some((exit, drop))
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        delayed.len(),
+        5,
+        "the projected result must release on each of the five panic/cancel exits"
+    );
+    let owner = delayed[0].1.place;
+    assert!(
+        delayed.iter().all(|(_, drop)| drop.place == owner),
+        "all exceptional exits must release the same projected result owner"
+    );
+    for (exit, plan) in &function.drop_plans {
+        let releases = plan
+            .drops
+            .iter()
+            .filter(|drop| {
+                drop.place == owner
+                    && drop.ty == hew_types::ResolvedTy::String
+                    && matches!(drop.kind, DropKind::CowHeap { .. })
+            })
+            .count();
+        assert!(
+            releases <= 1,
+            "exit {exit:?} must not duplicate the projected result release"
+        );
+    }
+    assert!(
+        function
+            .drop_plans
+            .iter()
+            .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+            .all(|(_, plan)| plan.drops.iter().all(|drop| drop.place != owner)),
+        "the successful return transfers the result instead of releasing it"
+    );
+
+    let inline_owner_releases = find_fn(&pipeline, "join_like")
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::Drop {
+                    place,
+                    ty: hew_types::ResolvedTy::String,
+                    drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
+                } if *place == owner
+            )
+        })
+        .count();
+    assert_eq!(
+        inline_owner_releases, 1,
+        "the successful loop iteration must release the old result generation once"
+    );
+}

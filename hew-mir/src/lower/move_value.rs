@@ -3,8 +3,8 @@ use super::{
     ty_is_indirect_enum, BasicBlock, BindingId, Builder, CaptureEnvOwnedLoad, Disposition,
     FieldLoadClass, HashMap, HashSet, HirBinding, HirExpr, HirExprKind, Instr, MirDiagnostic,
     MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedCarrierParam,
-    PendingOwnedCallArg, PendingOwnedCallSite, Place, ResolvedTy, SiteId, SnapshotFieldKind,
-    SuspendKind,
+    PendingOwnedCallArg, PendingOwnedCallSite, Place, ResolvedRef, ResolvedTy, SiteId,
+    SnapshotFieldKind, SuspendKind,
 };
 
 impl Builder {
@@ -288,9 +288,22 @@ impl Builder {
                         )
                         .unwrap_or(false) =>
             {
+                // Every admitted carrier gets an explicit transfer guard.
+                // Heap-only carrier shapes happen to make their zeroed
+                // snapshot drop inert, but nested user-resource rituals do
+                // not: closing a structurally zeroed `Wrap<Token>` is still an
+                // observable second close. Keep this authority structural
+                // rather than attempting to rediscover every non-idempotent
+                // leaf in the snapshot plan.
+                let guard = self.alloc_local(ResolvedTy::I64);
+                self.push_instr(Instr::ConstI64 {
+                    dest: guard,
+                    value: 0,
+                });
                 self.owned_carrier_param_ids.insert(param.id);
                 self.owned_carrier_params.push(OwnedCarrierParam {
                     value: slot,
+                    guard,
                     ty: owned_ty,
                     plan,
                 });
@@ -417,6 +430,32 @@ impl Builder {
         expr: &HirExpr,
         requested_transfer: bool,
     ) -> Option<Place> {
+        if requested_transfer {
+            if let HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Binding(binding),
+            } = &expr.kind
+            {
+                if self
+                    .vec_iter_borrowed_sources
+                    .iter()
+                    .any(|(_, source)| source == binding)
+                {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!("moving `{name}` while a VecIter cursor borrows it"),
+                            site: expr.site,
+                        },
+                        note: "the active for-loop cursor reads this Vec's handle directly; \
+                               moving the source would neutralize or release that handle while \
+                               the cursor can still execute. Move the Vec before entering the \
+                               loop, or wait until the loop has finished"
+                            .to_string(),
+                    });
+                    return None;
+                }
+            }
+        }
         if self.reject_capture_env_whole_escape_expr(expr) {
             return None;
         }
@@ -505,6 +544,11 @@ impl Builder {
         self.record_owned_carrier_transfer(value);
         match target {
             OwnedCarrierNeutralizeTarget::Whole(source) => {
+                let transfer_guard = self
+                    .owned_carrier_params
+                    .iter()
+                    .find(|param| param.value == source)
+                    .map(|param| param.guard);
                 let dest = self.alloc_local(ty.clone());
                 self.push_instr(Instr::Move { dest, src: value });
                 self.push_instr(Instr::NeutralizePayloadSlot {
@@ -512,6 +556,12 @@ impl Builder {
                     transferee: Some(dest),
                     authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
                 });
+                if let Some(flag) = transfer_guard {
+                    self.push_instr(Instr::ConstI64 {
+                        dest: flag,
+                        value: 1,
+                    });
+                }
                 dest
             }
             OwnedCarrierNeutralizeTarget::Projection {
@@ -600,6 +650,46 @@ impl Builder {
         self.transfer_owned_carrier_place(value, &ty)
     }
 
+    /// Forward a carrier-projected payload into a callee parameter whose root
+    /// stays on the `CoW` borrow spine.
+    ///
+    /// The call-consumption summary still sends the alias through the carrier
+    /// funnel so the enclosing enum slot is neutralized, but String/Bytes roots
+    /// never register a callee terminal owner. The binder therefore remains
+    /// responsible for the original count after the call. Keep this promotion
+    /// at the direct-call boundary: HIR may label both a match-arm return and a
+    /// borrowing call argument `Read`, so expression intent alone cannot
+    /// distinguish a genuine ownership transfer from this borrowed forward.
+    fn transfer_borrow_spine_carrier_payload(&mut self, expr: &HirExpr, value: Place) -> Place {
+        let delayed_payload_release = if matches!(
+            self.owned_carrier_authority(value),
+            Some(OwnedCarrierNeutralizeTarget::Whole(source)) if source != value
+        ) {
+            match &expr.kind {
+                HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(binding),
+                    ..
+                } => self
+                    .projected_payload_overwrite_flags
+                    .get(binding)
+                    .copied()
+                    .map(|flag| (*binding, flag)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let transferred = self.transfer_owned_carrier_value(expr, value);
+        if let Some((binding, flag)) = delayed_payload_release {
+            self.projected_payload_delayed_releases.insert(binding);
+            self.push_instr(Instr::ConstI64 {
+                dest: flag,
+                value: 0,
+            });
+        }
+        transferred
+    }
+
     pub(crate) fn lower_let_value(&mut self, binding: BindingId, value: &HirExpr) -> Option<Place> {
         let generator_clone_only = self.prepass_generator_capture_bindings.contains(&binding)
             && !self.prepass_binding_ref_uses.contains(&binding);
@@ -641,9 +731,26 @@ impl Builder {
             .supervisor_layout_map
             .values()
             .any(|layout| layout.bootstrap_symbol == callee_symbol);
+        // A captured user resource remains owned by its closure environment.
+        // The call-summary table does not carry an ItemId for inherent
+        // `Token::close(self)` calls, so the generic move gate below would
+        // misread the receiver as a borrow, byte-copy it out of the env, and
+        // close both the alias and the environment-owned value. Until Hew has
+        // a `FnOnce`/take-from-env protocol, reject that whole-value consume
+        // through the same existing capture-escape diagnostic.
+        let consumes_user_resource = args.iter().any(|arg| {
+            matches!(
+                super::resource_drop_fn(&self.subst_ty(&arg.ty), &self.type_classes),
+                Some(crate::model::DropFnSpec::UserClose(ref symbol))
+                    if symbol == callee_symbol
+            )
+        });
         args.iter()
             .enumerate()
             .map(|(index, arg)| {
+                if consumes_user_resource && self.reject_capture_env_whole_escape_expr(arg) {
+                    return None;
+                }
                 let is_move = move_all_args
                     || callee_item.is_some_and(|item| {
                         self.param_ownership
@@ -678,6 +785,21 @@ impl Builder {
                         Some(OwnedCarrierNeutralizeTarget::Whole(root)) if root == value
                     ) {
                         return Some(value);
+                    }
+                    let record_layouts = outbound_record_layouts(self);
+                    let stays_on_borrow_spine =
+                        crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                            &self.subst_ty(&arg.ty),
+                            &record_layouts,
+                            &self.enum_layouts,
+                            &self.opaque_handle_names,
+                            &self.resource_opaque_close,
+                        )
+                        .is_ok_and(|plan| {
+                            super::snapshot_root_outside_carrier_protocol(plan.root())
+                        });
+                    if stays_on_borrow_spine {
+                        return Some(self.transfer_borrow_spine_carrier_payload(arg, value));
                     }
                     return Some(self.transfer_owned_carrier_value(arg, value));
                 }

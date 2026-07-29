@@ -49,6 +49,21 @@ pub(crate) fn primitive_copy_layout(
     ty: &Ty,
     type_defs: &HashMap<String, TypeDef>,
 ) -> Option<(usize, usize)> {
+    primitive_copy_layout_on_path(ty, type_defs, &mut HashSet::new())
+}
+
+/// `primitive_copy_layout` with the currently-expanded record declarations.
+///
+/// The key is the resolved declaration name rather than `Ty`'s display
+/// spelling: recursive generics can revisit one declaration with ever-growing
+/// arguments, and imported uses can spell a declaration with a module prefix.
+/// Either way, a repeated nominal is an inline recursive layout and has no
+/// finite Copy size.
+fn primitive_copy_layout_on_path(
+    ty: &Ty,
+    type_defs: &HashMap<String, TypeDef>,
+    visiting: &mut HashSet<String>,
+) -> Option<(usize, usize)> {
     if let Some(layout) = identity_aggregate_layout(ty) {
         return Some(layout);
     }
@@ -61,7 +76,7 @@ pub(crate) fn primitive_copy_layout(
         // f64 is hash-ineligible but included for the same reason.
         Ty::I64 | Ty::U64 | Ty::Duration | Ty::F64 => Some((8, 8)),
         Ty::Array(elem, count) => {
-            let (elem_size, elem_align) = primitive_copy_layout(elem, type_defs)?;
+            let (elem_size, elem_align) = primitive_copy_layout_on_path(elem, type_defs, visiting)?;
             let count = usize::try_from(*count).ok()?;
             Some((elem_size.checked_mul(count)?, elem_align))
         }
@@ -71,28 +86,68 @@ pub(crate) fn primitive_copy_layout(
                 name.split_once('.')
                     .and_then(|(_, local)| type_defs.get(local))
             })?;
-            if args.is_empty() {
-                compute_copy_record_layout(type_def, type_defs)
+            let visit_key = type_def.name.clone();
+            if !visiting.insert(visit_key.clone()) {
+                return None;
+            }
+            let layout = if args.is_empty() {
+                compute_copy_record_layout_on_path(type_def, type_defs, visiting)
             } else {
                 if type_def.type_params.len() != args.len() {
+                    visiting.remove(&visit_key);
                     return None;
                 }
-                let subst: HashMap<String, Ty> = type_def
-                    .type_params
-                    .iter()
-                    .zip(args.iter())
-                    .map(|(param, arg)| (param.clone(), arg.clone()))
-                    .collect();
-                let mut instantiated = type_def.clone();
-                instantiated.fields = type_def
-                    .fields
-                    .iter()
-                    .map(|(field, ty)| (field.clone(), ty.substitute_named_params_parallel(&subst)))
-                    .collect();
-                compute_copy_record_layout(&instantiated, type_defs)
-            }
+                compute_copy_record_layout_with_args_on_path(type_def, args, type_defs, visiting)
+            };
+            visiting.remove(&visit_key);
+            layout
         }
         _ => None,
+    }
+}
+
+/// Compute a field layout while retaining the origin of direct type-parameter
+/// members. A supplied type argument is already a finite concrete payload, so
+/// it starts a fresh layout path (`Wrap<Wrap<i64>>` is not self-recursive). A
+/// definition-level edge such as `Wrap<T> { next: Wrap<Wrap<T>> }` stays on
+/// the active path and therefore still fails closed.
+fn primitive_copy_layout_member_on_path(
+    ty: &Ty,
+    type_def: &TypeDef,
+    type_args: &[Ty],
+    type_defs: &HashMap<String, TypeDef>,
+    visiting: &mut HashSet<String>,
+) -> Option<(usize, usize)> {
+    match ty {
+        Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } if args.is_empty() => {
+            let type_param_index = type_def
+                .type_params
+                .iter()
+                .position(|param| param == name)?;
+            let type_arg = type_args.get(type_param_index)?;
+            primitive_copy_layout(type_arg, type_defs)
+        }
+        Ty::Array(elem, count) => {
+            let (elem_size, elem_align) = primitive_copy_layout_member_on_path(
+                elem, type_def, type_args, type_defs, visiting,
+            )?;
+            let count = usize::try_from(*count).ok()?;
+            Some((elem_size.checked_mul(count)?, elem_align))
+        }
+        _ => {
+            let subst: HashMap<String, Ty> = type_def
+                .type_params
+                .iter()
+                .zip(type_args.iter())
+                .map(|(param, arg)| (param.clone(), arg.clone()))
+                .collect();
+            let instantiated = ty.substitute_named_params_parallel(&subst);
+            primitive_copy_layout_on_path(&instantiated, type_defs, visiting)
+        }
     }
 }
 
@@ -121,6 +176,23 @@ pub(crate) fn compute_copy_record_layout(
     type_def: &TypeDef,
     type_defs: &HashMap<String, TypeDef>,
 ) -> Option<(usize, usize)> {
+    compute_copy_record_layout_on_path(type_def, type_defs, &mut HashSet::new())
+}
+
+fn compute_copy_record_layout_on_path(
+    type_def: &TypeDef,
+    type_defs: &HashMap<String, TypeDef>,
+    visiting: &mut HashSet<String>,
+) -> Option<(usize, usize)> {
+    compute_copy_record_layout_with_args_on_path(type_def, &[], type_defs, visiting)
+}
+
+fn compute_copy_record_layout_with_args_on_path(
+    type_def: &TypeDef,
+    type_args: &[Ty],
+    type_defs: &HashMap<String, TypeDef>,
+    visiting: &mut HashSet<String>,
+) -> Option<(usize, usize)> {
     if type_def.fields.is_empty() {
         // Zero-size key is an ABI violation: `hew_hashmap_new_with_layout` aborts
         // when `key_layout.size == 0`.
@@ -146,7 +218,9 @@ pub(crate) fn compute_copy_record_layout(
 
     for name in field_names {
         let field_ty = type_def.fields.get(*name)?;
-        let (field_size, field_align) = primitive_copy_layout(field_ty, type_defs)?;
+        let (field_size, field_align) = primitive_copy_layout_member_on_path(
+            field_ty, type_def, type_args, type_defs, visiting,
+        )?;
 
         // Align the field start offset to the field's natural alignment.
         offset = align_up(offset, field_align);
@@ -1041,7 +1115,6 @@ impl Checker {
         name: &str,
         args: &[Ty],
         builtin: Option<BuiltinType>,
-        resolved: &Ty,
         visiting: &mut HashSet<String>,
     ) -> Option<String> {
         if self.canonical_owned_handle_type_name(name).is_some()
@@ -1085,7 +1158,9 @@ impl Checker {
         }
 
         let type_def = self.lookup_type_def(name)?;
-        let visit_key = resolved.user_facing().to_string();
+        // Track declaration identity, not the resolved display spelling: a
+        // generic or qualified recursive use must re-enter this same frame.
+        let visit_key = type_def.name.clone();
         if !visiting.insert(visit_key.clone()) {
             return None;
         }
@@ -1116,9 +1191,51 @@ impl Checker {
                 name,
                 args,
                 builtin,
-            } => self.hashmap_named_value_clone_blocker(name, args, *builtin, &resolved, visiting),
+            } => self.hashmap_named_value_clone_blocker(name, args, *builtin, visiting),
             _ => None,
         }
+    }
+
+    /// Clone-totality for the element/value position of a descriptor-backed
+    /// heap container (`Vec<T>`, `HashMap<K, V>`'s `V`).
+    ///
+    /// A `Vec`/`HashMap` slot is a pointer into a separately allocated buffer,
+    /// so a value cycle that crosses this edge is FINITE: re-encountering a
+    /// nominal that is still on the active recursion stack means the layout
+    /// closes through the container's heap indirection, not through an inline
+    /// self-embedding. The cloned-out element owns its own buffer, and the
+    /// container's per-element clone/drop descriptor re-enters the element
+    /// type's own thunk per slot, so the copy-in deep clone terminates.
+    ///
+    /// The witness is evaluated per nominal AT THIS EDGE, never accumulated:
+    /// only the nominal whose cycle closes across this exact container is
+    /// admitted. An unrelated container crossed earlier on the path leaves no
+    /// residue, so a direct inline self-cycle introduced below that boundary
+    /// still fails closed in [`vec_iter_clone_blocker`].
+    ///
+    /// The witness applies only when the element position IS the nominal: an
+    /// element that wraps the nominal inline (a tuple, `Option<T>`, a record)
+    /// re-descends and re-detects the inline cycle.
+    fn vec_iter_container_element_clone_blocker(
+        &self,
+        elem: &Ty,
+        visiting: &mut HashSet<String>,
+    ) -> Option<String> {
+        let resolved = self.subst.resolve(elem).materialize_literal_defaults();
+        if let Ty::Named {
+            name,
+            builtin: None,
+            ..
+        } = &resolved
+        {
+            let visit_key = self
+                .lookup_type_def(name)
+                .map_or_else(|| name.clone(), |type_def| type_def.name);
+            if visiting.contains(&visit_key) {
+                return None;
+            }
+        }
+        self.vec_iter_clone_blocker(&resolved, visiting)
     }
 
     /// Return the first leaf that prevents `VecIter::next` from cloning an
@@ -1135,6 +1252,14 @@ impl Checker {
     )]
     fn vec_iter_clone_blocker(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Option<String> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        // User resource/linear markers are semantic ownership authority. A
+        // marker may sit on an otherwise bit-copy layout, so this must precede
+        // the Copy-layout fast path below.
+        if let Ty::Named { name, .. } = &resolved {
+            if self.registry.is_resource(name) || self.registry.is_linear(name) {
+                return Some(format!("resource/linear value `{name}`"));
+            }
+        }
         if primitive_copy_layout(&resolved, &self.type_defs).is_some() {
             return None;
         }
@@ -1180,12 +1305,14 @@ impl Checker {
                 match builtin {
                     Some(BuiltinType::Rc | BuiltinType::Weak) if args.len() == 1 => return None,
                     Some(BuiltinType::Vec) if args.len() == 1 => {
-                        return self.vec_iter_clone_blocker(&args[0], visiting);
+                        return self.vec_iter_container_element_clone_blocker(&args[0], visiting);
                     }
                     Some(BuiltinType::HashMap) if args.len() == 2 => {
                         return self
                             .hashmap_nested_key_clone_blocker(&args[0], visiting)
-                            .or_else(|| self.vec_iter_clone_blocker(&args[1], visiting));
+                            .or_else(|| {
+                                self.vec_iter_container_element_clone_blocker(&args[1], visiting)
+                            });
                     }
                     Some(BuiltinType::HashSet) if args.len() == 1 => {
                         return self.hashmap_nested_key_clone_blocker(&args[0], visiting);
@@ -1225,7 +1352,20 @@ impl Checker {
                 ) {
                     return Some(format!("non-value type `{name}`"));
                 }
-                let visit_key = resolved.user_facing().to_string();
+                // Keep the active-stack key at nominal identity, not its
+                // substituted display spelling: a recursive generic may
+                // reach the same declaration under different type arguments,
+                // but its outgoing layout edges are already being checked by
+                // the outer frame. This is also the key used by the container
+                // witness above.
+                let visit_key = type_def.name.clone();
+                // Reaching a nominal already on the active stack through an
+                // INLINE edge (record field, enum payload, tuple member) is an
+                // infinite value layout: the element would have to embed a copy
+                // of itself. A cycle that crosses a descriptor-backed heap
+                // container is admitted earlier, at the container edge itself
+                // (`vec_iter_container_element_clone_blocker`), so it never
+                // reaches here.
                 if !visiting.insert(visit_key.clone()) {
                     return Some(format!("recursive value layout `{visit_key}`"));
                 }
@@ -1683,6 +1823,19 @@ impl Checker {
     }
 
     pub(super) fn vec_element_has_copy_layout(&self, elem_ty: &Ty) -> bool {
+        // Sender is pointer-width but not semantically Copy: duplicating an
+        // endpoint must call `hew_channel_sender_clone` so its shared channel
+        // refcount is retained. Keep it on the owned descriptor lane even if
+        // the representation marker reports a flat pointer layout.
+        if matches!(
+            elem_ty,
+            Ty::Named {
+                builtin: Some(BuiltinType::Sender),
+                ..
+            }
+        ) {
+            return false;
+        }
         self.registry.implements_marker(elem_ty, MarkerTrait::Copy)
             || primitive_copy_layout(elem_ty, &self.type_defs).is_some()
     }

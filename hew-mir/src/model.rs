@@ -4544,6 +4544,16 @@ pub enum Instr {
         ty: ResolvedTy,
         plan: crate::state_clone::ValueSnapshotPlan,
         boundary: PreparedCarrierBoundary,
+        /// Optional exactly-once gate for a prepared carrier drop.
+        ///
+        /// A user `#[resource]` record has no inert all-zero value: clearing
+        /// its fields after a whole-value transfer leaves its generated drop
+        /// thunk able to call `close(self)`. The flag is zero while this
+        /// carrier owns the value and one after transfer. Every local-call
+        /// carrier carries the structural gate; actor snapshots, whose
+        /// ownership protocol is separate, leave it absent. Codegen skips the
+        /// snapshot drop on the transferred path, including cancellation.
+        guard: Option<Place>,
     },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
@@ -5639,6 +5649,17 @@ pub struct FieldOffset(pub u32);
 pub enum StringRetainCondition {
     /// Always mint one additional string owner.
     Always,
+    /// Recursively mint owners for every string leaf in a borrowed inline
+    /// aggregate before that aggregate is copied into a new owner.
+    ///
+    /// Non-string `RecordFieldLoad` / `TupleFieldLoad` / enum-payload
+    /// projections are byte-copy aliases: the aggregate local has no owner of
+    /// its nested strings even though a later record/enum overwrite drop
+    /// reaches and releases them recursively. MIR emits this condition only
+    /// when projection-alias taint reaches an owning aggregate sink. Codegen
+    /// follows the concrete record/tuple/array/active-enum layout and retains
+    /// each string occurrence once.
+    AggregateBorrowedIngress,
     /// Mint an owner for a borrowed string entering an actor-state record.
     ///
     /// This is the count-balanced loop-carried `RecordInit` →
@@ -6322,26 +6343,32 @@ pub struct ElabDrop {
     /// Path-sensitive exactly-once gate for a conditional ownership transfer.
     ///
     /// `None` for every idempotent / null-tolerant drop that needs no
-    /// path-sensitive transfer guard (Duplex, lambda, half-handle, `CowHeap`,
-    /// ordinary enum/tuple in-place, dyn-trait, and records that remain live
+    /// path-sensitive transfer guard (Duplex, lambda, half-handle, ordinary
+    /// `CowHeap`, enum/tuple in-place, dyn-trait, and records that remain live
     /// on every path).
     ///
     /// `Some(flag)` for a `DropKind::Resource` whose `drop_fn` is a
     /// `DropFnSpec::UserClose`, for the `DropKind::RecordInPlace` helper of a
     /// field-bearing user resource record, or for an ordinary record whose
-    /// whole value is transferred on only some paths. Resource close rituals
-    /// are not runtime idempotent; ordinary conditional records need the same
-    /// edge distinction so recursive field teardown runs only where the record
-    /// remained live.
-    /// `flag` is an `i64` local initialised to 0 at the binding's
-    /// introduction and set to 1 at each `IntentKind::Consume` use site.
-    /// Codegen gates the drop on `flag == 0` so a binding reached at a
-    /// `MaybeConsumed` join — Live on one predecessor, Consumed on the
-    /// other — releases exactly once on the live path and is skipped on the
-    /// already-consumed path. The drop-plan validator re-derives only
-    /// `kind` (via the Place-driven `drop_kind_for` SSOT) and never
-    /// inspects `guard`, so this runtime-gating annotation is orthogonal to
-    /// the structural drop-kind contract.
+    /// whole value is transferred on only some paths; for an inline enum
+    /// consumed on one path and reassigned on another; or for a direct string
+    /// payload binder that becomes the delayed release authority when its
+    /// parent enum is overwritten while the binder is live, or when its owned
+    /// carrier shell is neutralized to forward the payload through a borrowing
+    /// call. Resource close rituals are not runtime idempotent; conditional
+    /// composites and delayed payload releases need the same edge distinction
+    /// so teardown runs only on the path/generation that still owns the value.
+    /// For ordinary conditional transfers, `flag` is an `i64` local
+    /// initialised to 0 at the binding's introduction and set to 1 at each
+    /// `IntentKind::Consume` use site. A delayed projected-payload flag uses
+    /// the inverse history: it starts at 1 while the parent owns the payload
+    /// and becomes 0 when an overwrite or borrowing forward transfers release
+    /// authority to the binder. In both protocols codegen gates the drop on
+    /// `flag == 0`, so it runs exactly on the path/generation represented by
+    /// this `ElabDrop`.
+    /// The drop-plan validator re-derives only `kind` (via the Place-driven
+    /// `drop_kind_for` SSOT) and never inspects `guard`, so this runtime-gating
+    /// annotation is orthogonal to the structural drop-kind contract.
     pub guard: Option<Place>,
 }
 
@@ -6429,6 +6456,24 @@ pub enum DropKind {
     /// type-incongruent release symbol is unrepresentable, so the codegen
     /// congruence re-derivation the literal carrier required is gone.
     CowHeap {
+        release: crate::ownership::CowHeapRelease,
+    },
+    /// Abandon-edge release of the owned `vec` field inside a first-class
+    /// `VecIter<T>` cursor.
+    ///
+    /// `VecIter<T>` is an inline `{ Vec<T>, i64 }` record, not itself a
+    /// copy-on-write heap leaf. Its field-0 snapshot is nevertheless the sole
+    /// heap owner when the cursor's runtime ownership sidecar is zero. Normal
+    /// lexical/explicit exits release that field with `Instr::RecordFieldDrop`;
+    /// cancellation, panic, yield-destroy, and suspend-destroy paths carry this
+    /// kind in an [`ElabDrop`] guarded by the same sidecar.
+    ///
+    /// The typed `CowHeapRelease` payload preserves the Vec element refinement
+    /// (`plain`, owned-element, closure-pair). Codegen GEPs field 0, invokes the
+    /// selected Vec release, and null-stores the live field slot. The paired
+    /// [`ElabDrop::ty`] remains the enclosing `VecIter<T>` type and
+    /// [`ElabDrop::place`] remains its stack-local record.
+    VecIterCursor {
         release: crate::ownership::CowHeapRelease,
     },
     /// owned-string-record — function-scope in-place drop of a stack-local user record whose

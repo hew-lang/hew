@@ -3335,6 +3335,30 @@ fn repl_fragment_no_unused_lints_for_stdlib_chunk() {
     );
 }
 
+#[test]
+fn repl_fragment_veciter_string_overwrite_helper_is_defined() {
+    require_codegen();
+    let input = concat!(
+        "import std::iter;\n",
+        "fn collect_strings() -> i64 {\n",
+        "    let values: Vec<string> = [\"a\", \"bb\"];\n",
+        "    let mapped = iter.map(values.into_iter(), |x: string| x);\n",
+        "    let collected: Vec<string> = iter.collect(mapped);\n",
+        "    collected[0].len() + collected[1].len()\n",
+        "}\n",
+        "collect_strings()\n",
+    );
+    let output = run_eval_with_stdin(&["eval", "-f", "-"], input);
+    assert!(
+        output.status.success(),
+        "VecIter<string> field overwrite must compile with a defined release helper;\n\
+         stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_repl_emits_line(&output, "3");
+}
+
 /// Regression test: definition continuity — define a fn on one line, call it
 /// on the next.  Top-level items persist across evals; bindings do not.
 #[test]

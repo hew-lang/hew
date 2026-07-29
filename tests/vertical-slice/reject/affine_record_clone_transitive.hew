@@ -62,4 +62,26 @@ fn main() {
 
     let array_wrapper = ArrayWrapper { values: [LinearTicket { id: 6 }] };
     let _array_copy = array_wrapper.clone();
+
+    var resources: Vec<ResourceToken> = Vec::new();
+    resources.push(ResourceToken { id: 7 });
+    let _resources_copy = resources.clone();
+
+    var tickets: HashMap<string, LinearTicket> = HashMap::new();
+    tickets.insert("one", LinearTicket { id: 8 });
+    let _tickets_copy = clone tickets;
+
+    // The checker visits the clone arm before the push arm, while execution
+    // populates the Vec on the first iteration and clones it on the second.
+    // Admission must use the post-inference element type, not source order.
+    var late_resources = Vec::new();
+    var i = 0;
+    while i < 2 {
+        if i == 1 {
+            let _late_copy = late_resources.clone();
+        } else {
+            late_resources.push(ResourceToken { id: 9 });
+        }
+        i = i + 1;
+    }
 }

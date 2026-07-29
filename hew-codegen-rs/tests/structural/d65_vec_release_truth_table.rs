@@ -119,74 +119,124 @@ fn ssa_def<'a>(body: &'a str, name: &str) -> Option<&'a str> {
         .find_map(|line| line.strip_prefix(prefix.as_str()))
 }
 
-/// The constants that can reach the drop flag guarding the cursor release, or
-/// `None` when the guard shape is not the expected conditional-drop-flag form.
+/// The constants that can reach every drop flag guarding a cursor-field
+/// release. `VecIter` cleanup has two equivalent codegen shapes: the older
+/// boolean-spill path and the direct `i64 flag == 0` branch used by the
+/// abandonment plan. Both must prove the same ownership bit.
 ///
-/// Deliberately fail-closed: an unrecognised shape returns `None` and the
-/// caller treats that as a failure, because a release whose guard cannot be
-/// resolved has not been shown to be dead.
-fn cursor_release_guard_flag_constants(body: &str) -> Option<Vec<i64>> {
-    // The block that performs the release.
-    let mut release_label = None;
-    let mut current: Option<String> = None;
-    for line in body.lines() {
-        if !line.starts_with(char::is_whitespace) {
-            if let Some(label) = line.split(':').next() {
-                if !label.is_empty() && !line.starts_with("define") && !line.starts_with('}') {
-                    current = Some(label.to_string());
-                }
-            }
-        }
-        if line.contains("call void @hew_vec_free") {
-            release_label.clone_from(&current);
-        }
+/// Deliberately fail-closed: an unrecognised release or guard returns `None`.
+/// In particular, this follows *every* release of field 0 of a `VecIter`, not
+/// merely the final `hew_vec_free*` call in the function: an actor handler can
+/// have one such release per cancellation checkpoint.
+fn cursor_release_guard_flag_constants(body: &str) -> Option<Vec<Vec<i64>>> {
+    let release_labels = vec_iter_cursor_release_labels(body);
+    if release_labels.is_empty() {
+        return Some(Vec::new());
     }
-    let release_label = release_label?;
 
-    // The conditional branch that selects it.
-    let cond = body.lines().map(str::trim).find_map(|line| {
+    release_labels
+        .iter()
+        .map(|label| {
+            let cond = body_branch_condition_to_label(body, label)?;
+            let flag_slot = cursor_guard_flag_slot(body, &cond)?;
+            i64_slot_constants(body, &flag_slot)
+        })
+        .collect()
+}
+
+fn body_branch_condition_to_label(body: &str, label: &str) -> Option<String> {
+    body.lines().map(str::trim).find_map(|line| {
         let rest = line.strip_prefix("br i1 ")?;
         let (cond, targets) = rest.split_once(',')?;
         targets
-            .contains(&format!("label %{release_label}"))
+            .contains(&format!("label %{label}"))
             .then(|| cond.trim().to_string())
-    })?;
+    })
+}
 
-    // `%cond = icmp ne i8 %flag_byte, 0` ← `load i8, ptr %byte_slot`
-    let byte = ssa_def(body, &cond)?
+/// Labels that release a `VecIter`'s field-0 Vec handle. A regular Vec local
+/// can also call `hew_vec_free*`; requiring the typed `VecIter` GEP prevents
+/// it from being mistaken for cursor cleanup.
+fn vec_iter_cursor_release_labels(body: &str) -> std::collections::BTreeSet<String> {
+    let mut labels = std::collections::BTreeSet::new();
+    let mut current = None;
+    let mut cursor_field_zero = false;
+    for raw in body.lines() {
+        if !raw.starts_with(char::is_whitespace) {
+            if let Some((label, _)) = raw.split_once(':') {
+                if !label.is_empty() && !raw.starts_with("define") && !raw.starts_with('}') {
+                    current = Some(label.to_string());
+                    cursor_field_zero = false;
+                }
+            }
+        }
+        let line = raw.trim();
+        if line.contains("getelementptr")
+            && line.contains("VecIter$$")
+            && line.contains(", i32 0, i32 0")
+        {
+            cursor_field_zero = true;
+        }
+        if cursor_field_zero && line.contains("call void @hew_vec_free") {
+            if let Some(label) = current.clone() {
+                labels.insert(label);
+            }
+        }
+    }
+    labels
+}
+
+/// Resolve a branch condition back to its `i64` cursor ownership sidecar.
+///
+/// The direct form is `%c = icmp eq i64 (load flag), 0`; the legacy form
+/// spills that comparison through an `i8` temporary before branching.
+fn cursor_guard_flag_slot(body: &str, cond: &str) -> Option<String> {
+    let definition = ssa_def(body, cond)?;
+    if let Some(operands) = definition.strip_prefix("icmp eq i64 ") {
+        let (lhs, rhs) = operands.split_once(',')?;
+        let lhs = lhs.trim();
+        let rhs = rhs.trim();
+        let flag = i64_load_slot(body, lhs)?;
+        return i64_operand_is_zero(body, rhs).then_some(flag);
+    }
+
+    let byte = definition
         .strip_prefix("icmp ne i8 ")?
         .split(',')
         .next()?
-        .trim()
-        .to_string();
-    let byte_slot = ssa_def(body, &byte)?
+        .trim();
+    let byte_slot = ssa_def(body, byte)?
         .strip_prefix("load i8, ptr ")?
         .split(',')
         .next()?
-        .trim()
-        .to_string();
-
-    // `store i8 %zext, ptr %byte_slot` ← `zext i1 %cmp` ← `icmp eq i64 %flag, %zero`
+        .trim();
     let zext = body.lines().map(str::trim).find_map(|line| {
         let rest = line.strip_prefix("store i8 ")?;
         rest.contains(&format!(", ptr {byte_slot},"))
-            .then(|| rest.split(',').next().map(|v| v.trim().to_string()))?
+            .then(|| rest.split(',').next().map(|value| value.trim()))?
     })?;
-    let cmp = ssa_def(body, &zext)?
+    let cmp = ssa_def(body, zext)?
         .strip_prefix("zext i1 ")?
         .split_whitespace()
-        .next()?
-        .to_string();
-    let operands = ssa_def(body, &cmp)?.strip_prefix("icmp eq i64 ")?;
-    let (lhs, _) = operands.split_once(',')?;
-    let flag_slot = ssa_def(body, lhs.trim())?
+        .next()?;
+    cursor_guard_flag_slot(body, cmp)
+}
+
+fn i64_load_slot(body: &str, value: &str) -> Option<String> {
+    ssa_def(body, value)?
         .strip_prefix("load i64, ptr ")?
         .split(',')
-        .next()?
-        .trim()
-        .to_string();
+        .next()
+        .map(|slot| slot.trim().to_string())
+}
 
-    i64_slot_constants(body, &flag_slot)
+fn i64_operand_is_zero(body: &str, value: &str) -> bool {
+    value == "0"
+        || i64_load_slot(body, value)
+            .and_then(|slot| i64_slot_constants(body, &slot))
+            .is_some_and(|constants| {
+                !constants.is_empty() && constants.iter().all(|value| *value == 0)
+            })
 }
 
 /// The iteration cursor over an actor-state Vec must never release that Vec:
@@ -202,17 +252,20 @@ fn assert_iteration_cursor_borrows_actor_state(name: &str, handler: &str) {
     if vec_release_calls(handler) == 0 {
         return;
     }
-    let constants = cursor_release_guard_flag_constants(handler).unwrap_or_else(|| {
+    let guards = cursor_release_guard_flag_constants(handler).unwrap_or_else(|| {
         panic!(
             "{name}: the handler releases a Vec and the release is not a resolvable \
              drop-flag-gated cursor release, so it is not proven dead\n{handler}"
         )
     });
     assert!(
-        !constants.is_empty() && !constants.contains(&0),
-        "{name}: the iteration cursor must borrow actor state — its release guard flag can \
-         reach {constants:?}, and `0` takes the release branch that frees the actor's own \
-         state Vec\n{handler}"
+        !guards.is_empty()
+            && guards
+                .iter()
+                .all(|constants| !constants.is_empty() && !constants.contains(&0)),
+        "{name}: the iteration cursor must borrow actor state — one of its release guard \
+         flags can reach `0` (all guards: {guards:?}), and `0` takes the branch that frees \
+         the actor's own state Vec\n{handler}"
     );
 }
 
@@ -661,15 +714,45 @@ fn d65_actor_state_borrow_proof_rejects_a_live_release_flag() {
         vec_release_calls(handler) > 0,
         "counterfactual is vacuous unless the handler actually emits a gated release\n{handler}"
     );
-    let constants = cursor_release_guard_flag_constants(handler)
-        .expect("the gated cursor release guard must resolve");
+    let guards = cursor_release_guard_flag_constants(handler)
+        .expect("the gated cursor release guards must resolve");
     assert!(
-        !constants.is_empty() && !constants.contains(&0),
-        "expected a borrow-only guard flag, got {constants:?}"
+        !guards.is_empty()
+            && guards
+                .iter()
+                .all(|constants| !constants.is_empty() && !constants.contains(&0)),
+        "expected borrow-only guard flags, got {guards:?}"
     );
 
-    // Counterfactual: make the guard flag reach the release value.
-    let live = handler.replace("store i64 1,", "store i64 0,");
+    // Counterfactual: make the actual cursor sidecar reach the release value.
+    // This mutates the emitted handler rather than merely passing an invented
+    // count to the assertion, proving the recognizer follows the real release
+    // paths introduced by abandonment cleanup.
+    let flag_slots: std::collections::BTreeSet<_> = guards
+        .iter()
+        .flat_map(|_| {
+            vec_iter_cursor_release_labels(handler)
+                .into_iter()
+                .filter_map(|label| {
+                    body_branch_condition_to_label(handler, &label)
+                        .and_then(|cond| cursor_guard_flag_slot(handler, &cond))
+                })
+        })
+        .collect();
+    assert_eq!(
+        flag_slots.len(),
+        1,
+        "expected one cursor ownership sidecar: {flag_slots:?}"
+    );
+    let flag_slot = flag_slots.iter().next().expect("one cursor sidecar");
+    let live = handler.replace(
+        &format!("store i64 1, ptr {flag_slot},"),
+        &format!("store i64 0, ptr {flag_slot},"),
+    );
+    assert_ne!(
+        live, handler,
+        "counterfactual must mutate the real cursor sidecar"
+    );
     assert!(
         std::panic::catch_unwind(|| {
             assert_iteration_cursor_borrows_actor_state("live_release_flag", &live);

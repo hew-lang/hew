@@ -46,8 +46,11 @@
 # established it for that symbol by measuring the runtime's actual retention
 # behaviour: distinct addresses for two live results, refcount 1 at handoff,
 # and the callee's own state surviving the caller's release. Those oracles are
-# hew-runtime/tests/last_error_result_retention.rs and
-# hew-std/src/last_error_retention.rs (hew-lang/hew#2828).
+# hew-runtime/tests/{last_error_result_retention,string_result_retention,
+# identity_format_result_retention,os_io_string_result_retention}.rs,
+# hew-std/src/{last_error_retention,string_result_retention,
+# os_io_string_retention,websocket_string_result_retention}.rs, and
+# hew-std/src/http/string_result_retention.rs (hew-lang/hew#2828).
 #
 # Three-tier model (rationale: Option A chosen over Option B for substrate
 # clarity — the tier boundary is a compile-time contract, not just a doc claim):
@@ -1885,6 +1888,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_location_format"
@@ -1892,6 +1896,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # hew-std/src/json.rs:379-384 reconstructs and drops `val`.
 [[ownership.contracts]]
@@ -1974,6 +1979,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # hew-runtime/src/vec.rs:814-835 returns a header-retained string reference.
 [[ownership.contracts]]
@@ -2006,6 +2012,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_last_serialize_error"
@@ -2013,6 +2020,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # hew-std/src/toml.rs:73-81 allocates the actor-local error string.
 [[ownership.contracts]]
@@ -2030,6 +2038,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # hew-std/src/toml.rs:264-282 allocates serialized TOML text.
 [[ownership.contracts]]
@@ -2038,6 +2047,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # hew-std/src/markdown.rs:38-56 allocates rendered HTML.
 [[ownership.contracts]]
@@ -2046,6 +2056,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # hew-std/src/markdown.rs:59-79 allocates sanitized rendered HTML.
 [[ownership.contracts]]
@@ -2054,6 +2065,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # hew-runtime/src/vec.rs:323-348 allocates an empty plain vector.
 [[ownership.contracts]]
@@ -2308,7 +2320,8 @@ discharge-depth = "shallow"
 
 # process environment / identity — hew-runtime/src/env.rs. String results are
 # string_to_malloc/str_to_malloc header-aware allocations (fresh); key/value
-# params are read via CStr::from_ptr (borrow).
+# params are read via CStr::from_ptr (borrow). Their transfer retention is
+# measured by hew-runtime/tests/os_io_string_result_retention.rs (R1/R2/R3).
 [[ownership.contracts]]
 symbol = "hew_args_count"
 result = "none"
@@ -2322,6 +2335,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_cwd"
@@ -2329,6 +2343,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_env_get"
@@ -2336,6 +2351,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_env_has"
@@ -2364,6 +2380,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_hostname"
@@ -2371,6 +2388,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_pid"
@@ -2385,6 +2403,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # runtime error/control singles — hew-runtime/src/lib.rs (hew_clear_error),
 # hew-runtime/src/execution_context.rs (hew_set_partition_policy: scalar tag in,
@@ -2404,13 +2423,15 @@ release-symbol = ""
 discharge-depth = "none"
 
 # stdio — hew-runtime/src/stdio.rs. read_line/read_all return str_to_malloc
-# strings; write/write_err read their C-string operand only.
+# strings; write/write_err read their C-string operand only. The isolated-stdin
+# R1/R2/R3 witnesses live in hew-runtime/tests/os_io_string_result_retention.rs.
 [[ownership.contracts]]
 symbol = "hew_io_read_all"
 result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_io_read_line"
@@ -2418,6 +2439,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_io_write"
@@ -2456,6 +2478,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_log_get_format"
@@ -2496,6 +2519,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_string_compare"
@@ -2621,7 +2645,8 @@ discharge-depth = "none"
 # aliases) null-out the pair slot and MOVE the handle to the caller (fresh;
 # released via hew_sink_close / hew_stream_close). hew_stream_pipe takes
 # Box::from_raw ownership of BOTH handles; hew_stream_collect_string consumes
-# its stream and returns a fresh alloc_cstring string.
+# its stream and returns a fresh alloc_cstring string. The returned string's
+# transfer is measured in hew-runtime/tests/os_io_string_result_retention.rs.
 [[ownership.contracts]]
 symbol = "hew_sink_is_valid"
 result = "none"
@@ -2642,6 +2667,7 @@ result = "fresh"
 params = ["consume"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_from_file_read"
@@ -3011,6 +3037,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_process_result_stdout"
@@ -3018,6 +3045,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_process_run"
@@ -3057,7 +3085,8 @@ discharge-depth = "none"
 # file I/O — hew-runtime/src/file_io.rs. Path/content params are borrowed C
 # strings; hew_file_read returns a fresh string, hew_file_read_bytes a fresh
 # bytes buffer, hew_fs_list_dir a fresh Vec<string> (hew_vec_free discharges
-# the element strings: deep).
+# the element strings: deep). The string transfer is measured by the OS/I/O
+# retention oracle.
 [[ownership.contracts]]
 symbol = "hew_file_append"
 result = "none"
@@ -3085,6 +3114,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_file_read_bytes"
@@ -3165,7 +3195,8 @@ discharge-depth = "none"
 
 # path / glob — hew-runtime/src/path.rs. hew_glob returns a Box'd
 # HewGlobResult (freed by hew_glob_free); hew_glob_get and hew_path_absolute
-# return str_to_malloc strings (fresh).
+# return str_to_malloc strings (fresh). The getter/error/path copies are
+# measured by hew-runtime/tests/os_io_string_result_retention.rs.
 [[ownership.contracts]]
 symbol = "hew_glob"
 result = "fresh"
@@ -3186,6 +3217,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_glob_free"
@@ -3200,6 +3232,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_glob_is_valid"
@@ -3214,6 +3247,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_path_is_dir"
@@ -3339,6 +3373,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_cidr_contains"
@@ -3360,6 +3395,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ip_is_loopback"
@@ -3398,13 +3434,15 @@ discharge-depth = "none"
 
 # DNS — hew-std/src/dns.rs. lookup_host(_timed) return str_to_malloc strings;
 # resolve(_timed) return a fresh Vec<string> built with hew_vec_new_str /
-# hew_vec_push_str (hew_vec_free discharges element strings: deep).
+# hew_vec_push_str (hew_vec_free discharges element strings: deep). The numeric
+# loopback R1/R2/R3 witness lives in hew-std/src/os_io_string_retention.rs.
 [[ownership.contracts]]
 symbol = "hew_dns_lookup_host"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_dns_lookup_host_timed"
@@ -3412,6 +3450,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_dns_resolve"
@@ -3494,6 +3533,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_gzip_compress_hew"
@@ -3567,6 +3607,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # ed25519 signing — hew-std/src/sign.rs. Borrowed BytesTriple params; fresh
 # bytes results (key material / signatures).
@@ -3627,6 +3668,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_encrypt_try_seal_base64_hew"
@@ -3634,6 +3676,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_encrypt_try_open_hew"
@@ -3641,6 +3684,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # JWT — hew-std/src/jwt.rs. Token/secret/payload strings are borrowed;
 # encode/decode return fresh JSON/token strings.
@@ -3650,6 +3694,7 @@ result = "fresh"
 params = ["borrow", "borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_jwt_decode_insecure"
@@ -3657,6 +3702,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_jwt_encode_hew"
@@ -3664,6 +3710,7 @@ result = "fresh"
 params = ["borrow", "borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_jwt_last_error_code"
@@ -3687,6 +3734,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_password_hash_custom"
@@ -3694,6 +3742,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_password_verify"
@@ -3717,6 +3766,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_uuid_v7"
@@ -3724,6 +3774,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # datetime — hew-std/src/time/datetime.rs. Scalar epoch math; format and
 # last_error return fresh strings; parse borrows both strings.
@@ -3740,6 +3791,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_datetime_hour"
@@ -3857,6 +3909,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # URL — hew-std/src/url.rs. parse/join return Box'd HewUrl handles (freed by
 # hew_url_free); component getters return str_to_malloc strings.
@@ -3866,6 +3919,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_url_free"
@@ -3880,6 +3934,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_url_is_valid"
@@ -3908,6 +3963,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_url_port"
@@ -3922,6 +3978,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_url_scheme"
@@ -3929,6 +3986,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_url_to_string"
@@ -3936,6 +3994,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # HTTP server — hew-std/src/http/server.rs. server_new/server_recv return
 # Box'd handles; respond_* take the responder out of the borrowed request but
@@ -3948,6 +4007,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_http_request_free"
@@ -3962,6 +4022,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_http_request_headers"
@@ -3976,6 +4037,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_http_request_path"
@@ -3983,6 +4045,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_http_respond_bridge"
@@ -4065,6 +4128,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_http_response_content_type"
@@ -4072,6 +4136,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_http_response_free"
@@ -4086,6 +4151,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_http_response_headers"
@@ -4154,6 +4220,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ws_message_type"
@@ -4403,6 +4470,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_conn_local_addr"
@@ -4410,6 +4478,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_conn_on_event"
@@ -4438,6 +4507,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_conn_rtt_ms"
@@ -4480,6 +4550,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_endpoint_local_addr"
@@ -4487,6 +4558,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_endpoint_on_event"
@@ -4579,6 +4651,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_stream_last_recv_status"
@@ -4780,6 +4853,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_last_error"
@@ -4851,6 +4925,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_type"
@@ -5160,6 +5235,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_last_error"
@@ -5224,6 +5300,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_type"
@@ -5256,6 +5333,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_xml_get_child"
@@ -5270,6 +5348,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_xml_get_text"
@@ -5277,6 +5356,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_xml_is_element"
@@ -5306,6 +5386,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # regex — hew-std/src/regex.rs. new/clone return Box'd HewRegex handles
 # (hew_regex_free). Match/capture entries borrow the regex and text; the
@@ -5352,6 +5433,7 @@ result = "fresh"
 params = ["borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_regex_find_all"
@@ -5401,6 +5483,7 @@ result = "fresh"
 params = ["borrow", "borrow", "borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 # protobuf — hew-std/src/protobuf.rs. msg_new returns a Box'd HewProtoMsg
 # (hew_proto_msg_free drops owned field storage: deep); setters borrow the
@@ -5552,6 +5635,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ws_last_errno"

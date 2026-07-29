@@ -102,6 +102,45 @@ pub(super) fn finalize_string_local_share_intents(
         }
     }
 }
+
+/// Aggregate-ingress retain sites known before retain instructions are spliced
+/// into raw MIR. The escaped-projection sibling pass runs at this earlier
+/// phase, so it consumes this view instead of attempting to rediscover the
+/// later `StringRetain` markers.
+pub(super) fn aggregate_borrowed_ingress_clone_sites(
+    blocks: &[BasicBlock],
+    builder: &Builder,
+) -> HashSet<(u32, usize, Place)> {
+    let owned_locals = builder.owned_locals_snapshot();
+    derive_cow_sole_owner(
+        blocks,
+        &builder.suspend_kinds,
+        &owned_locals,
+        &builder.binding_locals,
+        &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
+        &builder.locals,
+        &builder.borrowed_string_param_locals,
+        &builder.parameter_locals,
+        &builder.actor_message_cow_drop_flags,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
+    )
+    .retain_sites
+    .into_iter()
+    .filter_map(|site| {
+        matches!(
+            site.condition,
+            StringRetainCondition::AggregateBorrowedIngress
+        )
+        .then_some((site.block, site.instr_index, site.value))
+    })
+    .collect()
+}
 /// The destination of an instruction that loads an *interior pointer* out
 /// of a still-live aggregate — a record field, a tuple element, a
 /// closure-env capture, or an actor-state field. The loaded value aliases
@@ -126,11 +165,13 @@ pub(super) fn finalize_string_local_share_intents(
 /// fresh producers, so they earn exactly one balancing scope-exit drop — the
 /// same class `hew_vec_get_str` (`xs.get(i)`) already occupies. NON-string
 /// `*FieldLoad` dests (`bytes` / `Vec<T>` / nested record) are NOT retained by
-/// codegen and stay tainted here (leak, never double-free) until the
-/// retain-on-share spine lands. The two sides are coupled: if the codegen retain
-/// is ever conditionally skipped for a string field load, the taint exclusion
-/// and the fresh-producer admission must be skipped in lockstep, or the leak
-/// inverts back into a double-free.
+/// the projection load itself and stay tainted here. When a borrowed nested
+/// aggregate reaches an owning sink, `derive_cow_sole_owner` consumes that
+/// taint by emitting one recursive string-only retain; handles remain covered
+/// by overwrite neutralisation. The two sides are coupled: if the codegen
+/// retain is ever conditionally skipped for a string field load, the taint
+/// exclusion and the fresh-producer admission must be skipped in lockstep, or
+/// the leak inverts back into a double-free.
 #[must_use]
 fn projection_alias_dest(instr: &Instr) -> Option<Place> {
     match instr {
@@ -367,7 +408,7 @@ fn seed_fresh_string_instruction_locals(
     }
     fresh
 }
-fn string_share_sink_places(instr: &Instr) -> Vec<Place> {
+pub(super) fn string_share_sink_places(instr: &Instr) -> Vec<Place> {
     match instr {
         // Fork-entry environments preserve their existing move-in contract: the
         // parent consumes each owned argument and the child environment is the
@@ -781,6 +822,7 @@ pub(super) fn derive_cow_sole_owner(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     match_project_consumed_binder_locals: &HashSet<u32>,
+    fresh_variant_payload_binder_locals: &HashSet<u32>,
     locals: &[ResolvedTy],
     borrowed_param_locals: &HashSet<u32>,
     parameter_locals: &HashSet<u32>,
@@ -895,12 +937,45 @@ pub(super) fn derive_cow_sole_owner(
         .values()
         .filter_map(|place| base_local(*place))
         .collect();
-    let tainted =
-        compute_projection_alias_taint(blocks, match_project_consumed_binder_locals, locals);
+    let tainted = compute_projection_alias_taint(
+        blocks,
+        match_project_consumed_binder_locals,
+        fresh_variant_payload_binder_locals,
+        locals,
+    );
+    // Whole actor-state loads classified `Owned` already mint a recursive
+    // clone that their one proven whole-value escape consumes. Keep those
+    // locals tainted for scope-drop admission, but do not mint a second
+    // recursive string owner at that escape. Only genuinely borrowed
+    // projection provenance drives the aggregate-ingress retain sites.
+    let borrowed_aggregate_tainted = compute_projection_alias_taint_impl(
+        blocks,
+        match_project_consumed_binder_locals,
+        fresh_variant_payload_binder_locals,
+        locals,
+        false,
+    );
+    // A generator capture `RecordInit` is not an owning aggregate sink. It is
+    // the synthetic stack alias shell consumed immediately by
+    // `MakeGenerator`, whose per-field plan mints the independent heap owner
+    // with one semantic clone (or transfers the sole owner for `OwnedMove`).
+    // Treating this constructor like an ordinary record ingress emits a second
+    // string-only retain before codegen's structural clone. The closure owner
+    // and generator owner then provide only two matching drops, leaving that
+    // redundant retain live. Track the MIR-declared env places so the general
+    // aggregate-share pass does not invent an owner at their `RecordInit`.
+    let generator_env_stack_locals: HashSet<u32> = blocks
+        .iter()
+        .filter_map(|block| match &block.terminator {
+            Terminator::MakeGenerator { env: Some(env), .. } => base_local(env.place),
+            _ => None,
+        })
+        .collect();
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
     let mut pending_share_sites: Vec<(u32, usize, Place, Vec<BindingId>)> = Vec::new();
     let mut state_ingress_share_sites: Vec<StringRetainSite> = Vec::new();
+    let mut aggregate_ingress_share_sites: Vec<StringRetainSite> = Vec::new();
     let note_escape = |local: u32, excluded: &mut HashSet<u32>| {
         if let Some(&root) = alias_of.get(&local) {
             excluded.insert(root);
@@ -915,6 +990,18 @@ pub(super) fn derive_cow_sole_owner(
                     Place::MachineVariant { .. } | Place::EnumVariant { .. }
                 ) {
                     if let Some(src_local) = base_local(*src) {
+                        if borrowed_aggregate_tainted.contains(&src_local)
+                            && !string_place_is_typed(*src, locals)
+                        {
+                            aggregate_ingress_share_sites.push(StringRetainSite {
+                                block: block.id,
+                                instr_index,
+                                value: *src,
+                                condition: StringRetainCondition::AggregateBorrowedIngress,
+                                required_bindings: Vec::new(),
+                            });
+                            continue;
+                        }
                         if let Some(&root) = alias_of.get(&src_local) {
                             if let Some(&binding) = candidate_local_to_binding.get(&root) {
                                 if share_needs_retain(src_local, block.id, instr_index) {
@@ -1024,7 +1111,17 @@ pub(super) fn derive_cow_sole_owner(
                 }
             }
 
-            let share_places = string_share_sink_places(instr);
+            let is_generator_env_alias_shell = matches!(
+                instr,
+                Instr::RecordInit { dest, .. }
+                    if base_local(*dest)
+                        .is_some_and(|local| generator_env_stack_locals.contains(&local))
+            );
+            let share_places = if is_generator_env_alias_shell {
+                Vec::new()
+            } else {
+                string_share_sink_places(instr)
+            };
             if !share_places.is_empty() {
                 let mut candidate_groups: HashMap<u32, Vec<Place>> = HashMap::new();
                 let mut external_groups: HashMap<u32, (bool, Vec<Place>)> = HashMap::new();
@@ -1032,7 +1129,17 @@ pub(super) fn derive_cow_sole_owner(
                     let Some(local) = base_local(place) else {
                         continue;
                     };
-                    if let Some(&root) = alias_of.get(&local) {
+                    if borrowed_aggregate_tainted.contains(&local)
+                        && !string_place_is_typed(place, locals)
+                    {
+                        aggregate_ingress_share_sites.push(StringRetainSite {
+                            block: block.id,
+                            instr_index,
+                            value: place,
+                            condition: StringRetainCondition::AggregateBorrowedIngress,
+                            required_bindings: Vec::new(),
+                        });
+                    } else if let Some(&root) = alias_of.get(&local) {
                         candidate_groups.entry(root).or_default().push(place);
                     } else if borrowed_alias_of.contains_key(&local)
                         && !matches!(instr, Instr::ActorStateFieldStore { .. })
@@ -1254,6 +1361,7 @@ pub(super) fn derive_cow_sole_owner(
         .collect::<Vec<_>>();
 
     retain_sites.extend(state_ingress_share_sites);
+    retain_sites.extend(aggregate_ingress_share_sites);
 
     // Classify each string local's possible source shares. Pointer provenance
     // and ownership are deliberately separate here:
@@ -2003,17 +2111,42 @@ fn record_actor_state_load_terminator_uses(
 /// (`retain_string_field_load`), so it is a genuine fresh `+1` owner admitted via
 /// `string_field_load_producer_dest`, not a no-retain interior alias. Excluding
 /// it from the taint is what lets `derive_cow_fresh_borrowed_owner` admit it for
-/// its one balancing drop — the two-sided coupling. Non-string `*FieldLoad` dests
-/// are NOT retained by codegen, so they stay tainted here (leak, never
-/// double-free) until the retain-on-share spine lands. This exclusion is a
-/// provable no-op for the collection/Vec callers (a string-typed local is never a
-/// Vec/owned-record/HashMap drop candidate), so threading `locals` keeps one
-/// taint authority with consistent semantics across all consumers.
+/// its one balancing drop — the two-sided coupling. Non-string `*FieldLoad`
+/// dests are not retained at the load and stay tainted; the recursive
+/// string-only retain is emitted only if that borrowed aggregate later reaches
+/// an owning sink. This exclusion is a provable no-op for the collection/Vec
+/// callers (a string-typed local is never a Vec/owned-record/HashMap drop
+/// candidate), so threading `locals` keeps one taint authority with consistent
+/// semantics across all consumers.
 #[must_use]
 pub(super) fn compute_projection_alias_taint(
     blocks: &[BasicBlock],
     exempt_seed_locals: &HashSet<u32>,
+    fresh_variant_payload_binder_locals: &HashSet<u32>,
     locals: &[ResolvedTy],
+) -> HashSet<u32> {
+    compute_projection_alias_taint_impl(
+        blocks,
+        exempt_seed_locals,
+        fresh_variant_payload_binder_locals,
+        locals,
+        true,
+    )
+}
+
+/// Shared taint engine.
+///
+/// `include_owned_actor_state_loads` is `true` for drop admission: even an
+/// `Owned` load transfers its minted clone through a single whole-value escape
+/// and must not gain a second scope-exit drop. Recursive borrowed-ingress
+/// retains call this with `false`, because that same `Owned` load already
+/// cloned every string leaf and another retain at its escape would leak.
+fn compute_projection_alias_taint_impl(
+    blocks: &[BasicBlock],
+    exempt_seed_locals: &HashSet<u32>,
+    fresh_variant_payload_binder_locals: &HashSet<u32>,
+    locals: &[ResolvedTy],
+    include_owned_actor_state_loads: bool,
 ) -> HashSet<u32> {
     // #2523 — projection slots whose heap ownership was TRANSFERRED to a new
     // owner by a projected-payload move-out. The `Move` that copies such a slot
@@ -2037,12 +2170,20 @@ pub(super) fn compute_projection_alias_taint(
         for instr in &block.instructions {
             if let Some(dest) = projection_alias_dest(instr) {
                 if let Some(l) = base_local(dest) {
+                    let is_owned_actor_state_load = matches!(
+                        instr,
+                        Instr::ActorStateFieldLoad {
+                            mode: ActorStateLoadMode::Owned,
+                            ..
+                        }
+                    );
                     // A `string` field-load dest is a retained fresh producer, not
                     // a no-retain alias — exclude it from the taint so its
                     // balancing drop is admitted (see the doc above).
                     let is_retained_string_field_load =
                         string_field_load_producer_dest(instr, locals).is_some();
                     if !exempt_seed_locals.contains(&l)
+                        && (include_owned_actor_state_loads || !is_owned_actor_state_load)
                         && !is_retained_string_field_load
                         && !transferred_projection_dests.contains(&l)
                     {
@@ -2056,7 +2197,9 @@ pub(super) fn compute_projection_alias_taint(
                 // alias. Skip the taint seed so its drop is admitted exactly once.
                 if place_is_interior_projection(*src) && !neutralized_sources.contains(src) {
                     if let Some(dl) = base_local(*dest) {
-                        tainted.insert(dl);
+                        if !fresh_variant_payload_binder_locals.contains(&dl) {
+                            tainted.insert(dl);
+                        }
                     }
                 }
             }
@@ -2605,7 +2748,7 @@ mod aggregate_projection_transfer_dest_tests {
 /// which pass the real `locals`.
 #[must_use]
 pub(super) fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32> {
-    let mut tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &[]);
+    let mut tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &HashSet::new(), &[]);
     // Seed the borrowing vector element getters (both lowering shapes).
     for block in blocks {
         for instr in &block.instructions {
@@ -3100,7 +3243,7 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     //    consumed-binder exemption (conservative: taint strictly more). String
     //    `*FieldLoad` dests are excluded from the seed (they are retained fresh
     //    producers, admitted in step 1) via the `locals` type gate.
-    let tainted = compute_projection_alias_taint(blocks, &HashSet::new(), locals);
+    let tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &HashSet::new(), locals);
 
     // 3. Admit a leaf-`string` owned binding iff it is a proven fresh owner, not
     //    a projection alias, and every use is a verified borrow.
@@ -3159,6 +3302,7 @@ pub(super) fn finalize_string_ownership(
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
         &builder.borrowed_string_param_locals,
         &builder.parameter_locals,
@@ -5805,6 +5949,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -5863,6 +6008,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -5918,6 +6064,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -5962,7 +6109,8 @@ mod cow_sole_owner_derivation {
             HashSet::from([(0, 2)]),
             "the exact retain+move pair mints one independent destination owner"
         );
-        let tainted = compute_projection_alias_taint(&blocks, &HashSet::new(), &local_tys);
+        let tainted =
+            compute_projection_alias_taint(&blocks, &HashSet::new(), &HashSet::new(), &local_tys);
         assert!(
             tainted.contains(&40) && !tainted.contains(&41),
             "the payload binder stays parent-owned while its retained copy is independent; \
@@ -6114,7 +6262,12 @@ mod cow_sole_owner_derivation {
                 corroborated_retained_string_move_sites(&blocks, &local_tys).is_empty(),
                 "{label} must not mint independent ownership"
             );
-            let tainted = compute_projection_alias_taint(&blocks, &HashSet::new(), &local_tys);
+            let tainted = compute_projection_alias_taint(
+                &blocks,
+                &HashSet::new(),
+                &HashSet::new(),
+                &local_tys,
+            );
             assert!(
                 tainted.contains(&41),
                 "{label} must preserve fail-closed projection taint; got {tainted:?}"
@@ -6167,7 +6320,8 @@ mod cow_sole_owner_derivation {
             "a terminator-overwritten destination cannot hold one stable generation"
         );
         assert!(
-            compute_projection_alias_taint(&blocks, &HashSet::new(), &local_tys).contains(&41),
+            compute_projection_alias_taint(&blocks, &HashSet::new(), &HashSet::new(), &local_tys,)
+                .contains(&41),
             "a terminator-overwritten destination must retain projection taint"
         );
     }
@@ -6198,7 +6352,13 @@ mod cow_sole_owner_derivation {
             "a string opcode cannot grant retained ownership to bytes or another aggregate"
         );
         assert!(
-            compute_projection_alias_taint(&wrong_type, &HashSet::new(), &bytes_tys).contains(&41),
+            compute_projection_alias_taint(
+                &wrong_type,
+                &HashSet::new(),
+                &HashSet::new(),
+                &bytes_tys,
+            )
+            .contains(&41),
             "the wrong-type destination must retain projection taint"
         );
     }
@@ -6234,6 +6394,7 @@ mod cow_sole_owner_derivation {
             &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
+            &HashSet::new(),
             &HashSet::new(),
             &[],
             &HashSet::new(),
@@ -6283,6 +6444,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[
                 ResolvedTy::String,
                 ResolvedTy::String,
@@ -6311,6 +6473,80 @@ mod cow_sole_owner_derivation {
     }
 
     #[test]
+    fn generator_env_alias_shell_defers_string_clone_to_make_generator() {
+        let source = BindingId(71);
+        let env_ty = ResolvedTy::named_user("__hew_gen_env_test_0", vec![]);
+        let owned = vec![(source, "source".to_string(), ResolvedTy::String)];
+        let binding_locals = HashMap::from([(source, Place::Local(3))]);
+        let mut constructor = block(vec![
+            Instr::RecordInit {
+                ty: env_ty.clone(),
+                fields: vec![(FieldOffset(0), Place::Local(3))],
+                dest: Place::Local(4),
+            },
+            // Keep the source live after the alias-shell construction. An
+            // ordinary RecordInit at this site must retain; MakeGenerator's
+            // declared structural clone is the independent owner here.
+            Instr::IntCmp {
+                dest: Place::Local(6),
+                pred: CmpPred::Eq,
+                lhs: Place::Local(3),
+                rhs: Place::Local(3),
+            },
+        ]);
+        constructor.terminator = Terminator::MakeGenerator {
+            dest: Place::Local(5),
+            body_fn: "__hew_gen_body_test_0".to_string(),
+            next: 1,
+            env: Some(crate::model::GeneratorEnvPlan {
+                place: Place::Local(4),
+                ty: env_ty.clone(),
+                fields: Vec::new(),
+            }),
+        };
+        let blocks = vec![
+            constructor,
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Return,
+            },
+        ];
+        let derivation = derive_cow_sole_owner(
+            &blocks,
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[
+                ResolvedTy::Unit,
+                ResolvedTy::Unit,
+                ResolvedTy::Unit,
+                ResolvedTy::String,
+                env_ty,
+                ResolvedTy::Unit,
+                ResolvedTy::Bool,
+            ],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+
+        assert!(
+            derivation.retain_sites.is_empty(),
+            "the generator stack env is an alias shell; MakeGenerator's field \
+             plan is the sole clone authority, got {:?}",
+            derivation.retain_sites
+        );
+    }
+
+    #[test]
     fn borrowed_param_variant_ingress_retains_for_the_payload_owner() {
         let derivation = derive_cow_sole_owner(
             &[block(vec![Instr::Move {
@@ -6324,6 +6560,7 @@ mod cow_sole_owner_derivation {
             &HashMap::new(),
             &[],
             &HashMap::new(),
+            &HashSet::new(),
             &HashSet::new(),
             &[ResolvedTy::String, ResolvedTy::String, ResolvedTy::String],
             &HashSet::from([2]),
@@ -6401,6 +6638,7 @@ mod cow_sole_owner_derivation {
             &[],
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
             &[
                 ResolvedTy::String,
                 ResolvedTy::Bool,
@@ -6449,6 +6687,7 @@ mod cow_sole_owner_derivation {
             &HashMap::new(),
             &[(binding, "value".to_string(), ResolvedTy::String)],
             &HashMap::from([(binding, Place::Local(3))]),
+            &HashSet::new(),
             &HashSet::new(),
             &[
                 ResolvedTy::String,

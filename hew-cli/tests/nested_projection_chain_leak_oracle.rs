@@ -458,6 +458,151 @@ fn escaped_into_record_source(frames: usize) -> String {
     )
 }
 
+/// The retained deep projection is stored in a tuple owner rather than a
+/// record constructor. The source `Outer` must still keep its complete drop.
+fn escaped_into_tuple_source(frames: usize) -> String {
+    format!(
+        "type Leaf {{\n\
+         \x20   s: string,\n\
+         \x20   t: string,\n\
+         }}\n\
+         type Mid {{ leaf: Leaf, x: string }}\n\
+         type Outer {{ mid: Mid, c: string }}\n\
+         \n\
+         fn make_outer(k: i64) -> Outer {{\n\
+         \x20   Outer {{\n\
+         \x20       mid: Mid {{\n\
+         \x20           leaf: Leaf {{\n\
+         \x20               s: \"tuple-s-heap-payload\".to_upper(),\n\
+         \x20               t: \"tuple-t-heap-payload\".to_upper(),\n\
+         \x20           }},\n\
+         \x20           x: \"tuple-x-heap-payload\".to_upper(),\n\
+         \x20       }},\n\
+         \x20       c: \"tuple-c-heap-payload\".to_upper(),\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn deep(k: i64) -> (Leaf, i64) {{\n\
+         \x20   let o = make_outer(k);\n\
+         \x20   let mid = o.mid;\n\
+         \x20   let leaf = mid.leaf;\n\
+         \x20   (leaf, k)\n\
+         }}\n\
+         \n\
+         fn run_cycle(k: i64) -> i64 {{\n\
+         \x20   let h = deep(k);\n\
+         \x20   h.0.s.len()\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       total = total + run_cycle(i);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total > 0 {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
+/// The retained deep projection overwrites an existing record field. This
+/// exercises `RecordFieldStore`, including release of the prior field value.
+fn escaped_into_field_store_source(frames: usize) -> String {
+    format!(
+        "type Leaf {{\n\
+         \x20   s: string,\n\
+         \x20   t: string,\n\
+         }}\n\
+         type Mid {{ leaf: Leaf, x: string }}\n\
+         type Outer {{ mid: Mid, c: string }}\n\
+         type Holder {{ held: Leaf }}\n\
+         \n\
+         fn make_outer(k: i64) -> Outer {{\n\
+         \x20   Outer {{\n\
+         \x20       mid: Mid {{\n\
+         \x20           leaf: Leaf {{\n\
+         \x20               s: \"store-s-heap-payload\".to_upper(),\n\
+         \x20               t: \"store-t-heap-payload\".to_upper(),\n\
+         \x20           }},\n\
+         \x20           x: \"store-x-heap-payload\".to_upper(),\n\
+         \x20       }},\n\
+         \x20       c: \"store-c-heap-payload\".to_upper(),\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn deep(k: i64) -> Holder {{\n\
+         \x20   let o = make_outer(k);\n\
+         \x20   let mid = o.mid;\n\
+         \x20   let leaf = mid.leaf;\n\
+         \x20   var h = Holder {{ held: Leaf {{\n\
+         \x20       s: \"old-s-heap-payload\".to_upper(),\n\
+         \x20       t: \"old-t-heap-payload\".to_upper(),\n\
+         \x20   }} }};\n\
+         \x20   h.held = leaf;\n\
+         \x20   h\n\
+         }}\n\
+         \n\
+         fn run_cycle(k: i64) -> i64 {{\n\
+         \x20   let h = deep(k);\n\
+         \x20   h.held.s.len()\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       total = total + run_cycle(i);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total > 0 {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
+/// Inline enums use the same recursive retain marker as records and tuples.
+/// Every variant is string/scalar-total, so the retained payload is an
+/// independent owner and the source record keeps its complete drop.
+fn escaped_inline_enum_source(frames: usize) -> String {
+    format!(
+        "enum Payload {{\n\
+         \x20   Text(string);\n\
+         \x20   Number(i64);\n\
+         \x20   Empty;\n\
+         }}\n\
+         type Outer {{ payload: Payload, sibling: string }}\n\
+         type Holder {{ held: Payload }}\n\
+         \n\
+         fn make_outer(k: i64) -> Outer {{\n\
+         \x20   Outer {{\n\
+         \x20       payload: Payload::Text(\"enum-heap-payload\".to_upper()),\n\
+         \x20       sibling: \"enum-sibling-payload\".to_upper(),\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn deep(k: i64) -> Holder {{\n\
+         \x20   let o = make_outer(k);\n\
+         \x20   let payload = o.payload;\n\
+         \x20   Holder {{ held: payload }}\n\
+         }}\n\
+         \n\
+         fn run_cycle(k: i64) -> i64 {{\n\
+         \x20   let h = deep(k);\n\
+         \x20   k + 1\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var total: i64 = 0;\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       total = total + run_cycle(i);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if total > 0 {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
 /// Escaped-deep-alias control (TUPLE twin): the deep tuple alias is returned to
 /// the caller, which reads it. The tuple prover's twin of the returned-record
 /// double-free boundary.
@@ -676,6 +821,36 @@ fn escaped_into_record_leak_slope_below_tolerance() {
     assert_frame_slope_below_tolerance("chain_escaped_store", escaped_into_record_source);
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn escaped_into_tuple_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("chain_escaped_tuple_sink", escaped_into_tuple_source);
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn escaped_into_field_store_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance(
+        "chain_escaped_field_store",
+        escaped_into_field_store_source,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn escaped_inline_enum_leak_slope_below_tolerance() {
+    assert_frame_slope_below_tolerance("chain_escaped_inline_enum", escaped_inline_enum_source);
+}
+
 /// Escaped-return TUPLE holds a FLAT slope (#2383): when the deep tuple alias
 /// escapes into the return, the tuple prover excludes the owner's composite
 /// drop (the caller frees the escapee's pair exactly once), and the multi-hop
@@ -822,6 +997,20 @@ fn escaped_into_record_no_double_free_under_malloc_scribble() {
     assert_scribble_clean("chain_escaped_store", &escaped_into_record_source(6));
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn cloned_projection_sinks_are_clean_under_malloc_scribble() {
+    assert_scribble_clean("chain_escaped_tuple_sink", &escaped_into_tuple_source(6));
+    assert_scribble_clean(
+        "chain_escaped_field_store",
+        &escaped_into_field_store_source(6),
+    );
+    assert_scribble_clean("chain_escaped_inline_enum", &escaped_inline_enum_source(6));
+}
+
 /// Escaped-return TUPLE twin: the deep tuple alias is handed to the caller —
 /// the tuple prover's twin of the returned-record double-free boundary.
 #[cfg_attr(
@@ -956,6 +1145,104 @@ fn escaped_return_record_excludes_the_owner_composite() {
         0,
         "the deep alias escapes into the return, so the owner is excluded from \
          its composite drop (leak-not-double-free); got a composite drop:\n{deep}"
+    );
+}
+
+/// Escaped-into-record is a clone, not a transfer: the explicit recursive
+/// string retain gives `Holder.held` independent shares, so `deep` keeps the
+/// outer root's one complete composite drop and emits no sibling-only
+/// compensation.
+#[test]
+fn escaped_into_record_clone_keeps_complete_source_drop() {
+    let source = escaped_into_record_source(4);
+    let checked = checked_dump(&source, "chain-escaped-store-checked-");
+    let checked_deep = checked
+        .split("fn ")
+        .find(|section| section.starts_with("deep"))
+        .expect("deep section present in checked dump");
+    assert!(
+        checked_deep.contains("string.retain_aggregate"),
+        "the destination record must own a recursive retained clone of the \
+         borrowed Leaf projection:\n{checked_deep}"
+    );
+    assert!(
+        !checked_deep.contains("drop_field_in_place"),
+        "a retained clone leaves the source root fully owned; sibling-only \
+         compensation would strand the original escaped subtree:\n{checked_deep}"
+    );
+
+    let elaborated = elab_dump(&source, "chain-escaped-store-elab-");
+    let elaborated_deep = elaborated
+        .split("fn ")
+        .find(|section| section.starts_with("deep"))
+        .expect("deep section present in elaborated dump");
+    let composites = record_in_place_locals(elaborated_deep);
+    assert_eq!(
+        composites.len(),
+        1,
+        "the original Outer must retain exactly one complete recursive drop; \
+         projection aliases never gain their own drop:\n{elaborated_deep}"
+    );
+    assert!(
+        elaborated_deep.contains("ty=Outer kind=record_in_place"),
+        "the sole composite drop must belong to the source Outer:\n{elaborated_deep}"
+    );
+}
+
+#[test]
+fn tuple_and_field_store_clones_keep_complete_source_drop() {
+    for (name, source) in [
+        ("tuple", escaped_into_tuple_source(4)),
+        ("field-store", escaped_into_field_store_source(4)),
+    ] {
+        let checked = checked_dump(&source, &format!("chain-{name}-checked-"));
+        let checked_deep = checked
+            .split("fn ")
+            .find(|section| section.starts_with("deep"))
+            .expect("deep section present in checked dump");
+        assert!(
+            checked_deep.contains("string.retain_aggregate"),
+            "{name} must recursively retain the borrowed projection:\n{checked_deep}"
+        );
+        assert!(
+            !checked_deep.contains("drop_field_in_place"),
+            "{name} retained clone must not replace the source root drop with \
+             sibling-only compensation:\n{checked_deep}"
+        );
+
+        let elaborated = elab_dump(&source, &format!("chain-{name}-elab-"));
+        let elaborated_deep = elaborated
+            .split("fn ")
+            .find(|section| section.starts_with("deep"))
+            .expect("deep section present in elaborated dump");
+        assert!(
+            elaborated_deep.contains("ty=Outer kind=record_in_place"),
+            "{name} clone must leave the source Outer fully owned:\n{elaborated_deep}"
+        );
+    }
+}
+
+#[test]
+fn inline_enum_clone_keeps_complete_source_drop() {
+    let source = escaped_inline_enum_source(4);
+    let checked = checked_dump(&source, "chain-inline-enum-checked-");
+    let checked_deep = checked
+        .split("fn ")
+        .find(|section| section.starts_with("deep"))
+        .expect("deep section present in checked dump");
+    assert!(
+        checked_deep.contains("string.retain_aggregate"),
+        "inline enum sink must retain its active string payload:\n{checked_deep}"
+    );
+
+    let elaborated = elab_dump(&source, "chain-inline-enum-elab-");
+    let elaborated_deep = elaborated
+        .split("fn ")
+        .find(|section| section.starts_with("deep"))
+        .expect("deep section present in elaborated dump");
+    assert!(
+        elaborated_deep.contains("ty=Outer kind=record_in_place"),
+        "retained inline enum clone must leave source Outer fully owned:\n{elaborated_deep}"
     );
 }
 

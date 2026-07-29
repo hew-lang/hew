@@ -816,6 +816,78 @@ fn main() {
     }
 
     #[test]
+    fn vector_index_expression_emits_bounds_trapping_index_opcode() {
+        let source = r"
+fn main() {
+    let values: Vec<i64> = Vec::new();
+    values.push(7);
+    println(values[0]);
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let ops = all_instruction_ops(&bytecode);
+        assert!(ops.contains(&"vector.index"));
+        assert!(!ops.contains(&"vector.get"));
+
+        let index_instruction = bytecode
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .find(|instruction| instruction.op == "vector.index")
+            .expect("direct vector indexing must emit a vector.index instruction");
+        assert_eq!(index_instruction.args.len(), 2);
+        assert!(
+            index_instruction.args.iter().all(|operand| operand.kind == "local"),
+            "vector.index must receive the evaluated vector and index locals: {index_instruction:#?}"
+        );
+
+        assert_published_schema_admits_emitted_instruction_and_rejects_unknown_opcode(
+            index_instruction,
+        );
+    }
+
+    fn assert_published_schema_admits_emitted_instruction_and_rejects_unknown_opcode(
+        instruction: &Instruction,
+    ) {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../hew-sandbox-vm/bytecode/sandbox-bytecode-v0.schema.json"
+        ))
+        .expect("published sandbox bytecode schema must be valid JSON");
+        let published_ops = schema
+            .pointer("/$defs/instruction_op/enum")
+            .and_then(serde_json::Value::as_array)
+            .expect("published schema must declare its instruction opcode enum")
+            .iter()
+            .map(|opcode| {
+                opcode
+                    .as_str()
+                    .expect("published instruction opcode entries must be strings")
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert!(
+            published_ops.contains(instruction.op.as_str()),
+            "published bytecode schema must admit compiler-emitted opcode {:?}",
+            instruction.op
+        );
+
+        let mut unknown_opcode = instruction.clone();
+        unknown_opcode.op = "vector.not_real".to_string();
+        assert!(
+            !published_ops.contains(unknown_opcode.op.as_str()),
+            "published bytecode schema must reject a mutated unknown opcode"
+        );
+    }
+
+    #[test]
     fn string_methods_emit_len_and_slice() {
         set_test_hewpath();
         let source = r#"

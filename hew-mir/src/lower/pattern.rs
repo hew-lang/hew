@@ -123,6 +123,24 @@ impl Builder {
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
+        if let Some(arm) = arms.iter().find(|arm| {
+            arm.scope.is_none()
+                && (!arm.bindings.is_empty()
+                    || !arm.payload_variant_predicates.is_empty()
+                    || matches!(arm.predicate, hew_hir::HirMatchArmPredicate::Binding { .. }))
+        }) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "match arm binding without lexical scope".to_string(),
+                    site: arm.body.site,
+                },
+                note: "HIR must carry the synthetic arm scope that encloses pattern bindings, \
+                       guards, and the body; lowering an unscoped payload alias would make its \
+                       release lifetime ambiguous"
+                    .to_string(),
+            });
+            return None;
+        }
         // A `match` whose checker-assigned type is `Never` produces no usable
         // value: either every arm diverges (e.g. all arms `panic(...)`/`return`)
         // or the match sits in a discarded statement position alongside a
@@ -440,6 +458,49 @@ impl Builder {
                 }
             }
             _ => ReleaseSymbolVerdict::NoDropPath,
+        }
+    }
+
+    /// Convert the inline yielded-value release verdict into the equivalent
+    /// exit-plan drop kind. Plan drops carry heap/composite rituals in
+    /// `DropKind` with no `drop_fn`; keeping the inline `Release`/`InPlace`
+    /// carrier would route them through the unrelated resource-close
+    /// dispatcher at codegen.
+    fn generator_yield_plan_drop_kind(&self, ty: &ResolvedTy) -> Option<crate::model::DropKind> {
+        match self.generator_yield_drop_symbol(ty) {
+            ReleaseSymbolVerdict::Wired("hew_rc_drop") => Some(crate::model::DropKind::RcRelease),
+            ReleaseSymbolVerdict::Wired("hew_weak_drop_rc") => {
+                Some(crate::model::DropKind::WeakRelease)
+            }
+            ReleaseSymbolVerdict::Wired(symbol) => {
+                let mut release = crate::ownership::CowHeapRelease::from_symbol(symbol)?;
+                if matches!(release, crate::ownership::CowHeapRelease::VecOwnedElement)
+                    && matches!(
+                        ty,
+                        ResolvedTy::Named {
+                            builtin: Some(hew_types::BuiltinType::Vec),
+                            args,
+                            ..
+                        } if args.first().is_some_and(|elem| matches!(
+                            self.classify_vec_element_release(elem),
+                            VecElementRelease::ClosurePair
+                        ))
+                    )
+                {
+                    release = crate::ownership::CowHeapRelease::VecClosurePairs;
+                }
+                Some(crate::model::DropKind::CowHeap { release })
+            }
+            ReleaseSymbolVerdict::WiredInPlace(kind) => Some(match kind {
+                crate::ownership::InPlaceReleaseKind::Record => {
+                    crate::model::DropKind::RecordInPlace
+                }
+                crate::ownership::InPlaceReleaseKind::Enum => crate::model::DropKind::EnumInPlace,
+                crate::ownership::InPlaceReleaseKind::AggregateRecursive => {
+                    crate::model::DropKind::AggregateRecursive
+                }
+            }),
+            ReleaseSymbolVerdict::NoDropPath | ReleaseSymbolVerdict::Unwired(_) => None,
         }
     }
 
@@ -1413,6 +1474,286 @@ impl Builder {
                 }
             }
         }
+    }
+
+    /// Preserve exactly one release authority for an inline enum's old active
+    /// payload across a proven non-aliasing constructor reassignment.
+    ///
+    /// `emit_local_overwrite_release` intentionally handles leaves and records
+    /// only. An inline enum needs its tag-aware in-place drop, and emitting that
+    /// release while a match binder can still read the old payload would create
+    /// a use-after-free. The caller has already proved
+    /// `!reassign_rhs_may_alias_binding(value, binding)`, so a payload-bearing
+    /// fresh constructor is just as independent as a unit variant. This helper
+    /// handles the enum- and lexical-specific cases:
+    ///
+    /// * the target is a heap-owning, direct enum;
+    /// * the incoming value is an enum constructor; and
+    /// * with no live projected payload aliases, drop the old tagged value
+    ///   immediately;
+    /// * when direct live `string` binders cover every heap-owning field of the
+    ///   selected variant, transfer the old generation's release to guarded
+    ///   binder scope-exit drops; and
+    /// * reject live payload shapes that cannot yet express that complete
+    ///   delayed-release transfer.
+    ///
+    /// A move-out neutralizes the old payload slot before reassignment and does
+    /// not need this cleanup. Missing scope facts conservatively classify an
+    /// alias as live; an owned unsupported live alias produces a diagnostic
+    /// rather than compiling a known leak or risking a double-free.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the release-authority decision and its emitted CFG must stay adjacent so \
+                  immediate, delayed, repeated-generation, and fail-closed cases cannot drift"
+    )]
+    pub(crate) fn emit_enum_overwrite_release(
+        &mut self,
+        binding: BindingId,
+        dest: Place,
+        target_ty: &ResolvedTy,
+        value: &HirExpr,
+    ) {
+        let ty = self.subst_ty(target_ty);
+        if !super::ty_is_heap_owning_enum_composite(
+            &ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+        ) {
+            return;
+        }
+        let ResolvedTy::Named { name, args, .. } = &ty else {
+            return;
+        };
+        let Some(layout) = crate::model::find_enum_layout(name, args, &self.enum_layouts) else {
+            return;
+        };
+        if layout.is_indirect {
+            return;
+        }
+        let HirExprKind::MachineVariantCtor { state_idx, .. } = &value.kind else {
+            return;
+        };
+        if layout.variants.get(*state_idx).is_none() {
+            return;
+        }
+        // A reassigned `while let` scrutinee has already copied this old
+        // generation into a dedicated iteration snapshot. Its back-edge/exit
+        // drop is the sole release authority; dropping the parent slot here
+        // would free bytes that the snapshot's live payload binders still
+        // reference. This is the pre-existing while-let ownership protocol,
+        // orthogonal to ordinary match-arm aliases over the parent slot.
+        if self.active_while_let_snapshot_parents.contains(&binding) {
+            return;
+        }
+        let matching_aliases = self
+            .projected_payload_provenance
+            .iter()
+            .filter_map(|(payload_binding, provenance)| {
+                let ProjectedPayloadOrigin::OwnedBinding(scrutinee) = &provenance.origin else {
+                    return None;
+                };
+                (scrutinee.binding == binding)
+                    .then_some((*payload_binding, provenance.source_place))
+            })
+            .collect::<Vec<_>>();
+        if matching_aliases.iter().any(|(payload_binding, _)| {
+            self.binding_scope
+                .get(payload_binding)
+                .is_none_or(|scope| self.active_scopes.contains(scope))
+        }) {
+            // Direct, still-live string binders can take over the old payload
+            // generation's release after the store when together they cover
+            // every heap-owning field in the selected variant. More complex
+            // alias shapes reject until their delayed-release protocol is
+            // represented.
+            let mut active = matching_aliases
+                .iter()
+                .filter(|(payload_binding, _)| {
+                    self.binding_scope
+                        .get(payload_binding)
+                        .is_some_and(|scope| self.active_scopes.contains(scope))
+                })
+                .copied()
+                .collect::<Vec<_>>();
+            active.sort_by_key(|(_, source)| match source {
+                Place::MachineVariant {
+                    variant_idx,
+                    field_idx,
+                    ..
+                } => (*variant_idx, *field_idx),
+                _ => (u32::MAX, u32::MAX),
+            });
+            let Some(Place::MachineVariant { variant_idx, .. }) =
+                active.first().map(|(_, source)| *source)
+            else {
+                return;
+            };
+            let mut active_fields = active
+                .iter()
+                .filter_map(|(_, source)| match source {
+                    Place::MachineVariant {
+                        variant_idx: source_variant,
+                        field_idx,
+                        ..
+                    } if *source_variant == variant_idx => Some(*field_idx as usize),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            active_fields.sort_unstable();
+            let heap_fields = layout
+                .variants
+                .get(variant_idx as usize)
+                .map(|variant| {
+                    variant
+                        .field_tys
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, field_ty)| {
+                            crate::model::ty_owns_heap_mir(
+                                &self.subst_ty(field_ty),
+                                &self.record_field_orders,
+                                &self.enum_layouts,
+                            )
+                        })
+                        .map(|(index, _)| index)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let promoted = active
+                .iter()
+                .filter_map(|(payload_binding, _)| {
+                    let binder_still_owns = self.owned_locals.iter().any(|entry| {
+                        entry.binding == *payload_binding
+                            && entry.disposition == Disposition::ScopeExit
+                            && matches!(entry.ty, ResolvedTy::String)
+                    });
+                    (binder_still_owns
+                        && self
+                            .projected_payload_overwrite_flags
+                            .contains_key(payload_binding))
+                    .then(|| {
+                        (
+                            *payload_binding,
+                            self.projected_payload_overwrite_flags[payload_binding],
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            let active_scope_exit_owners = active
+                .iter()
+                .filter(|(payload_binding, _)| {
+                    self.owned_locals.iter().any(|entry| {
+                        entry.binding == *payload_binding
+                            && entry.disposition == Disposition::ScopeExit
+                    })
+                })
+                .count();
+            if !heap_fields.is_empty()
+                && active_fields == heap_fields
+                && promoted.len() == active.len()
+            {
+                if self.in_fallthrough_match_guard {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "enum overwrite in a fallthrough match guard".to_string(),
+                            site: value.site,
+                        },
+                        note: "overwriting an enum while its payload binder is live in a \
+                                   guard needs edge-specific delayed release on the guard-false \
+                                   path; bind the guard result without mutating the scrutinee"
+                            .to_string(),
+                    });
+                    return;
+                }
+                let first_transfer = promoted.iter().all(|(payload_binding, _)| {
+                    !self
+                        .projected_payload_delayed_releases
+                        .contains(payload_binding)
+                });
+                self.projected_payload_delayed_releases
+                    .extend(promoted.iter().map(|(payload_binding, _)| *payload_binding));
+                if first_transfer {
+                    for (_, flag) in &promoted {
+                        self.push_instr(Instr::ConstI64 {
+                            dest: *flag,
+                            value: 0,
+                        });
+                    }
+                } else {
+                    // Every field flag is updated in lockstep. Reading the
+                    // first one is therefore a complete generation test for
+                    // the parent variant.
+                    let flag = promoted[0].1;
+                    // The same arm may overwrite the parent more than
+                    // once. `flag == 0` means an earlier executed overwrite
+                    // already moved the original generation's release to
+                    // the binders, so this overwrite must release the
+                    // parent's current (newer) generation normally.
+                    // `flag == 1` means the earlier syntactic overwrite was
+                    // on an untaken path; this is the first runtime
+                    // transfer and must preserve the binders' old payloads.
+                    let zero = self.alloc_local(ResolvedTy::I64);
+                    self.push_instr(Instr::ConstI64 {
+                        dest: zero,
+                        value: 0,
+                    });
+                    let parent_has_newer_generation = self.alloc_local(ResolvedTy::Bool);
+                    self.push_instr(Instr::IntCmp {
+                        dest: parent_has_newer_generation,
+                        pred: CmpPred::Eq,
+                        lhs: flag,
+                        rhs: zero,
+                    });
+                    let release_bb = self.alloc_block();
+                    let transfer_bb = self.alloc_block();
+                    let cont_bb = self.alloc_block();
+                    self.finish_current_block(Terminator::Branch {
+                        cond: parent_has_newer_generation,
+                        then_target: release_bb,
+                        else_target: transfer_bb,
+                    });
+                    self.start_block(release_bb);
+                    self.push_instr(Instr::Drop {
+                        place: dest,
+                        ty: ty.clone(),
+                        drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                            crate::ownership::InPlaceReleaseKind::Enum,
+                        )),
+                    });
+                    self.finish_current_block(Terminator::Goto { target: cont_bb });
+                    self.start_block(transfer_bb);
+                    for (_, transfer_flag) in &promoted {
+                        self.push_instr(Instr::ConstI64 {
+                            dest: *transfer_flag,
+                            value: 0,
+                        });
+                    }
+                    self.finish_current_block(Terminator::Goto { target: cont_bb });
+                    self.start_block(cont_bb);
+                }
+            } else if active_scope_exit_owners != 0 {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "enum overwrite with a live non-string payload alias"
+                            .to_string(),
+                        site: value.site,
+                    },
+                    note: "the old enum generation can be delayed through direct string \
+                           binders only when those binders cover every heap-owning field of \
+                           the selected variant; move the payload into a sole owner before \
+                           overwriting the parent"
+                        .to_string(),
+                });
+            }
+            return;
+        }
+        self.push_instr(Instr::Drop {
+            place: dest,
+            ty,
+            drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                crate::ownership::InPlaceReleaseKind::Enum,
+            )),
+        });
     }
 
     pub(crate) fn project_tuple_owned_field_list(&self, ty: &ResolvedTy) -> Vec<(u32, ResolvedTy)> {
@@ -3494,6 +3835,14 @@ impl Builder {
         keep_for_drop_elab: bool,
     ) {
         if keep_for_drop_elab {
+            let direct_owned_string_alias =
+                matches!(&origin, ProjectedPayloadOrigin::OwnedBinding(_))
+                    && self
+                        .binding_locals
+                        .get(&binding_id)
+                        .and_then(|place| base_local(*place))
+                        .and_then(|local| self.locals.get(local as usize))
+                        .is_some_and(|ty| matches!(self.subst_ty(ty), ResolvedTy::String));
             self.projected_payload_provenance.insert(
                 binding_id,
                 ProjectedPayloadProvenance {
@@ -3502,6 +3851,31 @@ impl Builder {
                     origin,
                 },
             );
+            if direct_owned_string_alias
+                && !self
+                    .projected_payload_overwrite_flags
+                    .contains_key(&binding_id)
+            {
+                let flag = self.alloc_local(ResolvedTy::I64);
+                self.push_instr(Instr::ConstI64 {
+                    dest: flag,
+                    value: 1,
+                });
+                self.projected_payload_overwrite_flags
+                    .insert(binding_id, flag);
+            }
+        }
+    }
+
+    /// Record a match payload binder in the authoritative synthetic arm scope
+    /// created by HIR lowering. That scope encloses the pattern bindings,
+    /// optional guard, and body regardless of whether the body is itself a
+    /// block expression.
+    fn record_match_arm_binding_scope(&mut self, binding: BindingId, arm: &hew_hir::HirMatchArm) {
+        if let Some(scope) = arm.scope {
+            self.record_binding_scope_in(binding, scope);
+        } else {
+            self.record_binding_scope(binding);
         }
     }
 
@@ -3799,6 +4173,9 @@ impl Builder {
             // present, failing it falls through to the exhaustiveness trap (no
             // subsequent arm can match a wildcard's position).
             let guard_failed_bb = self.alloc_block();
+            if let Some(scope) = wildcard.scope {
+                self.active_scopes.push(scope);
+            }
 
             self.emit_match_arm_binding(
                 wildcard,
@@ -3833,6 +4210,9 @@ impl Builder {
             if !self.cursor_unreachable {
                 join_reachable = true;
             }
+            if wildcard.scope.is_some() {
+                self.active_scopes.pop();
+            }
             self.finish_current_block(Terminator::Goto { target: join_bb });
 
             // Guard-failed block: belt-and-braces trap (exhaustiveness still
@@ -3859,6 +4239,9 @@ impl Builder {
         // Order: predicates → bindings → guard → body.
         for (i, arm) in variant_arms.iter().enumerate() {
             self.start_block(body_bbs[i]);
+            if let Some(scope) = arm.scope {
+                self.active_scopes.push(scope);
+            }
             let variant_idx = match &arm.predicate {
                 hew_hir::HirMatchArmPredicate::EnumVariant { variant_idx, .. } => *variant_idx,
                 other => unreachable!(
@@ -3934,6 +4317,7 @@ impl Builder {
             // `match stream.recv() { ... }`.
             let arm_is_recv_some = recv_next_scrutinee && arm_is_some;
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
+            let mut call_carrier_match_result_candidates = Vec::new();
             // Fresh `Some(x)` bindings whose payload owns heap. VecIter clone
             // reads, generator drives, and receiver reads all hand the body a
             // fresh sole owner, so one shared lifecycle releases it at
@@ -3949,12 +4333,31 @@ impl Builder {
                     site: arm.body.site,
                     ty: binding_ty.clone(),
                 });
-                self.record_binding_scope(binding.binding);
-                let warrant = self.owner_warrant_for_scrutinee_payload(
-                    binding.binding,
-                    scrutinee,
-                    &binding_ty,
-                );
+                self.record_match_arm_binding_scope(binding.binding, arm);
+                // A mixed-return wrapper has no shell owner: the whole Result
+                // may contain an opaque sibling. Its selected payload can still
+                // be a measured transferred owner, proven by the active
+                // `(variant, field)` summary. That authority is deliberately
+                // used only when no whole call-scrutinee owner was minted, so a
+                // fresh Result never gains a second payload release.
+                let active_variant_payload_warrant = call_scrutinee_owner
+                    .is_none()
+                    .then(|| {
+                        self.owner_warrant_for_fresh_variant_payload(
+                            scrutinee,
+                            variant_idx,
+                            binding.field_idx,
+                        )
+                    })
+                    .flatten();
+                let fresh_active_payload = active_variant_payload_warrant.is_some();
+                let warrant = active_variant_payload_warrant.unwrap_or_else(|| {
+                    self.owner_warrant_for_scrutinee_payload(
+                        binding.binding,
+                        scrutinee,
+                        &binding_ty,
+                    )
+                });
                 let keep_for_drop_elab =
                     self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
                 if keep_for_drop_elab {
@@ -3973,6 +4376,28 @@ impl Builder {
                     }
                 }
                 let dest = self.alloc_local(binding.ty.clone());
+                if fresh_active_payload && keep_for_drop_elab {
+                    self.fresh_variant_payload_bindings.insert(binding.binding);
+                    if let Some(local) = base_local(dest) {
+                        self.fresh_variant_payload_binder_locals.insert(local);
+                    }
+                }
+                // Whole call-carrier payloads normally remain aliases of the
+                // shell and are released by its terminal composite drop.
+                // Recursive record payloads moved out as the match result are
+                // the narrow exception: record drop admission cannot infer
+                // the transfer through the MachineVariant projection. CoW
+                // strings/bytes already carry their own retain-aware transfer
+                // authority; exempting them here would admit both the binder
+                // and shell releases for one owner.
+                if call_scrutinee_owner.is_some()
+                    && keep_for_drop_elab
+                    && self.is_owned_aggregate_record_ty(&binding_ty)
+                {
+                    if let Some(local) = base_local(dest) {
+                        call_carrier_match_result_candidates.push((binding.binding, local));
+                    }
+                }
                 let payload_source = Place::MachineVariant {
                     local: scrutinee_local,
                     variant_idx,
@@ -4121,6 +4546,80 @@ impl Builder {
                 }
             }
 
+            // A wildcard payload (`Ok(_)` / `Err(_)`) has no HIR binding, so
+            // the ordinary binder-owner path has nowhere to attach the active
+            // variant's release. Materialise a synthetic, arm-local owner only
+            // for a field that carries the same fresh-transfer proof. This is
+            // the discard twin of the bound-payload path above: it still moves
+            // the selected field once and gets one exit drop, while an opaque
+            // sibling or an unproven field remains untouched (leak, never a
+            // guessed release).
+            if call_scrutinee_owner.is_none() {
+                use crate::model::HeapOwnershipLayouts as _;
+                let bound_fields: HashSet<u32> = arm.bindings.iter().map(|b| b.field_idx).collect();
+                let predicate_fields: HashSet<u32> = arm
+                    .payload_variant_predicates
+                    .iter()
+                    .map(|p| p.field_idx)
+                    .collect();
+                let subst = self.subst_ty(&scrutinee.ty);
+                let skipped_fields = match &subst {
+                    ResolvedTy::Named { name, args, .. } => {
+                        let layouts = crate::model::MirHeapLayouts {
+                            record_field_orders: &self.record_field_orders,
+                            enum_layouts: &self.enum_layouts,
+                        };
+                        layouts
+                            .enum_variant_field_tys(name, args)
+                            .and_then(|variants| variants.get(variant_idx as usize).cloned())
+                            .into_iter()
+                            .flatten()
+                            .enumerate()
+                            .filter_map(|(field_idx, ty)| {
+                                let field_idx = u32::try_from(field_idx).ok()?;
+                                (!bound_fields.contains(&field_idx)
+                                    && !predicate_fields.contains(&field_idx))
+                                .then(|| (field_idx, self.subst_ty(&ty)))
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                    _ => Vec::new(),
+                };
+                for (field_idx, field_ty) in skipped_fields {
+                    if !self.binding_seeds_drop_elaboration(&field_ty) {
+                        continue;
+                    }
+                    let Some(warrant) = self.owner_warrant_for_fresh_variant_payload(
+                        scrutinee,
+                        variant_idx,
+                        field_idx,
+                    ) else {
+                        continue;
+                    };
+                    let dest = self.alloc_local(field_ty.clone());
+                    let local = base_local(dest).expect(
+                        "alloc_local must produce a Local place for active-variant payload ownership",
+                    );
+                    let binding = self.register_synthetic_owned_local(
+                        "__hew_active_variant_payload",
+                        arm.body.site,
+                        local,
+                        field_ty,
+                        warrant,
+                    );
+                    self.fresh_variant_payload_bindings.insert(binding);
+                    self.fresh_variant_payload_binder_locals.insert(local);
+                    self.push_instr(Instr::Move {
+                        dest,
+                        src: Place::MachineVariant {
+                            local: scrutinee_local,
+                            variant_idx,
+                            field_idx,
+                        },
+                    });
+                }
+            }
+
             // Nested constructor payload bindings (the `v` in `Ok(Ok(v))`):
             // same registration discipline as the arm's own bindings above —
             // `Bind` statement, `owned_locals` entry for non-BitCopy types so
@@ -4138,7 +4637,7 @@ impl Builder {
                     site: arm.body.site,
                     ty: binding_ty.clone(),
                 });
-                self.record_binding_scope(binding.binding);
+                self.record_match_arm_binding_scope(binding.binding, arm);
                 let warrant = self.owner_warrant_for_scrutinee_payload(
                     binding.binding,
                     scrutinee,
@@ -4233,6 +4732,22 @@ impl Builder {
                 }
             }
             let value = self.lower_composite_result_value(&arm.body);
+            let body_end_block_id = self.current_block_id;
+            // A direct whole-record match result (`Some(g) => g`) transfers the
+            // selected field out of a proved-fresh call carrier. The carrier's
+            // active payload drop is suppressed on that arm, so the resulting
+            // binder is the sole recursive owner. Exempt exactly that moved-out
+            // record binder from projection taint. Merely reading a payload in
+            // an otherwise statement-valued arm leaves the carrier as owner,
+            // while CoW leaves use their separate retain-aware authority.
+            if let Some(value_local) = value.and_then(base_local) {
+                for (binding, local) in &call_carrier_match_result_candidates {
+                    if *local == value_local {
+                        self.fresh_variant_payload_bindings.insert(*binding);
+                        self.fresh_variant_payload_binder_locals.insert(*local);
+                    }
+                }
+            }
 
             // Drain the entries this arm registered; break/continue inside the
             // body has already cloned-freed them on its edges.
@@ -4259,6 +4774,20 @@ impl Builder {
                 });
             }
             for (binding, place, ty, site) in generator_yield_drop_bindings {
+                if arm_is_fresh_owned_vec_iter_some {
+                    if let Some(kind) = self.generator_yield_plan_drop_kind(&ty) {
+                        self.vec_iter_yield_exit_drops
+                            .push(super::VecIterYieldExitDrop {
+                                binding,
+                                place,
+                                ty: ty.clone(),
+                                kind,
+                                body_start_block: body_start_block_id,
+                                body_end_block: body_end_block_id,
+                                site,
+                            });
+                    }
+                }
                 self.emit_generator_yield_binding_drop(
                     binding,
                     place,
@@ -4275,6 +4804,9 @@ impl Builder {
             // so the Goto seals dead code and contributes no live edge.
             if !self.cursor_unreachable {
                 join_reachable = true;
+            }
+            if arm.scope.is_some() {
+                self.active_scopes.pop();
             }
             self.finish_current_block(Terminator::Goto { target: join_bb });
         }

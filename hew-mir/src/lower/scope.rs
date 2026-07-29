@@ -4,6 +4,7 @@ use super::{
     HirExpr, HirExprKind, Instr, LoopFrame, MirDiagnostic, MirDiagnosticKind, Place, ResolvedRef,
     ResolvedTy, ScopeId, ScopeInfoEntry, VecElementRelease,
 };
+use crate::ownership::CowHeapRelease;
 
 impl Builder {
     /// Whether a non-binding `VecIter<T>` value arrives as an independent
@@ -71,6 +72,22 @@ impl Builder {
         if let Some(span) = self.current_span {
             self.binding_decl_byte.insert(binding, span.0);
             self.note_scope_span(span);
+        }
+    }
+
+    /// Record a binding against a known lexical scope rather than the current
+    /// lowering cursor's scope.
+    ///
+    /// Match payload binders are materialised before their body expression is
+    /// lowered. HIR supplies the synthetic arm scope that encloses bindings,
+    /// guard, and body, and match lowering pushes that scope before
+    /// materialising the binders. Recording the explicit id here keeps the
+    /// lifetime authoritative even when the arm is expression-bodied and has no
+    /// body block scope of its own.
+    pub(crate) fn record_binding_scope_in(&mut self, binding: BindingId, scope: ScopeId) {
+        self.binding_scope.insert(binding, scope);
+        if let Some(span) = self.current_span {
+            self.binding_decl_byte.insert(binding, span.0);
         }
     }
     /// Widen the active scope's recorded byte-extent to cover `span`, and record
@@ -166,6 +183,19 @@ impl Builder {
         &self,
         cursor_ty: &ResolvedTy,
     ) -> Option<&'static str> {
+        self.vec_iter_cursor_release_protocol(cursor_ty)
+            .map(CowHeapRelease::release_symbol)
+    }
+
+    /// Typed release protocol for the owned `vec` field of a `VecIter<T>`.
+    ///
+    /// This is shared by the normal inline `RecordFieldDrop` and the
+    /// elaborated abandon-edge `DropKind::VecIterCursor`, so both paths retain
+    /// the identical Vec element refinement.
+    pub(crate) fn vec_iter_cursor_release_protocol(
+        &self,
+        cursor_ty: &ResolvedTy,
+    ) -> Option<CowHeapRelease> {
         let ResolvedTy::Named { name, args, .. } = cursor_ty else {
             return None;
         };
@@ -174,10 +204,9 @@ impl Builder {
         }
         let elem = args.first()?;
         match self.classify_vec_element_release(elem) {
-            VecElementRelease::Plain => Some("hew_vec_free"),
-            VecElementRelease::OwnedElement | VecElementRelease::ClosurePair => {
-                Some("hew_vec_free_owned")
-            }
+            VecElementRelease::Plain => Some(CowHeapRelease::VecPlain),
+            VecElementRelease::OwnedElement => Some(CowHeapRelease::VecOwnedElement),
+            VecElementRelease::ClosurePair => Some(CowHeapRelease::VecClosurePairs),
             VecElementRelease::Unsupported(_) => None,
         }
     }
@@ -209,9 +238,23 @@ impl Builder {
         }
         let flag = self.alloc_local(ResolvedTy::I64);
         self.vec_iter_drop_flags.insert(binding, flag);
+        self.vec_iter_scope_owner_ledger
+            .push((binding, binding_ty.clone()));
         if let Some(scope) = self.active_scopes.last().copied() {
             self.scope_vec_iter_bindings
                 .push((scope, binding, binding_ty.clone()));
+            if let Some(source) = vec_iter_init_vec_source_expr(value) {
+                if source.intent == hew_hir::IntentKind::Capture {
+                    if let HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(source_binding),
+                        ..
+                    } = &source.kind
+                    {
+                        self.vec_iter_borrowed_sources
+                            .push((scope, *source_binding));
+                    }
+                }
+            }
         }
         if let Some(value_flag) = self.vec_iter_value_drop_flags.get(&value.site).copied() {
             self.push_instr(Instr::Move {
@@ -267,6 +310,8 @@ impl Builder {
         for (binding, cursor_ty) in to_drop.into_iter().rev() {
             let _ = self.emit_flag_gated_vec_iter_cursor_release(binding, &cursor_ty);
         }
+        self.vec_iter_borrowed_sources
+            .retain(|(scope, _)| *scope != scope_id);
     }
 
     /// Release the `vec` handle of every registered `for x in …` cursor
@@ -387,6 +432,16 @@ impl Builder {
         });
         self.start_block(release_bb);
         let emitted = self.emit_vec_iter_value_release(place, cursor_ty);
+        if emitted {
+            // The sidecar is the single path-sensitive release authority, not
+            // merely a move bit. Disarm it after the normal inline release so
+            // a later cancellation checkpoint in the same lexical CFG cannot
+            // re-run the abandon plan for an already-closed cursor slot.
+            self.push_instr(Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            });
+        }
         self.finish_current_block(super::Terminator::Goto { target: cont_bb });
         self.start_block(cont_bb);
         emitted

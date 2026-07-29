@@ -37,9 +37,10 @@ fn Inbox__recv__run(i64) -> () [conv=actor_handler]
     _34: i64
     _35: bool
     _36: string
-    _37: string
-    _38: ()
-    _39: string
+    _37: i64
+    _38: string
+    _39: ()
+    _40: string
   bb0:
     enter_context
     _1 = const.i64 4
@@ -133,24 +134,25 @@ fn Inbox__recv__run(i64) -> () [conv=actor_handler]
     _33 = icmp.eq _31 _32
     branch _33 ? bb24 : bb27
   bb21:
-    _39 = string_lit "timeout"
-    call println_str(_39) -> bb30
+    _40 = string_lit "timeout"
+    call println_str(_40) -> bb30
   bb22:
     stmt: eval site=SiteId(35) ty=()
     stmt: use BindingId(4) rx site=SiteId(51) ty=Receiver<string> intent=Consume
     call hew_channel_receiver_close(_7) [builtin=ChannelReceiverClose] -> bb31
   bb23:
-    _38 = move _30
-    _27 = move _38
+    _39 = move _30
+    _27 = move _39
     goto bb22
   bb24:
     stmt: bind BindingId(8) msg site=SiteId(40) ty=string
     stmt: use BindingId(8) msg site=SiteId(41) ty=string intent=Read
     _36 = move mvar28.0.0
+    _37 = const.i64 1
     call println_str(_36) -> bb28
   bb25:
-    _37 = string_lit "closed"
-    call println_str(_37) -> bb29
+    _38 = string_lit "closed"
+    call println_str(_38) -> bb29
   bb26:
     exit_context
     trap(ExhaustivenessFallthrough)

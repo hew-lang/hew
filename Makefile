@@ -51,12 +51,15 @@
 #   make test-parser       — parser + lexer crate tests (narrow)
 #   make test-types        — type-checker + parser + lexer crate tests (narrow)
 #   make test-cli          — CLI crate tests (narrow)
+#   make macos-leak-oracle — ratcheted local leaks(1) + poisoned-allocator corpus
+#   make test-leak-oracle-selftest — fail-closed leak runner/harness counterfactuals
 #   make test-cabi         — C-ABI crate tests (narrow; excluded from the workspace run)
 #   make test-compiler-pipeline — compiler ladder + CLI pipeline tests (narrow)
 #   make test-vertical-slice — end-to-end Hew compiler oracle
 #   make test-package-install — Adze install -> Hew import consumer proof
 #   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
+#   make test-stdlib-execution-proofs — verify every README-indexed public stdlib module has an executed API proof
 #   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
 #   make asan         — run the nightly rust-runtime ASan test command locally
 #   make tsan         — run the nightly rust-runtime TSan test command locally
@@ -69,7 +72,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
+.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -116,6 +119,13 @@ RELEASE_DIR := $(CARGO_NATIVE_OUT)/release
 # staticlibs (`--link-lib` packages), so packaging must never ship the
 # `release` archive. See `[profile.release-lib]` in Cargo.toml.
 RELEASE_LIB_DIR := $(CARGO_NATIVE_OUT)/release-lib
+ifeq ($(OS),Windows_NT)
+RELEASE_HEW := $(RELEASE_DIR)/hew.exe
+RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/hew.lib
+else
+RELEASE_HEW := $(RELEASE_DIR)/hew
+RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/libhew.a
+endif
 # The wasm archives are always built with an explicit `--target wasm32-wasip1`,
 # which outranks the environment, so they hang off the target root rather than
 # the native output directory.
@@ -345,7 +355,7 @@ sandbox-vm-deps:
 # every test in all four binaries via plain `cargo test`, so nothing is
 # silently skipped anywhere.
 sandbox-parity: hew-native sandbox-vm-deps $(LIBHEW_READY)
-	npm --prefix hew-sandbox-vm run build
+	npm --prefix hew-sandbox-vm run conformance
 	cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset
 
 # Repo-local browser/tooling smoke:
@@ -640,15 +650,15 @@ publish-docs: $(RELEASE_DIR)/hew ## Build stdlib docs; print wrangler deploy com
 	@echo "Docs generated at $(CARGO_TARGET_ROOT)/doc/."
 	@echo "Deploy with: wrangler pages deploy $(CARGO_TARGET_ROOT)/doc/ --project-name hew-docs"
 
-# Fail-closed shape check for a shipped libhew.a: the archive must carry
-# verbatim prebuilt libstd members (std-*.o). A fat-LTO build folds libstd
-# into the merged codegen unit — such an archive links Hew programs fine but
-# breaks every external Rust staticlib (--link-lib package), so it must be
-# rejected at packaging time, never shipped. Single logical line so it can be
-# spliced into shell for-loops inside recipes.
-define check_libhew_shape
-ar t $(1) | grep -q '^std-' || { echo "Error: $(1) has no verbatim libstd members (std-*.o) — it was built with LTO and cannot link external Rust staticlibs. Build the shipped archive with: cargo build -p hew-lib --profile release-lib"; exit 1; }
-endef
+# Prove the shipped archive can link a real Rust staticlib through the public
+# `hew build --link-lib` interface. Rust controls archive member names, so the
+# behavioural consumer proof is more stable than inspecting `ar t` output.
+test-release-lib-link:
+ifeq ($(OS),Windows_NT)
+	@powershell -NoProfile -ExecutionPolicy Bypass -File "$(CURDIR)/scripts/test-release-lib-link.ps1" -Hew "$(RELEASE_HEW)" -Archive "$(RELEASE_LIBHEW)"
+else
+	@$(CURDIR)/scripts/test-release-lib-link.sh --hew $(RELEASE_HEW) --archive $(RELEASE_LIBHEW)
+endif
 
 # Assemble build/ with release symlinks.
 assemble-release:
@@ -658,7 +668,7 @@ assemble-release:
 	@ln -sfn $(LINK_UP2)$(RELEASE_DIR)/hew-observe      $(BUILD_DIR)/bin/hew-observe
 	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
 	@# release-lib profile — never the fat-LTO target/release archive.
-	@$(call check_libhew_shape,$(RELEASE_LIB_DIR)/libhew.a)
+	@$(MAKE) test-release-lib-link
 	@ln -sfn $(LINK_UP2)$(RELEASE_LIB_DIR)/libhew.a     $(BUILD_DIR)/lib/libhew.a
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
@@ -678,7 +688,6 @@ assemble-release:
 		else \
 			continue; \
 		fi; \
-		$(call check_libhew_shape,$$lib_path); \
 		mkdir -p $(BUILD_DIR)/lib/$$triple; \
 		ln -sfn $(LINK_UP3)$$lib_path $(BUILD_DIR)/lib/$$triple/libhew.a; \
 	done
@@ -724,6 +733,24 @@ test-types:
 
 test-cli:
 	cargo nextest run --profile ci -p hew-cli -p adze-cli
+
+# Canonical local macOS memory authority. This is deliberately named as a local
+# authority, not a CI `test-*` gate: hosted macOS processes cannot grant
+# leaks(1) the task port it needs. The runner rejects a non-Darwin host,
+# a missing leaks(1), an empty/shrunken inventory, any unexpected selected
+# binary, and the absence of ffi_link_e2e's real allocator slope probe. It runs
+# ignored tests too, so a newly ignored memory verdict cannot disappear behind
+# a green nextest summary.
+macos-leak-oracle: test-leak-oracle-selftest hew-native $(LIBHEW_READY)
+	scripts/macos-leak-oracle.sh
+
+# Platform-independent teeth for the leak harness and the runner's inventory
+# contract. The Rust counterfactuals inject missing/declined/malformed/timed-out
+# inspector commands and incomplete work witnesses; the shell counterfactuals
+# prove empty/shrunken inventories and a missing ffi authority are red.
+test-leak-oracle-selftest:
+	cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed
+	scripts/tests/test_macos_leak_oracle_runner.sh
 
 # The C-ABI crate, run on its own.
 #
@@ -888,35 +915,26 @@ test-stdlib-ratchet: hew
 	@echo "==> Type-checking stdlib (ratcheted)"
 	scripts/stdlib-ratchet.sh
 
+# Verify the public stdlib index has exactly one executable fixture proof per
+# module, and that each manifest fixture is run by its declared test command.
+test-stdlib-execution-proofs:
+	@echo "==> Verifying public stdlib execution proofs"
+	scripts/stdlib-execution-proof.sh --check
+
 # Run every examples/ux and examples/progressive tutorial against its paired
-# .expected file.  Any tutorial whose .expected output diverges from `hew run`
-# output fails the gate, catching dialect regressions before they reach users.
+# .expected file. The shared runner fails closed on missing/orphan expectations,
+# nonzero exit status, timeout, output drift, empty inventory, and duplicate
+# admission. New examples therefore cannot disappear from the authority by
+# omitting their expectation.
 #
-test-ux-examples: hew-native runtime $(LIBHEW_READY)
+test-ux-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-selftest
 	@echo "==> Running ux + progressive tutorials against .expected"
-	@fail=0; pass=0; \
-	for corpus in examples/ux examples/progressive; do \
-	  for src in $$(find $$corpus -maxdepth 1 -name '*.hew' | sort); do \
-	    exp="$${src%.hew}.expected"; \
-	    test -f "$$exp" || continue; \
-	    actual=$$($(DEBUG_DIR)/hew run "$$src" 2>&1); \
-	    expected=$$(cat "$$exp"); \
-	    if [ "$$actual" = "$$expected" ]; then \
-	      pass=$$((pass + 1)); \
-	    else \
-	      echo "  FAIL: $$src"; \
-	      echo "    expected: $$(echo "$$expected" | head -3 | tr '\n' '|')"; \
-	      echo "    actual:   $$(echo "$$actual"   | head -3 | tr '\n' '|')"; \
-	      fail=$$((fail + 1)); \
-	    fi; \
-	  done; \
-	done; \
-	echo "  $$pass passed, $$fail failed"; \
-	bash scripts/lib/corpus-floor.sh ux-example-expectations "$$((pass + fail))" || exit 1; \
-	if [ $$fail -gt 0 ]; then \
-	  echo "ERROR: $$fail tutorial(s) failed — run \`hew run <file>\` to reproduce"; \
-	  exit 1; \
-	fi
+	@python3 scripts/example-expectations.py \
+	  --hew-bin "$(DEBUG_DIR)/hew" \
+	  --label "ux + progressive tutorial" \
+	  --floor-key ux-example-expectations \
+	  --source-root examples/ux \
+	  --source-root examples/progressive
 
 # Run every offline v0.5-surface example against its paired .expected file.
 # Two lanes:
@@ -941,55 +959,21 @@ test-ux-examples: hew-native runtime $(LIBHEW_READY)
 # supposed to print is recorded verbatim in its `.expected`, so the strictness
 # costs nothing legitimate.
 #
-# SURFACE_EXAMPLES_UNGATED lists lane sources that deliberately ship without an
-# `.expected`. The list is closed both ways: a source outside it that has no
-# `.expected` FAILS (an ungated example cannot hide by omission — that is how a
-# leak advisory shipped unnoticed), and an entry that has since grown an
-# `.expected` or no longer exists FAILS too, so the list cannot rot.
+# The shared runner treats the surface inventory as closed: missing or orphan
+# expectations, process failures, timeouts, and output drift all fail the gate.
+# `scanner_tokens.hew` is fully admitted with its repaired five-line output.
 #
-SURFACE_EXAMPLES_UNGATED :=
-
-test-surface-examples: hew-native runtime $(LIBHEW_READY)
+test-surface-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-selftest
 	@echo "==> Running v0.5 surface examples against .expected"
-	@fail=0; pass=0; \
-	ungated="$(SURFACE_EXAMPLES_UNGATED)"; \
-	srcs="$$(find examples/v05/surfaces -maxdepth 1 -name '*.hew' | sort) examples/net/http_await_service.hew"; \
-	for entry in $$ungated; do \
-	  if [ ! -f "$$entry" ]; then \
-	    echo "  FAIL: $$entry listed in SURFACE_EXAMPLES_UNGATED but does not exist"; \
-	    fail=$$((fail + 1)); \
-	  elif [ -f "$${entry%.hew}.expected" ]; then \
-	    echo "  FAIL: $$entry has an .expected — drop it from SURFACE_EXAMPLES_UNGATED"; \
-	    fail=$$((fail + 1)); \
-	  fi; \
-	done; \
-	for src in $$srcs; do \
-	  exp="$${src%.hew}.expected"; \
-	  if [ ! -f "$$exp" ]; then \
-	    case " $$ungated " in \
-	      *" $$src "*) echo "  SKIP: $$src (SURFACE_EXAMPLES_UNGATED)";; \
-	      *) echo "  FAIL: $$src has no .expected — add one or justify it in SURFACE_EXAMPLES_UNGATED"; \
-	         fail=$$((fail + 1));; \
-	    esac; \
-	    continue; \
-	  fi; \
-	  actual=$$($(DEBUG_DIR)/hew run "$$src" 2>&1); \
-	  expected=$$(cat "$$exp"); \
-	  if [ "$$actual" = "$$expected" ]; then \
-	    pass=$$((pass + 1)); \
-	  else \
-	    echo "  FAIL: $$src"; \
-	    echo "    expected: $$(echo "$$expected" | head -3 | tr '\n' '|')"; \
-	    echo "    actual:   $$(echo "$$actual"   | head -3 | tr '\n' '|')"; \
-	    fail=$$((fail + 1)); \
-	  fi; \
-	done; \
-	echo "  $$pass passed, $$fail failed"; \
-	bash scripts/lib/corpus-floor.sh surface-example-expectations "$$((pass + fail))" || exit 1; \
-	if [ $$fail -gt 0 ]; then \
-	  echo "ERROR: $$fail surface example(s) failed — run \`hew run <file>\` to reproduce"; \
-	  exit 1; \
-	fi
+	@python3 scripts/example-expectations.py \
+	  --hew-bin "$(DEBUG_DIR)/hew" \
+	  --label "surface" \
+	  --floor-key surface-example-expectations \
+	  --source-root examples/v05/surfaces \
+	  --source examples/net/http_await_service.hew
+
+test-example-expectations-selftest:
+	@python3 scripts/tests/test_example_expectations.py
 
 # Check ```hew fenced blocks in docs/ against hew check.
 # Extracts each fence from docs/hew-language-guide.md and docs/specs/HEW-SPEC-2026.md
@@ -1015,13 +999,13 @@ doc-ratchet-selftest:
 # Release sanitizer gate validator self-test.
 check-sanitizer-gate:
 	@set -e; \
-	commit=0123456789abcdef0123456789abcdef01234567; \
+	version=0.6.0-rc1; \
 	fixture=scripts/fixtures/sanitizer-gate; \
 	pass=0; \
 	fail=0; \
 	expect_reject() { \
 	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
-	  if scripts/check-sanitizer-gate.sh "$$commit" "$$asan_file" "$$waiver_file"; then \
+	  if scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
 	    echo "FAIL $$name: expected reject"; fail=$$((fail + 1)); \
 	  else \
 	    echo "ok $$name: rejected"; pass=$$((pass + 1)); \
@@ -1029,7 +1013,7 @@ check-sanitizer-gate:
 	}; \
 	expect_accept() { \
 	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
-	  if scripts/check-sanitizer-gate.sh "$$commit" "$$asan_file" "$$waiver_file"; then \
+	  if scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
 	    echo "ok $$name: accepted"; pass=$$((pass + 1)); \
 	  else \
 	    echo "FAIL $$name: expected accept"; fail=$$((fail + 1)); \
@@ -1038,12 +1022,16 @@ check-sanitizer-gate:
 	expect_reject "1 no ASan result" "$$fixture/missing.result" "$$fixture/waivers/valid.toml"; \
 	expect_reject "2 ASan red" "$$fixture/asan-fail.result" "$$fixture/waivers/valid.toml"; \
 	expect_reject "3 ASan ambiguous/skipped" "$$fixture/asan-ambiguous.result" "$$fixture/waivers/valid.toml"; \
-	expect_reject "4 missing TSan/Miri waivers" "$$fixture/asan-pass.result" "$$fixture/waivers/none.toml"; \
-	expect_reject "5 waiver for different commit" "$$fixture/asan-pass.result" "$$fixture/waivers/different-commit.toml"; \
-	expect_reject "6 expired waiver" "$$fixture/asan-pass.result" "$$fixture/waivers/expired.toml"; \
-	expect_reject "7 blanket waiver" "$$fixture/asan-pass.result" "$$fixture/waivers/blanket.toml"; \
-	expect_reject "8 missing required field" "$$fixture/asan-pass.result" "$$fixture/waivers/missing-field.toml"; \
-	expect_accept "9 ASan green with valid commit-scoped waivers" "$$fixture/asan-pass.result" "$$fixture/waivers/valid.toml"; \
+	expect_reject "4 missing TSan/Miri evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/none.toml"; \
+	expect_reject "5 evidence for different release" "$$fixture/asan-pass.result" "$$fixture/waivers/different-release.toml"; \
+	expect_reject "6 expired evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/expired.toml"; \
+	expect_reject "7 blanket evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/blanket.toml"; \
+	expect_reject "8 missing behavior" "$$fixture/asan-pass.result" "$$fixture/waivers/missing-field.toml"; \
+	expect_reject "9 duplicate axis evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/duplicate.toml"; \
+	expect_reject "10 untracked evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/bad-tracking.toml"; \
+	expect_reject "11 duplicate ledger key" "$$fixture/asan-pass.result" "$$fixture/waivers/duplicate-key.toml"; \
+	expect_reject "12 vague behavioral evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/vague.toml"; \
+	expect_accept "13 ASan green with bounded release evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/valid.toml"; \
 	echo "$$pass sanitizer gate cases passed, $$fail failed"; \
 	if [ "$$fail" -ne 0 ]; then exit 1; fi
 
@@ -1161,7 +1149,7 @@ lint: runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity
 # enumerates a corpus and then compares over it proves nothing when the
 # enumeration is empty; scripts/corpus-floors.tsv is where each such gate
 # records the size it expects to find.
-corpus-floor-check:
+corpus-floor-check: test-leak-oracle-selftest
 	bash scripts/tests/test_corpus_floor.sh
 	bash scripts/check-corpus-floors.sh
 
@@ -1198,6 +1186,7 @@ test-sandbox-parity-coverage-check:
 # and static-oracle changes and by the scripts/config preflight profile.
 test-release-workflow-contract:
 	python3 scripts/tests/test_release_workflow_contract.py
+	python3 scripts/tests/test_pre_release_validate_contract.py
 
 # Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
 # and scan commit-message bodies of commits not yet on origin/main for the same tokens.
@@ -1405,7 +1394,6 @@ install:
 	install -m 755 $(RELEASE_DIR)/hew                $(DESTDIR)$(PREFIX)/bin/hew
 	install -m 755 $(RELEASE_DIR)/adze               $(DESTDIR)$(PREFIX)/bin/adze
 	install -m 755 $(RELEASE_DIR)/hew-observe        $(DESTDIR)$(PREFIX)/bin/hew-observe
-	@$(call check_libhew_shape,$(RELEASE_LIB_DIR)/libhew.a)
 	install -m 644 $(RELEASE_LIB_DIR)/libhew.a       $(DESTDIR)$(PREFIX)/lib/libhew.a
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
@@ -1426,7 +1414,6 @@ install:
 		else \
 			continue; \
 		fi; \
-		$(call check_libhew_shape,$$lib_path); \
 		install -d $(DESTDIR)$(PREFIX)/lib/$$triple; \
 		install -m 644 $$lib_path $(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a; \
 	done

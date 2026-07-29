@@ -106,12 +106,7 @@ detect_platform() {
 
     case "$(uname -m)" in
     x86_64 | amd64) ARCH="x86_64" ;;
-    aarch64 | arm64)
-        if [ "$OS" = "freebsd" ]; then
-            err "FreeBSD prebuilt releases are x86_64 only today; build from source or use a x86_64 host"
-        fi
-        ARCH="aarch64"
-        ;;
+    aarch64 | arm64) ARCH="aarch64" ;;
     *) err "unsupported architecture: $(uname -m)" ;;
     esac
 }

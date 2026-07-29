@@ -1,6 +1,6 @@
 {
   "name": "@hew-lang/sandbox-vm",
-  "version": "0.5.0",
+  "version": "0.6.0-rc1",
   "description": "Deterministic TypeScript interpreter for the Hew educational sandbox",
   "type": "module",
   "main": "./dist/interpreter/index.js",

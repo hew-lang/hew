@@ -699,6 +699,14 @@ class Interpreter {
         return;
       }
       case "vector.get": {
+        this.writeDst(
+          frame,
+          instruction,
+          this.vectorGetOption(frame, instruction, instruction.args[0], instruction.args[1])
+        );
+        return;
+      }
+      case "vector.index": {
         const vector = this.vectorArg(frame, instruction.args[0], instruction.span);
         const index = this.indexArg(frame, instruction.args[1], instruction.span);
         if (index < 0 || index >= vector.items.length) {
@@ -1197,12 +1205,11 @@ class Interpreter {
         this.writeDst(frame, instruction, this.i64(BigInt(this.vectorArg(frame, instruction.args[1], instruction.span).items.length)));
         return;
       case "vec.get": {
-        const vector = this.vectorArg(frame, instruction.args[1], instruction.span);
-        const index = this.indexArg(frame, instruction.args[2], instruction.span);
-        if (index < 0 || index >= vector.items.length) {
-          this.trap("vector_bounds", "vector index out of bounds", instruction.span);
-        }
-        this.writeDst(frame, instruction, cloneValue(vector.items[index]!));
+        this.writeDst(
+          frame,
+          instruction,
+          this.vectorGetOption(frame, instruction, instruction.args[1], instruction.args[2])
+        );
         return;
       }
       case "vec.push":
@@ -1367,6 +1374,57 @@ class Interpreter {
       this.trap("invalid_enum_tag", "invalid enum payload", instruction.span);
     }
     return cloneValue(value.payload[index]!);
+  }
+
+  /**
+   * Resolve the enum layout declared for an instruction destination.  The
+   * bytecode opcode alone intentionally does not bake in a concrete Option
+   * type because Vec::get is generic; the destination local carries that
+   * specialization and its registered layout is the runtime authority.
+   */
+  private optionResultLayoutForDst(
+    frame: Frame,
+    instruction: Instruction,
+    expectedName: "Option" | "Result"
+  ): { id: string; someOkTag: number; noneErrTag: number } {
+    const local = instruction.dst
+      ? frame.fn.locals.find((candidate) => candidate.id === instruction.dst)
+      : undefined;
+    const layout = local ? this.enums.get(local.type) : undefined;
+    if (!layout || layout.name !== expectedName) {
+      this.trap("invalid_enum_tag", `${instruction.op} requires a ${expectedName} destination`, instruction.span);
+    }
+    const someOk = layout.variants.find((variant) => variant.name === (expectedName === "Option" ? "Some" : "Ok"));
+    const noneErr = layout.variants.find((variant) => variant.name === (expectedName === "Option" ? "None" : "Err"));
+    if (!someOk || !noneErr) {
+      this.trap("invalid_enum_tag", `${expectedName} layout is missing required variants`, instruction.span);
+    }
+    return { id: layout.id, someOkTag: someOk.tag, noneErrTag: noneErr.tag };
+  }
+
+  private vectorGetOption(
+    frame: Frame,
+    instruction: Instruction,
+    vectorOperand: Operand | undefined,
+    indexOperand: Operand | undefined
+  ): VmValue {
+    const vector = this.vectorArg(frame, vectorOperand, instruction.span);
+    const index = this.indexArg(frame, indexOperand, instruction.span);
+    const option = this.optionResultLayoutForDst(frame, instruction, "Option");
+    if (index < 0 || index >= vector.items.length) {
+      return {
+        kind: "enum",
+        typeId: option.id,
+        tag: option.noneErrTag,
+        payload: []
+      };
+    }
+    return {
+      kind: "enum",
+      typeId: option.id,
+      tag: option.someOkTag,
+      payload: [cloneValue(vector.items[index]!)]
+    };
   }
 
   private machineNew(instruction: Instruction): VmValue {

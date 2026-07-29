@@ -72,7 +72,7 @@
 //!   [`Builder::owner_warrant_for_owned_parameter`] for the argument and the
 //!   tripwire that pins it.
 
-use super::{BindingId, Builder, HirExpr, ResolvedTy};
+use super::{BindingId, Builder, HirExpr, HirExprKind, ResolvedTy};
 
 /// Which value the owner is being minted over, as the question was actually
 /// put. Recorded on the warrant so the withheld/granted decision names its own
@@ -190,6 +190,26 @@ impl Builder {
         OwnerMintWarrant::new(OwnerMintOrigin::PayloadOfScrutinee, foreign)
     }
 
+    /// Mint authority for one *active* enum payload of a mixed-return call.
+    /// The normal payload warrant asks about the whole scrutinee, correctly
+    /// refusing a `Result` that contains an opaque sibling. The variant summary
+    /// has already proved this exact `(tag, field)` path fresh using the same
+    /// precise and audited-transfer authorities, so this grants only that
+    /// binder; it never makes the enclosing shell droppable.
+    pub(crate) fn owner_warrant_for_fresh_variant_payload(
+        &self,
+        scrutinee: &HirExpr,
+        variant_idx: u32,
+        field_idx: u32,
+    ) -> Option<OwnerMintWarrant> {
+        let HirExprKind::Call { callee, .. } = &scrutinee.kind else {
+            return None;
+        };
+        self.call_scrutinee_provenance
+            .callee_returns_fresh_variant_payload(callee, variant_idx, field_idx)
+            .then(|| OwnerMintWarrant::new(OwnerMintOrigin::PayloadOfScrutinee, false))
+    }
+
     /// Ask about a binder that rebinds or restores another binding in this same
     /// function — the `var`-self method receiver restore, and any future
     /// same-frame rebind.
@@ -285,12 +305,13 @@ mod tests {
         // provenance question to the ledger or the module authority. This is a
         // property of the SOURCE, so it holds for constructors nobody has
         // written yet.
-        const ASKS: [&str; 5] = [
+        const ASKS: [&str; 6] = [
             "note_let_binder_proven_foreign",
             "note_payload_binder_proven_foreign",
             "note_rebind_proven_foreign",
             "value_is_free_of_opaque_foreign_provenance",
             "proven_foreign_bindings",
+            "callee_returns_fresh_variant_payload",
         ];
         let source = include_str!("owner_mint.rs");
         let squeezed: String = source.chars().filter(|c| !c.is_whitespace()).collect();

@@ -2380,12 +2380,6 @@ unsafe fn restart_child_supervisor_with_budget(sup: &mut HewSupervisor, failed_i
 /// single free with no double-free — eliminating the abort/heap-corruption the
 /// pre-fix headerless-`CString` + move-of-borrow produced on every real crash.
 ///
-/// (Known follow-up, not the reported critical bug: when the hook BODY reads
-/// `info.message` via a borrowing call, the codegen field-read `hew_string_clone`
-/// retain temp is not yet released by drop-elaboration for the synthetic-prologue
-/// shape, a small per-crash `string` leak tracked in #2252. No abort, no
-/// double-free, no corruption — the fail-closed crash path stays safe.)
-///
 /// # Safety
 ///
 /// `handler` (when `Some`) must be a valid `HewOnCrashFn` fn-pointer; `ctx` must

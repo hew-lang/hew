@@ -5449,6 +5449,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         return_ty: i32_ty.into(),
         return_resolved_ty: ResolvedTy::I32,
         execution_context: None,
+        explicit_actor_state_ptr: None,
         closure_call_fallback_context: None,
         execution_context_is_actor_handler: false,
         actor_state_ty: None,
@@ -5509,6 +5510,216 @@ fn alloc_local(fn_ctx: &mut FnCtx<'_, '_>, id: u32, ty: ResolvedTy) {
 fn finish_test_fn(fn_ctx: &FnCtx<'_, '_>) {
     let zero = fn_ctx.ctx.i32_type().const_zero();
     fn_ctx.builder.build_return(Some(&zero)).expect("ret 0");
+}
+
+#[test]
+fn failed_actor_sender_transfer_closes_the_prepared_owner() {
+    let ctx = Context::create();
+    let module = ctx.create_module("failed_actor_sender_transfer_cleanup");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "sender_cleanup");
+    let sender_ty = ResolvedTy::named_builtin(
+        "channel.Sender",
+        hew_types::BuiltinType::Sender,
+        vec![ResolvedTy::I64],
+    );
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let slot = fn_ctx
+        .builder
+        .build_alloca(ptr_ty, "local_0")
+        .expect("Sender carrier slot");
+    fn_ctx.locals.insert(0, (slot, ptr_ty.into()));
+    fn_ctx.local_tys.insert(0, sender_ty.clone());
+    let plan = hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        &sender_ty,
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .expect("Sender must have the canonical prepared-carrier plan");
+
+    emit_prepared_carrier_drop(
+        &fn_ctx,
+        Place::Local(0),
+        &plan,
+        hew_mir::PreparedCarrierBoundary::Actor,
+    )
+    .expect("a failed actor submission must close its transferred Sender owner");
+    finish_test_fn(&fn_ctx);
+
+    let ir = module.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call void @hew_channel_sender_close").count(),
+        1,
+        "the undelivered Sender must close exactly once:\n{ir}"
+    );
+    assert!(
+        ir.contains("store ptr null, ptr %local_0"),
+        "prepared Sender cleanup must disarm the local carrier slot:\n{ir}"
+    );
+    assert!(module.verify().is_ok(), "sender cleanup IR:\n{ir}");
+}
+
+#[test]
+fn aggregate_borrowed_ingress_array_retains_each_string_occurrence() {
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_array");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "array_retain_probe");
+    // Array surface lowering is not implemented yet, so construct the
+    // classifier-admitted LLVM slot directly to pin this recursive backend arm.
+    let array_ty = ctx.ptr_type(AddressSpace::default()).array_type(3);
+    let slot = fn_ctx
+        .builder
+        .build_alloca(array_ty, "local_0")
+        .expect("array fixture alloca");
+    fn_ctx.locals.insert(0, (slot, array_ty.into()));
+    fn_ctx
+        .local_tys
+        .insert(0, ResolvedTy::Array(Box::new(ResolvedTy::String), 3));
+    retain_strings_in_borrowed_aggregate(&fn_ctx, Place::Local(0), "array_probe")
+        .expect("fixed-array string retain walk must lower");
+    finish_test_fn(&fn_ctx);
+    assert!(m.verify().is_ok(), "array retain module must verify");
+    let ir = m.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call ptr @hew_string_clone").count(),
+        3,
+        "one retain per fixed-array string occurrence; ir:\n{ir}"
+    );
+    for idx in 0..3 {
+        assert!(
+            ir.contains(&format!("array_probe_d0_array_e{idx}")),
+            "array element {idx} must be reached by the recursive walk; ir:\n{ir}"
+        );
+    }
+}
+
+#[test]
+fn aggregate_borrowed_ingress_treats_channel_sender_as_non_string_terminal() {
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_sender");
+    let harness = build_harness(&ctx, &[], &[]);
+    let fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "sender_retain_probe");
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let tuple_ty = ctx.struct_type(&[ptr_ty.into(), ptr_ty.into()], false);
+    let slot = fn_ctx
+        .builder
+        .build_alloca(tuple_ty, "sender_tuple")
+        .expect("sender tuple alloca");
+    let kind = StateFieldCloneKind::Tuple {
+        elems: vec![
+            StateFieldCloneKind::String,
+            StateFieldCloneKind::ChannelSender,
+        ],
+    };
+    retain_strings_in_aggregate_slot(
+        &fn_ctx,
+        slot,
+        tuple_ty.into(),
+        &kind,
+        0,
+        "sender_tuple_probe",
+    )
+    .expect("string-only retain walk must skip the Sender handle");
+    finish_test_fn(&fn_ctx);
+    assert!(m.verify().is_ok(), "sender retain module must verify");
+    let ir = m.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call ptr @hew_string_clone").count(),
+        1,
+        "the string sibling needs one retain; ir:\n{ir}"
+    );
+    assert!(
+        !ir.contains("hew_channel_sender_clone"),
+        "the string-only walker must leave Sender ownership to its descriptor path; ir:\n{ir}"
+    );
+}
+
+#[test]
+fn aggregate_borrowed_ingress_qualified_generic_record_uses_clone_kind_key() {
+    let key = hew_hir::mangle("Box", &[ResolvedTy::String]);
+    let record = MirRecordLayout {
+        name: key.clone(),
+        field_tys: vec![ResolvedTy::String],
+        field_names: vec![],
+    };
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_generic_record");
+    let mut harness = build_harness(&ctx, std::slice::from_ref(&record), &[]);
+    harness
+        .record_field_resolved_tys
+        .insert(key, vec![ResolvedTy::String]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "generic_record_retain_probe");
+    alloc_local(
+        &mut fn_ctx,
+        0,
+        ResolvedTy::named_user("qualified.Box", vec![ResolvedTy::String]),
+    );
+    retain_strings_in_borrowed_aggregate(&fn_ctx, Place::Local(0), "generic_record_probe")
+        .expect("qualified generic record must resolve through its clone-kind key");
+    finish_test_fn(&fn_ctx);
+    assert!(
+        m.verify().is_ok(),
+        "qualified generic record retain module must verify"
+    );
+    let ir = m.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call ptr @hew_string_clone").count(),
+        1,
+        "the generic record's substituted string field needs one retain; ir:\n{ir}"
+    );
+    assert!(
+        ir.contains("generic_record_probe_d0_record_f0"),
+        "the clone-kind record key must drive the field walk; ir:\n{ir}"
+    );
+}
+
+#[test]
+fn aggregate_borrowed_ingress_enum_invalid_tag_traps_fail_closed() {
+    let enum_fixtures = vec![MirEnumLayout {
+        name: "Payload".to_string(),
+        tag_width: 1,
+        variants: vec![
+            MachineVariantLayout {
+                name: "Hold".to_string(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
+            },
+            MachineVariantLayout {
+                name: "Empty".to_string(),
+                field_tys: vec![],
+                field_names: vec![],
+            },
+        ],
+        is_indirect: false,
+    }];
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_enum_oob");
+    let harness = build_harness(&ctx, &[], &enum_fixtures);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "enum_retain_probe");
+    fn_ctx.enum_layouts = &enum_fixtures;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::named_user("Payload", vec![]));
+    retain_strings_in_borrowed_aggregate(&fn_ctx, Place::Local(0), "enum_probe")
+        .expect("inline enum string retain walk must lower");
+    finish_test_fn(&fn_ctx);
+    assert!(m.verify().is_ok(), "enum retain module must verify");
+    let ir = m.print_to_string().to_string();
+    let oob_start = ir
+        .find("enum_probe_d0_enum_tag_oob:")
+        .expect("enum retain must emit an invalid-tag block");
+    let variant_start = ir[oob_start..]
+        .find("enum_probe_d0_enum_v0:")
+        .map(|offset| oob_start + offset)
+        .expect("enum retain must emit its first variant block");
+    let oob = &ir[oob_start..variant_start];
+    assert!(
+        oob.contains("call void @hew_trap_with_code")
+            && oob.contains("call void @llvm.trap")
+            && oob.contains("unreachable"),
+        "invalid enum tags must trap fail-closed; block:\n{oob}"
+    );
 }
 
 /// W5.011 Slice 1: a `DropKind::CowHeap { release: String }`
@@ -6048,7 +6259,7 @@ fn resolved_ty_element_owns_heap_for_owned_vec_matches_mir_table() {
         is_opaque: false,
     };
     // Identical to the MIR `is_owned_vec_element` table — keep in lockstep.
-    let table: [(ResolvedTy, bool); 11] = [
+    let table: [(ResolvedTy, bool); 13] = [
         (ResolvedTy::String, false),
         (ResolvedTy::Bytes, false),
         (ResolvedTy::I64, false),
@@ -6080,6 +6291,24 @@ fn resolved_ty_element_owns_heap_for_owned_vec_matches_mir_table() {
         ),
         (vec_of(ResolvedTy::I64), true),
         (vec_of(fn_elem.clone()), false),
+        (
+            ResolvedTy::Named {
+                name: "Sender".to_string(),
+                args: vec![ResolvedTy::I64],
+                builtin: Some(hew_types::BuiltinType::Sender),
+                is_opaque: true,
+            },
+            true,
+        ),
+        (
+            ResolvedTy::Named {
+                name: "Receiver".to_string(),
+                args: vec![ResolvedTy::I64],
+                builtin: Some(hew_types::BuiltinType::Receiver),
+                is_opaque: true,
+            },
+            false,
+        ),
         (fn_elem, false),
         (closure_elem, false),
     ];
@@ -8095,6 +8324,36 @@ fn resolve_ty_lowers_trait_object_to_fat_ptr_struct() {
     assert_eq!(st, dyn_trait_fat_ptr_ty(&ctx));
 }
 
+#[test]
+fn resolve_ty_uses_channel_builtin_identity_without_admitting_user_shadow() {
+    let ctx = Context::create();
+    let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
+    let target_data = host_target_data();
+
+    for builtin in [BuiltinType::Sender, BuiltinType::Receiver] {
+        let lowered = resolve_ty(
+            &ctx,
+            &target_data,
+            &ResolvedTy::named_builtin(builtin.canonical_name(), builtin, Vec::new()),
+            &record_layouts,
+        )
+        .expect("exact std channel identity must lower to its pointer representation");
+        let _ = lowered.into_pointer_type();
+    }
+
+    let err = resolve_ty(
+        &ctx,
+        &target_data,
+        &ResolvedTy::named_user("Sender".to_string(), Vec::new()),
+        &record_layouts,
+    )
+    .expect_err("a user Sender shadow must remain outside the runtime handle ABI");
+    assert!(
+        matches!(err, CodegenError::FailClosed(ref message) if message.contains("D10 violation")),
+        "user shadow must retain the D10 fail-closed boundary, got {err:?}"
+    );
+}
+
 /// `Instr::CoerceToDynTrait` now emits the
 /// fat-pointer aggregate. This test pins the emitted IR shape:
 /// (1) the canonical `%hew.dyn.fat_ptr` named struct is used at
@@ -9426,6 +9685,158 @@ fn connection_actor_state_clone_returns_null() {
                 && ir.contains("ret ptr null"),
             "Connection actor state clone body must reset the restart template by returning null:\n{ir}"
         );
+}
+
+fn crash_state_probe_fn(source_origin: SourceOrigin) -> RawMirFunction {
+    RawMirFunction {
+        source_origin,
+        name: "CrashStateActor__on_crash".to_string(),
+        return_ty: ResolvedTy::I64,
+        call_conv: FunctionCallConv::ActorHandler,
+        // The two MIR-visible parameters are the raw CrashInfo ingress fields.
+        // The actor-state pointer is a codegen-only trailing ABI argument.
+        params: vec![ResolvedTy::I64, ResolvedTy::String],
+        locals: vec![ResolvedTy::I64, ResolvedTy::String, ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![
+                Instr::EnterContext,
+                Instr::ActorStateFieldLoad {
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(2),
+                    mode: ActorStateLoadMode::Borrowed,
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(2),
+                },
+                Instr::ExitContext,
+            ],
+            terminator: Terminator::Return,
+        }],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    }
+}
+
+#[test]
+fn on_crash_definition_consumes_trailing_actor_state_pointer() {
+    let actor_key = "CrashStateActor";
+    let mut pipeline = minimal_pipeline_with_unit_main(false);
+    pipeline.raw_mir.push(crash_state_probe_fn(
+        SourceOrigin::SynthesizedActorHandler {
+            kind: ActorHandlerKind::Crash,
+            actor_layout_key: actor_key.to_string(),
+        },
+    ));
+    pipeline.record_layouts = vec![RecordLayout {
+        name: actor_key.to_string(),
+        field_tys: vec![ResolvedTy::I64],
+        field_names: vec!["value".to_string()],
+    }];
+    pipeline.actor_layouts = vec![ActorLayout {
+        name: actor_key.to_string(),
+        defining_module: None,
+        state_field_names: vec!["value".to_string()],
+        state_field_tys: vec![ResolvedTy::I64],
+        state_field_defaults: vec![None],
+        init_param_names: vec![],
+        init_param_tys: vec![],
+        init_symbol: None,
+        on_start_symbol: None,
+        on_stop_symbols: vec![],
+        on_crash_symbol: Some("CrashStateActor__on_crash".to_string()),
+        on_exit_symbol: None,
+        on_down_symbol: None,
+        max_heap_bytes: None,
+        cycle_capable: false,
+        mailbox_capacity: None,
+        overflow_policy: None,
+        coalesce_key_plan: None,
+        handlers: vec![],
+        state_clone_fn_symbol: None,
+        state_drop_fn_symbol: None,
+        state_field_clone_kinds: None,
+    }];
+
+    let ctx = Context::create();
+    let module = build_module(&ctx, &pipeline, "crash_state_pointer")
+        .expect("crash-state ABI probe must build");
+    module
+        .verify()
+        .unwrap_or_else(|e| panic!("crash-state ABI probe failed verify: {e}"));
+    let ir = module.print_to_string().to_string();
+    let signature =
+        "define internal i64 @CrashStateActor__on_crash(ptr %0, i64 %1, ptr %2, ptr %3)";
+    let start = ir
+        .find(signature)
+        .unwrap_or_else(|| panic!("crash hook must take the fourth state pointer:\n{ir}"));
+    let body = &ir[start..];
+    let end = body
+        .find("\n}")
+        .expect("crash hook definition has a closing brace");
+    let body = &body[..end];
+
+    assert!(
+        body.lines().any(|line| {
+            line.contains("getelementptr")
+                && line.contains("%CrashStateActor")
+                && line.contains("ptr %3")
+        }),
+        "actor-state field access must GEP from the explicit fourth argument:\n{body}"
+    );
+    assert!(
+        !body.contains("ctx_actor_ptr_slot") && !body.contains("actor_state_slot"),
+        "crash hook must not recover the supervisor actor's state through ctx:\n{body}"
+    );
+}
+
+#[test]
+fn crash_abi_fourth_parameter_is_source_origin_gated() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("crash_source_origin_gate");
+    let target_data = host_target_data();
+    let layouts = RecordLayoutMap::new();
+
+    let exact = crash_state_probe_fn(SourceOrigin::SynthesizedActorHandler {
+        kind: ActorHandlerKind::Crash,
+        actor_layout_key: "CrashStateActor".to_string(),
+    });
+    let exact_symbol =
+        declare_function(&ctx, &llvm_mod, &target_data, &exact, &layouts, &[], false)
+            .expect("declare proven crash handler");
+    let (exact_fn, _, _) = exact_symbol
+        .real(&exact.name, "crash source-origin test")
+        .expect("real exact crash symbol");
+    assert_eq!(
+        exact_fn.get_type().count_param_types(),
+        4,
+        "proven crash identity must carry ctx, code, message, and state"
+    );
+
+    let mut spoof = crash_state_probe_fn(SourceOrigin::Unknown);
+    spoof.name = "NameOnly__on_crash".to_string();
+    let spoof_symbol =
+        declare_function(&ctx, &llvm_mod, &target_data, &spoof, &layouts, &[], false)
+            .expect("declare name-only actor handler");
+    let (spoof_fn, _, _) = spoof_symbol
+        .real(&spoof.name, "crash source-origin test")
+        .expect("real spoof symbol");
+    assert_eq!(
+        spoof_fn.get_type().count_param_types(),
+        3,
+        "a crash-like symbol name without carried identity must keep the ordinary actor ABI"
+    );
 }
 
 // ── Stackless suspend substrate (R326/R327, W6.007) ──────────────────────
@@ -11844,6 +12255,121 @@ fn emit_field_drop_step_bytes_fail_closed_on_non_struct_field() {
     }
 }
 
+#[test]
+fn builtin_resource_field_drop_interns_typed_runtime_release() {
+    for (name, descriptor, return_bits) in [
+        (
+            "Receiver",
+            hew_types::runtime_call::RuntimeDropDescriptor::ReceiverClose,
+            None,
+        ),
+        (
+            "LambdaPid",
+            hew_types::runtime_call::RuntimeDropDescriptor::LambdaActorHandleClose,
+            Some(32),
+        ),
+    ] {
+        let ctx = Context::create();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let parent_st = ctx.struct_type(&[ptr_ty.into()], false);
+        let (llvm_mod, builder, slot, _) =
+            bytes_field_drop_test_harness(&ctx, parent_st, "builtin_resource_field_drop");
+        let td = host_target_data();
+        let ml = MachineLayoutMap::new();
+        let rs = RecordLayoutMap::new();
+        let w = empty_drop_witnesses(&td, &ml, &rs);
+
+        emit_field_drop_step(
+            &ctx,
+            &llvm_mod,
+            &builder,
+            Some(parent_st),
+            slot,
+            0,
+            &StateFieldCloneKind::Resource {
+                name: name.to_string(),
+                close: ResourceCloseAuthority::Runtime(descriptor),
+            },
+            &w,
+        )
+        .unwrap_or_else(|error| panic!("{name} resource drop failed: {error}"));
+        builder
+            .build_return(Some(&ctx.i32_type().const_zero()))
+            .expect("host return");
+
+        let close_fn = llvm_mod
+            .get_function(descriptor.c_symbol())
+            .unwrap_or_else(|| panic!("{} runtime declaration missing", descriptor.c_symbol()));
+        assert_eq!(close_fn.count_params(), 1);
+        assert_eq!(
+            close_fn
+                .get_type()
+                .get_return_type()
+                .map(|ty| ty.into_int_type().get_bit_width()),
+            return_bits,
+            "{} must retain its runtime ABI return type",
+            descriptor.c_symbol()
+        );
+        assert!(
+            llvm_mod.verify().is_ok(),
+            "{name} resource drop module must verify"
+        );
+        let ir = llvm_mod.print_to_string().to_string();
+        let call_prefix = if return_bits.is_some() {
+            "call i32"
+        } else {
+            "call void"
+        };
+        assert!(
+            ir.contains(&format!("{call_prefix} @{}", descriptor.c_symbol())),
+            "{name} drop must call its typed runtime release; IR:\n{ir}",
+        );
+    }
+}
+
+#[test]
+fn user_resource_field_drop_uses_generated_hew_function() {
+    let ctx = Context::create();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let parent_st = ctx.struct_type(&[ptr_ty.into()], false);
+    let (llvm_mod, builder, slot, _) =
+        bytes_field_drop_test_harness(&ctx, parent_st, "user_resource_field_drop");
+    llvm_mod.add_function(
+        "Pattern::free",
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    let td = host_target_data();
+    let ml = MachineLayoutMap::new();
+    let rs = RecordLayoutMap::new();
+    let w = empty_drop_witnesses(&td, &ml, &rs);
+
+    emit_field_drop_step(
+        &ctx,
+        &llvm_mod,
+        &builder,
+        Some(parent_st),
+        slot,
+        0,
+        &StateFieldCloneKind::Resource {
+            name: "Pattern".to_string(),
+            close: ResourceCloseAuthority::User("Pattern::free".to_string()),
+        },
+        &w,
+    )
+    .expect("user resource drop must resolve the generated Hew function");
+    builder
+        .build_return(Some(&ctx.i32_type().const_zero()))
+        .expect("host return");
+
+    assert!(llvm_mod.verify().is_ok());
+    let ir = llvm_mod.print_to_string().to_string();
+    assert!(
+        ir.contains("call void @\"Pattern::free\""),
+        "user resource drop must call the generated Hew function; IR:\n{ir}",
+    );
+}
+
 // ── overwrite-release synthesis (record / enum state-field re-store) ──
 //
 // The synthesised `__hew_{record,enum}_overwrite_release_<Name>(old, new)`
@@ -11853,6 +12379,143 @@ fn emit_field_drop_step_bytes_fail_closed_on_non_struct_field() {
 // unchanged — an unguarded drop is a use-after-free), and (b) fail
 // closed on classification drift instead of emitting a walk over the
 // wrong shape.
+
+#[test]
+fn builtin_handle_field_overwrite_fails_closed_before_store() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("builtin_handle_field_overwrite_refusal");
+    let harness = build_harness(&ctx, &[], &[]);
+    let fn_ctx = make_test_fn_ctx(
+        &ctx,
+        &llvm_mod,
+        &harness,
+        "builtin_handle_field_overwrite_probe",
+    );
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let field_ptr = fn_ctx
+        .builder
+        .build_alloca(ptr_ty, "old_handle_slot")
+        .expect("old handle slot");
+    let src_ptr = fn_ctx
+        .builder
+        .build_alloca(ptr_ty, "new_handle_slot")
+        .expect("new handle slot");
+    let src_val = fn_ctx
+        .builder
+        .build_load(ptr_ty, src_ptr, "new_handle")
+        .expect("new handle load");
+
+    for kind in [
+        IoHandleKind::Stream,
+        IoHandleKind::Sink,
+        IoHandleKind::Generator,
+        IoHandleKind::CancellationToken,
+    ] {
+        let err = emit_field_overwrite_release(
+            &fn_ctx,
+            field_ptr,
+            ptr_ty.into(),
+            src_ptr,
+            src_val,
+            &StateFieldCloneKind::IoHandle { kind: kind.clone() },
+            "record_f0",
+            false,
+        )
+        .expect_err("un-clonable builtin handle overwrite must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => assert!(
+                msg.contains("source-slot neutralisation") && msg.contains(&format!("{kind:?}")),
+                "refusal must name the missing move protocol and handle kind; got: {msg}"
+            ),
+            other => panic!("expected FailClosed for {kind:?}, got {other:?}"),
+        }
+    }
+    emit_field_overwrite_release(
+        &fn_ctx,
+        field_ptr,
+        ptr_ty.into(),
+        src_ptr,
+        src_val,
+        &StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        },
+        "state_connection_f0",
+        false,
+    )
+    .expect("Connection carries no per-field close obligation");
+    let receiver_err = emit_field_overwrite_release(
+        &fn_ctx,
+        field_ptr,
+        ptr_ty.into(),
+        src_ptr,
+        src_val,
+        &StateFieldCloneKind::Resource {
+            name: "Receiver".to_string(),
+            close: ResourceCloseAuthority::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::ReceiverClose,
+            ),
+        },
+        "record_receiver_f0",
+        false,
+    )
+    .expect_err("builtin Receiver overwrite must fail closed");
+    assert!(
+        matches!(
+            receiver_err,
+            CodegenError::FailClosed(ref msg)
+                if msg.contains("builtin resource Receiver")
+                    && msg.contains("source-slot neutralisation")
+        ),
+        "Receiver refusal must name the builtin and missing move protocol; got {receiver_err:?}"
+    );
+    emit_field_overwrite_release(
+        &fn_ctx,
+        field_ptr,
+        ptr_ty.into(),
+        src_ptr,
+        src_val,
+        &StateFieldCloneKind::Resource {
+            name: "Receiver".to_string(),
+            close: ResourceCloseAuthority::User("user$Receiver$close".to_string()),
+        },
+        "user_receiver_f0",
+        false,
+    )
+    .expect("a user resource shadow must not acquire builtin Receiver semantics");
+
+    finish_test_fn(&fn_ctx);
+    assert!(
+        llvm_mod.verify().is_ok(),
+        "defense-in-depth refusal must leave valid surrounding IR"
+    );
+}
+
+#[test]
+fn record_field_overwrite_builtin_backstop_tracks_the_typed_close_set() {
+    for info in hew_types::builtin_types() {
+        let ty = ResolvedTy::named_builtin(info.canonical_name, info.kind, vec![]);
+        let expected = info.close_method.is_some()
+            || matches!(
+                info.kind,
+                hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator
+            );
+        assert_eq!(
+            is_unclonable_builtin_record_field(&ty),
+            expected,
+            "record overwrite backstop drifted for {:?}",
+            info.kind,
+        );
+    }
+    assert!(is_unclonable_builtin_record_field(
+        &ResolvedTy::CancellationToken
+    ));
+    for shadow in ["Sender", "Receiver", "LambdaPid", "MonitorRef"] {
+        assert!(
+            !is_unclonable_builtin_record_field(&ResolvedTy::named_user(shadow, vec![])),
+            "user shadow `{shadow}` must not acquire builtin close semantics",
+        );
+    }
+}
 
 /// Give the in-place drop helper a trivial body so the module verifies
 /// (internal-linkage declarations without bodies are invalid IR; in the

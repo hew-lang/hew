@@ -6,12 +6,13 @@
 //! the body and the cursor snapshot can be released independently.
 
 use hew_hir::{lower_program, IntentKind, ResolutionCtx};
+use hew_mir::model::NeutralizeAuthority;
 use hew_mir::{
-    lower_hir_module, CmpPred, DropFnSpec, InPlaceReleaseKind, Instr, IrPipeline, MirStatement,
-    Place, Terminator,
+    lower_hir_module, CmpPred, CowHeapRelease, DropFnSpec, DropKind, ExitPath, InPlaceReleaseKind,
+    Instr, IrPipeline, MirStatement, Place, Terminator,
 };
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::{Checker, ResolvedTy};
+use hew_types::Checker;
 
 fn pipeline(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -45,6 +46,129 @@ fn pipeline(source: &str) -> IrPipeline {
         mir.diagnostics
     );
     mir
+}
+
+fn pipeline_allowing_mir_diagnostics(source: &str) -> IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        hir.diagnostics
+    );
+    lower_hir_module(&hir.module)
+}
+
+#[test]
+fn affine_vec_iter_snapshot_is_rejected_before_runtime_clone() {
+    let parsed = hew_parser::parse(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(file: File) { } }
+        type Holder { file: File }
+
+        fn main() {
+            let file = File { fd: 7 };
+            let holder = Holder { file: file };
+            let values: Vec<Holder> = [holder];
+            let _cursor = values.iter();
+        }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.iter().any(|error| {
+            error.message.contains("`VecIter<Holder>` is not supported")
+                && error
+                    .message
+                    .contains("resource/linear value `File` has no semantic clone/retain operation")
+        }),
+        "Vec::iter must reject affine element clone-out before HIR/MIR: {:#?}",
+        tc_output.errors
+    );
+}
+
+#[test]
+fn affine_vec_index_remains_borrow_only() {
+    let pipeline = pipeline(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(file: File) { } }
+        type Holder { file: File }
+
+        fn main() -> i64 {
+            let file = File { fd: 7 };
+            let holder = Holder { file: file };
+            let values: Vec<Holder> = [holder];
+            let first = values[0];
+            first.file.fd
+        }
+        ",
+    );
+    let calls = call_symbols(&pipeline, "main");
+    assert!(
+        calls.contains(&"hew_vec_get_ptr"),
+        "resource-containing Vec indexing must remain a borrow: {calls:?}"
+    );
+    assert!(
+        !calls.contains(&"hew_vec_get_clone"),
+        "resource-containing Vec indexing must not clone out an owner: {calls:?}"
+    );
+}
+
+#[test]
+fn affine_vec_get_stays_on_clone_out_guard() {
+    let pipeline = pipeline_allowing_mir_diagnostics(
+        r"
+        #[resource]
+        type File { fd: i64 }
+        impl File { fn close(file: File) { } }
+        type Holder { file: File }
+
+        fn main() {
+            let file = File { fd: 7 };
+            let holder = Holder { file: file };
+            let values: Vec<Holder> = [holder];
+            let _value = values.get(0);
+        }
+        ",
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct == "`VecIter<Holder>` clone-out"
+        ) && diagnostic
+            .note
+            .contains("resource `File` has an affine close contract")),
+        "Vec::get must retain its element clone-out guard: {:#?}",
+        pipeline.diagnostics
+    );
 }
 
 fn call_symbols<'a>(pipeline: &'a IrPipeline, function: &str) -> Vec<&'a str> {
@@ -82,6 +206,236 @@ fn raw_instructions<'a>(pipeline: &'a IrPipeline, function: &str) -> Vec<&'a Ins
         .iter()
         .flat_map(|block| block.instructions.iter())
         .collect()
+}
+
+#[test]
+fn for_vec_capture_keeps_source_carrier_release_authority() {
+    let pipeline = pipeline(
+        r"
+        fn drain(values: Vec<i64>) {
+            for value in values {
+                let _ = value;
+            }
+        }
+
+        type Holder { values: Vec<i64> }
+
+        fn wrap(values: Vec<i64>) -> Holder {
+            Holder { values: values }
+        }
+        ",
+    );
+
+    let drain = raw_instructions(&pipeline, "drain");
+    assert!(
+        drain.iter().all(|instr| !matches!(
+            instr,
+            Instr::NeutralizePayloadSlot {
+                place: Place::Local(0),
+                authority: NeutralizeAuthority::WholeCarrierConsume,
+                ..
+            }
+        )),
+        "the Capture source borrowed by `VecIter.vec` must keep its carrier \
+         release authority: {drain:#?}"
+    );
+    let source_guards: std::collections::HashSet<_> = drain
+        .iter()
+        .filter_map(|instr| match instr {
+            Instr::ValueSnapshotDrop {
+                value: Place::Local(0),
+                guard: Some(guard),
+                ..
+            } => Some(*guard),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        source_guards.len(),
+        1,
+        "all exits must share the source Vec's one carrier guard"
+    );
+    let source_guard = *source_guards.iter().next().expect("source guard");
+    assert!(
+        drain.iter().any(|instr| matches!(
+            instr,
+            Instr::ConstI64 {
+                dest,
+                value: 0
+            } if *dest == source_guard
+        )) && drain.iter().all(|instr| !matches!(
+            instr,
+            Instr::ConstI64 {
+                dest,
+                value: 1
+            } if *dest == source_guard
+        )),
+        "the live source owner must stay armed on every loop path: {drain:#?}"
+    );
+
+    let wrap = raw_instructions(&pipeline, "wrap");
+    assert_eq!(
+        wrap.iter()
+            .filter(|instr| matches!(
+                instr,
+                Instr::NeutralizePayloadSlot {
+                    place: Place::Local(0),
+                    transferee: Some(_),
+                    authority: NeutralizeAuthority::WholeCarrierConsume,
+                }
+            ))
+            .count(),
+        1,
+        "ordinary aggregate ingress remains a real transfer: the source carrier \
+         must be neutralized exactly once in favour of the Holder owner"
+    );
+}
+
+#[test]
+fn borrowed_for_source_cannot_move_or_reassign_until_cursor_scope_closes() {
+    let pipeline = pipeline_allowing_mir_diagnostics(
+        r"
+        fn make() -> Vec<i64> {
+            [1, 2, 3]
+        }
+
+        fn take(values: Vec<i64>) {
+            let _ = values.len();
+        }
+
+        fn overwrite() {
+            var values = make();
+            for value in values {
+                values = make();
+                print(value);
+            }
+        }
+
+        fn consume() {
+            let values = make();
+            for value in values {
+                let _moved = values;
+                print(value);
+            }
+        }
+
+        fn after_loop() {
+            let values = make();
+            for value in values {
+                print(value);
+                print(values.len());
+            }
+            take(values);
+        }
+        ",
+    );
+
+    let constructs: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| match &diagnostic.kind {
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("while a VecIter cursor borrows it") =>
+            {
+                Some(construct.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        constructs.len(),
+        2,
+        "reassignment and whole-value movement must reject while the borrowed \
+         cursor is active, while reads and a post-loop move stay valid: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        constructs
+            .iter()
+            .any(|construct| construct.starts_with("reassigning `values`"))
+            && constructs
+                .iter()
+                .any(|construct| construct.starts_with("moving `values`")),
+        "the two invalid ownership boundaries need distinct actionable diagnostics: \
+         {constructs:#?}"
+    );
+}
+
+#[test]
+fn vec_iter_yield_cancel_cleanup_is_path_exact_or_rejected() {
+    let pipeline = pipeline_allowing_mir_diagnostics(
+        r"
+        fn branch_selective(values: Vec<Vec<i64>>, ticks: Vec<i64>, move_value: bool) {
+            for value in values {
+                if move_value {
+                    let _moved = value;
+                } else {
+                    for tick in ticks {
+                        print(tick);
+                    }
+                }
+
+                for tick in ticks {
+                    print(tick);
+                }
+            }
+        }
+        ",
+    );
+
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct
+                    == "conditionally moved VecIter yield across an abandonment point"
+        ) && diagnostic
+            .note
+            .contains("omitting the release would leak the live path")),
+        "a joined cancellation point with MaybeConsumed payload authority must fail \
+         closed instead of leaking one predecessor or double-freeing the other: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let function = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|candidate| candidate.name == "branch_selective")
+        .expect("missing elaborated MIR for `branch_selective`");
+    let cancel_payload_drops: Vec<_> = function
+        .drop_plans
+        .iter()
+        .filter_map(|(exit, plan)| match exit {
+            ExitPath::Cancel { block } => {
+                let count = plan
+                    .drops
+                    .iter()
+                    .filter(|drop| {
+                        drop.drop_fn.is_none()
+                            && drop.kind
+                                == DropKind::CowHeap {
+                                    release: CowHeapRelease::VecPlain,
+                                }
+                    })
+                    .count();
+                (count != 0).then_some((*block, count))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cancel_payload_drops.len(),
+        5,
+        "each cancellation point in the else-only inner loop has definite Live \
+         authority and must release the payload; the later joined MaybeConsumed \
+         loop must receive no unconditional payload drop: {:#?}",
+        function.drop_plans
+    );
+    assert!(
+        cancel_payload_drops.iter().all(|(_, count)| *count == 1),
+        "every definite-live cancellation edge owns exactly one payload release: \
+         {cancel_payload_drops:#?}"
+    );
 }
 
 fn vec_iter_release_guard_flags(
@@ -310,7 +664,7 @@ fn first_class_vec_iter_owners_drop_at_scope_exit_but_return_transfers() {
 }
 
 #[test]
-fn cursor_assignment_drops_are_runtime_guarded_and_absent_from_exit_plans() {
+fn cursor_assignment_drops_are_runtime_guarded_and_exit_plans_are_abandon_only() {
     let pipeline = pipeline(
         r"
         fn reassign(first_values: Vec<Rc<i64>>, second_values: Vec<Rc<i64>>) {
@@ -386,18 +740,174 @@ fn cursor_assignment_drops_are_runtime_guarded_and_absent_from_exit_plans() {
         .iter()
         .find(|candidate| candidate.name == "reassign")
         .expect("missing elaborated MIR for `reassign`");
+    for (exit, plan) in &elaborated.drop_plans {
+        for drop in &plan.drops {
+            if !matches!(drop.kind, DropKind::VecIterCursor { .. }) {
+                continue;
+            }
+            assert!(
+                matches!(
+                    exit,
+                    ExitPath::Cancel { .. }
+                        | ExitPath::Panic { .. }
+                        | ExitPath::Yield { .. }
+                        | ExitPath::Suspend { .. }
+                ),
+                "a cursor field release may enter a drop plan only on an \
+                 abandonment edge, never normal flow: {exit:?} -> {drop:?}"
+            );
+            assert!(
+                drop.guard.is_some(),
+                "every abandonment cursor release must share the binding's \
+                 path-sensitive ownership sidecar: {exit:?} -> {drop:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn first_class_cursor_abandonment_plans_cover_cancel_panic_suspend_and_yield() {
+    let pipeline = pipeline(
+        r"
+        fn cancel_cursor(values: Vec<i64>) {
+            var cursor = values.iter();
+            var i: i64 = 0;
+            while i < 2 {
+                i = i + 1;
+            }
+            let _ = cursor.next();
+        }
+
+        fn panic_cursor(values: Vec<i64>, index: i64) {
+            var cursor = values.iter();
+            let _ = values[index];
+            let _ = cursor.next();
+        }
+
+        gen fn yield_cursor(values: Vec<i64>) -> i64 {
+            var cursor = values.iter();
+            yield 1;
+            let _ = cursor.next();
+        }
+
+        actor Sleeper {
+            receive fn park() {
+                let values: Vec<i64> = Vec::new();
+                values.push(1);
+                var cursor = values.iter();
+                sleep(10s);
+                let _ = cursor.next();
+            }
+        }
+        ",
+    );
+
+    let cursor_drops: Vec<_> = pipeline
+        .elaborated_mir
+        .iter()
+        .flat_map(|function| {
+            function.drop_plans.iter().flat_map(move |(exit, plan)| {
+                plan.drops
+                    .iter()
+                    .filter(|drop| matches!(drop.kind, DropKind::VecIterCursor { .. }))
+                    .map(move |drop| (function.name.as_str(), exit, drop))
+            })
+        })
+        .collect();
     assert!(
-        elaborated
-            .drop_plans
+        !cursor_drops.is_empty(),
+        "the fixture must produce first-class cursor abandon releases"
+    );
+    for (function, exit, drop) in &cursor_drops {
+        assert!(
+            drop.guard.is_some(),
+            "{function}: every cursor abandon release must be flag-gated: \
+             {exit:?} -> {drop:?}"
+        );
+        assert_eq!(
+            drop.kind,
+            DropKind::VecIterCursor {
+                release: CowHeapRelease::VecPlain,
+            },
+            "{function}: VecIter<i64> must select the plain Vec release"
+        );
+    }
+
+    for (needle, expected_path) in [
+        ("cancel_cursor", "cancel"),
+        ("panic_cursor", "panic"),
+        ("yield_cursor", "yield"),
+        ("park", "suspend"),
+    ] {
+        assert!(
+            cursor_drops.iter().any(|(function, exit, _)| {
+                function.contains(needle)
+                    && matches!(
+                        (expected_path, *exit),
+                        ("cancel", ExitPath::Cancel { .. })
+                            | ("panic", ExitPath::Panic { .. })
+                            | ("yield", ExitPath::Yield { .. })
+                            | ("suspend", ExitPath::Suspend { .. })
+                    )
+            }),
+            "`{needle}` must carry a guarded VecIter field release on its \
+             {expected_path} abandonment edge: {cursor_drops:#?}"
+        );
+    }
+
+    assert!(
+        cursor_drops.iter().all(|(_, exit, _)| !matches!(
+            exit,
+            ExitPath::Return { .. }
+                | ExitPath::Goto { .. }
+                | ExitPath::Branch { .. }
+                | ExitPath::Call { .. }
+                | ExitPath::Send { .. }
+                | ExitPath::Ask { .. }
+                | ExitPath::Select { .. }
+                | ExitPath::Join { .. }
+        )),
+        "resume/normal flow must retain the cursor for its lexical release: \
+         {cursor_drops:#?}"
+    );
+
+    assert_cursor_release_disarms_before_later_cancellation(&pipeline);
+}
+
+fn assert_cursor_release_disarms_before_later_cancellation(pipeline: &IrPipeline) {
+    let cancel = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "cancel_cursor")
+        .expect("cancel_cursor raw MIR");
+    let release_blocks: Vec<_> = cancel
+        .blocks
+        .iter()
+        .filter(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::RecordFieldDrop {
+                        field_offset: hew_mir::FieldOffset(0),
+                        ..
+                    }
+                )
+            })
+        })
+        .collect();
+    assert!(
+        release_blocks
             .iter()
-            .all(|(_, plan)| plan.drops.iter().all(|drop| !matches!(
-                &drop.ty,
-                ResolvedTy::Named { name, .. }
-                    if name.rsplit('.').next() == Some("VecIter")
+            .all(|block| block.instructions.iter().any(|instr| matches!(
+                instr,
+                Instr::ConstI64 {
+                    dest: Place::Local(_),
+                    value: 1
+                }
             ))),
-        "cursor ownership is discharged exactly by guarded inline field drops; \
-         no unconditional VecIter exit-plan drop may compete: {:#?}",
-        elaborated.drop_plans
+        "every normal cursor field release must disarm its sidecar before \
+         continuing, preventing a later cancellation checkpoint from reusing \
+         the same release authority: {release_blocks:#?}"
     );
 }
 

@@ -370,7 +370,8 @@ impl Builder {
                         hew_types::BuiltinType::HashMap
                         | hew_types::BuiltinType::HashSet
                         | hew_types::BuiltinType::Rc
-                        | hew_types::BuiltinType::Weak,
+                        | hew_types::BuiltinType::Weak
+                        | hew_types::BuiltinType::Sender,
                     ),
                 ..
             } => true,
@@ -483,6 +484,7 @@ impl Builder {
     /// follow a future seed-rule change).
     pub(crate) fn binding_seeds_drop_elaboration(&self, ty: &ResolvedTy) -> bool {
         binding_seeds_drop_elaboration(ty, &self.type_classes)
+            || self.record_with_ready_inline_enum_owned_field(ty)
     }
 
     /// Classify a `Vec<E>` element's scope-exit release by reading the single
@@ -1011,8 +1013,8 @@ impl Builder {
             .is_some_and(|elem| self.is_owned_vec_element(elem))
     }
 
-    /// Prove that a concrete `hew_vec_get_clone` element has a total semantic
-    /// clone and inverse drop.
+    /// Prove that a concrete collection payload has a total semantic clone and
+    /// inverse drop.
     ///
     /// The type checker can decide this directly for monomorphic `VecIter<E>`
     /// sites.  A generic body is checked before `T` is substituted, however,
@@ -1026,11 +1028,11 @@ impl Builder {
     /// classifier's descriptor view rather than maintaining a second clone
     /// classifier here.  Field names are carried only to preserve the shared
     /// `RecordLayout` shape; clone totality depends on the field types.
-    fn validate_vec_get_clone_element(&self, elem_ty: &ResolvedTy) -> Result<(), String> {
-        let concrete = self.subst_ty(elem_ty);
+    fn validate_collection_clone_value(&self, value_ty: &ResolvedTy) -> Result<(), String> {
+        let concrete = self.subst_ty(value_ty);
         let mut visiting_markers = HashSet::new();
         if let Some(blocker) =
-            self.vec_get_clone_affine_marker_blocker(&concrete, &mut visiting_markers)
+            self.collection_clone_affine_marker_blocker(&concrete, &mut visiting_markers)
         {
             return Err(blocker);
         }
@@ -1073,15 +1075,15 @@ impl Builder {
     }
 
     /// Return the first non-cloneable resource / linear value reachable from a
-    /// clone-out element.
+    /// collection clone value.
     ///
     /// `state_clone` intentionally classifies a field-bearing non-opaque
     /// resource record structurally as `UserRecord` before consulting its
     /// opaque-handle resource registry: actor-state snapshot planning needs
-    /// the record's field drop spine.  `VecIter::next` has a stricter contract,
-    /// though — it must duplicate the WHOLE element, and an affine/linear user
-    /// record has no semantic clone even when every field happens to be
-    /// clone-total.  Conjoin the shared structural proof with HIR's
+    /// the record's field drop spine. Collection clone/get operations have a
+    /// stricter contract, though — they must duplicate the WHOLE stored value,
+    /// and an affine/linear user record has no semantic clone even when every
+    /// field happens to be clone-total. Conjoin the shared structural proof with HIR's
     /// authoritative type-class marker, descending through the concrete
     /// record/enum layouts so a marker cannot hide inside an unmarked wrapper.
     ///
@@ -1093,7 +1095,7 @@ impl Builder {
         clippy::too_many_lines,
         reason = "one exhaustive recursive type-shape proof keeps the marker veto and every descent edge auditable together"
     )]
-    fn vec_get_clone_affine_marker_blocker(
+    fn collection_clone_affine_marker_blocker(
         &self,
         ty: &ResolvedTy,
         visiting: &mut HashSet<String>,
@@ -1102,31 +1104,23 @@ impl Builder {
         match &concrete {
             ResolvedTy::Tuple(items) => items
                 .iter()
-                .find_map(|item| self.vec_get_clone_affine_marker_blocker(item, visiting)),
-            ResolvedTy::Array(elem, _) => self.vec_get_clone_affine_marker_blocker(elem, visiting),
+                .find_map(|item| self.collection_clone_affine_marker_blocker(item, visiting)),
+            ResolvedTy::Array(elem, _) => {
+                self.collection_clone_affine_marker_blocker(elem, visiting)
+            }
             ResolvedTy::Named {
                 name,
                 args,
                 builtin,
                 ..
             } => {
-                let builtin_has_ratified_clone = matches!(
-                    builtin,
-                    Some(
-                        BuiltinType::LocalPid
-                            | BuiltinType::RemotePid
-                            | BuiltinType::LambdaPid
-                            | BuiltinType::HewActor
-                            | BuiltinType::Rc
-                            | BuiltinType::Weak
-                    )
-                );
+                let builtin_has_ratified_clone =
+                    builtin.is_some_and(BuiltinType::is_affine_clone_terminal);
                 if builtin_has_ratified_clone {
                     // These wrappers are terminal clone leaves. Actor refs
                     // bit-copy/erase their protocol identity argument. Rc/Weak
-                    // retain the outer shared allocation and do not recursively
-                    // clone its payload (whose own admissibility is checked
-                    // when the Rc/Weak type is formed).
+                    // and Sender retain/clone the outer shared handle and do
+                    // not recursively clone their payload/protocol tag.
                     return None;
                 }
                 match hew_hir::lookup_type_marker_for_ty(&concrete, &self.type_classes) {
@@ -1172,18 +1166,18 @@ impl Builder {
                     });
                 let blocker = if let Some(fields) = record_fields {
                     fields.iter().find_map(|(_, field_ty)| {
-                        self.vec_get_clone_affine_marker_blocker(field_ty, visiting)
+                        self.collection_clone_affine_marker_blocker(field_ty, visiting)
                     })
                 } else if let Some(fields) = enum_fields {
                     fields.iter().find_map(|field_ty| {
-                        self.vec_get_clone_affine_marker_blocker(field_ty, visiting)
+                        self.collection_clone_affine_marker_blocker(field_ty, visiting)
                     })
                 } else {
                     // Builtin containers and enum-like constructors do not
                     // have user record layouts in `record_field_orders`; their
                     // type arguments are their clone-relevant payloads.
                     args.iter()
-                        .find_map(|arg| self.vec_get_clone_affine_marker_blocker(arg, visiting))
+                        .find_map(|arg| self.collection_clone_affine_marker_blocker(arg, visiting))
                 };
                 visiting.remove(&visit_key);
                 blocker
@@ -2050,6 +2044,32 @@ impl Builder {
         reason = "one exhaustive match keeps assignment boundary rules together"
     )]
     fn assign(&mut self, target: &HirExpr, value: &HirExpr) {
+        if let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(binding),
+        } = &target.kind
+        {
+            if self
+                .vec_iter_borrowed_sources
+                .iter()
+                .any(|(_, source)| source == binding)
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "reassigning `{name}` while a VecIter cursor borrows it"
+                        ),
+                        site: target.site,
+                    },
+                    note: "the active for-loop cursor reads this Vec's handle directly; \
+                           overwriting the source would release that handle while the cursor \
+                           can still execute. Reassign the Vec before entering the loop, or \
+                           wait until the loop has finished"
+                        .to_string(),
+                });
+                return;
+            }
+        }
         let copy_in = self.assign_target_stays_copy_in(target, value);
         let src = if copy_in {
             self.lower_value(value)
@@ -2317,13 +2337,27 @@ impl Builder {
                         // 0 after the store so the fresh value is released on the
                         // next overwrite.
                         if !rhs_may_alias_old {
-                            self.emit_flag_gated_overwrite_release(dest, &target.ty, flag);
+                            self.emit_flag_gated_overwrite_release(
+                                *binding, dest, &target.ty, flag, value,
+                            );
                         }
                         self.push_instr(Instr::Move { dest, src });
                         self.push_instr(Instr::ConstI64 {
                             dest: flag,
                             value: 0,
                         });
+                        if super::ty_is_heap_owning_enum_composite(
+                            &self.subst_ty(&target.ty),
+                            &self.record_field_orders,
+                            &self.enum_layouts,
+                        ) {
+                            // The reassignment constructs a fresh live enum
+                            // generation. Restore its scope-exit obligation;
+                            // per-exit dataflow excludes the consumed path and
+                            // the same overwrite flag guards a shared
+                            // MaybeConsumed join.
+                            self.set_owned_local_disposition(*binding, Disposition::ScopeExit);
+                        }
                     } else {
                         // #53: gated on the binding still owning live heap
                         // (scope-exit-live `owned_locals` membership) -- a
@@ -2338,6 +2372,7 @@ impl Builder {
                             })
                         {
                             self.emit_local_overwrite_release(dest, &target.ty);
+                            self.emit_enum_overwrite_release(*binding, dest, &target.ty, value);
                         }
                         self.push_instr(Instr::Move { dest, src });
                     }
@@ -3806,7 +3841,26 @@ impl Builder {
                 // Lower each explicit field value to a Place, keyed by name.
                 let mut explicit: HashMap<String, Place> = HashMap::new();
                 for (fname, fexpr) in fields {
-                    if let Some(place) = self.lower_value_for_move(fexpr) {
+                    // The Vec for-in desugar marks only the borrowed source of
+                    // `VecIter { vec, idx }` as Capture. That field aliases a
+                    // still-owning source binding, while the cursor ownership
+                    // bit starts moved. Keep this one record ingress out of the
+                    // owned-carrier transfer funnel: moving and neutralizing
+                    // the source here would disable both release authorities.
+                    //
+                    // Fence the exception by record and field instead of
+                    // treating every CowValue Capture as non-transferring;
+                    // closure-environment and other aggregate ingress sites
+                    // retain their ordinary ownership-boundary semantics.
+                    let borrows_vec_iter_source = name.rsplit('.').next() == Some("VecIter")
+                        && fname == "vec"
+                        && fexpr.intent == hew_hir::IntentKind::Capture;
+                    let place = if borrows_vec_iter_source {
+                        self.lower_value(fexpr)
+                    } else {
+                        self.lower_value_for_move(fexpr)
+                    };
+                    if let Some(place) = place {
                         explicit.insert(fname.clone(), place);
                     }
                 }
@@ -5071,7 +5125,7 @@ impl Builder {
                     let Some(elem_ty) = receiver_args.first() else {
                         unreachable!("a resolved Vec receiver always carries one element argument");
                     };
-                    if let Err(reason) = self.validate_vec_get_clone_element(elem_ty) {
+                    if let Err(reason) = self.validate_collection_clone_value(elem_ty) {
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
@@ -5084,6 +5138,190 @@ impl Builder {
                                 "`VecIter::next()` must clone each element into an independent \
                                  owner, but {reason}; the concrete generic instantiation is \
                                  rejected before the runtime clone choke"
+                            ),
+                        });
+                        return None;
+                    }
+                }
+
+                // A whole-Vec clone has the same semantic precondition as an
+                // element clone-out: every stored element must have a real
+                // clone/retain operation. `Vec::iter()` synthesizes this call
+                // for a place receiver, so guarding only explicit `.clone()`
+                // leaves an affine cursor snapshot reachable even when no
+                // `next()` call is emitted.
+                if matches!(
+                    callee.as_str(),
+                    "hew_vec_clone" | "hew_vec_clone_layout" | "hew_vec_clone_owned"
+                ) {
+                    let concrete_receiver = self.subst_ty(&receiver.ty);
+                    let ResolvedTy::Named {
+                        args: receiver_args,
+                        builtin: Some(hew_types::BuiltinType::Vec),
+                        ..
+                    } = &concrete_receiver
+                    else {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "Vec clone on a non-Vec receiver".to_string(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "`{callee}` requires a concrete `Vec<E>` receiver, but MIR \
+                                 substitution produced `{concrete_receiver}`"
+                            ),
+                        });
+                        return None;
+                    };
+                    let Some(elem_ty) = receiver_args.first() else {
+                        unreachable!("a resolved Vec receiver always carries one element argument");
+                    };
+                    if let Err(reason) = self.validate_collection_clone_value(elem_ty) {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!("`Vec<{}>` clone", elem_ty.user_facing()),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "`Vec::clone()` / `Vec::iter()` must duplicate every element \
+                                 into an independent owner, but {reason}; the clone is rejected \
+                                 before it reaches the runtime"
+                            ),
+                        });
+                        return None;
+                    }
+                }
+
+                // HashMap whole-clone and snapshot projections manufacture
+                // independent owners through descriptor clone functions.
+                // Generic bodies are checked while K/V are abstract, so repeat
+                // the clone-totality proof after monomorphisation, when the
+                // receiver carries concrete K/V.
+                //
+                // Whole-map clone duplicates BOTH keys and values. `get` and
+                // `values` duplicate V; `keys` duplicates K. HashMap for-in
+                // synthesizes `keys` + `values`, so it shares these same guards.
+                let hashmap_clone_roles = match callee.as_str() {
+                    "hew_hashmap_clone_layout" => Some((true, true)),
+                    "hew_hashmap_get_layout"
+                    | "hew_hashmap_get_clone_layout"
+                    | "hew_hashmap_values_layout" => Some((false, true)),
+                    "hew_hashmap_keys_layout" => Some((true, false)),
+                    _ => None,
+                };
+                if let Some((clones_key, clones_value)) = hashmap_clone_roles {
+                    let concrete_receiver = self.subst_ty(&receiver.ty);
+                    let ResolvedTy::Named {
+                        args: receiver_args,
+                        builtin: Some(hew_types::BuiltinType::HashMap),
+                        ..
+                    } = &concrete_receiver
+                    else {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "HashMap clone on a non-HashMap receiver".to_string(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "`{callee}` requires a concrete `HashMap<K, V>` receiver, but \
+                                 MIR substitution produced `{concrete_receiver}`"
+                            ),
+                        });
+                        return None;
+                    };
+                    let [key_ty, val_ty] = receiver_args.as_slice() else {
+                        unreachable!(
+                            "a resolved HashMap receiver always carries key and value arguments"
+                        );
+                    };
+                    let mut clone_parts = Vec::with_capacity(2);
+                    if clones_key {
+                        clone_parts.push(("key", key_ty));
+                    }
+                    if clones_value {
+                        clone_parts.push(("value", val_ty));
+                    }
+                    for (role, part_ty) in clone_parts {
+                        if let Err(reason) = self.validate_collection_clone_value(part_ty) {
+                            let operation = match callee.as_str() {
+                                "hew_hashmap_clone_layout" => {
+                                    "HashMap::clone() must duplicate every key and value"
+                                }
+                                "hew_hashmap_keys_layout" => {
+                                    "HashMap::keys() must clone every key into an independent snapshot"
+                                }
+                                "hew_hashmap_values_layout" => {
+                                    "HashMap::values() must clone every value into an independent snapshot"
+                                }
+                                _ => {
+                                    "HashMap::get() must clone the matched value into an independent owner"
+                                }
+                            };
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "`HashMap<{}, {}>` {role} clone",
+                                        key_ty.user_facing(),
+                                        val_ty.user_facing()
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: format!(
+                                    "{operation}, but its {role} {reason}; the concrete generic \
+                                     instantiation is rejected before the runtime clone choke"
+                                ),
+                            });
+                            return None;
+                        }
+                    }
+                }
+
+                // HashSet clone and to-Vec projection duplicate every element.
+                // Plain `for x in set` synthesizes `to_vec`, while `remove`
+                // moves an element out and deliberately does not enter here.
+                if matches!(
+                    callee.as_str(),
+                    "hew_hashset_clone_layout" | "hew_hashset_to_vec_layout"
+                ) {
+                    let concrete_receiver = self.subst_ty(&receiver.ty);
+                    let ResolvedTy::Named {
+                        args: receiver_args,
+                        builtin: Some(hew_types::BuiltinType::HashSet),
+                        ..
+                    } = &concrete_receiver
+                    else {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "HashSet clone on a non-HashSet receiver".to_string(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "`{callee}` requires a concrete `HashSet<T>` receiver, but MIR \
+                                 substitution produced `{concrete_receiver}`"
+                            ),
+                        });
+                        return None;
+                    };
+                    let [elem_ty] = receiver_args.as_slice() else {
+                        unreachable!("a resolved HashSet receiver always carries one argument");
+                    };
+                    if let Err(reason) = self.validate_collection_clone_value(elem_ty) {
+                        let operation = if callee == "hew_hashset_clone_layout" {
+                            "HashSet::clone() must duplicate every element"
+                        } else {
+                            "HashSet::to_vec() must clone every element into an independent snapshot"
+                        };
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!(
+                                    "`HashSet<{}>` element clone",
+                                    elem_ty.user_facing()
+                                ),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "{operation}, but {reason}; the concrete generic instantiation \
+                                 is rejected before the runtime clone choke"
                             ),
                         });
                         return None;
@@ -7249,8 +7487,24 @@ impl Builder {
         container: &HirExpr,
         index: &HirExpr,
         elem_ty: &ResolvedTy,
-        _site: hew_hir::SiteId,
+        site: hew_hir::SiteId,
     ) -> Option<Place> {
+        if let Err(reason) = self.validate_collection_clone_value(elem_ty) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "`HashMap<_, {}>` indexed value clone",
+                        elem_ty.user_facing()
+                    ),
+                    site,
+                },
+                note: format!(
+                    "HashMap indexing must clone the matched value into an independent owner, \
+                     but it {reason}; the access is rejected before the runtime clone choke"
+                ),
+            });
+            return None;
+        }
         let map_place = self.lower_value(container)?;
         let key_place = self.lower_value(index)?;
         let result_place = self.alloc_local(elem_ty.clone());

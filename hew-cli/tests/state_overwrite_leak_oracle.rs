@@ -27,7 +27,9 @@
 //!   * functional update — `cur = Outer { label: cur.label, ... }`
 //!     (same-position leaf reuse);
 //!   * whole-value self-store — `prof = prof`;
-//!   * cross-position swap — `pair = Pair { a: pair.b, b: pair.a }`.
+//!   * cross-position swap — `pair = Pair { a: pair.b, b: pair.a }`;
+//!   * nested record alias — `cur = Wrap { leaf: cur.leaf }`;
+//!   * inline enum alias — `cur = Wrap { payload: cur.payload }`.
 //!
 //! An over-eager release frees a buffer the field re-owns and the
 //! scribbled read crashes (or returns a poisoned length) before the
@@ -165,6 +167,104 @@ fn record_functional_update_source(frames: usize) -> String {
          \x20   sleep(2000ms);\n\
          \x20   match await k.count() {{\n\
          \x20       Ok(v) => v,\n\
+         \x20       Err(_) => -1,\n\
+         \x20   }}\n\
+         }}\n"
+    )
+}
+
+/// Nested record alias overwrite: the projected `Leaf` is a byte-copy alias,
+/// so its interior string is invisible to a shallow string-only ingress proof.
+/// The new `Wrap` must recursively retain that leaf before the overwrite helper
+/// releases the old `Wrap`. Pre-fix the second rewrite deterministically
+/// double-frees the heap-built string.
+fn nested_record_alias_source(frames: usize) -> String {
+    format!(
+        "record Leaf {{\n\
+         \x20   text: string,\n\
+         }}\n\
+         \n\
+         record Wrap {{\n\
+         \x20   leaf: Leaf,\n\
+         }}\n\
+         \n\
+         actor Keeper {{\n\
+         \x20   var cur: Wrap;\n\
+         \n\
+         \x20   receive fn rewrite() {{\n\
+         \x20       cur = Wrap {{ leaf: cur.leaf }};\n\
+         \x20   }}\n\
+         \n\
+         \x20   receive fn size() -> i64 {{\n\
+         \x20       cur.leaf.text.len()\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let keeper = spawn Keeper(cur: Wrap {{\n\
+         \x20       leaf: Leaf {{ text: \"record-alias\".to_upper() }},\n\
+         \x20   }});\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       keeper.rewrite();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   sleep(2000ms);\n\
+         \x20   match await keeper.size() {{\n\
+         \x20       Ok(n) => n,\n\
+         \x20       Err(_) => -1,\n\
+         \x20   }}\n\
+         }}\n"
+    )
+}
+
+/// Inline enum alias overwrite: the projected enum carrier owns a nested
+/// record/string only in its active `Hold` variant. The recursive retain must
+/// tag-dispatch that payload before the old enum drop does the symmetric walk.
+/// Pre-fix this has the same deterministic double-free as the record-only
+/// shape, but through `emit_overwrite_neutralize_enum`.
+fn enum_payload_alias_source(frames: usize) -> String {
+    format!(
+        "record Leaf {{\n\
+         \x20   text: string,\n\
+         }}\n\
+         \n\
+         enum Payload {{\n\
+         \x20   Empty;\n\
+         \x20   Hold(Leaf);\n\
+         }}\n\
+         \n\
+         record Wrap {{\n\
+         \x20   payload: Payload,\n\
+         }}\n\
+         \n\
+         actor Keeper {{\n\
+         \x20   var cur: Wrap;\n\
+         \n\
+         \x20   receive fn rewrite() {{\n\
+         \x20       cur = Wrap {{ payload: cur.payload }};\n\
+         \x20   }}\n\
+         \n\
+         \x20   receive fn size() -> i64 {{\n\
+         \x20       match cur.payload {{\n\
+         \x20           Payload::Empty => 0,\n\
+         \x20           Payload::Hold(leaf) => leaf.text.len(),\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let keeper = spawn Keeper(cur: Wrap {{\n\
+         \x20       payload: Payload::Hold(Leaf {{ text: \"enum-alias\".to_upper() }}),\n\
+         \x20   }});\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       keeper.rewrite();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   sleep(2000ms);\n\
+         \x20   match await keeper.size() {{\n\
+         \x20       Ok(n) => n,\n\
          \x20       Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
@@ -587,6 +687,79 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
     PathBuf::from(bin)
 }
 
+fn ir_function_body<'a>(ir: &'a str, signature: &str) -> &'a str {
+    let start = ir
+        .find(signature)
+        .unwrap_or_else(|| panic!("missing LLVM function `{signature}`"));
+    let tail = &ir[start..];
+    let end = tail
+        .find("\n}")
+        .unwrap_or_else(|| panic!("unterminated LLVM function `{signature}`"));
+    &tail[..end + 2]
+}
+
+/// Compile one aggregate-alias shape and pin the exact static ownership
+/// authority in LLVM: one recursive string retain in the handler, one
+/// overwrite-release call, and one old-record drop in the helper.
+fn assert_recursive_retain_ir(shape_name: &str, source: &str, expects_enum_dispatch: bool) {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("overwrite-retain-ir-{shape_name}-"))
+        .tempdir()
+        .expect("tempdir");
+    let _bin = compile_to_native(source, dir.path(), shape_name);
+    let ir = std::fs::read_to_string(dir.path().join(format!("{shape_name}.ll")))
+        .expect("read emitted LLVM IR");
+    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__rewrite");
+    assert_eq!(
+        handler.matches("call ptr @hew_string_clone").count(),
+        1,
+        "{shape_name}: the projected aggregate contributes exactly one borrowed \
+         string occurrence and therefore needs exactly one recursive retain:\n{handler}"
+    );
+    assert_eq!(
+        handler
+            .matches("call void @__hew_record_overwrite_release_Wrap")
+            .count(),
+        1,
+        "{shape_name}: the actor-state store must release exactly one old Wrap:\n{handler}"
+    );
+    assert_eq!(
+        handler.contains("mir_aggregate_share_d0_enum_tag"),
+        expects_enum_dispatch,
+        "{shape_name}: active-enum dispatch presence drifted:\n{handler}"
+    );
+    if expects_enum_dispatch {
+        let oob_start = handler
+            .find("mir_aggregate_share_d0_enum_tag_oob:")
+            .expect("recursive enum retain must have an invalid-tag block");
+        let variant_start = handler[oob_start..]
+            .find("mir_aggregate_share_d0_enum_v0:")
+            .map(|offset| oob_start + offset)
+            .expect("recursive enum retain must dispatch its first variant");
+        let oob = &handler[oob_start..variant_start];
+        assert!(
+            oob.contains("call void @hew_trap_with_code")
+                && oob.contains("call void @llvm.trap")
+                && oob.contains("unreachable"),
+            "{shape_name}: an invalid enum tag must trap fail-closed:\n{oob}"
+        );
+    }
+
+    let overwrite = ir_function_body(
+        &ir,
+        "define internal void @__hew_record_overwrite_release_Wrap",
+    );
+    assert_eq!(
+        overwrite
+            .matches("call void @__hew_record_drop_inplace_Wrap")
+            .count(),
+        1,
+        "{shape_name}: overwrite helper must run one old-value drop spine:\n{overwrite}"
+    );
+}
+
 /// Build the shape at LOW and HIGH frame counts, measure leak NODE
 /// counts, and assert the delta stays within `SLOPE_TOLERANCE`.
 fn assert_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize) -> String) {
@@ -693,6 +866,29 @@ fn record_state_overwrite_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("record_functional_update", record_functional_update_source);
 }
 
+/// A recursively retained nested-record alias must stay leak-flat: retaining
+/// twice would leak one reference per rewrite, while retaining zero times is
+/// the poisoned-allocator double-free pinned below.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn nested_record_alias_state_overwrite_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("nested_record_alias", nested_record_alias_source);
+}
+
+/// The active enum payload's nested string gets the same exact one-retain /
+/// one-old-drop balance across every overwrite.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn enum_payload_alias_state_overwrite_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("enum_payload_alias", enum_payload_alias_source);
+}
+
 /// Enums: cycling variants must release each replaced payload through
 /// the tag-dispatched release (pre-fix slope ~0.7 nodes/frame).
 #[cfg_attr(
@@ -732,6 +928,123 @@ fn collection_state_iterate_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("collection_iterate", collection_iterate_source);
 }
 
+/// Static LLVM authority for the nested-record alias: exactly one recursive
+/// string retain reaches the handler before its one old-record release.
+#[test]
+fn nested_record_alias_emits_exact_recursive_retain_and_release() {
+    assert_recursive_retain_ir(
+        "nested_record_alias_ir",
+        &nested_record_alias_source(3),
+        false,
+    );
+}
+
+/// Static LLVM authority for the enum carrier additionally pins tag dispatch:
+/// only the active variant's nested string is retained.
+#[test]
+fn enum_payload_alias_emits_exact_recursive_retain_and_release() {
+    assert_recursive_retain_ir("enum_payload_alias_ir", &enum_payload_alias_source(3), true);
+}
+
+/// Whole-value self-store is already recursively retained by the `Owned`
+/// actor-state load. It must not also receive the borrowed-aggregate retain.
+#[test]
+fn record_self_store_emits_one_recursive_clone_authority() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("overwrite-retain-ir-record-self-store-")
+        .tempdir()
+        .expect("tempdir");
+    let _bin = compile_to_native(RECORD_SELF_STORE_SOURCE, dir.path(), "record_self_store_ir");
+    let ir = std::fs::read_to_string(dir.path().join("record_self_store_ir.ll"))
+        .expect("read emitted LLVM IR");
+    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__refresh");
+    assert_eq!(
+        handler
+            .matches("call i32 @__hew_record_clone_inplace_Profile")
+            .count(),
+        1,
+        "the Owned actor-state load must mint exactly one recursive clone:\n{handler}"
+    );
+    assert_eq!(
+        handler.matches("call ptr @hew_string_clone").count(),
+        0,
+        "borrowed-aggregate ingress must not double-retain the Owned load:\n{handler}"
+    );
+}
+
+/// The string-only walk follows the registered tuple clone kind. Three tuple
+/// occurrences yield three exact string owners.
+#[test]
+fn tuple_alias_emits_one_retain_per_string_occurrence() {
+    const SOURCE: &str = r"
+record Wrap { nested: (string, string, string) }
+
+actor Keeper {
+    var cur: Wrap;
+    receive fn rewrite() {
+        cur = Wrap { nested: cur.nested };
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("overwrite-retain-ir-tuple-")
+        .tempdir()
+        .expect("tempdir");
+    let _bin = compile_to_native(SOURCE, dir.path(), "tuple_ir");
+    let ir = std::fs::read_to_string(dir.path().join("tuple_ir.ll")).expect("read emitted LLVM IR");
+    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__rewrite");
+    assert_eq!(
+        handler.matches("call ptr @hew_string_clone").count(),
+        3,
+        "the tuple has three string occurrences:\n{handler}"
+    );
+    assert!(
+        handler.contains("mir_aggregate_share_d0_tuple_f0")
+            && handler.contains("mir_aggregate_share_d0_tuple_f1")
+            && handler.contains("mir_aggregate_share_d0_tuple_f2"),
+        "the recursive retain must follow the tuple clone kind:\n{handler}"
+    );
+}
+
+/// A borrowed aggregate with no inline string leaves is a true codegen no-op:
+/// it needs neither a retain call nor even recursive GEP/tag scaffolding.
+#[test]
+fn zero_string_aggregate_alias_emits_no_recursive_retain_code() {
+    const SOURCE: &str = r"
+record Leaf { value: i64 }
+record Wrap { leaf: Leaf }
+
+actor Keeper {
+    var cur: Wrap;
+    receive fn rewrite() {
+        cur = Wrap { leaf: cur.leaf };
+    }
+}
+
+fn main() -> i64 { 0 }
+";
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("overwrite-retain-ir-zero-string-")
+        .tempdir()
+        .expect("tempdir");
+    let _bin = compile_to_native(SOURCE, dir.path(), "zero_string_alias_ir");
+    let ir = std::fs::read_to_string(dir.path().join("zero_string_alias_ir.ll"))
+        .expect("read emitted LLVM IR");
+    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__rewrite");
+    assert!(
+        !handler.contains("hew_string_clone") && !handler.contains("mir_aggregate_share"),
+        "zero-string aggregate ingress must emit no recursive retain code:\n{handler}"
+    );
+}
+
 /// UAF pin — whole-value self-store: every leaf of the incoming value
 /// aliases the old value; the release must free nothing and the final
 /// read must see the heap-built name (`"SELF-STORE-NAME"`, len 15).
@@ -768,6 +1081,30 @@ fn record_functional_update_keeps_aliased_label_alive() {
         "record_functional_update_uaf",
         &record_functional_update_source(HIGH_FRAMES),
         i32::try_from(HIGH_FRAMES).expect("frame count fits in i32"),
+    );
+}
+
+/// UAF/double-free pin — the projected nested record is only a byte-copy alias.
+/// The recursive retain must keep `"RECORD-ALIAS"` alive across all 50
+/// overwrites and the final exact length is 12.
+#[test]
+fn nested_record_alias_keeps_recursive_string_leaf_alive() {
+    assert_scribbled_run_exit(
+        "nested_record_alias_uaf",
+        &nested_record_alias_source(HIGH_FRAMES),
+        12,
+    );
+}
+
+/// UAF/double-free pin — the projected inline enum aliases a string through
+/// `Hold(Leaf)`. The active-variant retain keeps `"ENUM-ALIAS"` alive and the
+/// final exact length is 10.
+#[test]
+fn enum_payload_alias_keeps_recursive_string_leaf_alive() {
+    assert_scribbled_run_exit(
+        "enum_payload_alias_uaf",
+        &enum_payload_alias_source(HIGH_FRAMES),
+        10,
     );
 }
 

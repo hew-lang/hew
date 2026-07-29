@@ -106,16 +106,105 @@ test("M7 page I/O, virtual clock, and conservative pure shims are deterministic"
     local("two", "type:i64"),
     local("max", "type:i64"),
     local("vec", "type:VecI64"),
-    local("item", "type:i64")
+    local("item", "type:OptionI64")
   ]);
   const first = runBytecode(bytecode, runOptions("stdlib-shims", replay(707, 5)));
   const replayed = runBytecode(bytecode, { ...runOptions("stdlib-shims", replay(707, 5)), replay: first.replay });
 
   assert.equal(first.result, "ok");
-  assert.deepEqual(first.final_state.stdout, ["5 30 40", "3 é 7\n"]);
+  assert.deepEqual(first.final_state.stdout, [
+    "5 30 40",
+    '3 é {"payload":[7],"tag":0,"type":"type:OptionI64"}\n'
+  ]);
   assert.equal(first.final_state.virtual_clock.current_ms, 30);
   assert.equal(JSON.stringify(first), JSON.stringify(replayed));
   assert.ok(buildPlaygroundState(first).output.page_log.includes("log line"));
+});
+
+test("M7 symbolic Vec::get materializes Some and None from its destination layout", () => {
+  const getSymbol = stdlibSymbol("sym:std.vec.get", "std.vec", "get");
+  const bytecode = packageWithInstructions(
+    "stdlib-vec-get-option",
+    [
+      instr("vector.new", "local:vec", [type("type:i64")]),
+      instr("const.i64", "local:value", [lit(7)]),
+      instr("vector.push", null, [loc("vec"), loc("value")]),
+      instr("call.stdlib", "local:some", [sym(getSymbol.id), loc("vec"), lit(0)]),
+      instr("enum.tag", "local:some-tag", [loc("some")]),
+      instr("enum.payload", "local:some-value", [loc("some"), lit(0)]),
+      instr("call.stdlib", "local:none", [sym(getSymbol.id), loc("vec"), lit(99)]),
+      instr("enum.tag", "local:none-tag", [loc("none")]),
+      instr("call.stdlib", null, [
+        sym("sym:core.stdout.println"),
+        loc("some-tag"),
+        loc("some-value"),
+        loc("none-tag")
+      ])
+    ],
+    [getSymbol, stdlibSymbol("sym:core.stdout.println", "core.stdout", "println")],
+    [
+      local("vec", "type:VecI64"),
+      local("value", "type:i64"),
+      local("some", "type:OptionI64"),
+      local("some-tag", "type:i64"),
+      local("some-value", "type:i64"),
+      local("none", "type:OptionI64"),
+      local("none-tag", "type:i64")
+    ]
+  );
+
+  const trace = runBytecode(bytecode, runOptions("stdlib-vec-get-option"));
+
+  assert.equal(trace.result, "ok");
+  assert.deepEqual(trace.final_state.stdout, ["0 7 1\n"]);
+  assert.deepEqual(trace.final_state.runtime_failures, []);
+});
+
+test("M7 vector.index remains a raw bounds-trapping operation", () => {
+  const inBounds = packageWithInstructions(
+    "vector-index-raw",
+    [
+      instr("vector.new", "local:vec", [type("type:i64")]),
+      instr("const.i64", "local:value", [lit(7)]),
+      instr("vector.push", null, [loc("vec"), loc("value")]),
+      instr("vector.index", "local:item", [loc("vec"), lit(0)]),
+      instr("call.stdlib", null, [sym("sym:core.stdout.println"), loc("item")])
+    ],
+    [stdlibSymbol("sym:core.stdout.println", "core.stdout", "println")],
+    [local("vec", "type:VecI64"), local("value", "type:i64"), local("item", "type:i64")]
+  );
+  const clean = runBytecode(inBounds, runOptions("vector-index-raw"));
+
+  assert.equal(clean.result, "ok");
+  assert.deepEqual(clean.final_state.stdout, ["7\n"]);
+
+  const outOfBounds = structuredClone(inBounds);
+  outOfBounds.package_id = "pkg:vector-index-bounds";
+  outOfBounds.functions[0].blocks[0].instructions.find(
+    (instruction) => instruction.op === "vector.index"
+  ).args[1] = lit(1);
+  const trapped = runBytecode(outOfBounds, runOptions("vector-index-bounds"));
+
+  assert.equal(trapped.result, "trap");
+  assert.equal(trapped.final_state.runtime_failures[0].trap_kind, "vector_bounds");
+});
+
+test("M7 symbolic Vec::get rejects a non-Option destination", () => {
+  const getSymbol = stdlibSymbol("sym:std.vec.get", "std.vec", "get");
+  const bytecode = packageWithInstructions(
+    "stdlib-vec-get-layout-counterfactual",
+    [
+      instr("vector.new", "local:vec", [type("type:i64")]),
+      instr("call.stdlib", "local:not-option", [sym(getSymbol.id), loc("vec"), lit(0)])
+    ],
+    [getSymbol],
+    [local("vec", "type:VecI64"), local("not-option", "type:i64")]
+  );
+
+  const trace = runBytecode(bytecode, runOptions("stdlib-vec-get-layout-counterfactual"));
+
+  assert.equal(trace.result, "trap");
+  assert.equal(trace.final_state.runtime_failures[0].trap_kind, "invalid_enum_tag");
 });
 
 test("M7 playground JSON contract projects deterministic trace views and controls", () => {
@@ -171,7 +260,7 @@ function packageWithInstructions(id, instructions, stdlibSymbols, locals = [loca
   return {
     schema_version: "hew.sandbox.bytecode.v0",
     package_id: `pkg:${id}`,
-    hew_version: "0.5.0-pre",
+    hew_version: "0.6.0-rc1",
     compiler_version: "test",
     profile: "sandbox.educational.v0",
     source_map: { sources: [], spans: [] },
@@ -184,10 +273,20 @@ function packageWithInstructions(id, instructions, stdlibSymbols, locals = [loca
         { id: "type:unit", kind: "unit", name: "()" },
         { id: "type:i64", kind: "integer", name: "i64" },
         { id: "type:string", kind: "string", name: "String" },
-        { id: "type:VecI64", kind: "vector", name: "Vec<i64>" }
+        { id: "type:VecI64", kind: "vector", name: "Vec<i64>" },
+        { id: "type:OptionI64", kind: "enum", name: "Option" }
       ],
       records: [],
-      enums: [],
+      enums: [
+        {
+          id: "type:OptionI64",
+          name: "Option",
+          variants: [
+            { name: "Some", tag: 0, payload: ["type:i64"] },
+            { name: "None", tag: 1, payload: [] }
+          ]
+        }
+      ],
       actors: [],
       supervisors: [],
       machines: []
@@ -244,7 +343,7 @@ function fakeTrace() {
     trace_id: "trace:playground-contract",
     fixture_id: "playground-contract",
     profile: "sandbox.educational.v0",
-    hew_version: "0.5.0-pre",
+    hew_version: "0.6.0-rc1",
     sandbox_version: "0.0.0-spec",
     result: "ok",
     replay: replay(42, 12),

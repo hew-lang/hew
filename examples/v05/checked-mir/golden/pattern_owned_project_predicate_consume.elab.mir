@@ -25,15 +25,15 @@ fn record_join -> i64
     branch[bb2: bb5/bb3] ->
       (none)
     goto[bb3->bb1] ->
-      drop _7 ty=Token kind=resource fn=user_close(Token::close)
+      drop _8 ty=Token kind=resource fn=user_close(Token::close)
     cancel[bb3] ->
-      drop _7 ty=Token kind=resource fn=user_close(Token::close)
+      drop _8 ty=Token kind=resource fn=user_close(Token::close)
     panic[bb4] ->
       (none)
     goto[bb5->bb1] ->
-      drop _5 ty=Token kind=resource fn=user_close(Token::close)
+      drop _6 ty=Token kind=resource fn=user_close(Token::close)
     cancel[bb5] ->
-      drop _5 ty=Token kind=resource fn=user_close(Token::close)
+      drop _6 ty=Token kind=resource fn=user_close(Token::close)
 
 fn tuple_join -> i64
   statements:
@@ -57,15 +57,15 @@ fn tuple_join -> i64
     branch[bb2: bb5/bb3] ->
       (none)
     goto[bb3->bb1] ->
-      drop _7 ty=Token kind=resource fn=user_close(Token::close)
+      drop _8 ty=Token kind=resource fn=user_close(Token::close)
     cancel[bb3] ->
-      drop _7 ty=Token kind=resource fn=user_close(Token::close)
+      drop _8 ty=Token kind=resource fn=user_close(Token::close)
     panic[bb4] ->
       (none)
     goto[bb5->bb1] ->
-      drop _5 ty=Token kind=resource fn=user_close(Token::close)
+      drop _6 ty=Token kind=resource fn=user_close(Token::close)
     cancel[bb5] ->
-      drop _5 ty=Token kind=resource fn=user_close(Token::close)
+      drop _6 ty=Token kind=resource fn=user_close(Token::close)
 
 fn record_whole -> i64
   statements:
@@ -89,15 +89,15 @@ fn record_whole -> i64
     branch[bb2: bb5/bb3] ->
       (none)
     goto[bb3->bb1] ->
-      drop _7 ty=Packet kind=record_in_place
+      drop _8 ty=Packet kind=record_in_place
     cancel[bb3] ->
-      drop _7 ty=Packet kind=record_in_place
+      drop _8 ty=Packet kind=record_in_place
     panic[bb4] ->
       (none)
     goto[bb5->bb1] ->
-      drop _5 ty=Token kind=resource fn=user_close(Token::close)
+      drop _6 ty=Token kind=resource fn=user_close(Token::close)
     cancel[bb5] ->
-      drop _5 ty=Token kind=resource fn=user_close(Token::close)
+      drop _6 ty=Token kind=resource fn=user_close(Token::close)
 
 fn direct_return -> i64
   statements:
@@ -118,17 +118,17 @@ fn direct_return -> i64
     cancel[bb0] ->
       (none)
     return[bb1] ->
-      drop _7 ty=Token kind=resource fn=user_close(Token::close)
+      drop _8 ty=Token kind=resource fn=user_close(Token::close)
     branch[bb2: bb5/bb3] ->
       (none)
     goto[bb3->bb1] ->
       (none)
     cancel[bb3] ->
-      drop _7 ty=Token kind=resource fn=user_close(Token::close)
+      drop _8 ty=Token kind=resource fn=user_close(Token::close)
     panic[bb4] ->
       (none)
     return[bb5] ->
-      drop _5 ty=Token kind=resource fn=user_close(Token::close)
+      drop _6 ty=Token kind=resource fn=user_close(Token::close)
     goto[bb6->bb1] ->
       (none)
     cancel[bb6] ->

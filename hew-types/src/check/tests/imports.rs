@@ -394,6 +394,65 @@ fn stdlib_named_import_publishes_bare_type() {
     );
 }
 
+#[test]
+fn stdlib_type_binding_is_republished_for_each_importer_after_declaration_dedup() {
+    let connection = make_pub_struct("Connection", "fd");
+    let resolved_items = vec![(Item::TypeDecl(connection), 0..0)];
+    let plain_decl = ImportDecl {
+        path: vec!["std".to_string(), "net".to_string()],
+        spec: None,
+        module_alias: None,
+        file_path: None,
+        resolved_items: Some(resolved_items.clone()),
+        resolved_item_source_paths: Vec::new(),
+        resolved_source_paths: Vec::new(),
+    };
+    let named_spec = Some(ImportSpec::Names(vec![ImportName {
+        name: "Connection".to_string(),
+        alias: None,
+    }]));
+    let named_decl = ImportDecl {
+        spec: named_spec.clone(),
+        ..plain_decl.clone()
+    };
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("transitive".to_string());
+    checker.register_resolved_stdlib_hew_source(
+        &plain_decl,
+        "std::net",
+        "net",
+        "std.net",
+        &resolved_items,
+        StdlibBarePublication::Import(&None),
+    );
+
+    checker.current_module = None;
+    checker.register_resolved_stdlib_hew_source(
+        &named_decl,
+        "std::net",
+        "net",
+        "std.net",
+        &resolved_items,
+        StdlibBarePublication::Import(&named_spec),
+    );
+
+    assert!(
+        checker
+            .unqualified_to_module
+            .contains_key(&(None, "Connection".to_string())),
+        "the root's named import must publish Connection even when a transitive importer registered std::net first"
+    );
+    assert_eq!(
+        checker
+            .import_type_name_aliases
+            .get(&(None, "Connection".to_string()))
+            .map(String::as_str),
+        Some("net.Connection"),
+        "HIR must receive the root import's exact source identity"
+    );
+}
+
 /// A compiled-in `Prelude` bootstrap surface publishes its bare binding
 /// unconditionally — these are always-in-scope and have no user import.
 #[test]

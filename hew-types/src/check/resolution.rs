@@ -21,13 +21,10 @@ impl Checker {
         if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
             return None;
         }
-        // A builtin surface (`CrashInfo`, `CrashAction`, channel handles, …) has
-        // the builtin as its canonical identity — never a module-qualified user
-        // def. Leave it bare so the `builtin:` discriminator survives (the
-        // `#[on(crash)]` hook check and the substrate-handle paths key on it).
-        if crate::lookup_builtin_type(name).is_some() || builtin_named_type(name).is_some() {
-            return None;
-        }
+        // A published source binding outranks the builtin catalog. This is
+        // load-bearing for `import foo::{ Receiver }` and flattened file
+        // imports: the binding names `foo.Receiver`, not the runtime channel
+        // endpoint merely because its bare spelling is builtin-shaped.
         let identities = self
             .published_bare_type_owners
             .get(&(self.current_module.clone(), name.to_string()))?;
@@ -2042,16 +2039,21 @@ impl Checker {
                 let builtin = crate::lookup_builtin_type(resolved_name.as_str());
                 // A bare name that shadows a builtin via a local `type X {}` decl
                 // normally binds to the source decl (`builtin: None`). Collection
-                // and substrate-handle builtins are the exception: their stdlib
-                // modules declare zero-field carrier types (`type Sink<T> {}`,
-                // `type Stream<T> {}`, `type Duplex<S, R> {}`, …) whose real type
-                // identity is the compiler builtin. Keeping `builtin: Some(..)`
-                // here is what carries the discriminator through HIR→MIR so the
-                // MIR boundary recognises them as substrate handles rather than
-                // emitting `unknown type` — same discriminator-survival invariant
-                // as the collection types already excluded here.
-                let builtin_overrides_source_decl =
-                    builtin.is_some_and(|kind| kind.is_collection() || kind.is_substrate_handle());
+                // and substrate-handle builtins are the exception only while
+                // checking their imported stdlib carrier module. A root-source
+                // declaration is a distinct nominal shadow (`type Sink<T>`,
+                // `#[opaque] type Receiver {}`), never the runtime endpoint by
+                // spelling or generic arity alone.
+                // A qualified identity present in the builtin catalog is an
+                // actual compiler carrier (`stream.Stream`,
+                // `channel.Receiver`, ...). A user package declaration such
+                // as `foo.Receiver` has no exact catalog row and therefore
+                // remains source-owned even though its short spelling
+                // collides. Root bare declarations likewise remain user
+                // shadows.
+                let builtin_overrides_source_decl = resolved_name.contains('.')
+                    && builtin
+                        .is_some_and(|kind| kind.is_collection() || kind.is_substrate_handle());
                 let local_source_type_def = self.source_type_defs.contains(resolved_name.as_str())
                     && !builtin_overrides_source_decl;
                 // F1: a named type that resolved to nothing — not a builtin, not

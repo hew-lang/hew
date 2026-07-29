@@ -722,7 +722,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &builder,
             &thir.statements,
@@ -730,6 +730,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
             thir,
@@ -904,7 +905,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &builder,
             &thir.statements,
@@ -912,6 +913,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
             thir,
@@ -1437,7 +1439,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &body_builder,
             &thir.statements,
@@ -1445,6 +1447,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        body_diagnostics.extend(elaboration_diagnostics);
 
         let body_lowered = LoweredFunction {
             thir,
@@ -2068,35 +2071,19 @@ impl Builder {
         // `in_gen_body: true` enables `HirExprKind::Yield` → `Terminator::Yield`
         // construction inside the body.
         let mut body_builder = Builder {
-            type_classes: self.type_classes.clone(),
-            record_field_orders: self.record_field_orders.clone(),
-            machine_layout_names: self.machine_layout_names.clone(),
-            module_fn_names: self.module_fn_names.clone(),
-            module_generic_fn_names: self.module_generic_fn_names.clone(),
-            param_ownership: self.param_ownership.clone(),
-            // U2 — the proven-foreign ledger CROSSES the frame boundary with the
-            // captures. `BindingId`s are globally unique, so carrying the
-            // parent's set verbatim is exact: a nested body that re-derives
-            // ownership for a captured binding reads the same refusal the
-            // enclosing `let` recorded, and a binding the child cannot see is
-            // never consulted. Without this the child's ledger is empty and a
-            // captured foreign handle re-enters every mint inside the body clean.
-            proven_foreign_bindings: self.proven_foreign_bindings.clone(),
-            subst: self.subst.clone(),
-            call_site_type_args: self.call_site_type_args.clone(),
-            supervisor_child_slots: self.supervisor_child_slots.clone(),
-            pointer_width: self.pointer_width,
             current_function_symbol: body_name.clone(),
             current_function_call_conv: crate::model::FunctionCallConv::Default,
-            task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
             in_gen_body: true,
-            // #2648 — the generator body is USER code: the preflight needs the
-            // module provenance context or a `match wrap(x)` inside a gen body
-            // silently takes the unknown-item legacy fail-open mint (the same
-            // closure-shim double-free class). Local-freshness facts stay the
-            // fail-closed empty default — see `child_builder_tables`.
-            call_scrutinee_provenance: self.call_scrutinee_provenance.clone(),
-            ..Builder::default()
+            // A generator body is user code and needs the same complete shared
+            // type/ownership registry as every other generated child body.
+            // In particular, enum layouts drive both tagged overwrite release
+            // and scope/abandonment drop admission. Building this child from a
+            // hand-picked table subset left those layouts empty, so an enum
+            // payload overwritten after a yield leaked even though the
+            // byte-identical non-generator body released it. Keep the
+            // fail-closed per-function defaults (including local freshness)
+            // supplied by the shared constructor.
+            ..self.child_builder_tables()
         };
         // Propagate the inadmissible-capture poison set into the body builder so
         // its `BindingRef` resolution stays silent for those bindings — the root
@@ -2159,8 +2146,9 @@ impl Builder {
         }
 
         // #2301 -- same pre-pass gap as `lower_closure_shim`: this gen body
-        // lowers via its own fresh `body_builder` (built by field list above,
-        // not `child_builder_tables`), so without this call
+        // lowers via its own fresh `body_builder`; `child_builder_tables`
+        // deliberately carries module registries but no per-body pre-pass
+        // facts, so without this call
         // `prepass_consumed_bindings`/`prepass_reassigned_bindings` stay empty
         // for every binding local to the `gen fn`/`gen {}` body and a `var`
         // consumed on one control-flow arm and overwritten on a sibling arm
@@ -2336,7 +2324,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &body_builder,
             &thir.statements,
@@ -2344,6 +2332,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        body_diagnostics.extend(elaboration_diagnostics);
 
         let body_lowered = LoweredFunction {
             thir,

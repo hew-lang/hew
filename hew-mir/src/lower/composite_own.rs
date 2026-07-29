@@ -2,7 +2,10 @@
 use super::temp_drop::{
     corroborated_retained_bytes_move_sites, corroborated_retained_string_move_sites,
 };
+mod aggregate_borrowed_ingress_clone;
+mod builtin_handle_record_field_overwrite;
 mod bytes_payload_handoff;
+mod predicate_string_temp_drop;
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
@@ -24,12 +27,17 @@ use super::{
     vec_iter_record_init_vec_source, AggregateOwner, BTreeMap, BasicBlock, BindingId, Builder,
     BytesDropDerivation, BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership,
     FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement, Place,
-    ResolvedTy, RootScan, ScopeId, ScopeInfoEntry, SuspendKind, Terminator,
+    ResolvedTy, RootScan, ScopeId, ScopeInfoEntry, StringRetainCondition, SuspendKind, Terminator,
     FOR_ITER_CURSOR_NAME_PREFIX,
 };
+use aggregate_borrowed_ingress_clone::{
+    aggregate_borrowed_ingress_retain_clones_value, aggregate_borrowed_ingress_sink_clones_source,
+};
+pub(super) use builtin_handle_record_field_overwrite::detect_builtin_handle_record_field_overwrite;
 use bytes_payload_handoff::provable_bytes_payload_handoff_sites;
 #[cfg(test)]
 use bytes_payload_handoff::BytesPayloadHandoff;
+use predicate_string_temp_drop::predicate_string_temp_drop_proof;
 
 fn generator_env_snapshot_init_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
     blocks
@@ -74,73 +82,6 @@ fn scope_is_same_or_nested(
         };
         current = parent;
     }
-}
-
-/// Prove retained string field-load destinations are predicate-only owners.
-///
-/// Admission is intentionally exact: the load, equality comparison feeding
-/// the block's branch, and one `hew_string_drop` must occur in that order in
-/// one block, and the loaded place must have no other read. Such a temporary
-/// owns only the retain minted by codegen; it never takes ownership from the
-/// aggregate field and therefore must not suppress the aggregate's composite
-/// scope-exit drop.
-fn predicate_string_temp_drop_proof(
-    blocks: &[BasicBlock],
-    local_tys: &[ResolvedTy],
-) -> HashSet<u32> {
-    let mut proven = HashSet::new();
-    for block in blocks {
-        let Terminator::Branch { cond, .. } = block.terminator else {
-            continue;
-        };
-        for (load_idx, load) in block.instructions.iter().enumerate() {
-            let Some(loaded) = string_field_load_producer_dest(load, local_tys) else {
-                continue;
-            };
-            let Some(loaded_local) = base_local(loaded) else {
-                continue;
-            };
-            let comparisons = block
-                .instructions
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, instr)| match instr {
-                    Instr::IntCmp { lhs, rhs, dest, .. }
-                        if *dest == cond && (*lhs == loaded || *rhs == loaded) =>
-                    {
-                        Some(idx)
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let drops = block
-                .instructions
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, instr)| match instr {
-                    Instr::Drop {
-                        place,
-                        ty: ResolvedTy::String,
-                        drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
-                    } if *place == loaded => Some(idx),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let ([cmp_idx], [drop_idx]) = (comparisons.as_slice(), drops.as_slice()) else {
-                continue;
-            };
-            if !(load_idx < *cmp_idx && *cmp_idx < *drop_idx) {
-                continue;
-            }
-            let reads_are_exact = block.instructions.iter().enumerate().all(|(idx, instr)| {
-                !instr_source_places(instr).contains(&loaded) || idx == *cmp_idx || idx == *drop_idx
-            });
-            if reads_are_exact {
-                proven.insert(loaded_local);
-            }
-        }
-    }
-    proven
 }
 
 /// String field loads are emitted with an independent `+1` retain. Follow
@@ -305,6 +246,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     alias_chain: &[(u32, u32, u32)],
+    aggregate_clone_sites: &HashSet<(u32, usize, Place)>,
     is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
     owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     owned_tuple_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
@@ -441,6 +383,17 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                 }
                 Instr::RecordInit { fields, dest, .. } => {
                     for (_, p) in fields {
+                        if aggregate_borrowed_ingress_sink_clones_source(
+                            block,
+                            idx,
+                            *p,
+                            Some(aggregate_clone_sites),
+                            local_tys,
+                            record_field_orders,
+                            enum_layouts,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(*p) {
                             if let Some(&root) = alias_of.get(&l) {
                                 poison!(root);
@@ -547,6 +500,17 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                         }
                     }
                     if let Instr::RecordFieldStore { src, .. } = instr {
+                        if aggregate_borrowed_ingress_sink_clones_source(
+                            block,
+                            idx,
+                            *src,
+                            Some(aggregate_clone_sites),
+                            local_tys,
+                            record_field_orders,
+                            enum_layouts,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(*src) {
                             if field_binders.contains(&l) {
                                 // Binder stored into another aggregate's
@@ -556,9 +520,32 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                         }
                     }
                 }
+                Instr::StringRetain { value, .. }
+                    if base_local(*value)
+                        .and_then(|local| local_tys.get(local as usize))
+                        .is_some_and(|ty| {
+                            aggregate_borrowed_ingress_retain_clones_value(
+                                instr,
+                                *value,
+                                ty,
+                                record_field_orders,
+                                enum_layouts,
+                            )
+                        }) => {}
                 other => {
                     let (reads, writes) = crate::dataflow::instr_reads_writes(other);
                     for p in reads {
+                        if aggregate_borrowed_ingress_sink_clones_source(
+                            block,
+                            idx,
+                            p,
+                            Some(aggregate_clone_sites),
+                            local_tys,
+                            record_field_orders,
+                            enum_layouts,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(p) {
                             if let Some(&root) = alias_of.get(&l) {
                                 // Any unmodelled read of the record itself.
@@ -709,6 +696,9 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
         owned_field_list,
         owned_tuple_field_list,
         field_dischargeable,
+        record_field_orders,
+        enum_layouts,
+        aggregate_clone_sites,
     ));
     if insertions.is_empty() {
         return;
@@ -810,6 +800,9 @@ fn compute_escaped_chain_sibling_drops(
     owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     owned_tuple_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &[crate::model::EnumLayout],
+    aggregate_clone_sites: &HashSet<(u32, usize, Place)>,
 ) -> Vec<(u32, usize, Vec<Instr>)> {
     // Immediate-parent map: alias_local -> (parent_local, field ordinal it reads).
     let parent_of: HashMap<u32, (u32, u32)> = alias_chain
@@ -881,6 +874,17 @@ fn compute_escaped_chain_sibling_drops(
                 }
                 Instr::RecordInit { fields, .. } => {
                     for (_, place) in fields {
+                        if aggregate_borrowed_ingress_sink_clones_source(
+                            block,
+                            idx,
+                            *place,
+                            Some(aggregate_clone_sites),
+                            local_tys,
+                            record_field_orders,
+                            enum_layouts,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(*place) {
                             if let Some(&escapee) = carrier_of.get(&l) {
                                 escapes.push((escapee, block.id, idx));
@@ -893,6 +897,17 @@ fn compute_escaped_chain_sibling_drops(
                         .iter()
                         .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
                     {
+                        if aggregate_borrowed_ingress_sink_clones_source(
+                            block,
+                            idx,
+                            field.src,
+                            Some(aggregate_clone_sites),
+                            local_tys,
+                            record_field_orders,
+                            enum_layouts,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(field.src) {
                             if let Some(&escapee) = carrier_of.get(&l) {
                                 escapes.push((escapee, block.id, idx));
@@ -901,15 +916,49 @@ fn compute_escaped_chain_sibling_drops(
                     }
                 }
                 Instr::RecordFieldStore { src, .. } => {
+                    if aggregate_borrowed_ingress_sink_clones_source(
+                        block,
+                        idx,
+                        *src,
+                        Some(aggregate_clone_sites),
+                        local_tys,
+                        record_field_orders,
+                        enum_layouts,
+                    ) {
+                        continue;
+                    }
                     if let Some(l) = base_local(*src) {
                         if let Some(&escapee) = carrier_of.get(&l) {
                             escapes.push((escapee, block.id, idx));
                         }
                     }
                 }
+                Instr::StringRetain { value, .. }
+                    if base_local(*value)
+                        .and_then(|local| local_tys.get(local as usize))
+                        .is_some_and(|ty| {
+                            aggregate_borrowed_ingress_retain_clones_value(
+                                instr,
+                                *value,
+                                ty,
+                                record_field_orders,
+                                enum_layouts,
+                            )
+                        }) => {}
                 other => {
                     let (reads, _) = crate::dataflow::instr_reads_writes(other);
                     for place in reads {
+                        if aggregate_borrowed_ingress_sink_clones_source(
+                            block,
+                            idx,
+                            place,
+                            Some(aggregate_clone_sites),
+                            local_tys,
+                            record_field_orders,
+                            enum_layouts,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(place) {
                             if carrier_of.contains_key(&l)
                                 && !binder_read_is_borrow_safe_instr(other, l)
@@ -2009,6 +2058,7 @@ pub(super) fn derive_owned_record_drop_allowed(
     binding_locals: &HashMap<BindingId, Place>,
     local_tys: &[ResolvedTy],
     is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
+    record_field_store_preserves_owner: &dyn Fn(Place, FieldOffset) -> bool,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     alias_field_binders: &[(u32, u32)],
@@ -2299,10 +2349,27 @@ pub(super) fn derive_owned_record_drop_allowed(
                 _ => None,
             })
             .collect();
-        for instr in &block.instructions {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
             if initializes_generator_env_snapshot(instr, &generator_env_inits) {
                 continue;
             }
+            // A supported inline-enum overwrite releases before storing, so
+            // only its destination base is an interior mutation; the source
+            // remains on the ordinary owning-sink scan below.
+            let preserves_record_store_base = match instr {
+                Instr::RecordFieldStore {
+                    record,
+                    field_offset,
+                    ..
+                } => record_field_store_preserves_owner(*record, *field_offset),
+                _ => false,
+            };
+            let preserved_record_store_local = match instr {
+                Instr::RecordFieldStore { record, .. } if preserves_record_store_base => {
+                    base_local(*record)
+                }
+                _ => None,
+            };
             // COPY-IN element store (`hew_vec_push_owned` / `hew_vec_set_owned`)
             // DEEP-CLONES its element operand: an owned record pushed WHOLE by
             // value is cloned into the Vec slot and the SOURCE keeps sole
@@ -2447,13 +2514,34 @@ pub(super) fn derive_owned_record_drop_allowed(
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
+                        let cloned_borrowed_ingress =
+                            aggregate_borrowed_ingress_sink_clones_source(
+                                block,
+                                instr_index,
+                                p,
+                                None,
+                                local_tys,
+                                record_field_orders,
+                                enum_layouts,
+                            ) || local_tys.get(l as usize).is_some_and(|ty| {
+                                aggregate_borrowed_ingress_retain_clones_value(
+                                    instr,
+                                    p,
+                                    ty,
+                                    record_field_orders,
+                                    enum_layouts,
+                                )
+                            });
                         if !copy_in_elem_store
+                            && !cloned_borrowed_ingress
                             && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                            && preserved_record_store_local != Some(l)
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
                         if !copy_in_elem_store
+                            && !cloned_borrowed_ingress
                             && is_escape_binder(l)
                             && !binder_read_is_borrow_safe_instr(instr, l)
                         {
@@ -4174,6 +4262,49 @@ fn derive_tuple_projection_forward_transfers(
                     continue;
                 }
 
+                // A sibling assignment arm can carry the same inline-enum
+                // carrier through its ordinary overwrite cleanup before
+                // installing another exact empty generation.  That cleanup is
+                // independent of the tuple projection transferred on the
+                // other arm: the neutralize block cannot reach it, every
+                // carrier generation on the arm is already proven empty, and
+                // the original exact-empty initialization dominates it.
+                //
+                // Keep this admission site-exact.  In particular, an enum drop
+                // reachable after `neutralize_site` could observe the active
+                // payload transferred out of the tuple and must remain denied.
+                let benign_empty_carrier_drop_sites: HashSet<InstrSite> =
+                    blocks
+                        .iter()
+                        .flat_map(|block| {
+                            block.instructions.iter().enumerate().filter_map(
+                                move |(index, instr)| {
+                                    let site = InstrSite {
+                                        block: block.id,
+                                        index,
+                                    };
+                                    matches!(
+                                        instr,
+                                        Instr::Drop {
+                                            place: Place::Local(drop_local),
+                                            ty,
+                                            drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                                                crate::ownership::InPlaceReleaseKind::Enum,
+                                            )),
+                                        } if *drop_local == *carrier
+                                            && local_tys.get(*carrier as usize) == Some(ty)
+                                    )
+                                    .then_some(site)
+                                },
+                            )
+                        })
+                        .filter(|site| {
+                            instr_site_dominates(&dominators, initialization_site, *site)
+                                && !blocks_reachable_from(blocks, neutralize_block.id)
+                                    .contains(&site.block)
+                        })
+                        .collect();
+
                 let carrier_accesses_are_exact = blocks.iter().all(|block| {
                     !terminator_references_local(
                         &block.terminator,
@@ -4195,6 +4326,7 @@ fn derive_tuple_projection_forward_transfers(
                             || (cleanup_sites.contains(&site)
                                 && cleanup_field_drop_base(instr) == Some(Place::Local(*carrier)))
                             || non_initial_carrier_defs.contains(&site)
+                            || benign_empty_carrier_drop_sites.contains(&site)
                             || site == forward_site
                     })
                 });
@@ -4818,12 +4950,34 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
-                        if alias_of.contains_key(&l)
+                        let cloned_borrowed_ingress =
+                            aggregate_borrowed_ingress_sink_clones_source(
+                                block,
+                                instr_index,
+                                p,
+                                None,
+                                local_tys,
+                                record_field_orders,
+                                enum_layouts,
+                            ) || local_tys.get(l as usize).is_some_and(|ty| {
+                                aggregate_borrowed_ingress_retain_clones_value(
+                                    instr,
+                                    p,
+                                    ty,
+                                    record_field_orders,
+                                    enum_layouts,
+                                )
+                            });
+                        if !cloned_borrowed_ingress
+                            && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
-                        if is_escape_binder(l) && !binder_read_is_borrow_safe_instr(instr, l) {
+                        if !cloned_borrowed_ingress
+                            && is_escape_binder(l)
+                            && !binder_read_is_borrow_safe_instr(instr, l)
+                        {
                             exclude_tuple_roots_except(
                                 &alias_of,
                                 &mut excluded_roots,
@@ -4959,22 +5113,9 @@ fn place_is_owned_handoff_member(place: Place) -> bool {
         | Place::EnumTag(_) => false,
     }
 }
-fn retained_string_values_before(block: &BasicBlock, instr_index: usize) -> HashSet<Place> {
-    block.instructions[..instr_index]
-        .iter()
-        .rev()
-        .take_while(|instr| {
-            matches!(
-                instr,
-                Instr::BytesRetain { .. } | Instr::StringRetain { .. }
-            )
-        })
-        .filter_map(|instr| match instr {
-            Instr::StringRetain { value, .. } => Some(*value),
-            _ => None,
-        })
-        .collect()
-}
+mod returned_member_flow;
+use returned_member_flow::retained_string_values_before;
+
 /// W5.021 (defect #1) — fail-closed value-flow derivation of the owned member
 /// bindings that a function HANDS to its caller through a returned aggregate,
 /// and therefore must NOT also drop at its own scope exit.
@@ -5188,6 +5329,9 @@ fn compute_returned_flow_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
     flows_to_return
 }
 
+#[cfg(test)]
+mod returned_member_retain_scope;
+
 /// Per-member map from a returned-aggregate member binding to the set of blocks
 /// where its value ENTERS the return flow — i.e. the block(s) containing the
 /// instruction that hands its local to the caller (a `Move` to the `ReturnSlot`,
@@ -5253,6 +5397,19 @@ pub(super) fn derive_returned_member_transfer_blocks(
                 Instr::Move { dest, src }
                     if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) =>
                 {
+                    record(src, block.id, &mut transfer_blocks);
+                }
+                // A returned enum / Result constructor stores its member
+                // through an interior variant projection rather than a plain
+                // local move. This is the transfer boundary for the selected
+                // arm: without recording it, the path-sensitive re-admission
+                // cannot distinguish `Err(x)` from its `Ok(y)` sibling and
+                // leaves the untouched local excluded on both arm-to-join
+                // edges.
+                Instr::Move {
+                    dest: dest @ (Place::MachineVariant { .. } | Place::EnumVariant { .. }),
+                    src,
+                } if base_local(*dest).is_some_and(|dl| flows_to_return.contains(&dl)) => {
                     record(src, block.id, &mut transfer_blocks);
                 }
                 // Aggregate constructor whose dest reaches the return: each
@@ -6502,8 +6659,7 @@ pub(super) fn detect_opaque_resource_field_misuse(
     }
     findings
 }
-/// True when overwriting an actor-state field of this classified kind would
-/// silently leak the previous handle — the exact #2654 hazard.
+/// True when overwriting this actor-state field kind leaks its previous handle (#2654).
 ///
 /// The gated kinds are those whose scope-exit / actor-shutdown drop runs a real
 /// close AND whose `ActorStateFieldStore` has NO release-before-store today:
@@ -6519,7 +6675,6 @@ pub(super) fn detect_opaque_resource_field_misuse(
 ///     coroutine frame / refcount of the OLD handle leaks on overwrite.
 ///
 /// NOT gated (no leak on overwrite, so no refusal):
-///
 ///   - kinds with an existing release-before-store — `String`/`Bytes`/`Vec`/
 ///     `HashMap`/`HashSet` go through `emit_state_field_old_value_release`'s
 ///     pointer-inequality guard, which releases the old payload before the store;
@@ -6824,6 +6979,7 @@ mod owned_record_drop_derivation {
             binding_locals,
             local_tys,
             &is_rec,
+            &|_, _| false,
             &record_field_orders,
             &[],
             &[],
@@ -6874,6 +7030,7 @@ mod owned_record_drop_derivation {
             binding_locals,
             local_tys,
             &is_rec,
+            &|_, _| false,
             &record_field_orders,
             &[],
             &[],
@@ -7648,6 +7805,7 @@ mod escaped_sibling_field_discharge {
             &field_orders(),
             &[],
             alias_chain,
+            &HashSet::new(),
             is_owned_record,
             owned_field_list,
             &owned_tuple_fields,
@@ -8052,6 +8210,7 @@ mod escaped_sibling_field_discharge {
             &field_orders(),
             &[],
             &[],
+            &HashSet::new(),
             &is_rec,
             &three_fields,
             &owned_tuple_fields,
@@ -9838,149 +9997,4 @@ mod plain_vec_drop_interior_alias_and_escape {
 }
 
 #[cfg(test)]
-mod plain_string_payload_cap {
-    //! The clone-safety cap on the `string_binder_read_is_user_fn_borrow`
-    //! exemption must be a POSITIVE bit-copy predicate, not "owns no heap".
-    //!
-    //! `EnumInPlace` seeds the enum clone/drop helper synthesis, and clone
-    //! totality refuses every `IoHandle` / closure-pair / `#[resource]` /
-    //! opaque-handle class. `Stream<T>` and `Sink<T>` are pointer-backed IO
-    //! handles with no duplication helper — yet the MIR heap authority's builtin
-    //! leaf set omits them and its generic `Named` arm only recurses into type
-    //! arguments, so `Stream<i64>` / `Sink<i64>` answer "owns no heap". The old
-    //! `String || !ty_owns_heap_mir` spelling therefore re-admitted exactly the
-    //! composites the cap exists to exclude, re-opening the clone-synthesis
-    //! refusal.
-    use super::*;
-
-    fn builtin(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: name.to_string(),
-            args,
-            builtin: None,
-            is_opaque: false,
-        }
-    }
-
-    fn opaque(name: &str) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: name.to_string(),
-            args: vec![],
-            builtin: None,
-            is_opaque: true,
-        }
-    }
-
-    /// A two-variant `Result`-shaped layout named for the mangled key the
-    /// lookup resolves, with `ok` in the first variant and `string` in the
-    /// second.
-    fn result_layout(name: &str, ok: Vec<ResolvedTy>) -> crate::model::EnumLayout {
-        crate::model::EnumLayout {
-            name: name.to_string(),
-            tag_width: 1,
-            variants: vec![
-                crate::model::MachineVariantLayout {
-                    name: "Ok".to_string(),
-                    field_tys: ok,
-                    field_names: vec![],
-                },
-                crate::model::MachineVariantLayout {
-                    name: "Err".to_string(),
-                    field_tys: vec![ResolvedTy::String],
-                    field_names: vec![],
-                },
-            ],
-            is_indirect: false,
-        }
-    }
-
-    fn admits(ok: Vec<ResolvedTy>) -> bool {
-        let args = vec![
-            ok.first().cloned().unwrap_or(ResolvedTy::Unit),
-            ResolvedTy::String,
-        ];
-        let ty = builtin("Result", args.clone());
-        let key = crate::lower::mangle_layout_key("Result", &args);
-        enum_payloads_are_plain_string(&ty, &[result_layout(&key, ok)])
-    }
-
-    #[test]
-    fn plain_string_payloads_are_admitted() {
-        assert!(
-            admits(vec![ResolvedTy::String]),
-            "the f-string interpolation fix must survive: `Result<string, string>` \
-             is the shape the exemption exists for"
-        );
-    }
-
-    #[test]
-    fn scalar_payloads_are_admitted() {
-        assert!(
-            admits(vec![ResolvedTy::I64]),
-            "a scalar payload is a genuine bit-copy leaf"
-        );
-        assert!(
-            admits(vec![ResolvedTy::Tuple(vec![
-                ResolvedTy::I64,
-                ResolvedTy::Bool
-            ])]),
-            "a tuple of scalars is bit-copy through"
-        );
-    }
-
-    #[test]
-    fn scalar_argument_io_handle_payloads_are_refused() {
-        // The load-bearing case: SCALAR type arguments, so the heap authority
-        // answers "owns no heap" for both handles. Only a positive bit-copy
-        // predicate rejects them.
-        let stream = builtin("Stream", vec![ResolvedTy::I64]);
-        let sink = builtin("Sink", vec![ResolvedTy::I64]);
-        assert!(
-            !crate::model::ty_owns_heap_mir(&stream, &HashMap::new(), &[]),
-            "guard: the heap authority does NOT see Stream<i64> as heap-owning — \
-             that is exactly why `!ty_owns_heap_mir` was the wrong predicate"
-        );
-        assert!(
-            !admits(vec![ResolvedTy::Tuple(vec![stream, sink])]),
-            "`Result<(Stream<i64>, Sink<i64>), string>` must stay OUT of the \
-             exemption: its `EnumInPlace` drop would seed a clone helper the \
-             IoHandle class cannot synthesise"
-        );
-    }
-
-    #[test]
-    fn string_argument_io_handle_payloads_are_refused() {
-        assert!(
-            !admits(vec![ResolvedTy::Tuple(vec![
-                builtin("Stream", vec![ResolvedTy::String]),
-                builtin("Sink", vec![ResolvedTy::String]),
-            ])]),
-            "the heap-argument spelling stays refused too"
-        );
-    }
-
-    #[test]
-    fn opaque_and_resource_payloads_are_refused() {
-        assert!(
-            !admits(vec![opaque("Value")]),
-            "an `#[opaque]` handle has no duplication helper and must stay refused"
-        );
-        assert!(
-            !admits(vec![builtin("Connection", vec![])]),
-            "a `#[resource]`-class handle must stay refused"
-        );
-        assert!(
-            !admits(vec![builtin("Rec", vec![])]),
-            "a user record payload is not a bit-copy leaf and stays refused \
-             (fail-closed: it keeps leaking, exactly as before, and compiles)"
-        );
-    }
-
-    #[test]
-    fn an_unresolvable_layout_is_refused() {
-        assert!(
-            !enum_payloads_are_plain_string(&builtin("Result", vec![ResolvedTy::String]), &[]),
-            "no layout means no proof"
-        );
-    }
-}
+mod plain_string_payload_cap;

@@ -53,6 +53,15 @@ impl StdlibBarePublication<'_> {
             }),
         }
     }
+
+    /// Whether this publication came from a real source `import`.
+    ///
+    /// Only real imports need an HIR source-identity binding. Prelude types are
+    /// always in scope and remain governed by the builtin catalog; publishing a
+    /// Prelude alias here would let it outrank a root-authored same-name type.
+    fn records_import_identity(self) -> bool {
+        matches!(self, Self::Import(_))
+    }
 }
 
 /// A trait reference (`impl <Trait> for ...`) resolved to its OWNER-QUALIFIED
@@ -5563,16 +5572,16 @@ impl Checker {
         });
         // A coercion to `dyn Trait` currently stores the fat pointer's data word
         // as an alias of concrete storage in the producing frame. Returning
-        // that pair would let the alias escape after the frame is gone. The
-        // runtime already has target-width box allocation primitives, but the
-        // compiler does not yet promote the concrete value and rewrite the data
-        // word at this boundary.
+        // that pair, directly or inside another carrier, would let the alias
+        // escape after the frame is gone. The runtime already has target-width
+        // box allocation primitives, but the compiler does not yet promote the
+        // concrete value and rewrite the data word at this boundary.
         //
         // WASM-TODO(dyn-trait-returns): heap-promote the concrete storage before
         // returning the fat pointer, then transfer its drop authority to the
         // caller. Until that lowering exists, reject the signature itself so
         // neither native nor wasm32 codegen can manufacture a dangling value.
-        if matches!(self.subst.resolve(&declared_return), Ty::TraitObject { .. }) {
+        if self.subst.resolve(&declared_return).contains_trait_object() {
             let error_span = fd
                 .return_type
                 .as_ref()
@@ -7715,15 +7724,15 @@ impl Checker {
                     // Process resolved Hew source items from stdlib modules that ship
                     // alongside their C/Rust bindings so trait methods stay visible.
                     if let Some(ref resolved_items) = decl.resolved_items {
-                        if !self.stdlib_hew_source_already_registered(decl, &module_path) {
-                            let module_full_path = module_path.replace("::", ".");
-                            self.register_stdlib_hew_items(
-                                &short,
-                                &module_full_path,
-                                resolved_items,
-                                StdlibBarePublication::Import(&decl.spec),
-                            );
-                        }
+                        let module_full_path = module_path.replace("::", ".");
+                        self.register_resolved_stdlib_hew_source(
+                            decl,
+                            &module_path,
+                            &short,
+                            &module_full_path,
+                            resolved_items,
+                            StdlibBarePublication::Import(&decl.spec),
+                        );
                     }
 
                     // `std::io::closable` is a pure-Hew trait module with no C
@@ -7876,6 +7885,33 @@ impl Checker {
         }
     }
 
+    /// Register one resolved Hew stdlib source while preserving two distinct
+    /// scopes of authority:
+    ///
+    /// * declarations and qualified exports are global and therefore deduped;
+    /// * bare import bindings belong to each importer and must be republished
+    ///   every time that importer reaches the already-registered module.
+    ///
+    /// A transitive import can encounter `std::net` before the root's named
+    /// import. Treating the global declaration-dedup bit as a reason to skip
+    /// the second import silently loses the root's `Connection` binding and its
+    /// HIR source identity.
+    pub(super) fn register_resolved_stdlib_hew_source(
+        &mut self,
+        decl: &ImportDecl,
+        module_path: &str,
+        module_short: &str,
+        module_full_path: &str,
+        items: &[Spanned<Item>],
+        publication: StdlibBarePublication<'_>,
+    ) {
+        if self.stdlib_hew_source_already_registered(decl, module_path) {
+            self.publish_stdlib_hew_type_bindings(module_short, items, publication);
+        } else {
+            self.register_stdlib_hew_items(module_short, module_full_path, items, publication);
+        }
+    }
+
     fn unresolved_import_error(
         decl: &ImportDecl,
         import_span: Option<&Span>,
@@ -8025,10 +8061,11 @@ impl Checker {
                     // on a named/glob/aliased opt-in, exactly like a user module.
                     if let Some(binding) = import_spec.bare_binding(&td.name) {
                         let source_identity = format!("{module_short}.{}", td.name);
-                        self.record_published_bare_type(&binding, &source_identity);
-                        self.unqualified_to_module.insert(
-                            (self.current_module.clone(), binding),
-                            module_short.to_string(),
+                        self.publish_stdlib_hew_type_binding(
+                            module_short,
+                            binding,
+                            source_identity,
+                            import_spec,
                         );
                     }
                 }
@@ -8065,18 +8102,20 @@ impl Checker {
                     // or neither; `Prelude` publishes both unconditionally.
                     if let Some(binding) = import_spec.bare_binding(&md.name) {
                         let source_identity = format!("{module_short}.{}", md.name);
-                        self.record_published_bare_type(&binding, &source_identity);
-                        self.unqualified_to_module.insert(
-                            (self.current_module.clone(), binding),
-                            module_short.to_string(),
+                        self.publish_stdlib_hew_type_binding(
+                            module_short,
+                            binding,
+                            source_identity,
+                            import_spec,
                         );
                     }
                     if let Some(binding) = import_spec.bare_binding(&event_name) {
                         let source_identity = format!("{module_short}.{event_name}");
-                        self.record_published_bare_type(&binding, &source_identity);
-                        self.unqualified_to_module.insert(
-                            (self.current_module.clone(), binding),
-                            module_short.to_string(),
+                        self.publish_stdlib_hew_type_binding(
+                            module_short,
+                            binding,
+                            source_identity,
+                            import_spec,
                         );
                     }
                 }
@@ -8344,6 +8383,66 @@ impl Checker {
         }
         self.local_type_defs = saved_local_type_defs;
         self.source_type_defs = saved_source_type_defs;
+    }
+
+    /// Republish the public type names from an already-registered stdlib Hew
+    /// source into the current importer's scope. This deliberately performs no
+    /// declaration registration and therefore cannot create duplicate defs.
+    fn publish_stdlib_hew_type_bindings(
+        &mut self,
+        module_short: &str,
+        items: &[Spanned<Item>],
+        publication: StdlibBarePublication<'_>,
+    ) {
+        for (item, _) in items {
+            match item {
+                Item::TypeDecl(td) if td.visibility.is_pub() => {
+                    if let Some(binding) = publication.bare_binding(&td.name) {
+                        self.publish_stdlib_hew_type_binding(
+                            module_short,
+                            binding,
+                            format!("{module_short}.{}", td.name),
+                            publication,
+                        );
+                    }
+                }
+                Item::Machine(md) if md.visibility.is_pub() => {
+                    let event_name = format!("{}Event", md.name);
+                    for name in [&md.name, &event_name] {
+                        if let Some(binding) = publication.bare_binding(name) {
+                            self.publish_stdlib_hew_type_binding(
+                                module_short,
+                                binding,
+                                format!("{module_short}.{name}"),
+                                publication,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn publish_stdlib_hew_type_binding(
+        &mut self,
+        module_short: &str,
+        binding: String,
+        source_identity: String,
+        publication: StdlibBarePublication<'_>,
+    ) {
+        self.known_types.insert(binding.clone());
+        self.record_published_bare_type(&binding, &source_identity);
+        if publication.records_import_identity() {
+            self.import_type_name_aliases.insert(
+                (self.current_module.clone(), binding.clone()),
+                source_identity,
+            );
+        }
+        self.unqualified_to_module.insert(
+            (self.current_module.clone(), binding),
+            module_short.to_string(),
+        );
     }
 
     /// Register items from a file-based import as top-level names (no module namespace).
@@ -8823,17 +8922,20 @@ impl Checker {
                     // the function/trait arms. Named (`::{ T }`) and glob
                     // imports publish the bare (or aliased) binding.
                     if Self::should_import_name(&td.name, spec) {
-                        let binding_name = Self::resolve_import_name(spec, &td.name)
+                        let explicit_import_name = Self::resolve_import_name(spec, &td.name);
+                        let binding_name = explicit_import_name
+                            .clone()
                             .unwrap_or_else(|| td.name.clone());
                         self.known_types.insert(binding_name.clone());
                         let source_identity = format!("{module_short}.{}", td.name);
                         self.record_published_bare_type(&binding_name, &source_identity);
-                        // When the importer chose an alias (`T as U`), record
-                        // the mapping so HIR `lower_type` can canonicalise the
-                        // alias name in type-annotation position.  Key by
-                        // (importer_module, alias) so aliases from different
-                        // modules cannot overwrite each other.
-                        if binding_name != td.name {
+                        // Record every published bare type binding, including
+                        // an unrenamed named/glob import. HIR needs the source
+                        // identity for `import foo::{ Receiver }` just as much
+                        // as for `Receiver as Rx`: otherwise the bare spelling
+                        // can be stolen by the builtin catalog before HIR sees
+                        // that it names `foo.Receiver`.
+                        if explicit_import_name.is_some() {
                             self.import_type_name_aliases.insert(
                                 (self.current_module.clone(), binding_name.clone()),
                                 source_identity.clone(),

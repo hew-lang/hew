@@ -510,6 +510,9 @@ fn render_instr(instr: &Instr) -> String {
             StringRetainCondition::Always => {
                 format!("string.retain {}", render_place(value))
             }
+            StringRetainCondition::AggregateBorrowedIngress => {
+                format!("string.retain_aggregate {}", render_place(value))
+            }
             StringRetainCondition::ActorStateRecordBorrowedIngress {
                 state_field,
                 record_path,
@@ -794,12 +797,18 @@ fn render_instr(instr: &Instr) -> String {
             ty,
             plan,
             boundary,
-        } => format!(
-            "snapshot_drop {} ty={} plan={:?} boundary={boundary:?}",
-            render_place(value),
-            ty.user_facing(),
-            plan.root()
-        ),
+            guard,
+        } => {
+            let guard = guard.map_or_else(String::new, |flag| {
+                format!(" guard={}", render_place(&flag))
+            });
+            format!(
+                "snapshot_drop {} ty={} plan={:?} boundary={boundary:?}{guard}",
+                render_place(value),
+                ty.user_facing(),
+                plan.root()
+            )
+        }
 
         // Data movement
         Instr::Move { dest, src } => {
@@ -1974,6 +1983,9 @@ fn render_drop_kind(kind: DropKind) -> String {
         DropKind::LambdaActorRelease => "lambda_actor_release".to_string(),
         DropKind::TraitObject { storage } => format!("trait_object({storage:?})"),
         DropKind::CowHeap { release } => format!("cow_heap({})", release.release_symbol()),
+        DropKind::VecIterCursor { release } => {
+            format!("vec_iter_cursor({})", release.release_symbol())
+        }
         DropKind::RecordInPlace => "record_in_place".to_string(),
         DropKind::AggregateRecursive => "aggregate_recursive".to_string(),
         DropKind::EnumInPlace => "enum_in_place".to_string(),

@@ -58,6 +58,35 @@ fn count_markdown_table_rows(md: &str, start_heading: &str, end_heading: &str) -
     pipe_rows - 2
 }
 
+/// Returns the data rows from one markdown table, in committed order.
+fn markdown_table_rows(md: &str, start_heading: &str, end_heading: &str) -> Vec<Vec<String>> {
+    let mut in_section = false;
+    let mut rows = Vec::new();
+    for line in md.lines() {
+        if line.starts_with(start_heading) {
+            in_section = true;
+            continue;
+        }
+        if in_section && line.starts_with(end_heading) {
+            break;
+        }
+        if in_section && line.starts_with('|') {
+            rows.push(
+                line.trim_matches('|')
+                    .split('|')
+                    .map(|cell| cell.trim().to_string())
+                    .collect(),
+            );
+        }
+    }
+    assert!(
+        rows.len() >= 2,
+        "expected a header, separator, and data rows in section starting {start_heading:?}"
+    );
+    rows.drain(..2);
+    rows
+}
+
 #[test]
 fn manifest_row_counts_match_prose_matrix() {
     let root = repo_root();
@@ -106,6 +135,56 @@ fn manifest_row_counts_match_prose_matrix() {
         manifest.tiers.len(),
         md_tiers,
     );
+}
+
+#[test]
+fn manifest_runtime_statuses_match_prose_matrix() {
+    let root = repo_root();
+    let manifest_src = read(&root.join("wasm-capability-manifest.toml"));
+    let matrix_src = read(&root.join("docs").join("wasm-capability-matrix.md"));
+    let manifest = hew_capability_gen::Manifest::parse(&manifest_src)
+        .expect("wasm-capability-manifest.toml parses");
+    let rows = markdown_table_rows(
+        &matrix_src,
+        "## Feature disposition table",
+        "## Disposition rationale",
+    );
+
+    assert_eq!(
+        manifest.features.len(),
+        rows.len(),
+        "feature rows must stay in manifest order before their content can be compared"
+    );
+    for (feature, row) in manifest.features.iter().zip(&rows) {
+        assert_eq!(
+            row.len(),
+            4,
+            "feature row for {} must have four cells: {row:?}",
+            feature.id
+        );
+        let runtime_status = feature
+            .extra
+            .get("runtime_status")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("feature {} has no runtime_status", feature.id));
+        assert_eq!(
+            row[2], runtime_status,
+            "runtime status drift for feature {} ({})",
+            feature.id, row[0]
+        );
+
+        let manifest_tracking = feature
+            .extra
+            .get("tracking_label")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("—");
+        let prose_tracking = row[3].trim_matches('`');
+        assert_eq!(
+            prose_tracking, manifest_tracking,
+            "tracking-label drift for feature {} ({})",
+            feature.id, row[0]
+        );
+    }
 }
 
 #[test]

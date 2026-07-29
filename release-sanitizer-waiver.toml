@@ -1,28 +1,33 @@
-# Release sanitizer waiver ledger.
+# Release sanitizer limitation ledger.
 #
-# Schema:
-#   [[waiver]]
+# ASan is never represented here: the release workflow executes it and fails
+# closed unless it passes. TSan and Miri require one release-scoped row each
+# until they can run as authoritative gates. Rows describe behavior rather
+# than a Git commit so the evidence survives normal branch and merge movement.
+#
+# Required fields:
 #   axis = "tsan" | "miri"
-#   reason = "<why this axis cannot be green for this exact release commit>"
-#   tracking = "<GitHub issue or upstream URL>"
-#   commit = "<40-hex SHA: the release commit or its first parent>"
+#   release = "<semantic release version>"
+#   behavior = "<what the lane does or why its result is non-authoritative>"
+#   reason = "<why this release cannot require a green execution>"
+#   tracking = "<https issue or upstream report>"
+#   owner = "<project role or GitHub team responsible for retirement>"
 #   expires = "YYYY-MM-DD"
-#
-# The release gate rejects blanket waivers, missing fields, non-40-hex
-# commits, expired rows, unsupported axes, and duplicate rows. A row may pin
-# the release commit's first parent because the waiver commit at the release
-# tip cannot contain its own SHA.
 
 [[waiver]]
 axis = "tsan"
-reason = "The Linux TSan lane links the prebuilt uninstrumented std (-Zbuild-std is broken upstream for this configuration; -Cunsafe-allow-abi-mismatch=sanitizer). TSan therefore cannot observe synchronization inside std (futex-based Condvar/Mutex slow-path/scoped-join edges) and is proven to report races on correctly synchronized code: a minimal probe with no Hew code and no custom allocator produces 11 race reports under the lane's exact flags. All 15 reported hew-runtime sites were individually verified: every racing pair is protected by the same std mutex or a source-verified handoff chain whose edge TSan cannot see. No real race was found. Race coverage for this release rests on the green full ASan suite (1832/1832, leak phase clean)."
+release = "0.6.0-rc1"
+behavior = "The Linux TSan configuration reports races in correctly synchronized std mutex/condvar handoffs when linked with the prebuilt uninstrumented standard library; a no-Hew minimal probe reproduces the false-positive class."
+reason = "Upstream build-std/TSan linking is not usable for this runtime configuration, so TSan output cannot distinguish the reproduced toolchain false positives from Hew races. ASan remains mandatory and executed."
 tracking = "https://github.com/hew-lang/hew/issues/1825"
-commit = "d3ebbad7cb857380bd10a4bf30884e2b4f26f10e"
+owner = "Hew runtime maintainers"
 expires = "2026-09-10"
 
 [[waiver]]
 axis = "miri"
-reason = "No Miri lane exists for the FFI-heavy runtime in this cycle; the unsafe surface is covered by the ASan hard gate (green, never waived), MallocScribble leak oracles, and the per-site TSan triage above."
+release = "0.6.0-rc1"
+behavior = "The FFI-heavy scheduler/runtime surface cannot execute under the current curated Miri lane; release behavior is covered by executed ASan, leak-oracle, C-ABI, and native runtime gates."
+reason = "A representative Miri model for the runtime FFI boundary is not yet available and treating non-execution as a pass would be misleading."
 tracking = "https://github.com/hew-lang/hew/issues/1826"
-commit = "d3ebbad7cb857380bd10a4bf30884e2b4f26f10e"
+owner = "Hew runtime maintainers"
 expires = "2026-09-10"

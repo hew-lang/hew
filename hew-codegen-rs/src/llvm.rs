@@ -74,8 +74,9 @@ use hew_mir::{
     CooperateSite, DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
     FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind,
     IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
-    RawMirFunction, RecordLayout, RegexLiteral, SourceOrigin, StateFieldCloneKind,
-    StringRetainCondition, SupervisorChildLayout, SuspendKind, Terminator, TrapKind,
+    RawMirFunction, RecordLayout, RegexLiteral, ResourceCloseAuthority, SourceOrigin,
+    StateFieldCloneKind, StringRetainCondition, SupervisorChildLayout, SuspendKind, Terminator,
+    TrapKind,
 };
 pub(crate) use hew_types::short_name;
 use hew_types::{
@@ -1686,6 +1687,14 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     pub(crate) return_ty: BasicTypeEnum<'ctx>,
     pub(crate) return_resolved_ty: ResolvedTy,
     pub(crate) execution_context: Option<PointerValue<'ctx>>,
+    /// Actor-state pointer carried explicitly by the `HewOnCrashFn` ABI.
+    ///
+    /// `#[on(crash)]` runs in the SUPERVISOR'S execution context after the
+    /// crashed child has been torn down, so recovering state through
+    /// `ctx.actor.state` would address the supervisor rather than the child's
+    /// restart template. `Some` only for a function carrying the exact
+    /// [`SourceOrigin::SynthesizedActorHandler`] `Crash` identity.
+    pub(crate) explicit_actor_state_ptr: Option<PointerValue<'ctx>>,
     pub(crate) closure_call_fallback_context: Option<PointerValue<'ctx>>,
     pub(crate) execution_context_is_actor_handler: bool,
     pub(crate) actor_state_ty: Option<StructType<'ctx>>,
@@ -2987,7 +2996,21 @@ pub(crate) fn resolve_ty<'ctx>(
     ) {
         return Ok(ctx.ptr_type(AddressSpace::default()).into());
     }
-    if let ResolvedTy::Named { name, args, .. } = ty {
+    if let ResolvedTy::Named {
+        name,
+        args,
+        builtin,
+        is_opaque,
+    } = ty
+    {
+        // A stamped user/imported opaque identity is pointer-shaped even when
+        // its short name collides with a registered builtin record layout
+        // (`#[opaque] type MonitorRef {}`). Typed identity outranks the
+        // short-name layout fallback; ordinary user records have
+        // `is_opaque: false` and still take the layout-first path below.
+        if builtin.is_none() && *is_opaque {
+            return Ok(ctx.ptr_type(AddressSpace::default()).into());
+        }
         if matches!(
             ty,
             ResolvedTy::Named {
@@ -3217,6 +3240,17 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             // writes its returned pointer into this alloca; the send/recv/close
             // ABIs load from it. LESSONS: exhaustive-traversal-and-lowering,
             // boundary-fail-closed.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Sender | BuiltinType::Receiver),
+            ..
+        } => {
+            // Channel endpoints are pointer-width runtime handles. Dispatch
+            // on the typed builtin discriminator so a std declaration
+            // recovered from exact `channel.Sender` / `channel.Receiver`
+            // provenance lowers to `ptr`, while a user `foo.Sender` carrying
+            // `builtin: None` still reaches the D10 fail-closed arm.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
         ResolvedTy::Named { name, .. } if name == "Vec" => {
@@ -5049,6 +5083,9 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
         StateFieldCloneKind::Weak => Ok(Some(CloneHelper::Allocating {
             name: "hew_weak_clone_rc",
         })),
+        StateFieldCloneKind::ChannelSender => Ok(Some(CloneHelper::Allocating {
+            name: "hew_channel_sender_clone",
+        })),
         StateFieldCloneKind::Tuple { .. } => Err(CodegenError::FailClosed(
             "Tuple arm requires a synthesised in-place tuple clone helper; caller must dispatch separately"
                 .into(),
@@ -5155,6 +5192,9 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
         })),
         StateFieldCloneKind::Weak => Ok(Some(DropHelper {
             name: "hew_weak_drop_rc",
+        })),
+        StateFieldCloneKind::ChannelSender => Ok(Some(DropHelper {
+            name: "hew_channel_sender_close",
         })),
         StateFieldCloneKind::Tuple { .. } => Err(CodegenError::FailClosed(
             "Tuple arm requires a synthesised in-place tuple drop helper; caller must dispatch separately"
@@ -5404,10 +5444,10 @@ pub(crate) fn get_or_declare_enum_drop_inplace<'ctx>(
 }
 
 /// Lookup-or-declare the synthesised per-record overwrite-release helper
-/// `fn(*mut old, *const new)`. Called by `lower_actor_state_field_store`
-/// before a record-typed state field is overwritten: the body neutralises
-/// (nulls) aliasing old non-String heap leaves, leaves old String owners for
-/// the drop spine to release, then runs
+/// `fn(*mut old, *const new)`. Called before a record-typed actor-state or
+/// ordinary record field is overwritten: the body neutralises (nulls) aliasing
+/// old non-String heap leaves, leaves old String owners for the drop spine, then
+/// runs
 /// `__hew_record_drop_inplace_<Record>` over what remains. See
 /// `emit_record_overwrite_release_body` for the alias model and the
 /// leak-over-UAF posture.
@@ -6477,7 +6517,9 @@ pub(crate) fn emit_field_drop_step<'ctx>(
         // owns the call to `.free()`. Actor state drop does not auto-free opaque
         // handles — consistent with `drop_helper_for_kind` returning `Ok(None)`.
         StateFieldCloneKind::OpaqueHandle { .. } => Ok(()),
-        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+        StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender => {
             let field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "refcounted field drop: parent struct {st_ty:?} has no field at \
@@ -6797,11 +6839,12 @@ pub(crate) fn emit_field_drop_step<'ctx>(
             builder.position_at_end(cont_bb);
             Ok(())
         }
-        // Resource (`#[resource] #[opaque]` handle): the field slot holds the
-        // opaque handle pointer by value. Its sole release is the type's user
-        // `close(self)` method (validated to consume self and return Unit at
-        // MIR registry-build time — Q-β-C, W3.030). Load the handle, and on
-        // a non-null handle call `close_symbol(handle)` then null-store the
+        // Resource (`#[resource] #[opaque]` or builtin affine handle): the
+        // field slot holds the opaque handle pointer by value. Its sole release
+        // is selected by the typed classifier authority: a runtime drop
+        // descriptor for builtins, or the generated Hew close function for a
+        // user resource. Load the handle, and on
+        // a non-null handle call the selected close function, then null-store the
         // slot so any structurally-reachable second drop (cancel-into-trap
         // after a normal exit, actor-shutdown after a sync drop) lands on
         // `null` and short-circuits — the same idempotency posture the Bytes
@@ -6811,26 +6854,36 @@ pub(crate) fn emit_field_drop_step<'ctx>(
         // `close` body is not guaranteed null-tolerant), so the close call is
         // gated behind an explicit is-null branch.
         //
-        // Symbol resolution: `close_symbol` is the flattened `<Self>::<method>`
-        // name `declare_function` registers the LLVM function under
-        // (`func.name`), so `get_function` finds it directly. Absence means the
-        // `#[resource]`'s `close` body never reached `declare_function` — fail
-        // closed rather than silently no-op a resource drop (the same posture
-        // as `resolve_drop_fn`'s UserClose arm). A param-count != 1 means the
+        // User symbol resolution uses the flattened `<Self>::<method>` name
+        // `declare_function` registers. Runtime resources are declared from the
+        // carried descriptor through `intern_runtime_decl`. A param-count != 1 means the
         // close ABI drifted from `void(self)` (e.g. a non-Unit return added an
         // sret param) — fail closed instead of calling with a mismatched ABI.
-        StateFieldCloneKind::Resource { name, close_symbol } => {
-            let close_fn = llvm_mod.get_function(close_symbol).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "resource `{name}` field drop: no LLVM function for close symbol \
-                     `{close_symbol}` is registered. A `#[resource]`'s `close` body \
-                     must be declared in an inherent `impl` block whose flattened \
-                     `<Self>::<method>` symbol reaches `declare_function` before drop \
-                     synthesis (W3.030). Refusing to silently no-op a resource drop \
-                     (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
-                     lifecycle-symmetry)."
-                ))
-            })?;
+        StateFieldCloneKind::Resource { name, close } => {
+            let (close_fn, close_symbol) = match close {
+                ResourceCloseAuthority::Runtime(descriptor) => {
+                    let symbol = descriptor.c_symbol();
+                    let mut declarations = RuntimeDeclMap::new();
+                    (
+                        intern_runtime_decl(ctx, llvm_mod, &mut declarations, symbol)?,
+                        symbol,
+                    )
+                }
+                ResourceCloseAuthority::User(symbol) => {
+                    let close_fn = llvm_mod.get_function(symbol).ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "resource `{name}` field drop: no LLVM function for close symbol \
+                             `{symbol}` is registered. A `#[resource]`'s `close` body \
+                             must be declared in an inherent `impl` block whose flattened \
+                             `<Self>::<method>` symbol reaches `declare_function` before drop \
+                             synthesis (W3.030). Refusing to silently no-op a resource drop \
+                             (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
+                             lifecycle-symmetry)."
+                        ))
+                    })?;
+                    (close_fn, symbol.as_str())
+                }
+            };
             if close_fn.count_params() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "resource `{name}` field drop: close symbol `{close_symbol}` has \
@@ -7770,6 +7823,7 @@ fn collect_clone_target_names(
         | StateFieldCloneKind::Bytes
         | StateFieldCloneKind::Rc
         | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender
         | StateFieldCloneKind::IoHandle { .. }
         // OpaqueHandle has no synthesised clone/drop helper — it is a
         // pointer-width BitCopy-class handle. Nothing to enqueue.
@@ -8930,6 +8984,7 @@ fn overwrite_heap_leaf_capacity(
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
             | StateFieldCloneKind::HashSet { .. } => 1,
@@ -9058,6 +9113,7 @@ fn emit_overwrite_collect_leaves<'ctx>(
             StateFieldCloneKind::String
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
             | StateFieldCloneKind::HashSet { .. } => Some(
@@ -9520,6 +9576,7 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
             }
             StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
             | StateFieldCloneKind::HashSet { .. } => {
@@ -11918,7 +11975,11 @@ fn lower_instruction_with_cancel_drops(
     instr: &Instr,
     block_id: u32,
     drop_plans: &[(ExitPath, hew_mir::DropPlan)],
-    owned_carrier_cancel_drops: &[(Place, hew_mir::state_clone::ValueSnapshotPlan)],
+    owned_carrier_cancel_drops: &[(
+        Place,
+        hew_mir::state_clone::ValueSnapshotPlan,
+        Option<Place>,
+    )],
 ) -> CodegenResult<()> {
     let ctx = fn_ctx
         .builder
@@ -12319,9 +12380,10 @@ fn lower_instruction_with_cancel_drops(
             value,
             plan,
             boundary,
+            guard,
             ..
         } => {
-            emit_prepared_carrier_drop(fn_ctx, *value, plan, *boundary)?;
+            emit_guarded_prepared_carrier_drop(fn_ctx, *value, plan, *boundary, *guard)?;
         }
         Instr::ContextField { dest, offset } => {
             lower_context_field(fn_ctx, *dest, *offset)?;
@@ -13623,6 +13685,9 @@ fn lower_instruction_with_cancel_drops(
             match condition {
                 StringRetainCondition::Always => {
                     retain_string_value(fn_ctx, *value, "mir_share")?;
+                }
+                StringRetainCondition::AggregateBorrowedIngress => {
+                    retain_strings_in_borrowed_aggregate(fn_ctx, *value, "mir_aggregate_share")?;
                 }
                 StringRetainCondition::ActorStateRecordBorrowedIngress {
                     state_field,
@@ -15807,6 +15872,470 @@ fn retain_string_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> Cod
     Ok(())
 }
 
+/// Retain one string owner held at an aggregate leaf slot.
+///
+/// This is the address-based counterpart of [`retain_string_value`]. The
+/// recursive aggregate ingress walk already has the field address, so routing
+/// through a synthetic `Place` would lose the record/enum path authority.
+fn retain_string_slot(
+    fn_ctx: &FnCtx<'_, '_>,
+    slot: PointerValue<'_>,
+    slot_ty: BasicTypeEnum<'_>,
+    label: &str,
+) -> CodegenResult<()> {
+    let BasicTypeEnum::PointerType(_) = slot_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "aggregate borrowed-ingress string leaf has non-pointer slot type: {slot_ty:?}"
+        )));
+    };
+    let string = fn_ctx
+        .builder
+        .build_load(slot_ty, slot, &format!("{label}_string_load"))
+        .llvm_ctx_with(|| format!("aggregate borrowed-ingress StringRetain load for {label}"))?;
+    let clone_fn = get_or_declare_clone_helper(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &CloneHelper::Allocating {
+            name: "hew_string_clone",
+        },
+    );
+    fn_ctx
+        .builder
+        .build_call(
+            clone_fn,
+            &[string.into()],
+            &format!("{label}_string_retain"),
+        )
+        .llvm_ctx_with(|| {
+            format!("aggregate borrowed-ingress hew_string_clone retain for {label}")
+        })?;
+    Ok(())
+}
+
+/// Classify the borrowed ingress through the same recursive
+/// `StateFieldCloneKind` authority consumed by record/enum clone, drop, and
+/// overwrite-release synthesis.
+fn borrowed_aggregate_retain_kind(
+    fn_ctx: &FnCtx<'_, '_>,
+    ty: &ResolvedTy,
+) -> CodegenResult<StateFieldCloneKind> {
+    let record_layouts = codegen_record_layouts(fn_ctx);
+    let mut visited = HashSet::new();
+    hew_mir::classify_state_field_with_resource_handles(
+        ty,
+        &record_layouts,
+        fn_ctx.enum_layouts,
+        &[],
+        fn_ctx.resource_opaque_close,
+        &mut visited,
+    )
+    .map_err(|error| {
+        CodegenError::FailClosed(format!(
+            "aggregate borrowed-ingress value {ty} has no structural clone-kind authority: {error}"
+        ))
+    })
+}
+
+/// Whether a classified inline aggregate contains at least one string leaf.
+///
+/// Collection and indirect-enum storage is deliberately opaque here: their
+/// pointer leaves are transferred by overwrite neutralisation. This predicate
+/// also prevents a zero-string enum from emitting needless tag dispatch.
+fn aggregate_kind_contains_inline_string(
+    fn_ctx: &FnCtx<'_, '_>,
+    kind: &StateFieldCloneKind,
+    depth: u32,
+) -> CodegenResult<bool> {
+    if depth > OVERWRITE_RELEASE_MAX_DEPTH {
+        return Err(CodegenError::FailClosed(format!(
+            "aggregate borrowed-ingress string-capacity walk exceeded depth \
+             {OVERWRITE_RELEASE_MAX_DEPTH}"
+        )));
+    }
+    match kind {
+        StateFieldCloneKind::String => Ok(true),
+        StateFieldCloneKind::Tuple { elems } => {
+            for elem in elems {
+                if aggregate_kind_contains_inline_string(fn_ctx, elem, depth + 1)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        StateFieldCloneKind::Array { elem, len } => {
+            Ok(*len != 0 && aggregate_kind_contains_inline_string(fn_ctx, elem, depth + 1)?)
+        }
+        StateFieldCloneKind::UserRecord { name } => {
+            let fields = classify_record_drop_fields_for_key(fn_ctx, name)?;
+            for field in &fields {
+                if aggregate_kind_contains_inline_string(fn_ctx, field, depth + 1)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        StateFieldCloneKind::Enum { name } => {
+            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+                return Ok(false);
+            }
+            for variant in classify_enum_drop_variants_for_key(fn_ctx, name)? {
+                for field in &variant {
+                    if aggregate_kind_contains_inline_string(fn_ctx, field, depth + 1)? {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }
+        StateFieldCloneKind::BitCopy { .. }
+        | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. }
+        | StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender
+        | StateFieldCloneKind::IoHandle { .. }
+        | StateFieldCloneKind::ClosurePair
+        | StateFieldCloneKind::OpaqueHandle { .. }
+        | StateFieldCloneKind::Resource { .. } => Ok(false),
+    }
+}
+
+/// Recursively retain every string occurrence in one borrowed inline
+/// aggregate.
+///
+/// A non-string projection load is a byte-copy alias. When it enters an owning
+/// record/tuple/enum sink, its nested strings need independent `+1` owners
+/// before the old aggregate's recursive overwrite drop releases its copies.
+///
+/// This cannot call the existing clone thunk: that thunk also clones
+/// collection/RC/bytes leaves, while overwrite neutralisation transfers those
+/// handles and would leak the extra clones. It therefore performs a
+/// string-only walk, but consumes the exact `StateFieldCloneKind` and
+/// record/enum classification authorities used by clone/drop/overwrite
+/// synthesis—never a second `ResolvedTy` name-to-layout resolver.
+fn retain_strings_in_borrowed_aggregate(
+    fn_ctx: &FnCtx<'_, '_>,
+    value: Place,
+    label: &str,
+) -> CodegenResult<()> {
+    let ty = place_resolved_ty(fn_ctx, value)?;
+    let kind = borrowed_aggregate_retain_kind(fn_ctx, ty)?;
+    if matches!(kind, StateFieldCloneKind::String) {
+        return Err(CodegenError::FailClosed(
+            "aggregate borrowed-ingress StringRetain received a scalar string".into(),
+        ));
+    }
+    if !aggregate_kind_contains_inline_string(fn_ctx, &kind, 0)? {
+        return Ok(());
+    }
+    let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+    retain_strings_in_aggregate_slot(fn_ctx, slot, slot_ty, &kind, 0, label)
+}
+
+fn retain_strings_in_aggregate_slot<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    slot: PointerValue<'ctx>,
+    slot_ty: BasicTypeEnum<'ctx>,
+    kind: &StateFieldCloneKind,
+    depth: u32,
+    label: &str,
+) -> CodegenResult<()> {
+    if depth > OVERWRITE_RELEASE_MAX_DEPTH {
+        return Err(CodegenError::FailClosed(format!(
+            "aggregate borrowed-ingress string retain exceeded depth bound \
+             {OVERWRITE_RELEASE_MAX_DEPTH} at kind {kind:?}"
+        )));
+    }
+    if !aggregate_kind_contains_inline_string(fn_ctx, kind, depth)? {
+        return Ok(());
+    }
+    match kind {
+        StateFieldCloneKind::String => retain_string_slot(fn_ctx, slot, slot_ty, label),
+        StateFieldCloneKind::Tuple { elems } => {
+            let BasicTypeEnum::StructType(st) = slot_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress tuple has non-struct slot type: {slot_ty:?}"
+                )));
+            };
+            if st.count_fields() as usize != elems.len() {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress tuple has {} LLVM fields but {} classified fields",
+                    st.count_fields(),
+                    elems.len()
+                )));
+            }
+            for (idx, elem) in elems.iter().enumerate() {
+                let field_idx = u32::try_from(idx).map_err(|_| {
+                    CodegenError::FailClosed(
+                        "aggregate borrowed-ingress tuple arity exceeds u32".into(),
+                    )
+                })?;
+                let field_ty = st.get_field_type_at_index(field_idx).ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "aggregate borrowed-ingress tuple field layout drift".into(),
+                    )
+                })?;
+                let field_ptr = fn_ctx
+                    .builder
+                    .build_struct_gep(
+                        st,
+                        slot,
+                        field_idx,
+                        &format!("{label}_d{depth}_tuple_f{field_idx}"),
+                    )
+                    .llvm_ctx("aggregate borrowed-ingress tuple gep")?;
+                retain_strings_in_aggregate_slot(
+                    fn_ctx,
+                    field_ptr,
+                    field_ty,
+                    elem,
+                    depth + 1,
+                    label,
+                )?;
+            }
+            Ok(())
+        }
+        StateFieldCloneKind::Array { elem, len } => {
+            let BasicTypeEnum::ArrayType(array_ty) = slot_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress array has non-array slot type: {slot_ty:?}"
+                )));
+            };
+            if u64::from(array_ty.len()) != *len {
+                return Err(CodegenError::FailClosed(
+                    "aggregate borrowed-ingress array kind/layout length mismatch".into(),
+                ));
+            }
+            let elem_ty = array_ty.get_element_type();
+            for elem_idx in 0..array_ty.len() {
+                // SAFETY: `slot` addresses this fixed-size array and
+                // `elem_idx` is drawn from its declared in-bounds length.
+                let elem_ptr = unsafe {
+                    fn_ctx
+                        .builder
+                        .build_in_bounds_gep(
+                            array_ty,
+                            slot,
+                            &[
+                                fn_ctx.ctx.i32_type().const_zero(),
+                                fn_ctx.ctx.i32_type().const_int(u64::from(elem_idx), false),
+                            ],
+                            &format!("{label}_d{depth}_array_e{elem_idx}"),
+                        )
+                        .llvm_ctx("aggregate borrowed-ingress array gep")?
+                };
+                retain_strings_in_aggregate_slot(
+                    fn_ctx,
+                    elem_ptr,
+                    elem_ty,
+                    elem,
+                    depth + 1,
+                    label,
+                )?;
+            }
+            Ok(())
+        }
+        StateFieldCloneKind::UserRecord { name } => {
+            let BasicTypeEnum::StructType(st) = slot_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress record `{name}` has non-struct slot type: \
+                     {slot_ty:?}"
+                )));
+            };
+            let fields = classify_record_drop_fields_for_key(fn_ctx, name)?;
+            if st.count_fields() as usize != fields.len() {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress record `{name}` has {} LLVM fields but {} \
+                     classified fields",
+                    st.count_fields(),
+                    fields.len()
+                )));
+            }
+            for (idx, field) in fields.iter().enumerate() {
+                let field_idx = u32::try_from(idx).map_err(|_| {
+                    CodegenError::FailClosed(
+                        "aggregate borrowed-ingress record arity exceeds u32".into(),
+                    )
+                })?;
+                let field_ty = st.get_field_type_at_index(field_idx).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "aggregate borrowed-ingress record `{name}` field layout drift"
+                    ))
+                })?;
+                let field_ptr = fn_ctx
+                    .builder
+                    .build_struct_gep(
+                        st,
+                        slot,
+                        field_idx,
+                        &format!("{label}_d{depth}_record_f{field_idx}"),
+                    )
+                    .llvm_ctx("aggregate borrowed-ingress record gep")?;
+                retain_strings_in_aggregate_slot(
+                    fn_ctx,
+                    field_ptr,
+                    field_ty,
+                    field,
+                    depth + 1,
+                    label,
+                )?;
+            }
+            Ok(())
+        }
+        StateFieldCloneKind::Enum { name } => {
+            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+                return Ok(());
+            }
+            let BasicTypeEnum::StructType(outer_struct) = slot_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress enum `{name}` has non-struct slot type: \
+                     {slot_ty:?}"
+                )));
+            };
+            let variants = classify_enum_drop_variants_for_key(fn_ctx, name)?;
+            let layout = fn_ctx.machine_layouts.get(name).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress enum `{name}` has no tagged-union layout"
+                ))
+            })?;
+            if outer_struct != layout.outer_struct
+                || variants.len() != layout.variant_struct_tys.len()
+            {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress enum `{name}` classifier/layout drift"
+                )));
+            }
+            let current = fn_ctx.builder.get_insert_block().ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "aggregate borrowed-ingress enum retain has no insertion block".into(),
+                )
+            })?;
+            let parent = current.get_parent().ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "aggregate borrowed-ingress enum retain has no parent function".into(),
+                )
+            })?;
+            let tag_ptr = fn_ctx
+                .builder
+                .build_struct_gep(
+                    outer_struct,
+                    slot,
+                    0,
+                    &format!("{label}_d{depth}_enum_tag_ptr"),
+                )
+                .llvm_ctx("aggregate borrowed-ingress enum tag gep")?;
+            let tag = fn_ctx
+                .builder
+                .build_load(
+                    layout.tag_int_ty,
+                    tag_ptr,
+                    &format!("{label}_d{depth}_enum_tag"),
+                )
+                .llvm_ctx("aggregate borrowed-ingress enum tag load")?
+                .into_int_value();
+            let merge_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent, &format!("{label}_d{depth}_enum_merge"));
+            let trap_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent, &format!("{label}_d{depth}_enum_tag_oob"));
+            let mut cases = Vec::with_capacity(variants.len());
+            let mut variant_bbs = Vec::with_capacity(variants.len());
+            for idx in 0..variants.len() {
+                let bb = fn_ctx
+                    .ctx
+                    .append_basic_block(parent, &format!("{label}_d{depth}_enum_v{idx}"));
+                cases.push((layout.tag_int_ty.const_int(idx as u64, false), bb));
+                variant_bbs.push(bb);
+            }
+            fn_ctx
+                .builder
+                .build_switch(tag, trap_bb, &cases)
+                .llvm_ctx("aggregate borrowed-ingress enum tag switch")?;
+            fn_ctx.builder.position_at_end(trap_bb);
+            emit_trap_with_code_raw(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &fn_ctx.builder,
+                HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+                "aggregate_string_retain_tag_oob",
+            )?;
+            for (idx, variant) in variants.iter().enumerate() {
+                fn_ctx.builder.position_at_end(variant_bbs[idx]);
+                let payload = fn_ctx
+                    .builder
+                    .build_struct_gep(
+                        outer_struct,
+                        slot,
+                        1,
+                        &format!("{label}_d{depth}_enum_v{idx}_payload"),
+                    )
+                    .llvm_ctx("aggregate borrowed-ingress enum payload gep")?;
+                let variant_struct = layout.variant_struct_tys[idx];
+                if variant_struct.count_fields() as usize != variant.len() {
+                    return Err(CodegenError::FailClosed(format!(
+                        "aggregate borrowed-ingress enum `{name}` variant {idx} has {} LLVM \
+                         fields but {} classified fields",
+                        variant_struct.count_fields(),
+                        variant.len()
+                    )));
+                }
+                for (field_idx, field) in variant.iter().enumerate() {
+                    let field_idx = u32::try_from(field_idx).map_err(|_| {
+                        CodegenError::FailClosed(
+                            "aggregate borrowed-ingress enum payload arity exceeds u32".into(),
+                        )
+                    })?;
+                    let field_ty = variant_struct
+                        .get_field_type_at_index(field_idx)
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(format!(
+                                "aggregate borrowed-ingress enum `{name}` field layout drift"
+                            ))
+                        })?;
+                    let field_ptr = fn_ctx
+                        .builder
+                        .build_struct_gep(
+                            variant_struct,
+                            payload,
+                            field_idx,
+                            &format!("{label}_d{depth}_enum_v{idx}_f{field_idx}"),
+                        )
+                        .llvm_ctx("aggregate borrowed-ingress enum field gep")?;
+                    retain_strings_in_aggregate_slot(
+                        fn_ctx,
+                        field_ptr,
+                        field_ty,
+                        field,
+                        depth + 1,
+                        label,
+                    )?;
+                }
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(merge_bb)
+                    .llvm_ctx("aggregate borrowed-ingress enum merge branch")?;
+            }
+            fn_ctx.builder.position_at_end(merge_bb);
+            Ok(())
+        }
+        StateFieldCloneKind::BitCopy { .. }
+        | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. }
+        | StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender
+        | StateFieldCloneKind::IoHandle { .. }
+        | StateFieldCloneKind::ClosurePair
+        | StateFieldCloneKind::OpaqueHandle { .. }
+        | StateFieldCloneKind::Resource { .. } => Ok(()),
+    }
+}
+
 /// Retain a borrowed loop-carried message string entering actor-state.
 ///
 /// String leaves are deliberately not alias-neutralised by the record
@@ -16000,14 +16529,54 @@ fn retain_string_for_actor_state_record_borrowed_ingress(
     )
 }
 
+/// Resolve a record type to the exact registered field-layout key.
+fn registered_record_layout_key(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Option<String> {
+    let ResolvedTy::Named {
+        name,
+        args,
+        builtin: None,
+        is_opaque: false,
+    } = ty
+    else {
+        return None;
+    };
+    let full_key = if args.is_empty() {
+        name.clone()
+    } else {
+        mangle_with_shortened_args(name, args)
+    };
+    let short_key = if args.is_empty() {
+        short_name(name).to_string()
+    } else {
+        mangle_with_shortened_args(short_name(name), args)
+    };
+    [full_key, short_key]
+        .into_iter()
+        .find(|key| fn_ctx.record_field_resolved_tys.contains_key(key))
+}
+
+fn is_unclonable_builtin_record_field(ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::CancellationToken)
+        || matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(builtin),
+                ..
+            } if builtin.close_method().is_some()
+                || matches!(
+                    builtin,
+                    hew_types::BuiltinType::Generator
+                        | hew_types::BuiltinType::AsyncGenerator
+                )
+        )
+}
+
 /// Lower `Instr::RecordFieldStore { record, field_offset, src }` to a
-/// GEP+store on the record's alloca, taking the source value from the
-/// `src` place.
+/// release+GEP+store on the record's alloca.
 ///
-/// The aggregate record stays Live after the store — only the named field's
-/// bytes are overwritten. Mirrors `lower_record_field_load` structurally.
-/// Producer is `assign()` in `hew-mir/src/lower.rs` for the `r.x = v`
-/// target shape (Q297 Stage 1, Q299=(a)).
+/// The aggregate record stays live after the store. The old named field owner
+/// is released according to its MIR ownership kind before the replacement is
+/// stored. Producer is `assign()` in `hew-mir/src/lower.rs` for `r.x = v`.
 fn lower_record_field_store(
     fn_ctx: &FnCtx<'_, '_>,
     record: Place,
@@ -16057,6 +16626,51 @@ fn lower_record_field_store(
         .builder
         .build_load(field_ty, src_ptr, &format!("field_{idx}_store_src"))
         .llvm_ctx_with(|| format!("RecordFieldStore field {idx} load src"))?;
+
+    // Select cleanup from the destination field's MIR type, never from the
+    // source spelling or the LLVM slot shape. A well-typed store makes source
+    // and destination agree, but only the destination layout is the ownership
+    // authority for the value being abandoned.
+    let record_key = place_base_local(&record)
+        .and_then(|record_local| fn_ctx.local_tys.get(&record_local))
+        .and_then(|record_ty| registered_record_layout_key(fn_ctx, record_ty));
+    if let Some(record_key) = record_key {
+        let resolved_field_ty = fn_ctx
+            .record_field_resolved_tys
+            .get(&record_key)
+            .and_then(|fields| fields.get(idx_usize))
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "RecordFieldStore field offset {idx} has no resolved type entry \
+                     for record `{record_key}`"
+                ))
+            })?;
+        if is_unclonable_builtin_record_field(resolved_field_ty) {
+            return Err(CodegenError::FailClosed(format!(
+                "RecordFieldStore reached codegen for un-clonable builtin field \
+                 {resolved_field_ty:?}; MIR must reject the store until it carries \
+                 source-slot neutralisation"
+            )));
+        }
+        let kinds = classify_record_drop_fields_for_key(fn_ctx, &record_key)?;
+        let kind = kinds.get(idx_usize).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "RecordFieldStore field offset {idx} has no ownership-kind entry \
+                 for record `{record_key}` ({} kinds registered)",
+                kinds.len()
+            ))
+        })?;
+        emit_field_overwrite_release(
+            fn_ctx,
+            field_ptr,
+            field_ty,
+            src_ptr,
+            src_val,
+            kind,
+            &format!("record_f{idx}"),
+            false,
+        )?;
+    }
     fn_ctx
         .builder
         .build_store(field_ptr, src_val)
@@ -16163,6 +16777,9 @@ pub(crate) fn live_execution_context_ptr<'ctx>(
 }
 
 fn current_actor_state_ptr<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<PointerValue<'ctx>> {
+    if let Some(state_ptr) = fn_ctx.explicit_actor_state_ptr {
+        return Ok(state_ptr);
+    }
     let i64_ty = fn_ctx.ctx.i64_type();
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     let actor_ptr = current_actor_ptr(fn_ctx)?;
@@ -16228,7 +16845,7 @@ fn lower_actor_state_field_load(
     // this was an unconditional bare load/store: the loaded value bit-
     // aliased the field's owned heap at refcount unchanged, so a third live
     // binding (`let t = x;`) held the same pointer the field's own
-    // overwrite-release guard (`emit_state_field_old_value_release`, below)
+    // overwrite-release guard (`emit_field_old_value_release`, below)
     // later freed out from under it — deterministic UAF/double-free on the
     // temp-bridged swap idiom (`let t = x; x = y; y = t;`), confirmed for
     // Vec (SIGABRT in descriptor-driven free), record (same), and string
@@ -16341,7 +16958,9 @@ fn lower_actor_state_field_load(
                         .llvm_ctx("ActorStateFieldLoad store")?;
                     return Ok(());
                 }
-                StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+                StateFieldCloneKind::Rc
+                | StateFieldCloneKind::Weak
+                | StateFieldCloneKind::ChannelSender => {
                     if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
                         return Err(CodegenError::FailClosed(format!(
                             "ActorStateFieldLoad field {idx}: refcounted handle kind \
@@ -16575,6 +17194,195 @@ fn emit_actor_state_field_clone_inplace_trap<'ctx>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn emit_field_overwrite_release(
+    fn_ctx: &FnCtx<'_, '_>,
+    field_ptr: PointerValue<'_>,
+    field_ty: BasicTypeEnum<'_>,
+    src_ptr: PointerValue<'_>,
+    src_val: BasicValueEnum<'_>,
+    kind: &StateFieldCloneKind,
+    label: &str,
+    release_resource_records: bool,
+) -> CodegenResult<()> {
+    match kind {
+        StateFieldCloneKind::Bytes => {
+            let triple_ty = bytes_triple_llvm_ty(fn_ctx.ctx);
+            let old_ptr_slot = fn_ctx
+                .builder
+                .build_struct_gep(triple_ty, field_ptr, 0, &format!("{label}_old_data_slot"))
+                .llvm_ctx("field overwrite old bytes data gep")?;
+            let old_ptr = fn_ctx
+                .builder
+                .build_load(
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                    old_ptr_slot,
+                    &format!("{label}_old_data"),
+                )
+                .llvm_ctx("field overwrite old bytes data load")?
+                .into_pointer_value();
+            let new_ptr = fn_ctx
+                .builder
+                .build_extract_value(src_val.into_struct_value(), 0, &format!("{label}_new_data"))
+                .llvm_ctx("field overwrite new bytes data extract")?
+                .into_pointer_value();
+            emit_field_old_value_release(
+                fn_ctx,
+                old_ptr,
+                new_ptr,
+                "hew_bytes_drop",
+                &format!("{label}_bytes"),
+            )
+        }
+        StateFieldCloneKind::String => {
+            let old_ptr = fn_ctx
+                .builder
+                .build_load(
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                    field_ptr,
+                    &format!("{label}_old_str"),
+                )
+                .llvm_ctx("field overwrite old string load")?
+                .into_pointer_value();
+            emit_field_old_value_release(
+                fn_ctx,
+                old_ptr,
+                src_val.into_pointer_value(),
+                "hew_string_drop",
+                &format!("{label}_str"),
+            )
+        }
+        StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender => {
+            if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "field overwrite `{label}`: refcounted kind {kind:?} requires a \
+                     pointer-typed slot, got {field_ty:?}"
+                )));
+            }
+            let helper = drop_helper_for_kind(kind)?.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "field overwrite `{label}`: refcounted kind {kind:?} has no drop helper"
+                ))
+            })?;
+            let old_ptr = fn_ctx
+                .builder
+                .build_load(
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                    field_ptr,
+                    &format!("{label}_old_rc"),
+                )
+                .llvm_ctx("field overwrite old refcounted handle load")?
+                .into_pointer_value();
+            emit_field_old_value_release(
+                fn_ctx,
+                old_ptr,
+                src_val.into_pointer_value(),
+                helper.name,
+                &format!("{label}_rc"),
+            )
+        }
+        StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. } => {
+            let witness = crate::layout::collection_layout_witness(kind)?.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "field overwrite `{label}`: collection kind {kind:?} has no layout witness"
+                ))
+            })?;
+            if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "field overwrite `{label}`: collection kind {kind:?} requires a \
+                     pointer-typed slot, got {field_ty:?}"
+                )));
+            }
+            let old_ptr = fn_ctx
+                .builder
+                .build_load(
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                    field_ptr,
+                    &format!("{label}_old_coll"),
+                )
+                .llvm_ctx("field overwrite old collection load")?
+                .into_pointer_value();
+            emit_field_old_value_release(
+                fn_ctx,
+                old_ptr,
+                src_val.into_pointer_value(),
+                witness.drop_sym,
+                &format!("{label}_coll"),
+            )
+        }
+        StateFieldCloneKind::UserRecord { name } => {
+            if !release_resource_records
+                && fn_ctx
+                    .resource_record_close
+                    .iter()
+                    .any(|(record, _)| record == name || short_name(record) == short_name(name))
+            {
+                return Ok(());
+            }
+            let helper = get_or_declare_record_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name);
+            fn_ctx
+                .builder
+                .build_call(
+                    helper,
+                    &[field_ptr.into(), src_ptr.into()],
+                    &format!("{label}_record_release"),
+                )
+                .llvm_ctx("record field overwrite release call")?;
+            Ok(())
+        }
+        StateFieldCloneKind::Enum { name } => {
+            let helper = get_or_declare_enum_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name);
+            fn_ctx
+                .builder
+                .build_call(
+                    helper,
+                    &[field_ptr.into(), src_ptr.into()],
+                    &format!("{label}_enum_release"),
+                )
+                .llvm_ctx("enum field overwrite release call")?;
+            Ok(())
+        }
+        StateFieldCloneKind::Tuple { .. } | StateFieldCloneKind::Array { .. } => {
+            Err(CodegenError::FailClosed(format!(
+                "field overwrite `{label}` is not wired for aggregate kind {kind:?}"
+            )))
+        }
+        StateFieldCloneKind::IoHandle {
+            kind:
+                kind @ (IoHandleKind::Stream
+                | IoHandleKind::Sink
+                | IoHandleKind::Generator
+                | IoHandleKind::CancellationToken),
+        } => Err(CodegenError::FailClosed(format!(
+            "field overwrite `{label}` reached codegen for un-clonable builtin handle \
+             {kind:?}; MIR must reject the store until it carries source-slot \
+             neutralisation"
+        ))),
+        // Connection state teardown is actor-owned; this field kind carries no
+        // per-slot close, so replacing its pointer abandons no independent
+        // close obligation. Keep the established actor-state posture.
+        StateFieldCloneKind::IoHandle {
+            kind: IoHandleKind::Connection,
+        } => Ok(()),
+        StateFieldCloneKind::Resource {
+            name,
+            close: ResourceCloseAuthority::Runtime(descriptor),
+        } => Err(CodegenError::FailClosed(format!(
+            "field overwrite `{label}` reached codegen for builtin resource {name} \
+                 ({descriptor:?}); MIR must reject the store until it carries \
+                 source-slot neutralisation"
+        ))),
+        StateFieldCloneKind::BitCopy { .. }
+        | StateFieldCloneKind::ClosurePair
+        | StateFieldCloneKind::Resource { .. }
+        | StateFieldCloneKind::OpaqueHandle { .. } => Ok(()),
+    }
+}
+
 fn lower_actor_state_field_store(
     fn_ctx: &FnCtx<'_, '_>,
     field_offset: FieldOffset,
@@ -16636,7 +17444,7 @@ fn lower_actor_state_field_store(
     // MIR-level `StateFieldCloneKind` — never the LLVM struct shape, which a
     // user record with a `{ ptr, i32, i32 }` layout could alias. Emitted
     // AFTER the borrow-gated clone above so the pointer-inequality guard
-    // inside `emit_state_field_old_value_release` compares against the value
+    // inside `emit_field_old_value_release` compares against the value
     // actually stored. `None` kinds (non-handler functions, hand-built test
     // fixtures) keep the pre-fix posture.
     //
@@ -16669,186 +17477,16 @@ fn lower_actor_state_field_store(
                 kinds.len()
             ))
         })?;
-        match kind {
-            StateFieldCloneKind::Bytes => {
-                // The field slot holds the BytesTriple by value; its heap
-                // reference is the data pointer in triple field 0.
-                let triple_ty = bytes_triple_llvm_ty(fn_ctx.ctx);
-                let old_ptr_slot = fn_ctx
-                    .builder
-                    .build_struct_gep(
-                        triple_ty,
-                        field_ptr,
-                        0,
-                        &format!("actor_state_field_{idx}_old_data_slot"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore old bytes data gep")?;
-                let old_ptr = fn_ctx
-                    .builder
-                    .build_load(
-                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
-                        old_ptr_slot,
-                        &format!("actor_state_field_{idx}_old_data"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore old bytes data load")?
-                    .into_pointer_value();
-                let new_ptr = fn_ctx
-                    .builder
-                    .build_extract_value(
-                        src_val.into_struct_value(),
-                        0,
-                        &format!("actor_state_field_{idx}_new_data"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore new bytes data extract")?
-                    .into_pointer_value();
-                emit_state_field_old_value_release(
-                    fn_ctx,
-                    old_ptr,
-                    new_ptr,
-                    "hew_bytes_drop",
-                    &format!("state_f{idx}_bytes"),
-                )?;
-            }
-            StateFieldCloneKind::String => {
-                let old_ptr = fn_ctx
-                    .builder
-                    .build_load(
-                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
-                        field_ptr,
-                        &format!("actor_state_field_{idx}_old_str"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore old string load")?
-                    .into_pointer_value();
-                let new_ptr = src_val.into_pointer_value();
-                emit_state_field_old_value_release(
-                    fn_ctx,
-                    old_ptr,
-                    new_ptr,
-                    "hew_string_drop",
-                    &format!("state_f{idx}_str"),
-                )?;
-            }
-            StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
-                if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
-                    return Err(CodegenError::FailClosed(format!(
-                        "ActorStateFieldStore field {idx}: refcounted handle kind \
-                         {kind:?} requires a pointer-typed slot, got {field_ty:?}"
-                    )));
-                }
-                let old_ptr = fn_ctx
-                    .builder
-                    .build_load(
-                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
-                        field_ptr,
-                        &format!("actor_state_field_{idx}_old_rc"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore old refcounted handle load")?
-                    .into_pointer_value();
-                let helper = drop_helper_for_kind(kind)?.ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "ActorStateFieldStore field {idx}: refcounted handle kind \
-                         {kind:?} has no drop helper"
-                    ))
-                })?;
-                emit_state_field_old_value_release(
-                    fn_ctx,
-                    old_ptr,
-                    src_val.into_pointer_value(),
-                    helper.name,
-                    &format!("state_f{idx}_rc"),
-                )?;
-            }
-            StateFieldCloneKind::Vec { .. }
-            | StateFieldCloneKind::HashMap { .. }
-            | StateFieldCloneKind::HashSet { .. } => {
-                // The field slot holds the collection handle pointer by
-                // value. The release symbol comes from the layout witness —
-                // the sole collection symbol-selection authority — so this
-                // release and the `state_drop` release derive from one
-                // descriptor and cannot drift (W4.045 UAF class). All three
-                // `*_free_*` symbols are null-tolerant, so the spawn-time
-                // zero-initialised first store needs no extra guard.
-                let witness = crate::layout::collection_layout_witness(kind)?.ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "ActorStateFieldStore field {idx}: collection kind {kind:?} \
-                         has no layout witness; `collection_layout_witness` and the \
-                         kind classifier have drifted"
-                    ))
-                })?;
-                if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
-                    return Err(CodegenError::FailClosed(format!(
-                        "ActorStateFieldStore field {idx}: collection kind {kind:?} \
-                         requires a pointer-typed handle slot, got {field_ty:?}; the \
-                         state layout and the kind classifier have drifted"
-                    )));
-                }
-                let old_ptr = fn_ctx
-                    .builder
-                    .build_load(
-                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
-                        field_ptr,
-                        &format!("actor_state_field_{idx}_old_coll"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore old collection load")?
-                    .into_pointer_value();
-                let new_ptr = src_val.into_pointer_value();
-                emit_state_field_old_value_release(
-                    fn_ctx,
-                    old_ptr,
-                    new_ptr,
-                    witness.drop_sym,
-                    &format!("state_f{idx}_coll"),
-                )?;
-            }
-            StateFieldCloneKind::UserRecord { name } => {
-                // Embedded aggregate: byte-copied loads mean the incoming
-                // value can alias old heap leaves (functional update /
-                // self-store), so the release is the synthesised
-                // collect-neutralise-drop helper, not a bare drop-spine
-                // call. See `emit_record_overwrite_release_body`.
-                let helper =
-                    get_or_declare_record_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name);
-                fn_ctx
-                    .builder
-                    .build_call(
-                        helper,
-                        &[field_ptr.into(), src_ptr.into()],
-                        &format!("state_f{idx}_rec_release"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore record overwrite release")?;
-            }
-            StateFieldCloneKind::Enum { name } => {
-                let helper =
-                    get_or_declare_enum_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name);
-                fn_ctx
-                    .builder
-                    .build_call(
-                        helper,
-                        &[field_ptr.into(), src_ptr.into()],
-                        &format!("state_f{idx}_enum_release"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore enum overwrite release")?;
-            }
-            StateFieldCloneKind::Tuple { .. } | StateFieldCloneKind::Array { .. } => {
-                return Err(CodegenError::FailClosed(format!(
-                    "ActorStateFieldStore field {idx}: aggregate state-field reassignment \
-                     is not wired for kind {kind:?}"
-                )));
-            }
-            StateFieldCloneKind::BitCopy { .. }
-            | StateFieldCloneKind::IoHandle { .. }
-            // ClosurePair: closure-valued actor state is rejected at check
-            // time by the transitive closure-field walk, so no overwrite
-            // reaches this store; grouped with the no-release kinds.
-            | StateFieldCloneKind::ClosurePair
-            // Resource: leak-over-UAF on overwrite (clone refused; a
-            // move-and-restore could alias with no retain to compare). The
-            // neutralise step already nulled the slot; grouped with the
-            // no-release kinds. The final actor-shutdown drop closes a live
-            // handle.
-            | StateFieldCloneKind::Resource { .. }
-            | StateFieldCloneKind::OpaqueHandle { .. } => {}
-        }
+        emit_field_overwrite_release(
+            fn_ctx,
+            field_ptr,
+            field_ty,
+            src_ptr,
+            src_val,
+            kind,
+            &format!("state_f{idx}"),
+            true,
+        )?;
     }
     fn_ctx
         .builder
@@ -17541,13 +18179,13 @@ pub(crate) fn bytes_triple_llvm_ty(ctx: &Context) -> StructType<'_> {
     ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false)
 }
 
-/// Release the OLD heap reference of an actor state field that is about to
-/// be overwritten, guarded by pointer inequality against the NEW value.
+/// Release the old heap reference of a field that is about to be overwritten,
+/// guarded by pointer inequality against the replacement.
 ///
 /// The guard exists for the self-store shapes: a stored value whose heap
 /// pointer EQUALS the old field pointer arrived without a refcount bump
-/// (`buf = buf` round-trips the triple through a local via
-/// `ActorStateFieldLoad`, which byte-copies at rc unchanged). Releasing the
+/// (`buf = buf` may round-trip the handle through a local via a byte-copy at
+/// unchanged refcount). Releasing the
 /// old reference there would free the very buffer the field is about to
 /// re-own — a use-after-free. Skipping the release merely preserves the
 /// pre-fix posture for that shape (and for the slice-of-self store, whose
@@ -17558,7 +18196,7 @@ pub(crate) fn bytes_triple_llvm_ty(ctx: &Context) -> StructType<'_> {
 /// `hew_string_drop` null + static-string guard), so the spawn-time
 /// zero-initialised field needs no extra null check — null old vs non-null
 /// new takes the release edge and no-ops in the runtime.
-fn emit_state_field_old_value_release(
+fn emit_field_old_value_release(
     fn_ctx: &FnCtx<'_, '_>,
     old_ptr: PointerValue<'_>,
     new_ptr: PointerValue<'_>,
@@ -17835,16 +18473,19 @@ fn lower_value_snapshot_clone_instr<'ctx>(
         StateFieldCloneKind::Enum { name } => {
             lower_enum_clone_inplace_instr(fn_ctx, dest, src, name)
         }
-        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+        StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender => {
             if boundary == hew_mir::PreparedCarrierBoundary::Actor {
                 return Err(CodegenError::FailClosed(
-                    "successful actor snapshot plan contains Rc/Weak".into(),
+                    "successful actor snapshot plan contains a local refcounted handle".into(),
                 ));
             }
             let symbol = match plan.root() {
                 StateFieldCloneKind::Rc => "hew_rc_clone",
                 StateFieldCloneKind::Weak => "hew_weak_clone_rc",
-                _ => unreachable!("outer match limits Rc/Weak roots"),
+                StateFieldCloneKind::ChannelSender => "hew_channel_sender_clone",
+                _ => unreachable!("outer match limits refcounted-handle roots"),
             };
             lower_allocating_snapshot_clone(fn_ctx, dest, src, symbol, "local_call_rc")
         }
@@ -17946,16 +18587,28 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
             let (slot, _) = place_pointer(fn_ctx, value)?;
             emit_aggregate_recursive_drop(fn_ctx, slot, ty, 0, "prepared_array_drop")
         }
-        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
-            if boundary == hew_mir::PreparedCarrierBoundary::Actor {
+        StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender => {
+            // Unlike Rc/Weak, Sender<T> is an explicitly sendable actor
+            // payload. Outbound mode resolution transfers its final owner;
+            // failed submission therefore closes the still-caller-owned
+            // prepared carrier here.
+            if boundary == hew_mir::PreparedCarrierBoundary::Actor
+                && matches!(
+                    plan.root(),
+                    StateFieldCloneKind::Rc | StateFieldCloneKind::Weak
+                )
+            {
                 return Err(CodegenError::FailClosed(
-                    "prepared actor carrier drop contains Rc/Weak".into(),
+                    "prepared actor carrier drop contains a local refcounted handle".into(),
                 ));
             }
             let symbol = match plan.root() {
                 StateFieldCloneKind::Rc => "hew_rc_drop",
                 StateFieldCloneKind::Weak => "hew_weak_drop_rc",
-                _ => unreachable!("outer match limits Rc/Weak roots"),
+                StateFieldCloneKind::ChannelSender => "hew_channel_sender_close",
+                _ => unreachable!("outer match limits refcounted-handle roots"),
             };
             let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
             let handle = fn_ctx
@@ -17981,18 +18634,27 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
                 .llvm_ctx("local call Rc/Weak null store")?;
             Ok(())
         }
-        StateFieldCloneKind::Resource { close_symbol, .. } => {
+        StateFieldCloneKind::Resource { close, .. } => {
             let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
             let handle = fn_ctx
                 .builder
                 .build_load(slot_ty, slot, "prepared_resource_handle")
                 .llvm_ctx("prepared resource handle load")?;
-            let helper = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                close_symbol,
-            )?;
+            let helper = match close {
+                ResourceCloseAuthority::Runtime(descriptor) => intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    descriptor.c_symbol(),
+                )?,
+                ResourceCloseAuthority::User(symbol) => {
+                    fn_ctx.llvm_mod.get_function(symbol).ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "prepared user resource close `{symbol}` is not declared"
+                        ))
+                    })?
+                }
+            };
             fn_ctx
                 .builder
                 .build_call(helper, &[handle.into()], "prepared_resource_close")
@@ -18049,6 +18711,54 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
             )))
         }
     }
+}
+
+/// Emit a prepared-carrier drop only while its exactly-once transfer flag is
+/// zero. Every local-call carrier carries this structural guard; actor
+/// snapshots use their separate ownership protocol and leave it absent. A user
+/// `#[resource]` record is why null-neutralization alone is insufficient:
+/// zeroed fields are still a valid receiver for its generated `close(self)`, so
+/// a terminal snapshot drop must be suppressed after ownership moves to
+/// another carrier.
+fn emit_guarded_prepared_carrier_drop<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: Place,
+    plan: &hew_mir::state_clone::ValueSnapshotPlan,
+    boundary: hew_mir::PreparedCarrierBoundary,
+    guard: Option<Place>,
+) -> CodegenResult<()> {
+    let Some(flag) = guard else {
+        return emit_prepared_carrier_drop(fn_ctx, value, plan, boundary);
+    };
+    let (flag_ptr, flag_ty) = place_pointer(fn_ctx, flag)?;
+    let int_ty = match flag_ty {
+        BasicTypeEnum::IntType(int_ty) => int_ty,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "prepared carrier drop guard {flag:?} is not integer-shaped: {other:?}"
+            )));
+        }
+    };
+    let flag_value = fn_ctx
+        .builder
+        .build_load(int_ty, flag_ptr, "carrier_drop_flag")
+        .llvm_ctx("prepared carrier drop-flag load")?
+        .into_int_value();
+    let live = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            flag_value,
+            int_ty.const_zero(),
+            "carrier_drop_live",
+        )
+        .llvm_ctx("prepared carrier drop-flag compare")?;
+    emit_gated_drop_region(
+        fn_ctx,
+        live,
+        ("carrier_drop_live_only", "carrier_drop_merge"),
+        || emit_prepared_carrier_drop(fn_ctx, value, plan, boundary),
+    )
 }
 
 fn validate_prepared_outbound_modes(
@@ -19242,6 +19952,7 @@ fn state_kind_key_fragment(kind: &StateFieldCloneKind) -> String {
         StateFieldCloneKind::Bytes => "bytes".to_string(),
         StateFieldCloneKind::Rc => "rc".to_string(),
         StateFieldCloneKind::Weak => "weak".to_string(),
+        StateFieldCloneKind::ChannelSender => "channel_sender".to_string(),
         StateFieldCloneKind::Tuple { elems } => state_kind_tuple_key(elems),
         StateFieldCloneKind::Array { elem, len } => {
             format!("array_{}_{}", len, state_kind_key_fragment(elem))
@@ -19464,6 +20175,10 @@ pub(crate) fn collection_elem_clone_drop_syms(
             builtin: Some(hew_types::BuiltinType::Weak),
             ..
         } => Some(("hew_weak_clone_rc", "hew_weak_drop_rc")),
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Sender),
+            ..
+        } => Some(("hew_channel_sender_clone", "hew_channel_sender_close")),
         _ => None,
     }
 }
@@ -20254,6 +20969,10 @@ fn actor_handler_identity(func: &RawMirFunction) -> Option<(ActorHandlerKind, &s
 
 fn is_receive_handler(func: &RawMirFunction) -> bool {
     actor_handler_identity(func).is_some_and(|(kind, _)| kind == ActorHandlerKind::Receive)
+}
+
+fn is_crash_handler(func: &RawMirFunction) -> bool {
+    actor_handler_identity(func).is_some_and(|(kind, _)| kind == ActorHandlerKind::Crash)
 }
 
 fn compute_borrow_taint(func: &RawMirFunction) -> HashSet<u32> {
@@ -21377,6 +22096,61 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
             }
             emit_cow_heap_drop(fn_ctx, drop.place, release.release_symbol())
         }
+        hew_mir::DropKind::VecIterCursor { release } => {
+            if drop.drop_fn.is_some() {
+                return Err(CodegenError::FailClosed(format!(
+                    "VecIterCursor ElabDrop @ {place:?} unexpectedly carries \
+                     ElabDrop::drop_fn = {df:?}; the typed Vec release must live \
+                     in DropKind::VecIterCursor",
+                    place = drop.place,
+                    df = drop.drop_fn,
+                )));
+            }
+            let ResolvedTy::Named { name, args, .. } = &drop.ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "VecIterCursor ElabDrop @ {:?} has non-named type {}",
+                    drop.place,
+                    drop.ty.user_facing()
+                )));
+            };
+            if name.rsplit('.').next() != Some("VecIter") || args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "VecIterCursor ElabDrop @ {:?} has non-VecIter type {}",
+                    drop.place,
+                    drop.ty.user_facing()
+                )));
+            }
+            let vec_ty = ResolvedTy::Named {
+                name: "Vec".to_string(),
+                args: vec![args[0].clone()],
+                builtin: Some(BuiltinType::Vec),
+                is_opaque: false,
+            };
+            let expected = resolved_ty_cow_heap_release(fn_ctx, &vec_ty).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "VecIterCursor ElabDrop @ {:?} has no Vec release protocol for {}",
+                    drop.place,
+                    vec_ty.user_facing()
+                ))
+            })?;
+            if release != expected {
+                return Err(CodegenError::FailClosed(format!(
+                    "VecIterCursor ElabDrop @ {:?} carries {:?}, but element/layout \
+                     re-derivation selects {:?} for {}",
+                    drop.place,
+                    release,
+                    expected,
+                    vec_ty.user_facing()
+                )));
+            }
+            lower_record_field_drop(
+                fn_ctx,
+                drop.place,
+                hew_mir::FieldOffset(0),
+                &vec_ty,
+                &hew_mir::DropFnSpec::Release(release.release_symbol()),
+            )
+        }
         hew_mir::DropKind::AggregateRecursive => {
             if drop.drop_fn.is_some() {
                 return Err(CodegenError::FailClosed(format!(
@@ -21724,7 +22498,12 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
             ..
         } => true,
         ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Rc | hew_types::BuiltinType::Weak),
+            builtin:
+                Some(
+                    hew_types::BuiltinType::Rc
+                    | hew_types::BuiltinType::Weak
+                    | hew_types::BuiltinType::Sender,
+                ),
             ..
         } => true,
         ResolvedTy::Named {
@@ -28343,7 +29122,13 @@ fn emit_cancel_drops(
 /// which may be uninitialized when an entry cooperate check fires.
 fn collect_owned_carrier_cancel_drops(
     func: &RawMirFunction,
-) -> CodegenResult<Vec<(Place, hew_mir::state_clone::ValueSnapshotPlan)>> {
+) -> CodegenResult<
+    Vec<(
+        Place,
+        hew_mir::state_clone::ValueSnapshotPlan,
+        Option<Place>,
+    )>,
+> {
     let mut drops = Vec::new();
     for block in &func.blocks {
         if !matches!(
@@ -28356,6 +29141,7 @@ fn collect_owned_carrier_cancel_drops(
             let Instr::ValueSnapshotDrop {
                 value,
                 plan,
+                guard,
                 boundary: hew_mir::PreparedCarrierBoundary::LocalCall,
                 ..
             } = instr
@@ -28368,25 +29154,66 @@ fn collect_owned_carrier_cancel_drops(
             if usize::try_from(*local).map_or(true, |index| index >= func.params.len()) {
                 continue;
             }
-            if let Some((_, installed)) = drops.iter().find(|(place, _)| place == value) {
-                if installed != plan {
+            if let Some((_, installed, installed_guard)) =
+                drops.iter().find(|(place, _, _)| place == value)
+            {
+                if installed != plan || installed_guard != guard {
                     return Err(CodegenError::FailClosed(format!(
-                        "owned call-carrier parameter {value:?} has inconsistent terminal drop plans"
+                        "owned call-carrier parameter {value:?} has inconsistent terminal drop plans or guards"
                     )));
                 }
             } else {
-                drops.push((*value, plan.clone()));
+                drops.push((*value, plan.clone(), *guard));
             }
         }
     }
     Ok(drops)
 }
 
+/// Initialize carrier transfer guards in the LLVM prologue, before an
+/// auto-injected function-entry cooperate check can branch to cancellation.
+/// MIR also carries the dominating `ConstI64(0)` for its own definite-init
+/// proof; this prologue store closes the earlier codegen-only cancellation
+/// edge, which otherwise reads the guard before the first MIR instruction.
+fn initialize_owned_carrier_drop_guards(
+    fn_ctx: &FnCtx<'_, '_>,
+    drops: &[(
+        Place,
+        hew_mir::state_clone::ValueSnapshotPlan,
+        Option<Place>,
+    )],
+) -> CodegenResult<()> {
+    let mut initialized = HashSet::new();
+    for (_, _, guard) in drops {
+        let Some(flag) = guard else {
+            continue;
+        };
+        if !initialized.insert(*flag) {
+            continue;
+        }
+        let (slot, ty) = place_pointer(fn_ctx, *flag)?;
+        let BasicTypeEnum::IntType(int_ty) = ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "prepared carrier drop guard {flag:?} is not integer-shaped: {ty:?}"
+            )));
+        };
+        fn_ctx
+            .builder
+            .build_store(slot, int_ty.const_zero())
+            .llvm_ctx("initialize prepared carrier drop guard")?;
+    }
+    Ok(())
+}
+
 fn emit_cooperate_check<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     block_id: u32,
     drop_plans: &[(ExitPath, hew_mir::DropPlan)],
-    owned_carrier_cancel_drops: &[(Place, hew_mir::state_clone::ValueSnapshotPlan)],
+    owned_carrier_cancel_drops: &[(
+        Place,
+        hew_mir::state_clone::ValueSnapshotPlan,
+        Option<Place>,
+    )],
 ) -> CodegenResult<()> {
     let signal = fn_ctx.call_runtime_int(
         "hew_actor_cooperate",
@@ -28422,12 +29249,13 @@ fn emit_cooperate_check<'ctx>(
     // `collect_owned_carrier_cancel_drops` preserves the terminal instruction
     // order installed by MIR (already LIFO), so cancellation replays that same
     // order without reversing it a second time.
-    for (value, plan) in owned_carrier_cancel_drops {
-        emit_prepared_carrier_drop(
+    for (value, plan, guard) in owned_carrier_cancel_drops {
+        emit_guarded_prepared_carrier_drop(
             fn_ctx,
             *value,
             plan,
             hew_mir::PreparedCarrierBoundary::LocalCall,
+            *guard,
         )?;
     }
     emit_cancel_trap_or_return(fn_ctx)?;
@@ -28632,7 +29460,9 @@ fn declare_function<'ctx>(
     // argument into the corresponding `locals[i]` alloca slot.
     let ctx_ptr_ty = ctx.ptr_type(AddressSpace::default());
     let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(
-        func.params.len() + usize::from(func.call_conv.carries_execution_context()),
+        func.params.len()
+            + usize::from(func.call_conv.carries_execution_context())
+            + usize::from(is_crash_handler(func)),
     );
     if func.call_conv.carries_execution_context() {
         param_tys.push(ctx_ptr_ty.into());
@@ -28649,6 +29479,15 @@ fn declare_function<'ctx>(
         }
         let llvm_ty = resolve_value_ty(ctx, target_data, param_ty, record_layouts, enum_layouts)?;
         param_tys.push(metadata_type_from_basic(llvm_ty));
+    }
+    // The runtime invokes a synthesised crash hook as
+    // `(ctx, crash_code, crash_message, actor_state_ptr)`. The final pointer is
+    // not a user-visible MIR parameter: it is the child's supervisor-owned
+    // restart-template state and is consumed directly by actor-state field
+    // loads/stores in the hook body. Gate this ABI extension on the carried
+    // SourceOrigin identity, never on a forgeable function-name suffix.
+    if is_crash_handler(func) {
+        param_tys.push(ctx_ptr_ty.into());
     }
     // P5-RX sub-stage 1: receive handlers gain a trailing `borrow_mode: i32`
     // so the dispatch trampoline can thread the copy-vs-borrow receipt
@@ -30119,6 +30958,27 @@ fn lower_function<'ctx>(
     } else {
         None
     };
+    let explicit_actor_state_ptr = if is_crash_handler(func) {
+        if !func.call_conv.carries_execution_context() {
+            return Err(CodegenError::FailClosed(format!(
+                "synthesised crash handler `{}` does not carry an execution context",
+                func.name
+            )));
+        }
+        let state_idx = u32::try_from(func.params.len() + 1).map_err(|_| {
+            CodegenError::FailClosed("crash handler exceeds u32::MAX params — impossible".into())
+        })?;
+        let param = llvm_fn.get_nth_param(state_idx).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "crash handler `{}` has no trailing actor-state LLVM parameter at index \
+                 {state_idx}; declare_function and lower_function disagree on the crash ABI",
+                func.name
+            ))
+        })?;
+        Some(param.into_pointer_value())
+    } else {
+        None
+    };
     let closure_call_fallback_context = if function_needs_closure_call_fallback_context(func) {
         Some(build_zeroed_closure_call_fallback_context(ctx, &builder)?)
     } else {
@@ -30625,6 +31485,7 @@ fn lower_function<'ctx>(
         return_ty: body_return_ty_llvm,
         return_resolved_ty: func.return_ty.clone(),
         execution_context,
+        explicit_actor_state_ptr,
         closure_call_fallback_context,
         execution_context_is_actor_handler: func.call_conv == FunctionCallConv::ActorHandler,
         actor_state_ty,
@@ -30721,6 +31582,7 @@ fn lower_function<'ctx>(
     let cooperate_sites: &[CooperateSite] =
         checked.map(|c| c.cooperate_sites.as_slice()).unwrap_or(&[]);
     let owned_carrier_cancel_drops = collect_owned_carrier_cancel_drops(func)?;
+    initialize_owned_carrier_drop_guards(&fn_ctx, &owned_carrier_cancel_drops)?;
     if let Some(site) = cooperate_sites
         .iter()
         .find(|site| site.kind == CooperateKind::FunctionEntry && site.bb_id != entry_block.id)

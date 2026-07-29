@@ -90,29 +90,19 @@ const SOURCE_REFRESHED_BASELINE_FILES: &[&str] = &["examples/mqtt_broker.hew"];
 /// release fails this test and forces the entry to be removed rather than
 /// letting the debt quietly become the new normal.
 const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
-    // The `Err(err)` binder is an interior byte-alias of the parent `Result`.
-    // The local-call snapshot is separately cloned, but the binder itself is
-    // not: dropping both binder and parent on cancellation walked the same
-    // `CronError` string twice.
-    (
-        "std/time/cron/cron.hew",
-        "Expr::next",
-        6,
-        "the nested CronError binder aliases its parent Result; suppressing its duplicate cancellation drop prevents a child-plus-parent double-free",
-    ),
     // The benchmark loops moved to `serve_forever`; these `main` functions now
     // own only listener construction and its typed failure branch.
     (
         "examples/benchmarks/http_server.hew",
         "main",
-        5,
-        "the request loop and its owned path temporaries moved into serve_forever, so main no longer contains those syntactic release sites",
+        4,
+        "the request loop and its owned path temporaries moved into serve_forever; main retains only the error-arm reason/detail strings, each released on its normal and cancel exits",
     ),
     (
         "examples/benchmarks/http_server_expert.hew",
         "main",
-        9,
-        "the request loop and its owned path temporaries moved into serve_forever, so main no longer contains those syntactic release sites",
+        8,
+        "the request loop and its owned path temporaries moved into serve_forever; main retains addr across three live exits plus error-arm reason/detail strings on their normal and cancel exits",
     ),
     // SMTP constructors now return Result and transfer either the live
     // connection or error detail directly through the selected match arm.
@@ -146,8 +136,8 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     (
         "std/process.hew",
         "last_process_error",
-        0,
-        "both owned string inputs transfer directly into the selected ProcessError payload, leaving no untransferred Hew heap value to release",
+        1,
+        "the nonempty message transfers into ProcessError, while the empty-message arm transfers default_message and releases its now-unselected message buffer on that join edge",
     ),
     // SemVer numeric components are strings now. `try_parse` transfers them
     // into `Version` rather than parsing and dropping them, while
@@ -179,10 +169,81 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     (
         "std/text/semver/semver.hew",
         "try_parse",
-        63,
-        "validated component strings transfer into the returned Version instead of being dropped after fixed-width parsing, so those releases are intentionally absent",
+        105,
+        "the current source retains major_str, minor_str, patch_str, pre, and build as owned strings in the returned Version; its remaining releases are the live error/cancel paths for the cloned and sliced intermediates, so the three transferred component owners are intentionally absent from the pre-migration 108-plan topology",
     ),
 ];
+
+// These files carry inlined copies of the same current `std::net::connect_timeout`
+// helper. The owner has no suspend edge: its fourteen drops are the host's four
+// live terminal/error paths, the restored two receiver error-path releases,
+// and the eight formatting temporaries on the two
+// panic arms. `hew_tcp_connect_timeout(host, ...)` borrows `host`; it does not
+// retain or free it. The former 18-plan shape belonged to the pre-refactor
+// endpoint/control-flow topology, so these copies must remain pinned at 14
+// rather than silently accepting another loss.
+const ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES: &[(&str, &str)] = &[
+    ("examples/actor_net_reader.hew", "net$connect_timeout"),
+    ("examples/benchmarks/http_server.hew", "net$connect_timeout"),
+    (
+        "examples/benchmarks/http_server_expert.hew",
+        "net$connect_timeout",
+    ),
+    ("examples/chat_client.hew", "net$connect_timeout"),
+    ("examples/chat_server.hew", "net$connect_timeout"),
+    ("examples/curl_client.hew", "net$connect_timeout"),
+    ("examples/http_server.hew", "net$connect_timeout"),
+    (
+        "examples/net/await_http_roundtrip.hew",
+        "net$connect_timeout",
+    ),
+    ("examples/net/await_read.hew", "net$connect_timeout"),
+    ("examples/net/await_read_fanout.hew", "net$connect_timeout"),
+    ("examples/net/await_read_hup.hew", "net$connect_timeout"),
+    ("examples/net/http_await_service.hew", "net$connect_timeout"),
+    ("examples/net/probe_a_conn_field.hew", "net$connect_timeout"),
+    (
+        "examples/net/probe_b2_closure_await_outer_crash.hew",
+        "net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b2_closure_capture_await.hew",
+        "net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b2_closure_multi_await.hew",
+        "net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b2_closure_unit_await.hew",
+        "net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b3_closure_capture_noawait.hew",
+        "net$connect_timeout",
+    ),
+    ("examples/net/tls_client.hew", "net$connect_timeout"),
+    ("examples/quic_service/client.hew", "net$connect_timeout"),
+    ("examples/quic_service/server.hew", "net$connect_timeout"),
+    ("examples/static_server.hew", "net$connect_timeout"),
+    ("std/net/dns/dns.hew", "net$connect_timeout"),
+    ("std/net/http/http.hew", "net$connect_timeout"),
+    ("std/net/net.hew", "connect_timeout"),
+    ("std/net/quic/quic.hew", "net$connect_timeout"),
+    ("std/net/tls/tls.hew", "net$connect_timeout"),
+    ("std/net/websocket/websocket.hew", "net$connect_timeout"),
+];
+
+const NET_CONNECT_TIMEOUT_REASON: &str = "the current copied connect_timeout body has no suspend edge; its 14 elaborated drops cover host's four live terminal/error paths, two restored receiver error-path releases, and eight formatting temporaries, and hew_tcp_connect_timeout borrows (does not retain) host, so the former 18-plan pre-refactor endpoint topology is semantically obsolete";
+
+fn accounted_shortfalls() -> impl Iterator<Item = (&'static str, &'static str, usize, &'static str)>
+{
+    ACCOUNTED_BELOW_BASELINE.iter().copied().chain(
+        ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES
+            .iter()
+            .map(|(file, function)| (*file, *function, 14, NET_CONNECT_TIMEOUT_REASON)),
+    )
+}
 
 fn capture_mode() -> bool {
     std::env::var_os("HEW_RELEASE_COUNT_CAPTURE").is_some()
@@ -241,17 +302,41 @@ fn counts_for(file: &Path) -> FileCounts {
     if !output.status.success() {
         return FileCounts::Rejected;
     }
-    FileCounts::Functions(parse_dump(&String::from_utf8_lossy(&output.stdout)))
+    let direct_prefix =
+        hew_types::module_registry::is_canonical_stdlib_module_source(file, "std.stream")
+            .then_some("stream$");
+    FileCounts::Functions(parse_dump_for_direct_module(
+        &String::from_utf8_lossy(&output.stdout),
+        direct_prefix,
+    ))
 }
 
 /// The parser the whole observable rests on, factored out so the self-test
 /// below exercises THIS code rather than a copy of it.
 fn parse_dump(stdout: &str) -> BTreeMap<String, usize> {
+    parse_dump_for_direct_module(stdout, None)
+}
+
+/// Parse one dump, optionally normalising the canonical prefix of the module
+/// compiled directly as the root unit.
+///
+/// Imported dependency symbols retain their prefixes. `std/stream.hew` is the
+/// first non-intrinsic source module whose exact std provenance requires the
+/// frontend to lower it under `std.stream`; its own `stream$pipe` symbol must
+/// therefore compare with the historical root-source key `pipe`, while an
+/// imported `fs$read` in the same dump remains `fs$read`.
+fn parse_dump_for_direct_module(
+    stdout: &str,
+    direct_prefix: Option<&str>,
+) -> BTreeMap<String, usize> {
     let mut per: BTreeMap<String, usize> = BTreeMap::new();
     let mut current: Option<String> = None;
     for line in stdout.lines() {
         if let Some(rest) = line.strip_prefix("fn ") {
-            let name = rest.split_once(" -> ").map_or(rest, |(head, _)| head);
+            let raw_name = rest.split_once(" -> ").map_or(rest, |(head, _)| head);
+            let name = direct_prefix
+                .and_then(|prefix| raw_name.strip_prefix(prefix))
+                .unwrap_or(raw_name);
             current = Some(name.to_string());
             per.entry(name.to_string()).or_insert(0);
         } else if line.starts_with("      drop _") {
@@ -365,9 +450,8 @@ fn no_shipped_program_silently_loses_a_release() {
     }
 
     let baseline = load_baseline();
-    let accounted: BTreeMap<(&str, &str), (usize, &str)> = ACCOUNTED_BELOW_BASELINE
-        .iter()
-        .map(|(file, function, count, reason)| ((*file, *function), (*count, *reason)))
+    let accounted: BTreeMap<(&str, &str), (usize, &str)> = accounted_shortfalls()
+        .map(|(file, function, count, reason)| ((file, function), (count, reason)))
         .collect();
 
     let mut drops: Vec<String> = Vec::new();
@@ -478,21 +562,48 @@ fn the_differential_reads_plan_drops_and_not_binding_statements() {
     );
 }
 
+#[test]
+fn direct_module_prefix_normalization_preserves_imported_dependency_symbols() {
+    let dump = [
+        "fn stream$pipe -> ()",
+        "  drop_plans:",
+        "    return[bb0] ->",
+        "      drop _1 ty=string kind=cow_heap(hew_string_drop)",
+        "",
+        "fn fs$read -> ()",
+        "  drop_plans:",
+        "    return[bb0] ->",
+        "      drop _2 ty=string kind=cow_heap(hew_string_drop)",
+    ]
+    .join("\n");
+    let per = parse_dump_for_direct_module(&dump, Some("stream$"));
+    assert_eq!(per.get("pipe"), Some(&1));
+    assert_eq!(
+        per.get("fs$read"),
+        Some(&1),
+        "an imported dependency name must retain its owner prefix"
+    );
+    assert!(
+        !per.contains_key("stream$pipe"),
+        "only the direct module's canonical prefix is normalized"
+    );
+}
+
 /// Every accounted-for shortfall names a real cell in the baseline and really
 /// is BELOW it. Without this an entry could quietly waive a cell that no longer
 /// exists, or "account for" a count that never dropped.
 #[test]
 fn every_accounted_shortfall_is_a_real_shortfall() {
     let baseline = load_baseline();
-    for (file, function, expected, reason) in ACCOUNTED_BELOW_BASELINE {
-        let Some(FileCounts::Functions(per)) = baseline.get(*file) else {
+    for (file, function, expected, reason) in accounted_shortfalls() {
+        let Some(FileCounts::Functions(per)) = baseline.get(file) else {
             panic!("{file} is accounted for but is not an accepted file in the baseline");
         };
-        let before = per.get(*function).unwrap_or_else(|| {
+        let before = per.get(function).unwrap_or_else(|| {
             panic!("{file}::{function} is accounted for but is not in the baseline")
         });
         assert!(
-            expected < before,
+            expected < *before,
             "{file}::{function} is accounted for at {expected} but the baseline is \
              {before}; an accounted entry must describe a SHORTFALL"
         );

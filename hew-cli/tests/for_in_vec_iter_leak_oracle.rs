@@ -163,6 +163,40 @@ fn place_source_loop_source(frames: usize) -> String {
     )
 }
 
+/// `HashSet` field projection with owned string elements. Each outer frame owns a
+/// record-held set, `to_vec()` creates a fresh owned snapshot, and `VecIter`
+/// clone-out creates one independently droppable string per body iteration.
+fn hashset_owned_field_loop_source(frames: usize) -> String {
+    format!(
+        "type SetBox {{ words: HashSet<string> }}\n\
+         \n\
+         fn make_box() -> SetBox {{\n\
+         \x20   let words: HashSet<string> = HashSet::new();\n\
+         \x20   words.insert(\"field\" + \"-alpha-padding-padding\");\n\
+         \x20   words.insert(\"field\" + \"-beta-padding-padding\");\n\
+         \x20   words.insert(\"field\" + \"-gamma-padding-padding\");\n\
+         \x20   SetBox {{ words: words }}\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let holder = make_box();\n\
+         \x20       var total: i64 = 0;\n\
+         \x20       var count: i64 = 0;\n\
+         \x20       for word in holder.words {{\n\
+         \x20           total = total + word.len();\n\
+         \x20           count = count + 1;\n\
+         \x20       }}\n\
+         \x20       if count != 3 || holder.words.len() != 3 {{ return 91; }}\n\
+         \x20       println(total);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   0\n\
+         }}\n"
+    )
+}
+
 /// Fixture C — the `Vec<bool>` rvalue source. A second `BitCopy`-element width
 /// (1-byte) confirms the cursor's `hew_vec_free` release is element-width
 /// agnostic and the slope stays flat.
@@ -628,6 +662,26 @@ fn main() {\n\
 \x20   }\n\
 \x20   sum = sum + v[0] + v[1] + v.len();\n\
 \x20   print(sum);\n\
+\x20   print(\"OK\");\n\
+}\n";
+
+/// Poisoned-allocator twin of [`hashset_owned_field_loop_source`]. The source
+/// record-held `HashSet`, fresh `Vec` snapshot, and yielded string clones are three
+/// disjoint ownership layers and must all tear down exactly once.
+const HASHSET_OWNED_FIELD_SOURCE: &str = "\
+type SetBox { words: HashSet<string> }\n\
+\n\
+fn main() {\n\
+\x20   let words: HashSet<string> = HashSet::new();\n\
+\x20   words.insert(\"field\" + \"-alpha\");\n\
+\x20   words.insert(\"field\" + \"-beta\");\n\
+\x20   words.insert(\"field\" + \"-gamma\");\n\
+\x20   let holder = SetBox { words: words };\n\
+\x20   var count: i64 = 0;\n\
+\x20   for word in holder.words {\n\
+\x20       if word.len() > 0 { count = count + 1; }\n\
+\x20   }\n\
+\x20   print(count);\n\
 \x20   print(\"OK\");\n\
 }\n";
 
@@ -1220,6 +1274,20 @@ fn for_in_place_source_no_per_frame_leak_slope() {
     );
 }
 
+/// A record-field `HashSet<string>` source must release the source set, its
+/// `to_vec()` snapshot, and every clone-out yield with no per-frame residue.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn hashset_owned_field_for_in_has_zero_leak_endpoints() {
+    assert_frame_endpoints_zero(
+        "hashset_owned_field_for_in",
+        hashset_owned_field_loop_source,
+    );
+}
+
 /// Fixture C: per-iteration `for b in make_vec(i)` over a `Vec<bool>` must not
 /// leak — a second `BitCopy` element width confirms the cursor release is
 /// element-width agnostic.
@@ -1427,6 +1495,22 @@ fn assert_runs_clean(shape_name: &str, source: &str, expected: &str) {
 #[test]
 fn for_in_place_source_reuse_runs_clean_under_malloc_scribble() {
     assert_runs_clean("reuse_shape", REUSE_SHAPE_SOURCE, "86OK");
+}
+
+/// The `HashSet` field path must remain disjoint under aggressive allocator
+/// poisoning: source teardown, Vec snapshot teardown, and yielded-string
+/// teardown must not double-free or read a scribbled owner.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn hashset_owned_field_for_in_runs_clean_under_malloc_scribble() {
+    assert_runs_clean(
+        "hashset_owned_field_for_in",
+        HASHSET_OWNED_FIELD_SOURCE,
+        "3OK",
+    );
 }
 
 /// No-double-free pin: a place-source `for w in words` over a `Vec<string>`

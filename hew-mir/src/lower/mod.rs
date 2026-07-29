@@ -102,16 +102,18 @@ use self::composite_own::{
     derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
     derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
     detect_actor_state_handle_consume, detect_actor_state_resource_overwrite,
-    detect_opaque_resource_field_misuse, detect_unproven_aggregate_handle_double_free,
+    detect_builtin_handle_record_field_overwrite, detect_opaque_resource_field_misuse,
+    detect_unproven_aggregate_handle_double_free,
 };
 #[cfg(not(test))]
 use self::consts::{
     actor_name_from_handle_ty, actor_name_from_remote_pid_ty, build_down_hook_body,
     build_exit_hook_body, check_function, cmp_select_by_signedness, context_reader_offset,
     crash_action_return_ty, float_width, integer_bit_width, integer_signedness,
-    is_crash_info_payload_ty, is_self_expr, is_unit_close_error_result, is_unit_send_error_result,
-    literal_match_scrutinee_ty, method_name_from_id, named_type_marker, numeric_method_op,
-    numeric_method_signedness, recv_result_payload_ty, register_builtin_monomorphic_enum_layouts,
+    is_canonical_lifecycle_named_ty, is_crash_info_payload_ty, is_self_expr,
+    is_unit_close_error_result, is_unit_send_error_result, literal_match_scrutinee_ty,
+    method_name_from_id, named_type_marker, numeric_method_op, numeric_method_signedness,
+    recv_result_payload_ty, register_builtin_monomorphic_enum_layouts,
     register_builtin_record_layouts, runtime_symbol_for_call_expr, signed_min_value,
     unary_op_label, unresolved_fn_sig_reason,
 };
@@ -131,6 +133,7 @@ use self::drop_plan::{
     ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
     validate_discharge_authority_corroboration, validate_drop_plan, validate_field_drop_in_place,
     validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
+    vec_iter_yield_abandonment_diagnostics,
 };
 pub(crate) use self::facts::*;
 #[cfg(not(test))]
@@ -162,9 +165,10 @@ use self::suspend_places::{
 };
 #[cfg(not(test))]
 use self::temp_drop::{
-    aggregate_projection_transfer_dests, apply_nested_fresh_bytes_temp_drops,
-    apply_nested_fresh_string_temp_drops, bytes_interior_producer_dest, bytes_place_is_typed,
-    bytes_runtime_arg_is_borrow, bytes_share_sink_places, classify_actor_state_load_modes,
+    aggregate_borrowed_ingress_clone_sites, aggregate_projection_transfer_dests,
+    apply_nested_fresh_bytes_temp_drops, apply_nested_fresh_string_temp_drops,
+    bytes_interior_producer_dest, bytes_place_is_typed, bytes_runtime_arg_is_borrow,
+    bytes_share_sink_places, classify_actor_state_load_modes,
     compute_collection_interior_alias_taint, compute_projection_alias_taint,
     derive_bytes_actor_transfer_blocks, derive_cow_fresh_borrowed_owner, derive_cow_sole_owner,
     finalize_bytes_ownership, finalize_string_local_share_intents, finalize_string_ownership,
@@ -404,6 +408,7 @@ enum OwnedCarrierNeutralizeTarget {
 #[derive(Debug, Clone)]
 struct OwnedCarrierParam {
     value: Place,
+    guard: Place,
     ty: ResolvedTy,
     plan: crate::state_clone::ValueSnapshotPlan,
 }
@@ -417,13 +422,12 @@ struct OwnedCarrierParam {
 /// as borrowed sources. This predicate is the single home for the decision
 /// — both admission halves consult it (`register_owned_call_carrier_param`
 /// on the callee, `prepare_owned_call_carriers` on the caller) so the two
-/// sides cannot drift apart. `lower_direct_call_args` deliberately does
-/// NOT consult it: forwarding an already-tracked carrier projection or
-/// payload binder into a String/Bytes-param callee still discharges
-/// through the funnel, and the transferred count is released by the
-/// binder/projection local's own elaborated drop while the callee borrows
-/// (the copy-in runtime symbols mint independent owners) — verified leak-
-/// and scribble-clean in both liveness directions.
+/// sides cannot drift apart. `lower_direct_call_args` also consults it only
+/// when forwarding an already-tracked carrier projection or payload binder:
+/// String/Bytes still discharge the enclosing carrier through the funnel, but
+/// the binder/projection local keeps the transferred count's elaborated drop
+/// while the callee borrows (copy-in sinks mint independent owners) — verified
+/// leak- and scribble-clean in both liveness directions.
 pub(crate) fn snapshot_root_outside_carrier_protocol(root: &SnapshotFieldKind) -> bool {
     matches!(
         root,
@@ -761,6 +765,23 @@ struct Builder {
     /// guarded inline-field mechanism is their sole drop authority, so no
     /// unconditional `RecordInPlace` exit-plan drop can compete.
     pub(crate) scope_vec_iter_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// Persistent declaration ledger for every registered first-class
+    /// `VecIter<T>` binding.
+    ///
+    /// `scope_vec_iter_bindings` is drained when lexical lowering emits the
+    /// normal-flow field release. Drop elaboration runs after that drain, so it
+    /// needs this append-only twin to recover cursor owners live at
+    /// cancellation/panic/yield/suspend abandonment exits. Each entry has a
+    /// parallel runtime bit in `vec_iter_drop_flags`; abandonment plans carry
+    /// that bit as `ElabDrop::guard`, preserving conditional moves and the
+    /// normal-resume/lexical-cleanup path exactly once.
+    pub(crate) vec_iter_scope_owner_ledger: Vec<(hew_hir::BindingId, ResolvedTy)>,
+    /// Source Vec bindings borrowed by synthetic `for x in source` cursors,
+    /// paired with the desugar scope that owns the cursor. A whole-value move
+    /// or reassignment of the source while this entry is active would
+    /// invalidate `cursor.vec`; those ownership boundaries reject until the
+    /// cursor scope closes.
+    pub(crate) vec_iter_borrowed_sources: Vec<(ScopeId, hew_hir::BindingId)>,
     /// Runtime ownership bit for every first-class `VecIter<T>` local.
     ///
     /// `0` means this binding currently owns its `vec` snapshot and must release
@@ -861,11 +882,22 @@ struct Builder {
         u32,
         usize,
     )>,
+    /// Fresh `Some(x)` payload owners produced by the synthetic `VecIter`
+    /// `next()` match. Their normal body/explicit-edge release is emitted
+    /// inline; this bounded ledger restores authority only for abandoning
+    /// exits reached while the consuming body still owns the payload.
+    pub(crate) vec_iter_yield_exit_drops: Vec<VecIterYieldExitDrop>,
     /// Header-defined while-let scrutinee owners active while their body is
     /// lowered. Break/continue edges consume these owners and record an
     /// explicit edge drop; returns/panic/cancellation leave them Live so the
     /// ordinary exit planner releases them.
     pub(crate) active_iteration_owners: Vec<ActiveIterationOwner>,
+    /// Owning enum bindings whose current generation was byte-copied into the
+    /// dedicated `while let` iteration snapshot before the loop body began.
+    /// Reassigning one of these bindings must not run the ordinary enum
+    /// overwrite release: the snapshot's back-edge/exit drop is the sole
+    /// authority for that old generation.
+    pub(crate) active_while_let_snapshot_parents: Vec<BindingId>,
     /// Map from each MIR-bound HIR `BindingId` to the HIR `ScopeId` it was
     /// declared in. Populated at every `MirStatement::Bind` push site (let
     /// statements, match-arm payload bindings, function parameters, for-range
@@ -1194,6 +1226,19 @@ struct Builder {
     /// final authority: a binder consumed by `=> y` is removed from the
     /// allow-set, so the drop won't double-free a moved-out payload.
     pub(crate) match_project_consumed_binder_locals: HashSet<u32>,
+    /// Match-arm payload binders whose active `(variant, field)` was proven a
+    /// fresh transferred return. This includes mixed-return wrappers with no
+    /// whole shell owner and recursive record payloads moved directly out as
+    /// the result of a proved-fresh call-scrutinee match. In the latter case
+    /// the shell's active payload drop is suppressed on that arm, so the binder
+    /// is the one and only owner of the selected field. `CoW` payloads retain
+    /// their separate retain-aware shell/binder authority. These locals are
+    /// exempt from the ordinary interior-projection alias seed.
+    pub(crate) fresh_variant_payload_binder_locals: HashSet<u32>,
+    /// Binding ids paired with `fresh_variant_payload_binder_locals`. Record
+    /// drop admission is keyed by binding rather than local, so this is the
+    /// matching active-variant proof for recursive record payload teardown.
+    pub(crate) fresh_variant_payload_bindings: HashSet<BindingId>,
     /// Bindings that hold a closure value whose resolved invoke-shim carries a
     /// suspend terminator (the suspendable-callee discriminator). Populated by
     /// the `Let` handler from the shim's lowered MIR carriers — the SAME
@@ -1423,9 +1468,9 @@ struct Builder {
     /// `let` (so it dominates every consume and overwrite, including loop
     /// back-edges), set to 1 at each `mark_binding_moved`, gates the
     /// overwrite-release on `flag == 0`, and is reset to 0 after the overwrite
-    /// stores a fresh value. Scope-exit drops are unaffected: owned
-    /// record/string locals are released through the `elaborate` allow-set
-    /// prover (`CowValue` arm), not `owned_locals` / this flag.
+    /// stores a fresh value. The same flag guards any surviving scope-exit drop,
+    /// including an inline enum's tag-aware drop, so the moved generation is
+    /// skipped while a fresh post-store generation is released.
     pub(crate) overwrite_guard_flags: HashMap<BindingId, Place>,
     /// #2523: provenance for projected enum/machine payload binders, keyed on
     /// the binder's `BindingId`. Populated in `lower_match_enum_tag`'s binder
@@ -1433,6 +1478,23 @@ struct Builder {
     /// binder's `Consume`-intent move-out to emit `NeutralizePayloadSlot` for
     /// the source slot and `AggregateAlias` for the scrutinee.
     pub(crate) projected_payload_provenance: HashMap<BindingId, ProjectedPayloadProvenance>,
+    /// Path-sensitive delayed-release flags for direct `string` payload
+    /// binders projected from a mutable inline-enum owner. The flag starts at
+    /// one (the parent still owns the payload) and flips to zero when that
+    /// parent slot is overwritten while the binder remains lexically live.
+    /// Drop elaboration then promotes the binder to the sole release authority,
+    /// guarded on `flag == 0`, so the old payload survives every in-arm read
+    /// but is released on the arm's normal or early-exit edge. A later consume
+    /// of the binder flips the flag back to one on that runtime path: release
+    /// authority has moved onward, so a shared arm-close plan must skip it.
+    pub(crate) projected_payload_overwrite_flags: HashMap<BindingId, Place>,
+    /// Projected payload binders that can become the delayed sole release
+    /// authority on at least one runtime path. Parent overwrite is one such
+    /// transfer; forwarding a payload from an owned call carrier into a
+    /// borrow-spine callee is another. Kept separate from the flag map so a
+    /// binder whose parent remains the owner on every path stays a plain
+    /// non-owning projection alias.
+    pub(crate) projected_payload_delayed_releases: HashSet<BindingId>,
     /// Set while lowering a match-arm guard expression that
     /// can fall through to a later arm. A projected heap-payload binder consumed
     /// with this flag set is rejected fail-closed (`GuardedConsume`): its
@@ -2154,7 +2216,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         .items
         .iter()
         .filter_map(|item| match item {
-            HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.name.clone()),
+            HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.qualified_name()),
             _ => None,
         })
         .collect();
@@ -3720,7 +3782,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             .iter()
             .filter_map(|item| match item {
                 // `#[opaque]` runtime handles lower to ptr-sized slots.
-                HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.name.clone()),
+                HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.qualified_name()),
                 // `indirect enum` values are heap-allocated; every variable
                 // of the type holds a `ptr` to the heap struct.  Adding the
                 // name here causes `resolve_ty` in codegen to return `ptr`
@@ -4458,6 +4520,7 @@ fn append_owned_carrier_param_drops(blocks: &mut [BasicBlock], builder: &mut Bui
                 ty: param.ty.clone(),
                 plan: param.plan.clone(),
                 boundary: crate::model::PreparedCarrierBoundary::LocalCall,
+                guard: Some(param.guard),
             });
         }
     }
@@ -4552,6 +4615,7 @@ fn resolve_outbound_actor_modes(
                             }
                         }
                         SnapshotFieldKind::IoHandle { .. }
+                        | SnapshotFieldKind::ChannelSender
                         | SnapshotFieldKind::OpaqueHandle { .. }
                         | SnapshotFieldKind::ClosurePair
                         | SnapshotFieldKind::Resource { .. } => {
@@ -4731,25 +4795,30 @@ fn prepare_outbound_actor_payloads(
                     SendAliasMode::TransferLastUse => {
                         // Outbound mode resolution can discover a physical
                         // last-use transfer after HIR lowering stamped the
-                        // source read-only. If this is a guarded actor-message
-                        // leaf, mark the same path-local hand-off here, at the
-                        // authority that selected `TransferLastUse`, before
-                        // moving and neutralising the source slot.
-                        let guarded_transfer = builder
-                            .actor_message_cow_drop_flags
-                            .iter()
-                            .find_map(|(binding, flag)| {
-                                if builder.binding_locals.get(binding) != Some(&arg.source) {
-                                    return None;
-                                }
-                                builder
-                                    .owned_locals
-                                    .iter()
-                                    .find(|entry| entry.binding == *binding)
-                                    .map(|entry| {
-                                        (*binding, *flag, entry.name.clone(), entry.ty.clone())
-                                    })
-                            });
+                        // source read-only. If this is any guarded owned leaf
+                        // (including a non-idempotent user resource), mark the
+                        // same path-local hand-off here, at the authority that
+                        // selected `TransferLastUse`, before moving and
+                        // neutralising the source slot.
+                        let guarded_transfer = builder.owned_locals.iter().find_map(|entry| {
+                            if builder.binding_locals.get(&entry.binding) != Some(&arg.source) {
+                                return None;
+                            }
+                            builder
+                                .affine_release_flags
+                                .get(&entry.binding)
+                                .or_else(|| {
+                                    builder.actor_message_cow_drop_flags.get(&entry.binding)
+                                })
+                                .or_else(|| builder.collection_drop_flags.get(&entry.binding))
+                                .or_else(|| {
+                                    builder.conditional_record_drop_flags.get(&entry.binding)
+                                })
+                                .copied()
+                                .map(|flag| {
+                                    (entry.binding, flag, entry.name.clone(), entry.ty.clone())
+                                })
+                        });
                         if let Some((binding, flag, name, ty)) = guarded_transfer {
                             let already_set = block.instructions.iter().any(|instr| {
                                 matches!(
@@ -4812,6 +4881,7 @@ fn prepare_outbound_actor_payloads(
                                     ty: arg.ty.clone(),
                                     plan,
                                     boundary: crate::model::PreparedCarrierBoundary::Actor,
+                                    guard: None,
                                 });
                             }
                         }
@@ -4854,6 +4924,7 @@ fn prepare_outbound_actor_payloads(
                                 ty: arg.ty.clone(),
                                 plan: plan.clone(),
                                 boundary: crate::model::PreparedCarrierBoundary::Actor,
+                                guard: None,
                             });
                         }
                         recover_drops.push(Instr::ValueSnapshotDrop {
@@ -4861,6 +4932,7 @@ fn prepare_outbound_actor_payloads(
                             ty: arg.ty.clone(),
                             plan,
                             boundary: crate::model::PreparedCarrierBoundary::Actor,
+                            guard: None,
                         });
                         prepared.push(dest);
                     }
@@ -5245,6 +5317,7 @@ pub(crate) fn lower_function(
         // siblings at every level — the reach `close_alias_binders_forward` gave
         // the composite-drop prover's exclusion.
         let alias_chain = builder.alias_projection_chain();
+        let aggregate_clone_sites = aggregate_borrowed_ingress_clone_sites(&blocks, &builder);
         let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
         let owned_field_list = |ty: &ResolvedTy| builder.project_record_owned_field_list(ty);
         let owned_tuple_field_list = |ty: &ResolvedTy| builder.project_tuple_owned_field_list(ty);
@@ -5260,6 +5333,7 @@ pub(crate) fn lower_function(
             &builder.record_field_orders,
             &builder.enum_layouts,
             &alias_chain,
+            &aggregate_clone_sites,
             &is_owned_record,
             &owned_field_list,
             &owned_tuple_field_list,
@@ -5300,6 +5374,7 @@ pub(crate) fn lower_function(
     let projection_tainted = temp_drop::compute_projection_alias_taint(
         &blocks,
         &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
     );
     prepare_owned_call_carriers(&mut blocks, &mut builder, &projection_tainted);
@@ -5427,6 +5502,11 @@ pub(crate) fn lower_function(
         checks: dataflow_result.checks.clone(),
         cooperate_sites,
     };
+    diagnostics.extend(vec_iter_yield_abandonment_diagnostics(
+        &checked,
+        &builder,
+        &dataflow_result,
+    ));
     // Drop-elaboration pass. Consumes the CheckedMirFunction we just
     // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
     // are the authoritative description of what fires on every exit.
@@ -5446,7 +5526,7 @@ pub(crate) fn lower_function(
     // fixtures — real programs whose native binaries are proven leak- and
     // double-free-clean under `leaks --atExit` and the poisoned allocator —
     // as well as by hew-mir's hand-constructed CheckedMirFunction unit inputs.
-    let elaborated = elaborate(
+    let (elaborated, elaboration_diagnostics) = elaborate(
         &checked,
         &builder,
         &thir.statements,
@@ -5454,6 +5534,7 @@ pub(crate) fn lower_function(
         Some(&string_derivation.allowed),
         Some(&bytes_derivation.allowed),
     );
+    diagnostics.extend(elaboration_diagnostics);
 
     // Fail-closed validation of the elaborated drop plan. Surfaces a
     // `MirCheck::DropPlanUndetermined` for any Return-block whose
@@ -5599,6 +5680,9 @@ pub(crate) fn lower_function(
         &builder.proven_borrow_call_args,
     );
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
+    let record_field_store_preserves_owner = |record, field_offset| {
+        builder.record_field_store_preserves_record_owner(record, field_offset)
+    };
     let owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &raw.blocks,
         &raw.suspend_kinds,
@@ -5606,6 +5690,7 @@ pub(crate) fn lower_function(
         &builder.binding_locals,
         &builder.locals,
         &is_owned_record,
+        &record_field_store_preserves_owner,
         &builder.record_field_orders,
         &builder.enum_layouts,
         &alias_field_binders,
@@ -5649,6 +5734,21 @@ pub(crate) fn lower_function(
         &builder.locals,
         &builder.binding_locals,
         &opaque_resource_names,
+    ) {
+        if let Some(diag) = check_to_diagnostic(&check) {
+            diagnostics.push(diag);
+        }
+    }
+    // Builtin Stream/Sink/Generator/CancellationToken record fields have the
+    // same overwrite hazard as opaque resources.  Their drop direction is
+    // wired, but the replacement store has no source-slot neutralisation, so a
+    // release-before-store alone would merely trade the old-value leak for a
+    // double-close of the new handle. Refuse until a move/null protocol exists.
+    for check in detect_builtin_handle_record_field_overwrite(
+        &raw.blocks,
+        &builder.locals,
+        &builder.binding_locals,
+        &builder.record_field_orders,
     ) {
         if let Some(diag) = check_to_diagnostic(&check) {
             diagnostics.push(diag);
@@ -5738,6 +5838,19 @@ struct ActiveIterationOwner {
     name: String,
     site: SiteId,
     ty: ResolvedTy,
+}
+
+#[derive(Debug, Clone)]
+struct VecIterYieldExitDrop {
+    binding: BindingId,
+    place: Place,
+    ty: ResolvedTy,
+    kind: DropKind,
+    body_start_block: u32,
+    /// The body-end block already receives the normal inline drop. It is a
+    /// region boundary, not part of the abandonment window.
+    body_end_block: u32,
+    site: SiteId,
 }
 
 /// Accumulated lexical-scope facts for one HIR `ScopeId`, built incrementally
@@ -6131,15 +6244,25 @@ impl Builder {
         // not a unique owner. Captured here so every entry point that lowers a
         // parameterised body through `lower_params` participates.
         self.funcupdate_param_ids = Rc::new(func.params.iter().map(|p| p.id).collect());
-        for (i, param) in func.params.iter().enumerate() {
+        // Reserve the complete parameter-local prefix before any per-parameter
+        // ownership setup allocates guard locals. A user `#[resource]`
+        // parameter can allocate an affine release flag; doing that inside the
+        // old single loop displaced every trailing parameter from
+        // `locals[0..params.len()]`. Codegen still stored LLVM argument `i`
+        // into local `i`, so a trailing bool could initialize the resource
+        // flag while its actual binding remained uninitialized. Keep the
+        // prefix invariant structural: all parameter slots first, all helper
+        // locals second.
+        for param in &func.params {
             let slot = self.alloc_local(param.ty.clone());
             self.binding_locals.insert(param.id, slot);
             if let Place::Local(local) = slot {
                 self.parameter_locals.insert(local);
             }
-            // Record the parameter name for `-g` `DW_TAG_formal_parameter`
-            // DIEs (codegen's `create_parameter_variable`).
             self.record_local_name(slot, &param.name);
+        }
+        for (i, param) in func.params.iter().enumerate() {
+            let slot = self.binding_locals[&param.id];
             // A fn-typed parameter's closure env is provably heap-or-null (the checker
             // `Escapes`-classifies any closure crossing a call boundary as an
             // argument), so it may transfer env ownership into an owning
@@ -6239,6 +6362,8 @@ impl Builder {
                 // not re-closed at the merge while one left live on another
                 // branch still drops exactly once. A no-op for a binding whose
                 // close is idempotent/refcounted (`affine_release_needs_drop_flag`).
+            }
+            if param_is_consumed {
                 self.maybe_alloc_affine_release_flag(param.id, &owned_ty);
             }
             // A mailbox delivery transfers every heap-owning message parameter

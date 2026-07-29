@@ -110,6 +110,13 @@ if [[ "${1-}" == "--self-test" ]]; then
         git -C "$_tmpdir" init -q
         git -C "$_tmpdir" config user.email "test@test"
         git -C "$_tmpdir" config user.name "test"
+        # The self-test's synthetic commits exercise scanner behavior, not
+        # signing. Keep the isolated repository independent of a developer's
+        # global commit-signing setup or hardware-token availability.
+        git -C "$_tmpdir" config commit.gpgsign false
+        # Likewise, the fixture should not inherit repository hooks that
+        # enforce production commit policy before the scanner can inspect it.
+        git -C "$_tmpdir" config core.hooksPath /dev/null
         git -C "$_tmpdir" commit --allow-empty -m "root"
     }
 

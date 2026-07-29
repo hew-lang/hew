@@ -37,7 +37,7 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Sanitizers — ASan hard gate + commit-pinned TSan/Miri waivers
+  # Sanitizers — executed ASan hard gate + bounded TSan/Miri limitation ledger
   # ─────────────────────────────────────────────────────────────────────────
   gate-sanitizers:
     name: Release Gate — Sanitizers
@@ -45,10 +45,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        with:
-          # The sanitizer gate validates waiver rows that may pin the release
-          # commit's FIRST PARENT; depth 1 has no parent for git rev-parse.
-          fetch-depth: 2
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         run: |
@@ -94,7 +90,8 @@ jobs:
           else
             printf 'asan=fail\n' > .sanitizer-asan-result
           fi
-          scripts/check-sanitizer-gate.sh "${GITHUB_SHA}" .sanitizer-asan-result
+          RELEASE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          scripts/check-sanitizer-gate.sh "${RELEASE_VERSION}" .sanitizer-asan-result
 
   # ─────────────────────────────────────────────────────────────────────────
   # Linux x86_64 — full build + codegen E2E + WASM (matches ci.yml)
@@ -128,7 +125,10 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
+          sudo apt-get install -y -qq \
+            libssl-dev pkg-config zlib1g-dev libzstd-dev mosquitto-clients
+          command -v mosquitto_pub
+          command -v mosquitto_sub
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -151,8 +151,7 @@ jobs:
           target/release/adze --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          test -f target/release-lib/libhew.a && echo "✅ libhew.a exists"
-          ar t target/release-lib/libhew.a | grep -q '^std-' && echo "✅ libhew.a carries verbatim libstd members"
+          make test-release-lib-link
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -187,6 +186,12 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
+
+      - name: Run MQTT broker end-to-end oracle
+        # The Linux release lane has explicit mosquitto_pub/sub provisioning
+        # above, so this exercises a real external client against the shipped
+        # compiler's broker example before a release candidate is tagged.
+        run: make mqtt-broker-e2e
 
       # Browser-analysis WASM gate — Linux x86_64 only.
       # Installs wasm-pack + wasm32-unknown-unknown and runs the full playground
@@ -265,8 +270,9 @@ jobs:
           target/release/adze --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          test -f target/release-lib/libhew.a && echo "✅ libhew.a exists"
-          ar t target/release-lib/libhew.a | grep -q '^std-' && echo "✅ libhew.a carries verbatim libstd members"
+          scripts/test-release-lib-link.sh \
+            --hew target/release/hew \
+            --archive target/release-lib/libhew.a
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -345,8 +351,9 @@ jobs:
           target/release/adze --version
           target/release/hew-lsp --version
           target/release/hew-observe --version
-          test -f target/release-lib/libhew.a && echo "✅ libhew.a exists"
-          ar t target/release-lib/libhew.a | grep -q '^std-' && echo "✅ libhew.a carries verbatim libstd members"
+          scripts/test-release-lib-link.sh \
+            --hew target/release/hew \
+            --archive target/release-lib/libhew.a
 
       - name: Smoke test — compile and run a .hew program
         run: |
@@ -404,6 +411,14 @@ jobs:
       - name: Build release crates
         run: |
           cargo build -p adze-cli -p hew-lsp -p hew-observe -p hew-cli --release
+          cargo build -p hew-lib --profile release-lib
+
+      - name: Prove release library consumer linking
+        shell: pwsh
+        run: |
+          ./scripts/test-release-lib-link.ps1 `
+            -Hew target/release/hew.exe `
+            -Archive target/release-lib/hew.lib
 
       - name: Verify binaries
         shell: bash
@@ -449,10 +464,11 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git pkgconf libffi libxml2 wasmtime
+            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
+            command -v bash && bash --version
 
             git config --global --add safe.directory "$(pwd)"
 
@@ -474,8 +490,9 @@ jobs:
             target/release/adze --version
             target/release/hew-lsp --version
             target/release/hew-observe --version
-            test -f target/release-lib/libhew.a
-            ar t target/release-lib/libhew.a | grep -q '^std-'
+            bash scripts/test-release-lib-link.sh \
+              --hew target/release/hew \
+              --archive target/release-lib/libhew.a
 
             # Smoke test — compile and run a .hew program
             echo 'fn main() { println("smoke-ok") }' > _smoke.hew
@@ -539,10 +556,11 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git pkgconf libffi libxml2 wasmtime
+            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
+            command -v bash && bash --version
 
             git config --global --add safe.directory "$(pwd)"
 
@@ -564,8 +582,9 @@ jobs:
             target/release/adze --version
             target/release/hew-lsp --version
             target/release/hew-observe --version
-            test -f target/release-lib/libhew.a
-            ar t target/release-lib/libhew.a | grep -q '^std-'
+            bash scripts/test-release-lib-link.sh \
+              --hew target/release/hew \
+              --archive target/release-lib/libhew.a
 
             # Smoke test — compile and run a .hew program
             echo 'fn main() { println("smoke-ok") }' > _smoke.hew

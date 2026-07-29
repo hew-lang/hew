@@ -156,7 +156,8 @@ Enum layouts live in `layouts.enums`.
 | --- | --- | --- | --- |
 | `vector.new` | vector value | element type ID | Empty vector. |
 | `vector.push` | none or vector | vector, value | Mutability semantics deferred. |
-| `vector.get` | element value | vector, index | `vector_bounds` on invalid index. |
+| `vector.get` | option value | vector, index | Returns `Option::None` on an invalid index. |
+| `vector.index` | element value | vector, index | Raw indexing; `vector_bounds` on an invalid index. |
 | `vector.set` | none or vector | vector, index, value | `vector_bounds` on invalid index. |
 | `vector.len` | integer | vector | Deterministic length. |
 | `vector.contains` | bool | vector, element | Linear equality scan via canonical comparison. |

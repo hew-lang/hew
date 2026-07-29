@@ -67,6 +67,43 @@ fn main() {
 }
 "#;
 
+/// A first-class `VecIter<i64>` owns a cloned Vec snapshot but is deliberately
+/// excluded from the ordinary owned-local LIFO. When the handler is destroyed
+/// while parked, the cursor's flag-gated abandon drop must release field 0;
+/// the resumed-only `for` remains unreachable, so no lexical cursor cleanup can
+/// mask a missing destroy-edge release.
+const PARKED_VEC_ITER_TEARDOWN: &str = r#"
+actor Sleeper {
+    receive fn work() {
+        let values: Vec<i64> = Vec::new();
+        values.push(40);
+        values.push(2);
+        let cursor = values.iter();
+        sleep(10s);
+        var sum: i64 = 0;
+        for value in cursor {
+            sum = sum + value;
+        }
+        println(f"{sum}");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child sleeper: Sleeper;
+}
+
+fn main() {
+    let sup = spawn App;
+    let s = sup.sleeper;
+    s.work();
+    sleep(200ms);
+    supervisor_stop(sup);
+}
+"#;
+
 /// Wall: a local MOVED OUT across the suspend must NOT be dropped on the abandon
 /// edge. `let ys = xs;` moves the `Vec` handle (xs and ys share ONE buffer); at
 /// the park xs is Consumed and ys is Live, so only ys is dropped on destroy.
@@ -171,6 +208,45 @@ fn main() {
 }
 "#;
 
+/// A live enum payload binder becomes the delayed-release owner when its parent
+/// is overwritten, then crosses a real suspend. Destroying the parked actor
+/// must run the suspend plan's flag-gated binder drop exactly once.
+const OVERWRITTEN_ENUM_BINDER_ACROSS_SUSPEND: &str = r#"
+enum Box {
+    Full(string);
+    Empty;
+}
+
+actor Sleeper {
+    receive fn work() {
+        var opt = Box::Full(f"parked-overwritten-payload");
+        match opt {
+            Full(s) => {
+                opt = Box::Empty;
+                sleep(10s);
+                println(f"{s.len()}");
+            },
+            Empty => {},
+        }
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child sleeper: Sleeper;
+}
+
+fn main() {
+    let sup = spawn App;
+    let s = sup.sleeper;
+    s.work();
+    sleep(200ms);
+    supervisor_stop(sup);
+}
+"#;
+
 /// The #2395 regression pin: an owned local live across a suspend, destroyed
 /// while parked, leaks zero nodes. Skips gracefully when `leaks(1)` is
 /// unavailable (non-macOS or `leaks` off PATH).
@@ -195,6 +271,43 @@ fn parked_destroy_frees_owned_local_zero_leaks() {
         "destroy-while-parked leaked {leaks} node(s): the owned Vec live across \
          the sleep was not dropped on the coroutine abandon edge (#2395). Re-run \
          with `MallocStackLogging=1 leaks --atExit -- {}` for the leaked stack.",
+        bin.display()
+    );
+}
+
+/// First-class cursor regression: its cloned snapshot is not in
+/// `owned_locals`, so only the dedicated flag-gated `VecIter` abandon drop can
+/// free it when the coroutine is destroyed while parked.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn parked_destroy_frees_first_class_vec_iter_snapshot_zero_leaks() {
+    let shape = "parked_vec_iter_teardown";
+    require_leaks_tool();
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("parked-vec-iter-destroy-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(PARKED_VEC_ITER_TEARDOWN, dir.path(), shape);
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "destroy-while-parked VecIter teardown aborted under the poisoned \
+         allocator — the cursor snapshot release competed with another owner:\n{}",
+        describe_output(&output)
+    );
+
+    let leaks = measure_leaks(&bin);
+    assert_eq!(
+        leaks,
+        0,
+        "destroy-while-parked leaked {leaks} node(s): the first-class VecIter \
+         snapshot was not released on the coroutine abandon edge. Re-run with \
+         `MallocStackLogging=1 leaks --atExit -- {}` for the leaked stack.",
         bin.display()
     );
 }
@@ -301,5 +414,38 @@ fn hashmap_taken_value_across_suspend_dropped_exactly_once() {
         "hashmap-taken-value-across-suspend leaked {leaks} node(s): the \
          bound Some payload, the dropped key, or the map's surviving pair \
          was not freed exactly once across remove + abandon.",
+    );
+}
+
+/// The delayed binder owner must survive ordinary suspension and be released
+/// by task destruction. A stale parent owner double-frees under allocator
+/// poisoning; a missing suspend-plan binder drop leaks one node.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn overwritten_enum_payload_binder_drops_on_parked_destroy() {
+    let shape = "overwritten_enum_binder_across_suspend";
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("overwritten-enum-binder-suspend-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(OVERWRITTEN_ENUM_BINDER_ACROSS_SUSPEND, dir.path(), shape);
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "destroying the parked task must not release the overwritten parent and delayed \
+         binder as competing owners:\n{}",
+        describe_output(&output)
+    );
+
+    let leaks = measure_leaks(&bin);
+    assert_eq!(
+        leaks, 0,
+        "destroying the parked task leaked {leaks} node(s): the live binder that inherited \
+         the overwritten enum payload was absent from the suspend cleanup plan",
     );
 }

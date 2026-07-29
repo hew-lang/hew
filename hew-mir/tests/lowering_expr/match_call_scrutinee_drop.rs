@@ -87,6 +87,20 @@ fn enum_in_place(drops: &[ElabDrop]) -> Vec<ElabDrop> {
         .collect()
 }
 
+fn string_cow_drops(drops: &[ElabDrop]) -> Vec<ElabDrop> {
+    drops
+        .iter()
+        .filter(|drop| {
+            matches!(
+                drop.kind,
+                DropKind::CowHeap { release }
+                    if release.release_symbol() == "hew_string_drop"
+            )
+        })
+        .cloned()
+        .collect()
+}
+
 /// The #2429 headline shape: a `Result<bytes, string>` returned from a call and
 /// consumed directly by a `match` inside a `while` loop. The scrutinee temp
 /// must earn a per-iteration `EnumInPlace` release on the loop back-edge
@@ -238,6 +252,54 @@ fn main() {
         1,
         "a let-bound scrutinee owns its slot exactly once; a second EnumInPlace \
          entry means the from-call registration double-registered; got {ret:?}"
+    );
+}
+
+/// A `CoW` payload moved directly out as the match result already receives its
+/// sole release through the string ownership derivation. The record-specific
+/// projection exemption must not also re-admit this binder while the fresh
+/// call scrutinee remains a release authority.
+#[test]
+fn from_call_string_match_result_has_one_release_authority() {
+    let p = pipeline_with_tc(
+        r#"
+type Problem { code: i64; }
+
+fn f() -> Result<string, Problem> {
+    Ok("payload".to_upper())
+}
+
+fn problem_message(problem: Problem) -> string {
+    "problem-".to_upper()
+}
+
+fn main() -> i64 {
+    let value = match f() {
+        Ok(text) => text,
+        Err(error) => problem_message(error),
+    };
+    value.len()
+}
+"#,
+    );
+    assert!(
+        p.diagnostics.is_empty(),
+        "moving a fresh CoW payload out as the match result must not make the \
+         call scrutinee and binder both discharge one owner: {:?}",
+        p.diagnostics
+    );
+    let ret = return_drops(&p, "main");
+    let strings = string_cow_drops(&ret);
+    assert_eq!(
+        strings.len(),
+        1,
+        "the moved-out match result must retain exactly one string release; got {ret:?}"
+    );
+    assert_eq!(
+        enum_in_place(&ret).len(),
+        1,
+        "the call-carrier shell remains the complementary inactive-alternative cleanup, \
+         but must not be counted as a second discharge of the moved-out string; got {ret:?}"
     );
 }
 

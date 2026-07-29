@@ -121,6 +121,7 @@ pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                 }
             };
             hew_hir::HirMatchArm {
+                scope: None,
                 predicate,
                 bindings: Vec::new(),
                 payload_predicates: Vec::new(),
@@ -229,6 +230,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
         ty,
     };
     let match_arm = |tag: Option<i64>, body: HirExpr| hew_hir::HirMatchArm {
+        scope: None,
         predicate: tag.map_or(hew_hir::HirMatchArmPredicate::Wildcard, |value| {
             hew_hir::HirMatchArmPredicate::Literal {
                 lit: HirLiteral::Integer(value),
@@ -636,6 +638,30 @@ pub(super) fn named_type_marker(
 ) -> Option<ResourceMarker> {
     hew_hir::lookup_type_marker_for_ty(ty, type_classes)
 }
+
+/// Whether `ty` denotes a canonical stdlib lifecycle payload.
+///
+/// HIR may carry either a builtin discriminator or the exact module-owned
+/// source identity. Bare and foreign same-short-name user types are distinct
+/// nominal types and remain rejected.
+pub(super) fn is_canonical_lifecycle_named_ty(
+    ty: &ResolvedTy,
+    builtin: hew_types::BuiltinType,
+    source_identity: &str,
+) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin: resolved_builtin,
+            ..
+        } if args.is_empty()
+            && (*resolved_builtin == Some(builtin)
+                || (resolved_builtin.is_none() && name == source_identity))
+    )
+}
+
 fn builtin_registration_fields_match(
     actual: &[(String, ResolvedTy)],
     expected: &[hew_hir::builtin_type_classes::BuiltinTypeField],
@@ -651,17 +677,21 @@ pub(super) fn is_crash_info_payload_ty(
     _type_classes: &hew_hir::TypeClassTable,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
 ) -> bool {
-    let ResolvedTy::Named { name, args, .. } = ty else {
+    let ResolvedTy::Named { name, .. } = ty else {
         return false;
     };
     // M-5: `CrashInfo` now carries an owned `message: string`, so it is no
     // longer marker-`BitCopy`. The authoritative discriminant is the
     // `CrashInfo` role on the builtin registration, not the marker.
-    if !args.is_empty() {
+    if !is_canonical_lifecycle_named_ty(ty, hew_types::BuiltinType::CrashInfo, "failure.CrashInfo")
+    {
         return false;
     }
 
-    let Some(registration) = hew_hir::builtin_type_classes::builtin_type_registration(name) else {
+    let canonical_name = hew_types::BuiltinType::CrashInfo.canonical_name();
+    let Some(registration) =
+        hew_hir::builtin_type_classes::builtin_type_registration(canonical_name)
+    else {
         return false;
     };
     if registration.role != Some(hew_hir::builtin_type_classes::BuiltinTypeRole::CrashInfo) {
@@ -672,9 +702,13 @@ pub(super) fn is_crash_info_payload_ty(
     else {
         return false;
     };
-    record_field_orders.get(name).is_some_and(|actual_fields| {
-        builtin_registration_fields_match(actual_fields, expected_fields)
-    })
+    record_field_orders
+        .get(name)
+        .or_else(|| record_field_orders.get("failure.CrashInfo"))
+        .or_else(|| record_field_orders.get(canonical_name))
+        .is_some_and(|actual_fields| {
+            builtin_registration_fields_match(actual_fields, expected_fields)
+        })
 }
 pub(super) fn register_builtin_record_layouts(
     record_layouts: &mut Vec<crate::model::RecordLayout>,

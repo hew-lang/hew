@@ -57,6 +57,7 @@ FREEBSD_TOOL_PACKAGES = (
     "cmake",
     "ninja",
     "git",
+    "bash",
     "pkgconf",
     "libffi",
     "libxml2",
@@ -349,8 +350,7 @@ def _assert_wasi_tool_setup(
         EXPECTED_WASMTIME_PROBE,
         EXPECTED_WASM_LD_PROBE,
     ]
-    if job_name == "build-and-test":
-        required_commands.append(EXPECTED_BASH_PROBE)
+    required_commands.append(EXPECTED_BASH_PROBE)
     for required in required_commands:
         assert run_commands.count(required) == 1, (
             f"{job_name} must run exactly one active command {required!r}"

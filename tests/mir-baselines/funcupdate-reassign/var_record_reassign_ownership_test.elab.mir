@@ -559,24 +559,23 @@ fn VecAcc__recv__checksum -> i64
     bind BindingId(26) __hew_for_iter_25 site=SiteId(357) ty=VecIter<i64>
     use BindingId(26) __hew_for_iter_25 site=SiteId(359) ty=VecIter<i64> intent=Read
     use BindingId(26) __hew_for_iter_25 site=SiteId(361) ty=VecIter<i64> intent=Read
-    eval site=SiteId(390) ty=()
-    eval site=SiteId(391) ty=()
-    use BindingId(24) sum site=SiteId(394) ty=i64 intent=Read
+    eval site=SiteId(389) ty=()
     use BindingId(26) __hew_for_iter_25 site=SiteId(367) ty=VecIter<i64> intent=Read
     use BindingId(26) __hew_for_iter_25 site=SiteId(369) ty=VecIter<i64> intent=Read
-    bind BindingId(28) __hew_iter_value_27 site=SiteId(371) ty=i64
+    bind BindingId(28) __hew_iter_value_27 site=SiteId(371) ty=Option<i64>
     use BindingId(26) __hew_for_iter_25 site=SiteId(374) ty=VecIter<i64> intent=Read
     use BindingId(26) __hew_for_iter_25 site=SiteId(372) ty=VecIter<i64> intent=Modify
     eval site=SiteId(377) ty=()
-    use BindingId(28) __hew_iter_value_27 site=SiteId(378) ty=i64 intent=Read
-    eval site=SiteId(389) ty=()
-    bind BindingId(29) x site=SiteId(387) ty=i64
-    use BindingId(24) sum site=SiteId(385) ty=i64 intent=Read
-    use BindingId(29) x site=SiteId(386) ty=i64 intent=Read
-    bind BindingId(24) sum site=SiteId(383) ty=i64
-    eval site=SiteId(384) ty=()
-    return site=Some(SiteId(392)) ty=i64
-    drop BindingId(26) __hew_for_iter_25 ty=VecIter<i64>
+    use BindingId(28) __hew_iter_value_27 site=SiteId(378) ty=Option<i64> intent=Consume
+    eval site=SiteId(388) ty=()
+    bind BindingId(29) x site=SiteId(386) ty=i64
+    use BindingId(24) sum site=SiteId(384) ty=i64 intent=Read
+    use BindingId(29) x site=SiteId(385) ty=i64 intent=Read
+    bind BindingId(24) sum site=SiteId(382) ty=i64
+    eval site=SiteId(383) ty=()
+    eval site=SiteId(390) ty=()
+    use BindingId(24) sum site=SiteId(393) ty=i64 intent=Read
+    return site=Some(SiteId(391)) ty=i64
   drop_plans:
     goto[bb0->bb1] ->
       (none)
@@ -584,59 +583,61 @@ fn VecAcc__recv__checksum -> i64
       (none)
     call[bb1 hew_vec_len -> bb3] ->
       (none)
-    branch[bb2: bb19/bb20] ->
+    branch[bb2: bb18/bb19] ->
       (none)
     branch[bb3: bb4/bb5] ->
       (none)
     goto[bb4->bb6] ->
       (none)
-    branch[bb5: bb7/bb8] ->
+    call[bb5 hew_vec_get_clone -> bb7] ->
       (none)
-    branch[bb6: bb12/bb15] ->
+    branch[bb6: bb11/bb14] ->
       (none)
-    panic[bb7] ->
+    branch[bb7: bb8/bb9] ->
       (none)
-    branch[bb8: bb9/bb10] ->
+    panic[bb8] ->
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
+    goto[bb9->bb6] ->
       (none)
-    panic[bb9] ->
-      (none)
-    goto[bb10->bb6] ->
+    cancel[bb9] ->
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
+    goto[bb10->bb1] ->
       (none)
     cancel[bb10] ->
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
+    branch[bb11: bb15/bb16] ->
       (none)
-    goto[bb11->bb1] ->
+    goto[bb12->bb2] ->
       (none)
-    cancel[bb11] ->
+    cancel[bb12] ->
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
+    panic[bb13] ->
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
+    branch[bb14: bb12/bb13] ->
       (none)
-    branch[bb12: bb16/bb17] ->
+    panic[bb15] ->
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
+    goto[bb16->bb10] ->
       (none)
-    goto[bb13->bb2] ->
-      (none)
-    cancel[bb13] ->
-      (none)
-    panic[bb14] ->
-      (none)
-    branch[bb15: bb13/bb14] ->
-      (none)
-    panic[bb16] ->
-      (none)
-    goto[bb17->bb11] ->
+    cancel[bb16] ->
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
+    goto[bb17->bb10] ->
       (none)
     cancel[bb17] ->
       (none)
-    goto[bb18->bb11] ->
+    goto[bb18->bb19] ->
       (none)
-    cancel[bb18] ->
+    branch[bb19: bb20/bb21] ->
       (none)
-    panic[bb19] ->
+    panic[bb20] ->
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
+    call[bb21 hew_vec_len -> bb22] ->
       (none)
-    call[bb20 hew_vec_len -> bb21] ->
+    branch[bb22: bb23/bb24] ->
       (none)
-    branch[bb21: bb22/bb23] ->
-      (none)
-    panic[bb22] ->
-      (none)
-    return[bb23] ->
+    panic[bb23] ->
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
+    return[bb24] ->
       (none)
 
 fn Swapper__recv__seed -> ()
@@ -1527,4 +1528,3 @@ fn duration::fmt -> string
       (none)
     return[bb1] ->
       (none)
-

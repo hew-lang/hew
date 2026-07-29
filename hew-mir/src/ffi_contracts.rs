@@ -243,13 +243,17 @@ mod tests {
     #[test]
     fn retention_defaults_to_unspecified() {
         // Absence is the fail-closed answer, and it is the common case: a row
-        // that has never been measured must not read as a transfer.
-        let bytes_to_string = extern_ownership_contract("hew_bytes_to_string")
+        // that has never been measured must not read as a transfer. Keep this
+        // pinned to the deliberately-unmeasured primitive conversion below:
+        // it is outside the measured string-result program, unlike an active
+        // subsystem lane whose rows may be promoted together.
+        let string_to_bytes = extern_ownership_contract("hew_string_to_bytes")
             .contract()
-            .expect("hew_bytes_to_string is classified");
-        assert_eq!(bytes_to_string.result, ExternResultOwnership::Fresh);
+            .expect("hew_string_to_bytes is classified");
+        assert_eq!(string_to_bytes.result, ExternResultOwnership::Fresh);
+        assert_eq!(string_to_bytes.release_symbol, "hew_bytes_drop");
         assert_eq!(
-            bytes_to_string.result_retention,
+            string_to_bytes.result_retention,
             ExternResultRetention::Unspecified
         );
     }

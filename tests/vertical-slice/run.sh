@@ -714,6 +714,10 @@ run_accept_expect_status "hashset_for_in_owned" 9
 # non-identifier shapes the bug hid.
 # HashSet via a struct field: 10+20+30 → exit 60.
 run_accept_expect_status "hashset_for_in_field" 60
+# HashSet via nested struct fields: the projection receiver keeps HashSet type.
+run_accept_expect_status "hashset_for_in_nested_field" 60
+# HashSet via a tuple field: the projection receiver keeps HashSet type.
+run_accept_expect_status "hashset_for_in_tuple_projection" 60
 # HashSet via a call result (also a single-eval witness): 10+20+30 → exit 60.
 run_accept_expect_status "hashset_for_in_call" 60
 # HashMap via a struct field: keys 6 + values 60 → exit 66.
@@ -721,6 +725,9 @@ run_accept_expect_status "hashmap_for_in_field" 66
 # HashMap via a call result (single-eval: keys()+values() borrow one temp, so
 # make_map() runs once): keys 6 + values 60 → exit 66.
 run_accept_expect_status "hashmap_for_in_call" 66
+# HashMap::into_iter via a record field: both synthetic Vec projections retain
+# the HashMap-typed field receiver, and the source remains live. Three entries.
+run_accept_expect_status "hashmap_into_iter_field" 3
 # Owned-element drop ratchet on the non-identifier route (field access): string
 # lens 2+3+4 → exit 9. Verified clean under the guard allocator (MallocScribble /
 # MallocGuardEdges) alongside the other owned for-in fixtures.
@@ -1710,15 +1717,16 @@ run_accept_expect_status "on_crash_action_restart" 42
 # Accept: a REAL crash fires the emitted Worker__on_crash, which clones the
 # borrowed crash_message into the owned CrashInfo.message (hew_string_clone),
 # reads it, and returns CrashAction::Restart. The child traps, the supervisor
-# restarts it, await_restart re-fetches the fresh child, and main exits 42.
+# mutates its restart-template state, restarts it, await_restart re-fetches the
+# fresh child, and main exits 43.
 # Teeth: a wrong crash-message string ABI / a move-of-borrow aborts the runtime
 # (exit 134, libc::abort from validate_cstring_header) the instant the hook runs
 # on a real crash — only a correct clone+drop reaches the clean restart and
-# exit 42. This is the runtime coverage the compile-only fixture above lacks.
+# exit 43. This is the runtime coverage the compile-only fixture above lacks.
 # Verified ASan/guard-malloc clean on the crash+restart path (no double-free,
 # no leak, no OOB) — see the on_crash_action_restart_real_crash gate in
 # scripts/asan-fixture-check.sh (Linux) and the macOS leaks oracle.
-run_accept_expect_status "on_crash_action_restart_real_crash" 42
+run_accept_expect_status "on_crash_action_restart_real_crash" 43
 
 # Accept (G-S-A): a REAL crash fires an #[on(crash)] hook that returns
 # CrashAction::Escalate on a ROOT supervisor (no parent). Before the fix,
@@ -4688,8 +4696,8 @@ if "${HEW}" check \
   echo "expected affine_record_clone_transitive fixture to fail" >&2
   exit 1
 fi
-if [[ "$(grep -c "cannot be cloned" "${reject_output}")" -ne 6 ]]; then
-  echo "expected six transitive affine record-clone diagnostics" >&2
+if [[ "$(grep -c "cannot be cloned" "${reject_output}")" -ne 9 ]]; then
+  echo "expected nine transitive affine record-clone diagnostics" >&2
   cat "${reject_output}" >&2
   exit 1
 fi
@@ -4699,6 +4707,8 @@ grep -q 'GenericWrapper<LinearTicket>.*LinearTicket' "${reject_output}"
 grep -q 'ResourceEnvelope.*ResourceToken' "${reject_output}"
 grep -q 'TupleWrapper.*ResourceToken' "${reject_output}"
 grep -q 'ArrayWrapper.*LinearTicket' "${reject_output}"
+grep -q 'Vec<ResourceToken>.*ResourceToken' "${reject_output}"
+grep -q 'HashMap<string, LinearTicket>.*LinearTicket' "${reject_output}"
 
 # User-defined GENERIC record `clone` on an instantiation whose type parameter
 # resolves to an opaque handle (`Box<Handle>`) must be rejected too — the

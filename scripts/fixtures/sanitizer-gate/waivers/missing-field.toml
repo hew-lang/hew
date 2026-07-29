@@ -1,5 +1,7 @@
 [[waiver]]
 axis = "tsan"
-reason = "upstream nightly build-std + TSan link failure"
-commit = "0123456789abcdef0123456789abcdef01234567"
+release = "0.6.0-rc1"
+reason = "behavior is deliberately absent"
+tracking = "https://github.com/hew-lang/hew/issues/0000"
+owner = "runtime maintainers"
 expires = "2999-12-31"

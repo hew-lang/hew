@@ -76,7 +76,7 @@ use crate::model::{EnumLayout, RecordLayout};
 pub enum StateFieldCloneKind {
     /// Field whose bits constitute the value: primitives, `bool`, `char`,
     /// `Duration`, `Unit`, `Never`, and `#[repr(C)]` bit-copy aggregates
-    /// such as `HewActorRef` / `LocalPid<T>` / `RemotePid<T>` / `LambdaPid<M,R>`.
+    /// such as `HewActorRef` / `LocalPid<T>` / `RemotePid<T>`.
     ///
     /// Plan §4.5 A: "`HewActorRef` is `#[repr(C)]` bit-copyable — NOT
     /// refcount-bump". The Stage 3 wholesale `memcpy(dst, src,
@@ -223,20 +223,24 @@ pub enum StateFieldCloneKind {
     /// holds it. No refcount; no dup.
     OpaqueHandle { name: String },
 
-    /// `#[resource]` runtime handle that carries a user `close(self)` /
-    /// `free(self)` ritual (RAII-1). The single-slot opaque flavour —
-    /// `#[resource] #[opaque]` (e.g. `regex.Pattern` once F9 stamps it a
-    /// resource). Unlike a bare [`OpaqueHandle`] (no-op drop / documented
-    /// leak), a `Resource` field carries the `<Type>::<method>` close
-    /// `close_symbol` so the OWNING aggregate's drop spine runs the user close
-    /// EXACTLY ONCE on every exit path (sync return, task cancel, actor
-    /// shutdown), then null-stores the slot.
+    /// A channel sender endpoint. Unlike general `#[resource]` handles, a
+    /// sender has a ratified semantic clone (`hew_channel_sender_clone`) and a
+    /// paired release (`hew_channel_sender_close`), so containers may clone
+    /// the OUTER endpoint even when its `T` argument is affine. The element
+    /// type is a type-erased protocol tag and is never recursively cloned.
+    ChannelSender,
+
+    /// Close-owning runtime handle. This includes builtin resources such as
+    /// `Receiver` / `LambdaPid` and single-slot user `#[resource] #[opaque]`
+    /// handles. Unlike a bare [`OpaqueHandle`] (no-op drop / documented leak),
+    /// a `Resource` carries a typed [`ResourceCloseAuthority`] so the OWNING
+    /// aggregate's drop spine runs its close EXACTLY ONCE on every exit path
+    /// (sync return, task cancel, actor shutdown), then null-stores the slot.
     ///
-    /// **Drop**: `emit_field_drop_step` loads the handle pointer, calls
-    /// `close_symbol(handle)` (a `void(ptr)`, Unit-returning per W3.030), then
-    /// null-stores the field slot so a structurally-reachable second drop
-    /// (cancel-into-trap after a normal exit) short-circuits
-    /// (raii-null-after-move).
+    /// **Drop**: `emit_field_drop_step` loads the handle pointer and dispatches
+    /// either through the typed runtime ABI descriptor or the generated user
+    /// close function, then null-stores the field slot so a
+    /// structurally-reachable second drop short-circuits.
     ///
     /// **Clone**: refused at runtime — branch to the clone rollback chain and
     /// return the protocol failure code, mirroring [`ClosurePair`]. A
@@ -254,7 +258,21 @@ pub enum StateFieldCloneKind {
     /// [`OpaqueHandle`]: StateFieldCloneKind::OpaqueHandle
     /// [`ClosurePair`]: StateFieldCloneKind::ClosurePair
     /// [`UserRecord`]: StateFieldCloneKind::UserRecord
-    Resource { name: String, close_symbol: String },
+    Resource {
+        name: String,
+        close: ResourceCloseAuthority,
+    },
+}
+
+/// Closed dispatch authority for a resource field's exactly-once teardown.
+///
+/// Builtin resources retain their typed runtime descriptor through aggregate
+/// classification. User resources retain their generated Hew function symbol.
+/// Codegen must never infer one authority from the other's string spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ResourceCloseAuthority {
+    Runtime(hew_types::runtime_call::RuntimeDropDescriptor),
+    User(String),
 }
 
 /// Reusable structural clone/drop plan for one owned value.
@@ -328,7 +346,8 @@ fn clone_kind_is_total(
         | StateFieldCloneKind::String
         | StateFieldCloneKind::Bytes
         | StateFieldCloneKind::Rc
-        | StateFieldCloneKind::Weak => Ok(true),
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender => Ok(true),
         StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::Resource { .. }
@@ -528,6 +547,7 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -567,6 +587,7 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -615,6 +636,7 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -716,6 +738,7 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -1061,6 +1084,212 @@ pub fn classify_value_snapshot_plan_with_resource_handles(
     .map(|root| ValueSnapshotPlan { root })
 }
 
+/// Return whether `ty` is a registered inline enum whose complete recursive
+/// clone/drop plan is ready for an in-place record-field overwrite.
+///
+/// This is the MIR-side proof consumed by the owned-record sole-owner scan.
+/// A successful `RecordFieldStore` now releases the previous enum value before
+/// storing its replacement, so the enclosing record remains its final owner
+/// only when all of the following hold:
+///
+/// - the destination field resolves to a registered enum layout;
+/// - that enum and every recursively reached enum are inline;
+/// - every payload leaf has a total clone/drop plan; and
+/// - no payload reaches a user `#[resource]` record.
+///
+/// Unknown layouts, indirect enums, resource records, opaque handles, affine
+/// handles, and other mixed unsupported payloads return `false` (or a
+/// classification error) and retain the existing fail-closed owner exclusion.
+///
+/// # Errors
+///
+/// Returns [`ClassificationError`] when classification or recursive layout
+/// resolution fails.
+pub fn inline_enum_overwrite_drop_is_ready(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+    resource_record_names: &[String],
+) -> Result<bool, ClassificationError> {
+    let plan = classify_value_snapshot_plan_with_resource_handles(
+        ty,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+    )?;
+    let StateFieldCloneKind::Enum { name } = plan.root() else {
+        return Ok(false);
+    };
+    let Some(layout) = enum_layouts.iter().find(|layout| layout.name == *name) else {
+        return Err(ClassificationError::MissingEnumLayout { name: name.clone() });
+    };
+    if layout.is_indirect
+        || type_reaches_forbidden_overwrite_boundary(
+            ty,
+            record_layouts,
+            enum_layouts,
+            resource_record_names,
+            &mut HashSet::new(),
+        )
+    {
+        return Ok(false);
+    }
+    plan.is_clone_total(
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+    )
+}
+
+/// Return whether `ty` is a registered record with a total recursive
+/// clone/drop plan and at least one registered inline enum field.
+///
+/// This is the enclosing-record counterpart to
+/// [`inline_enum_overwrite_drop_is_ready`]. It is used only to repair the
+/// owned-local seed for generic record instantiations whose value-class marker
+/// still says `BitCopy`; ordinary seed decisions remain unchanged.
+///
+/// # Errors
+///
+/// Returns [`ClassificationError`] when classification or recursive layout
+/// resolution fails.
+pub fn record_with_inline_enum_drop_is_ready(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+    resource_record_names: &[String],
+) -> Result<bool, ClassificationError> {
+    let plan = classify_value_snapshot_plan_with_resource_handles(
+        ty,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+    )?;
+    let StateFieldCloneKind::UserRecord { name } = plan.root() else {
+        return Ok(false);
+    };
+    let Some(layout) = record_layouts.iter().find(|layout| layout.name == *name) else {
+        return Err(ClassificationError::MissingRecordLayout { name: name.clone() });
+    };
+    if type_reaches_forbidden_overwrite_boundary(
+        ty,
+        record_layouts,
+        enum_layouts,
+        resource_record_names,
+        &mut HashSet::new(),
+    ) || !plan.is_clone_total(
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+    )? {
+        return Ok(false);
+    }
+    Ok(layout.field_tys.iter().any(|field_ty| {
+        inline_enum_overwrite_drop_is_ready(
+            field_ty,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            resource_close,
+            resource_record_names,
+        )
+        .unwrap_or(false)
+    }))
+}
+
+fn type_reaches_forbidden_overwrite_boundary(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    resource_record_names: &[String],
+    visited: &mut HashSet<String>,
+) -> bool {
+    match ty {
+        ResolvedTy::Named { name, args, .. } => {
+            let short = hew_types::short_name(name);
+            if resource_record_names
+                .iter()
+                .any(|resource| resource == name || hew_types::short_name(resource) == short)
+            {
+                return true;
+            }
+            let visit_key = if args.is_empty() {
+                name.clone()
+            } else {
+                hew_hir::mangle(name, args)
+            };
+            if !visited.insert(visit_key.clone()) {
+                return false;
+            }
+            let forbidden = if let Some(layout) = lookup_enum_layout(name, args, enum_layouts) {
+                layout.is_indirect
+                    || layout.variants.iter().any(|variant| {
+                        variant.field_tys.iter().any(|field_ty| {
+                            type_reaches_forbidden_overwrite_boundary(
+                                field_ty,
+                                record_layouts,
+                                enum_layouts,
+                                resource_record_names,
+                                visited,
+                            )
+                        })
+                    })
+            } else if let Some(layout) = lookup_record_layout(name, args, record_layouts) {
+                layout.field_tys.iter().any(|field_ty| {
+                    type_reaches_forbidden_overwrite_boundary(
+                        field_ty,
+                        record_layouts,
+                        enum_layouts,
+                        resource_record_names,
+                        visited,
+                    )
+                })
+            } else {
+                args.iter().any(|arg| {
+                    type_reaches_forbidden_overwrite_boundary(
+                        arg,
+                        record_layouts,
+                        enum_layouts,
+                        resource_record_names,
+                        visited,
+                    )
+                })
+            };
+            visited.remove(&visit_key);
+            forbidden
+        }
+        ResolvedTy::Tuple(elems) => elems.iter().any(|elem| {
+            type_reaches_forbidden_overwrite_boundary(
+                elem,
+                record_layouts,
+                enum_layouts,
+                resource_record_names,
+                visited,
+            )
+        }),
+        ResolvedTy::Array(elem, _)
+        | ResolvedTy::Slice(elem)
+        | ResolvedTy::Task(elem)
+        | ResolvedTy::Pointer { pointee: elem, .. }
+        | ResolvedTy::Borrow { pointee: elem } => type_reaches_forbidden_overwrite_boundary(
+            elem,
+            record_layouts,
+            enum_layouts,
+            resource_record_names,
+            visited,
+        ),
+        _ => false,
+    }
+}
+
 /// owned-string-record classifier for a direct user record with owned `string` fields.
 ///
 /// This intentionally reuses the actor-state classifier, then narrows its
@@ -1087,6 +1316,7 @@ pub fn classify_owned_string_record_fields(
             StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::Tuple { .. }
             | StateFieldCloneKind::Array { .. }
             | StateFieldCloneKind::Vec { .. }
@@ -1469,15 +1699,22 @@ fn classify_named(
         return Ok(StateFieldCloneKind::Weak);
     }
     if matches!(builtin, Some(hew_types::BuiltinType::Sender)) {
-        return Ok(StateFieldCloneKind::Resource {
-            name: "Sender".to_string(),
-            close_symbol: "hew_channel_sender_close".to_string(),
-        });
+        return Ok(StateFieldCloneKind::ChannelSender);
     }
     if matches!(builtin, Some(hew_types::BuiltinType::Receiver)) {
         return Ok(StateFieldCloneKind::Resource {
             name: "Receiver".to_string(),
-            close_symbol: "hew_channel_receiver_close".to_string(),
+            close: ResourceCloseAuthority::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::ReceiverClose,
+            ),
+        });
+    }
+    if matches!(builtin, Some(hew_types::BuiltinType::LambdaPid)) {
+        return Ok(StateFieldCloneKind::Resource {
+            name: "LambdaPid".to_string(),
+            close: ResourceCloseAuthority::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::LambdaActorHandleClose,
+            ),
         });
     }
     if matches!(
@@ -1485,7 +1722,6 @@ fn classify_named(
         Some(
             hew_types::BuiltinType::LocalPid
                 | hew_types::BuiltinType::RemotePid
-                | hew_types::BuiltinType::LambdaPid
                 | hew_types::BuiltinType::HewActor
         )
     ) {
@@ -1522,7 +1758,7 @@ fn classify_named(
     // blobs it has actor-owned fd teardown semantics. Route it through the
     // existing IO-handle discriminator before the generic opaque fail-closed arm
     // so codegen can apply the restart-safe null-clone policy.
-    if args.is_empty() && name == "Connection" {
+    if args.is_empty() && name == "net.Connection" {
         return Ok(StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Connection,
         });
@@ -1548,11 +1784,12 @@ fn classify_named(
     let resource_short = hew_types::short_name(name);
     if let Some((_, close_symbol)) = resource_close
         .iter()
-        .find(|(n, _)| n == name || n == resource_short)
+        .find(|(n, _)| n == name)
+        .or_else(|| resource_close.iter().find(|(n, _)| n == resource_short))
     {
         return Ok(StateFieldCloneKind::Resource {
             name: name.to_string(),
-            close_symbol: close_symbol.clone(),
+            close: ResourceCloseAuthority::User(close_symbol.clone()),
         });
     }
 
@@ -2252,7 +2489,7 @@ mod tests {
             StateFieldCloneKind::ClosurePair,
             StateFieldCloneKind::Resource {
                 name: "Pattern".to_string(),
-                close_symbol: "Pattern::free".to_string(),
+                close: ResourceCloseAuthority::User("Pattern::free".to_string()),
             },
             StateFieldCloneKind::OpaqueHandle {
                 name: "json.Value".to_string(),
@@ -2322,13 +2559,32 @@ mod tests {
     }
 
     #[test]
-    fn connection_classifies_as_iohandle_per_audit_section_6() {
+    fn lambda_pid_classifies_as_close_bearing_resource() {
+        let mut v = HashSet::new();
+        let ty = builtin(
+            hew_types::BuiltinType::LambdaPid,
+            vec![ResolvedTy::I64, ResolvedTy::Unit],
+        );
+        assert_eq!(
+            classify_state_field(&ty, &no_records(), &mut v).unwrap(),
+            StateFieldCloneKind::Resource {
+                name: "LambdaPid".to_string(),
+                close: ResourceCloseAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeDropDescriptor::LambdaActorHandleClose,
+                ),
+            },
+            "LambdaPid owns a runtime release and must never enter actor state as BitCopy",
+        );
+    }
+
+    #[test]
+    fn net_connection_classifies_as_iohandle_per_audit_section_6() {
         let mut v = HashSet::new();
         let ty = ResolvedTy::Named {
-            name: "Connection".to_string(),
+            name: "net.Connection".to_string(),
             args: vec![],
             builtin: None,
-            is_opaque: false,
+            is_opaque: true,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -2363,19 +2619,53 @@ mod tests {
     }
 
     #[test]
-    fn opaque_connection_classifies_as_iohandle() {
+    fn opaque_net_connection_classifies_as_iohandle() {
         let mut v = HashSet::new();
         let ty = ResolvedTy::Named {
-            name: "Connection".to_string(),
+            name: "net.Connection".to_string(),
             args: vec![],
             builtin: None,
             is_opaque: true,
         };
         assert_eq!(
-            classify_state_field_full(&ty, &no_records(), &[], &["Connection".to_string()], &mut v)
-                .unwrap(),
+            classify_state_field_full(
+                &ty,
+                &no_records(),
+                &[],
+                &["net.Connection".to_string()],
+                &mut v,
+            )
+            .unwrap(),
             StateFieldCloneKind::IoHandle {
                 kind: IoHandleKind::Connection,
+            },
+        );
+    }
+
+    #[test]
+    fn qualified_user_connection_uses_exact_resource_close() {
+        let mut visited = HashSet::new();
+        let ty = ResolvedTy::named_opaque("foo.Connection".to_string(), Vec::new());
+        let registry = vec![
+            ("Connection".to_string(), "Connection::close".to_string()),
+            (
+                "foo.Connection".to_string(),
+                "foo.Connection::close".to_string(),
+            ),
+        ];
+        assert_eq!(
+            classify_state_field_with_resource_handles(
+                &ty,
+                &no_records(),
+                &[],
+                &["foo.Connection".to_string()],
+                &registry,
+                &mut visited,
+            )
+            .unwrap(),
+            StateFieldCloneKind::Resource {
+                name: "foo.Connection".to_string(),
+                close: ResourceCloseAuthority::User("foo.Connection::close".to_string()),
             },
         );
     }
@@ -2406,7 +2696,7 @@ mod tests {
             .unwrap(),
             StateFieldCloneKind::Resource {
                 name: "Pattern".to_string(),
-                close_symbol: "Pattern::free".to_string(),
+                close: ResourceCloseAuthority::User("Pattern::free".to_string()),
             },
         );
     }
@@ -2472,7 +2762,7 @@ mod tests {
     fn resource_kind_predicates_and_drop_spine() {
         let res = StateFieldCloneKind::Resource {
             name: "Pattern".to_string(),
-            close_symbol: "Pattern::free".to_string(),
+            close: ResourceCloseAuthority::User("Pattern::free".to_string()),
         };
         // A bare resource leaf IS admitted to the owned-aggregate drop spine
         // (the close fires in the owning record's drop body) and is a resource.
@@ -2499,15 +2789,16 @@ mod tests {
 
     #[test]
     fn vec_of_connection_carries_iohandle_through() {
-        // Exercises the mqtt_broker `Vec<Connection>` shape from the
-        // audit. Stage 2 emission consumes the nested kind to detect
-        // Connection-in-container and emit the codegen-time FailClosed
-        // at supervisor sites.
+        // Exercises the mqtt_broker `Vec<net.Connection>` shape from the
+        // audit. The exact std identity is required: a user package may
+        // declare its own `Connection` resource. Stage 2 emission consumes the
+        // nested kind to detect Connection-in-container and emit the
+        // codegen-time FailClosed at supervisor sites.
         let mut v = HashSet::new();
         let ty = builtin(
             hew_types::BuiltinType::Vec,
             vec![ResolvedTy::Named {
-                name: "Connection".to_string(),
+                name: "net.Connection".to_string(),
                 args: vec![],
                 builtin: None,
                 is_opaque: false,

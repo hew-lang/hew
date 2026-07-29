@@ -31,6 +31,8 @@ mod elaborate;
 #[path = "lowering_expr/extern_wrapper_result_opacity.rs"]
 mod extern_wrapper_result_opacity;
 
+#[path = "lowering_expr/for_in_hash_projection_types.rs"]
+mod for_in_hash_projection_types;
 #[path = "lowering_expr/forawait_loopvar_release.rs"]
 mod forawait_loopvar_release;
 #[path = "lowering_expr/fresh_vec_projection_owner.rs"]
@@ -43,6 +45,8 @@ mod gen_block_mir_lowering;
 mod generic_record_layout_test;
 #[path = "lowering_expr/hashmap_hashset_local_drop.rs"]
 mod hashmap_hashset_local_drop;
+#[path = "lowering_expr/http_ws_string_temp_drop_canary.rs"]
+mod http_ws_string_temp_drop_canary;
 #[path = "lowering_expr/identity_lowering.rs"]
 mod identity_lowering;
 #[path = "lowering_expr/lambda_captures.rs"]
@@ -73,10 +77,14 @@ mod owner_mint_warrant_seams;
 mod plain_vec_local_drop;
 #[path = "lowering_expr/polymorphic_mir_typeparam.rs"]
 mod polymorphic_mir_typeparam;
+#[path = "lowering_expr/quic_string_temp_drop_canary.rs"]
+mod quic_string_temp_drop_canary;
 #[path = "lowering_expr/rc_weak_lowering.rs"]
 mod rc_weak_lowering;
 #[path = "lowering_expr/regex_predicate_lowering.rs"]
 mod regex_predicate_lowering;
+#[path = "lowering_expr/returned_member_cancel_drop.rs"]
+mod returned_member_cancel_drop;
 #[path = "lowering_expr/runtime_abi_instr.rs"]
 mod runtime_abi_instr;
 #[path = "lowering_expr/select_arm_dataflow.rs"]

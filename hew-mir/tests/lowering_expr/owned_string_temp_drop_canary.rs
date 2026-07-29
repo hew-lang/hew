@@ -536,6 +536,219 @@ fn drain_error() {
     assert_eq!(return_exit_string_drops(&pl, "drain_error"), 0);
 }
 
+#[test]
+fn audited_xml_string_result_and_forwarder_release_once() {
+    let pl = pipeline_with_tc(
+        r#"
+extern "C" {
+    fn hew_xml_to_string(node: i64) -> string;
+}
+
+fn xml_text(node: i64) -> string {
+    unsafe { hew_xml_to_string(node) }
+}
+
+fn borrow_len(value: string) -> i64 {
+    value.len()
+}
+
+fn forwarded(node: i64) -> i64 {
+    borrow_len(xml_text(node))
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    assert_eq!(
+        total_string_drops(&pl, "forwarded"),
+        1,
+        "the measured XML string transfer must carry exactly one caller-side \
+         release through its Hew forwarder"
+    );
+    assert_eq!(
+        total_string_drops(&pl, "xml_text"),
+        0,
+        "the forwarding function transfers the XML string owner to its caller"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ownership-boundary matrix keeps positive wrapper forms and their fail-closed controls in the same checked module"
+)]
+fn audited_extern_string_temp_through_unsafe_tail_releases_once() {
+    let pl = pipeline_with_tc(
+        r#"
+extern "C" {
+    fn hew_xml_to_string(node: i64) -> string;
+}
+
+fn xml_text(node: i64) -> string {
+    unsafe { hew_xml_to_string(node) }
+}
+
+fn borrow_len(value: string) -> i64 {
+    value.len()
+}
+
+fn domestic(node: i64) -> string {
+    f"node={node}"
+}
+
+fn direct(node: i64) -> i64 {
+    borrow_len(unsafe { hew_xml_to_string(node) })
+}
+
+fn nested(node: i64) -> i64 {
+    borrow_len(unsafe { unsafe { hew_xml_to_string(node) } })
+}
+
+fn plain(node: i64) -> i64 {
+    borrow_len(domestic(node))
+}
+
+fn forwarded(node: i64) -> i64 {
+    borrow_len(xml_text(node))
+}
+
+fn statement_tail(node: i64) -> i64 {
+    borrow_len(unsafe {
+        let marker = 0;
+        hew_xml_to_string(node + marker)
+    })
+}
+
+fn immutable_alias(node: i64) -> i64 {
+    borrow_len(unsafe {
+        let value = hew_xml_to_string(node);
+        value
+    })
+}
+
+fn all_fresh_if(node: i64, take_first: bool) -> i64 {
+    borrow_len(unsafe {
+        if take_first {
+            hew_xml_to_string(node)
+        } else {
+            hew_xml_to_string(node + 1)
+        }
+    })
+}
+
+fn all_fresh_match(node: i64, choice: i64) -> i64 {
+    borrow_len(unsafe {
+        match choice {
+            0 => hew_xml_to_string(node),
+            _ => hew_xml_to_string(node + 1),
+        }
+    })
+}
+
+fn mixed_if(node: i64, fallback: string, take_fresh: bool) -> i64 {
+    borrow_len(unsafe {
+        if take_fresh {
+            hew_xml_to_string(node)
+        } else {
+            fallback
+        }
+    })
+}
+
+fn mutable_alias(node: i64) -> i64 {
+    borrow_len(unsafe {
+        var value = hew_xml_to_string(node);
+        value
+    })
+}
+
+fn static_literal() -> i64 {
+    borrow_len(unsafe { "static" })
+}
+
+fn borrowed(value: string) -> i64 {
+    borrow_len(unsafe { value })
+}
+
+fn opaque(make: fn() -> string) -> string {
+    make()
+}
+
+fn opaque_wrapped(make: fn() -> string) -> i64 {
+    borrow_len(unsafe { opaque(make) })
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    for caller in [
+        "direct",
+        "nested",
+        "statement_tail",
+        "immutable_alias",
+        "mutable_alias",
+        "all_fresh_if",
+        "all_fresh_match",
+        "plain",
+        "forwarded",
+    ] {
+        assert_eq!(
+            total_string_drops(&pl, caller),
+            1,
+            "`{caller}` must balance the measured transferred string with \
+             exactly one caller-side release"
+        );
+    }
+    for caller in ["mixed_if", "static_literal", "borrowed", "opaque_wrapped"] {
+        assert_eq!(
+            total_string_drops(&pl, caller),
+            0,
+            "`{caller}` has no audited fresh-producer tail and must not acquire \
+             a synthetic owner"
+        );
+    }
+}
+
+#[test]
+fn measured_markdown_result_releases_once_direct_and_through_wrapper() {
+    let pl = pipeline_with_tc(
+        r#"
+extern "C" {
+    fn hew_markdown_to_html(markdown: string) -> string;
+}
+
+fn to_html(markdown: string) -> string {
+    unsafe { hew_markdown_to_html(markdown) }
+}
+
+fn borrow_len(value: string) -> i64 {
+    value.len()
+}
+
+fn direct(markdown: string) -> i64 {
+    let html = unsafe { hew_markdown_to_html(markdown) };
+    html.len()
+}
+
+fn forwarded(markdown: string) -> i64 {
+    to_html(markdown).len()
+}
+"#,
+    );
+    assert_no_nyi(&pl);
+    for caller in ["direct", "forwarded"] {
+        assert_eq!(
+            total_string_drops(&pl, caller),
+            1,
+            "{caller}: a measured Markdown result borrowed by the caller must \
+             earn exactly one caller-side string drop"
+        );
+    }
+    assert_eq!(
+        total_string_drops(&pl, "to_html"),
+        0,
+        "the shipped-wrapper shape forwards its owner instead of releasing it"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Index-form canaries (`vec-generic-index` lane). `xs[i]` over `Vec<string>`
 // lowers to the same `hew_vec_get_str` retained owner as `.get(i)`, so the

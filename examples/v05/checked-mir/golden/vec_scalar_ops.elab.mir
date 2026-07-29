@@ -57,24 +57,23 @@ fn main -> ()
     bind BindingId(13) __hew_for_iter_12 site=SiteId(92) ty=VecIter<i64>
     use BindingId(13) __hew_for_iter_12 site=SiteId(94) ty=VecIter<i64> intent=Read
     use BindingId(13) __hew_for_iter_12 site=SiteId(96) ty=VecIter<i64> intent=Read
-    eval site=SiteId(125) ty=()
-    eval site=SiteId(126) ty=()
-    use BindingId(11) total site=SiteId(128) ty=i64 intent=Read
+    eval site=SiteId(124) ty=()
     use BindingId(13) __hew_for_iter_12 site=SiteId(102) ty=VecIter<i64> intent=Read
     use BindingId(13) __hew_for_iter_12 site=SiteId(104) ty=VecIter<i64> intent=Read
-    bind BindingId(15) __hew_iter_value_14 site=SiteId(106) ty=i64
+    bind BindingId(15) __hew_iter_value_14 site=SiteId(106) ty=Option<i64>
     use BindingId(13) __hew_for_iter_12 site=SiteId(109) ty=VecIter<i64> intent=Read
     use BindingId(13) __hew_for_iter_12 site=SiteId(107) ty=VecIter<i64> intent=Modify
     eval site=SiteId(112) ty=()
-    use BindingId(15) __hew_iter_value_14 site=SiteId(113) ty=i64 intent=Read
-    eval site=SiteId(124) ty=()
-    bind BindingId(16) x site=SiteId(122) ty=i64
-    use BindingId(11) total site=SiteId(118) ty=i64 intent=Read
-    use BindingId(16) x site=SiteId(119) ty=i64 intent=Read
-    bind BindingId(11) total site=SiteId(120) ty=i64
-    eval site=SiteId(121) ty=()
-    eval site=SiteId(127) ty=()
-    drop BindingId(13) __hew_for_iter_12 ty=VecIter<i64>
+    use BindingId(15) __hew_iter_value_14 site=SiteId(113) ty=Option<i64> intent=Consume
+    eval site=SiteId(123) ty=()
+    bind BindingId(16) x site=SiteId(121) ty=i64
+    use BindingId(11) total site=SiteId(117) ty=i64 intent=Read
+    use BindingId(16) x site=SiteId(118) ty=i64 intent=Read
+    bind BindingId(11) total site=SiteId(119) ty=i64
+    eval site=SiteId(120) ty=()
+    eval site=SiteId(125) ty=()
+    use BindingId(11) total site=SiteId(127) ty=i64 intent=Read
+    eval site=SiteId(126) ty=()
     drop BindingId(9) wslice ty=Vec<i32>
     drop BindingId(7) ws ty=Vec<i32>
     drop BindingId(5) bs ty=Vec<bool>
@@ -193,17 +192,19 @@ fn main -> ()
       (none)
     call[bb44 hew_vec_len -> bb46] ->
       (none)
-    call[bb45 println_i64 -> bb62] ->
+    branch[bb45: bb61/bb62] ->
       (none)
     branch[bb46: bb47/bb48] ->
       (none)
     goto[bb47->bb49] ->
       (none)
-    branch[bb48: bb50/bb51] ->
+    call[bb48 hew_vec_get_clone -> bb50] ->
       (none)
-    branch[bb49: bb55/bb58] ->
+    branch[bb49: bb54/bb57] ->
       (none)
-    panic[bb50] ->
+    branch[bb50: bb51/bb52] ->
+      (none)
+    panic[bb51] ->
       drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
@@ -211,9 +212,10 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    branch[bb51: bb52/bb53] ->
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
+    goto[bb52->bb49] ->
       (none)
-    panic[bb52] ->
+    cancel[bb52] ->
       drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
@@ -221,7 +223,8 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    goto[bb53->bb49] ->
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
+    goto[bb53->bb44] ->
       (none)
     cancel[bb53] ->
       drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
@@ -231,9 +234,12 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    goto[bb54->bb44] ->
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
+    branch[bb54: bb58/bb59] ->
       (none)
-    cancel[bb54] ->
+    goto[bb55->bb45] ->
+      (none)
+    cancel[bb55] ->
       drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
@@ -241,11 +247,8 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    branch[bb55: bb59/bb60] ->
-      (none)
-    goto[bb56->bb45] ->
-      (none)
-    cancel[bb56] ->
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
+    panic[bb56] ->
       drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
@@ -253,17 +256,10 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    panic[bb57] ->
-      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-      drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    branch[bb58: bb56/bb57] ->
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
+    branch[bb57: bb55/bb56] ->
       (none)
-    panic[bb59] ->
+    panic[bb58] ->
       drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
@@ -271,21 +267,27 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    goto[bb60->bb54] ->
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
+    goto[bb59->bb53] ->
+      (none)
+    cancel[bb59] ->
+      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+      drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
+    goto[bb60->bb53] ->
       (none)
     cancel[bb60] ->
-      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-      drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    goto[bb61->bb54] ->
       (none)
-    cancel[bb61] ->
+    goto[bb61->bb62] ->
       (none)
-    return[bb62] ->
+    call[bb62 println_i64 -> bb63] ->
+      (none)
+    return[bb63] ->
       drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
@@ -296,8 +298,8 @@ fn main -> ()
 
 fn i8::fmt -> string
   statements:
-    use BindingId(25) val site=SiteId(200) ty=i8 intent=Read
-    return site=Some(SiteId(198)) ty=string
+    use BindingId(25) val site=SiteId(199) ty=i8 intent=Read
+    return site=Some(SiteId(197)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -308,8 +310,8 @@ fn i8::fmt -> string
 
 fn i16::fmt -> string
   statements:
-    use BindingId(26) val site=SiteId(204) ty=i16 intent=Read
-    return site=Some(SiteId(202)) ty=string
+    use BindingId(26) val site=SiteId(203) ty=i16 intent=Read
+    return site=Some(SiteId(201)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -320,8 +322,8 @@ fn i16::fmt -> string
 
 fn i32::fmt -> string
   statements:
-    use BindingId(27) val site=SiteId(207) ty=i32 intent=Read
-    return site=Some(SiteId(206)) ty=string
+    use BindingId(27) val site=SiteId(206) ty=i32 intent=Read
+    return site=Some(SiteId(205)) ty=string
   drop_plans:
     call[bb0 to_string_i32 -> bb1] ->
       (none)
@@ -332,8 +334,8 @@ fn i32::fmt -> string
 
 fn i64::fmt -> string
   statements:
-    use BindingId(28) val site=SiteId(210) ty=i64 intent=Read
-    return site=Some(SiteId(209)) ty=string
+    use BindingId(28) val site=SiteId(209) ty=i64 intent=Read
+    return site=Some(SiteId(208)) ty=string
   drop_plans:
     call[bb0 to_string_i64 -> bb1] ->
       (none)
@@ -344,8 +346,8 @@ fn i64::fmt -> string
 
 fn u8::fmt -> string
   statements:
-    use BindingId(29) val site=SiteId(213) ty=u8 intent=Read
-    return site=Some(SiteId(212)) ty=string
+    use BindingId(29) val site=SiteId(212) ty=u8 intent=Read
+    return site=Some(SiteId(211)) ty=string
   drop_plans:
     call[bb0 to_string_u8 -> bb1] ->
       (none)
@@ -356,8 +358,8 @@ fn u8::fmt -> string
 
 fn u16::fmt -> string
   statements:
-    use BindingId(30) val site=SiteId(216) ty=u16 intent=Read
-    return site=Some(SiteId(215)) ty=string
+    use BindingId(30) val site=SiteId(215) ty=u16 intent=Read
+    return site=Some(SiteId(214)) ty=string
   drop_plans:
     call[bb0 to_string_u16 -> bb1] ->
       (none)
@@ -368,8 +370,8 @@ fn u16::fmt -> string
 
 fn u32::fmt -> string
   statements:
-    use BindingId(31) val site=SiteId(219) ty=u32 intent=Read
-    return site=Some(SiteId(218)) ty=string
+    use BindingId(31) val site=SiteId(218) ty=u32 intent=Read
+    return site=Some(SiteId(217)) ty=string
   drop_plans:
     call[bb0 to_string_u32 -> bb1] ->
       (none)
@@ -380,8 +382,8 @@ fn u32::fmt -> string
 
 fn u64::fmt -> string
   statements:
-    use BindingId(32) val site=SiteId(222) ty=u64 intent=Read
-    return site=Some(SiteId(221)) ty=string
+    use BindingId(32) val site=SiteId(221) ty=u64 intent=Read
+    return site=Some(SiteId(220)) ty=string
   drop_plans:
     call[bb0 to_string_u64 -> bb1] ->
       (none)
@@ -392,8 +394,8 @@ fn u64::fmt -> string
 
 fn isize::fmt -> string
   statements:
-    use BindingId(33) val site=SiteId(226) ty=isize intent=Read
-    return site=Some(SiteId(224)) ty=string
+    use BindingId(33) val site=SiteId(225) ty=isize intent=Read
+    return site=Some(SiteId(223)) ty=string
   drop_plans:
     call[bb0 to_string_i64 -> bb1] ->
       (none)
@@ -404,8 +406,8 @@ fn isize::fmt -> string
 
 fn usize::fmt -> string
   statements:
-    use BindingId(34) val site=SiteId(230) ty=usize intent=Read
-    return site=Some(SiteId(228)) ty=string
+    use BindingId(34) val site=SiteId(229) ty=usize intent=Read
+    return site=Some(SiteId(227)) ty=string
   drop_plans:
     call[bb0 to_string_u64 -> bb1] ->
       (none)
@@ -416,8 +418,8 @@ fn usize::fmt -> string
 
 fn bool::fmt -> string
   statements:
-    use BindingId(35) val site=SiteId(233) ty=bool intent=Read
-    return site=Some(SiteId(232)) ty=string
+    use BindingId(35) val site=SiteId(232) ty=bool intent=Read
+    return site=Some(SiteId(231)) ty=string
   drop_plans:
     call[bb0 to_string_bool -> bb1] ->
       (none)
@@ -428,8 +430,8 @@ fn bool::fmt -> string
 
 fn char::fmt -> string
   statements:
-    use BindingId(36) val site=SiteId(236) ty=char intent=Read
-    return site=Some(SiteId(235)) ty=string
+    use BindingId(36) val site=SiteId(235) ty=char intent=Read
+    return site=Some(SiteId(234)) ty=string
   drop_plans:
     call[bb0 to_string_char -> bb1] ->
       (none)
@@ -440,8 +442,8 @@ fn char::fmt -> string
 
 fn f64::fmt -> string
   statements:
-    use BindingId(37) val site=SiteId(239) ty=f64 intent=Read
-    return site=Some(SiteId(238)) ty=string
+    use BindingId(37) val site=SiteId(238) ty=f64 intent=Read
+    return site=Some(SiteId(237)) ty=string
   drop_plans:
     call[bb0 to_string_f64 -> bb1] ->
       (none)
@@ -452,8 +454,8 @@ fn f64::fmt -> string
 
 fn f32::fmt -> string
   statements:
-    use BindingId(38) val site=SiteId(243) ty=f32 intent=Read
-    return site=Some(SiteId(241)) ty=string
+    use BindingId(38) val site=SiteId(242) ty=f32 intent=Read
+    return site=Some(SiteId(240)) ty=string
   drop_plans:
     call[bb0 to_string_f64 -> bb1] ->
       (none)
@@ -464,16 +466,16 @@ fn f32::fmt -> string
 
 fn string::fmt -> string
   statements:
-    use BindingId(39) val site=SiteId(245) ty=string intent=Read
-    return site=Some(SiteId(245)) ty=string
+    use BindingId(39) val site=SiteId(244) ty=string intent=Read
+    return site=Some(SiteId(244)) ty=string
   drop_plans:
     return[bb0] ->
       (none)
 
 fn duration::from_nanos -> duration
   statements:
-    use BindingId(40) n site=SiteId(247) ty=i64 intent=Read
-    return site=Some(SiteId(246)) ty=duration
+    use BindingId(40) n site=SiteId(246) ty=i64 intent=Read
+    return site=Some(SiteId(245)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -484,8 +486,8 @@ fn duration::from_nanos -> duration
 
 fn duration::from_micros -> duration
   statements:
-    use BindingId(41) n site=SiteId(250) ty=i64 intent=Read
-    return site=Some(SiteId(249)) ty=duration
+    use BindingId(41) n site=SiteId(249) ty=i64 intent=Read
+    return site=Some(SiteId(248)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -496,8 +498,8 @@ fn duration::from_micros -> duration
 
 fn duration::from_millis -> duration
   statements:
-    use BindingId(42) n site=SiteId(253) ty=i64 intent=Read
-    return site=Some(SiteId(252)) ty=duration
+    use BindingId(42) n site=SiteId(252) ty=i64 intent=Read
+    return site=Some(SiteId(251)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -508,8 +510,8 @@ fn duration::from_millis -> duration
 
 fn duration::from_secs -> duration
   statements:
-    use BindingId(43) n site=SiteId(256) ty=i64 intent=Read
-    return site=Some(SiteId(255)) ty=duration
+    use BindingId(43) n site=SiteId(255) ty=i64 intent=Read
+    return site=Some(SiteId(254)) ty=duration
   drop_plans:
     branch[bb0: bb1/bb2] ->
       (none)
@@ -520,8 +522,8 @@ fn duration::from_secs -> duration
 
 fn duration::fmt -> string
   statements:
-    use BindingId(44) val site=SiteId(261) ty=duration intent=Read
-    return site=Some(SiteId(258)) ty=string
+    use BindingId(44) val site=SiteId(260) ty=duration intent=Read
+    return site=Some(SiteId(257)) ty=string
   drop_plans:
     call[bb0 to_string_i64 -> bb1] ->
       (none)

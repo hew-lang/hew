@@ -51,6 +51,25 @@ fn main() -> i64 {
     let l2 = LinearTicket { id: 52 };
     let _l2_copy = clone l2;
     let _ = l2.redeem();
+
+    var resources: Vec<ResourceToken> = Vec::new();
+    resources.push(ResourceToken { id: 61 });
+    let _resources_copy = resources.clone();
+
+    var tickets: HashMap<string, LinearTicket> = HashMap::new();
+    tickets.insert("one", LinearTicket { id: 62 });
+    let _tickets_copy = clone tickets;
+
+    var late_resources = Vec::new();
+    var i = 0;
+    while i < 2 {
+        if i == 1 {
+            let _late_copy = late_resources.clone();
+        } else {
+            late_resources.push(ResourceToken { id: 63 });
+        }
+        i = i + 1;
+    }
     0
 }
 "#,
@@ -81,8 +100,8 @@ fn main() -> i64 {
     );
     assert_eq!(
         combined.matches("cannot be cloned").count(),
-        4,
-        "both syntaxes must reject both affine markers: {combined}"
+        7,
+        "record and builtin-container dispatch must reject affine clones: {combined}"
     );
     assert!(
         combined.contains("`#[resource]`")

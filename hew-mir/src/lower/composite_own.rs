@@ -2056,6 +2056,7 @@ pub(super) fn derive_owned_record_drop_allowed(
     binding_locals: &HashMap<BindingId, Place>,
     local_tys: &[ResolvedTy],
     is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
+    record_field_store_preserves_owner: &dyn Fn(Place, FieldOffset) -> bool,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     alias_field_binders: &[(u32, u32)],
@@ -2350,6 +2351,23 @@ pub(super) fn derive_owned_record_drop_allowed(
             if initializes_generator_env_snapshot(instr, &generator_env_inits) {
                 continue;
             }
+            // A supported inline-enum overwrite releases before storing, so
+            // only its destination base is an interior mutation; the source
+            // remains on the ordinary owning-sink scan below.
+            let preserves_record_store_base = match instr {
+                Instr::RecordFieldStore {
+                    record,
+                    field_offset,
+                    ..
+                } => record_field_store_preserves_owner(*record, *field_offset),
+                _ => false,
+            };
+            let preserved_record_store_local = match instr {
+                Instr::RecordFieldStore { record, .. } if preserves_record_store_base => {
+                    base_local(*record)
+                }
+                _ => None,
+            };
             // COPY-IN element store (`hew_vec_push_owned` / `hew_vec_set_owned`)
             // DEEP-CLONES its element operand: an owned record pushed WHOLE by
             // value is cloned into the Vec slot and the SOURCE keeps sole
@@ -2516,6 +2534,7 @@ pub(super) fn derive_owned_record_drop_allowed(
                             && !cloned_borrowed_ingress
                             && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
+                            && preserved_record_store_local != Some(l)
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
@@ -6960,6 +6979,7 @@ mod owned_record_drop_derivation {
             binding_locals,
             local_tys,
             &is_rec,
+            &|_, _| false,
             &record_field_orders,
             &[],
             &[],
@@ -7010,6 +7030,7 @@ mod owned_record_drop_derivation {
             binding_locals,
             local_tys,
             &is_rec,
+            &|_, _| false,
             &record_field_orders,
             &[],
             &[],

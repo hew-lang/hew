@@ -1073,6 +1073,212 @@ pub fn classify_value_snapshot_plan_with_resource_handles(
     .map(|root| ValueSnapshotPlan { root })
 }
 
+/// Return whether `ty` is a registered inline enum whose complete recursive
+/// clone/drop plan is ready for an in-place record-field overwrite.
+///
+/// This is the MIR-side proof consumed by the owned-record sole-owner scan.
+/// A successful `RecordFieldStore` now releases the previous enum value before
+/// storing its replacement, so the enclosing record remains its final owner
+/// only when all of the following hold:
+///
+/// - the destination field resolves to a registered enum layout;
+/// - that enum and every recursively reached enum are inline;
+/// - every payload leaf has a total clone/drop plan; and
+/// - no payload reaches a user `#[resource]` record.
+///
+/// Unknown layouts, indirect enums, resource records, opaque handles, affine
+/// handles, and other mixed unsupported payloads return `false` (or a
+/// classification error) and retain the existing fail-closed owner exclusion.
+///
+/// # Errors
+///
+/// Returns [`ClassificationError`] when classification or recursive layout
+/// resolution fails.
+pub fn inline_enum_overwrite_drop_is_ready(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+    resource_record_names: &[String],
+) -> Result<bool, ClassificationError> {
+    let plan = classify_value_snapshot_plan_with_resource_handles(
+        ty,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+    )?;
+    let StateFieldCloneKind::Enum { name } = plan.root() else {
+        return Ok(false);
+    };
+    let Some(layout) = enum_layouts.iter().find(|layout| layout.name == *name) else {
+        return Err(ClassificationError::MissingEnumLayout { name: name.clone() });
+    };
+    if layout.is_indirect
+        || type_reaches_forbidden_overwrite_boundary(
+            ty,
+            record_layouts,
+            enum_layouts,
+            resource_record_names,
+            &mut HashSet::new(),
+        )
+    {
+        return Ok(false);
+    }
+    plan.is_clone_total(
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+    )
+}
+
+/// Return whether `ty` is a registered record with a total recursive
+/// clone/drop plan and at least one registered inline enum field.
+///
+/// This is the enclosing-record counterpart to
+/// [`inline_enum_overwrite_drop_is_ready`]. It is used only to repair the
+/// owned-local seed for generic record instantiations whose value-class marker
+/// still says `BitCopy`; ordinary seed decisions remain unchanged.
+///
+/// # Errors
+///
+/// Returns [`ClassificationError`] when classification or recursive layout
+/// resolution fails.
+pub fn record_with_inline_enum_drop_is_ready(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    opaque_handle_names: &[String],
+    resource_close: &[(String, String)],
+    resource_record_names: &[String],
+) -> Result<bool, ClassificationError> {
+    let plan = classify_value_snapshot_plan_with_resource_handles(
+        ty,
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+    )?;
+    let StateFieldCloneKind::UserRecord { name } = plan.root() else {
+        return Ok(false);
+    };
+    let Some(layout) = record_layouts.iter().find(|layout| layout.name == *name) else {
+        return Err(ClassificationError::MissingRecordLayout { name: name.clone() });
+    };
+    if type_reaches_forbidden_overwrite_boundary(
+        ty,
+        record_layouts,
+        enum_layouts,
+        resource_record_names,
+        &mut HashSet::new(),
+    ) || !plan.is_clone_total(
+        record_layouts,
+        enum_layouts,
+        opaque_handle_names,
+        resource_close,
+    )? {
+        return Ok(false);
+    }
+    Ok(layout.field_tys.iter().any(|field_ty| {
+        inline_enum_overwrite_drop_is_ready(
+            field_ty,
+            record_layouts,
+            enum_layouts,
+            opaque_handle_names,
+            resource_close,
+            resource_record_names,
+        )
+        .unwrap_or(false)
+    }))
+}
+
+fn type_reaches_forbidden_overwrite_boundary(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    resource_record_names: &[String],
+    visited: &mut HashSet<String>,
+) -> bool {
+    match ty {
+        ResolvedTy::Named { name, args, .. } => {
+            let short = hew_types::short_name(name);
+            if resource_record_names
+                .iter()
+                .any(|resource| resource == name || hew_types::short_name(resource) == short)
+            {
+                return true;
+            }
+            let visit_key = if args.is_empty() {
+                name.clone()
+            } else {
+                hew_hir::mangle(name, args)
+            };
+            if !visited.insert(visit_key.clone()) {
+                return false;
+            }
+            let forbidden = if let Some(layout) = lookup_enum_layout(name, args, enum_layouts) {
+                layout.is_indirect
+                    || layout.variants.iter().any(|variant| {
+                        variant.field_tys.iter().any(|field_ty| {
+                            type_reaches_forbidden_overwrite_boundary(
+                                field_ty,
+                                record_layouts,
+                                enum_layouts,
+                                resource_record_names,
+                                visited,
+                            )
+                        })
+                    })
+            } else if let Some(layout) = lookup_record_layout(name, args, record_layouts) {
+                layout.field_tys.iter().any(|field_ty| {
+                    type_reaches_forbidden_overwrite_boundary(
+                        field_ty,
+                        record_layouts,
+                        enum_layouts,
+                        resource_record_names,
+                        visited,
+                    )
+                })
+            } else {
+                args.iter().any(|arg| {
+                    type_reaches_forbidden_overwrite_boundary(
+                        arg,
+                        record_layouts,
+                        enum_layouts,
+                        resource_record_names,
+                        visited,
+                    )
+                })
+            };
+            visited.remove(&visit_key);
+            forbidden
+        }
+        ResolvedTy::Tuple(elems) => elems.iter().any(|elem| {
+            type_reaches_forbidden_overwrite_boundary(
+                elem,
+                record_layouts,
+                enum_layouts,
+                resource_record_names,
+                visited,
+            )
+        }),
+        ResolvedTy::Array(elem, _)
+        | ResolvedTy::Slice(elem)
+        | ResolvedTy::Task(elem)
+        | ResolvedTy::Pointer { pointee: elem, .. }
+        | ResolvedTy::Borrow { pointee: elem } => type_reaches_forbidden_overwrite_boundary(
+            elem,
+            record_layouts,
+            enum_layouts,
+            resource_record_names,
+            visited,
+        ),
+        _ => false,
+    }
+}
+
 /// owned-string-record classifier for a direct user record with owned `string` fields.
 ///
 /// This intentionally reuses the actor-state classifier, then narrows its

@@ -1114,6 +1114,9 @@ pub(super) fn elaborate(
     // string record is a subset of the owned-aggregate records covered here).
     let alias_field_binders = builder.alias_owner_field_binders();
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
+    let record_field_store_preserves_owner = |record, field_offset| {
+        builder.record_field_store_preserves_record_owner(record, field_offset)
+    };
     let mut owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
@@ -1121,6 +1124,7 @@ pub(super) fn elaborate(
         &builder.binding_locals,
         &builder.locals,
         &is_owned_record,
+        &record_field_store_preserves_owner,
         &builder.record_field_orders,
         &builder.enum_layouts,
         &alias_field_binders,
@@ -4586,6 +4590,18 @@ pub(super) fn resource_drop_fn(
         ResolvedTy::CancellationToken => Some(crate::model::DropFnSpec::Runtime(
             RuntimeDropDescriptor::CancellationTokenRelease,
         )),
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Stream),
+            ..
+        } => Some(crate::model::DropFnSpec::Runtime(
+            RuntimeDropDescriptor::StreamClose,
+        )),
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Sink),
+            ..
+        } => Some(crate::model::DropFnSpec::Runtime(
+            RuntimeDropDescriptor::SinkClose,
+        )),
         ResolvedTy::Named { name, .. } => {
             let short = short_name(name);
             let qualified_collision = short != name
@@ -4622,6 +4638,26 @@ pub(super) fn resource_drop_fn(
         }
         // Task<T> and all other types have no user-visible close method.
         _ => None,
+    }
+}
+#[cfg(test)]
+mod builtin_stream_resource_drop_fn {
+    use super::*;
+    use hew_types::runtime_call::RuntimeDropDescriptor;
+
+    #[test]
+    fn stream_and_sink_use_their_runtime_close_descriptors_without_type_class_entries() {
+        let classes = hew_hir::TypeClassTable::new();
+        for (builtin, expected) in [
+            (BuiltinType::Stream, RuntimeDropDescriptor::StreamClose),
+            (BuiltinType::Sink, RuntimeDropDescriptor::SinkClose),
+        ] {
+            let ty = ResolvedTy::named_builtin("Handle", builtin, vec![ResolvedTy::String]);
+            assert!(matches!(
+                resource_drop_fn(&ty, &classes),
+                Some(crate::model::DropFnSpec::Runtime(actual)) if actual == expected
+            ));
+        }
     }
 }
 /// Place-aware override of the type-derived `drop_fn`.

@@ -5678,6 +5678,9 @@ pub(crate) fn lower_function(
         &builder.proven_borrow_call_args,
     );
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
+    let record_field_store_preserves_owner = |record, field_offset| {
+        builder.record_field_store_preserves_record_owner(record, field_offset)
+    };
     let owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &raw.blocks,
         &raw.suspend_kinds,
@@ -5685,6 +5688,7 @@ pub(crate) fn lower_function(
         &builder.binding_locals,
         &builder.locals,
         &is_owned_record,
+        &record_field_store_preserves_owner,
         &builder.record_field_orders,
         &builder.enum_layouts,
         &alias_field_binders,

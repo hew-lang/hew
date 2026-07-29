@@ -3,6 +3,7 @@ use super::temp_drop::{
     corroborated_retained_bytes_move_sites, corroborated_retained_string_move_sites,
 };
 mod aggregate_borrowed_ingress_clone;
+mod builtin_handle_record_field_overwrite;
 mod bytes_payload_handoff;
 mod predicate_string_temp_drop;
 #[cfg(test)]
@@ -32,6 +33,7 @@ use super::{
 use aggregate_borrowed_ingress_clone::{
     aggregate_borrowed_ingress_retain_clones_value, aggregate_borrowed_ingress_sink_clones_source,
 };
+pub(super) use builtin_handle_record_field_overwrite::detect_builtin_handle_record_field_overwrite;
 use bytes_payload_handoff::provable_bytes_payload_handoff_sites;
 #[cfg(test)]
 use bytes_payload_handoff::BytesPayloadHandoff;
@@ -6657,8 +6659,7 @@ pub(super) fn detect_opaque_resource_field_misuse(
     }
     findings
 }
-/// True when overwriting an actor-state field of this classified kind would
-/// silently leak the previous handle — the exact #2654 hazard.
+/// True when overwriting this actor-state field kind leaks its previous handle (#2654).
 ///
 /// The gated kinds are those whose scope-exit / actor-shutdown drop runs a real
 /// close AND whose `ActorStateFieldStore` has NO release-before-store today:
@@ -6674,7 +6675,6 @@ pub(super) fn detect_opaque_resource_field_misuse(
 ///     coroutine frame / refcount of the OLD handle leaks on overwrite.
 ///
 /// NOT gated (no leak on overwrite, so no refusal):
-///
 ///   - kinds with an existing release-before-store — `String`/`Bytes`/`Vec`/
 ///     `HashMap`/`HashSet` go through `emit_state_field_old_value_release`'s
 ///     pointer-inequality guard, which releases the old payload before the store;

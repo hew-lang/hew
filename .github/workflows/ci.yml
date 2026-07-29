@@ -80,6 +80,11 @@ jobs:
               - 'Cargo.lock'
               - '**/Cargo.lock'
               - 'Makefile'
+              # The public-stdlib execution-proof mapping is a release gate,
+              # not a docs-only script: changes to either authority must run
+              # the code-path step that invokes its Make target below.
+              - 'scripts/stdlib-execution-proof.sh'
+              - 'scripts/stdlib-execution-proofs.tsv'
               - '.github/workflows/**'
               - '.github/actions/**'
             # Rule 4 (platform parity, strong set): native linking / LLVM / C ABI
@@ -631,6 +636,12 @@ jobs:
         # Type-checks every std/*.hew file through scripts/stdlib-ratchet.sh.
         # Known failures tracked in scripts/stdlib-expected-failures.txt.
         run: make test-stdlib-ratchet
+
+      - name: Verify public stdlib execution proofs
+        if: env.RUN_CODE_PATH == 'true'
+        # Enforces the README public-index → executed-fixture mapping, including
+        # parser-backed import evidence and the manifest's exact corpus floor.
+        run: make test-stdlib-execution-proofs
 
       - name: Run doc-fence typecheck suite (ratcheted)
         if: env.RUN_CODE_PATH == 'true'

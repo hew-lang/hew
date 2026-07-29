@@ -31,8 +31,8 @@
 # key	mode	floor	slack	description
 asan-fixture-gates	exact	19	-	ASan/LSan fixture verdicts asserted by scripts/asan-fixture-check.sh
 checked-mir-fixtures	exact	57	-	golden-MIR fixtures under examples/v05/checked-mir
-ci-parity-marked-steps	exact	28	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
-ci-required-checks	exact	32	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
+ci-parity-marked-steps	exact	29	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
+ci-required-checks	exact	33	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
 corpus-floor-registry	exact	23	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
 coverage-e2e-programs	min	70	30	self-contained examples/*.hew programs the runtime coverage report executes
 doc-hew-fences	min	297	60	hew fences extracted from the language guide and the spec
@@ -48,7 +48,7 @@ macos-leak-oracle-tests	exact	671	-	test verdicts selected by scripts/macos-leak
 o2-differential-outcomes	min	1169	200	per-test outcomes compared by the O0-vs-O2 differential gate
 sandbox-vm-binaries	exact	4	-	VM-dependent hew-sandbox-wasm test binaries requiring whole-binary exclusion
 stdlib-int-surface-files	exact	74	-	tracked std/ .hew files scanned for removed int/uint aliases
-stdlib-proof-modules	exact	69	-	public stdlib modules mapped to executable proof fixtures
+stdlib-proof-modules	exact	70	-	public stdlib modules mapped to executable proof fixtures
 stdlib-ratchet-files	exact	73	-	std/ .hew files type-checked by scripts/stdlib-ratchet.sh
 surface-example-expectations	exact	14	-	v0.5 surface examples compared against a paired .expected
 ux-example-expectations	exact	27	-	ux and progressive tutorials compared against a paired .expected

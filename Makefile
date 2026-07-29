@@ -59,6 +59,7 @@
 #   make test-package-install — Adze install -> Hew import consumer proof
 #   make test-runtime-net  — runtime / analysis / lsp / std-net crate tests (narrow)
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
+#   make test-stdlib-execution-proofs — verify every README-indexed public stdlib module has an executed API proof
 #   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
 #   make asan         — run the nightly rust-runtime ASan test command locally
 #   make tsan         — run the nightly rust-runtime TSan test command locally
@@ -71,7 +72,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
+.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -907,6 +908,12 @@ test-check-gate-reachability:
 test-stdlib-ratchet: hew
 	@echo "==> Type-checking stdlib (ratcheted)"
 	scripts/stdlib-ratchet.sh
+
+# Verify the public stdlib index has exactly one executable fixture proof per
+# module, and that each manifest fixture is run by its declared test command.
+test-stdlib-execution-proofs:
+	@echo "==> Verifying public stdlib execution proofs"
+	scripts/stdlib-execution-proof.sh --check
 
 # Run every examples/ux and examples/progressive tutorial against its paired
 # .expected file. The shared runner fails closed on missing/orphan expectations,

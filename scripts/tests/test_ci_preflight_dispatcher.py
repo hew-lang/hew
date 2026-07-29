@@ -631,6 +631,20 @@ def test_fallback_lane_includes_hew_suite_ratchets() -> None:
     )
 
 
+def test_stdlib_execution_proof_authorities_route_to_their_gate() -> None:
+    """The manifest and its checker run the proof gate before push."""
+    result = run_dispatcher(
+        "scripts/stdlib-execution-proof.sh",
+        "scripts/stdlib-execution-proofs.tsv",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Selected profile: scripts-config" in result.stdout, result.stdout
+    assert "make test-stdlib-execution-proofs" in result.stdout, (
+        "Expected stdlib proof authorities to run their verifier.\n"
+        f"stdout:\n{result.stdout}"
+    )
+
+
 def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
     """Parser + type-checker changes route to the types lane, not fallback.
 
@@ -802,6 +816,7 @@ _TESTS = [
     test_hew_tests_path_routes_to_hew_tests_lane,
     test_std_hew_file_adds_hew_suite_addon,
     test_fallback_lane_includes_hew_suite_ratchets,
+    test_stdlib_execution_proof_authorities_route_to_their_gate,
     test_ci_parity_script_passes,
     # Slice 2 positive bucket-routing tests
     test_hew_hir_routes_to_compiler_pipeline_lane,

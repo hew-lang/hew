@@ -719,6 +719,15 @@ class Interpreter {
         });
         return;
       }
+      case "vector.index": {
+        const vector = this.vectorArg(frame, instruction.args[0], instruction.span);
+        const index = this.indexArg(frame, instruction.args[1], instruction.span);
+        if (index < 0 || index >= vector.items.length) {
+          this.trap("vector_bounds", "vector index out of bounds", instruction.span);
+        }
+        this.writeDst(frame, instruction, cloneValue(vector.items[index]!));
+        return;
+      }
       case "vector.set": {
         const vector = this.vectorArg(frame, instruction.args[0], instruction.span);
         const index = this.indexArg(frame, instruction.args[1], instruction.span);

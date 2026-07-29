@@ -4317,6 +4317,7 @@ impl Builder {
             // `match stream.recv() { ... }`.
             let arm_is_recv_some = recv_next_scrutinee && arm_is_some;
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
+            let mut call_carrier_match_result_candidates = Vec::new();
             // Fresh `Some(x)` bindings whose payload owns heap. VecIter clone
             // reads, generator drives, and receiver reads all hand the body a
             // fresh sole owner, so one shared lifecycle releases it at
@@ -4349,6 +4350,7 @@ impl Builder {
                         )
                     })
                     .flatten();
+                let fresh_active_payload = active_variant_payload_warrant.is_some();
                 let warrant = active_variant_payload_warrant.unwrap_or_else(|| {
                     self.owner_warrant_for_scrutinee_payload(
                         binding.binding,
@@ -4374,10 +4376,15 @@ impl Builder {
                     }
                 }
                 let dest = self.alloc_local(binding.ty.clone());
-                if active_variant_payload_warrant.is_some() && keep_for_drop_elab {
+                if fresh_active_payload && keep_for_drop_elab {
                     self.fresh_variant_payload_bindings.insert(binding.binding);
                     if let Some(local) = base_local(dest) {
                         self.fresh_variant_payload_binder_locals.insert(local);
+                    }
+                }
+                if call_scrutinee_owner.is_some() && keep_for_drop_elab {
+                    if let Some(local) = base_local(dest) {
+                        call_carrier_match_result_candidates.push((binding.binding, local));
                     }
                 }
                 let payload_source = Place::MachineVariant {
@@ -4715,6 +4722,21 @@ impl Builder {
             }
             let value = self.lower_composite_result_value(&arm.body);
             let body_end_block_id = self.current_block_id;
+            // A direct whole-payload match result (`Some(g) => g`) transfers
+            // the selected field out of a proved-fresh call carrier. The
+            // carrier's active payload drop is suppressed on that arm, so the
+            // resulting binder is the sole recursive owner. Exempt exactly
+            // that moved-out binder from projection taint. Merely reading a
+            // payload in an otherwise statement-valued arm leaves the carrier
+            // as owner and must not create a second release.
+            if let Some(value_local) = value.and_then(base_local) {
+                for (binding, local) in &call_carrier_match_result_candidates {
+                    if *local == value_local {
+                        self.fresh_variant_payload_bindings.insert(*binding);
+                        self.fresh_variant_payload_binder_locals.insert(*local);
+                    }
+                }
+            }
 
             // Drain the entries this arm registered; break/continue inside the
             // body has already cloned-freed them on its edges.

@@ -102,6 +102,45 @@ pub(super) fn finalize_string_local_share_intents(
         }
     }
 }
+
+/// Aggregate-ingress retain sites known before retain instructions are spliced
+/// into raw MIR. The escaped-projection sibling pass runs at this earlier
+/// phase, so it consumes this view instead of attempting to rediscover the
+/// later `StringRetain` markers.
+pub(super) fn aggregate_borrowed_ingress_clone_sites(
+    blocks: &[BasicBlock],
+    builder: &Builder,
+) -> HashSet<(u32, usize, Place)> {
+    let owned_locals = builder.owned_locals_snapshot();
+    derive_cow_sole_owner(
+        blocks,
+        &builder.suspend_kinds,
+        &owned_locals,
+        &builder.binding_locals,
+        &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
+        &builder.locals,
+        &builder.borrowed_string_param_locals,
+        &builder.parameter_locals,
+        &builder.actor_message_cow_drop_flags,
+        &builder.module_fn_names,
+        &builder.module_generic_fn_names,
+        &builder.call_scrutinee_provenance.extern_table,
+        &builder
+            .call_scrutinee_provenance
+            .owned_string_return_carrier_symbols,
+    )
+    .retain_sites
+    .into_iter()
+    .filter_map(|site| {
+        matches!(
+            site.condition,
+            StringRetainCondition::AggregateBorrowedIngress
+        )
+        .then_some((site.block, site.instr_index, site.value))
+    })
+    .collect()
+}
 /// The destination of an instruction that loads an *interior pointer* out
 /// of a still-live aggregate — a record field, a tuple element, a
 /// closure-env capture, or an actor-state field. The loaded value aliases

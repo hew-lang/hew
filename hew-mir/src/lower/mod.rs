@@ -163,9 +163,10 @@ use self::suspend_places::{
 };
 #[cfg(not(test))]
 use self::temp_drop::{
-    aggregate_projection_transfer_dests, apply_nested_fresh_bytes_temp_drops,
-    apply_nested_fresh_string_temp_drops, bytes_interior_producer_dest, bytes_place_is_typed,
-    bytes_runtime_arg_is_borrow, bytes_share_sink_places, classify_actor_state_load_modes,
+    aggregate_borrowed_ingress_clone_sites, aggregate_projection_transfer_dests,
+    apply_nested_fresh_bytes_temp_drops, apply_nested_fresh_string_temp_drops,
+    bytes_interior_producer_dest, bytes_place_is_typed, bytes_runtime_arg_is_borrow,
+    bytes_share_sink_places, classify_actor_state_load_modes,
     compute_collection_interior_alias_taint, compute_projection_alias_taint,
     derive_bytes_actor_transfer_blocks, derive_cow_fresh_borrowed_owner, derive_cow_sole_owner,
     finalize_bytes_ownership, finalize_string_local_share_intents, finalize_string_ownership,
@@ -1224,10 +1225,12 @@ struct Builder {
     /// allow-set, so the drop won't double-free a moved-out payload.
     pub(crate) match_project_consumed_binder_locals: HashSet<u32>,
     /// Match-arm payload binders whose active `(variant, field)` was proven a
-    /// fresh transferred return, while the enclosing enum was deliberately NOT
-    /// admitted as a whole owner. These locals are exempt from the ordinary
-    /// interior-projection alias seed: the shell has no drop obligation, so the
-    /// binder is the one and only owner of the selected field.
+    /// fresh transferred return. This includes mixed-return wrappers with no
+    /// whole shell owner and selected payloads moved directly out as the result
+    /// of a proved-fresh call-scrutinee match. In the latter case the shell's
+    /// active payload drop is suppressed on that arm, so the binder is the one
+    /// and only owner of the selected field. These locals are exempt from the
+    /// ordinary interior-projection alias seed.
     pub(crate) fresh_variant_payload_binder_locals: HashSet<u32>,
     /// Binding ids paired with `fresh_variant_payload_binder_locals`. Record
     /// drop admission is keyed by binding rather than local, so this is the
@@ -5311,6 +5314,7 @@ pub(crate) fn lower_function(
         // siblings at every level — the reach `close_alias_binders_forward` gave
         // the composite-drop prover's exclusion.
         let alias_chain = builder.alias_projection_chain();
+        let aggregate_clone_sites = aggregate_borrowed_ingress_clone_sites(&blocks, &builder);
         let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
         let owned_field_list = |ty: &ResolvedTy| builder.project_record_owned_field_list(ty);
         let owned_tuple_field_list = |ty: &ResolvedTy| builder.project_tuple_owned_field_list(ty);
@@ -5326,6 +5330,7 @@ pub(crate) fn lower_function(
             &builder.record_field_orders,
             &builder.enum_layouts,
             &alias_chain,
+            &aggregate_clone_sites,
             &is_owned_record,
             &owned_field_list,
             &owned_tuple_field_list,

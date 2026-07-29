@@ -2,6 +2,7 @@
 use super::temp_drop::{
     corroborated_retained_bytes_move_sites, corroborated_retained_string_move_sites,
 };
+mod aggregate_borrowed_ingress_clone;
 mod bytes_payload_handoff;
 #[cfg(test)]
 use super::*;
@@ -26,6 +27,10 @@ use super::{
     FieldBinderProvenance, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement, Place,
     ResolvedTy, RootScan, ScopeId, ScopeInfoEntry, StringRetainCondition, SuspendKind, Terminator,
     FOR_ITER_CURSOR_NAME_PREFIX,
+};
+use aggregate_borrowed_ingress_clone::{
+    aggregate_borrowed_ingress_clones_source, aggregate_borrowed_ingress_retain_clones_value,
+    aggregate_borrowed_ingress_site_clones_source,
 };
 use bytes_payload_handoff::provable_bytes_payload_handoff_sites;
 #[cfg(test)]
@@ -305,6 +310,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
     enum_layouts: &[crate::model::EnumLayout],
     alias_chain: &[(u32, u32, u32)],
+    aggregate_clone_sites: &HashSet<(u32, usize, Place)>,
     is_owned_record: &dyn Fn(&ResolvedTy) -> bool,
     owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     owned_tuple_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
@@ -441,6 +447,22 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                 }
                 Instr::RecordInit { fields, dest, .. } => {
                     for (_, p) in fields {
+                        if aggregate_borrowed_ingress_clones_source(
+                            block,
+                            idx,
+                            *p,
+                            local_tys,
+                            record_field_orders,
+                        ) || aggregate_borrowed_ingress_site_clones_source(
+                            block.id,
+                            idx,
+                            *p,
+                            aggregate_clone_sites,
+                            local_tys,
+                            record_field_orders,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(*p) {
                             if let Some(&root) = alias_of.get(&l) {
                                 poison!(root);
@@ -556,6 +578,17 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                         }
                     }
                 }
+                Instr::StringRetain { value, .. }
+                    if base_local(*value)
+                        .and_then(|local| local_tys.get(local as usize))
+                        .is_some_and(|ty| {
+                            aggregate_borrowed_ingress_retain_clones_value(
+                                instr,
+                                *value,
+                                ty,
+                                record_field_orders,
+                            )
+                        }) => {}
                 other => {
                     let (reads, writes) = crate::dataflow::instr_reads_writes(other);
                     for p in reads {
@@ -709,6 +742,8 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
         owned_field_list,
         owned_tuple_field_list,
         field_dischargeable,
+        record_field_orders,
+        aggregate_clone_sites,
     ));
     if insertions.is_empty() {
         return;
@@ -810,6 +845,8 @@ fn compute_escaped_chain_sibling_drops(
     owned_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     owned_tuple_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
+    record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    aggregate_clone_sites: &HashSet<(u32, usize, Place)>,
 ) -> Vec<(u32, usize, Vec<Instr>)> {
     // Immediate-parent map: alias_local -> (parent_local, field ordinal it reads).
     let parent_of: HashMap<u32, (u32, u32)> = alias_chain
@@ -881,6 +918,22 @@ fn compute_escaped_chain_sibling_drops(
                 }
                 Instr::RecordInit { fields, .. } => {
                     for (_, place) in fields {
+                        if aggregate_borrowed_ingress_clones_source(
+                            block,
+                            idx,
+                            *place,
+                            local_tys,
+                            record_field_orders,
+                        ) || aggregate_borrowed_ingress_site_clones_source(
+                            block.id,
+                            idx,
+                            *place,
+                            aggregate_clone_sites,
+                            local_tys,
+                            record_field_orders,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(*place) {
                             if let Some(&escapee) = carrier_of.get(&l) {
                                 escapes.push((escapee, block.id, idx));
@@ -907,6 +960,17 @@ fn compute_escaped_chain_sibling_drops(
                         }
                     }
                 }
+                Instr::StringRetain { value, .. }
+                    if base_local(*value)
+                        .and_then(|local| local_tys.get(local as usize))
+                        .is_some_and(|ty| {
+                            aggregate_borrowed_ingress_retain_clones_value(
+                                instr,
+                                *value,
+                                ty,
+                                record_field_orders,
+                            )
+                        }) => {}
                 other => {
                     let (reads, _) = crate::dataflow::instr_reads_writes(other);
                     for place in reads {
@@ -2299,7 +2363,7 @@ pub(super) fn derive_owned_record_drop_allowed(
                 _ => None,
             })
             .collect();
-        for instr in &block.instructions {
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
             if initializes_generator_env_snapshot(instr, &generator_env_inits) {
                 continue;
             }
@@ -2447,13 +2511,31 @@ pub(super) fn derive_owned_record_drop_allowed(
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
+                        let cloned_borrowed_ingress = matches!(instr, Instr::RecordInit { .. })
+                            && aggregate_borrowed_ingress_clones_source(
+                                block,
+                                instr_index,
+                                p,
+                                local_tys,
+                                record_field_orders,
+                            )
+                            || local_tys.get(l as usize).is_some_and(|ty| {
+                                aggregate_borrowed_ingress_retain_clones_value(
+                                    instr,
+                                    p,
+                                    ty,
+                                    record_field_orders,
+                                )
+                            });
                         if !copy_in_elem_store
+                            && !cloned_borrowed_ingress
                             && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
                         if !copy_in_elem_store
+                            && !cloned_borrowed_ingress
                             && is_escape_binder(l)
                             && !binder_read_is_borrow_safe_instr(instr, l)
                         {
@@ -4862,12 +4944,32 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
-                        if alias_of.contains_key(&l)
+                        let cloned_borrowed_ingress = matches!(instr, Instr::RecordInit { .. })
+                            && aggregate_borrowed_ingress_clones_source(
+                                block,
+                                instr_index,
+                                p,
+                                local_tys,
+                                record_field_orders,
+                            )
+                            || local_tys.get(l as usize).is_some_and(|ty| {
+                                aggregate_borrowed_ingress_retain_clones_value(
+                                    instr,
+                                    p,
+                                    ty,
+                                    record_field_orders,
+                                )
+                            });
+                        if !cloned_borrowed_ingress
+                            && alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
                         {
                             note_alias_escape(l, &mut excluded_roots);
                         }
-                        if is_escape_binder(l) && !binder_read_is_borrow_safe_instr(instr, l) {
+                        if !cloned_borrowed_ingress
+                            && is_escape_binder(l)
+                            && !binder_read_is_borrow_safe_instr(instr, l)
+                        {
                             exclude_tuple_roots_except(
                                 &alias_of,
                                 &mut excluded_roots,
@@ -7695,6 +7797,7 @@ mod escaped_sibling_field_discharge {
             &field_orders(),
             &[],
             alias_chain,
+            &HashSet::new(),
             is_owned_record,
             owned_field_list,
             &owned_tuple_fields,
@@ -8099,6 +8202,7 @@ mod escaped_sibling_field_discharge {
             &field_orders(),
             &[],
             &[],
+            &HashSet::new(),
             &is_rec,
             &three_fields,
             &owned_tuple_fields,

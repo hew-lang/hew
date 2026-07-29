@@ -5049,6 +5049,9 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
         StateFieldCloneKind::Weak => Ok(Some(CloneHelper::Allocating {
             name: "hew_weak_clone_rc",
         })),
+        StateFieldCloneKind::ChannelSender => Ok(Some(CloneHelper::Allocating {
+            name: "hew_channel_sender_clone",
+        })),
         StateFieldCloneKind::Tuple { .. } => Err(CodegenError::FailClosed(
             "Tuple arm requires a synthesised in-place tuple clone helper; caller must dispatch separately"
                 .into(),
@@ -5155,6 +5158,9 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
         })),
         StateFieldCloneKind::Weak => Ok(Some(DropHelper {
             name: "hew_weak_drop_rc",
+        })),
+        StateFieldCloneKind::ChannelSender => Ok(Some(DropHelper {
+            name: "hew_channel_sender_close",
         })),
         StateFieldCloneKind::Tuple { .. } => Err(CodegenError::FailClosed(
             "Tuple arm requires a synthesised in-place tuple drop helper; caller must dispatch separately"
@@ -6477,7 +6483,9 @@ pub(crate) fn emit_field_drop_step<'ctx>(
         // owns the call to `.free()`. Actor state drop does not auto-free opaque
         // handles — consistent with `drop_helper_for_kind` returning `Ok(None)`.
         StateFieldCloneKind::OpaqueHandle { .. } => Ok(()),
-        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+        StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender => {
             let field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "refcounted field drop: parent struct {st_ty:?} has no field at \
@@ -7770,6 +7778,7 @@ fn collect_clone_target_names(
         | StateFieldCloneKind::Bytes
         | StateFieldCloneKind::Rc
         | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender
         | StateFieldCloneKind::IoHandle { .. }
         // OpaqueHandle has no synthesised clone/drop helper — it is a
         // pointer-width BitCopy-class handle. Nothing to enqueue.
@@ -8930,6 +8939,7 @@ fn overwrite_heap_leaf_capacity(
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
             | StateFieldCloneKind::HashSet { .. } => 1,
@@ -9058,6 +9068,7 @@ fn emit_overwrite_collect_leaves<'ctx>(
             StateFieldCloneKind::String
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
             | StateFieldCloneKind::HashSet { .. } => Some(
@@ -9520,6 +9531,7 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
             }
             StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
             | StateFieldCloneKind::HashSet { .. } => {
@@ -11918,7 +11930,11 @@ fn lower_instruction_with_cancel_drops(
     instr: &Instr,
     block_id: u32,
     drop_plans: &[(ExitPath, hew_mir::DropPlan)],
-    owned_carrier_cancel_drops: &[(Place, hew_mir::state_clone::ValueSnapshotPlan)],
+    owned_carrier_cancel_drops: &[(
+        Place,
+        hew_mir::state_clone::ValueSnapshotPlan,
+        Option<Place>,
+    )],
 ) -> CodegenResult<()> {
     let ctx = fn_ctx
         .builder
@@ -12319,9 +12335,10 @@ fn lower_instruction_with_cancel_drops(
             value,
             plan,
             boundary,
+            guard,
             ..
         } => {
-            emit_prepared_carrier_drop(fn_ctx, *value, plan, *boundary)?;
+            emit_guarded_prepared_carrier_drop(fn_ctx, *value, plan, *boundary, *guard)?;
         }
         Instr::ContextField { dest, offset } => {
             lower_context_field(fn_ctx, *dest, *offset)?;
@@ -16806,7 +16823,9 @@ fn lower_actor_state_field_load(
                         .llvm_ctx("ActorStateFieldLoad store")?;
                     return Ok(());
                 }
-                StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+                StateFieldCloneKind::Rc
+                | StateFieldCloneKind::Weak
+                | StateFieldCloneKind::ChannelSender => {
                     if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
                         return Err(CodegenError::FailClosed(format!(
                             "ActorStateFieldLoad field {idx}: refcounted handle kind \
@@ -17193,7 +17212,9 @@ fn lower_actor_state_field_store(
                     &format!("state_f{idx}_str"),
                 )?;
             }
-            StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+            StateFieldCloneKind::Rc
+            | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender => {
                 if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
                     return Err(CodegenError::FailClosed(format!(
                         "ActorStateFieldStore field {idx}: refcounted handle kind \
@@ -18300,16 +18321,19 @@ fn lower_value_snapshot_clone_instr<'ctx>(
         StateFieldCloneKind::Enum { name } => {
             lower_enum_clone_inplace_instr(fn_ctx, dest, src, name)
         }
-        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+        StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender => {
             if boundary == hew_mir::PreparedCarrierBoundary::Actor {
                 return Err(CodegenError::FailClosed(
-                    "successful actor snapshot plan contains Rc/Weak".into(),
+                    "successful actor snapshot plan contains a local refcounted handle".into(),
                 ));
             }
             let symbol = match plan.root() {
                 StateFieldCloneKind::Rc => "hew_rc_clone",
                 StateFieldCloneKind::Weak => "hew_weak_clone_rc",
-                _ => unreachable!("outer match limits Rc/Weak roots"),
+                StateFieldCloneKind::ChannelSender => "hew_channel_sender_clone",
+                _ => unreachable!("outer match limits refcounted-handle roots"),
             };
             lower_allocating_snapshot_clone(fn_ctx, dest, src, symbol, "local_call_rc")
         }
@@ -18411,16 +18435,19 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
             let (slot, _) = place_pointer(fn_ctx, value)?;
             emit_aggregate_recursive_drop(fn_ctx, slot, ty, 0, "prepared_array_drop")
         }
-        StateFieldCloneKind::Rc | StateFieldCloneKind::Weak => {
+        StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender => {
             if boundary == hew_mir::PreparedCarrierBoundary::Actor {
                 return Err(CodegenError::FailClosed(
-                    "prepared actor carrier drop contains Rc/Weak".into(),
+                    "prepared actor carrier drop contains a local refcounted handle".into(),
                 ));
             }
             let symbol = match plan.root() {
                 StateFieldCloneKind::Rc => "hew_rc_drop",
                 StateFieldCloneKind::Weak => "hew_weak_drop_rc",
-                _ => unreachable!("outer match limits Rc/Weak roots"),
+                StateFieldCloneKind::ChannelSender => "hew_channel_sender_close",
+                _ => unreachable!("outer match limits refcounted-handle roots"),
             };
             let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
             let handle = fn_ctx
@@ -18514,6 +18541,54 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
             )))
         }
     }
+}
+
+/// Emit a prepared-carrier drop only while its exactly-once transfer flag is
+/// zero. Every local-call carrier carries this structural guard; actor
+/// snapshots use their separate ownership protocol and leave it absent. A user
+/// `#[resource]` record is why null-neutralization alone is insufficient:
+/// zeroed fields are still a valid receiver for its generated `close(self)`, so
+/// a terminal snapshot drop must be suppressed after ownership moves to
+/// another carrier.
+fn emit_guarded_prepared_carrier_drop<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: Place,
+    plan: &hew_mir::state_clone::ValueSnapshotPlan,
+    boundary: hew_mir::PreparedCarrierBoundary,
+    guard: Option<Place>,
+) -> CodegenResult<()> {
+    let Some(flag) = guard else {
+        return emit_prepared_carrier_drop(fn_ctx, value, plan, boundary);
+    };
+    let (flag_ptr, flag_ty) = place_pointer(fn_ctx, flag)?;
+    let int_ty = match flag_ty {
+        BasicTypeEnum::IntType(int_ty) => int_ty,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "prepared carrier drop guard {flag:?} is not integer-shaped: {other:?}"
+            )));
+        }
+    };
+    let flag_value = fn_ctx
+        .builder
+        .build_load(int_ty, flag_ptr, "carrier_drop_flag")
+        .llvm_ctx("prepared carrier drop-flag load")?
+        .into_int_value();
+    let live = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            flag_value,
+            int_ty.const_zero(),
+            "carrier_drop_live",
+        )
+        .llvm_ctx("prepared carrier drop-flag compare")?;
+    emit_gated_drop_region(
+        fn_ctx,
+        live,
+        ("carrier_drop_live_only", "carrier_drop_merge"),
+        || emit_prepared_carrier_drop(fn_ctx, value, plan, boundary),
+    )
 }
 
 fn validate_prepared_outbound_modes(
@@ -19707,6 +19782,7 @@ fn state_kind_key_fragment(kind: &StateFieldCloneKind) -> String {
         StateFieldCloneKind::Bytes => "bytes".to_string(),
         StateFieldCloneKind::Rc => "rc".to_string(),
         StateFieldCloneKind::Weak => "weak".to_string(),
+        StateFieldCloneKind::ChannelSender => "channel_sender".to_string(),
         StateFieldCloneKind::Tuple { elems } => state_kind_tuple_key(elems),
         StateFieldCloneKind::Array { elem, len } => {
             format!("array_{}_{}", len, state_kind_key_fragment(elem))
@@ -19929,6 +20005,10 @@ pub(crate) fn collection_elem_clone_drop_syms(
             builtin: Some(hew_types::BuiltinType::Weak),
             ..
         } => Some(("hew_weak_clone_rc", "hew_weak_drop_rc")),
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Sender),
+            ..
+        } => Some(("hew_channel_sender_clone", "hew_channel_sender_close")),
         _ => None,
     }
 }
@@ -22189,7 +22269,12 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
             ..
         } => true,
         ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Rc | hew_types::BuiltinType::Weak),
+            builtin:
+                Some(
+                    hew_types::BuiltinType::Rc
+                    | hew_types::BuiltinType::Weak
+                    | hew_types::BuiltinType::Sender,
+                ),
             ..
         } => true,
         ResolvedTy::Named {
@@ -28808,7 +28893,13 @@ fn emit_cancel_drops(
 /// which may be uninitialized when an entry cooperate check fires.
 fn collect_owned_carrier_cancel_drops(
     func: &RawMirFunction,
-) -> CodegenResult<Vec<(Place, hew_mir::state_clone::ValueSnapshotPlan)>> {
+) -> CodegenResult<
+    Vec<(
+        Place,
+        hew_mir::state_clone::ValueSnapshotPlan,
+        Option<Place>,
+    )>,
+> {
     let mut drops = Vec::new();
     for block in &func.blocks {
         if !matches!(
@@ -28821,6 +28912,7 @@ fn collect_owned_carrier_cancel_drops(
             let Instr::ValueSnapshotDrop {
                 value,
                 plan,
+                guard,
                 boundary: hew_mir::PreparedCarrierBoundary::LocalCall,
                 ..
             } = instr
@@ -28833,25 +28925,66 @@ fn collect_owned_carrier_cancel_drops(
             if usize::try_from(*local).map_or(true, |index| index >= func.params.len()) {
                 continue;
             }
-            if let Some((_, installed)) = drops.iter().find(|(place, _)| place == value) {
-                if installed != plan {
+            if let Some((_, installed, installed_guard)) =
+                drops.iter().find(|(place, _, _)| place == value)
+            {
+                if installed != plan || installed_guard != guard {
                     return Err(CodegenError::FailClosed(format!(
-                        "owned call-carrier parameter {value:?} has inconsistent terminal drop plans"
+                        "owned call-carrier parameter {value:?} has inconsistent terminal drop plans or guards"
                     )));
                 }
             } else {
-                drops.push((*value, plan.clone()));
+                drops.push((*value, plan.clone(), *guard));
             }
         }
     }
     Ok(drops)
 }
 
+/// Initialize carrier transfer guards in the LLVM prologue, before an
+/// auto-injected function-entry cooperate check can branch to cancellation.
+/// MIR also carries the dominating `ConstI64(0)` for its own definite-init
+/// proof; this prologue store closes the earlier codegen-only cancellation
+/// edge, which otherwise reads the guard before the first MIR instruction.
+fn initialize_owned_carrier_drop_guards(
+    fn_ctx: &FnCtx<'_, '_>,
+    drops: &[(
+        Place,
+        hew_mir::state_clone::ValueSnapshotPlan,
+        Option<Place>,
+    )],
+) -> CodegenResult<()> {
+    let mut initialized = HashSet::new();
+    for (_, _, guard) in drops {
+        let Some(flag) = guard else {
+            continue;
+        };
+        if !initialized.insert(*flag) {
+            continue;
+        }
+        let (slot, ty) = place_pointer(fn_ctx, *flag)?;
+        let BasicTypeEnum::IntType(int_ty) = ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "prepared carrier drop guard {flag:?} is not integer-shaped: {ty:?}"
+            )));
+        };
+        fn_ctx
+            .builder
+            .build_store(slot, int_ty.const_zero())
+            .llvm_ctx("initialize prepared carrier drop guard")?;
+    }
+    Ok(())
+}
+
 fn emit_cooperate_check<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     block_id: u32,
     drop_plans: &[(ExitPath, hew_mir::DropPlan)],
-    owned_carrier_cancel_drops: &[(Place, hew_mir::state_clone::ValueSnapshotPlan)],
+    owned_carrier_cancel_drops: &[(
+        Place,
+        hew_mir::state_clone::ValueSnapshotPlan,
+        Option<Place>,
+    )],
 ) -> CodegenResult<()> {
     let signal = fn_ctx.call_runtime_int(
         "hew_actor_cooperate",
@@ -28887,12 +29020,13 @@ fn emit_cooperate_check<'ctx>(
     // `collect_owned_carrier_cancel_drops` preserves the terminal instruction
     // order installed by MIR (already LIFO), so cancellation replays that same
     // order without reversing it a second time.
-    for (value, plan) in owned_carrier_cancel_drops {
-        emit_prepared_carrier_drop(
+    for (value, plan, guard) in owned_carrier_cancel_drops {
+        emit_guarded_prepared_carrier_drop(
             fn_ctx,
             *value,
             plan,
             hew_mir::PreparedCarrierBoundary::LocalCall,
+            *guard,
         )?;
     }
     emit_cancel_trap_or_return(fn_ctx)?;
@@ -31186,6 +31320,7 @@ fn lower_function<'ctx>(
     let cooperate_sites: &[CooperateSite] =
         checked.map(|c| c.cooperate_sites.as_slice()).unwrap_or(&[]);
     let owned_carrier_cancel_drops = collect_owned_carrier_cancel_drops(func)?;
+    initialize_owned_carrier_drop_guards(&fn_ctx, &owned_carrier_cancel_drops)?;
     if let Some(site) = cooperate_sites
         .iter()
         .find(|site| site.kind == CooperateKind::FunctionEntry && site.bb_id != entry_block.id)

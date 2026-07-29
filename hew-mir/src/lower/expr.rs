@@ -370,7 +370,8 @@ impl Builder {
                         hew_types::BuiltinType::HashMap
                         | hew_types::BuiltinType::HashSet
                         | hew_types::BuiltinType::Rc
-                        | hew_types::BuiltinType::Weak,
+                        | hew_types::BuiltinType::Weak
+                        | hew_types::BuiltinType::Sender,
                     ),
                 ..
             } => true,
@@ -1112,23 +1113,13 @@ impl Builder {
                 builtin,
                 ..
             } => {
-                let builtin_has_ratified_clone = matches!(
-                    builtin,
-                    Some(
-                        BuiltinType::LocalPid
-                            | BuiltinType::RemotePid
-                            | BuiltinType::LambdaPid
-                            | BuiltinType::HewActor
-                            | BuiltinType::Rc
-                            | BuiltinType::Weak
-                    )
-                );
+                let builtin_has_ratified_clone =
+                    builtin.is_some_and(BuiltinType::is_affine_clone_terminal);
                 if builtin_has_ratified_clone {
                     // These wrappers are terminal clone leaves. Actor refs
                     // bit-copy/erase their protocol identity argument. Rc/Weak
-                    // retain the outer shared allocation and do not recursively
-                    // clone its payload (whose own admissibility is checked
-                    // when the Rc/Weak type is formed).
+                    // and Sender retain/clone the outer shared handle and do
+                    // not recursively clone their payload/protocol tag.
                     return None;
                 }
                 match hew_hir::lookup_type_marker_for_ty(&concrete, &self.type_classes) {

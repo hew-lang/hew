@@ -1823,6 +1823,19 @@ impl Checker {
     }
 
     pub(super) fn vec_element_has_copy_layout(&self, elem_ty: &Ty) -> bool {
+        // Sender is pointer-width but not semantically Copy: duplicating an
+        // endpoint must call `hew_channel_sender_clone` so its shared channel
+        // refcount is retained. Keep it on the owned descriptor lane even if
+        // the representation marker reports a flat pointer layout.
+        if matches!(
+            elem_ty,
+            Ty::Named {
+                builtin: Some(BuiltinType::Sender),
+                ..
+            }
+        ) {
+            return false;
+        }
         self.registry.implements_marker(elem_ty, MarkerTrait::Copy)
             || primitive_copy_layout(elem_ty, &self.type_defs).is_some()
     }

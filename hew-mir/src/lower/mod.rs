@@ -404,6 +404,7 @@ enum OwnedCarrierNeutralizeTarget {
 #[derive(Debug, Clone)]
 struct OwnedCarrierParam {
     value: Place,
+    guard: Place,
     ty: ResolvedTy,
     plan: crate::state_clone::ValueSnapshotPlan,
 }
@@ -4468,6 +4469,7 @@ fn append_owned_carrier_param_drops(blocks: &mut [BasicBlock], builder: &mut Bui
                 ty: param.ty.clone(),
                 plan: param.plan.clone(),
                 boundary: crate::model::PreparedCarrierBoundary::LocalCall,
+                guard: Some(param.guard),
             });
         }
     }
@@ -4562,6 +4564,7 @@ fn resolve_outbound_actor_modes(
                             }
                         }
                         SnapshotFieldKind::IoHandle { .. }
+                        | SnapshotFieldKind::ChannelSender
                         | SnapshotFieldKind::OpaqueHandle { .. }
                         | SnapshotFieldKind::ClosurePair
                         | SnapshotFieldKind::Resource { .. } => {
@@ -4741,25 +4744,30 @@ fn prepare_outbound_actor_payloads(
                     SendAliasMode::TransferLastUse => {
                         // Outbound mode resolution can discover a physical
                         // last-use transfer after HIR lowering stamped the
-                        // source read-only. If this is a guarded actor-message
-                        // leaf, mark the same path-local hand-off here, at the
-                        // authority that selected `TransferLastUse`, before
-                        // moving and neutralising the source slot.
-                        let guarded_transfer = builder
-                            .actor_message_cow_drop_flags
-                            .iter()
-                            .find_map(|(binding, flag)| {
-                                if builder.binding_locals.get(binding) != Some(&arg.source) {
-                                    return None;
-                                }
-                                builder
-                                    .owned_locals
-                                    .iter()
-                                    .find(|entry| entry.binding == *binding)
-                                    .map(|entry| {
-                                        (*binding, *flag, entry.name.clone(), entry.ty.clone())
-                                    })
-                            });
+                        // source read-only. If this is any guarded owned leaf
+                        // (including a non-idempotent user resource), mark the
+                        // same path-local hand-off here, at the authority that
+                        // selected `TransferLastUse`, before moving and
+                        // neutralising the source slot.
+                        let guarded_transfer = builder.owned_locals.iter().find_map(|entry| {
+                            if builder.binding_locals.get(&entry.binding) != Some(&arg.source) {
+                                return None;
+                            }
+                            builder
+                                .affine_release_flags
+                                .get(&entry.binding)
+                                .or_else(|| {
+                                    builder.actor_message_cow_drop_flags.get(&entry.binding)
+                                })
+                                .or_else(|| builder.collection_drop_flags.get(&entry.binding))
+                                .or_else(|| {
+                                    builder.conditional_record_drop_flags.get(&entry.binding)
+                                })
+                                .copied()
+                                .map(|flag| {
+                                    (entry.binding, flag, entry.name.clone(), entry.ty.clone())
+                                })
+                        });
                         if let Some((binding, flag, name, ty)) = guarded_transfer {
                             let already_set = block.instructions.iter().any(|instr| {
                                 matches!(
@@ -4822,6 +4830,7 @@ fn prepare_outbound_actor_payloads(
                                     ty: arg.ty.clone(),
                                     plan,
                                     boundary: crate::model::PreparedCarrierBoundary::Actor,
+                                    guard: None,
                                 });
                             }
                         }
@@ -4864,6 +4873,7 @@ fn prepare_outbound_actor_payloads(
                                 ty: arg.ty.clone(),
                                 plan: plan.clone(),
                                 boundary: crate::model::PreparedCarrierBoundary::Actor,
+                                guard: None,
                             });
                         }
                         recover_drops.push(Instr::ValueSnapshotDrop {
@@ -4871,6 +4881,7 @@ fn prepare_outbound_actor_payloads(
                             ty: arg.ty.clone(),
                             plan,
                             boundary: crate::model::PreparedCarrierBoundary::Actor,
+                            guard: None,
                         });
                         prepared.push(dest);
                     }
@@ -6142,15 +6153,25 @@ impl Builder {
         // not a unique owner. Captured here so every entry point that lowers a
         // parameterised body through `lower_params` participates.
         self.funcupdate_param_ids = Rc::new(func.params.iter().map(|p| p.id).collect());
-        for (i, param) in func.params.iter().enumerate() {
+        // Reserve the complete parameter-local prefix before any per-parameter
+        // ownership setup allocates guard locals. A user `#[resource]`
+        // parameter can allocate an affine release flag; doing that inside the
+        // old single loop displaced every trailing parameter from
+        // `locals[0..params.len()]`. Codegen still stored LLVM argument `i`
+        // into local `i`, so a trailing bool could initialize the resource
+        // flag while its actual binding remained uninitialized. Keep the
+        // prefix invariant structural: all parameter slots first, all helper
+        // locals second.
+        for param in &func.params {
             let slot = self.alloc_local(param.ty.clone());
             self.binding_locals.insert(param.id, slot);
             if let Place::Local(local) = slot {
                 self.parameter_locals.insert(local);
             }
-            // Record the parameter name for `-g` `DW_TAG_formal_parameter`
-            // DIEs (codegen's `create_parameter_variable`).
             self.record_local_name(slot, &param.name);
+        }
+        for (i, param) in func.params.iter().enumerate() {
+            let slot = self.binding_locals[&param.id];
             // A fn-typed parameter's closure env is provably heap-or-null (the checker
             // `Escapes`-classifies any closure crossing a call boundary as an
             // argument), so it may transfer env ownership into an owning
@@ -6250,6 +6271,8 @@ impl Builder {
                 // not re-closed at the merge while one left live on another
                 // branch still drops exactly once. A no-op for a binding whose
                 // close is idempotent/refcounted (`affine_release_needs_drop_flag`).
+            }
+            if param_is_consumed {
                 self.maybe_alloc_affine_release_flag(param.id, &owned_ty);
             }
             // A mailbox delivery transfers every heap-owning message parameter

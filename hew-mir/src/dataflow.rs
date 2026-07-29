@@ -567,7 +567,11 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         Instr::RecordCloneInplace { dest, src, .. } => (vec![*src], vec![*dest]),
         Instr::EnumCloneInplace { dest, src, .. } => (vec![*src], vec![*dest]),
         Instr::ValueSnapshotClone { dest, src, .. } => (vec![*src], vec![*dest]),
-        Instr::ValueSnapshotDrop { value, .. } => (vec![*value], vec![]),
+        Instr::ValueSnapshotDrop { value, guard, .. } => {
+            let mut reads = vec![*value];
+            reads.extend(*guard);
+            (reads, vec![])
+        }
         Instr::BoolNot { dest, operand }
         | Instr::FloatNeg { dest, operand, .. }
         | Instr::IntBitNot { dest, operand } => (vec![*operand], vec![*dest]),

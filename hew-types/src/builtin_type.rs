@@ -218,6 +218,28 @@ builtin_types! {
 }
 
 impl BuiltinType {
+    /// Whether cloning this builtin duplicates only its outer handle and treats
+    /// type arguments as protocol/identity tags rather than stored payloads.
+    ///
+    /// This is the shared checker/MIR authority for the affine-marker walk.
+    /// Actor references are bit-copied, `Rc`/`Weak` retain their shared
+    /// allocation, and `Sender` clones its refcounted endpoint handle; none
+    /// recursively clones a resource-bearing type argument. `Receiver` is
+    /// deliberately absent: the single-consumer endpoint has no clone helper.
+    #[must_use]
+    pub const fn is_affine_clone_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::LocalPid
+                | Self::RemotePid
+                | Self::LambdaPid
+                | Self::HewActor
+                | Self::Rc
+                | Self::Weak
+                | Self::Sender
+        )
+    }
+
     #[must_use]
     pub const fn marker(self) -> BuiltinTypeMarker {
         match self {

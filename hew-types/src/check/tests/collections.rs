@@ -1085,6 +1085,10 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
                     "actor".to_string(),
                     Ty::builtin_named(BuiltinType::HewActor, vec![]),
                 ),
+                (
+                    "sender".to_string(),
+                    Ty::builtin_named(BuiltinType::Sender, vec![resource.clone()]),
+                ),
             ]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -1096,9 +1100,18 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
                 "remote".to_string(),
                 "lambda".to_string(),
                 "actor".to_string(),
+                "sender".to_string(),
             ],
             is_indirect: false,
         },
+    );
+    checker.type_defs.insert(
+        "ReceiverWrapper".to_string(),
+        record_type_def_with_field(
+            "ReceiverWrapper",
+            "receiver",
+            Ty::builtin_named(BuiltinType::Receiver, vec![resource.clone()]),
+        ),
     );
     checker.type_defs.insert(
         "PhantomKey".to_string(),
@@ -1121,6 +1134,13 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
         checker.record_clone_admissibility("HandleWrapper", &[], &span),
         RecordCloneAdmissibility::Admissible
     ));
+    assert!(
+        matches!(
+            checker.record_clone_admissibility("ReceiverWrapper", &[], &span),
+            RecordCloneAdmissibility::AffineValue { .. }
+        ),
+        "Receiver has no semantic clone and must not be a terminal affine-clone leaf"
+    );
     assert!(matches!(
         checker.record_clone_admissibility("PhantomKey", &[resource], &span),
         RecordCloneAdmissibility::Admissible

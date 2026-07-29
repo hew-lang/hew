@@ -797,12 +797,18 @@ fn render_instr(instr: &Instr) -> String {
             ty,
             plan,
             boundary,
-        } => format!(
-            "snapshot_drop {} ty={} plan={:?} boundary={boundary:?}",
-            render_place(value),
-            ty.user_facing(),
-            plan.root()
-        ),
+            guard,
+        } => {
+            let guard = guard.map_or_else(String::new, |flag| {
+                format!(" guard={}", render_place(&flag))
+            });
+            format!(
+                "snapshot_drop {} ty={} plan={:?} boundary={boundary:?}{guard}",
+                render_place(value),
+                ty.user_facing(),
+                plan.root()
+            )
+        }
 
         // Data movement
         Instr::Move { dest, src } => {

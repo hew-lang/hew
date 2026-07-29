@@ -4544,6 +4544,16 @@ pub enum Instr {
         ty: ResolvedTy,
         plan: crate::state_clone::ValueSnapshotPlan,
         boundary: PreparedCarrierBoundary,
+        /// Optional exactly-once gate for a prepared carrier drop.
+        ///
+        /// A user `#[resource]` record has no inert all-zero value: clearing
+        /// its fields after a whole-value transfer leaves its generated drop
+        /// thunk able to call `close(self)`. The flag is zero while this
+        /// carrier owns the value and one after transfer. Every local-call
+        /// carrier carries the structural gate; actor snapshots, whose
+        /// ownership protocol is separate, leave it absent. Codegen skips the
+        /// snapshot drop on the transferred path, including cancellation.
+        guard: Option<Place>,
     },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },

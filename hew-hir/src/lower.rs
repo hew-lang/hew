@@ -1942,21 +1942,12 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.non_opaque_type_short_names,
     );
     ctx.root_opaque_type_short_names
-        .extend(
-            program
-                .items
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, (item, _))| {
-                    if file_import_module_idx.contains_key(&idx) {
-                        return None;
-                    }
-                    let Item::TypeDecl(decl) = item else {
-                        return None;
-                    };
-                    decl.is_opaque.then(|| decl.name.clone())
-                }),
-        );
+        .extend(program.items.iter().filter_map(|(item, _)| {
+            let Item::TypeDecl(decl) = item else {
+                return None;
+            };
+            decl.is_opaque.then(|| decl.name.clone())
+        }));
 
     let mut builtin_receiver_impl_method_symbols: HashSet<String> = HashSet::new();
 
@@ -2266,12 +2257,20 @@ pub fn lower_program_with_mono_cap(
                                     || classify_unsupported_where_clause(impl_decl).is_none()
                                 {
                                     let impl_type_params = impl_type_param_names(impl_decl);
-                                    let symbol_self_name =
-                                        if colliding_imported_record_names.contains(name) {
-                                            format!("{module_short}.{name}")
-                                        } else {
-                                            name.clone()
-                                        };
+                                    let qualified_identity = format!("{module_short}.{name}");
+                                    let qualified_user_builtin_shadow =
+                                        ctx.opaque_type_short_names.contains(&qualified_identity)
+                                            && hew_types::lookup_builtin_type(name).is_some()
+                                            && hew_types::lookup_builtin_type(&qualified_identity)
+                                                .is_none();
+                                    let symbol_self_name = if colliding_imported_record_names
+                                        .contains(name)
+                                        || qualified_user_builtin_shadow
+                                    {
+                                        qualified_identity
+                                    } else {
+                                        name.clone()
+                                    };
                                     for method in &impl_decl.methods {
                                         ctx.register_impl_method_fn_entry(
                                             &symbol_self_name,
@@ -4028,9 +4027,16 @@ pub fn lower_program_with_mono_cap(
                                         break;
                                     }
                                 }
-                                let qualified_symbol_self_name = colliding_imported_record_names
+                                let qualified_identity = format!("{module_short}.{self_type_name}");
+                                let qualified_user_builtin_shadow =
+                                    ctx.opaque_type_short_names.contains(&qualified_identity)
+                                        && hew_types::lookup_builtin_type(self_type_name).is_some()
+                                        && hew_types::lookup_builtin_type(&qualified_identity)
+                                            .is_none();
+                                let qualified_symbol_self_name = (colliding_imported_record_names
                                     .contains(self_type_name)
-                                    .then(|| format!("{module_short}.{self_type_name}"));
+                                    || qualified_user_builtin_shadow)
+                                    .then_some(qualified_identity);
                                 ctx.lower_impl_block(
                                     impl_decl,
                                     span.clone(),
@@ -5759,10 +5765,11 @@ struct LowerCtx {
     /// identity fact rather than a short-name heuristic.
     opaque_type_short_names: HashSet<String>,
     non_opaque_type_short_names: HashSet<String>,
-    /// Root-source opaque declarations, kept separate from imported compiler
-    /// carrier declarations. A root `#[opaque] type Receiver {}` shadows the
-    /// builtin by declaration identity even though its short name is registered
-    /// in the builtin catalog.
+    /// Root-visible opaque declarations: declarations authored in the root
+    /// source plus flattened file-import declarations, kept separate from
+    /// package-imported compiler carriers. A root-visible
+    /// `#[opaque] type Receiver {}` shadows the builtin by declaration identity
+    /// even though its short name is registered in the builtin catalog.
     root_opaque_type_short_names: HashSet<String>,
     /// Mirrors `Checker::current_module_idx`: 0 for root items, N for the N-th
     /// non-root module's items (1-based, matching topo order).  Used by
@@ -5798,19 +5805,20 @@ struct LowerCtx {
     /// and sibling alias lookups agrees with the checker's inserts for depth-≥2
     /// importers; the short last segment would diverge and miss.
     current_module_name: Option<String>,
-    /// Import type alias resolution table: maps `(importer_module, alias)` →
-    /// canonical qualified source identity, for every `import m::{ T as U }`.
+    /// Explicit named-import resolution table: maps `(importer_module,
+    /// binding)` → canonical qualified source identity for both
+    /// `import m::{ T }` and `import m::{ T as U }`.
     ///
     /// Sourced from [`hew_types::check::TypeCheckOutput::import_type_name_aliases`]
-    /// at `LowerCtx::new` time and consulted as a **fallback** (after local /
-    /// builtin / record-registry lookups) in:
+    /// at `LowerCtx::new` time and consulted in:
     /// - `resolve_named_type_ref`: type-annotation position (`fn f(x: Tag)`).
     /// - `lookup_variant_ctor`: `Tag::Variant` enum-constructor paths.
     ///
     /// Per-module keying prevents a same-named alias from a different imported
     /// module from hijacking the lookup (last-write-wins flat map defect).
-    /// The fallback position ensures a local `type U` shadows an import alias
-    /// `import m::{ Payload as U }` (local-shadows-imported rule).
+    /// Type references consult the source binding before the builtin catalog,
+    /// so an explicitly imported user `Receiver` cannot become the channel
+    /// endpoint. Local-shadow filtering remains checker-authoritative.
     import_type_name_aliases: HashMap<(Option<String>, String), String>,
 }
 
@@ -15657,7 +15665,16 @@ impl LowerCtx {
                         let field_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned()
                         {
                             match ResolvedTy::from_ty(&ty) {
-                                Ok(resolved) => resolved,
+                                // `Ty::Named` does not carry HIR's opacity bit.
+                                // Normalize the checker-authored field result
+                                // through the same module-identity funnel used
+                                // by other checker→HIR reads. This is
+                                // load-bearing for an imported resource wrapper
+                                // reading its private opaque handle field:
+                                // `regex.Pattern.handle` must remain
+                                // `regex.PatternHandle`, not a bare user
+                                // `PatternHandle` that reaches D10.
+                                Ok(resolved) => self.qualify_current_module_record_ty(resolved),
                                 Err(err) => {
                                     let diagnostic = HirDiagnostic::new(
                                         HirDiagnosticKind::CheckerBoundaryViolation {
@@ -18833,19 +18850,62 @@ impl LowerCtx {
     /// that dispatcher under the line budget.
     fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
         let type_name = hew_types::short_name(name);
-        // Root source declarations outrank the builtin catalog. This check must
-        // precede builtin registration: a user `#[opaque] type Receiver {}`
-        // is a distinct nominal resource, not the std channel endpoint merely
+        let current_module_is_file_import = self
+            .current_module_name
+            .as_deref()
+            .is_some_and(|module| self.file_import_module_names.contains(module));
+        // Root-visible source declarations (including flattened file imports)
+        // outrank the builtin catalog. A user `#[opaque] type Receiver {}` is a
+        // distinct nominal resource, not the std channel endpoint merely
         // because the short spelling collides.
-        if self.current_module_name.is_none()
+        if (self.current_module_name.is_none() || current_module_is_file_import)
             && !name.contains('.')
             && self.root_opaque_type_short_names.contains(name)
         {
             return ResolvedTy::named_opaque(name.to_string(), args);
         }
+        if !name.contains('.') && !current_module_is_file_import {
+            if let Some(module_short) = self
+                .current_module_name
+                .as_deref()
+                .map(hew_types::short_name)
+            {
+                let qualified = format!("{module_short}.{name}");
+                if self.resolves_to_opaque_handle(&qualified, name) {
+                    if let Some(builtin) = hew_types::lookup_builtin_type(&qualified) {
+                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                    }
+                    return ResolvedTy::named_opaque(qualified, args);
+                }
+            }
+        }
+
+        // Named/glob imports are source bindings, not aliases only. Resolve
+        // their bare spelling to the published qualified identity before any
+        // builtin lookup so `import foo::{ Receiver }` cannot become the
+        // runtime channel endpoint.
+        if !name.contains('.') {
+            if let Some(canonical) = self
+                .import_type_name_aliases
+                .get(&(self.current_module_name.clone(), name.to_string()))
+                .cloned()
+            {
+                return self.resolve_named_type_ref(&canonical, args);
+            }
+        }
+
+        // A bare name inside its defining module canonicalises to that module's
+        // exact identity. Known std carrier identities stay builtin; a declared
+        // opaque user identity keeps its full qualified name.
         if args.is_empty() {
             let canonical = self.canonical_current_module_record_name(name);
-            if canonical != name && !self.resolves_to_opaque_handle(&canonical, type_name) {
+            if canonical != name {
+                if let Some(builtin) = hew_types::lookup_builtin_type(&canonical) {
+                    return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                }
+                if self.resolves_to_opaque_handle(&canonical, type_name) {
+                    return ResolvedTy::named_opaque(canonical, args);
+                }
                 return ResolvedTy::named_user(canonical, args);
             }
         }
@@ -18870,21 +18930,20 @@ impl LowerCtx {
         {
             return ResolvedTy::named_user(name.to_string(), args);
         }
-        if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name)
-            .or_else(|| crate::builtin_type_classes::builtin_type_registration(type_name))
-        {
+        // Qualified inputs are resolved by exact identity only. The known std
+        // spellings live in `lookup_builtin_type`; an arbitrary
+        // `foo.Receiver` must never inherit the bare `Receiver` registration.
+        if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name) {
             ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
         } else if let Some(builtin) = hew_types::lookup_builtin_type(name) {
-            ResolvedTy::named_builtin(name.to_string(), builtin, args)
-        } else if let Some(builtin) = hew_types::lookup_builtin_type(type_name) {
-            ResolvedTy::named_builtin(type_name.to_string(), builtin, args)
-        } else if self.resolves_to_opaque_handle(name, type_name) {
+            ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args)
+        } else if name.contains('.') && self.resolves_to_opaque_handle(name, type_name) {
             // `#[opaque]` runtime handle (e.g. `json.Value`). Stamp the
             // type-identity discriminator so the actor-state clone/drop
             // classifier fails closed on the handle even when its short name
             // collides with a user record/enum of the same name. See
             // `LowerCtx::resolves_to_opaque_handle`.
-            ResolvedTy::named_opaque(type_name.to_string(), args)
+            ResolvedTy::named_opaque(name.to_string(), args)
         } else if name.contains('.') {
             // Module-qualified user type (`widgeti64.Widget`). Preserve the
             // full `{module}.{name}` identity so MIR layout keys and field
@@ -18897,19 +18956,14 @@ impl LowerCtx {
             // over the bare last-write-wins entry once MIR keys by it. A bare
             // reference (single-module program) keeps its short name unchanged.
             ResolvedTy::named_user(name.to_string(), args)
-        } else if let Some(canonical) = self
-            .import_type_name_aliases
-            .get(&(self.current_module_name.clone(), name.to_string()))
-            .cloned()
+        } else if let Some(registration) =
+            crate::builtin_type_classes::builtin_type_registration(type_name)
         {
-            // Import-alias fallback: `Tag` from `import aliassrc::{ Payload as Tag }`
-            // resolves to `aliassrc.Payload`.  Applied AFTER all local /
-            // builtin / record-registry / source-type lookups so a locally-
-            // declared `type Tag` shadows the alias (local-shadows-imported rule).
-            // The canonical name (e.g., "aliassrc.Payload") contains a dot, so
-            // the recursive call takes the module-qualified branch above and
-            // produces the right `ResolvedTy::Named { name: "aliassrc.Payload" }`.
-            self.resolve_named_type_ref(&canonical, args)
+            ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
+        } else if let Some(builtin) = hew_types::lookup_builtin_type(type_name) {
+            ResolvedTy::named_builtin(type_name.to_string(), builtin, args)
+        } else if self.resolves_to_opaque_handle(name, type_name) {
+            ResolvedTy::named_opaque(name.to_string(), args)
         } else {
             ResolvedTy::named_user(type_name.to_string(), args)
         }
@@ -18929,6 +18983,31 @@ impl LowerCtx {
             .into_iter()
             .map(|arg| self.qualify_current_module_record_ty(arg))
             .collect();
+        let current_module_is_file_import = self
+            .current_module_name
+            .as_deref()
+            .is_some_and(|module| self.file_import_module_names.contains(module));
+        if !name.contains('.')
+            && (self.current_module_name.is_none() || current_module_is_file_import)
+            && self.root_opaque_type_short_names.contains(&name)
+        {
+            return ResolvedTy::named_opaque(name, args);
+        }
+        if !name.contains('.') && !current_module_is_file_import {
+            if let Some(module_short) = self
+                .current_module_name
+                .as_deref()
+                .map(hew_types::short_name)
+            {
+                let qualified = format!("{module_short}.{name}");
+                if self.resolves_to_opaque_handle(&qualified, &name) {
+                    if let Some(builtin) = hew_types::lookup_builtin_type(&qualified) {
+                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                    }
+                    return ResolvedTy::named_opaque(qualified, args);
+                }
+            }
+        }
         // `Ty::Named` intentionally has no opacity bit, so checker-authored
         // expression facts lose that half of a root source declaration's
         // identity when converted through `ResolvedTy::from_ty`. Restore it
@@ -18957,6 +19036,8 @@ impl LowerCtx {
                 builtin,
                 is_opaque,
             }
+        } else if self.resolves_to_opaque_handle(&canonical, hew_types::short_name(&canonical)) {
+            ResolvedTy::named_opaque(canonical, args)
         } else {
             ResolvedTy::named_user(canonical, args)
         }
@@ -30006,6 +30087,77 @@ mod tests {
     use super::*;
     use hew_types::module_registry::ModuleRegistry;
     use hew_types::Checker;
+
+    #[test]
+    fn imported_opaque_identity_precedes_short_builtin_fallback() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.opaque_type_short_names.extend([
+            "Receiver".to_string(),
+            "Connection".to_string(),
+            "foo.Receiver".to_string(),
+            "foo.Connection".to_string(),
+            "net.Connection".to_string(),
+            "channel.Receiver".to_string(),
+        ]);
+
+        for qualified in ["foo.Receiver", "foo.Connection", "net.Connection"] {
+            assert_eq!(
+                ctx.resolve_named_type_ref(qualified, Vec::new()),
+                ResolvedTy::named_opaque(qualified.to_string(), Vec::new()),
+                "qualified opaque identity must be preserved exactly"
+            );
+        }
+
+        for (qualified, builtin) in [
+            ("channel.Receiver", BuiltinType::Receiver),
+            ("stream.Stream", BuiltinType::Stream),
+            ("stream.Sink", BuiltinType::Sink),
+            ("duplex.Duplex", BuiltinType::Duplex),
+            ("link_monitor.MonitorRef", BuiltinType::MonitorRef),
+        ] {
+            assert_eq!(
+                ctx.resolve_named_type_ref(qualified, Vec::new()),
+                ResolvedTy::named_builtin(builtin.canonical_name(), builtin, Vec::new()),
+                "known std carrier `{qualified}` must retain builtin identity"
+            );
+        }
+
+        ctx.import_type_name_aliases
+            .insert((None, "Receiver".to_string()), "foo.Receiver".to_string());
+        assert_eq!(
+            ctx.resolve_named_type_ref("Receiver", Vec::new()),
+            ResolvedTy::named_opaque("foo.Receiver".to_string(), Vec::new()),
+            "an unrenamed named import must resolve through its published source identity"
+        );
+
+        ctx.import_type_name_aliases.clear();
+        ctx.root_opaque_type_short_names
+            .insert("Receiver".to_string());
+        assert_eq!(
+            ctx.resolve_named_type_ref("Receiver", Vec::new()),
+            ResolvedTy::named_opaque("Receiver".to_string(), Vec::new()),
+            "a flattened file-import declaration must outrank the bare builtin"
+        );
+
+        ctx.root_opaque_type_short_names.clear();
+        ctx.current_module_name = Some("std.channel".to_string());
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "Receiver".to_string(),
+                Vec::new(),
+            )),
+            ResolvedTy::named_builtin(
+                BuiltinType::Receiver.canonical_name(),
+                BuiltinType::Receiver,
+                Vec::new(),
+            ),
+            "a checker-authored bare std handle must recover its exact builtin identity"
+        );
+    }
 
     /// Every synthetic-builtin sentinel `ItemId` minted into the
     /// `u32::MAX / 2` band is pairwise distinct. A collision is SILENT —

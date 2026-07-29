@@ -21,13 +21,10 @@ impl Checker {
         if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
             return None;
         }
-        // A builtin surface (`CrashInfo`, `CrashAction`, channel handles, …) has
-        // the builtin as its canonical identity — never a module-qualified user
-        // def. Leave it bare so the `builtin:` discriminator survives (the
-        // `#[on(crash)]` hook check and the substrate-handle paths key on it).
-        if crate::lookup_builtin_type(name).is_some() || builtin_named_type(name).is_some() {
-            return None;
-        }
+        // A published source binding outranks the builtin catalog. This is
+        // load-bearing for `import foo::{ Receiver }` and flattened file
+        // imports: the binding names `foo.Receiver`, not the runtime channel
+        // endpoint merely because its bare spelling is builtin-shaped.
         let identities = self
             .published_bare_type_owners
             .get(&(self.current_module.clone(), name.to_string()))?;
@@ -2046,14 +2043,27 @@ impl Checker {
                 // checking their imported stdlib carrier module. A root-source
                 // declaration is a distinct nominal shadow (`#[opaque] type
                 // Receiver {}`), never the runtime endpoint by spelling alone.
-                // Imported modules are checked with a non-zero module index,
-                // preserving compiler-carrier builtin discriminators without
-                // overriding root provenance. `current_module` alone is not
-                // sufficient here: registration passes may temporarily set a
-                // module name while still resolving root-source declarations.
-                let builtin_overrides_source_decl = self.current_module_idx != 0
-                    && builtin
-                        .is_some_and(|kind| kind.is_collection() || kind.is_substrate_handle());
+                // A qualified identity present in the builtin catalog is an
+                // actual compiler carrier (`stream.Stream`,
+                // `channel.Receiver`, ...). A user package declaration such
+                // as `foo.Receiver` has no exact catalog row and therefore
+                // remains source-owned even though its short spelling
+                // collides. Root bare declarations likewise remain user
+                // shadows.
+                let root_std_generic_carrier = self.current_module.is_none()
+                    && matches!(
+                        builtin,
+                        Some(crate::BuiltinType::Stream | crate::BuiltinType::Sink)
+                    )
+                    && self
+                        .type_defs
+                        .get(resolved_name.as_str())
+                        .is_some_and(|td| td.type_params.len() == 1);
+                let builtin_overrides_source_decl = root_std_generic_carrier
+                    || (resolved_name.contains('.')
+                        && builtin.is_some_and(|kind| {
+                            kind.is_collection() || kind.is_substrate_handle()
+                        }));
                 let local_source_type_def = self.source_type_defs.contains(resolved_name.as_str())
                     && !builtin_overrides_source_decl;
                 // F1: a named type that resolved to nothing — not a builtin, not

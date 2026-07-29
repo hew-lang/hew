@@ -1033,7 +1033,10 @@ jobs:
     # rpm Version and Arch pkgver forbid hyphens, so a -rcN tag cannot build
     # distro packages; release candidates validate via the tarballs instead
     # and packages ship with the final tag.
-    if: ${{ !cancelled() && needs.build-linux.result != 'failure' && !contains(github.ref_name, '-rc') }}
+    # `workflow_dispatch` runs on the selected branch, so github.ref_name is
+    # not the release identity there. Keep prerelease policy tied to the tag
+    # that every build and publication step actually uses.
+    if: ${{ !cancelled() && needs.build-linux.result != 'failure' && !contains(github.event.inputs.tag || github.ref_name, '-rc') }}
     strategy:
       fail-fast: false
       matrix:
@@ -1188,7 +1191,9 @@ jobs:
           merge-multiple: true
 
       - name: Generate checksums
+        shell: bash
         run: |
+          set -euo pipefail
           cd artifacts
           VERSION="${RELEASE_TAG#v}"
           if compgen -G "hew-vmain-*" > /dev/null; then
@@ -1196,14 +1201,33 @@ jobs:
             ls -1 hew-vmain-*
             exit 1
           fi
-          if [ ! -f "hew-v${VERSION}-windows-x86_64.zip" ]; then
-            echo "::error::Missing Windows release archive: hew-v${VERSION}-windows-x86_64.zip"
-            exit 1
+          required_assets=(
+            "hew-v${VERSION}-darwin-aarch64.tar.gz"
+            "hew-v${VERSION}-darwin-x86_64.tar.gz"
+            "hew-v${VERSION}-windows-x86_64.zip"
+            "hew-v${VERSION}-linux-x86_64.tar.gz"
+            "hew-v${VERSION}-linux-aarch64.tar.gz"
+            "hew-v${VERSION}-freebsd-x86_64.tar.gz"
+            "hew-v${VERSION}-freebsd-aarch64.tar.gz"
+          )
+          for asset in "${required_assets[@]}"; do
+            if [ ! -f "${asset}" ]; then
+              echo "::error::Missing required release archive: ${asset}"
+              exit 1
+            fi
+          done
+
+          assets=("${required_assets[@]}")
+          if [[ "${RELEASE_TAG}" != *-* ]]; then
+            shopt -s nullglob
+            package_assets=(hew_*.deb hew-*.rpm hew-bin-*.pkg.tar.zst)
+            if [ "${#package_assets[@]}" -eq 0 ]; then
+              echo "::error::Final release has no Linux package artifacts"
+              exit 1
+            fi
+            assets+=("${package_assets[@]}")
           fi
-          sha256sum \
-            hew-v*-*.tar.gz hew-v*-*.zip \
-            hew_*.deb hew-*.rpm hew-bin-*.pkg.tar.zst \
-            2>/dev/null | tee checksums.txt
+          sha256sum "${assets[@]}" | tee checksums.txt
           mv checksums.txt "hew-v${VERSION}-checksums.txt"
 
       - name: Create GitHub Release
@@ -1212,7 +1236,7 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           body_path: docs/releases/${{ env.RELEASE_TAG }}.md
           generate_release_notes: false
-          prerelease: ${{ contains(github.ref_name, '-rc') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-rc') }}
           files: |
             artifacts/hew-v*-*.tar.gz
             artifacts/hew-v*-*.zip
@@ -1225,9 +1249,12 @@ jobs:
   # Docker — multi-arch image pushed to ghcr.io/hew-lang/hew
   # ─────────────────────────────────────────────────────────────────────────
   docker:
-    needs: [build, build-linux]
+    # Do not publish a container when the canonical release failed to assemble.
+    # This also makes the image a post-release artifact rather than a parallel
+    # public side effect of a partial tag run.
+    needs: release
     runs-on: ubuntu-24.04
-    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     # 180: the arm64 leg compiles the workspace under QEMU emulation —
     # three 60-minute attempts timed out at exactly the wall. Native local
     # builds + a manifest push are the faster path when iterating.
@@ -1255,9 +1282,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version
+      - name: Extract image tags
         id: version
-        run: echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          {
+            echo "version=${VERSION}"
+            echo "tags<<EOF"
+            echo "ghcr.io/hew-lang/hew:${VERSION}"
+            # A candidate is installable by its exact tag but must never move
+            # the stable Docker channel.
+            if [[ "${RELEASE_TAG}" != *-* ]]; then
+              echo "ghcr.io/hew-lang/hew:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
@@ -1268,9 +1309,7 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
-          tags: |
-            ghcr.io/hew-lang/hew:${{ steps.version.outputs.version }}
-            ghcr.io/hew-lang/hew:latest
+          tags: ${{ steps.version.outputs.tags }}
 
   # ─────────────────────────────────────────────────────────────────────────
   # Homebrew — trigger formula update in hew-lang/homebrew-hew
@@ -1279,7 +1318,7 @@ jobs:
     needs: release
     runs-on: ubuntu-24.04
     # Formula updates are for final releases; -rc tags must not touch the tap.
-    if: ${{ !cancelled() && needs.release.result == 'success' && !contains(github.ref_name, '-rc') }}
+    if: ${{ !cancelled() && needs.release.result == 'success' && !contains(github.event.inputs.tag || github.ref_name, '-rc') }}
     timeout-minutes: 5
 
     steps:
@@ -1428,9 +1467,11 @@ jobs:
   # VS Code Extension — package + publish with bundled hew-lsp per platform
   # ─────────────────────────────────────────────────────────────────────────
   vscode-extension:
-    needs: [build, build-linux]
+    # The extension is a public release artifact; do not package or publish it
+    # until the canonical archive release has succeeded.
+    needs: release
     runs-on: ubuntu-latest
-    if: ${{ !cancelled() && needs.build.result != 'failure' && needs.build-linux.result != 'failure' }}
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     timeout-minutes: 15
 
     # Map hew release targets to VS Code platform identifiers
@@ -1503,7 +1544,7 @@ jobs:
   vscode-publish:
     needs: vscode-extension
     runs-on: ubuntu-latest
-    if: ${{ !cancelled() && needs.vscode-extension.result != 'failure' }}
+    if: ${{ !cancelled() && needs.vscode-extension.result == 'success' }}
     timeout-minutes: 10
 
     steps:

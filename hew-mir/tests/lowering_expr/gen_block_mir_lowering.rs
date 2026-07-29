@@ -15,8 +15,9 @@
 
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{
-    terminator_source_places, DropKind, GeneratorEnvFieldPlan, Instr, IrPipeline,
-    MirDiagnosticKind, Place, RawMirFunction, StateFieldCloneKind, Terminator,
+    terminator_source_places, DropFnSpec, DropKind, ExitPath, GeneratorEnvFieldPlan,
+    InPlaceReleaseKind, Instr, IrPipeline, MirDiagnosticKind, Place, RawMirFunction,
+    StateFieldCloneKind, Terminator,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -138,6 +139,97 @@ fn gen_block_with_two_yields_emits_two_terminator_yield() {
     assert!(
         matches!(last_terminator, Terminator::Return),
         "gen-body's last block must terminate with Return; got {last_terminator:?}"
+    );
+}
+
+/// Generator bodies inherit the module's enum layouts through the same child-
+/// builder constructor as closures, tasks, and lambda actors. The layout is the
+/// ownership authority for both release sites in this shape:
+///
+/// * abandoning the generator at `yield` drops the live `Box::Full` payload;
+/// * resuming and assigning `Box::Empty` drops the old payload before overwrite.
+///
+/// A byte-identical ordinary function is the differential control. Before the
+/// regression fix only the control emitted its tagged release: the generator's
+/// hand-built child table omitted `enum_layouts`, leaving both its inline
+/// overwrite release and its elaborated drop plans empty.
+#[test]
+fn gen_body_enum_payload_overwrite_and_abandonment_keep_release_authority() {
+    let pipeline = lower_checked(
+        r#"
+        enum Box { Full(string); Empty; }
+
+        fn control() {
+            var value: Box = Box::Full(string_concat("control-", "payload"));
+            value = Box::Empty;
+        }
+
+        fn main() {
+            let g = gen {
+                var value: Box = Box::Full(string_concat("generator-", "payload"));
+                yield 1;
+                value = Box::Empty;
+            };
+            for n in g { let _seen = n; }
+            control();
+        }
+        "#,
+    );
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "enum overwrite in generator and control must lower cleanly: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let body = find_gen_body(&pipeline, "main");
+    let control = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "control")
+        .expect("ordinary control function must exist");
+    let has_enum_overwrite_release = |function: &RawMirFunction| {
+        function.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::Drop {
+                        ty: hew_types::ResolvedTy::Named { name, .. },
+                        drop_fn: Some(DropFnSpec::InPlace(InPlaceReleaseKind::Enum)),
+                        ..
+                    } if name == "Box"
+                )
+            })
+        })
+    };
+    assert!(
+        has_enum_overwrite_release(control),
+        "ordinary control must emit a tagged release before overwriting Box"
+    );
+    assert!(
+        has_enum_overwrite_release(body),
+        "generator body must emit the same tagged release before overwriting Box"
+    );
+
+    let elaborated = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == body.name)
+        .expect("elaborated generator body must exist");
+    assert!(
+        elaborated.drop_plans.iter().any(|(exit, plan)| {
+            matches!(exit, ExitPath::Yield { .. })
+                && plan.drops.iter().any(|drop| {
+                    matches!(
+                        (&drop.ty, drop.kind),
+                        (
+                            hew_types::ResolvedTy::Named { name, .. },
+                            DropKind::EnumInPlace
+                        ) if name == "Box"
+                    )
+                })
+        }),
+        "abandoning the generator at yield must release the live Box payload: {:?}",
+        elaborated.drop_plans
     );
 }
 

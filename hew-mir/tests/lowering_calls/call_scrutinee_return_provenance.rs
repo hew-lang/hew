@@ -946,20 +946,16 @@ fn closure_discarded_forwarder_rejects() {
 }
 
 #[test]
-fn generator_body_matches_mint_no_owner() {
-    // A generator body is lowered by a child builder that carries NO
-    // `enum_layouts`, so `ty_is_heap_owning_enum_composite` is false for every
-    // scrutinee there: the from-call owner is NEVER minted in a gen body (the
-    // pre-existing leak-biased posture — the Result temp is not released) and
-    // the preflight's ty-gate returns `NotApplicable` for the same reason.
-    // The load-bearing safety fact is NO OWNER MINT — with no owner there is
-    // no second release authority, so the #2648 double-free class cannot fire
-    // in a gen body. Pinned for both a local-arg forwarder shape and an
-    // inline-literal shape; when generator bodies gain enum layouts (and with
-    // them scrutinee owners), these pins must flip to the closure-shim
-    // verdicts (reject / admit-with-one-mint).
-    for scrutinee_src in [
-        r#"
+fn generator_body_matches_use_the_same_scrutinee_ownership_gate() {
+    // Generator bodies inherit the module enum layouts from the shared child-
+    // builder constructor. Their call scrutinees therefore use the same
+    // ownership gate as ordinary functions and closure shims: a wrapper over a
+    // local heap owner is rejected (minting a second owner would double-free),
+    // while a wrapper over an inline-fresh argument is admitted with exactly
+    // one release authority.
+    let cases = [
+        (
+            r#"
         fn wrap(s: string) -> Result<string, string> { Ok(s) }
         fn use_it() -> i64 {
             var total = 0;
@@ -973,7 +969,11 @@ fn generator_body_matches_mint_no_owner() {
             total
         }
         "#,
-        r#"
+            1,
+            0,
+        ),
+        (
+            r#"
         fn wrap(s: string) -> Result<string, string> { Ok(s) }
         fn use_it() -> i64 {
             var total = 0;
@@ -986,7 +986,11 @@ fn generator_body_matches_mint_no_owner() {
             total
         }
         "#,
-    ] {
+            0,
+            1,
+        ),
+    ];
+    for (scrutinee_src, expected_rejects, expected_mints) in cases {
         let p = pipeline(scrutinee_src);
         assert_eq!(
             unrelated_diag_count(&p),
@@ -996,13 +1000,16 @@ fn generator_body_matches_mint_no_owner() {
         );
         assert_eq!(
             count_owner_mints(&p),
-            0,
-            "no __hew_call_scrutinee owner may exist in a gen body (no layouts, no mint,              no double-free surface)"
+            expected_mints,
+            "generator-body call scrutinee owner count must follow the same freshness \
+             verdict as an ordinary function: {:#?}",
+            p.diagnostics
         );
         assert_eq!(
             reject_count(&p),
-            0,
-            "the ty-gate returns NotApplicable in gen bodies today: {:#?}",
+            expected_rejects,
+            "generator-body call scrutinee rejection must follow the same alias verdict \
+             as an ordinary function: {:#?}",
             p.diagnostics
         );
     }

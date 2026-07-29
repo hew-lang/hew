@@ -2942,7 +2942,15 @@ impl Checker {
                     }
                 }
                 let type_def = self.lookup_type_def(name)?;
-                let visit_key = resolved.user_facing().to_string();
+                // Cycle detection is about the declared layout edge, not the
+                // instantiated spelling. A polymorphic recursive definition
+                // such as `Grow<T> { Node(Vec<Grow<Vec<T>>>) }` makes that
+                // spelling grow forever (`Grow<i64>`,
+                // `Grow<Vec<i64>>`, ...), so using it as the key never closes
+                // the walk and can overflow the checker stack. Re-visiting the
+                // same nominal declaration is already an active recursive
+                // layout edge; its fields are being checked by the outer frame.
+                let visit_key = type_def.name.clone();
                 if !visiting.insert(visit_key.clone()) {
                     return None;
                 }

@@ -1252,6 +1252,14 @@ impl Checker {
     )]
     fn vec_iter_clone_blocker(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Option<String> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        // User resource/linear markers are semantic ownership authority. A
+        // marker may sit on an otherwise bit-copy layout, so this must precede
+        // the Copy-layout fast path below.
+        if let Ty::Named { name, .. } = &resolved {
+            if self.registry.is_resource(name) || self.registry.is_linear(name) {
+                return Some(format!("resource/linear value `{name}`"));
+            }
+        }
         if primitive_copy_layout(&resolved, &self.type_defs).is_some() {
             return None;
         }

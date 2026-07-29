@@ -2009,7 +2009,7 @@ fn vec_iter_clone_totality_rejects_opaque_resource_element() {
         .iter()
         .filter(|error| {
             error.message.contains("`VecIter<Handle>` is not supported")
-                && error.message.contains("opaque/resource handle `Handle`")
+                && error.message.contains("resource/linear value `Handle`")
                 && error
                     .message
                     .contains("has no semantic clone/retain operation")
@@ -2019,6 +2019,50 @@ fn vec_iter_clone_totality_rejects_opaque_resource_element() {
         matching.len(),
         1,
         "opaque/resource elements must fail once before VecIter clone-out lowering: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_iter_clone_totality_rejects_marked_resource_direct_and_wrapped() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Tok { id: i64 }
+        record Wrap { token: Tok }
+        fn scan(xs: Vec<Tok>, wrapped: Vec<Wrap>) {
+            let _ = xs.iter().next();
+            let _ = wrapped.iter().next();
+        }
+        ",
+    );
+    let blockers: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| {
+            error.message.contains("VecIter<")
+                && error.message.contains("resource/linear value `Tok`")
+        })
+        .collect();
+    assert_eq!(
+        blockers.len(),
+        2,
+        "direct and wrapped marked values must fail at VecIter: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_clone_growing_recursive_generic_terminates_fail_closed() {
+    let output = check_source(
+        r"
+        enum Grow<T> { Node(Vec<Grow<Vec<T>>>); Leaf(T); }
+        fn main() { let xs: Vec<Grow<i64>> = []; let _ys = xs.clone(); }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "checker must terminate before the downstream clone fail-closed gate: {:#?}",
         output.errors
     );
 }

@@ -107,20 +107,15 @@ banner() {
     echo -e "\n${CYAN}═══ $1 ═══${RESET}"
 }
 
-# Fail-closed shape check for a shipped libhew.a: it must carry verbatim
-# prebuilt libstd members (std-*.o). A fat-LTO archive folds libstd into the
-# merged codegen unit and cannot link external Rust staticlibs (--link-lib
-# packages) — reject it at packaging, never ship it. Remote validation blocks
-# inline the same `ar t | grep -q '^std-'` check (this function does not exist
-# on the remote hosts).
-check_libhew_shape() {
-    local archive="$1"
-    if ! ar t "$archive" | grep -q '^std-'; then
-        echo "FATAL: ${archive} has no verbatim libstd members (std-*.o) — built with LTO;"
-        echo "       it cannot link external Rust staticlibs. Build it with:"
-        echo "       cargo build -p hew-lib --profile release-lib"
-        return 1
-    fi
+# Prove the published archive's consumer contract rather than relying on ar
+# member names, which rustc is free to change. The probe builds a Rust
+# staticlib, links it through `hew build --link-lib`, and runs the binary from
+# a staged release layout.
+verify_libhew_external_link() {
+    local hew="$1"
+    local archive="$2"
+    run_with_timeout "${SMOKE_TIMEOUT}" scripts/test-release-lib-link.sh \
+        --hew "$hew" --archive "$archive"
 }
 
 # ── Determine which platforms to validate ────────────────────────────────────
@@ -194,21 +189,17 @@ validate_linux() {
         target/release/hew-lsp --version
         target/release/hew-observe --version
         test -f target/release-lib/libhew.a
-        check_libhew_shape target/release-lib/libhew.a
+        verify_libhew_external_link target/release/hew target/release-lib/libhew.a
 
-        echo "==> Step 3: Smoke test — compile and run a Hew program"
+        echo "==> Step 3: Smoke test — run a Hew program"
         local smoke_file_base
         smoke_file_base=$(mktemp)
         local smoke_file="${smoke_file_base}.hew"
         mv "$smoke_file_base" "$smoke_file"
         write_smoke_test "$smoke_file"
-        local smoke_bin
-        smoke_bin=$(mktemp)
-        run_with_timeout "${SMOKE_TIMEOUT}" target/release/hew "$smoke_file" -o "$smoke_bin"
-        chmod +x "$smoke_bin"
         local output
-        output=$(run_with_timeout "${SMOKE_TIMEOUT}" "$smoke_bin")
-        rm -f "$smoke_file" "$smoke_bin"
+        output=$(run_with_timeout "${SMOKE_TIMEOUT}" target/release/hew run "$smoke_file")
+        rm -f "$smoke_file"
 
         if echo "$output" | grep -q "Hello from Hew"; then
             echo "==> Smoke test passed"
@@ -241,7 +232,7 @@ validate_linux() {
 
         cp target/release/hew target/release/adze target/release/hew-lsp target/release/hew-observe "${package_root}/bin/"
         chmod +x "${package_root}/bin/"*
-        check_libhew_shape target/release-lib/libhew.a
+        verify_libhew_external_link target/release/hew target/release-lib/libhew.a
         cp target/release-lib/libhew.a "${package_root}/lib/"
         cp target/release-lib/libhew.a "${package_root}/lib/x86_64-unknown-linux-gnu/"
         cp -r std/. "${package_root}/std/"
@@ -306,7 +297,7 @@ validate_macos() {
             target/release/adze --version
             target/release/hew-lsp --version
             target/release/hew-observe --version
-            ar t target/release-lib/libhew.a | grep -q '^std-'
+            scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a
 
             echo \"==> Smoke test: hew run (guards against process-exit SIGABRT — issue #1606)\"
             make stdlib
@@ -388,10 +379,10 @@ validate_linux_aarch64() {
             target/release/hew-lsp --version
             target/release/hew-observe --version
             test -f target/release-lib/libhew.a
-            ar t target/release-lib/libhew.a | grep -q '^std-'
+            scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a
 
             printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
-            target/release/hew _smoke.hew -o _smoke_bin
+            target/release/hew build _smoke.hew -o _smoke_bin
             chmod +x _smoke_bin
             ./_smoke_bin | grep -q \"Hello from Hew release test\"
             rm -f _smoke.hew _smoke_bin
@@ -461,7 +452,7 @@ validate_freebsd() {
             target/release/adze --version
             target/release/hew-lsp --version
             target/release/hew-observe --version
-            ar t target/release-lib/libhew.a | grep -q '^std-'
+            scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a
 
             echo \"FreeBSD build succeeded\"
         '"
@@ -507,6 +498,9 @@ Write-Host 'Found ${WINDOWS_LLVM_CONFIG}'
 "
 
         echo "==> Building on Windows with the LLVM toolchain"
+        # PowerShell here-strings embed Rust and Hew source. Their quotes are
+        # data for PowerShell, not Bash syntax.
+        # shellcheck disable=SC1078,SC1079,SC2140
         run_windows_powershell "${REMOTE_BUILD_TIMEOUT}" "
 \$ErrorActionPreference = 'Stop'
 function Assert-NativeSuccess([string]\$Label) {
@@ -534,14 +528,39 @@ Assert-NativeSuccess 'cargo build hew-lib'
 if (-not (Test-Path '.\\target\\release-lib\\hew.lib')) {
     throw 'target/release-lib/hew.lib missing after cargo build --profile release-lib'
 }
-# Fail-closed shape check: the shipped archive must carry verbatim libstd
-# members (std-*.o); a fat-LTO archive cannot link external Rust staticlibs.
-# llvm-ar comes from the LLVM_PREFIX\\bin PATH entry above (BSD ar / MSVC lib
-# do not resolve the COFF long-name table carrying the member names).
-\$StdMembers = & llvm-ar t '.\\target\\release-lib\\hew.lib' | Select-String -Pattern '^std-'
-Assert-NativeSuccess 'llvm-ar t hew.lib'
-if (-not \$StdMembers) {
-    throw 'target/release-lib/hew.lib has no verbatim libstd members (std-*.o) — built with LTO; refusing to validate'
+# Archive member names are rustc implementation details. Prove the public
+# contract instead: a Rust staticlib consumer must link through 'hew build'
+# against the release-lib archive and the resulting program must run.
+\$probeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("hew-release-link-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path \$probeDir | Out-Null
+try {
+    \$native = Join-Path \$probeDir 'native.rs'
+    @'
+#[no_mangle]
+pub extern "C" fn release_link_probe() -> i64 { String::from("release-link-ok").len() as i64 }
+'@ | Set-Content -NoNewline \$native
+    \$foreign = Join-Path \$probeDir 'release_link_probe.lib'
+    & rustc --crate-type staticlib --crate-name hew_release_link_probe --edition 2021 -C panic=abort -C codegen-units=1 -o \$foreign \$native
+    Assert-NativeSuccess 'rustc release-link consumer'
+    \$source = Join-Path \$probeDir 'main.hew'
+    @'
+extern "C" { fn release_link_probe() -> i64; }
+fn main() {
+    let value: i64 = unsafe { release_link_probe() };
+    if value != 15 { panic("unexpected native link probe value"); }
+    println("release-native-link-ok");
+}
+'@ | Set-Content -NoNewline \$source
+    \$output = Join-Path \$probeDir 'release-link-probe.exe'
+    & .\\target\\release\\hew.exe build \$source --link-lib \$foreign -o \$output
+    Assert-NativeSuccess 'hew build --link-lib release-link consumer'
+    \$probeOutput = & \$output
+    Assert-NativeSuccess 'release-link consumer run'
+    if (\$probeOutput -notmatch 'release-native-link-ok') {
+        throw "release-link consumer produced unexpected output: \$probeOutput"
+    }
+} finally {
+    Remove-Item -Recurse -Force \$probeDir -ErrorAction SilentlyContinue
 }
 
 & .\\target\\release\\hew.exe --version
@@ -578,11 +597,11 @@ try {
         [System.Text.UTF8Encoding]::new(\$false)
     )
 
-    & .\\target\\release\\hew.exe .\\_smoke.hew -o .\\_smoke.exe
-    Assert-NativeSuccess 'hew.exe smoke compile'
+    & .\\target\\release\\hew.exe build .\\_smoke.hew -o .\\_smoke.exe
+    Assert-NativeSuccess 'hew.exe smoke build'
 
     if (-not (Test-Path .\\_smoke.exe)) {
-        throw 'Smoke compile did not produce .\\_smoke.exe'
+        throw 'Smoke build did not produce .\\_smoke.exe'
     }
 
     \$output = & .\\_smoke.exe

@@ -72,7 +72,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
+.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -643,15 +643,11 @@ publish-docs: $(RELEASE_DIR)/hew ## Build stdlib docs; print wrangler deploy com
 	@echo "Docs generated at $(CARGO_TARGET_ROOT)/doc/."
 	@echo "Deploy with: wrangler pages deploy $(CARGO_TARGET_ROOT)/doc/ --project-name hew-docs"
 
-# Fail-closed shape check for a shipped libhew.a: the archive must carry
-# verbatim prebuilt libstd members (std-*.o). A fat-LTO build folds libstd
-# into the merged codegen unit — such an archive links Hew programs fine but
-# breaks every external Rust staticlib (--link-lib package), so it must be
-# rejected at packaging time, never shipped. Single logical line so it can be
-# spliced into shell for-loops inside recipes.
-define check_libhew_shape
-ar t $(1) | grep -q '^std-' || { echo "Error: $(1) has no verbatim libstd members (std-*.o) — it was built with LTO and cannot link external Rust staticlibs. Build the shipped archive with: cargo build -p hew-lib --profile release-lib"; exit 1; }
-endef
+# Prove the shipped archive can link a real Rust staticlib through the public
+# `hew build --link-lib` interface. Rust controls archive member names, so the
+# behavioural consumer proof is more stable than inspecting `ar t` output.
+test-release-lib-link:
+	@$(CURDIR)/scripts/test-release-lib-link.sh --hew $(RELEASE_DIR)/hew --archive $(RELEASE_LIB_DIR)/libhew.a
 
 # Assemble build/ with release symlinks.
 assemble-release:
@@ -661,7 +657,7 @@ assemble-release:
 	@ln -sfn $(LINK_UP2)$(RELEASE_DIR)/hew-observe      $(BUILD_DIR)/bin/hew-observe
 	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
 	@# release-lib profile — never the fat-LTO target/release archive.
-	@$(call check_libhew_shape,$(RELEASE_LIB_DIR)/libhew.a)
+	@$(MAKE) test-release-lib-link
 	@ln -sfn $(LINK_UP2)$(RELEASE_LIB_DIR)/libhew.a     $(BUILD_DIR)/lib/libhew.a
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
@@ -681,7 +677,6 @@ assemble-release:
 		else \
 			continue; \
 		fi; \
-		$(call check_libhew_shape,$$lib_path); \
 		mkdir -p $(BUILD_DIR)/lib/$$triple; \
 		ln -sfn $(LINK_UP3)$$lib_path $(BUILD_DIR)/lib/$$triple/libhew.a; \
 	done
@@ -1383,7 +1378,6 @@ install:
 	install -m 755 $(RELEASE_DIR)/hew                $(DESTDIR)$(PREFIX)/bin/hew
 	install -m 755 $(RELEASE_DIR)/adze               $(DESTDIR)$(PREFIX)/bin/adze
 	install -m 755 $(RELEASE_DIR)/hew-observe        $(DESTDIR)$(PREFIX)/bin/hew-observe
-	@$(call check_libhew_shape,$(RELEASE_LIB_DIR)/libhew.a)
 	install -m 644 $(RELEASE_LIB_DIR)/libhew.a       $(DESTDIR)$(PREFIX)/lib/libhew.a
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
@@ -1404,7 +1398,6 @@ install:
 		else \
 			continue; \
 		fi; \
-		$(call check_libhew_shape,$$lib_path); \
 		install -d $(DESTDIR)$(PREFIX)/lib/$$triple; \
 		install -m 644 $$lib_path $(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a; \
 	done

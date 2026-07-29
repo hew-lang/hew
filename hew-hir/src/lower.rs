@@ -19925,7 +19925,7 @@ impl LowerCtx {
         if Self::for_in_iterable_is_place(&receiver.0) {
             // Place source: re-read directly per projection (single owner, drop-safe).
             let init = self.make_hashmap_iter_init(
-                receiver.0.clone(),
+                receiver.clone(),
                 key_ty,
                 val_ty,
                 iter_ty.clone(),
@@ -19951,7 +19951,7 @@ impl LowerCtx {
             span: span.clone(),
         };
         let tail = self.make_hashmap_iter_init(
-            Expr::Identifier(temp_name),
+            (Expr::Identifier(temp_name), span.clone()),
             key_ty,
             val_ty,
             iter_ty.clone(),
@@ -19975,10 +19975,11 @@ impl LowerCtx {
     /// `StructInit` from a projection receiver. `keys()`/`values()` are spanned at
     /// the call span's start/end offsets, matching the checker's
     /// `BuiltinHashMapIntoIter` recording so the span-keyed projection facts
-    /// resolve. The receiver is either re-read (place) or the single-eval temp.
+    /// resolve. The receiver keeps its own original span and is either re-read
+    /// (place) or the single-eval temp.
     fn make_hashmap_iter_init(
         &mut self,
-        receiver: Expr,
+        receiver: Spanned<Expr>,
         key_ty: &ResolvedTy,
         val_ty: &ResolvedTy,
         iter_ty: ResolvedTy,
@@ -19988,7 +19989,7 @@ impl LowerCtx {
         let values_span = span.end..span.end;
         let keys_call = (
             Expr::MethodCall {
-                receiver: Box::new((receiver.clone(), keys_span.clone())),
+                receiver: Box::new(receiver.clone()),
                 method: "keys".to_string(),
                 args: Vec::new(),
             },
@@ -19996,7 +19997,7 @@ impl LowerCtx {
         );
         let values_call = (
             Expr::MethodCall {
-                receiver: Box::new((receiver, values_span.clone())),
+                receiver: Box::new(receiver),
                 method: "values".to_string(),
                 args: Vec::new(),
             },
@@ -20100,9 +20101,10 @@ impl LowerCtx {
     /// Synthesizes a `HashMapIter<K, V> { ks: src.keys(), vs: src.values(), idx: 0 }`
     /// constructor as AST and lowers it through the normal `StructInit` path so
     /// the cursor's per-`(K, V)` layout monomorphises exactly like any user
-    /// record. `receiver` is the projection receiver expression — the iterable
-    /// AST itself for a place source (re-read per projection, drop-safe), or an
-    /// `Expr::Identifier` for the single-eval temp of a non-place rvalue source.
+    /// record. `receiver` is the spanned projection receiver — the iterable AST
+    /// with its original span for a place source (re-read per projection,
+    /// drop-safe), or an `Expr::Identifier` for the single-eval temp of a
+    /// non-place rvalue source.
     /// The `keys()`/`values()` calls are spanned at two synthetic zero-width
     /// spans (`iterable.start..start`, `iterable.end..end`) the checker recorded
     /// the `keys`/`values` resolved-call facts at (`resolved_calls` is keyed by
@@ -20114,7 +20116,7 @@ impl LowerCtx {
     fn lower_hashmap_for_in_init(
         &mut self,
         iterable: &Spanned<Expr>,
-        receiver: &Expr,
+        receiver: &Spanned<Expr>,
         key_ty: ResolvedTy,
         val_ty: ResolvedTy,
     ) -> (HirExpr, ResolvedTy, ResolvedTy, ForIterNextCall) {
@@ -20134,7 +20136,10 @@ impl LowerCtx {
         // (NOT a re-lowered clone of the iterable AST — that would evaluate a
         // side-effectful source twice). Each call is spanned at its own
         // synthetic zero-width span: `keys()` at `iterable.start..start`,
-        // `values()` at `iterable.end..end`. The derivation MUST match
+        // `values()` at `iterable.end..end`. Their receiver keeps its original
+        // iterable span; otherwise a field/tuple projection reads the
+        // projection's `Vec` result type from `expr_types` instead of the
+        // receiver's `HashMap` type. The call-span derivation MUST match
         // `Checker::hashmap_for_in_keys_span`/`..values_span` (hew-types)
         // byte-for-byte — `resolved_calls`/`expr_types` are span-keyed, so a
         // drift here would miss the checker's facts and trip the HIR boundary's
@@ -20151,7 +20156,7 @@ impl LowerCtx {
         let values_span = iterable_span.end..iterable_span.end;
         let keys_call = (
             Expr::MethodCall {
-                receiver: Box::new((receiver.clone(), keys_span.clone())),
+                receiver: Box::new(receiver.clone()),
                 method: "keys".to_string(),
                 args: Vec::new(),
             },
@@ -20159,7 +20164,7 @@ impl LowerCtx {
         );
         let values_call = (
             Expr::MethodCall {
-                receiver: Box::new((receiver.clone(), values_span.clone())),
+                receiver: Box::new(receiver.clone()),
                 method: "values".to_string(),
                 args: Vec::new(),
             },
@@ -20748,13 +20753,13 @@ impl LowerCtx {
                 let key_ty = args[0].clone();
                 let val_ty = args[1].clone();
                 if Self::for_in_iterable_is_place(&iterable.0) {
-                    self.lower_hashmap_for_in_init(iterable, &iterable.0, key_ty, val_ty)
+                    self.lower_hashmap_for_in_init(iterable, iterable, key_ty, val_ty)
                 } else {
                     let source_ty = lowered_iterable.ty.clone();
                     let (src_name, src_stmt) =
                         self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
                     source_prelude.push(src_stmt);
-                    let receiver = Expr::Identifier(src_name);
+                    let receiver = (Expr::Identifier(src_name), iterable.1.clone());
                     self.lower_hashmap_for_in_init(iterable, &receiver, key_ty, val_ty)
                 }
             }
@@ -20779,20 +20784,23 @@ impl LowerCtx {
                 // zero-width, matching `Checker::hashset_for_in_to_vec_span`
                 // byte-for-byte), NOT the iterable's real span — that span keeps
                 // the set's true type so non-identifier sources route here, not
-                // to the Vec arm.
+                // to the Vec arm. Only the CALL uses the synthetic span: its
+                // receiver keeps the real iterable span so a field/tuple
+                // projection reads its HashSet type rather than the call's Vec
+                // result type.
                 let to_vec_span = iterable.1.start..iterable.1.start;
                 let to_vec_receiver = if Self::for_in_iterable_is_place(&iterable.0) {
-                    iterable.0.clone()
+                    iterable.clone()
                 } else {
                     let source_ty = lowered_iterable.ty.clone();
                     let (src_name, src_stmt) =
                         self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
                     source_prelude.push(src_stmt);
-                    Expr::Identifier(src_name)
+                    (Expr::Identifier(src_name), iterable.1.clone())
                 };
                 let to_vec_call = (
                     Expr::MethodCall {
-                        receiver: Box::new((to_vec_receiver, to_vec_span.clone())),
+                        receiver: Box::new(to_vec_receiver),
                         method: "to_vec".to_string(),
                         args: Vec::new(),
                     },

@@ -408,7 +408,7 @@ fn seed_fresh_string_instruction_locals(
     }
     fresh
 }
-fn string_share_sink_places(instr: &Instr) -> Vec<Place> {
+pub(super) fn string_share_sink_places(instr: &Instr) -> Vec<Place> {
     match instr {
         // Fork-entry environments preserve their existing move-in contract: the
         // parent consumes each owned argument and the child environment is the

@@ -4,6 +4,7 @@ use super::temp_drop::{
 };
 mod aggregate_borrowed_ingress_clone;
 mod bytes_payload_handoff;
+mod predicate_string_temp_drop;
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
@@ -29,12 +30,12 @@ use super::{
     FOR_ITER_CURSOR_NAME_PREFIX,
 };
 use aggregate_borrowed_ingress_clone::{
-    aggregate_borrowed_ingress_clones_source, aggregate_borrowed_ingress_retain_clones_value,
-    aggregate_borrowed_ingress_site_clones_source,
+    aggregate_borrowed_ingress_retain_clones_value, aggregate_borrowed_ingress_sink_clones_source,
 };
 use bytes_payload_handoff::provable_bytes_payload_handoff_sites;
 #[cfg(test)]
 use bytes_payload_handoff::BytesPayloadHandoff;
+use predicate_string_temp_drop::predicate_string_temp_drop_proof;
 
 fn generator_env_snapshot_init_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
     blocks
@@ -79,73 +80,6 @@ fn scope_is_same_or_nested(
         };
         current = parent;
     }
-}
-
-/// Prove retained string field-load destinations are predicate-only owners.
-///
-/// Admission is intentionally exact: the load, equality comparison feeding
-/// the block's branch, and one `hew_string_drop` must occur in that order in
-/// one block, and the loaded place must have no other read. Such a temporary
-/// owns only the retain minted by codegen; it never takes ownership from the
-/// aggregate field and therefore must not suppress the aggregate's composite
-/// scope-exit drop.
-fn predicate_string_temp_drop_proof(
-    blocks: &[BasicBlock],
-    local_tys: &[ResolvedTy],
-) -> HashSet<u32> {
-    let mut proven = HashSet::new();
-    for block in blocks {
-        let Terminator::Branch { cond, .. } = block.terminator else {
-            continue;
-        };
-        for (load_idx, load) in block.instructions.iter().enumerate() {
-            let Some(loaded) = string_field_load_producer_dest(load, local_tys) else {
-                continue;
-            };
-            let Some(loaded_local) = base_local(loaded) else {
-                continue;
-            };
-            let comparisons = block
-                .instructions
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, instr)| match instr {
-                    Instr::IntCmp { lhs, rhs, dest, .. }
-                        if *dest == cond && (*lhs == loaded || *rhs == loaded) =>
-                    {
-                        Some(idx)
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let drops = block
-                .instructions
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, instr)| match instr {
-                    Instr::Drop {
-                        place,
-                        ty: ResolvedTy::String,
-                        drop_fn: Some(crate::model::DropFnSpec::Release("hew_string_drop")),
-                    } if *place == loaded => Some(idx),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let ([cmp_idx], [drop_idx]) = (comparisons.as_slice(), drops.as_slice()) else {
-                continue;
-            };
-            if !(load_idx < *cmp_idx && *cmp_idx < *drop_idx) {
-                continue;
-            }
-            let reads_are_exact = block.instructions.iter().enumerate().all(|(idx, instr)| {
-                !instr_source_places(instr).contains(&loaded) || idx == *cmp_idx || idx == *drop_idx
-            });
-            if reads_are_exact {
-                proven.insert(loaded_local);
-            }
-        }
-    }
-    proven
 }
 
 /// String field loads are emitted with an independent `+1` retain. Follow
@@ -447,19 +381,14 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                 }
                 Instr::RecordInit { fields, dest, .. } => {
                     for (_, p) in fields {
-                        if aggregate_borrowed_ingress_clones_source(
+                        if aggregate_borrowed_ingress_sink_clones_source(
                             block,
                             idx,
                             *p,
+                            Some(aggregate_clone_sites),
                             local_tys,
                             record_field_orders,
-                        ) || aggregate_borrowed_ingress_site_clones_source(
-                            block.id,
-                            idx,
-                            *p,
-                            aggregate_clone_sites,
-                            local_tys,
-                            record_field_orders,
+                            enum_layouts,
                         ) {
                             continue;
                         }
@@ -569,6 +498,17 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                         }
                     }
                     if let Instr::RecordFieldStore { src, .. } = instr {
+                        if aggregate_borrowed_ingress_sink_clones_source(
+                            block,
+                            idx,
+                            *src,
+                            Some(aggregate_clone_sites),
+                            local_tys,
+                            record_field_orders,
+                            enum_layouts,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(*src) {
                             if field_binders.contains(&l) {
                                 // Binder stored into another aggregate's
@@ -587,11 +527,23 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                                 *value,
                                 ty,
                                 record_field_orders,
+                                enum_layouts,
                             )
                         }) => {}
                 other => {
                     let (reads, writes) = crate::dataflow::instr_reads_writes(other);
                     for p in reads {
+                        if aggregate_borrowed_ingress_sink_clones_source(
+                            block,
+                            idx,
+                            p,
+                            Some(aggregate_clone_sites),
+                            local_tys,
+                            record_field_orders,
+                            enum_layouts,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(p) {
                             if let Some(&root) = alias_of.get(&l) {
                                 // Any unmodelled read of the record itself.
@@ -743,6 +695,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
         owned_tuple_field_list,
         field_dischargeable,
         record_field_orders,
+        enum_layouts,
         aggregate_clone_sites,
     ));
     if insertions.is_empty() {
@@ -846,6 +799,7 @@ fn compute_escaped_chain_sibling_drops(
     owned_tuple_field_list: &dyn Fn(&ResolvedTy) -> Vec<(u32, ResolvedTy)>,
     field_dischargeable: &dyn Fn(&ResolvedTy) -> bool,
     record_field_orders: &HashMap<String, Vec<(String, ResolvedTy)>>,
+    enum_layouts: &[crate::model::EnumLayout],
     aggregate_clone_sites: &HashSet<(u32, usize, Place)>,
 ) -> Vec<(u32, usize, Vec<Instr>)> {
     // Immediate-parent map: alias_local -> (parent_local, field ordinal it reads).
@@ -918,19 +872,14 @@ fn compute_escaped_chain_sibling_drops(
                 }
                 Instr::RecordInit { fields, .. } => {
                     for (_, place) in fields {
-                        if aggregate_borrowed_ingress_clones_source(
+                        if aggregate_borrowed_ingress_sink_clones_source(
                             block,
                             idx,
                             *place,
+                            Some(aggregate_clone_sites),
                             local_tys,
                             record_field_orders,
-                        ) || aggregate_borrowed_ingress_site_clones_source(
-                            block.id,
-                            idx,
-                            *place,
-                            aggregate_clone_sites,
-                            local_tys,
-                            record_field_orders,
+                            enum_layouts,
                         ) {
                             continue;
                         }
@@ -946,6 +895,17 @@ fn compute_escaped_chain_sibling_drops(
                         .iter()
                         .filter(|field| field.ownership == ClosureEnvFieldOwnership::OwnsMoved)
                     {
+                        if aggregate_borrowed_ingress_sink_clones_source(
+                            block,
+                            idx,
+                            field.src,
+                            Some(aggregate_clone_sites),
+                            local_tys,
+                            record_field_orders,
+                            enum_layouts,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(field.src) {
                             if let Some(&escapee) = carrier_of.get(&l) {
                                 escapes.push((escapee, block.id, idx));
@@ -954,6 +914,17 @@ fn compute_escaped_chain_sibling_drops(
                     }
                 }
                 Instr::RecordFieldStore { src, .. } => {
+                    if aggregate_borrowed_ingress_sink_clones_source(
+                        block,
+                        idx,
+                        *src,
+                        Some(aggregate_clone_sites),
+                        local_tys,
+                        record_field_orders,
+                        enum_layouts,
+                    ) {
+                        continue;
+                    }
                     if let Some(l) = base_local(*src) {
                         if let Some(&escapee) = carrier_of.get(&l) {
                             escapes.push((escapee, block.id, idx));
@@ -969,11 +940,23 @@ fn compute_escaped_chain_sibling_drops(
                                 *value,
                                 ty,
                                 record_field_orders,
+                                enum_layouts,
                             )
                         }) => {}
                 other => {
                     let (reads, _) = crate::dataflow::instr_reads_writes(other);
                     for place in reads {
+                        if aggregate_borrowed_ingress_sink_clones_source(
+                            block,
+                            idx,
+                            place,
+                            Some(aggregate_clone_sites),
+                            local_tys,
+                            record_field_orders,
+                            enum_layouts,
+                        ) {
+                            continue;
+                        }
                         if let Some(l) = base_local(place) {
                             if carrier_of.contains_key(&l)
                                 && !binder_read_is_borrow_safe_instr(other, l)
@@ -2511,20 +2494,22 @@ pub(super) fn derive_owned_record_drop_allowed(
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
-                        let cloned_borrowed_ingress = matches!(instr, Instr::RecordInit { .. })
-                            && aggregate_borrowed_ingress_clones_source(
+                        let cloned_borrowed_ingress =
+                            aggregate_borrowed_ingress_sink_clones_source(
                                 block,
                                 instr_index,
                                 p,
+                                None,
                                 local_tys,
                                 record_field_orders,
-                            )
-                            || local_tys.get(l as usize).is_some_and(|ty| {
+                                enum_layouts,
+                            ) || local_tys.get(l as usize).is_some_and(|ty| {
                                 aggregate_borrowed_ingress_retain_clones_value(
                                     instr,
                                     p,
                                     ty,
                                     record_field_orders,
+                                    enum_layouts,
                                 )
                             });
                         if !copy_in_elem_store
@@ -4944,20 +4929,22 @@ pub(super) fn derive_tuple_composite_drop_allowed(
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
-                        let cloned_borrowed_ingress = matches!(instr, Instr::RecordInit { .. })
-                            && aggregate_borrowed_ingress_clones_source(
+                        let cloned_borrowed_ingress =
+                            aggregate_borrowed_ingress_sink_clones_source(
                                 block,
                                 instr_index,
                                 p,
+                                None,
                                 local_tys,
                                 record_field_orders,
-                            )
-                            || local_tys.get(l as usize).is_some_and(|ty| {
+                                enum_layouts,
+                            ) || local_tys.get(l as usize).is_some_and(|ty| {
                                 aggregate_borrowed_ingress_retain_clones_value(
                                     instr,
                                     p,
                                     ty,
                                     record_field_orders,
+                                    enum_layouts,
                                 )
                             });
                         if !cloned_borrowed_ingress

@@ -2731,6 +2731,11 @@ pub(crate) struct CallScrutineeProvenance {
     /// Monomorphisations are keyed by their origin verdict and recorded under
     /// the concrete mangled symbol that reaches MIR.
     pub(crate) owned_string_return_carrier_symbols: HashSet<String>,
+    /// Per-function `(variant, field)` return positions whose payload is a
+    /// proven fresh owner even though another `Result`/enum arm may not be.
+    /// This deliberately does NOT make the enclosing enum fresh: a match may
+    /// mint only the selected payload binder, never a shell owner.
+    pub(crate) fresh_variant_payloads: HashMap<hew_hir::ItemId, HashSet<(u32, u32)>>,
 }
 
 impl Default for CallScrutineeProvenance {
@@ -2743,6 +2748,7 @@ impl Default for CallScrutineeProvenance {
             fresh_owner_verdicts: FreshOwnerVerdicts::denying_all(),
             owned_string_return_carriers: HashSet::new(),
             owned_string_return_carrier_symbols: HashSet::new(),
+            fresh_variant_payloads: HashMap::new(),
         }
     }
 }
@@ -2767,6 +2773,30 @@ impl CallScrutineeProvenance {
         };
         !self.extern_table.is_extern_name(name)
             && self.owned_string_return_carriers.contains(item_id)
+    }
+
+    /// True only for an analysed Hew function and an active enum payload whose
+    /// every constructor path was proven fresh under both the precise alias and
+    /// opaque-extern-transfer analyses. Direct externs never reach this query.
+    #[must_use]
+    pub(crate) fn callee_returns_fresh_variant_payload(
+        &self,
+        callee: &HirExpr,
+        variant_idx: u32,
+        field_idx: u32,
+    ) -> bool {
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Item(item_id),
+        } = &callee.kind
+        else {
+            return false;
+        };
+        !self.extern_table.is_extern_name(name)
+            && self
+                .fresh_variant_payloads
+                .get(item_id)
+                .is_some_and(|fields| fields.contains(&(variant_idx, field_idx)))
     }
 }
 
@@ -2809,6 +2839,14 @@ pub(crate) fn build_call_scrutinee_provenance(
         compute_fn_return_launders_opaque_extern(origin_fns, &extern_table, &declared_release);
     let carries_proven_foreign =
         compute_fn_return_carries_proven_foreign(origin_fns, &extern_table, &declared_release);
+    let fresh_variant_payloads = compute_fresh_variant_payloads(
+        origin_fns,
+        &provenance,
+        &extern_table,
+        &may_mutate,
+        &launders_opaque_extern,
+        &declared_release,
+    );
     let fresh_owner_verdicts = FreshOwnerVerdicts::build(
         coarse_fresh_returns,
         &provenance,
@@ -2867,6 +2905,132 @@ pub(crate) fn build_call_scrutinee_provenance(
         fresh_owner_verdicts,
         owned_string_return_carriers,
         owned_string_return_carrier_symbols,
+        fresh_variant_payloads,
+    }
+}
+
+/// Narrow active-variant ownership summary for a mixed enum return.
+///
+/// A whole `Result<T, E>` is fresh only when *both* arms are fresh, which is
+/// the right requirement for minting a recursive shell owner. It is too coarse
+/// for `match f() { Ok(value) => ... }` when only `value` crosses an audited
+/// transferred-return seam. This summary retains the existing whole-value
+/// default-deny and proves only `(variant, field)` positions that are fresh on
+/// every constructor path for that position. The match lowering then gives that
+/// selected field one owner; it never gives the shell an owner.
+#[allow(
+    clippy::implicit_hasher,
+    reason = "built once over the pipeline's default-hasher origin_fns map"
+)]
+fn compute_fresh_variant_payloads(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    provenance: &HashMap<hew_hir::ItemId, ReturnProvenance>,
+    extern_table: &ExternContractTable,
+    may_mutate: &HashMap<hew_hir::ItemId, bool>,
+    launders_opaque_extern: &HashSet<hew_hir::ItemId>,
+    declared_release: &DeclaredReleaseTypes,
+) -> HashMap<hew_hir::ItemId, HashSet<(u32, u32)>> {
+    let analyzed: HashSet<hew_hir::ItemId> = fns.keys().copied().collect();
+    let mut result = HashMap::new();
+    for (&id, &function) in fns {
+        let local_bits =
+            compute_local_binding_provenance(function, provenance, extern_table, may_mutate);
+        let precise = PrecisePolicy {
+            provenance,
+            extern_table,
+            local_bits: &local_bits,
+        };
+        let foreign = OpaqueExternTaintPolicy {
+            extern_table,
+            analyzed: &analyzed,
+            tainted: launders_opaque_extern,
+            declared_release,
+        };
+        let mut returns = Vec::new();
+        crate::lower::collect_return_values_in_block(&function.body, &mut returns);
+        if let Some(tail) = &function.body.tail {
+            if !matches!(tail.ty, ResolvedTy::Unit | ResolvedTy::Never) {
+                returns.push(tail);
+            }
+        }
+
+        let mut complete = !returns.is_empty();
+        let mut payloads: HashMap<(u32, u32), Vec<&HirExpr>> = HashMap::new();
+        for value in returns {
+            complete &= collect_return_variant_payloads(value, &mut payloads);
+        }
+        if !complete {
+            continue;
+        }
+        let fresh = payloads
+            .into_iter()
+            .filter_map(|(position, values)| {
+                values
+                    .iter()
+                    .all(|value| {
+                        return_alias_bits_in_block(value, &function.body, &precise).is_fresh()
+                            && return_alias_bits_in_block(value, &function.body, &foreign)
+                                .is_fresh()
+                    })
+                    .then_some(position)
+            })
+            .collect::<HashSet<_>>();
+        if !fresh.is_empty() {
+            result.insert(id, fresh);
+        }
+    }
+    result
+}
+
+/// Collect enum constructor payloads from a value-returning expression. Every
+/// accepted branch must expose a constructor; an alias through a binding or an
+/// unmodelled control-flow form returns `false` and denies the entire function.
+/// The outer return collector supplies explicit `return` sites independently,
+/// while this walk expands tail `if`/`match` paths into their active variants.
+fn collect_return_variant_payloads<'a>(
+    expr: &'a HirExpr,
+    payloads: &mut HashMap<(u32, u32), Vec<&'a HirExpr>>,
+) -> bool {
+    match &expr.kind {
+        HirExprKind::MachineVariantCtor {
+            state_idx, payload, ..
+        } => {
+            let Some(payload) = payload else {
+                return true;
+            };
+            for (field_idx, (_, value)) in payload.iter().enumerate() {
+                let Ok(field_idx) = u32::try_from(field_idx) else {
+                    return false;
+                };
+                let Ok(variant_idx) = u32::try_from(*state_idx) else {
+                    return false;
+                };
+                payloads
+                    .entry((variant_idx, field_idx))
+                    .or_default()
+                    .push(value);
+            }
+            true
+        }
+        HirExprKind::Block(block) => block
+            .tail
+            .as_deref()
+            .is_some_and(|tail| collect_return_variant_payloads(tail, payloads)),
+        HirExprKind::If {
+            then_expr,
+            else_expr: Some(else_expr),
+            ..
+        } => {
+            collect_return_variant_payloads(then_expr, payloads)
+                && collect_return_variant_payloads(else_expr, payloads)
+        }
+        HirExprKind::Match { arms, .. } if !arms.is_empty() => arms
+            .iter()
+            .all(|arm| collect_return_variant_payloads(&arm.body, payloads)),
+        HirExprKind::Return { value: Some(value) } => {
+            collect_return_variant_payloads(value, payloads)
+        }
+        _ => false,
     }
 }
 

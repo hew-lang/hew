@@ -3950,11 +3950,29 @@ impl Builder {
                     ty: binding_ty.clone(),
                 });
                 self.record_binding_scope(binding.binding);
-                let warrant = self.owner_warrant_for_scrutinee_payload(
-                    binding.binding,
-                    scrutinee,
-                    &binding_ty,
-                );
+                // A mixed-return wrapper has no shell owner: the whole Result
+                // may contain an opaque sibling. Its selected payload can still
+                // be a measured transferred owner, proven by the active
+                // `(variant, field)` summary. That authority is deliberately
+                // used only when no whole call-scrutinee owner was minted, so a
+                // fresh Result never gains a second payload release.
+                let active_variant_payload_warrant = call_scrutinee_owner
+                    .is_none()
+                    .then(|| {
+                        self.owner_warrant_for_fresh_variant_payload(
+                            scrutinee,
+                            variant_idx,
+                            binding.field_idx,
+                        )
+                    })
+                    .flatten();
+                let warrant = active_variant_payload_warrant.unwrap_or_else(|| {
+                    self.owner_warrant_for_scrutinee_payload(
+                        binding.binding,
+                        scrutinee,
+                        &binding_ty,
+                    )
+                });
                 let keep_for_drop_elab =
                     self.binding_seeds_drop_elaboration(&binding_ty) && !warrant.withholds_mint();
                 if keep_for_drop_elab {
@@ -3973,6 +3991,12 @@ impl Builder {
                     }
                 }
                 let dest = self.alloc_local(binding.ty.clone());
+                if active_variant_payload_warrant.is_some() && keep_for_drop_elab {
+                    self.fresh_variant_payload_bindings.insert(binding.binding);
+                    if let Some(local) = base_local(dest) {
+                        self.fresh_variant_payload_binder_locals.insert(local);
+                    }
+                }
                 let payload_source = Place::MachineVariant {
                     local: scrutinee_local,
                     variant_idx,
@@ -4118,6 +4142,80 @@ impl Builder {
                             });
                         }
                     }
+                }
+            }
+
+            // A wildcard payload (`Ok(_)` / `Err(_)`) has no HIR binding, so
+            // the ordinary binder-owner path has nowhere to attach the active
+            // variant's release. Materialise a synthetic, arm-local owner only
+            // for a field that carries the same fresh-transfer proof. This is
+            // the discard twin of the bound-payload path above: it still moves
+            // the selected field once and gets one exit drop, while an opaque
+            // sibling or an unproven field remains untouched (leak, never a
+            // guessed release).
+            if call_scrutinee_owner.is_none() {
+                use crate::model::HeapOwnershipLayouts as _;
+                let bound_fields: HashSet<u32> = arm.bindings.iter().map(|b| b.field_idx).collect();
+                let predicate_fields: HashSet<u32> = arm
+                    .payload_variant_predicates
+                    .iter()
+                    .map(|p| p.field_idx)
+                    .collect();
+                let subst = self.subst_ty(&scrutinee.ty);
+                let skipped_fields = match &subst {
+                    ResolvedTy::Named { name, args, .. } => {
+                        let layouts = crate::model::MirHeapLayouts {
+                            record_field_orders: &self.record_field_orders,
+                            enum_layouts: &self.enum_layouts,
+                        };
+                        layouts
+                            .enum_variant_field_tys(name, args)
+                            .and_then(|variants| variants.get(variant_idx as usize).cloned())
+                            .into_iter()
+                            .flatten()
+                            .enumerate()
+                            .filter_map(|(field_idx, ty)| {
+                                let field_idx = u32::try_from(field_idx).ok()?;
+                                (!bound_fields.contains(&field_idx)
+                                    && !predicate_fields.contains(&field_idx))
+                                .then(|| (field_idx, self.subst_ty(&ty)))
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                    _ => Vec::new(),
+                };
+                for (field_idx, field_ty) in skipped_fields {
+                    if !self.binding_seeds_drop_elaboration(&field_ty) {
+                        continue;
+                    }
+                    let Some(warrant) = self.owner_warrant_for_fresh_variant_payload(
+                        scrutinee,
+                        variant_idx,
+                        field_idx,
+                    ) else {
+                        continue;
+                    };
+                    let dest = self.alloc_local(field_ty.clone());
+                    let local = base_local(dest).expect(
+                        "alloc_local must produce a Local place for active-variant payload ownership",
+                    );
+                    let binding = self.register_synthetic_owned_local(
+                        "__hew_active_variant_payload",
+                        arm.body.site,
+                        local,
+                        field_ty,
+                        warrant,
+                    );
+                    self.fresh_variant_payload_bindings.insert(binding);
+                    self.fresh_variant_payload_binder_locals.insert(local);
+                    self.push_instr(Instr::Move {
+                        dest,
+                        src: Place::MachineVariant {
+                            local: scrutinee_local,
+                            variant_idx,
+                            field_idx,
+                        },
+                    });
                 }
             }
 

@@ -781,6 +781,7 @@ pub(super) fn derive_cow_sole_owner(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     match_project_consumed_binder_locals: &HashSet<u32>,
+    fresh_variant_payload_binder_locals: &HashSet<u32>,
     locals: &[ResolvedTy],
     borrowed_param_locals: &HashSet<u32>,
     parameter_locals: &HashSet<u32>,
@@ -895,8 +896,12 @@ pub(super) fn derive_cow_sole_owner(
         .values()
         .filter_map(|place| base_local(*place))
         .collect();
-    let tainted =
-        compute_projection_alias_taint(blocks, match_project_consumed_binder_locals, locals);
+    let tainted = compute_projection_alias_taint(
+        blocks,
+        match_project_consumed_binder_locals,
+        fresh_variant_payload_binder_locals,
+        locals,
+    );
 
     let mut excluded_roots: HashSet<u32> = HashSet::new();
     let mut pending_share_sites: Vec<(u32, usize, Place, Vec<BindingId>)> = Vec::new();
@@ -2013,6 +2018,7 @@ fn record_actor_state_load_terminator_uses(
 pub(super) fn compute_projection_alias_taint(
     blocks: &[BasicBlock],
     exempt_seed_locals: &HashSet<u32>,
+    fresh_variant_payload_binder_locals: &HashSet<u32>,
     locals: &[ResolvedTy],
 ) -> HashSet<u32> {
     // #2523 — projection slots whose heap ownership was TRANSFERRED to a new
@@ -2056,7 +2062,9 @@ pub(super) fn compute_projection_alias_taint(
                 // alias. Skip the taint seed so its drop is admitted exactly once.
                 if place_is_interior_projection(*src) && !neutralized_sources.contains(src) {
                     if let Some(dl) = base_local(*dest) {
-                        tainted.insert(dl);
+                        if !fresh_variant_payload_binder_locals.contains(&dl) {
+                            tainted.insert(dl);
+                        }
                     }
                 }
             }
@@ -2605,7 +2613,7 @@ mod aggregate_projection_transfer_dest_tests {
 /// which pass the real `locals`.
 #[must_use]
 pub(super) fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32> {
-    let mut tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &[]);
+    let mut tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &HashSet::new(), &[]);
     // Seed the borrowing vector element getters (both lowering shapes).
     for block in blocks {
         for instr in &block.instructions {
@@ -3100,7 +3108,7 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
     //    consumed-binder exemption (conservative: taint strictly more). String
     //    `*FieldLoad` dests are excluded from the seed (they are retained fresh
     //    producers, admitted in step 1) via the `locals` type gate.
-    let tainted = compute_projection_alias_taint(blocks, &HashSet::new(), locals);
+    let tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &HashSet::new(), locals);
 
     // 3. Admit a leaf-`string` owned binding iff it is a proven fresh owner, not
     //    a projection alias, and every use is a verified borrow.
@@ -3159,6 +3167,7 @@ pub(super) fn finalize_string_ownership(
         &owned_locals_snapshot,
         &builder.binding_locals,
         &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
         &builder.borrowed_string_param_locals,
         &builder.parameter_locals,
@@ -5805,6 +5814,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -5863,6 +5873,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -5918,6 +5929,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[],
             &HashSet::new(),
             &HashSet::new(),
@@ -5962,7 +5974,8 @@ mod cow_sole_owner_derivation {
             HashSet::from([(0, 2)]),
             "the exact retain+move pair mints one independent destination owner"
         );
-        let tainted = compute_projection_alias_taint(&blocks, &HashSet::new(), &local_tys);
+        let tainted =
+            compute_projection_alias_taint(&blocks, &HashSet::new(), &HashSet::new(), &local_tys);
         assert!(
             tainted.contains(&40) && !tainted.contains(&41),
             "the payload binder stays parent-owned while its retained copy is independent; \
@@ -6114,7 +6127,12 @@ mod cow_sole_owner_derivation {
                 corroborated_retained_string_move_sites(&blocks, &local_tys).is_empty(),
                 "{label} must not mint independent ownership"
             );
-            let tainted = compute_projection_alias_taint(&blocks, &HashSet::new(), &local_tys);
+            let tainted = compute_projection_alias_taint(
+                &blocks,
+                &HashSet::new(),
+                &HashSet::new(),
+                &local_tys,
+            );
             assert!(
                 tainted.contains(&41),
                 "{label} must preserve fail-closed projection taint; got {tainted:?}"
@@ -6167,7 +6185,8 @@ mod cow_sole_owner_derivation {
             "a terminator-overwritten destination cannot hold one stable generation"
         );
         assert!(
-            compute_projection_alias_taint(&blocks, &HashSet::new(), &local_tys).contains(&41),
+            compute_projection_alias_taint(&blocks, &HashSet::new(), &HashSet::new(), &local_tys,)
+                .contains(&41),
             "a terminator-overwritten destination must retain projection taint"
         );
     }
@@ -6198,7 +6217,13 @@ mod cow_sole_owner_derivation {
             "a string opcode cannot grant retained ownership to bytes or another aggregate"
         );
         assert!(
-            compute_projection_alias_taint(&wrong_type, &HashSet::new(), &bytes_tys).contains(&41),
+            compute_projection_alias_taint(
+                &wrong_type,
+                &HashSet::new(),
+                &HashSet::new(),
+                &bytes_tys,
+            )
+            .contains(&41),
             "the wrong-type destination must retain projection taint"
         );
     }
@@ -6234,6 +6259,7 @@ mod cow_sole_owner_derivation {
             &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
+            &HashSet::new(),
             &HashSet::new(),
             &[],
             &HashSet::new(),
@@ -6283,6 +6309,7 @@ mod cow_sole_owner_derivation {
             &owned,
             &binding_locals,
             &HashSet::new(),
+            &HashSet::new(),
             &[
                 ResolvedTy::String,
                 ResolvedTy::String,
@@ -6324,6 +6351,7 @@ mod cow_sole_owner_derivation {
             &HashMap::new(),
             &[],
             &HashMap::new(),
+            &HashSet::new(),
             &HashSet::new(),
             &[ResolvedTy::String, ResolvedTy::String, ResolvedTy::String],
             &HashSet::from([2]),
@@ -6401,6 +6429,7 @@ mod cow_sole_owner_derivation {
             &[],
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
             &[
                 ResolvedTy::String,
                 ResolvedTy::Bool,
@@ -6449,6 +6478,7 @@ mod cow_sole_owner_derivation {
             &HashMap::new(),
             &[(binding, "value".to_string(), ResolvedTy::String)],
             &HashMap::from([(binding, Place::Local(3))]),
+            &HashSet::new(),
             &HashSet::new(),
             &[
                 ResolvedTy::String,

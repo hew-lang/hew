@@ -362,6 +362,7 @@ pub(super) fn elaborate(
             &owned_locals_snapshot,
             &builder.binding_locals,
             &builder.match_project_consumed_binder_locals,
+            &builder.fresh_variant_payload_binder_locals,
             &builder.locals,
             &builder.borrowed_string_param_locals,
             &builder.parameter_locals,
@@ -757,6 +758,17 @@ pub(super) fn elaborate(
     // authority and consume hook installed the flag. The guarded drop fires
     // only where that sink did not execute.
     owned_record_drop_allowed.extend(builder.conditional_record_drop_flags.keys().copied());
+    // An active mixed-return payload is not an alias of a dropped enum shell:
+    // its per-variant transfer proof deliberately withheld the shell owner and
+    // assigned this binder the sole recursive record teardown. The usual record
+    // projection prover cannot infer that from a raw `MachineVariant` move, so
+    // thread the proof recorded at the match site directly.
+    owned_record_drop_allowed.extend(owned_locals_snapshot.iter().filter_map(
+        |(binding, _name, ty)| {
+            (builder.fresh_variant_payload_bindings.contains(binding) && is_owned_record(ty))
+                .then_some(*binding)
+        },
+    ));
 
     // W5.021 — fail-closed sole-owner allow-set for heap-owning **tuple**
     // bindings (the tuple/record-of-owned-handles drop spine). A by-value owned
@@ -902,6 +914,7 @@ pub(super) fn elaborate(
     let projection_alias_tainted = compute_projection_alias_taint(
         &checked.blocks,
         &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
     );
     let lifo_drops = build_lifo_drops(

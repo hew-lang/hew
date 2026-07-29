@@ -44,6 +44,7 @@ command_timeout_floor() {
         "make doc-ratchet-selftest") echo 45 ;;
         "make test-release-workflow-contract") echo 30 ;;
         "make test-stdlib-ratchet") echo 45 ;;
+        "make test-stdlib-execution-proofs") echo 45 ;;
         "make test-doc-examples") echo 45 ;;
         "make sandbox-parity") echo 150 ;;
         "make checked-mir-verify") echo 45 ;;
@@ -99,6 +100,7 @@ CI_REQUIRED_CHECKS=(
     "Doc-ratchet membership self-test (ci.yml: make doc-ratchet-selftest)	make doc-ratchet-selftest"
     "Release workflow contract (ci.yml: make test-release-workflow-contract)	make test-release-workflow-contract"
     "Stdlib type-check ratchet (ci.yml: make test-stdlib-ratchet)	make test-stdlib-ratchet"
+    "Stdlib execution-proof manifest (ci.yml: make test-stdlib-execution-proofs)	make test-stdlib-execution-proofs"
     "Vertical slice oracle (ci.yml: make test-vertical-slice)	make test-vertical-slice"
     "Package-import oracle (ci.yml: make test-pkg-import)	make test-pkg-import"
     "Fuzz-oracle ratchet (ci.yml: make fuzz-oracle)	make fuzz-oracle"
@@ -693,6 +695,7 @@ case "$LANE" in
     scripts-config)
         add_command "make leak-scan"
         add_command "make test-release-workflow-contract"
+        add_command "make test-stdlib-execution-proofs"
         add_command "cargo fmt --all -- --check"
         add_command "make freebsd-workflow-contract-check"
         add_command "make test-rust"
@@ -849,6 +852,7 @@ case "$LANE" in
         add_command "make o2-differential-selftest"
         add_command "make test-release-workflow-contract"
         add_command "make test-stdlib-ratchet"
+        add_command "make test-stdlib-execution-proofs"
         add_command "make test-doc-examples"
         add_command "make doc-ratchet-selftest"
         add_command "make sandbox-parity"

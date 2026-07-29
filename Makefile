@@ -71,7 +71,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
+.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -909,34 +909,19 @@ test-stdlib-ratchet: hew
 	scripts/stdlib-ratchet.sh
 
 # Run every examples/ux and examples/progressive tutorial against its paired
-# .expected file.  Any tutorial whose .expected output diverges from `hew run`
-# output fails the gate, catching dialect regressions before they reach users.
+# .expected file. The shared runner fails closed on missing/orphan expectations,
+# nonzero exit status, timeout, output drift, empty inventory, and duplicate
+# admission. New examples therefore cannot disappear from the authority by
+# omitting their expectation.
 #
-test-ux-examples: hew-native runtime $(LIBHEW_READY)
+test-ux-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-selftest
 	@echo "==> Running ux + progressive tutorials against .expected"
-	@fail=0; pass=0; \
-	for corpus in examples/ux examples/progressive; do \
-	  for src in $$(find $$corpus -maxdepth 1 -name '*.hew' | sort); do \
-	    exp="$${src%.hew}.expected"; \
-	    test -f "$$exp" || continue; \
-	    actual=$$($(DEBUG_DIR)/hew run "$$src" 2>&1); \
-	    expected=$$(cat "$$exp"); \
-	    if [ "$$actual" = "$$expected" ]; then \
-	      pass=$$((pass + 1)); \
-	    else \
-	      echo "  FAIL: $$src"; \
-	      echo "    expected: $$(echo "$$expected" | head -3 | tr '\n' '|')"; \
-	      echo "    actual:   $$(echo "$$actual"   | head -3 | tr '\n' '|')"; \
-	      fail=$$((fail + 1)); \
-	    fi; \
-	  done; \
-	done; \
-	echo "  $$pass passed, $$fail failed"; \
-	bash scripts/lib/corpus-floor.sh ux-example-expectations "$$((pass + fail))" || exit 1; \
-	if [ $$fail -gt 0 ]; then \
-	  echo "ERROR: $$fail tutorial(s) failed — run \`hew run <file>\` to reproduce"; \
-	  exit 1; \
-	fi
+	@python3 scripts/example-expectations.py \
+	  --hew-bin "$(DEBUG_DIR)/hew" \
+	  --label "ux + progressive tutorial" \
+	  --floor-key ux-example-expectations \
+	  --source-root examples/ux \
+	  --source-root examples/progressive
 
 # Run every offline v0.5-surface example against its paired .expected file.
 # Two lanes:
@@ -961,55 +946,21 @@ test-ux-examples: hew-native runtime $(LIBHEW_READY)
 # supposed to print is recorded verbatim in its `.expected`, so the strictness
 # costs nothing legitimate.
 #
-# SURFACE_EXAMPLES_UNGATED lists lane sources that deliberately ship without an
-# `.expected`. The list is closed both ways: a source outside it that has no
-# `.expected` FAILS (an ungated example cannot hide by omission — that is how a
-# leak advisory shipped unnoticed), and an entry that has since grown an
-# `.expected` or no longer exists FAILS too, so the list cannot rot.
+# The shared runner treats the surface inventory as closed: missing or orphan
+# expectations, process failures, timeouts, and output drift all fail the gate.
+# `scanner_tokens.hew` is fully admitted with its repaired five-line output.
 #
-SURFACE_EXAMPLES_UNGATED :=
-
-test-surface-examples: hew-native runtime $(LIBHEW_READY)
+test-surface-examples: hew-native runtime $(LIBHEW_READY) test-example-expectations-selftest
 	@echo "==> Running v0.5 surface examples against .expected"
-	@fail=0; pass=0; \
-	ungated="$(SURFACE_EXAMPLES_UNGATED)"; \
-	srcs="$$(find examples/v05/surfaces -maxdepth 1 -name '*.hew' | sort) examples/net/http_await_service.hew"; \
-	for entry in $$ungated; do \
-	  if [ ! -f "$$entry" ]; then \
-	    echo "  FAIL: $$entry listed in SURFACE_EXAMPLES_UNGATED but does not exist"; \
-	    fail=$$((fail + 1)); \
-	  elif [ -f "$${entry%.hew}.expected" ]; then \
-	    echo "  FAIL: $$entry has an .expected — drop it from SURFACE_EXAMPLES_UNGATED"; \
-	    fail=$$((fail + 1)); \
-	  fi; \
-	done; \
-	for src in $$srcs; do \
-	  exp="$${src%.hew}.expected"; \
-	  if [ ! -f "$$exp" ]; then \
-	    case " $$ungated " in \
-	      *" $$src "*) echo "  SKIP: $$src (SURFACE_EXAMPLES_UNGATED)";; \
-	      *) echo "  FAIL: $$src has no .expected — add one or justify it in SURFACE_EXAMPLES_UNGATED"; \
-	         fail=$$((fail + 1));; \
-	    esac; \
-	    continue; \
-	  fi; \
-	  actual=$$($(DEBUG_DIR)/hew run "$$src" 2>&1); \
-	  expected=$$(cat "$$exp"); \
-	  if [ "$$actual" = "$$expected" ]; then \
-	    pass=$$((pass + 1)); \
-	  else \
-	    echo "  FAIL: $$src"; \
-	    echo "    expected: $$(echo "$$expected" | head -3 | tr '\n' '|')"; \
-	    echo "    actual:   $$(echo "$$actual"   | head -3 | tr '\n' '|')"; \
-	    fail=$$((fail + 1)); \
-	  fi; \
-	done; \
-	echo "  $$pass passed, $$fail failed"; \
-	bash scripts/lib/corpus-floor.sh surface-example-expectations "$$((pass + fail))" || exit 1; \
-	if [ $$fail -gt 0 ]; then \
-	  echo "ERROR: $$fail surface example(s) failed — run \`hew run <file>\` to reproduce"; \
-	  exit 1; \
-	fi
+	@python3 scripts/example-expectations.py \
+	  --hew-bin "$(DEBUG_DIR)/hew" \
+	  --label "surface" \
+	  --floor-key surface-example-expectations \
+	  --source-root examples/v05/surfaces \
+	  --source examples/net/http_await_service.hew
+
+test-example-expectations-selftest:
+	@python3 scripts/tests/test_example_expectations.py
 
 # Check ```hew fenced blocks in docs/ against hew check.
 # Extracts each fence from docs/hew-language-guide.md and docs/specs/HEW-SPEC-2026.md

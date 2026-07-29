@@ -695,8 +695,8 @@ examples/mqtt_broker.hew	build_publish	4
 examples/mqtt_broker.hew	build_suback	1
 examples/mqtt_broker.hew	bytes_slice	3
 examples/mqtt_broker.hew	main	2
-examples/mqtt_broker.hew	net$connect_timeout	12
-examples/mqtt_broker.hew	net$try_connect_timeout	5
+examples/mqtt_broker.hew	net$connect_timeout	14
+examples/mqtt_broker.hew	net$try_connect_timeout	11
 examples/mqtt_broker.hew	net$try_endpoint_port	2
 examples/mqtt_broker.hew	net$try_parse_bracketed_endpoint	19
 examples/mqtt_broker.hew	net$try_parse_endpoint	13

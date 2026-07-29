@@ -492,6 +492,7 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
         "stream.Stream" => return Some(BuiltinType::Stream),
         "stream.Sink" => return Some(BuiltinType::Sink),
         "duplex.Duplex" => return Some(BuiltinType::Duplex),
+        "link_monitor.MonitorRef" => return Some(BuiltinType::MonitorRef),
         _ => {}
     }
     builtin_types()

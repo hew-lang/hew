@@ -1758,7 +1758,7 @@ fn classify_named(
     // blobs it has actor-owned fd teardown semantics. Route it through the
     // existing IO-handle discriminator before the generic opaque fail-closed arm
     // so codegen can apply the restart-safe null-clone policy.
-    if args.is_empty() && name == "Connection" {
+    if args.is_empty() && name == "net.Connection" {
         return Ok(StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Connection,
         });
@@ -1784,7 +1784,8 @@ fn classify_named(
     let resource_short = hew_types::short_name(name);
     if let Some((_, close_symbol)) = resource_close
         .iter()
-        .find(|(n, _)| n == name || n == resource_short)
+        .find(|(n, _)| n == name)
+        .or_else(|| resource_close.iter().find(|(n, _)| n == resource_short))
     {
         return Ok(StateFieldCloneKind::Resource {
             name: name.to_string(),
@@ -2577,13 +2578,13 @@ mod tests {
     }
 
     #[test]
-    fn connection_classifies_as_iohandle_per_audit_section_6() {
+    fn net_connection_classifies_as_iohandle_per_audit_section_6() {
         let mut v = HashSet::new();
         let ty = ResolvedTy::Named {
-            name: "Connection".to_string(),
+            name: "net.Connection".to_string(),
             args: vec![],
             builtin: None,
-            is_opaque: false,
+            is_opaque: true,
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
@@ -2618,19 +2619,53 @@ mod tests {
     }
 
     #[test]
-    fn opaque_connection_classifies_as_iohandle() {
+    fn opaque_net_connection_classifies_as_iohandle() {
         let mut v = HashSet::new();
         let ty = ResolvedTy::Named {
-            name: "Connection".to_string(),
+            name: "net.Connection".to_string(),
             args: vec![],
             builtin: None,
             is_opaque: true,
         };
         assert_eq!(
-            classify_state_field_full(&ty, &no_records(), &[], &["Connection".to_string()], &mut v)
-                .unwrap(),
+            classify_state_field_full(
+                &ty,
+                &no_records(),
+                &[],
+                &["net.Connection".to_string()],
+                &mut v,
+            )
+            .unwrap(),
             StateFieldCloneKind::IoHandle {
                 kind: IoHandleKind::Connection,
+            },
+        );
+    }
+
+    #[test]
+    fn qualified_user_connection_uses_exact_resource_close() {
+        let mut visited = HashSet::new();
+        let ty = ResolvedTy::named_opaque("foo.Connection".to_string(), Vec::new());
+        let registry = vec![
+            ("Connection".to_string(), "Connection::close".to_string()),
+            (
+                "foo.Connection".to_string(),
+                "foo.Connection::close".to_string(),
+            ),
+        ];
+        assert_eq!(
+            classify_state_field_with_resource_handles(
+                &ty,
+                &no_records(),
+                &[],
+                &["foo.Connection".to_string()],
+                &registry,
+                &mut visited,
+            )
+            .unwrap(),
+            StateFieldCloneKind::Resource {
+                name: "foo.Connection".to_string(),
+                close: ResourceCloseAuthority::User("foo.Connection::close".to_string()),
             },
         );
     }
@@ -2754,15 +2789,16 @@ mod tests {
 
     #[test]
     fn vec_of_connection_carries_iohandle_through() {
-        // Exercises the mqtt_broker `Vec<Connection>` shape from the
-        // audit. Stage 2 emission consumes the nested kind to detect
-        // Connection-in-container and emit the codegen-time FailClosed
-        // at supervisor sites.
+        // Exercises the mqtt_broker `Vec<net.Connection>` shape from the
+        // audit. The exact std identity is required: a user package may
+        // declare its own `Connection` resource. Stage 2 emission consumes the
+        // nested kind to detect Connection-in-container and emit the
+        // codegen-time FailClosed at supervisor sites.
         let mut v = HashSet::new();
         let ty = builtin(
             hew_types::BuiltinType::Vec,
             vec![ResolvedTy::Named {
-                name: "Connection".to_string(),
+                name: "net.Connection".to_string(),
                 args: vec![],
                 builtin: None,
                 is_opaque: false,

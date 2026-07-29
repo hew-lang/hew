@@ -8323,6 +8323,36 @@ fn resolve_ty_lowers_trait_object_to_fat_ptr_struct() {
     assert_eq!(st, dyn_trait_fat_ptr_ty(&ctx));
 }
 
+#[test]
+fn resolve_ty_uses_channel_builtin_identity_without_admitting_user_shadow() {
+    let ctx = Context::create();
+    let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
+    let target_data = host_target_data();
+
+    for builtin in [BuiltinType::Sender, BuiltinType::Receiver] {
+        let lowered = resolve_ty(
+            &ctx,
+            &target_data,
+            &ResolvedTy::named_builtin(builtin.canonical_name(), builtin, Vec::new()),
+            &record_layouts,
+        )
+        .expect("exact std channel identity must lower to its pointer representation");
+        let _ = lowered.into_pointer_type();
+    }
+
+    let err = resolve_ty(
+        &ctx,
+        &target_data,
+        &ResolvedTy::named_user("Sender".to_string(), Vec::new()),
+        &record_layouts,
+    )
+    .expect_err("a user Sender shadow must remain outside the runtime handle ABI");
+    assert!(
+        matches!(err, CodegenError::FailClosed(ref message) if message.contains("D10 violation")),
+        "user shadow must retain the D10 fail-closed boundary, got {err:?}"
+    );
+}
+
 /// `Instr::CoerceToDynTrait` now emits the
 /// fat-pointer aggregate. This test pins the emitted IR shape:
 /// (1) the canonical `%hew.dyn.fat_ptr` named struct is used at

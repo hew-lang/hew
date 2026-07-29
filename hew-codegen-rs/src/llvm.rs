@@ -3234,6 +3234,17 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             // boundary-fail-closed.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Sender | BuiltinType::Receiver),
+            ..
+        } => {
+            // Channel endpoints are pointer-width runtime handles. Dispatch
+            // on the typed builtin discriminator so a std declaration
+            // recovered from exact `channel.Sender` / `channel.Receiver`
+            // provenance lowers to `ptr`, while a user `foo.Sender` carrying
+            // `builtin: None` still reaches the D10 fail-closed arm.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
         ResolvedTy::Named { name, .. } if name == "Vec" => {
             // C-2 Vec<T> handle. A Vec<T> local is a `*mut HewVec` pointer.
             // The producer (`lower_vec_index`) allocates the result local

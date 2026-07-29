@@ -4565,12 +4565,14 @@ pub(super) fn resource_opaque_close_registry(
         .iter()
         .filter_map(|name| {
             let short = short_name(name);
-            let (_, close) = type_classes
-                .get(name.as_str())
-                .or_else(|| type_classes.get(short))
-                .and_then(|entry| matches!(entry.0, ResourceMarker::Resource).then_some(entry))?;
+            let (class_name, (marker, close)) = type_classes
+                .get_key_value(name.as_str())
+                .or_else(|| type_classes.get_key_value(short))?;
+            if *marker != ResourceMarker::Resource {
+                return None;
+            }
             let close_method = close.as_ref()?;
-            let symbol = format!("{short}::{close_method}");
+            let symbol = format!("{class_name}::{close_method}");
             Some((name.clone(), symbol))
         })
         .collect()
@@ -4616,23 +4618,9 @@ pub(super) fn resource_drop_fn(
             ..
         } => {
             let short = short_name(name);
-            let qualified_collision = short != name
-                && type_classes
-                    .keys()
-                    .filter(|candidate| candidate.contains('.') && short_name(candidate) == short)
-                    .count()
-                    > 1;
-            let class_entry = if short == name {
-                type_classes.get_key_value(name)
-            } else if qualified_collision {
-                type_classes
-                    .get_key_value(name)
-                    .or_else(|| type_classes.get_key_value(short))
-            } else {
-                type_classes
-                    .get_key_value(short)
-                    .or_else(|| type_classes.get_key_value(name))
-            };
+            let class_entry = type_classes
+                .get_key_value(name)
+                .or_else(|| type_classes.get_key_value(short));
             class_entry.and_then(|(class_name, (_, close))| {
                 close.as_ref().map(|method| {
                     crate::model::DropFnSpec::UserClose(format!("{class_name}::{method}"))
@@ -4722,6 +4710,36 @@ mod typed_resource_close_authority {
                 "user resource `{name}` must retain generated-function close authority"
             );
         }
+    }
+
+    #[test]
+    fn qualified_user_collision_keeps_qualified_close_symbol() {
+        let mut classes = hew_hir::TypeClassTable::new();
+        classes.insert(
+            "Receiver".to_string(),
+            (ResourceMarker::Resource, Some("close".to_string())),
+        );
+        classes.insert(
+            "foo.Receiver".to_string(),
+            (ResourceMarker::Resource, Some("close".to_string())),
+        );
+        let registry = resource_opaque_close_registry(&["foo.Receiver".to_string()], &classes);
+        assert_eq!(
+            registry,
+            vec![(
+                "foo.Receiver".to_string(),
+                "foo.Receiver::close".to_string()
+            )]
+        );
+        assert_eq!(
+            resource_drop_fn(
+                &ResolvedTy::named_opaque("foo.Receiver".to_string(), Vec::new()),
+                &classes,
+            ),
+            Some(crate::model::DropFnSpec::UserClose(
+                "foo.Receiver::close".to_string()
+            ))
+        );
     }
 }
 /// Place-aware override of the type-derived `drop_fn`.

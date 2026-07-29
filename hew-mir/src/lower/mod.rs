@@ -2215,7 +2215,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         .items
         .iter()
         .filter_map(|item| match item {
-            HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.name.clone()),
+            HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.qualified_name()),
             _ => None,
         })
         .collect();
@@ -3781,7 +3781,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             .iter()
             .filter_map(|item| match item {
                 // `#[opaque]` runtime handles lower to ptr-sized slots.
-                HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.name.clone()),
+                HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.qualified_name()),
                 // `indirect enum` values are heap-allocated; every variable
                 // of the type holds a `ptr` to the heap struct.  Adding the
                 // name here causes `resolve_ty` in codegen to return `ptr`

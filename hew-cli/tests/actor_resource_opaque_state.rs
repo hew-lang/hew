@@ -166,6 +166,116 @@ fn colliding_resource_closes_once() {{
     );
 }
 
+fn run_imported_receiver_collision_teardown_oracle(package_import: bool) {
+    require_codegen();
+
+    let mode = if package_import { "package" } else { "file" };
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("actor-resource-imported-receiver-{mode}-"))
+        .tempdir()
+        .expect("tempdir");
+    let marker = dir.path().join("closed.txt");
+    let marker_literal = hew_string_literal(&marker);
+    let module_source = format!(
+        r#"import std::fs;
+
+#[resource]
+#[opaque]
+pub type Receiver {{}}
+
+impl Receiver {{
+    fn close(self) {{
+        unsafe {{ hew_deque_free(self) }};
+        match fs.try_append("{marker_literal}", "closed\n") {{
+            Ok(_) => {{}},
+            Err(_) => panic("append close marker"),
+        }}
+    }}
+}}
+
+pub actor Keeper {{
+    let handle: Receiver = unsafe {{ hew_deque_new() }};
+    receive fn ping() -> i64 {{ 1 }}
+}}
+
+extern "C" {{
+    fn hew_deque_new() -> Receiver;
+    fn hew_deque_free(consume handle: Receiver);
+}}
+"#
+    );
+    let (import, actor) = if package_import {
+        let pkg = dir.path().join("hew/foo");
+        std::fs::create_dir_all(&pkg).expect("create package");
+        std::fs::write(
+            pkg.join("hew.toml"),
+            "[package]\nname = \"hew::foo\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write package manifest");
+        std::fs::write(pkg.join("foo.hew"), module_source).expect("write package source");
+        ("import hew::foo;", "foo.Keeper")
+    } else {
+        std::fs::write(dir.path().join("foo.hew"), module_source).expect("write file import");
+        ("import \"foo.hew\";", "Keeper")
+    };
+    let source_path = dir.path().join("main.hew");
+    let source = format!(
+        r#"{import}
+
+fn main() {{
+    let keeper = spawn {actor}();
+    match await keeper.ping() {{
+        Ok(n) => if n != 1 {{ panic("wrong reply") }},
+        Err(_) => panic("ask failed"),
+    }}
+}}
+"#
+    );
+    std::fs::write(&source_path, source).expect("write root source");
+
+    let output = Command::new(hew_binary())
+        .args([
+            "compile",
+            "--emit-dir",
+            dir.path().to_str().expect("emit dir utf-8"),
+            source_path.to_str().expect("source path utf-8"),
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("compile imported collision IR");
+    assert!(
+        output.status.success(),
+        "{mode}-imported Receiver IR must compile;\n{}",
+        describe_output(&output)
+    );
+    let ll = std::fs::read_to_string(dir.path().join("main.ll")).expect("read emitted IR");
+    let drop_body = fn_body(&ll, "__hew_state_drop_");
+    assert!(
+        drop_body.contains("Receiver::close"),
+        "{mode}-imported state drop must call the authored Receiver close:\n{drop_body}"
+    );
+    assert!(
+        !drop_body.contains("hew_channel_receiver_close"),
+        "{mode}-imported user Receiver must not route to runtime channel close:\n{drop_body}"
+    );
+
+    let output = Command::new(hew_binary())
+        .args(["run", source_path.to_str().expect("source path utf-8")])
+        .current_dir(repo_root())
+        .output()
+        .expect("run imported collision test");
+    assert!(
+        output.status.success(),
+        "{mode}-imported user Receiver must compile and run with user teardown;\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("close marker"),
+        "closed\n",
+        "{mode}-imported Receiver must close exactly once"
+    );
+}
+
 fn fn_body<'a>(ll: &'a str, symbol: &str) -> &'a str {
     let start = ll
         .match_indices("define ")
@@ -214,6 +324,16 @@ fn user_receiver_resource_shadow_closes_once_on_teardown() {
 #[test]
 fn user_monitor_ref_resource_shadow_closes_once_on_teardown() {
     run_builtin_name_collision_teardown_oracle("MonitorRef");
+}
+
+#[test]
+fn package_imported_user_receiver_closes_once_without_runtime_close() {
+    run_imported_receiver_collision_teardown_oracle(true);
+}
+
+#[test]
+fn file_imported_user_receiver_closes_once_without_runtime_close() {
+    run_imported_receiver_collision_teardown_oracle(false);
 }
 
 #[test]

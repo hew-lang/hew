@@ -8823,17 +8823,20 @@ impl Checker {
                     // the function/trait arms. Named (`::{ T }`) and glob
                     // imports publish the bare (or aliased) binding.
                     if Self::should_import_name(&td.name, spec) {
-                        let binding_name = Self::resolve_import_name(spec, &td.name)
+                        let explicit_import_name = Self::resolve_import_name(spec, &td.name);
+                        let binding_name = explicit_import_name
+                            .clone()
                             .unwrap_or_else(|| td.name.clone());
                         self.known_types.insert(binding_name.clone());
                         let source_identity = format!("{module_short}.{}", td.name);
                         self.record_published_bare_type(&binding_name, &source_identity);
-                        // When the importer chose an alias (`T as U`), record
-                        // the mapping so HIR `lower_type` can canonicalise the
-                        // alias name in type-annotation position.  Key by
-                        // (importer_module, alias) so aliases from different
-                        // modules cannot overwrite each other.
-                        if binding_name != td.name {
+                        // Record every published bare type binding, including
+                        // an unrenamed named/glob import. HIR needs the source
+                        // identity for `import foo::{ Receiver }` just as much
+                        // as for `Receiver as Rx`: otherwise the bare spelling
+                        // can be stolen by the builtin catalog before HIR sees
+                        // that it names `foo.Receiver`.
+                        if explicit_import_name.is_some() {
                             self.import_type_name_aliases.insert(
                                 (self.current_module.clone(), binding_name.clone()),
                                 source_identity.clone(),

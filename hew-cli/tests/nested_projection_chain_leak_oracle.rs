@@ -959,6 +959,47 @@ fn escaped_return_record_excludes_the_owner_composite() {
     );
 }
 
+/// Escaped-into-record is a clone, not a transfer: the explicit recursive
+/// string retain gives `Holder.held` independent shares, so `deep` keeps the
+/// outer root's one complete composite drop and emits no sibling-only
+/// compensation.
+#[test]
+fn escaped_into_record_clone_keeps_complete_source_drop() {
+    let source = escaped_into_record_source(4);
+    let checked = checked_dump(&source, "chain-escaped-store-checked-");
+    let checked_deep = checked
+        .split("fn ")
+        .find(|section| section.starts_with("deep"))
+        .expect("deep section present in checked dump");
+    assert!(
+        checked_deep.contains("string.retain_aggregate"),
+        "the destination record must own a recursive retained clone of the \
+         borrowed Leaf projection:\n{checked_deep}"
+    );
+    assert!(
+        !checked_deep.contains("drop_field_in_place"),
+        "a retained clone leaves the source root fully owned; sibling-only \
+         compensation would strand the original escaped subtree:\n{checked_deep}"
+    );
+
+    let elaborated = elab_dump(&source, "chain-escaped-store-elab-");
+    let elaborated_deep = elaborated
+        .split("fn ")
+        .find(|section| section.starts_with("deep"))
+        .expect("deep section present in elaborated dump");
+    let composites = record_in_place_locals(elaborated_deep);
+    assert_eq!(
+        composites.len(),
+        1,
+        "the original Outer must retain exactly one complete recursive drop; \
+         projection aliases never gain their own drop:\n{elaborated_deep}"
+    );
+    assert!(
+        elaborated_deep.contains("ty=Outer kind=record_in_place"),
+        "the sole composite drop must belong to the source Outer:\n{elaborated_deep}"
+    );
+}
+
 /// Proven-borrow owner control: `sink(o: Outer)` only reads `o`, so it is a
 /// proven-borrowing helper that registers no callee-side drop. Under the
 /// copy-on-write borrow model the caller therefore RETAINS the owner and frees

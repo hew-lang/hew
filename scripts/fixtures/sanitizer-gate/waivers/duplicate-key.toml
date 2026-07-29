@@ -1,0 +1,9 @@
+[[waiver]]
+axis = "tsan"
+release = "0.6.0-rc1"
+behavior = "first behavior is sufficiently detailed"
+behavior = "second behavior must not overwrite the first"
+reason = "duplicate keys make the evidence ambiguous"
+tracking = "https://github.com/hew-lang/hew/issues/0000"
+owner = "runtime maintainers"
+expires = "2999-12-31"

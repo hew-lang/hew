@@ -676,57 +676,47 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
     hew_parser::module::ModuleId::new(segments)
 }
 
-fn canonical_floor_module_for_source(source_file: &Path) -> Option<hew_parser::module::ModuleId> {
-    let input_canonical = std::fs::canonicalize(source_file).ok()?;
-    let search_roots = hew_types::module_registry::build_module_search_paths_for(Some(source_file));
-
-    for dotted in hew_types::check::intrinsic_floor_modules() {
+fn canonical_direct_stdlib_module_for_source(
+    source_file: &Path,
+) -> Option<hew_parser::module::ModuleId> {
+    for dotted in hew_types::check::intrinsic_floor_modules()
+        .iter()
+        .copied()
+        .chain(std::iter::once("std.stream"))
+    {
         let segments = dotted.split('.').collect::<Vec<_>>();
-        let Some(last) = segments.last() else {
-            continue;
-        };
-        let rel = segments.iter().collect::<PathBuf>();
-        let candidates = [rel.join(format!("{last}.hew")), rel.with_extension("hew")];
-
-        for root in &search_roots {
-            for candidate in &candidates {
-                let Ok(candidate_canonical) = std::fs::canonicalize(root.join(candidate)) else {
-                    continue;
-                };
-                if candidate_canonical == input_canonical {
-                    return Some(hew_parser::module::ModuleId::new(
-                        segments
-                            .iter()
-                            .map(|segment| (*segment).to_string())
-                            .collect(),
-                    ));
-                }
-            }
+        if hew_types::module_registry::is_canonical_stdlib_module_source(source_file, dotted) {
+            return Some(hew_parser::module::ModuleId::new(
+                segments
+                    .iter()
+                    .map(|segment| (*segment).to_string())
+                    .collect(),
+            ));
         }
     }
 
     None
 }
 
-fn rewrite_direct_floor_module_root(
+fn rewrite_direct_stdlib_module_root(
     module_graph: &mut hew_parser::module::ModuleGraph,
     items: &mut Vec<Spanned<Item>>,
     source_file: &Path,
 ) -> Result<(), FrontendFailure> {
     use hew_parser::module::{Module, ModuleId};
 
-    let Some(floor_id) = canonical_floor_module_for_source(source_file) else {
+    let Some(stdlib_id) = canonical_direct_stdlib_module_for_source(source_file) else {
         return Ok(());
     };
 
     let original_root = module_graph.root.clone();
-    let Some(mut floor_module) = module_graph.modules.remove(&original_root) else {
+    let Some(mut stdlib_module) = module_graph.modules.remove(&original_root) else {
         return Ok(());
     };
 
-    floor_module.id = floor_id.clone();
+    stdlib_module.id = stdlib_id.clone();
     module_graph.root = ModuleId::root();
-    module_graph.modules.insert(floor_id, floor_module);
+    module_graph.modules.insert(stdlib_id, stdlib_module);
     module_graph
         .add_module(Module {
             id: module_graph.root.clone(),
@@ -790,7 +780,7 @@ fn build_module_graph_with_diagnostics(
     if let Err(cycle_err) = graph.compute_topo_order() {
         return Err(FrontendFailure::message_only(cycle_err.to_string()));
     }
-    rewrite_direct_floor_module_root(&mut graph, items, &input_canonical)?;
+    rewrite_direct_stdlib_module_root(&mut graph, items, &input_canonical)?;
 
     // Reject programs where two different module imports share the same short
     // name (the last path segment).  HIR keys all cross-module fn registrations
@@ -2110,6 +2100,52 @@ mod tests {
             )),
             "expected IntrinsicOutsideFloor for temp math.hew, got: {:?}",
             failure.diagnostics
+        );
+    }
+
+    #[test]
+    fn direct_std_stream_provenance_is_exact_to_the_shipped_source() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root");
+        let shipped = repo_root.join("std/stream.hew");
+        assert_eq!(
+            super::canonical_direct_stdlib_module_for_source(&shipped).map(|module| module.path),
+            Some(vec!["std".to_string(), "stream".to_string()]),
+            "direct compilation of the shipped stream module must retain std.stream identity"
+        );
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let user_stream = write_source(
+            dir.path(),
+            "stream.hew",
+            "type Sink<T> { value: T }\ntype Stream<T> { value: T }\n",
+        );
+        assert!(
+            super::canonical_direct_stdlib_module_for_source(Path::new(&user_stream)).is_none(),
+            "a same-named user file must not acquire compiler-owned std.stream provenance"
+        );
+    }
+
+    #[test]
+    fn root_named_connection_import_survives_transitive_first_registration() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        write_source(
+            dir.path(),
+            "helper.hew",
+            "import std::net;\n\npub fn marker() -> i64 { 1 }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import helper;\n\
+             import std::net::{Connection};\n\n\
+             fn close_connection(conn: Connection) { conn.close(); }\n\
+             fn main() { let _ = helper.marker(); }\n",
+        );
+
+        check_file(&input, &FrontendOptions::default()).expect(
+            "the root's named Connection binding and builtin close dispatch must survive when helper registered std::net transitively first",
         );
     }
 

@@ -32,6 +32,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check-sandbox-parity-coverage.py"
+MAKEFILE = ROOT / "Makefile"
 
 spec = importlib.util.spec_from_file_location("check_sandbox_parity_coverage", SCRIPT)
 check_sandbox_parity_coverage = importlib.util.module_from_spec(spec)
@@ -439,6 +440,41 @@ def test_script_stays_python_3_10_compatible_with_no_new_dependency() -> None:
         assert "binary(parity_ratchet)" in filter_value
 
 
+def _assert_sandbox_target_runs_schema_conformance(makefile: str) -> None:
+    match = re.search(
+        r"(?ms)^sandbox-parity:.*?\n(?P<body>(?:^\t.*\n)+)",
+        makefile,
+    )
+    assert match is not None
+    body = match.group("body")
+    assert body.count("npm --prefix hew-sandbox-vm run conformance") == 1
+    assert "npm --prefix hew-sandbox-vm run build" not in body
+    assert (
+        body.count(
+            "cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet "
+            "--test playground --test ios_subset"
+        )
+        == 1
+    )
+
+
+def test_sandbox_target_runs_schema_and_runtime_conformance() -> None:
+    _assert_sandbox_target_runs_schema_conformance(MAKEFILE.read_text())
+
+
+def test_build_only_sandbox_mutation_is_rejected() -> None:
+    mutated = MAKEFILE.read_text().replace(
+        "npm --prefix hew-sandbox-vm run conformance",
+        "npm --prefix hew-sandbox-vm run build",
+        1,
+    )
+    try:
+        _assert_sandbox_target_runs_schema_conformance(mutated)
+    except AssertionError:
+        return
+    raise AssertionError("sandbox build-only mutation escaped the parity authority")
+
+
 _TESTS = [
     test_direct_marker_call_is_detected,
     test_file_with_no_marker_is_not_flagged,
@@ -451,6 +487,8 @@ _TESTS = [
     test_every_generic_profile_is_required,
     test_removing_binary_exclusion_from_profile_ci_fails_the_checker,
     test_deleting_profile_default_filter_line_entirely_fails_default_only,
+    test_sandbox_target_runs_schema_and_runtime_conformance,
+    test_build_only_sandbox_mutation_is_rejected,
     test_script_stays_python_3_10_compatible_with_no_new_dependency,
 ]
 

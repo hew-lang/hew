@@ -191,6 +191,37 @@ pub fn build_module_search_paths() -> Vec<PathBuf> {
     build_module_search_paths_for(None)
 }
 
+/// Whether `source_file` is the canonical source selected for `dotted_module`
+/// by Hew's stdlib search-path authority.
+///
+/// This compares canonical paths, not filenames or generic arity. It is used
+/// when a shipped stdlib file is compiled directly as a root unit but its
+/// source-declared carrier types still need their standard-library identity.
+#[must_use]
+pub fn is_canonical_stdlib_module_source(
+    source_file: &std::path::Path,
+    dotted_module: &str,
+) -> bool {
+    let Ok(input_canonical) = std::fs::canonicalize(source_file) else {
+        return false;
+    };
+    let segments = dotted_module.split('.').collect::<Vec<_>>();
+    let Some(last) = segments.last() else {
+        return false;
+    };
+    let rel = segments.iter().collect::<PathBuf>();
+    let candidates = [rel.join(format!("{last}.hew")), rel.with_extension("hew")];
+
+    build_module_search_paths_for(Some(source_file))
+        .iter()
+        .any(|root| {
+            candidates.iter().any(|candidate| {
+                std::fs::canonicalize(root.join(candidate))
+                    .is_ok_and(|canonical| canonical == input_canonical)
+            })
+        })
+}
+
 #[derive(Debug)]
 pub enum ModuleError {
     NotFound {

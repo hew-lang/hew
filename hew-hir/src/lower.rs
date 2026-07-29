@@ -1980,15 +1980,23 @@ pub fn lower_program_with_mono_cap(
             let Some(module) = module_graph.modules.get(module_id) else {
                 continue;
             };
-            ctx.source_type_identities
-                .extend(module.items.iter().filter_map(|(item, _)| {
+            let identities = module
+                .items
+                .iter()
+                .filter_map(|(item, _)| {
                     let name = match item {
                         Item::TypeDecl(decl) => &decl.name,
                         Item::Record(decl) => &decl.name,
                         _ => return None,
                     };
                     Some(format!("{module_short}.{name}"))
-                }));
+                })
+                .collect::<Vec<_>>();
+            ctx.source_type_identities
+                .extend(identities.iter().cloned());
+            if module_id.path.first().map(String::as_str) == Some("std") {
+                ctx.canonical_std_source_type_identities.extend(identities);
+            }
         }
     }
 
@@ -5824,6 +5832,11 @@ struct LowerCtx {
     /// identity inside a declaring module and through named imports without
     /// broadening the general builtin-shadow rules.
     source_type_identities: HashSet<String>,
+    /// Source declarations owned by canonical `std.*` modules, keyed with the
+    /// same short owner identity as `source_type_identities`. This provenance
+    /// distinguishes shipped source carriers from a user package with the same
+    /// leaf module and type spelling.
+    canonical_std_source_type_identities: HashSet<String>,
     /// Mirrors `Checker::current_module_idx`: 0 for root items, N for the N-th
     /// non-root module's items (1-based, matching topo order).  Used by
     /// `mk_key` to produce module-scoped `SpanKey` lookups that agree with
@@ -6004,6 +6017,7 @@ impl LowerCtx {
             root_opaque_type_short_names: HashSet::new(),
             root_visible_source_type_short_names: HashSet::new(),
             source_type_identities: HashSet::new(),
+            canonical_std_source_type_identities: HashSet::new(),
             current_module_idx: 0,
             root_item_ids: HashSet::new(),
             lowering_injected_items: false,
@@ -18926,8 +18940,22 @@ impl LowerCtx {
                 .map(hew_types::short_name)
             {
                 let qualified = format!("{module_short}.{name}");
+                // Several compiler carriers (notably Stream/Sink and lifecycle
+                // payloads) are non-opaque source declarations. Recover their
+                // builtin identity only while lowering a canonical `std.*`
+                // module. An arbitrary `acme.stream.Sink<T>` has the same leaf
+                // qualifier but is outside this authority and stays nominal.
+                if self
+                    .current_module_name
+                    .as_deref()
+                    .is_some_and(|module| module.starts_with("std."))
+                {
+                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
+                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                    }
+                }
                 if self.resolves_to_opaque_handle(&qualified, name) {
-                    if let Some(builtin) = hew_types::lookup_builtin_type(&qualified) {
+                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
                         return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
                     }
                     return ResolvedTy::named_opaque(qualified, args);
@@ -18935,10 +18963,37 @@ impl LowerCtx {
             }
         }
 
+        // A bare name inside its defining module canonicalises to that module's
+        // exact identity. Known std carrier identities stay builtin; a declared
+        // opaque user identity keeps its full qualified name.
+        let canonical = self.canonical_current_module_record_name(name);
+        if canonical != name {
+            if let Some(builtin) = self.qualified_source_builtin(&canonical) {
+                return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+            }
+            if self.resolves_to_opaque_handle(&canonical, type_name) {
+                return ResolvedTy::named_opaque(canonical, args);
+            }
+            return ResolvedTy::named_user(canonical, args);
+        }
+
+        // A declaration authored in the current source scope outranks both an
+        // imported binding and the builtin catalog, including when generic.
+        // Do not use the global `record_registry` here: it contains every
+        // imported record too and would turn `import std::failure::{
+        // CrashInfo }` into a user type, losing the crash-hook ABI identity.
+        if !name.contains('.')
+            && self.current_scope_declares_source_type(name, current_module_is_file_import)
+            && !self.resolves_to_opaque_handle(name, type_name)
+        {
+            return ResolvedTy::named_user(name.to_string(), args);
+        }
+
         // Named/glob imports are source bindings, not aliases only. Resolve
         // their bare spelling to the published qualified identity before any
         // builtin lookup so `import foo::{ Receiver }` cannot become the
-        // runtime channel endpoint.
+        // runtime channel endpoint. This remains a fallback after the local
+        // declaration check above: authored local types shadow imports.
         if !name.contains('.') {
             if let Some(canonical) = self
                 .import_type_name_aliases
@@ -18949,48 +19004,28 @@ impl LowerCtx {
             }
         }
 
-        // A bare name inside its defining module canonicalises to that module's
-        // exact identity. Known std carrier identities stay builtin; a declared
-        // opaque user identity keeps its full qualified name.
-        if args.is_empty() {
-            let canonical = self.canonical_current_module_record_name(name);
-            if canonical != name {
-                if let Some(builtin) = hew_types::lookup_builtin_type(&canonical) {
-                    return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
-                }
-                if self.resolves_to_opaque_handle(&canonical, type_name) {
-                    return ResolvedTy::named_opaque(canonical, args);
-                }
-                return ResolvedTy::named_user(canonical, args);
-            }
-        }
-        // A declared user record shadows a same-named builtin for a bare,
-        // argument-less reference: e.g. a package's `type Result { handle:
-        // i64 }` annotation `-> Result` names the record, never the prelude's
-        // generic `Result<T, E>` (a zero-arg reference to a generic builtin
-        // is not constructible). The checker already resolves such an
-        // annotation to the record; without this interception the HIR maps
-        // it to the builtin and MIR's actor-ask reply comparison sees
-        // builtin-`Result` vs user-`Result` and fails closed with a reply
-        // type mismatch. Dotted references and parameterised references are
-        // untouched, and an `#[opaque]` handle is never intercepted — it must
-        // keep its `is_opaque` discriminator so the actor-state clone/drop
-        // classifier stays fail-closed (a bodyless `#[opaque] type` also
-        // lands in `record_registry`, so registry membership alone cannot
-        // decide).
+        // Some always-in-scope std records are source-layout-backed rather
+        // than compiler-layout-backed (`DownNotification`,
+        // `CrashNotification`, their payload enums, ...). Their bare names
+        // are present in the global record registry but intentionally absent
+        // from the HIR builtin registration table. Preserve that source layout
+        // after import bindings have had a chance to resolve. Compiler-owned
+        // records such as CrashInfo/CrashAction/MonitorRef have registrations
+        // and continue to the discriminator-bearing builtin path below.
         if !name.contains('.')
-            && args.is_empty()
             && self.record_registry.contains_key(name)
+            && crate::builtin_type_classes::builtin_type_registration(type_name).is_none()
             && !self.resolves_to_opaque_handle(name, type_name)
         {
             return ResolvedTy::named_user(name.to_string(), args);
         }
+
         // Qualified inputs are resolved by exact identity only. The known std
         // spellings live in `lookup_builtin_type`; an arbitrary
         // `foo.Receiver` must never inherit the bare `Receiver` registration.
         if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name) {
             ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
-        } else if let Some(builtin) = hew_types::lookup_builtin_type(name) {
+        } else if let Some(builtin) = self.qualified_source_builtin(name) {
             ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args)
         } else if name.contains('.') && self.resolves_to_opaque_handle(name, type_name) {
             // `#[opaque]` runtime handle (e.g. `json.Value`). Stamp the
@@ -19112,8 +19147,17 @@ impl LowerCtx {
                 .map(hew_types::short_name)
             {
                 let qualified = format!("{module_short}.{name}");
+                if self
+                    .current_module_name
+                    .as_deref()
+                    .is_some_and(|module| module.starts_with("std."))
+                {
+                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
+                        return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                    }
+                }
                 if self.resolves_to_opaque_handle(&qualified, &name) {
-                    if let Some(builtin) = hew_types::lookup_builtin_type(&qualified) {
+                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
                         return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
                     }
                     return ResolvedTy::named_opaque(qualified, args);
@@ -19230,6 +19274,70 @@ impl LowerCtx {
             }
         }
         name.to_string()
+    }
+
+    /// Whether bare `name` is authored by the scope currently being lowered.
+    ///
+    /// Root and flattened file-import declarations share the root namespace.
+    /// Genuine package modules use the exact declaration identities harvested
+    /// from the module graph. This is deliberately narrower than
+    /// `record_registry`, which is a global layout index containing imports.
+    fn current_scope_declares_source_type(
+        &self,
+        name: &str,
+        current_module_is_file_import: bool,
+    ) -> bool {
+        if self.current_module_name.is_none() || current_module_is_file_import {
+            return self.root_visible_source_type_short_names.contains(name);
+        }
+        self.current_module_name
+            .as_deref()
+            .map(hew_types::short_name)
+            .is_some_and(|module_short| {
+                self.source_type_identities
+                    .contains(&format!("{module_short}.{name}"))
+            })
+    }
+
+    /// Resolve an owner-qualified compiler carrier using source provenance.
+    ///
+    /// The ordinary catalog covers opaque/substrate carriers such as
+    /// `stream.Sink`. Lifecycle records are source-defined and therefore need
+    /// an exact owner mapping as well. In both cases a colliding user package
+    /// declaration wins unless the module graph proves the declaration came
+    /// from canonical `std.*`.
+    fn qualified_source_builtin(&self, name: &str) -> Option<BuiltinType> {
+        if !name.contains('.') {
+            return hew_types::lookup_builtin_type(name);
+        }
+
+        let current_std_owner = self
+            .current_module_name
+            .as_deref()
+            .filter(|module| module.starts_with("std."))
+            .is_some_and(|module| {
+                let owner = name.split_once('.').map(|(owner, _)| owner);
+                owner == Some(hew_types::short_name(module))
+            });
+        let canonical_std_owner =
+            current_std_owner || self.canonical_std_source_type_identities.contains(name);
+
+        if self.source_type_identities.contains(name) && !canonical_std_owner {
+            return None;
+        }
+        if let Some(builtin) = hew_types::lookup_builtin_type(name) {
+            return Some(builtin);
+        }
+        if !canonical_std_owner {
+            return None;
+        }
+
+        match name {
+            "failure.CrashInfo" => Some(BuiltinType::CrashInfo),
+            "failure.CrashAction" => Some(BuiltinType::CrashAction),
+            "link_monitor.MonitorRef" => Some(BuiltinType::MonitorRef),
+            _ => None,
+        }
     }
 
     fn qualify_imported_impl_method_symbol(
@@ -30296,6 +30404,53 @@ mod tests {
     }
 
     #[test]
+    fn canonical_std_carriers_and_user_package_collisions_keep_distinct_identities() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        let args = vec![ResolvedTy::I64];
+
+        ctx.current_module_name = Some("std.stream".to_string());
+        assert_eq!(
+            ctx.resolve_named_type_ref("Sink", args.clone()),
+            ResolvedTy::named_builtin("Sink", BuiltinType::Sink, args.clone()),
+            "the canonical std.stream declaration must recover compiler carrier identity"
+        );
+
+        ctx.current_module_name = Some("acme.stream".to_string());
+        ctx.source_type_identities.insert("stream.Sink".to_string());
+        assert_eq!(
+            ctx.resolve_named_type_ref("Sink", args.clone()),
+            ResolvedTy::named_user("Sink", args.clone()),
+            "an acme package's authored Sink<T> must remain a user nominal"
+        );
+        assert_eq!(
+            ctx.resolve_named_type_ref("stream.Sink", args.clone()),
+            ResolvedTy::named_user("stream.Sink", args.clone()),
+            "a qualified import of the acme carrier collision must remain user-owned"
+        );
+
+        ctx.current_module_name = None;
+        ctx.canonical_std_source_type_identities
+            .insert("failure.CrashInfo".to_string());
+        ctx.import_type_name_aliases.insert(
+            (None, "CrashInfo".to_string()),
+            "failure.CrashInfo".to_string(),
+        );
+        assert_eq!(
+            ctx.resolve_named_type_ref("CrashInfo", Vec::new()),
+            ResolvedTy::named_builtin(
+                BuiltinType::CrashInfo.canonical_name(),
+                BuiltinType::CrashInfo,
+                Vec::new(),
+            ),
+            "an imported std lifecycle payload must not be stolen by the global record registry"
+        );
+    }
+
+    #[test]
     fn nested_imported_opaque_identity_indexes_full_and_short_module_names() {
         use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
@@ -31521,6 +31676,35 @@ mod tests {
             none_variant.field_tys.is_empty(),
             "None variant must have no payload fields"
         );
+    }
+
+    #[test]
+    fn authored_generic_local_records_shadow_generic_builtin_spellings() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            type Option<T> { value: T }
+            type Sink<T> { value: T }
+
+            fn keep_option(value: Option<i64>) -> Option<i64> { value }
+            fn keep_sink(value: Sink<i64>) -> Sink<i64> { value }
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "generic local shadows must lower cleanly: {:#?}",
+            lowered.diagnostics
+        );
+
+        for (function_name, nominal_name) in [("keep_option", "Option"), ("keep_sink", "Sink")] {
+            let function = function_named(&lowered, function_name);
+            for ty in [&function.params[0].ty, &function.return_ty] {
+                assert_eq!(
+                    ty,
+                    &ResolvedTy::named_user(nominal_name, vec![ResolvedTy::I64],),
+                    "`{nominal_name}<i64>` authored at the root must remain a user nominal"
+                );
+            }
+        }
     }
 
     /// A STDLIB bare `None` — with NO user `enum Option<T>` in source — must

@@ -40,8 +40,9 @@
 //!   1. `supervisor_normal_return_cleanup` returns 42 with a live supervisor and
 //!      three registered children. This is the direct #2252 normal-return
 //!      child-spec ownership oracle.
-//!   2. `on_crash_action_restart_real_crash` returns 42 after a real crash and
-//!      restart, proving the cleanup tail preserves the crash-message path.
+//!   2. `on_crash_action_restart_real_crash` returns 43 after a real crash,
+//!      state-template mutation, and restart, proving the cleanup tail
+//!      preserves the crash-message path.
 //!   3. `supervisor_stop_basic` explicitly stops its supervisor and returns 0,
 //!      proving the implicit cleanup tail does not double-consume the root.
 //!
@@ -182,7 +183,7 @@ fn supervisor_exit_paths_are_leak_free_under_guard_malloc() {
 
     for (fixture, expected_exit) in [
         ("supervisor_normal_return_cleanup", 42),
-        ("on_crash_action_restart_real_crash", 42),
+        ("on_crash_action_restart_real_crash", 43),
         ("supervisor_stop_basic", 0),
     ] {
         assert_fixture_is_leak_free(

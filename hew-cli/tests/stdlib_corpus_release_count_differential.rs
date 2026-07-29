@@ -302,17 +302,41 @@ fn counts_for(file: &Path) -> FileCounts {
     if !output.status.success() {
         return FileCounts::Rejected;
     }
-    FileCounts::Functions(parse_dump(&String::from_utf8_lossy(&output.stdout)))
+    let direct_prefix =
+        hew_types::module_registry::is_canonical_stdlib_module_source(file, "std.stream")
+            .then_some("stream$");
+    FileCounts::Functions(parse_dump_for_direct_module(
+        &String::from_utf8_lossy(&output.stdout),
+        direct_prefix,
+    ))
 }
 
 /// The parser the whole observable rests on, factored out so the self-test
 /// below exercises THIS code rather than a copy of it.
 fn parse_dump(stdout: &str) -> BTreeMap<String, usize> {
+    parse_dump_for_direct_module(stdout, None)
+}
+
+/// Parse one dump, optionally normalising the canonical prefix of the module
+/// compiled directly as the root unit.
+///
+/// Imported dependency symbols retain their prefixes. `std/stream.hew` is the
+/// first non-intrinsic source module whose exact std provenance requires the
+/// frontend to lower it under `std.stream`; its own `stream$pipe` symbol must
+/// therefore compare with the historical root-source key `pipe`, while an
+/// imported `fs$read` in the same dump remains `fs$read`.
+fn parse_dump_for_direct_module(
+    stdout: &str,
+    direct_prefix: Option<&str>,
+) -> BTreeMap<String, usize> {
     let mut per: BTreeMap<String, usize> = BTreeMap::new();
     let mut current: Option<String> = None;
     for line in stdout.lines() {
         if let Some(rest) = line.strip_prefix("fn ") {
-            let name = rest.split_once(" -> ").map_or(rest, |(head, _)| head);
+            let raw_name = rest.split_once(" -> ").map_or(rest, |(head, _)| head);
+            let name = direct_prefix
+                .and_then(|prefix| raw_name.strip_prefix(prefix))
+                .unwrap_or(raw_name);
             current = Some(name.to_string());
             per.entry(name.to_string()).or_insert(0);
         } else if line.starts_with("      drop _") {
@@ -535,6 +559,33 @@ fn the_differential_reads_plan_drops_and_not_binding_statements() {
         Some(0),
         "a function with no plan drops must still be a cell, so losing its \
          releases later is a drop rather than a missing row"
+    );
+}
+
+#[test]
+fn direct_module_prefix_normalization_preserves_imported_dependency_symbols() {
+    let dump = [
+        "fn stream$pipe -> ()",
+        "  drop_plans:",
+        "    return[bb0] ->",
+        "      drop _1 ty=string kind=cow_heap(hew_string_drop)",
+        "",
+        "fn fs$read -> ()",
+        "  drop_plans:",
+        "    return[bb0] ->",
+        "      drop _2 ty=string kind=cow_heap(hew_string_drop)",
+    ]
+    .join("\n");
+    let per = parse_dump_for_direct_module(&dump, Some("stream$"));
+    assert_eq!(per.get("pipe"), Some(&1));
+    assert_eq!(
+        per.get("fs$read"),
+        Some(&1),
+        "an imported dependency name must retain its owner prefix"
+    );
+    assert!(
+        !per.contains_key("stream$pipe"),
+        "only the direct module's canonical prefix is normalized"
     );
 }
 

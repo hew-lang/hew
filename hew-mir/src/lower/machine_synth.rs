@@ -533,7 +533,7 @@ fn lower_actor_lifecycle_handlers(
                 //
                 // The runtime ABI for `HewOnCrashFn` (M-3 reshape) is
                 // `(ctx, crash_code: i64, crash_message: *const c_char,
-                //  actor_state_ptr) -> i32` — see
+                //  actor_state_ptr) -> CrashAction` — see
                 // `hew-runtime/src/internal/types.rs`.
                 //
                 // User sources declare a single crash-info payload param and
@@ -587,9 +587,10 @@ fn lower_actor_lifecycle_handlers(
                 // The crash-info payload param expands to TWO ABI params:
                 // `__crash_code: i64` then `__crash_message: string` (a `ptr`),
                 // matching the `HewOnCrashFn` signature `(ctx, i64, *const
-                // c_char, *mut c_void) -> i32`. The message param is a borrow
-                // (the runtime owns the buffer) and is unused until M-5 seeds
-                // `CrashInfo.message` from it. Non-payload params pass through.
+                // c_char, *mut c_void) -> HewCrashActionAbi`. The message param
+                // is a borrow (the runtime owns the buffer) and seeds
+                // `CrashInfo.message` through the cloned prologue owner.
+                // Non-payload params pass through.
                 let abi_params: Vec<HirBinding> = hook
                     .params
                     .iter()

@@ -119,6 +119,13 @@ RELEASE_DIR := $(CARGO_NATIVE_OUT)/release
 # staticlibs (`--link-lib` packages), so packaging must never ship the
 # `release` archive. See `[profile.release-lib]` in Cargo.toml.
 RELEASE_LIB_DIR := $(CARGO_NATIVE_OUT)/release-lib
+ifeq ($(OS),Windows_NT)
+RELEASE_HEW := $(RELEASE_DIR)/hew.exe
+RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/hew.lib
+else
+RELEASE_HEW := $(RELEASE_DIR)/hew
+RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/libhew.a
+endif
 # The wasm archives are always built with an explicit `--target wasm32-wasip1`,
 # which outranks the environment, so they hang off the target root rather than
 # the native output directory.
@@ -348,7 +355,7 @@ sandbox-vm-deps:
 # every test in all four binaries via plain `cargo test`, so nothing is
 # silently skipped anywhere.
 sandbox-parity: hew-native sandbox-vm-deps $(LIBHEW_READY)
-	npm --prefix hew-sandbox-vm run build
+	npm --prefix hew-sandbox-vm run conformance
 	cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet --test playground --test ios_subset
 
 # Repo-local browser/tooling smoke:
@@ -647,7 +654,11 @@ publish-docs: $(RELEASE_DIR)/hew ## Build stdlib docs; print wrangler deploy com
 # `hew build --link-lib` interface. Rust controls archive member names, so the
 # behavioural consumer proof is more stable than inspecting `ar t` output.
 test-release-lib-link:
-	@$(CURDIR)/scripts/test-release-lib-link.sh --hew $(RELEASE_DIR)/hew --archive $(RELEASE_LIB_DIR)/libhew.a
+ifeq ($(OS),Windows_NT)
+	@powershell -NoProfile -ExecutionPolicy Bypass -File "$(CURDIR)/scripts/test-release-lib-link.ps1" -Hew "$(RELEASE_HEW)" -Archive "$(RELEASE_LIBHEW)"
+else
+	@$(CURDIR)/scripts/test-release-lib-link.sh --hew $(RELEASE_HEW) --archive $(RELEASE_LIBHEW)
+endif
 
 # Assemble build/ with release symlinks.
 assemble-release:
@@ -988,13 +999,13 @@ doc-ratchet-selftest:
 # Release sanitizer gate validator self-test.
 check-sanitizer-gate:
 	@set -e; \
-	commit=0123456789abcdef0123456789abcdef01234567; \
+	version=0.6.0-rc1; \
 	fixture=scripts/fixtures/sanitizer-gate; \
 	pass=0; \
 	fail=0; \
 	expect_reject() { \
 	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
-	  if scripts/check-sanitizer-gate.sh "$$commit" "$$asan_file" "$$waiver_file"; then \
+	  if scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
 	    echo "FAIL $$name: expected reject"; fail=$$((fail + 1)); \
 	  else \
 	    echo "ok $$name: rejected"; pass=$$((pass + 1)); \
@@ -1002,7 +1013,7 @@ check-sanitizer-gate:
 	}; \
 	expect_accept() { \
 	  name="$$1"; asan_file="$$2"; waiver_file="$$3"; \
-	  if scripts/check-sanitizer-gate.sh "$$commit" "$$asan_file" "$$waiver_file"; then \
+	  if scripts/check-sanitizer-gate.sh "$$version" "$$asan_file" "$$waiver_file"; then \
 	    echo "ok $$name: accepted"; pass=$$((pass + 1)); \
 	  else \
 	    echo "FAIL $$name: expected accept"; fail=$$((fail + 1)); \
@@ -1011,12 +1022,16 @@ check-sanitizer-gate:
 	expect_reject "1 no ASan result" "$$fixture/missing.result" "$$fixture/waivers/valid.toml"; \
 	expect_reject "2 ASan red" "$$fixture/asan-fail.result" "$$fixture/waivers/valid.toml"; \
 	expect_reject "3 ASan ambiguous/skipped" "$$fixture/asan-ambiguous.result" "$$fixture/waivers/valid.toml"; \
-	expect_reject "4 missing TSan/Miri waivers" "$$fixture/asan-pass.result" "$$fixture/waivers/none.toml"; \
-	expect_reject "5 waiver for different commit" "$$fixture/asan-pass.result" "$$fixture/waivers/different-commit.toml"; \
-	expect_reject "6 expired waiver" "$$fixture/asan-pass.result" "$$fixture/waivers/expired.toml"; \
-	expect_reject "7 blanket waiver" "$$fixture/asan-pass.result" "$$fixture/waivers/blanket.toml"; \
-	expect_reject "8 missing required field" "$$fixture/asan-pass.result" "$$fixture/waivers/missing-field.toml"; \
-	expect_accept "9 ASan green with valid commit-scoped waivers" "$$fixture/asan-pass.result" "$$fixture/waivers/valid.toml"; \
+	expect_reject "4 missing TSan/Miri evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/none.toml"; \
+	expect_reject "5 evidence for different release" "$$fixture/asan-pass.result" "$$fixture/waivers/different-release.toml"; \
+	expect_reject "6 expired evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/expired.toml"; \
+	expect_reject "7 blanket evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/blanket.toml"; \
+	expect_reject "8 missing behavior" "$$fixture/asan-pass.result" "$$fixture/waivers/missing-field.toml"; \
+	expect_reject "9 duplicate axis evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/duplicate.toml"; \
+	expect_reject "10 untracked evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/bad-tracking.toml"; \
+	expect_reject "11 duplicate ledger key" "$$fixture/asan-pass.result" "$$fixture/waivers/duplicate-key.toml"; \
+	expect_reject "12 vague behavioral evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/vague.toml"; \
+	expect_accept "13 ASan green with bounded release evidence" "$$fixture/asan-pass.result" "$$fixture/waivers/valid.toml"; \
 	echo "$$pass sanitizer gate cases passed, $$fail failed"; \
 	if [ "$$fail" -ne 0 ]; then exit 1; fi
 
@@ -1171,6 +1186,7 @@ test-sandbox-parity-coverage-check:
 # and static-oracle changes and by the scripts/config preflight profile.
 test-release-workflow-contract:
 	python3 scripts/tests/test_release_workflow_contract.py
+	python3 scripts/tests/test_pre_release_validate_contract.py
 
 # Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
 # and scan commit-message bodies of commits not yet on origin/main for the same tokens.

@@ -5449,6 +5449,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         return_ty: i32_ty.into(),
         return_resolved_ty: ResolvedTy::I32,
         execution_context: None,
+        explicit_actor_state_ptr: None,
         closure_call_fallback_context: None,
         execution_context_is_actor_handler: false,
         actor_state_ty: None,
@@ -9684,6 +9685,158 @@ fn connection_actor_state_clone_returns_null() {
                 && ir.contains("ret ptr null"),
             "Connection actor state clone body must reset the restart template by returning null:\n{ir}"
         );
+}
+
+fn crash_state_probe_fn(source_origin: SourceOrigin) -> RawMirFunction {
+    RawMirFunction {
+        source_origin,
+        name: "CrashStateActor__on_crash".to_string(),
+        return_ty: ResolvedTy::I64,
+        call_conv: FunctionCallConv::ActorHandler,
+        // The two MIR-visible parameters are the raw CrashInfo ingress fields.
+        // The actor-state pointer is a codegen-only trailing ABI argument.
+        params: vec![ResolvedTy::I64, ResolvedTy::String],
+        locals: vec![ResolvedTy::I64, ResolvedTy::String, ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: Vec::new(),
+            instructions: vec![
+                Instr::EnterContext,
+                Instr::ActorStateFieldLoad {
+                    field_offset: FieldOffset(0),
+                    dest: Place::Local(2),
+                    mode: ActorStateLoadMode::Borrowed,
+                },
+                Instr::Move {
+                    dest: Place::ReturnSlot,
+                    src: Place::Local(2),
+                },
+                Instr::ExitContext,
+            ],
+            terminator: Terminator::Return,
+        }],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    }
+}
+
+#[test]
+fn on_crash_definition_consumes_trailing_actor_state_pointer() {
+    let actor_key = "CrashStateActor";
+    let mut pipeline = minimal_pipeline_with_unit_main(false);
+    pipeline.raw_mir.push(crash_state_probe_fn(
+        SourceOrigin::SynthesizedActorHandler {
+            kind: ActorHandlerKind::Crash,
+            actor_layout_key: actor_key.to_string(),
+        },
+    ));
+    pipeline.record_layouts = vec![RecordLayout {
+        name: actor_key.to_string(),
+        field_tys: vec![ResolvedTy::I64],
+        field_names: vec!["value".to_string()],
+    }];
+    pipeline.actor_layouts = vec![ActorLayout {
+        name: actor_key.to_string(),
+        defining_module: None,
+        state_field_names: vec!["value".to_string()],
+        state_field_tys: vec![ResolvedTy::I64],
+        state_field_defaults: vec![None],
+        init_param_names: vec![],
+        init_param_tys: vec![],
+        init_symbol: None,
+        on_start_symbol: None,
+        on_stop_symbols: vec![],
+        on_crash_symbol: Some("CrashStateActor__on_crash".to_string()),
+        on_exit_symbol: None,
+        on_down_symbol: None,
+        max_heap_bytes: None,
+        cycle_capable: false,
+        mailbox_capacity: None,
+        overflow_policy: None,
+        coalesce_key_plan: None,
+        handlers: vec![],
+        state_clone_fn_symbol: None,
+        state_drop_fn_symbol: None,
+        state_field_clone_kinds: None,
+    }];
+
+    let ctx = Context::create();
+    let module = build_module(&ctx, &pipeline, "crash_state_pointer")
+        .expect("crash-state ABI probe must build");
+    module
+        .verify()
+        .unwrap_or_else(|e| panic!("crash-state ABI probe failed verify: {e}"));
+    let ir = module.print_to_string().to_string();
+    let signature =
+        "define internal i64 @CrashStateActor__on_crash(ptr %0, i64 %1, ptr %2, ptr %3)";
+    let start = ir
+        .find(signature)
+        .unwrap_or_else(|| panic!("crash hook must take the fourth state pointer:\n{ir}"));
+    let body = &ir[start..];
+    let end = body
+        .find("\n}")
+        .expect("crash hook definition has a closing brace");
+    let body = &body[..end];
+
+    assert!(
+        body.lines().any(|line| {
+            line.contains("getelementptr")
+                && line.contains("%CrashStateActor")
+                && line.contains("ptr %3")
+        }),
+        "actor-state field access must GEP from the explicit fourth argument:\n{body}"
+    );
+    assert!(
+        !body.contains("ctx_actor_ptr_slot") && !body.contains("actor_state_slot"),
+        "crash hook must not recover the supervisor actor's state through ctx:\n{body}"
+    );
+}
+
+#[test]
+fn crash_abi_fourth_parameter_is_source_origin_gated() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("crash_source_origin_gate");
+    let target_data = host_target_data();
+    let layouts = RecordLayoutMap::new();
+
+    let exact = crash_state_probe_fn(SourceOrigin::SynthesizedActorHandler {
+        kind: ActorHandlerKind::Crash,
+        actor_layout_key: "CrashStateActor".to_string(),
+    });
+    let exact_symbol =
+        declare_function(&ctx, &llvm_mod, &target_data, &exact, &layouts, &[], false)
+            .expect("declare proven crash handler");
+    let (exact_fn, _, _) = exact_symbol
+        .real(&exact.name, "crash source-origin test")
+        .expect("real exact crash symbol");
+    assert_eq!(
+        exact_fn.get_type().count_param_types(),
+        4,
+        "proven crash identity must carry ctx, code, message, and state"
+    );
+
+    let mut spoof = crash_state_probe_fn(SourceOrigin::Unknown);
+    spoof.name = "NameOnly__on_crash".to_string();
+    let spoof_symbol =
+        declare_function(&ctx, &llvm_mod, &target_data, &spoof, &layouts, &[], false)
+            .expect("declare name-only actor handler");
+    let (spoof_fn, _, _) = spoof_symbol
+        .real(&spoof.name, "crash source-origin test")
+        .expect("real spoof symbol");
+    assert_eq!(
+        spoof_fn.get_type().count_param_types(),
+        3,
+        "a crash-like symbol name without carried identity must keep the ordinary actor ABI"
+    );
 }
 
 // ── Stackless suspend substrate (R326/R327, W6.007) ──────────────────────

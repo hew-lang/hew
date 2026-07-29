@@ -2041,8 +2041,9 @@ impl Checker {
                 // normally binds to the source decl (`builtin: None`). Collection
                 // and substrate-handle builtins are the exception only while
                 // checking their imported stdlib carrier module. A root-source
-                // declaration is a distinct nominal shadow (`#[opaque] type
-                // Receiver {}`), never the runtime endpoint by spelling alone.
+                // declaration is a distinct nominal shadow (`type Sink<T>`,
+                // `#[opaque] type Receiver {}`), never the runtime endpoint by
+                // spelling or generic arity alone.
                 // A qualified identity present in the builtin catalog is an
                 // actual compiler carrier (`stream.Stream`,
                 // `channel.Receiver`, ...). A user package declaration such
@@ -2050,20 +2051,9 @@ impl Checker {
                 // remains source-owned even though its short spelling
                 // collides. Root bare declarations likewise remain user
                 // shadows.
-                let root_std_generic_carrier = self.current_module.is_none()
-                    && matches!(
-                        builtin,
-                        Some(crate::BuiltinType::Stream | crate::BuiltinType::Sink)
-                    )
-                    && self
-                        .type_defs
-                        .get(resolved_name.as_str())
-                        .is_some_and(|td| td.type_params.len() == 1);
-                let builtin_overrides_source_decl = root_std_generic_carrier
-                    || (resolved_name.contains('.')
-                        && builtin.is_some_and(|kind| {
-                            kind.is_collection() || kind.is_substrate_handle()
-                        }));
+                let builtin_overrides_source_decl = resolved_name.contains('.')
+                    && builtin
+                        .is_some_and(|kind| kind.is_collection() || kind.is_substrate_handle());
                 let local_source_type_def = self.source_type_defs.contains(resolved_name.as_str())
                     && !builtin_overrides_source_decl;
                 // F1: a named type that resolved to nothing — not a builtin, not

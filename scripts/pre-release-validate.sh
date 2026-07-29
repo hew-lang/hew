@@ -33,11 +33,8 @@ set -euo pipefail
 #
 #   MACOS_HOST=my-mac.local
 #   LINUX_AARCH64_HOST=user@ubuntu-24-arm-host
-#   LINUX_AARCH64_PROJECT_DIR=/path/to/hew
 #   FREEBSD_HOST=user@freebsd-host
-#   FREEBSD_PROJECT_DIR=/path/to/hew
 #   WINDOWS_HOST=user@windows-host
-#   WINDOWS_PROJECT_DIR=P:/path/to/hew
 #   MACOS_TART_VM=macos-build
 #   HEW_WINDOWS_LLVM_PREFIX='C:\llvm-22'
 #   HEW_WINDOWS_CC=cl
@@ -58,9 +55,6 @@ LINUX_AARCH64_HOST="${HEW_LINUX_AARCH64_HOST:-${LINUX_AARCH64_HOST:-}}"
 FREEBSD_HOST="${HEW_FREEBSD_HOST:-${FREEBSD_HOST:-}}"
 WINDOWS_HOST="${HEW_WINDOWS_HOST:-${WINDOWS_HOST:-}}"
 
-LINUX_AARCH64_PROJECT_DIR="${HEW_LINUX_AARCH64_DIR:-${LINUX_AARCH64_PROJECT_DIR:-}}"
-FREEBSD_PROJECT_DIR="${HEW_FREEBSD_DIR:-${FREEBSD_PROJECT_DIR:-}}"
-WINDOWS_PROJECT_DIR="${HEW_WINDOWS_DIR:-${WINDOWS_PROJECT_DIR:-}}"
 WINDOWS_LLVM_PREFIX="${HEW_WINDOWS_LLVM_PREFIX:-C:\\llvm-22}"
 WINDOWS_LLVM_CONFIG="${HEW_WINDOWS_LLVM_CONFIG:-${WINDOWS_LLVM_PREFIX}\\lib\\cmake\\llvm\\LLVMConfig.cmake}"
 WINDOWS_CC="${HEW_WINDOWS_CC:-cl}"
@@ -73,7 +67,6 @@ MACOS_TART_VM="${HEW_MACOS_TART_VM:-${MACOS_TART_VM:-macos-build}}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 RESET='\033[0m'
 
@@ -98,10 +91,11 @@ LOG_DIR=$(mktemp -d)
 RESULT_DIR=$(mktemp -d)
 
 # Write results to files so background processes can report back.
-# Usage: pass <platform> [detail] / fail <platform> [detail] / skip <platform> [detail]
+# Every requested platform is authoritative: absent configuration and
+# unreachable hosts are failures. Narrow PLATFORMS explicitly when a host is
+# intentionally outside the current validation run.
 pass() { echo "pass $1 ${2:-}" > "${RESULT_DIR}/$1"; }
 fail() { echo "fail $1 ${2:-}" > "${RESULT_DIR}/$1"; }
-skip() { echo "skip $1 ${2:-}" > "${RESULT_DIR}/$1"; }
 
 banner() {
     echo -e "\n${CYAN}═══ $1 ═══${RESET}"
@@ -167,6 +161,51 @@ run_windows_powershell() {
         "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}"
 }
 
+create_unix_remote_stage() {
+    local host="$1"
+    local stage
+    stage=$(run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh "$host" \
+        'mktemp -d /tmp/hew-pre-release.XXXXXX')
+    if [[ "$stage" =~ ^/tmp/hew-pre-release\.[A-Za-z0-9._-]+$ ]]; then
+        printf '%s' "$stage"
+    else
+        echo "invalid remote candidate directory: ${stage}" >&2
+        return 1
+    fi
+}
+
+remove_unix_remote_stage() {
+    local host="$1"
+    local stage="$2"
+    if [[ "$stage" =~ ^/tmp/hew-pre-release\.[A-Za-z0-9._-]+$ ]]; then
+        run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh "$host" \
+            "rm -rf -- '${stage}'" >/dev/null 2>&1 || true
+    else
+        echo "refusing to remove unexpected remote path: ${stage}" >&2
+    fi
+}
+
+create_windows_remote_stage() {
+    run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
+\$ErrorActionPreference = 'Stop'
+\$Stage = Join-Path ([System.IO.Path]::GetTempPath()) ('hew-pre-release-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Path \$Stage | Out-Null
+Write-Output (\$Stage.Replace('\\', '/'))
+"
+}
+
+remove_windows_remote_stage() {
+    local stage="$1"
+    if [[ "$stage" =~ ^[A-Za-z]:/[A-Za-z0-9._/\ -]*/hew-pre-release-[0-9A-Fa-f-]+$ ]]; then
+        run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
+\$ErrorActionPreference = 'Stop'
+Remove-Item -LiteralPath '${stage}' -Recurse -Force -ErrorAction SilentlyContinue
+" >/dev/null 2>&1 || true
+    else
+        echo "refusing to remove unexpected Windows remote path: ${stage}" >&2
+    fi
+}
+
 # ── Platform validators ──────────────────────────────────────────────────────
 
 validate_linux() {
@@ -174,7 +213,8 @@ validate_linux() {
 
     local log="${LOG_DIR}/linux.log"
 
-    if (
+    set +e
+    (
         set -e
         echo "==> Step 1: Static-link release build"
         # This is the exact build that the release CI does. libhew.a ships
@@ -251,7 +291,10 @@ validate_linux() {
             echo "==> PACKAGED ARCHIVE SMOKE TEST FAILED — output: $package_output"
             exit 1
         fi
-    ) > "$log" 2>&1; then
+    ) > "$log" 2>&1
+    local status=$?
+    set -e
+    if [[ "$status" -eq 0 ]]; then
         pass "linux"
     else
         fail "linux" "see ${log}"
@@ -265,26 +308,29 @@ validate_macos() {
     local log="${LOG_DIR}/macos.log"
 
     if [[ -z "$MACOS_HOST" ]]; then
-        skip "macos" "MACOS_HOST not configured"
-        return 0
+        fail "macos" "MACOS_HOST not configured"
+        return 1
     fi
     if ! run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh -o ConnectTimeout=5 "${MACOS_HOST}" true 2>/dev/null; then
-        skip "macos" "${MACOS_HOST} unreachable"
-        return 0
+        fail "macos" "${MACOS_HOST} unreachable"
+        return 1
     fi
 
-    if (
+    set +e
+    (
         set -e
-        echo "==> Syncing source to ${MACOS_HOST}"
-        run_with_timeout "${SYNC_TIMEOUT}" rsync -az --delete \
+        remote_stage=$(create_unix_remote_stage "${MACOS_HOST}")
+        trap 'remove_unix_remote_stage "${MACOS_HOST}" "${remote_stage}"' EXIT
+        echo "==> Staging local candidate on macOS: ${remote_stage}"
+        run_with_timeout "${SYNC_TIMEOUT}" rsync -az \
             --exclude target --exclude .git --exclude build \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
-            . "${MACOS_HOST}:~/hew-pre-release/"
+            . "${MACOS_HOST}:${remote_stage}/"
 
         echo "==> Building on macOS"
         run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${MACOS_HOST}" bash -lc "'
             set -eux
-            cd ~/hew-pre-release
+            cd ${remote_stage}
 
             # Ensure LLVM is on PATH (Homebrew)
             export PATH=\"/opt/homebrew/opt/llvm@22/bin:/opt/homebrew/bin:\$PATH\"
@@ -305,7 +351,10 @@ validate_macos() {
 
             echo \"macOS build succeeded\"
         '"
-    ) > "$log" 2>&1; then
+    ) > "$log" 2>&1
+    local status=$?
+    set -e
+    if [[ "$status" -eq 0 ]]; then
         pass "macos"
     else
         fail "macos" "see ${log}"
@@ -319,38 +368,29 @@ validate_linux_aarch64() {
     local log="${LOG_DIR}/linux-aarch64.log"
 
     if [[ -z "$LINUX_AARCH64_HOST" ]]; then
-        skip "linux-aarch64" "LINUX_AARCH64_HOST not configured"
-        return 0
-    fi
-    if [[ -z "$LINUX_AARCH64_PROJECT_DIR" ]]; then
-        skip "linux-aarch64" "LINUX_AARCH64_PROJECT_DIR not configured"
-        return 0
+        fail "linux-aarch64" "LINUX_AARCH64_HOST not configured"
+        return 1
     fi
     if ! run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh -o ConnectTimeout=5 "${LINUX_AARCH64_HOST}" true 2>/dev/null; then
-        skip "linux-aarch64" "${LINUX_AARCH64_HOST} unreachable"
-        return 0
+        fail "linux-aarch64" "${LINUX_AARCH64_HOST} unreachable"
+        return 1
     fi
 
-    if (
+    set +e
+    (
         set -e
-        echo "==> Syncing source to Linux aarch64 host"
-        if run_with_timeout "${SYNC_TIMEOUT}" rsync -az --delete \
+        remote_stage=$(create_unix_remote_stage "${LINUX_AARCH64_HOST}")
+        trap 'remove_unix_remote_stage "${LINUX_AARCH64_HOST}" "${remote_stage}"' EXIT
+        echo "==> Staging local candidate on Linux aarch64: ${remote_stage}"
+        run_with_timeout "${SYNC_TIMEOUT}" rsync -az \
             --exclude target --exclude .git --exclude build \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
-            . "${LINUX_AARCH64_HOST}:${LINUX_AARCH64_PROJECT_DIR}/"; then
-            echo "==> Synced via rsync"
-        else
-            echo "==> rsync failed, falling back to git pull on remote"
-            run_with_timeout "${SYNC_TIMEOUT}" ssh "${LINUX_AARCH64_HOST}" bash -lc "'cd ${LINUX_AARCH64_PROJECT_DIR} && git pull --rebase origin main'" || {
-                echo "FATAL: Could not sync source to Linux aarch64 host (rsync and git pull both failed)"
-                exit 1
-            }
-        fi
+            . "${LINUX_AARCH64_HOST}:${remote_stage}/"
 
         echo "==> Provisioning LLVM 22 from apt.llvm.org/noble"
         run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${LINUX_AARCH64_HOST}" bash -lc "'
             set -eux
-            cd ${LINUX_AARCH64_PROJECT_DIR}
+            cd ${remote_stage}
 
             sudo mkdir -p /etc/apt/keyrings
             wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
@@ -387,7 +427,10 @@ validate_linux_aarch64() {
             ./_smoke_bin | grep -q \"Hello from Hew release test\"
             rm -f _smoke.hew _smoke_bin
         '"
-    ) > "$log" 2>&1; then
+    ) > "$log" 2>&1
+    local status=$?
+    set -e
+    if [[ "$status" -eq 0 ]]; then
         pass "linux-aarch64"
     else
         fail "linux-aarch64" "see ${log}"
@@ -401,38 +444,29 @@ validate_freebsd() {
     local log="${LOG_DIR}/freebsd.log"
 
     if [[ -z "$FREEBSD_HOST" ]]; then
-        skip "freebsd" "FREEBSD_HOST not configured"
-        return 0
-    fi
-    if [[ -z "$FREEBSD_PROJECT_DIR" ]]; then
-        skip "freebsd" "FREEBSD_PROJECT_DIR not configured"
-        return 0
+        fail "freebsd" "FREEBSD_HOST not configured"
+        return 1
     fi
     if ! run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh -o ConnectTimeout=5 "${FREEBSD_HOST}" true 2>/dev/null; then
-        skip "freebsd" "${FREEBSD_HOST} unreachable"
-        return 0
+        fail "freebsd" "${FREEBSD_HOST} unreachable"
+        return 1
     fi
 
-    if (
+    set +e
+    (
         set -e
-        echo "==> Syncing source to FreeBSD"
-        if run_with_timeout "${SYNC_TIMEOUT}" rsync -az --delete \
+        remote_stage=$(create_unix_remote_stage "${FREEBSD_HOST}")
+        trap 'remove_unix_remote_stage "${FREEBSD_HOST}" "${remote_stage}"' EXIT
+        echo "==> Staging local candidate on FreeBSD: ${remote_stage}"
+        run_with_timeout "${SYNC_TIMEOUT}" rsync -az \
             --exclude target --exclude .git --exclude build \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
-            . "${FREEBSD_HOST}:${FREEBSD_PROJECT_DIR}/"; then
-            echo "==> Synced via rsync"
-        else
-            echo "==> rsync failed, falling back to git pull on remote"
-            run_with_timeout "${SYNC_TIMEOUT}" ssh "${FREEBSD_HOST}" bash -lc "'cd ${FREEBSD_PROJECT_DIR} && git pull --rebase origin main'" || {
-                echo "FATAL: Could not sync source to FreeBSD (rsync and git pull both failed)"
-                exit 1
-            }
-        fi
+            . "${FREEBSD_HOST}:${remote_stage}/"
 
         echo "==> Building on FreeBSD"
         run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${FREEBSD_HOST}" bash -lc "'
             set -eux
-            cd ${FREEBSD_PROJECT_DIR}
+            cd ${remote_stage}
 
             # Auto-detect LLVM 22 from typical FreeBSD install locations
             for dir in /usr/local/llvm22 /usr/local/llvm22-src /usr/local; do
@@ -456,7 +490,10 @@ validate_freebsd() {
 
             echo \"FreeBSD build succeeded\"
         '"
-    ) > "$log" 2>&1; then
+    ) > "$log" 2>&1
+    local status=$?
+    set -e
+    if [[ "$status" -eq 0 ]]; then
         pass "freebsd"
     else
         fail "freebsd" "see ${log}"
@@ -470,23 +507,36 @@ validate_windows() {
     local log="${LOG_DIR}/windows.log"
 
     if [[ -z "$WINDOWS_HOST" ]]; then
-        skip "windows" "WINDOWS_HOST not configured"
-        return 0
-    fi
-    if [[ -z "$WINDOWS_PROJECT_DIR" ]]; then
-        skip "windows" "WINDOWS_PROJECT_DIR not configured"
-        return 0
+        fail "windows" "WINDOWS_HOST not configured"
+        return 1
     fi
     if ! run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh -o ConnectTimeout=5 "${WINDOWS_HOST}" true 2>/dev/null; then
-        skip "windows" "${WINDOWS_HOST} unreachable"
-        return 0
+        fail "windows" "${WINDOWS_HOST} unreachable"
+        return 1
     fi
 
-    if (
+    set +e
+    (
         set -e
-        echo "==> Syncing source to Windows"
-        # shellcheck disable=SC2029  # WINDOWS_PROJECT_DIR is intentionally expanded locally
-        run_with_timeout "${SYNC_TIMEOUT}" ssh "${WINDOWS_HOST}" "cd /d ${WINDOWS_PROJECT_DIR} && git fetch origin main && git reset --hard origin/main"
+        remote_stage=$(create_windows_remote_stage)
+        if [[ ! "$remote_stage" =~ ^[A-Za-z]:/[A-Za-z0-9._/\ -]*/hew-pre-release-[0-9A-Fa-f-]+$ ]]; then
+            echo "FATAL: invalid Windows candidate directory: ${remote_stage}"
+            exit 1
+        fi
+        trap 'remove_windows_remote_stage "${remote_stage}"' EXIT
+        candidate_archive="${LOG_DIR}/windows-candidate.tar.gz"
+        echo "==> Staging local candidate on Windows: ${remote_stage}"
+        tar -czf "${candidate_archive}" \
+            --exclude='./target' --exclude='./.git' --exclude='./build' \
+            --exclude='*.o' --exclude='*.a' --exclude='*.d' .
+        run_with_timeout "${SYNC_TIMEOUT}" scp "${candidate_archive}" \
+            "${WINDOWS_HOST}:${remote_stage}/candidate.tar.gz"
+        run_windows_powershell "${SYNC_TIMEOUT}" "
+\$ErrorActionPreference = 'Stop'
+tar.exe -xf '${remote_stage}/candidate.tar.gz' -C '${remote_stage}'
+if (\$LASTEXITCODE -ne 0) { throw 'failed to extract local release candidate' }
+Remove-Item -LiteralPath '${remote_stage}/candidate.tar.gz' -Force
+"
 
         echo "==> Verifying Windows LLVM install"
         run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
@@ -509,7 +559,7 @@ function Assert-NativeSuccess([string]\$Label) {
     }
 }
 
-Set-Location '${WINDOWS_PROJECT_DIR}'
+Set-Location '${remote_stage}'
 if (-not (Test-Path '${WINDOWS_LLVM_CONFIG}')) {
     throw 'Missing ${WINDOWS_LLVM_CONFIG}. Bootstrap LLVM 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation.'
 }
@@ -528,40 +578,8 @@ Assert-NativeSuccess 'cargo build hew-lib'
 if (-not (Test-Path '.\\target\\release-lib\\hew.lib')) {
     throw 'target/release-lib/hew.lib missing after cargo build --profile release-lib'
 }
-# Archive member names are rustc implementation details. Prove the public
-# contract instead: a Rust staticlib consumer must link through 'hew build'
-# against the release-lib archive and the resulting program must run.
-\$probeDir = Join-Path ([System.IO.Path]::GetTempPath()) ("hew-release-link-" + [guid]::NewGuid())
-New-Item -ItemType Directory -Path \$probeDir | Out-Null
-try {
-    \$native = Join-Path \$probeDir 'native.rs'
-    @'
-#[no_mangle]
-pub extern "C" fn release_link_probe() -> i64 { String::from("release-link-ok").len() as i64 }
-'@ | Set-Content -NoNewline \$native
-    \$foreign = Join-Path \$probeDir 'release_link_probe.lib'
-    & rustc --crate-type staticlib --crate-name hew_release_link_probe --edition 2021 -C panic=abort -C codegen-units=1 -o \$foreign \$native
-    Assert-NativeSuccess 'rustc release-link consumer'
-    \$source = Join-Path \$probeDir 'main.hew'
-    @'
-extern "C" { fn release_link_probe() -> i64; }
-fn main() {
-    let value: i64 = unsafe { release_link_probe() };
-    if value != 15 { panic("unexpected native link probe value"); }
-    println("release-native-link-ok");
-}
-'@ | Set-Content -NoNewline \$source
-    \$output = Join-Path \$probeDir 'release-link-probe.exe'
-    & .\\target\\release\\hew.exe build \$source --link-lib \$foreign -o \$output
-    Assert-NativeSuccess 'hew build --link-lib release-link consumer'
-    \$probeOutput = & \$output
-    Assert-NativeSuccess 'release-link consumer run'
-    if (\$probeOutput -notmatch 'release-native-link-ok') {
-        throw "release-link consumer produced unexpected output: \$probeOutput"
-    }
-} finally {
-    Remove-Item -Recurse -Force \$probeDir -ErrorAction SilentlyContinue
-}
+& .\\scripts\\test-release-lib-link.ps1 -Hew .\\target\\release\\hew.exe -Archive .\\target\\release-lib\\hew.lib
+Assert-NativeSuccess 'release library consumer proof'
 
 & .\\target\\release\\hew.exe --version
 Assert-NativeSuccess 'hew.exe --version'
@@ -585,7 +603,7 @@ function Assert-NativeSuccess([string]\$Label) {
     }
 }
 
-Set-Location '${WINDOWS_PROJECT_DIR}'
+Set-Location '${remote_stage}'
 \$env:Path = '${WINDOWS_LLVM_PREFIX}\\bin;' + \$env:Path
 \$smokeProgram = 'fn main() { println(\"smoke-ok\") }'
 Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
@@ -616,7 +634,10 @@ try {
     Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
 }
 "
-    ) > "$log" 2>&1; then
+    ) > "$log" 2>&1
+    local status=$?
+    set -e
+    if [[ "$status" -eq 0 ]]; then
         pass "windows"
     else
         fail "windows" "see ${log}"
@@ -674,7 +695,6 @@ for platform in "${PLATFORMS[@]}"; do
         case "$status" in
             pass) echo -e "  ${GREEN}✓ ${platform}${RESET}" ;;
             fail) echo -e "  ${RED}✗ ${platform}${detail_suffix}${RESET}"; HAVE_FAILURE=1 ;;
-            skip) echo -e "  ${YELLOW}⊘ ${platform}${detail_suffix} (skipped)${RESET}" ;;
         esac
     else
         echo -e "  ${RED}✗ ${platform} (no result — likely crashed)${RESET}"

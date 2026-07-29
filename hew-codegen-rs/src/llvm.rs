@@ -1687,6 +1687,14 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     pub(crate) return_ty: BasicTypeEnum<'ctx>,
     pub(crate) return_resolved_ty: ResolvedTy,
     pub(crate) execution_context: Option<PointerValue<'ctx>>,
+    /// Actor-state pointer carried explicitly by the `HewOnCrashFn` ABI.
+    ///
+    /// `#[on(crash)]` runs in the SUPERVISOR'S execution context after the
+    /// crashed child has been torn down, so recovering state through
+    /// `ctx.actor.state` would address the supervisor rather than the child's
+    /// restart template. `Some` only for a function carrying the exact
+    /// [`SourceOrigin::SynthesizedActorHandler`] `Crash` identity.
+    pub(crate) explicit_actor_state_ptr: Option<PointerValue<'ctx>>,
     pub(crate) closure_call_fallback_context: Option<PointerValue<'ctx>>,
     pub(crate) execution_context_is_actor_handler: bool,
     pub(crate) actor_state_ty: Option<StructType<'ctx>>,
@@ -16769,6 +16777,9 @@ pub(crate) fn live_execution_context_ptr<'ctx>(
 }
 
 fn current_actor_state_ptr<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<PointerValue<'ctx>> {
+    if let Some(state_ptr) = fn_ctx.explicit_actor_state_ptr {
+        return Ok(state_ptr);
+    }
     let i64_ty = fn_ctx.ctx.i64_type();
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     let actor_ptr = current_actor_ptr(fn_ctx)?;
@@ -20958,6 +20969,10 @@ fn actor_handler_identity(func: &RawMirFunction) -> Option<(ActorHandlerKind, &s
 
 fn is_receive_handler(func: &RawMirFunction) -> bool {
     actor_handler_identity(func).is_some_and(|(kind, _)| kind == ActorHandlerKind::Receive)
+}
+
+fn is_crash_handler(func: &RawMirFunction) -> bool {
+    actor_handler_identity(func).is_some_and(|(kind, _)| kind == ActorHandlerKind::Crash)
 }
 
 fn compute_borrow_taint(func: &RawMirFunction) -> HashSet<u32> {
@@ -29445,7 +29460,9 @@ fn declare_function<'ctx>(
     // argument into the corresponding `locals[i]` alloca slot.
     let ctx_ptr_ty = ctx.ptr_type(AddressSpace::default());
     let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(
-        func.params.len() + usize::from(func.call_conv.carries_execution_context()),
+        func.params.len()
+            + usize::from(func.call_conv.carries_execution_context())
+            + usize::from(is_crash_handler(func)),
     );
     if func.call_conv.carries_execution_context() {
         param_tys.push(ctx_ptr_ty.into());
@@ -29462,6 +29479,15 @@ fn declare_function<'ctx>(
         }
         let llvm_ty = resolve_value_ty(ctx, target_data, param_ty, record_layouts, enum_layouts)?;
         param_tys.push(metadata_type_from_basic(llvm_ty));
+    }
+    // The runtime invokes a synthesised crash hook as
+    // `(ctx, crash_code, crash_message, actor_state_ptr)`. The final pointer is
+    // not a user-visible MIR parameter: it is the child's supervisor-owned
+    // restart-template state and is consumed directly by actor-state field
+    // loads/stores in the hook body. Gate this ABI extension on the carried
+    // SourceOrigin identity, never on a forgeable function-name suffix.
+    if is_crash_handler(func) {
+        param_tys.push(ctx_ptr_ty.into());
     }
     // P5-RX sub-stage 1: receive handlers gain a trailing `borrow_mode: i32`
     // so the dispatch trampoline can thread the copy-vs-borrow receipt
@@ -30932,6 +30958,27 @@ fn lower_function<'ctx>(
     } else {
         None
     };
+    let explicit_actor_state_ptr = if is_crash_handler(func) {
+        if !func.call_conv.carries_execution_context() {
+            return Err(CodegenError::FailClosed(format!(
+                "synthesised crash handler `{}` does not carry an execution context",
+                func.name
+            )));
+        }
+        let state_idx = u32::try_from(func.params.len() + 1).map_err(|_| {
+            CodegenError::FailClosed("crash handler exceeds u32::MAX params — impossible".into())
+        })?;
+        let param = llvm_fn.get_nth_param(state_idx).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "crash handler `{}` has no trailing actor-state LLVM parameter at index \
+                 {state_idx}; declare_function and lower_function disagree on the crash ABI",
+                func.name
+            ))
+        })?;
+        Some(param.into_pointer_value())
+    } else {
+        None
+    };
     let closure_call_fallback_context = if function_needs_closure_call_fallback_context(func) {
         Some(build_zeroed_closure_call_fallback_context(ctx, &builder)?)
     } else {
@@ -31438,6 +31485,7 @@ fn lower_function<'ctx>(
         return_ty: body_return_ty_llvm,
         return_resolved_ty: func.return_ty.clone(),
         execution_context,
+        explicit_actor_state_ptr,
         closure_call_fallback_context,
         execution_context_is_actor_handler: func.call_conv == FunctionCallConv::ActorHandler,
         actor_state_ty,

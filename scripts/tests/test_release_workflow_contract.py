@@ -11,12 +11,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HEW_SHA = "0123456789abcdef0123456789abcdef01234567"
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
 RUNBOOK = ROOT / "docs" / "release-runbook.md"
 UNIX_INSTALLER = ROOT / "installers" / "install.sh"
 PRE_RELEASE_VALIDATOR = ROOT / "scripts" / "pre-release-validate.sh"
 RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.sh"
+WINDOWS_RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.ps1"
+SANITIZER_GATE = ROOT / "scripts" / "check-sanitizer-gate.sh"
 MAKEFILE = ROOT / "Makefile"
 
 
@@ -500,6 +503,7 @@ def test_release_checksums_require_every_platform_asset() -> None:
 def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     validator = PRE_RELEASE_VALIDATOR.read_text()
     probe = RELEASE_LINK_PROBE.read_text()
+    windows_probe = WINDOWS_RELEASE_LINK_PROBE.read_text()
     makefile = MAKEFILE.read_text()
 
     assert "verify_libhew_external_link" in validator
@@ -513,11 +517,76 @@ def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     assert '"$WORK_DIR/release/bin/hew" build' in probe
     assert "--link-lib" in probe
     assert 'String::from("release-link-ok")' in probe
+    assert 'String::from("release-link-ok")' in windows_probe
+    assert "--link-lib" in windows_probe
+    assert "Copy-Item -LiteralPath $Archive" in windows_probe
+    assert "& $StagedHew build" in windows_probe
     assert "test-release-lib-link:" in makefile
-    assert (
-        "scripts/test-release-lib-link.sh --hew $(RELEASE_DIR)/hew --archive $(RELEASE_LIB_DIR)/libhew.a"
-        in makefile
-    )
+    assert "--hew $(RELEASE_HEW) --archive $(RELEASE_LIBHEW)" in makefile
+    assert "scripts/test-release-lib-link.ps1" in makefile
+    assert "RELEASE_HEW := $(RELEASE_DIR)/hew.exe" in makefile
+    assert "RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/hew.lib" in makefile
+
+
+def test_every_release_lane_executes_the_library_consumer_proof() -> None:
+    release = workflow()
+    gate = RELEASE_GATE.read_text()
+
+    # build matrix: macOS Unix + Windows; Linux matrix; two FreeBSD jobs.
+    assert release.count("scripts/test-release-lib-link.sh") == 4
+    assert release.count("scripts/test-release-lib-link.ps1") == 1
+    # Linux x86_64/aarch64, macOS, Windows, and both FreeBSD gate jobs.
+    assert gate.count("scripts/test-release-lib-link.sh") == 4
+    assert gate.count("scripts/test-release-lib-link.ps1") == 1
+    assert gate.count("make test-release-lib-link") == 1
+    for text in (release, gate):
+        assert "ar t " not in text
+        assert "llvm-ar t " not in text
+
+
+def test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh() -> None:
+    release = workflow()
+    gate = RELEASE_GATE.read_text()
+    assert release.count("git bash pkgconf") == 2
+    assert gate.count("git bash pkgconf") == 2
+    assert release.count("command -v bash") == 2
+    assert gate.count("command -v bash") == 2
+    assert release.count("bash scripts/test-release-lib-link.sh") == 2
+    assert gate.count("bash scripts/test-release-lib-link.sh") == 2
+
+    for job_name in ("  build-freebsd:\n", "  build-freebsd-aarch64:\n"):
+        start = release.index(job_name)
+        next_job = release.find("\n  # ──", start + len(job_name))
+        block = release[start : next_job if next_job != -1 else len(release)]
+        assert "if [[ " not in block
+
+
+def test_sanitizer_gate_is_behavioral_and_release_scoped() -> None:
+    validator = SANITIZER_GATE.read_text()
+    gate = RELEASE_GATE.read_text()
+    ledger = (ROOT / "release-sanitizer-waiver.toml").read_text()
+
+    assert "<release-version>" in validator
+    assert "release_version" in validator
+    assert "behavior" in validator
+    assert "reason" in validator
+    assert "tracking" in validator
+    assert "owner" in validator
+    assert "expires" in validator
+    assert "git " not in validator
+    assert "commit" not in validator
+    assert "SHA" not in validator
+    assert "GITHUB_SHA" not in gate
+    assert 'scripts/check-sanitizer-gate.sh "${RELEASE_VERSION}"' in gate
+    for field in (
+        "release =",
+        "behavior =",
+        "reason =",
+        "tracking =",
+        "owner =",
+        "expires =",
+    ):
+        assert ledger.count(field) >= 2
 
 
 def test_release_notes_and_runbook_keep_candidate_truthful() -> None:
@@ -562,6 +631,9 @@ _TESTS = [
     test_unix_installer_accepts_every_published_freebsd_architecture,
     test_release_checksums_require_every_platform_asset,
     test_prerelease_validator_proves_external_staticlib_linking,
+    test_every_release_lane_executes_the_library_consumer_proof,
+    test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh,
+    test_sanitizer_gate_is_behavioral_and_release_scoped,
     test_release_notes_and_runbook_keep_candidate_truthful,
     test_contract_oracle_runs_in_required_ci,
 ]

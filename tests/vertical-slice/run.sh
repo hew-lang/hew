@@ -1717,15 +1717,16 @@ run_accept_expect_status "on_crash_action_restart" 42
 # Accept: a REAL crash fires the emitted Worker__on_crash, which clones the
 # borrowed crash_message into the owned CrashInfo.message (hew_string_clone),
 # reads it, and returns CrashAction::Restart. The child traps, the supervisor
-# restarts it, await_restart re-fetches the fresh child, and main exits 42.
+# mutates its restart-template state, restarts it, await_restart re-fetches the
+# fresh child, and main exits 43.
 # Teeth: a wrong crash-message string ABI / a move-of-borrow aborts the runtime
 # (exit 134, libc::abort from validate_cstring_header) the instant the hook runs
 # on a real crash — only a correct clone+drop reaches the clean restart and
-# exit 42. This is the runtime coverage the compile-only fixture above lacks.
+# exit 43. This is the runtime coverage the compile-only fixture above lacks.
 # Verified ASan/guard-malloc clean on the crash+restart path (no double-free,
 # no leak, no OOB) — see the on_crash_action_restart_real_crash gate in
 # scripts/asan-fixture-check.sh (Linux) and the macOS leaks oracle.
-run_accept_expect_status "on_crash_action_restart_real_crash" 42
+run_accept_expect_status "on_crash_action_restart_real_crash" 43
 
 # Accept (G-S-A): a REAL crash fires an #[on(crash)] hook that returns
 # CrashAction::Escalate on a ROOT supervisor (no parent). Before the fix,

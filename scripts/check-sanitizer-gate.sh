@@ -2,14 +2,14 @@
 # Fail-closed release sanitizer evidence validator.
 #
 # Usage:
-#   scripts/check-sanitizer-gate.sh <release-commit-sha> <asan-result-file> [waiver-file]
+#   scripts/check-sanitizer-gate.sh <release-version> <asan-result-file> [ledger-file]
 #
-# The ASan result file must contain exactly:
-#   asan=pass
-#
-# TSan and Miri are not hard-run in the release gate yet. Their absence is only
-# acceptable when release-sanitizer-waiver.toml contains one commit-pinned,
-# unexpired waiver row per axis.
+# ASan is an executed release gate and must contain exactly `asan=pass`.
+# TSan and Miri are tracked as release-scoped behavioral limitations until
+# their lanes can execute authoritatively. Each axis needs one bounded ledger
+# row for this release with an observed behavior, rationale, tracking issue,
+# owner, and expiry. Git identity is intentionally irrelevant: sanitizer
+# behavior and the released version are the authority.
 
 set -euo pipefail
 
@@ -21,35 +21,23 @@ die() {
 }
 
 usage() {
-    die "usage: $0 <40-hex-release-commit-sha> <asan-result-file> [waiver-file]"
+    die "usage: $0 <release-version> <asan-result-file> [ledger-file]"
 }
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
     usage
 fi
 
-release_commit="$1"
+release_version="${1#v}"
 asan_result_file="$2"
-waiver_file="${3:-release-sanitizer-waiver.toml}"
+ledger_file="${3:-release-sanitizer-waiver.toml}"
 
-if [[ ! "$release_commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
-    die "release commit must be the exact 40-hex commit SHA"
-fi
-release_commit="$(printf '%s' "$release_commit" | tr '[:upper:]' '[:lower:]')"
-
-# A waiver row may pin either the release commit itself or its first parent.
-# WHY: a commit cannot contain its own SHA (self-citation is cryptographically
-# impossible), so the waiver/version commit that sits at the release tip cites
-# the known SHA of its parent instead. Both forms pin THIS release lineage;
-# stale rows from earlier releases still fail the match.
-release_parent=""
-if release_parent_raw="$(git rev-parse "${release_commit}^" 2>/dev/null)"; then
-    release_parent="$(printf '%s' "$release_parent_raw" | tr '[:upper:]' '[:lower:]')"
+if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+    die "release version must be a concrete semantic version"
 fi
 
-if [[ ! -f "$asan_result_file" ]]; then
+[[ -f "$asan_result_file" ]] ||
     die "ASan result file is absent: ${asan_result_file}"
-fi
 
 asan_status=""
 while IFS= read -r line || [[ -n "$line" ]]; do
@@ -57,30 +45,28 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
     [[ -z "$line" ]] && continue
-    if [[ -n "$asan_status" ]]; then
+    [[ -z "$asan_status" ]] ||
         die "ASan result file is ambiguous: multiple result lines"
-    fi
     asan_status="$line"
 done < "$asan_result_file"
 
-if [[ "$asan_status" != "asan=pass" ]]; then
+[[ "$asan_status" == "asan=pass" ]] ||
     die "ASan hard gate did not pass unambiguously"
-fi
-
-if [[ ! -f "$waiver_file" ]]; then
-    die "waiver file is absent: ${waiver_file}"
-fi
+[[ -f "$ledger_file" ]] ||
+    die "sanitizer ledger is absent: ${ledger_file}"
 
 today="$(date -u +%F)"
-
 valid_tsan_count=0
 valid_miri_count=0
 
 current_axis=""
+current_release=""
+current_behavior=""
 current_reason=""
 current_tracking=""
-current_commit=""
+current_owner=""
 current_expires=""
+current_keys=" "
 row_number=0
 
 trim() {
@@ -101,10 +87,13 @@ strip_quotes() {
 
 reset_row() {
     current_axis=""
+    current_release=""
+    current_behavior=""
     current_reason=""
     current_tracking=""
-    current_commit=""
+    current_owner=""
     current_expires=""
+    current_keys=" "
 }
 
 axis_is_required() {
@@ -116,43 +105,56 @@ axis_is_required() {
     return 1
 }
 
+require_substantive() {
+    local field="$1"
+    local value="$2"
+    local minimum="$3"
+    local normalized
+    normalized="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+    case "$normalized" in
+        "*"|"all"|"n/a"|"na"|"none"|"unknown"|"tbd"|"todo"|"waived"|"not applicable")
+            die "ledger row ${row_number} has vague ${field}: ${value}"
+            ;;
+    esac
+    [[ "${#value}" -ge "$minimum" ]] ||
+        die "ledger row ${row_number} ${field} is too vague"
+}
+
 validate_row() {
     [[ "$row_number" -eq 0 ]] && return 0
 
-    [[ -n "$current_axis" ]] || die "waiver row ${row_number} missing axis"
-    [[ -n "$current_reason" ]] || die "waiver row ${row_number} missing reason"
-    [[ -n "$current_tracking" ]] || die "waiver row ${row_number} missing tracking"
-    [[ -n "$current_commit" ]] || die "waiver row ${row_number} missing commit"
-    [[ -n "$current_expires" ]] || die "waiver row ${row_number} missing expires"
+    [[ -n "$current_axis" ]] || die "ledger row ${row_number} missing axis"
+    [[ -n "$current_release" ]] || die "ledger row ${row_number} missing release"
+    [[ -n "$current_behavior" ]] || die "ledger row ${row_number} missing behavior"
+    [[ -n "$current_reason" ]] || die "ledger row ${row_number} missing reason"
+    [[ -n "$current_tracking" ]] || die "ledger row ${row_number} missing tracking"
+    [[ -n "$current_owner" ]] || die "ledger row ${row_number} missing owner"
+    [[ -n "$current_expires" ]] || die "ledger row ${row_number} missing expires"
 
     current_axis="$(printf '%s' "$current_axis" | tr '[:upper:]' '[:lower:]')"
-    current_commit="$(printf '%s' "$current_commit" | tr '[:upper:]' '[:lower:]')"
+    current_release="${current_release#v}"
 
     case "$current_axis" in
-        "*"|"all")
-            die "waiver row ${row_number} is a blanket waiver"
-            ;;
+        "*"|"all") die "ledger row ${row_number} is a blanket entry" ;;
     esac
+    axis_is_required "$current_axis" ||
+        die "ledger row ${row_number} has unsupported axis: ${current_axis}"
+    require_substantive behavior "$current_behavior" 16
+    require_substantive reason "$current_reason" 16
+    require_substantive owner "$current_owner" 3
+    [[ "$current_release" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] ||
+        die "ledger row ${row_number} release is not a semantic version"
+    [[ "$current_expires" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||
+        die "ledger row ${row_number} expires must be YYYY-MM-DD"
+    [[ "$current_tracking" == https://* ]] ||
+        die "ledger row ${row_number} tracking must be an https URL"
 
-    if ! axis_is_required "$current_axis"; then
-        die "waiver row ${row_number} has unsupported axis: ${current_axis}"
-    fi
+    # Historical or future versions may remain in the ledger. Only the
+    # selected release is authoritative for this invocation.
+    [[ "$current_release" == "$release_version" ]] || return 0
 
-    if [[ ! "$current_commit" =~ ^[0-9a-f]{40}$ ]]; then
-        die "waiver row ${row_number} commit is not a 40-hex SHA"
-    fi
-
-    if [[ ! "$current_expires" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
-        die "waiver row ${row_number} expires must be YYYY-MM-DD"
-    fi
-
-    if [[ "$current_commit" != "$release_commit" && "$current_commit" != "$release_parent" ]]; then
-        return 0
-    fi
-
-    if [[ "$current_expires" < "$today" ]]; then
-        die "waiver row ${row_number} for ${current_axis} expired on ${current_expires}"
-    fi
+    [[ "$current_expires" > "$today" || "$current_expires" == "$today" ]] ||
+        die "ledger row ${row_number} for ${current_axis} expired on ${current_expires}"
 
     case "$current_axis" in
         tsan) valid_tsan_count=$((valid_tsan_count + 1)) ;;
@@ -172,21 +174,30 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
         continue
     fi
 
-    [[ "$row_number" -gt 0 ]] || die "waiver key outside [[waiver]] table: ${line}"
-    [[ "$line" == *=* ]] || die "unparseable waiver line in row ${row_number}: ${line}"
+    [[ "$row_number" -gt 0 ]] ||
+        die "ledger key outside [[waiver]] table: ${line}"
+    [[ "$line" == *=* ]] ||
+        die "unparseable ledger line in row ${row_number}: ${line}"
 
     key="$(trim "${line%%=*}")"
     value="$(strip_quotes "$(trim "${line#*=}")")"
 
+    case "$current_keys" in
+        *" ${key} "*) die "ledger row ${row_number} repeats key: ${key}" ;;
+    esac
+    current_keys="${current_keys}${key} "
+
     case "$key" in
         axis) current_axis="$value" ;;
+        release) current_release="$value" ;;
+        behavior) current_behavior="$value" ;;
         reason) current_reason="$value" ;;
         tracking) current_tracking="$value" ;;
-        commit) current_commit="$value" ;;
+        owner) current_owner="$value" ;;
         expires) current_expires="$value" ;;
-        *) die "unsupported waiver key in row ${row_number}: ${key}" ;;
+        *) die "unsupported ledger key in row ${row_number}: ${key}" ;;
     esac
-done < "$waiver_file"
+done < "$ledger_file"
 
 validate_row
 
@@ -194,13 +205,12 @@ for axis in "${REQUIRED_AXES[@]}"; do
     case "$axis" in
         tsan) count="$valid_tsan_count" ;;
         miri) count="$valid_miri_count" ;;
-        *) die "internal error: unsupported required axis ${axis}" ;;
     esac
     case "$count" in
-        0) die "missing valid ${axis} waiver for ${release_commit}" ;;
+        0) die "missing ${axis} behavioral ledger entry for release ${release_version}" ;;
         1) ;;
-        *) die "ambiguous ${axis} waivers for ${release_commit}" ;;
+        *) die "ambiguous ${axis} behavioral ledger entries for release ${release_version}" ;;
     esac
 done
 
-echo "sanitizer-gate: ASan passed; TSan and Miri waivers are valid for ${release_commit}"
+echo "sanitizer-gate: ASan passed; TSan and Miri behavioral ledger entries are valid for v${release_version}"

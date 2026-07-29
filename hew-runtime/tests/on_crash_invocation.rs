@@ -71,7 +71,7 @@ unsafe extern "C" fn recording_on_crash(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     crash_code: i64,
     crash_message: *const std::ffi::c_char,
-    _actor_state_ptr: *mut c_void,
+    actor_state_ptr: *mut c_void,
 ) -> HewCrashActionAbi {
     ON_CRASH_CALLS.fetch_add(1, Ordering::SeqCst);
     LAST_CRASH_CODE.store(crash_code, Ordering::SeqCst);
@@ -91,6 +91,18 @@ unsafe extern "C" fn recording_on_crash(
     *LAST_CRASH_MESSAGE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = message;
+    // The hook runs under the supervisor's execution context, so the only
+    // correct child-state address is this explicit fourth ABI argument. Mutate
+    // the restart template and prove below that the fresh child observes it.
+    assert!(
+        !actor_state_ptr.is_null(),
+        "on_crash must receive the child's restart-template state"
+    );
+    // SAFETY: this test registered a live i32 template of exactly this size.
+    unsafe {
+        assert_eq!(*actor_state_ptr.cast::<i32>(), 17);
+        *actor_state_ptr.cast::<i32>() = 23;
+    }
     HewCrashActionAbi {
         tag: 0, // CrashAction::Restart
         payload_pad: [0],
@@ -149,7 +161,7 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 10, 60);
 
     let name = cstr("on-crash-worker");
-    let mut state: i32 = 0;
+    let mut state: i32 = 17;
 
     // SAFETY: sup is live; spec lives across the FFI call.
     unsafe {
@@ -224,6 +236,11 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
         assert!(
             !restarted.is_null(),
             "child should have been restarted after the on_crash handler ran"
+        );
+        assert_eq!(
+            *(*restarted).state.cast::<i32>(),
+            23,
+            "the restarted child must clone the state template mutated by on_crash"
         );
 
         // Supervisor is still running — budget of 10 not exhausted.

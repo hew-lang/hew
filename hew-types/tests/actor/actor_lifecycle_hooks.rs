@@ -116,6 +116,35 @@ fn accept_typed_on_down_hook() {
 }
 
 #[test]
+fn reject_user_down_notification_collision_in_typed_hook() {
+    let output = typecheck(
+        r"
+        type DownNotification {
+            value: i64,
+        }
+
+        actor Watcher {
+            #[on(down)]
+            fn on_down(note: DownNotification) {
+                let _value = note.value;
+            }
+        }
+
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error
+                .message
+                .contains("must have type `DownNotification` (from `std::link_monitor`)")
+        }),
+        "a user nominal that only shares the lifecycle payload's short name must be rejected: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn reject_invalid_on_down_shapes() {
     let output = typecheck(
         r"

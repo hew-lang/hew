@@ -341,9 +341,10 @@ run_asan_fixture_expect_leak() {
 CLEAN_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_clean_probe.hew"
 LEAK_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_leak_probe.hew"
 # Crash+restart clean probe: an actor really traps, its #[on(crash)] hook clones
-# and reads CrashInfo.message and returns CrashAction::Restart, the supervisor
-# restarts it, and main exits 42. Exercises the emitted __on_crash on a REAL
-# crash under ASan/LSan — the crash-message clone (hew_string_clone) and the
+# and reads CrashInfo.message, mutates the child's restart template, and returns
+# CrashAction::Restart; the supervisor restarts it and main exits 43. Exercises
+# the emitted __on_crash on a REAL crash under ASan/LSan — the crash-message
+# clone (hew_string_clone) and the
 # CrashInfo drop must balance the supervisor's str_to_malloc/free_cstring with no
 # double-free, no leak, no OOB. The pre-fix move-of-borrow + headerless drop
 # would OOB-read and abort here; ASan would catch the heap-buffer-overflow even
@@ -531,14 +532,14 @@ else
   fail=$((fail + 1))
 fi
 
-# ── Gate 4: crash+restart clean probe MUST produce zero findings, exit 42 ─
+# ── Gate 4: crash+restart clean probe MUST produce zero findings, exit 43 ─
 # A real crash fires the emitted __on_crash, which clones + reads
 # CrashInfo.message and returns CrashAction::Restart. The crash-message
 # clone/drop (hew_string_clone / CrashInfo record drop) must balance the
 # supervisor's str_to_malloc/free_cstring with no double-free, no leak, no OOB.
 # Exit 42 = the restarted child's init value; any ASan/LSan finding (or a non-42
 # exit) fails the gate.
-if run_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_BIN}" 42; then
+if run_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_BIN}" 43; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

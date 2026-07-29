@@ -212,6 +212,7 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
     goto[bb52->bb49] ->
       (none)
     cancel[bb52] ->
@@ -222,6 +223,7 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
     goto[bb53->bb44] ->
       (none)
     cancel[bb53] ->
@@ -232,6 +234,7 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
     branch[bb54: bb58/bb59] ->
       (none)
     goto[bb55->bb45] ->
@@ -244,6 +247,7 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
     panic[bb56] ->
       drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
       drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
@@ -252,6 +256,7 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
     branch[bb57: bb55/bb56] ->
       (none)
     panic[bb58] ->
@@ -262,6 +267,7 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
     goto[bb59->bb53] ->
       (none)
     cancel[bb59] ->
@@ -272,6 +278,7 @@ fn main -> ()
       drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
       drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
       drop _1 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+      drop _69 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_68
     goto[bb60->bb53] ->
       (none)
     cancel[bb60] ->

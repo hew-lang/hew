@@ -120,18 +120,21 @@ fn main -> ()
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
     goto[bb24->bb21] ->
       (none)
     cancel[bb24] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
     goto[bb25->bb16] ->
       (none)
     cancel[bb25] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
     call[bb26 println_str -> bb30] ->
       (none)
     goto[bb27->bb17] ->
@@ -140,10 +143,12 @@ fn main -> ()
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
     panic[bb28] ->
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
     branch[bb29: bb27/bb28] ->
       (none)
     goto[bb30->bb25] ->
@@ -152,6 +157,7 @@ fn main -> ()
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
     goto[bb31->bb25] ->
       (none)
     cancel[bb31] ->
@@ -171,6 +177,7 @@ fn main -> ()
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
     call[bb38 println_i64 -> bb39] ->
       (none)
     call[bb39 Vec::new -> bb40] ->
@@ -187,6 +194,7 @@ fn main -> ()
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
     call[bb44 hew_vec_get_clone -> bb45] ->
       (none)
     call[bb45 println_i64 -> bb46] ->
@@ -200,6 +208,7 @@ fn main -> ()
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
     branch[bb48: bb47/bb49] ->
       (none)
     branch[bb49: bb50/bb51] ->
@@ -212,6 +221,7 @@ fn main -> ()
       drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _26 ty=VecIter<string> kind=vec_iter_cursor(hew_vec_free) guard=_25
     call[bb51 hew_vec_get_clone -> bb52] ->
       (none)
     call[bb52 println_i64 -> bb53] ->

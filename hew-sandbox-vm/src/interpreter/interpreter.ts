@@ -701,10 +701,22 @@ class Interpreter {
       case "vector.get": {
         const vector = this.vectorArg(frame, instruction.args[0], instruction.span);
         const index = this.indexArg(frame, instruction.args[1], instruction.span);
+        const option = this.optionResultLayoutForDst(frame, instruction, "Option");
         if (index < 0 || index >= vector.items.length) {
-          this.trap("vector_bounds", "vector index out of bounds", instruction.span);
+          this.writeDst(frame, instruction, {
+            kind: "enum",
+            typeId: option.id,
+            tag: option.noneErrTag,
+            payload: []
+          });
+          return;
         }
-        this.writeDst(frame, instruction, cloneValue(vector.items[index]!));
+        this.writeDst(frame, instruction, {
+          kind: "enum",
+          typeId: option.id,
+          tag: option.someOkTag,
+          payload: [cloneValue(vector.items[index]!)]
+        });
         return;
       }
       case "vector.set": {
@@ -1367,6 +1379,32 @@ class Interpreter {
       this.trap("invalid_enum_tag", "invalid enum payload", instruction.span);
     }
     return cloneValue(value.payload[index]!);
+  }
+
+  /**
+   * Resolve the enum layout declared for an instruction destination.  The
+   * bytecode opcode alone intentionally does not bake in a concrete Option
+   * type because Vec::get is generic; the destination local carries that
+   * specialization and its registered layout is the runtime authority.
+   */
+  private optionResultLayoutForDst(
+    frame: Frame,
+    instruction: Instruction,
+    expectedName: "Option" | "Result"
+  ): { id: string; someOkTag: number; noneErrTag: number } {
+    const local = instruction.dst
+      ? frame.fn.locals.find((candidate) => candidate.id === instruction.dst)
+      : undefined;
+    const layout = local ? this.enums.get(local.type) : undefined;
+    if (!layout || layout.name !== expectedName) {
+      this.trap("invalid_enum_tag", `${instruction.op} requires a ${expectedName} destination`, instruction.span);
+    }
+    const someOk = layout.variants.find((variant) => variant.name === (expectedName === "Option" ? "Some" : "Ok"));
+    const noneErr = layout.variants.find((variant) => variant.name === (expectedName === "Option" ? "None" : "Err"));
+    if (!someOk || !noneErr) {
+      this.trap("invalid_enum_tag", `${expectedName} layout is missing required variants`, instruction.span);
+    }
+    return { id: layout.id, someOkTag: someOk.tag, noneErrTag: noneErr.tag };
   }
 
   private machineNew(instruction: Instruction): VmValue {

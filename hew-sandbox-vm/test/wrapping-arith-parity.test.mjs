@@ -26,7 +26,7 @@ function wrappingOpPackage(op, lhs, rhs) {
   return {
     schema_version: "hew.sandbox.bytecode.v0",
     package_id: "pkg:wrapping-arith",
-    hew_version: "0.6.0-pre",
+    hew_version: "0.6.0-rc1",
     compiler_version: "test",
     profile: "sandbox.educational.v0",
     source_map: { sources: [], spans: [] },

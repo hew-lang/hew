@@ -1929,6 +1929,105 @@ fn actor_lifecycle_crash_lowers_to_actor_handler_function() {
     );
 }
 
+#[test]
+fn qualified_failure_lifecycle_payloads_expand_to_runtime_abi() {
+    use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+    let mut parsed = hew_parser::parse(
+        r#"
+        import std::failure;
+
+        actor Watcher {
+            #[on(crash)]
+            fn on_crash(info: failure.CrashInfo) -> failure.CrashAction {
+                panic("stop")
+            }
+
+            #[on(exit)]
+            fn on_exit(note: failure.CrashNotification) {}
+        }
+
+        fn main() {}
+        "#,
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let failure = hew_parser::parse(include_str!("../../../std/failure.hew"));
+    assert!(
+        failure.errors.is_empty(),
+        "failure module parse errors: {:#?}",
+        failure.errors
+    );
+    let failure_items = failure.program.items;
+    let import = parsed
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            hew_parser::ast::Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("fixture import must exist");
+    import.resolved_items = Some(failure_items.clone());
+    let root_id = ModuleId::root();
+    let failure_id = ModuleId::new(vec!["std".to_string(), "failure".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: failure_id.clone(),
+            items: failure_items,
+            imports: Vec::new(),
+            source_paths: Vec::new(),
+            doc: None,
+        })
+        .expect("failure module id must be unique");
+    graph.topo_order = vec![failure_id, root_id];
+    parsed.program.module_graph = Some(graph);
+
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type errors: {:#?}",
+        tc_output.errors
+    );
+    let hir = hew_hir::lower_program(
+        &parsed.program,
+        &tc_output,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        hir.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        hir.diagnostics
+    );
+    let pipeline = lower_hir_module(&hir.module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "MIR diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let crash = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Watcher__on_crash")
+        .expect("qualified crash hook must produce MIR");
+    assert_eq!(crash.params, vec![ResolvedTy::I64, ResolvedTy::String]);
+
+    let exit = pipeline
+        .raw_mir
+        .iter()
+        .find(|func| func.name == "Watcher__on_exit")
+        .expect("qualified exit hook must produce MIR");
+    assert_eq!(exit.params, vec![ResolvedTy::U64, ResolvedTy::I32]);
+}
+
 /// A `for await` cursor over a `Stream<T>` must close INLINE at its enclosing
 /// block's scope exit (#1949's `Stream`/`Receiver` sibling) — not only on the
 /// function's Return/Panic/Cancel exits — so a `break` or natural-exhaustion

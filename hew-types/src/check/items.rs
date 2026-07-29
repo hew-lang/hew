@@ -1578,13 +1578,10 @@ impl Checker {
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_crash_info = matches!(
+                let is_crash_info = is_canonical_std_named_type(
                     &pty,
-                    Ty::Named {
-                        builtin: Some(crate::BuiltinType::CrashInfo),
-                        args,
-                        ..
-                    } if args.is_empty()
+                    crate::BuiltinType::CrashInfo,
+                    "failure.CrashInfo",
                 );
                 if !is_crash_info {
                     self.errors.push(TypeError::new(
@@ -1625,13 +1622,10 @@ impl Checker {
     ) -> Ty {
         if let Some(rt) = &hook.return_type {
             let ty = self.resolve_type_expr(rt);
-            if !matches!(
+            if !is_canonical_std_named_type(
                 &ty,
-                Ty::Named {
-                    builtin: Some(crate::BuiltinType::CrashAction),
-                    args,
-                    ..
-                } if args.is_empty()
+                crate::BuiltinType::CrashAction,
+                "failure.CrashAction",
             ) {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
@@ -1727,16 +1721,18 @@ impl Checker {
 
         self.reject_hook_modifier_set(actor_name, hook, hook_kind);
 
-        // Param: exactly one `note: CrashNotification`. CrashNotification is a
-        // std/failure.hew type (not a compiler builtin), so match by resolved
-        // type name rather than a builtin marker.
+        // Param: exactly one canonical `note: CrashNotification`. Match either
+        // the compiler discriminator or the exact source-owned std identity:
+        // the module graph resolves the declaration to
+        // `failure.CrashNotification` without a builtin marker, while an
+        // unrelated user type can share the short name.
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_crash_notification = matches!(
+                let is_crash_notification = is_canonical_std_named_type(
                     &pty,
-                    Ty::Named { name, args, .. }
-                        if name == "CrashNotification" && args.is_empty()
+                    crate::BuiltinType::CrashNotification,
+                    "failure.CrashNotification",
                 );
                 if !is_crash_notification {
                     self.errors.push(TypeError::new(
@@ -1818,13 +1814,10 @@ impl Checker {
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_down_notification = matches!(
+                let is_down_notification = is_canonical_std_named_type(
                     &pty,
-                    Ty::Named {
-                        builtin: Some(crate::BuiltinType::DownNotification),
-                        args,
-                        ..
-                    } if args.is_empty()
+                    crate::BuiltinType::DownNotification,
+                    "link_monitor.DownNotification",
                 );
                 if !is_down_notification {
                     self.errors.push(TypeError::new(
@@ -2603,6 +2596,29 @@ fn supervisor_local_pid_target(ty: &Ty) -> Option<&str> {
     }
 }
 
+/// Whether `ty` is a canonical stdlib nominal used by a lifecycle hook.
+///
+/// Some compilation surfaces attach the compiler builtin discriminator, while
+/// module-graph resolution retains the exact source-owned identity instead.
+/// Both denote the same std type; a bare or foreign same-short-name user type
+/// denotes a different type and must remain rejected.
+fn is_canonical_std_named_type(
+    ty: &Ty,
+    builtin: crate::BuiltinType,
+    source_identity: &str,
+) -> bool {
+    matches!(
+        ty,
+        Ty::Named {
+            name,
+            args,
+            builtin: resolved_builtin,
+        } if args.is_empty()
+            && (*resolved_builtin == Some(builtin)
+                || (resolved_builtin.is_none() && name == source_identity))
+    )
+}
+
 /// Returns `true` for types that carry owned heap allocations and therefore
 /// cannot be safely byte-copied as `init_state` for a permanent supervisor
 /// child restart (C1 UAF guard — v0.5.0.1 P0).
@@ -2625,4 +2641,44 @@ fn ty_is_known_owned_heap(ty: &Ty) -> bool {
                 ..
             }
         )
+}
+
+#[cfg(test)]
+mod lifecycle_std_identity_tests {
+    use super::*;
+
+    fn named(name: &str, builtin: Option<crate::BuiltinType>) -> Ty {
+        Ty::Named {
+            name: name.to_string(),
+            args: Vec::new(),
+            builtin,
+        }
+    }
+
+    #[test]
+    fn canonical_lifecycle_type_requires_marker_or_exact_source_owner() {
+        let builtin = crate::BuiltinType::CrashNotification;
+        let source_identity = "failure.CrashNotification";
+
+        assert!(is_canonical_std_named_type(
+            &named("CrashNotification", Some(builtin)),
+            builtin,
+            source_identity,
+        ));
+        assert!(is_canonical_std_named_type(
+            &named(source_identity, None),
+            builtin,
+            source_identity,
+        ));
+        assert!(!is_canonical_std_named_type(
+            &named("CrashNotification", None),
+            builtin,
+            source_identity,
+        ));
+        assert!(!is_canonical_std_named_type(
+            &named("foreign.CrashNotification", None),
+            builtin,
+            source_identity,
+        ));
+    }
 }

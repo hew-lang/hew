@@ -3,8 +3,8 @@ use super::{
     ty_is_indirect_enum, BasicBlock, BindingId, Builder, CaptureEnvOwnedLoad, Disposition,
     FieldLoadClass, HashMap, HashSet, HirBinding, HirExpr, HirExprKind, Instr, MirDiagnostic,
     MirDiagnosticKind, MirStatement, OwnedCarrierNeutralizeTarget, OwnedCarrierParam,
-    PendingOwnedCallArg, PendingOwnedCallSite, Place, ResolvedTy, SiteId, SnapshotFieldKind,
-    SuspendKind,
+    PendingOwnedCallArg, PendingOwnedCallSite, Place, ResolvedRef, ResolvedTy, SiteId,
+    SnapshotFieldKind, SuspendKind,
 };
 
 impl Builder {
@@ -430,6 +430,32 @@ impl Builder {
         expr: &HirExpr,
         requested_transfer: bool,
     ) -> Option<Place> {
+        if requested_transfer {
+            if let HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Binding(binding),
+            } = &expr.kind
+            {
+                if self
+                    .vec_iter_borrowed_sources
+                    .iter()
+                    .any(|(_, source)| source == binding)
+                {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!("moving `{name}` while a VecIter cursor borrows it"),
+                            site: expr.site,
+                        },
+                        note: "the active for-loop cursor reads this Vec's handle directly; \
+                               moving the source would neutralize or release that handle while \
+                               the cursor can still execute. Move the Vec before entering the \
+                               loop, or wait until the loop has finished"
+                            .to_string(),
+                    });
+                    return None;
+                }
+            }
+        }
         if self.reject_capture_env_whole_escape_expr(expr) {
             return None;
         }

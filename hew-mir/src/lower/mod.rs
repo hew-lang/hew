@@ -131,6 +131,7 @@ use self::drop_plan::{
     ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
     validate_discharge_authority_corroboration, validate_drop_plan, validate_field_drop_in_place,
     validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
+    vec_iter_yield_abandonment_diagnostics,
 };
 pub(crate) use self::facts::*;
 #[cfg(not(test))]
@@ -762,6 +763,12 @@ struct Builder {
     /// guarded inline-field mechanism is their sole drop authority, so no
     /// unconditional `RecordInPlace` exit-plan drop can compete.
     pub(crate) scope_vec_iter_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// Source Vec bindings borrowed by synthetic `for x in source` cursors,
+    /// paired with the desugar scope that owns the cursor. A whole-value move
+    /// or reassignment of the source while this entry is active would
+    /// invalidate `cursor.vec`; those ownership boundaries reject until the
+    /// cursor scope closes.
+    pub(crate) vec_iter_borrowed_sources: Vec<(ScopeId, hew_hir::BindingId)>,
     /// Runtime ownership bit for every first-class `VecIter<T>` local.
     ///
     /// `0` means this binding currently owns its `vec` snapshot and must release
@@ -862,6 +869,11 @@ struct Builder {
         u32,
         usize,
     )>,
+    /// Fresh `Some(x)` payload owners produced by the synthetic `VecIter`
+    /// `next()` match. Their normal body/explicit-edge release is emitted
+    /// inline; this bounded ledger restores authority only for abandoning
+    /// exits reached while the consuming body still owns the payload.
+    pub(crate) vec_iter_yield_exit_drops: Vec<VecIterYieldExitDrop>,
     /// Header-defined while-let scrutinee owners active while their body is
     /// lowered. Break/continue edges consume these owners and record an
     /// explicit edge drop; returns/panic/cancellation leave them Live so the
@@ -5468,6 +5480,11 @@ pub(crate) fn lower_function(
         checks: dataflow_result.checks.clone(),
         cooperate_sites,
     };
+    diagnostics.extend(vec_iter_yield_abandonment_diagnostics(
+        &checked,
+        &builder,
+        &dataflow_result,
+    ));
     // Drop-elaboration pass. Consumes the CheckedMirFunction we just
     // built; emits an ElaboratedMirFunction whose `blocks` + `drop_plans`
     // are the authoritative description of what fires on every exit.
@@ -5779,6 +5796,19 @@ struct ActiveIterationOwner {
     name: String,
     site: SiteId,
     ty: ResolvedTy,
+}
+
+#[derive(Debug, Clone)]
+struct VecIterYieldExitDrop {
+    binding: BindingId,
+    place: Place,
+    ty: ResolvedTy,
+    kind: DropKind,
+    body_start_block: u32,
+    /// The body-end block already receives the normal inline drop. It is a
+    /// region boundary, not part of the abandonment window.
+    body_end_block: u32,
+    site: SiteId,
 }
 
 /// Accumulated lexical-scope facts for one HIR `ScopeId`, built incrementally

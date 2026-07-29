@@ -44,7 +44,7 @@ hew-fmt-check-files	min	648	150	std/ and examples/ .hew sources checked by make 
 hew-suite-tests	min	1169	200	tests executed by hew test tests/hew under the suite ratchet
 ll-oracle-fixtures	exact	15	-	ll-oracle corpus fixtures under tests/ll-oracle/corpus
 macos-leak-oracle-binaries	exact	104	-	nonempty hew-cli memory-oracle binaries selected by scripts/macos-leak-oracle.sh, including ffi_link_e2e
-macos-leak-oracle-tests	exact	671	-	test verdicts selected by scripts/macos-leak-oracle.sh, including ffi_link_e2e
+macos-leak-oracle-tests	exact	680	-	test verdicts selected by scripts/macos-leak-oracle.sh, including ffi_link_e2e
 o2-differential-outcomes	min	1169	200	per-test outcomes compared by the O0-vs-O2 differential gate
 sandbox-vm-binaries	exact	4	-	VM-dependent hew-sandbox-wasm test binaries requiring whole-binary exclusion
 stdlib-int-surface-files	exact	74	-	tracked std/ .hew files scanned for removed int/uint aliases

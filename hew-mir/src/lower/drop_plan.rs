@@ -250,6 +250,194 @@ pub(super) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
         | MirCheck::WitnessOperandUnresolved { .. } => None,
     }
 }
+
+/// Blocks that read a returned-member candidate through either its registered
+/// local or a whole-value `Move` alias of that local.
+///
+/// Returned-member Goto re-admission is an eager release at a non-terminal
+/// edge, so a later read through `alias = member` is just as disqualifying as
+/// `member` itself. The move may be a compiler-generated slot handoff with no
+/// independent retain; following only the registered local would free the
+/// shared heap before the alias read. Ambiguous alias joins are evicted by
+/// [`propagate_whole_value_alias_roots`], which leaves this proof fail-closed.
+fn returned_member_alias_read_blocks(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    candidate_locals: &HashMap<u32, BindingId>,
+) -> HashMap<BindingId, HashSet<u32>> {
+    let alias_roots = propagate_whole_value_alias_roots(blocks, candidate_locals.keys().copied());
+    let mut read_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+    for block in blocks {
+        let sources = block
+            .instructions
+            .iter()
+            .flat_map(instr_source_places)
+            .chain(terminator_source_places(
+                &block.terminator,
+                suspend_kinds.get(&block.id),
+            ));
+        for source in sources {
+            let Some(root) = base_local(source).and_then(|local| alias_roots.get(&local)) else {
+                continue;
+            };
+            let Some(binding) = candidate_locals.get(root) else {
+                continue;
+            };
+            read_blocks.entry(*binding).or_default().insert(block.id);
+        }
+    }
+    read_blocks
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReturnedMemberReAdmission {
+    plan_index: usize,
+    block: u32,
+}
+
+/// Blocks reachable from `start` without executing `removed`.
+fn blocks_reachable_without(blocks: &[BasicBlock], start: u32, removed: u32) -> HashSet<u32> {
+    if start == removed {
+        return HashSet::new();
+    }
+    let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|block| (block.id, block)).collect();
+    let mut reachable = HashSet::new();
+    let mut worklist = vec![start];
+    while let Some(block) = worklist.pop() {
+        if block == removed || !reachable.insert(block) {
+            continue;
+        }
+        if let Some(block) = by_id.get(&block) {
+            worklist.extend(block.successors());
+        }
+    }
+    reachable
+}
+
+/// Whether every terminating normal path from `start` executes `postdominator`.
+fn block_postdominates(blocks: &[BasicBlock], start: u32, postdominator: u32) -> bool {
+    if start == postdominator {
+        return true;
+    }
+    let bypass = blocks_reachable_without(blocks, start, postdominator);
+    !blocks
+        .iter()
+        .any(|block| bypass.contains(&block.id) && block.successors().is_empty())
+}
+
+/// Whether every entry path to `block` executes `dominator`.
+fn block_dominates(blocks: &[BasicBlock], dominator: u32, block: u32) -> bool {
+    dominator == block
+        || !blocks_reachable_without(blocks, ENTRY_BLOCK_ID, dominator).contains(&block)
+}
+
+/// Whether every normal continuation after a release in `block` executes
+/// `postdominator`.
+fn block_postdominates_release(blocks: &[BasicBlock], block: u32, postdominator: u32) -> bool {
+    let Some(block) = blocks.iter().find(|candidate| candidate.id == block) else {
+        return false;
+    };
+    let successors = block.successors();
+    !successors.is_empty()
+        && successors
+            .into_iter()
+            .all(|successor| block_postdominates(blocks, successor, postdominator))
+}
+
+/// Select a path-compatible subset of locally valid returned-member releases.
+///
+/// For two candidates `A -> B` on the same normal path:
+///
+/// * prefer `B` only when it postdominates A's Goto continuation (so no path
+///   covered by A can bypass the later release);
+/// * prefer `A` only when it dominates B (so every path reaching B already
+///   crossed A);
+/// * if neither proof holds, suppress both. Keeping both double-releases their
+///   overlap, while keeping either one alone leaks the other side of the
+///   partial overlap.
+///
+/// Incomparable sibling-arm candidates are all retained.
+fn select_returned_member_re_admissions(
+    blocks: &[BasicBlock],
+    block_reach: &HashMap<u32, HashSet<u32>>,
+    candidates: &[ReturnedMemberReAdmission],
+) -> Vec<ReturnedMemberReAdmission> {
+    let mut suppressed = HashSet::new();
+    for upstream in candidates {
+        for downstream in candidates {
+            if upstream.plan_index == downstream.plan_index {
+                continue;
+            }
+            let reaches_downstream = block_reach
+                .get(&upstream.block)
+                .is_some_and(|reachable| reachable.contains(&downstream.block));
+            if !reaches_downstream {
+                continue;
+            }
+            if block_postdominates_release(blocks, upstream.block, downstream.block) {
+                suppressed.insert(upstream.plan_index);
+            } else if block_dominates(blocks, upstream.block, downstream.block) {
+                suppressed.insert(downstream.plan_index);
+            } else {
+                suppressed.insert(upstream.plan_index);
+                suppressed.insert(downstream.plan_index);
+            }
+        }
+    }
+    candidates
+        .iter()
+        .copied()
+        .filter(|candidate| !suppressed.contains(&candidate.plan_index))
+        .collect()
+}
+
+/// Existing release plans a candidate can safely subsume.
+///
+/// Existing plans are fixed until a selected candidate proves it can replace
+/// them. A downstream candidate may replace an existing release only when it
+/// postdominates every continuation after that release. An upstream candidate
+/// may replace an existing release only when it dominates the existing site and
+/// the existing release does not already postdominate all of the candidate's
+/// continuations. Any partial overlap rejects the candidate: retaining both
+/// would double-release their common path, while removing the existing plan
+/// would leak a path the candidate does not cover.
+fn existing_releases_replaced_by_candidate(
+    blocks: &[BasicBlock],
+    block_reach: &HashMap<u32, HashSet<u32>>,
+    candidate: ReturnedMemberReAdmission,
+    existing: &[ReturnedMemberReAdmission],
+) -> Option<HashSet<usize>> {
+    let mut replaced = HashSet::new();
+    for release in existing {
+        let release_reaches_candidate = block_reach
+            .get(&release.block)
+            .is_some_and(|reachable| reachable.contains(&candidate.block));
+        let candidate_reaches_release = block_reach
+            .get(&candidate.block)
+            .is_some_and(|reachable| reachable.contains(&release.block));
+
+        if release_reaches_candidate {
+            if block_postdominates_release(blocks, release.block, candidate.block) {
+                replaced.insert(release.plan_index);
+            } else {
+                return None;
+            }
+        } else if candidate_reaches_release {
+            if block_postdominates_release(blocks, candidate.block, release.block) {
+                // The existing release already covers every path leaving this
+                // candidate; adding the candidate would only release earlier.
+                return None;
+            }
+            if block_dominates(blocks, candidate.block, release.block) {
+                replaced.insert(release.plan_index);
+            } else {
+                return None;
+            }
+        }
+    }
+    Some(replaced)
+}
+
 /// Drop-elaboration pass over a `CheckedMirFunction`.
 ///
 /// Produces an `ElaboratedMirFunction` whose `blocks` + `drop_plans`
@@ -1016,6 +1204,14 @@ pub(super) fn elaborate(
             .iter()
             .map(|(binding, _name, ty)| (*binding, ty))
             .collect();
+        // Cache transitive CFG reachability once. Besides the transfer/read
+        // proofs below, this is the authority that prevents two re-admitted
+        // plans for the same owner from firing in sequence.
+        let block_reach: HashMap<u32, HashSet<u32>> = checked
+            .blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&checked.blocks, block.id)))
+            .collect();
         // Blocks each member's hand-off can reach (inclusive of the transfer
         // block itself). A `Return` exit inside this set is at or downstream of
         // the hand-off, so the caller owns the value there — no re-admission.
@@ -1027,7 +1223,9 @@ pub(super) fn elaborate(
             let mut reach: HashSet<u32> = HashSet::new();
             for &transfer_block in transfer_blocks {
                 reach.insert(transfer_block);
-                reach.extend(blocks_reachable_from(&checked.blocks, transfer_block));
+                if let Some(from_transfer) = block_reach.get(&transfer_block) {
+                    reach.extend(from_transfer);
+                }
             }
             member_transfer_reach.insert(*binding, reach);
         }
@@ -1070,27 +1268,11 @@ pub(super) fn elaborate(
                     .map(|local| (local, *binding))
             })
             .collect();
-        let mut member_read_blocks: HashMap<BindingId, HashSet<u32>> = HashMap::new();
-        for block in &checked.blocks {
-            let sources = block
-                .instructions
-                .iter()
-                .flat_map(instr_source_places)
-                .chain(terminator_source_places(
-                    &block.terminator,
-                    builder.suspend_kinds.get(&block.id),
-                ));
-            for source in sources {
-                if let Some(binding) =
-                    base_local(source).and_then(|local| candidate_locals.get(&local))
-                {
-                    member_read_blocks
-                        .entry(*binding)
-                        .or_default()
-                        .insert(block.id);
-                }
-            }
-        }
+        let member_read_blocks = returned_member_alias_read_blocks(
+            &checked.blocks,
+            &builder.suspend_kinds,
+            &candidate_locals,
+        );
         let mut member_read_predecessors: HashMap<BindingId, HashSet<u32>> = HashMap::new();
         for (binding, read_blocks) in &member_read_blocks {
             let mut predecessors = read_blocks.clone();
@@ -1104,21 +1286,33 @@ pub(super) fn elaborate(
             }
             member_read_predecessors.insert(*binding, predecessors);
         }
-        for (exit, plan) in &mut drop_plans {
-            let (block, is_goto) = match exit {
-                ExitPath::Return { block } => (*block, None),
-                ExitPath::Goto { block, target } => (*block, Some(*target)),
-                _ => continue,
-            };
-            let Some(state_map) = dataflow_result.exit_states.get(&block) else {
+        for (binding, reach) in &member_transfer_reach {
+            let Some(ty) = owned_ty_by_binding.get(binding).copied() else {
                 continue;
             };
-            for (binding, reach) in &member_transfer_reach {
+            if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
+                continue;
+            }
+            let Some(&place) = builder.binding_locals.get(binding) else {
+                continue;
+            };
+
+            // First collect every locally-valid re-admission without mutating
+            // the plans. Deciding one plan at a time is order-dependent: two
+            // consecutive Gotos can both look locally valid and schedule the
+            // same unconditional release, as in static_server::resolve_path.
+            let mut candidates = Vec::new();
+            for (plan_index, (exit, plan)) in drop_plans.iter().enumerate() {
+                let (block, goto_target) = match exit {
+                    ExitPath::Return { block } => (*block, None),
+                    ExitPath::Goto { block, target } => (*block, Some(*target)),
+                    _ => continue,
+                };
                 // This exit is at or after the hand-off: caller owns the value.
                 if reach.contains(&block) {
                     continue;
                 }
-                if let Some(target) = is_goto {
+                if let Some(target) = goto_target {
                     // A normal continuation can still perform this member's
                     // transfer: retain the blanket exclusion until then.
                     if member_transfer_predecessors
@@ -1133,28 +1327,92 @@ pub(super) fn elaborate(
                     {
                         continue;
                     }
+                    // A release attached to a loop edge can fire more than
+                    // once for one mint. Without a per-iteration owner flag,
+                    // re-admission on such an edge is not exactly-once.
+                    if target == block
+                        || block_reach
+                            .get(&target)
+                            .is_some_and(|reachable| reachable.contains(&block))
+                    {
+                        continue;
+                    }
                 }
                 // Only re-admit where the value is definitely still owned. A
                 // `MaybeConsumed`/`Uninit`/`Consumed` state at this exit is
                 // ambiguous or already discharged — skip (fail-closed).
+                let Some(state_map) = dataflow_result.exit_states.get(&block) else {
+                    continue;
+                };
                 if !matches!(
                     state_map.get(binding).copied(),
                     Some(dataflow::BindingState::Live)
                 ) {
                     continue;
                 }
-                let Some(ty) = owned_ty_by_binding.get(binding).copied() else {
-                    continue;
-                };
-                if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
-                    continue;
-                }
-                let Some(&place) = builder.binding_locals.get(binding) else {
-                    continue;
-                };
                 if plan.drops.iter().any(|drop| drop.place == place) {
                     continue;
                 }
+                candidates.push(ReturnedMemberReAdmission { plan_index, block });
+            }
+
+            // Existing plans participate in the same dominance/post-dominance
+            // proof as new candidates. A plain reachability veto is too coarse:
+            // in a diamond, a release on one arm reaches a common candidate,
+            // but deleting the common candidate leaks the sibling arm. The
+            // common candidate may replace that arm-local release exactly when
+            // it postdominates the release's continuation. Removals stay
+            // contingent on the replacement candidate surviving the
+            // candidate-vs-candidate selection below.
+            let existing_releases: Vec<ReturnedMemberReAdmission> = drop_plans
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (exit, plan))| {
+                    if plan.drops.iter().any(|drop| drop.place == place) {
+                        Some(ReturnedMemberReAdmission {
+                            plan_index: index,
+                            block: exit_block_id(exit),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let mut replacements: HashMap<usize, HashSet<usize>> = HashMap::new();
+            candidates.retain(|candidate| {
+                let Some(replaced) = existing_releases_replaced_by_candidate(
+                    &checked.blocks,
+                    &block_reach,
+                    *candidate,
+                    &existing_releases,
+                ) else {
+                    return false;
+                };
+                replacements.insert(candidate.plan_index, replaced);
+                true
+            });
+
+            let selected =
+                select_returned_member_re_admissions(&checked.blocks, &block_reach, &candidates);
+
+            let replaced_existing: HashSet<usize> = selected
+                .iter()
+                .flat_map(|candidate| {
+                    replacements
+                        .get(&candidate.plan_index)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                })
+                .collect();
+            for plan_index in replaced_existing {
+                drop_plans[plan_index]
+                    .1
+                    .drops
+                    .retain(|drop| drop.place != place);
+            }
+            for candidate in selected {
+                let plan = &mut drop_plans[candidate.plan_index].1;
                 plan.drops.push(ElabDrop {
                     place,
                     ty: ty.clone(),
@@ -7664,6 +7922,189 @@ mod twin_gate_classifier {
             is_ephemeral(&b.classify_scrutinee_origin(&call)),
             "a fresh-summary call scrutinee is an ephemeral fresh owner"
         );
+    }
+}
+#[cfg(test)]
+mod returned_member_read_aliases {
+    use super::*;
+
+    fn block(id: u32, terminator: Terminator) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator,
+        }
+    }
+
+    /// Counterfactual for non-terminal re-admission: the candidate owner is
+    /// copied through unretained MIR handoff slots before a branch, and only
+    /// the final alias is read after the join. A direct-local scan sees no
+    /// future read of `_1` from either arm Goto and could free it there; the
+    /// alias-closed scan must attribute the joined `_3` read back to `_1`.
+    #[test]
+    fn unretained_move_alias_read_after_join_is_attributed_to_candidate() {
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                }],
+                terminator: Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![Instr::Move {
+                    dest: Place::Local(3),
+                    src: Place::Local(2),
+                }],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 2,
+                statements: Vec::new(),
+                instructions: vec![Instr::Move {
+                    dest: Place::Local(3),
+                    src: Place::Local(2),
+                }],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 3,
+                statements: Vec::new(),
+                instructions: vec![Instr::Drop {
+                    place: Place::Local(3),
+                    ty: ResolvedTy::String,
+                    drop_fn: None,
+                }],
+                terminator: Terminator::Return,
+            },
+        ];
+        let binding = BindingId(7);
+        let candidate_locals = [(1_u32, binding)].into_iter().collect();
+        let reads = returned_member_alias_read_blocks(&blocks, &HashMap::new(), &candidate_locals);
+
+        assert!(
+            reads
+                .get(&binding)
+                .is_some_and(|blocks| blocks.contains(&3)),
+            "the post-join read through `_3` must be attributed to returned-member \
+             candidate `_1`; otherwise an arm Goto may release the shared heap early: \
+             {reads:?}"
+        );
+    }
+
+    /// Diamond counterfactual: only the then arm has an earlier candidate A,
+    /// while both arms merge at candidate B. Reachability alone must not keep
+    /// A and suppress B (that leaks the else arm). B postdominates A's target,
+    /// so the selector keeps only B and both paths cross exactly one release.
+    #[test]
+    fn merged_later_candidate_covers_sibling_that_bypasses_earlier_candidate() {
+        let blocks = vec![
+            block(
+                0,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(1, Terminator::Goto { target: 3 }),
+            block(2, Terminator::Goto { target: 3 }),
+            block(3, Terminator::Goto { target: 4 }),
+            block(4, Terminator::Return),
+        ];
+        let block_reach: HashMap<u32, HashSet<u32>> = blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&blocks, block.id)))
+            .collect();
+        let candidates = [
+            ReturnedMemberReAdmission {
+                plan_index: 10,
+                block: 1,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 11,
+                block: 3,
+            },
+        ];
+
+        let selected = select_returned_member_re_admissions(&blocks, &block_reach, &candidates);
+        assert_eq!(
+            selected,
+            vec![candidates[1]],
+            "the common later candidate must replace the one-arm predecessor"
+        );
+
+        for path in [[0_u32, 1, 3, 4], [0_u32, 2, 3, 4]] {
+            let releases = selected
+                .iter()
+                .filter(|candidate| path.contains(&candidate.block))
+                .count();
+            assert_eq!(
+                releases, 1,
+                "both diamond paths must cross exactly one selected release: \
+                 path={path:?}, selected={selected:?}"
+            );
+        }
+    }
+
+    /// Existing-plan diamond counterfactual: the then arm already releases the
+    /// owner and a later common candidate covers both arms. A reachability veto
+    /// would delete the common candidate and leak the else arm. Because the
+    /// common block postdominates the existing arm's continuation, it may
+    /// replace that arm-local release and both paths retain exactly one release.
+    #[test]
+    fn common_candidate_replaces_branch_local_existing_release() {
+        let blocks = vec![
+            block(
+                0,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(1, Terminator::Goto { target: 3 }),
+            block(2, Terminator::Goto { target: 3 }),
+            block(3, Terminator::Goto { target: 4 }),
+            block(4, Terminator::Return),
+        ];
+        let block_reach: HashMap<u32, HashSet<u32>> = blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&blocks, block.id)))
+            .collect();
+        let existing = [ReturnedMemberReAdmission {
+            plan_index: 20,
+            block: 1,
+        }];
+        let candidate = ReturnedMemberReAdmission {
+            plan_index: 10,
+            block: 3,
+        };
+
+        let replaced =
+            existing_releases_replaced_by_candidate(&blocks, &block_reach, candidate, &existing)
+                .expect("the common postdominator can replace the arm-local release");
+        assert_eq!(replaced, HashSet::from([existing[0].plan_index]));
+
+        for path in [[0_u32, 1, 3, 4], [0_u32, 2, 3, 4]] {
+            let releases = usize::from(
+                path.contains(&existing[0].block) && !replaced.contains(&existing[0].plan_index),
+            ) + usize::from(path.contains(&candidate.block));
+            assert_eq!(
+                releases, 1,
+                "both diamond paths must cross exactly one release after relocation: \
+                 path={path:?}, replaced={replaced:?}"
+            );
+        }
     }
 }
 #[cfg(test)]

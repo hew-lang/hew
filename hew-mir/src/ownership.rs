@@ -988,13 +988,19 @@ impl TryFrom<DropKind> for DropClass {
             DropKind::DuplexHalfClose(direction) => DropClass::DuplexHalfClose { direction },
             DropKind::LambdaActorRelease => DropClass::LambdaActorRelease,
             DropKind::TraitObject { storage } => DropClass::DynTrait { storage },
-            DropKind::CowHeap { release } => DropClass::CowHeapLeaf {
-                // The typed carrier names its leaf directly — no symbol to
-                // parse, so this arm is now infallible (an unrecognised release
-                // is unrepresentable). `CowHeapRelease` is never a
-                // `CancellationToken` leaf, so `CowHeapLeaf` stays copy-on-write.
-                leaf: release.heap_leaf(),
-            },
+            DropKind::CowHeap { release } | DropKind::VecIterCursor { release } => {
+                DropClass::CowHeapLeaf {
+                    // The typed carrier names its leaf directly — no symbol to
+                    // parse, so this arm is now infallible (an unrecognised release
+                    // is unrepresentable). `CowHeapRelease` is never a
+                    // `CancellationToken` leaf, so `CowHeapLeaf` stays copy-on-write.
+                    //
+                    // A VecIter cursor addresses field 0 of its enclosing record,
+                    // but the discharged obligation is still this Vec-family
+                    // leaf. DropClass deliberately subsumes addressing.
+                    leaf: release.heap_leaf(),
+                }
+            }
             DropKind::RecordInPlace => DropClass::RecordInPlace,
             DropKind::AggregateRecursive => DropClass::AggregateRecursive,
             DropKind::EnumInPlace => DropClass::EnumInPlace,
@@ -1865,6 +1871,30 @@ mod tests {
                 "round-trip mismatch for {kind:?}",
             );
         }
+
+        // VecIterCursor is deliberately field-addressed in MIR but collapses
+        // to the same semantic CowHeap leaf as its field-0 Vec snapshot.
+        let cursor_kind = DropKind::VecIterCursor {
+            release: CowHeapRelease::VecOwnedElement,
+        };
+        let cursor_class = DropClass::try_from(cursor_kind).unwrap_or_else(|e| {
+            panic!("DropKind {cursor_kind:?} did not map to a DropClass: {e:?}")
+        });
+        assert_eq!(
+            cursor_class,
+            DropClass::CowHeapLeaf {
+                leaf: CowHeapRelease::VecOwnedElement.heap_leaf(),
+            }
+        );
+        assert_eq!(
+            cursor_class.canonical_drop_kind(),
+            DropKind::CowHeap {
+                // Canonical projection deliberately collapses the Vec-family
+                // leaf to its plain representative; the typed MIR carrier
+                // retains the element-specific refinement.
+                release: CowHeapRelease::VecPlain,
+            }
+        );
     }
 
     /// The Vec element-symbol collapse is intentional and documented: owned /

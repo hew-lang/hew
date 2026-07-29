@@ -1365,6 +1365,80 @@ pub(super) fn elaborate(
         &projection_alias_tainted,
     );
 
+    // A first-class VecIter cursor is an inline record whose field-0 Vec
+    // snapshot is released on ordinary lexical/explicit exits by a
+    // flag-gated RecordFieldDrop. Cancellation, panic, yield-destroy, and
+    // suspend-destroy can abandon the frame without traversing that inline
+    // cleanup. Re-admit the same typed field release on those alternate
+    // terminal edges only while dataflow says the cursor binding has been
+    // initialised and may still be live. The existing ownership sidecar is
+    // carried as ElabDrop::guard, so a conditional move, a borrowing cursor,
+    // or an earlier lexical release skips the drop at runtime.
+    //
+    // Function-entry cancellation observes the block ENTRY state because its
+    // check runs before entry-block instructions. Every other abandonment
+    // point observes EXIT state, matching enumerate_exits and codegen's
+    // cooperate/suspend placement.
+    for (binding, cursor_ty) in builder.vec_iter_scope_owner_ledger.iter().rev() {
+        let Some(&place) = builder.binding_locals.get(binding) else {
+            continue;
+        };
+        let Some(&guard) = builder.vec_iter_drop_flags.get(binding) else {
+            continue;
+        };
+        let Some(release) = builder.vec_iter_cursor_release_protocol(cursor_ty) else {
+            continue;
+        };
+        for (exit, plan) in &mut drop_plans {
+            let block = match exit {
+                ExitPath::Cancel { block }
+                | ExitPath::Panic { block }
+                | ExitPath::Yield { block, .. }
+                | ExitPath::Suspend { block, .. } => *block,
+                ExitPath::Return { .. }
+                | ExitPath::Goto { .. }
+                | ExitPath::Branch { .. }
+                | ExitPath::Call { .. }
+                | ExitPath::Send { .. }
+                | ExitPath::Ask { .. }
+                | ExitPath::Select { .. }
+                | ExitPath::Join { .. } => continue,
+            };
+            let is_entry_cancel =
+                matches!(exit, ExitPath::Cancel { .. }) && block == ENTRY_BLOCK_ID;
+            let state_maps = if is_entry_cancel {
+                &dataflow_result.entry_states
+            } else {
+                &dataflow_result.exit_states
+            };
+            let binding_may_own = matches!(
+                state_maps
+                    .get(&block)
+                    .and_then(|states| states.get(binding))
+                    .copied(),
+                Some(
+                    dataflow::BindingState::Live
+                        | dataflow::BindingState::MaybeConsumed(_)
+                        | dataflow::BindingState::AliasedIntoAggregate(_)
+                )
+            );
+            if !binding_may_own
+                || plan.drops.iter().any(|drop| {
+                    drop.place == place && matches!(drop.kind, DropKind::VecIterCursor { .. })
+                })
+            {
+                continue;
+            }
+            plan.drops.push(ElabDrop {
+                place,
+                ty: cursor_ty.clone(),
+                drop_fn: None,
+                kind: DropKind::VecIterCursor { release },
+                guard: Some(guard),
+            });
+        }
+    }
+
     // A VecIter `Some(x)` binder is a fresh per-iteration owner. Normal body
     // completion and explicit break/continue/return edges release it inline,
     // but cancellation/panic/suspend abandonment can leave from the middle of
@@ -3694,6 +3768,20 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
         } if matches!(drop.place, Place::Local(_)) && ty_is_vec(&drop.ty) => DropKind::CowHeap {
             release: crate::ownership::CowHeapRelease::VecPlain,
         },
+        // First-class VecIter abandonment drops address field 0 of a local
+        // cursor record. The release refinement is carried explicitly and
+        // codegen re-derives it against the concrete element/layout before
+        // emitting the field release.
+        DropKind::VecIterCursor { release }
+            if matches!(drop.place, Place::Local(_))
+                && matches!(
+                    &drop.ty,
+                    ResolvedTy::Named { name, args, .. }
+                        if name.rsplit('.').next() == Some("VecIter") && args.len() == 1
+                ) =>
+        {
+            DropKind::VecIterCursor { release }
+        }
         // W5.021 — heap-owning tuple drops are keyed by both kind and
         // `ElabDrop::ty` (the structural tuple shape selects the synthesized
         // in-place helper), while the place is an ordinary stack `Local`

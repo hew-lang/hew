@@ -21924,6 +21924,61 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
             }
             emit_cow_heap_drop(fn_ctx, drop.place, release.release_symbol())
         }
+        hew_mir::DropKind::VecIterCursor { release } => {
+            if drop.drop_fn.is_some() {
+                return Err(CodegenError::FailClosed(format!(
+                    "VecIterCursor ElabDrop @ {place:?} unexpectedly carries \
+                     ElabDrop::drop_fn = {df:?}; the typed Vec release must live \
+                     in DropKind::VecIterCursor",
+                    place = drop.place,
+                    df = drop.drop_fn,
+                )));
+            }
+            let ResolvedTy::Named { name, args, .. } = &drop.ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "VecIterCursor ElabDrop @ {:?} has non-named type {}",
+                    drop.place,
+                    drop.ty.user_facing()
+                )));
+            };
+            if name.rsplit('.').next() != Some("VecIter") || args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "VecIterCursor ElabDrop @ {:?} has non-VecIter type {}",
+                    drop.place,
+                    drop.ty.user_facing()
+                )));
+            }
+            let vec_ty = ResolvedTy::Named {
+                name: "Vec".to_string(),
+                args: vec![args[0].clone()],
+                builtin: Some(BuiltinType::Vec),
+                is_opaque: false,
+            };
+            let expected = resolved_ty_cow_heap_release(fn_ctx, &vec_ty).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "VecIterCursor ElabDrop @ {:?} has no Vec release protocol for {}",
+                    drop.place,
+                    vec_ty.user_facing()
+                ))
+            })?;
+            if release != expected {
+                return Err(CodegenError::FailClosed(format!(
+                    "VecIterCursor ElabDrop @ {:?} carries {:?}, but element/layout \
+                     re-derivation selects {:?} for {}",
+                    drop.place,
+                    release,
+                    expected,
+                    vec_ty.user_facing()
+                )));
+            }
+            lower_record_field_drop(
+                fn_ctx,
+                drop.place,
+                hew_mir::FieldOffset(0),
+                &vec_ty,
+                &hew_mir::DropFnSpec::Release(release.release_symbol()),
+            )
+        }
         hew_mir::DropKind::AggregateRecursive => {
             if drop.drop_fn.is_some() {
                 return Err(CodegenError::FailClosed(format!(

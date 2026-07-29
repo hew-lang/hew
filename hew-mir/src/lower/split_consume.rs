@@ -1800,6 +1800,7 @@ mod slice3_invariants {
                     | DropKind::WeakRelease
                     | DropKind::LambdaActorRelease
                     | DropKind::CowHeap { .. }
+                    | DropKind::VecIterCursor { .. }
                     | DropKind::RecordInPlace
                     | DropKind::AggregateRecursive
                     | DropKind::EnumInPlace

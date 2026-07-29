@@ -1983,6 +1983,9 @@ fn render_drop_kind(kind: DropKind) -> String {
         DropKind::LambdaActorRelease => "lambda_actor_release".to_string(),
         DropKind::TraitObject { storage } => format!("trait_object({storage:?})"),
         DropKind::CowHeap { release } => format!("cow_heap({})", release.release_symbol()),
+        DropKind::VecIterCursor { release } => {
+            format!("vec_iter_cursor({})", release.release_symbol())
+        }
         DropKind::RecordInPlace => "record_in_place".to_string(),
         DropKind::AggregateRecursive => "aggregate_recursive".to_string(),
         DropKind::EnumInPlace => "enum_in_place".to_string(),

@@ -4,6 +4,7 @@ use super::{
     HirExpr, HirExprKind, Instr, LoopFrame, MirDiagnostic, MirDiagnosticKind, Place, ResolvedRef,
     ResolvedTy, ScopeId, ScopeInfoEntry, VecElementRelease,
 };
+use crate::ownership::CowHeapRelease;
 
 impl Builder {
     /// Whether a non-binding `VecIter<T>` value arrives as an independent
@@ -182,6 +183,19 @@ impl Builder {
         &self,
         cursor_ty: &ResolvedTy,
     ) -> Option<&'static str> {
+        self.vec_iter_cursor_release_protocol(cursor_ty)
+            .map(CowHeapRelease::release_symbol)
+    }
+
+    /// Typed release protocol for the owned `vec` field of a `VecIter<T>`.
+    ///
+    /// This is shared by the normal inline `RecordFieldDrop` and the
+    /// elaborated abandon-edge `DropKind::VecIterCursor`, so both paths retain
+    /// the identical Vec element refinement.
+    pub(crate) fn vec_iter_cursor_release_protocol(
+        &self,
+        cursor_ty: &ResolvedTy,
+    ) -> Option<CowHeapRelease> {
         let ResolvedTy::Named { name, args, .. } = cursor_ty else {
             return None;
         };
@@ -190,10 +204,9 @@ impl Builder {
         }
         let elem = args.first()?;
         match self.classify_vec_element_release(elem) {
-            VecElementRelease::Plain => Some("hew_vec_free"),
-            VecElementRelease::OwnedElement | VecElementRelease::ClosurePair => {
-                Some("hew_vec_free_owned")
-            }
+            VecElementRelease::Plain => Some(CowHeapRelease::VecPlain),
+            VecElementRelease::OwnedElement => Some(CowHeapRelease::VecOwnedElement),
+            VecElementRelease::ClosurePair => Some(CowHeapRelease::VecClosurePairs),
             VecElementRelease::Unsupported(_) => None,
         }
     }
@@ -225,6 +238,8 @@ impl Builder {
         }
         let flag = self.alloc_local(ResolvedTy::I64);
         self.vec_iter_drop_flags.insert(binding, flag);
+        self.vec_iter_scope_owner_ledger
+            .push((binding, binding_ty.clone()));
         if let Some(scope) = self.active_scopes.last().copied() {
             self.scope_vec_iter_bindings
                 .push((scope, binding, binding_ty.clone()));
@@ -417,6 +432,16 @@ impl Builder {
         });
         self.start_block(release_bb);
         let emitted = self.emit_vec_iter_value_release(place, cursor_ty);
+        if emitted {
+            // The sidecar is the single path-sensitive release authority, not
+            // merely a move bit. Disarm it after the normal inline release so
+            // a later cancellation checkpoint in the same lexical CFG cannot
+            // re-run the abandon plan for an already-closed cursor slot.
+            self.push_instr(Instr::ConstI64 {
+                dest: flag,
+                value: 1,
+            });
+        }
         self.finish_current_block(super::Terminator::Goto { target: cont_bb });
         self.start_block(cont_bb);
         emitted

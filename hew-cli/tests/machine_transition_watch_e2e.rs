@@ -239,6 +239,38 @@ fn channel_receiver_actor_message_arg_transfers_locally() {
     );
 }
 
+/// Sender is the complementary local mailbox transfer: its last-use carrier
+/// has a failure-edge cleanup, so this used to be rejected by the generic
+/// actor refcount-handle guard before the program could execute.  The worker
+/// can use and close the transferred sender, proving the original owner did
+/// not remain live at the call site.
+#[test]
+fn channel_sender_actor_message_arg_transfers_locally() {
+    run_inline_scribbled(
+        "sender_param_transfer",
+        "import std::channel::channel;\n\
+         \n\
+         actor Worker {\n\
+         \x20   receive fn notify(tx: channel.Sender<string>) {\n\
+         \x20       tx.send(\"pong\");\n\
+         \x20       tx.close();\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
+         \x20   let worker = spawn Worker;\n\
+         \x20   worker.notify(tx);\n\
+         \x20   match rx.recv() {\n\
+         \x20       Some(value) => println(value),\n\
+         \x20       None => println(\"closed\"),\n\
+         \x20   }\n\
+         \x20   rx.close();\n\
+         }\n",
+        "pong\n",
+    );
+}
+
 /// Ownership contract: the caller binding is consumed by the transfer.
 /// A later `rx.close()` would double-close the channel the new owner now
 /// holds — refused with the named `UseAfterConsume` diagnostic.

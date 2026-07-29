@@ -175,11 +175,12 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
 ];
 
 // These files carry inlined copies of the same current `std::net::connect_timeout`
-// helper. The owner has no suspend edge: its twelve drops are the host's four
-// live terminal/error paths plus the eight formatting temporaries on the two
+// helper. The owner has no suspend edge: its fourteen drops are the host's four
+// live terminal/error paths, the restored two receiver error-path releases,
+// and the eight formatting temporaries on the two
 // panic arms. `hew_tcp_connect_timeout(host, ...)` borrows `host`; it does not
 // retain or free it. The former 18-plan shape belonged to the pre-refactor
-// endpoint/control-flow topology, so these copies must remain pinned at 12
+// endpoint/control-flow topology, so these copies must remain pinned at 14
 // rather than silently accepting another loss.
 const ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES: &[(&str, &str)] = &[
     ("examples/actor_net_reader.hew", "net$connect_timeout"),
@@ -233,14 +234,14 @@ const ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES: &[(&str, &str)] = &[
     ("std/net/websocket/websocket.hew", "net$connect_timeout"),
 ];
 
-const NET_CONNECT_TIMEOUT_REASON: &str = "the current copied connect_timeout body has no suspend edge; its 12 elaborated drops cover host's four live terminal/error paths plus eight formatting temporaries, and hew_tcp_connect_timeout borrows (does not retain) host, so the former 18-plan pre-refactor endpoint topology is semantically obsolete";
+const NET_CONNECT_TIMEOUT_REASON: &str = "the current copied connect_timeout body has no suspend edge; its 14 elaborated drops cover host's four live terminal/error paths, two restored receiver error-path releases, and eight formatting temporaries, and hew_tcp_connect_timeout borrows (does not retain) host, so the former 18-plan pre-refactor endpoint topology is semantically obsolete";
 
 fn accounted_shortfalls() -> impl Iterator<Item = (&'static str, &'static str, usize, &'static str)>
 {
     ACCOUNTED_BELOW_BASELINE.iter().copied().chain(
         ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES
             .iter()
-            .map(|(file, function)| (*file, *function, 12, NET_CONNECT_TIMEOUT_REASON)),
+            .map(|(file, function)| (*file, *function, 14, NET_CONNECT_TIMEOUT_REASON)),
     )
 }
 

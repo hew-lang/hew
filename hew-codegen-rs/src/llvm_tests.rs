@@ -5512,6 +5512,55 @@ fn finish_test_fn(fn_ctx: &FnCtx<'_, '_>) {
 }
 
 #[test]
+fn failed_actor_sender_transfer_closes_the_prepared_owner() {
+    let ctx = Context::create();
+    let module = ctx.create_module("failed_actor_sender_transfer_cleanup");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "sender_cleanup");
+    let sender_ty = ResolvedTy::named_builtin(
+        "channel.Sender",
+        hew_types::BuiltinType::Sender,
+        vec![ResolvedTy::I64],
+    );
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let slot = fn_ctx
+        .builder
+        .build_alloca(ptr_ty, "local_0")
+        .expect("Sender carrier slot");
+    fn_ctx.locals.insert(0, (slot, ptr_ty.into()));
+    fn_ctx.local_tys.insert(0, sender_ty.clone());
+    let plan = hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        &sender_ty,
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .expect("Sender must have the canonical prepared-carrier plan");
+
+    emit_prepared_carrier_drop(
+        &fn_ctx,
+        Place::Local(0),
+        &plan,
+        hew_mir::PreparedCarrierBoundary::Actor,
+    )
+    .expect("a failed actor submission must close its transferred Sender owner");
+    finish_test_fn(&fn_ctx);
+
+    let ir = module.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call void @hew_channel_sender_close").count(),
+        1,
+        "the undelivered Sender must close exactly once:\n{ir}"
+    );
+    assert!(
+        ir.contains("store ptr null, ptr %local_0"),
+        "prepared Sender cleanup must disarm the local carrier slot:\n{ir}"
+    );
+    assert!(module.verify().is_ok(), "sender cleanup IR:\n{ir}");
+}
+
+#[test]
 fn aggregate_borrowed_ingress_array_retains_each_string_occurrence() {
     let ctx = Context::create();
     let m = ctx.create_module("aggregate_borrowed_ingress_array");

@@ -18440,7 +18440,16 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
         StateFieldCloneKind::Rc
         | StateFieldCloneKind::Weak
         | StateFieldCloneKind::ChannelSender => {
-            if boundary == hew_mir::PreparedCarrierBoundary::Actor {
+            // Unlike Rc/Weak, Sender<T> is an explicitly sendable actor
+            // payload. Outbound mode resolution transfers its final owner;
+            // failed submission therefore closes the still-caller-owned
+            // prepared carrier here.
+            if boundary == hew_mir::PreparedCarrierBoundary::Actor
+                && matches!(
+                    plan.root(),
+                    StateFieldCloneKind::Rc | StateFieldCloneKind::Weak
+                )
+            {
                 return Err(CodegenError::FailClosed(
                     "prepared actor carrier drop contains a local refcounted handle".into(),
                 ));

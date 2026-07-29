@@ -83,6 +83,8 @@ mod quic_string_temp_drop_canary;
 mod rc_weak_lowering;
 #[path = "lowering_expr/regex_predicate_lowering.rs"]
 mod regex_predicate_lowering;
+#[path = "lowering_expr/returned_member_cancel_drop.rs"]
+mod returned_member_cancel_drop;
 #[path = "lowering_expr/runtime_abi_instr.rs"]
 mod runtime_abi_instr;
 #[path = "lowering_expr/select_arm_dataflow.rs"]

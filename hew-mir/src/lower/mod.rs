@@ -5504,7 +5504,7 @@ pub(crate) fn lower_function(
     // fixtures — real programs whose native binaries are proven leak- and
     // double-free-clean under `leaks --atExit` and the poisoned allocator —
     // as well as by hew-mir's hand-constructed CheckedMirFunction unit inputs.
-    let elaborated = elaborate(
+    let (elaborated, elaboration_diagnostics) = elaborate(
         &checked,
         &builder,
         &thir.statements,
@@ -5512,6 +5512,7 @@ pub(crate) fn lower_function(
         Some(&string_derivation.allowed),
         Some(&bytes_derivation.allowed),
     );
+    diagnostics.extend(elaboration_diagnostics);
 
     // Fail-closed validation of the elaborated drop plan. Surfaces a
     // `MirCheck::DropPlanUndetermined` for any Return-block whose

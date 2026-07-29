@@ -364,7 +364,7 @@ impl Builder {
         dataflow_result
             .checks
             .extend(crate::model::validate_context_markers(&raw));
-        let diagnostics: Vec<MirDiagnostic> = dataflow_result
+        let mut diagnostics: Vec<MirDiagnostic> = dataflow_result
             .checks
             .iter()
             .filter_map(check_to_diagnostic)
@@ -380,7 +380,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &builder,
             &[],
@@ -388,6 +388,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        diagnostics.extend(elaboration_diagnostics);
         LoweredFunction {
             thir,
             raw,
@@ -959,7 +960,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &builder,
             &thir.statements,
@@ -967,6 +968,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
             thir,

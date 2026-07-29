@@ -722,7 +722,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &builder,
             &thir.statements,
@@ -730,6 +730,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
             thir,
@@ -904,7 +905,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &builder,
             &thir.statements,
@@ -912,6 +913,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        diagnostics.extend(elaboration_diagnostics);
 
         LoweredFunction {
             thir,
@@ -1437,7 +1439,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &body_builder,
             &thir.statements,
@@ -1445,6 +1447,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        body_diagnostics.extend(elaboration_diagnostics);
 
         let body_lowered = LoweredFunction {
             thir,
@@ -2336,7 +2339,7 @@ impl Builder {
             checks: dataflow_result.checks.clone(),
             cooperate_sites,
         };
-        let elaborated = elaborate(
+        let (elaborated, elaboration_diagnostics) = elaborate(
             &checked,
             &body_builder,
             &thir.statements,
@@ -2344,6 +2347,7 @@ impl Builder {
             Some(&string_derivation.allowed),
             Some(&bytes_derivation.allowed),
         );
+        body_diagnostics.extend(elaboration_diagnostics);
 
         let body_lowered = LoweredFunction {
             thir,

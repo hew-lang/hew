@@ -77,7 +77,7 @@ fn pipeline_allowing_mir_diagnostics(source: &str) -> IrPipeline {
 
 #[test]
 fn affine_vec_iter_snapshot_is_rejected_before_runtime_clone() {
-    let pipeline = pipeline_allowing_mir_diagnostics(
+    let parsed = hew_parser::parse(
         r"
         #[resource]
         type File { fd: i64 }
@@ -93,15 +93,21 @@ fn affine_vec_iter_snapshot_is_rejected_before_runtime_clone() {
         ",
     );
     assert!(
-        pipeline.diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
-                if construct == "`Vec<Holder>` clone"
-        ) && diagnostic
-            .note
-            .contains("resource `File` has an affine close contract")),
-        "Vec::iter must not synthesize an affine Vec clone: {:#?}",
-        pipeline.diagnostics
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.iter().any(|error| {
+            error.message.contains("`VecIter<Holder>` is not supported")
+                && error
+                    .message
+                    .contains("resource/linear value `File` has no semantic clone/retain operation")
+        }),
+        "Vec::iter must reject affine element clone-out before HIR/MIR: {:#?}",
+        tc_output.errors
     );
 }
 

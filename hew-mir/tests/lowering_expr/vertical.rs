@@ -1968,6 +1968,147 @@ fn recv_handler_conditional_record_ingress_retains_before_guarded_drop() {
     );
 }
 
+/// A projected record is a byte-copy alias even though its nested string is not
+/// directly visible to the string share scanner. Before the alias enters a new
+/// owning record, MIR must carry one recursive retain authority.
+#[test]
+fn actor_state_nested_record_alias_ingress_retains_recursive_string_leaves() {
+    let pipeline = lower_source(
+        r"
+        record Leaf { text: string }
+        record Wrap { leaf: Leaf }
+        actor Keeper {
+            var cur: Wrap;
+            receive fn rewrite() {
+                cur = Wrap { leaf: cur.leaf };
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Keeper__recv__rewrite")
+        .expect("nested record alias handler raw MIR present");
+    let conditions = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::StringRetain { value, condition } => Some((*value, condition)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        conditions,
+        vec![(
+            Place::Local(1),
+            &hew_mir::StringRetainCondition::AggregateBorrowedIngress
+        )],
+        "the projected Leaf alias needs exactly one recursive owner mint: {:?}",
+        handler.blocks
+    );
+}
+
+/// The recursive retain authority must tag-dispatch an inline enum and descend
+/// through a record payload rather than treating the enum carrier as leafless.
+#[test]
+fn actor_state_enum_payload_alias_ingress_retains_recursive_string_leaves() {
+    let pipeline = lower_source(
+        r"
+        record Leaf { text: string }
+        enum Payload { Empty; Hold(Leaf); }
+        record Wrap { payload: Payload }
+        actor Keeper {
+            var cur: Wrap;
+            receive fn rewrite() {
+                cur = Wrap { payload: cur.payload };
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Keeper__recv__rewrite")
+        .expect("enum payload alias handler raw MIR present");
+    let conditions = handler
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instr| match instr {
+            Instr::StringRetain { value, condition } => Some((*value, condition)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        conditions,
+        vec![(
+            Place::Local(1),
+            &hew_mir::StringRetainCondition::AggregateBorrowedIngress
+        )],
+        "the projected Payload alias needs exactly one recursive owner mint: {:?}",
+        handler.blocks
+    );
+}
+
+/// A whole-value actor-state load is already deep-cloned by its `Owned` load
+/// mode. Its one proven store escape must consume that clone without an
+/// additional aggregate-ingress retain.
+#[test]
+fn actor_state_owned_record_self_store_does_not_double_retain_strings() {
+    let pipeline = lower_source(
+        r"
+        record Profile { name: string }
+        actor Keeper {
+            var prof: Profile;
+            receive fn rewrite() {
+                prof = prof;
+            }
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+    let handler = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Keeper__recv__rewrite")
+        .expect("record self-store handler raw MIR present");
+    assert!(
+        handler
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::ActorStateFieldLoad {
+                    mode: hew_mir::ActorStateLoadMode::Owned,
+                    ..
+                }
+            )),
+        "whole-record self-store must retain through its Owned load: {:?}",
+        handler.blocks
+    );
+    assert!(
+        !handler
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::StringRetain {
+                    condition: hew_mir::StringRetainCondition::AggregateBorrowedIngress,
+                    ..
+                }
+            )),
+        "the Owned load already minted the recursive owner; a second aggregate \
+         retain would leak: {:?}",
+        handler.blocks
+    );
+}
+
 /// A cyclic record ingress carries the exact actor-state leaf path while
 /// retaining each borrowed incoming string. The overwrite helper releases the
 /// old String owner even on equal-pointer replacement, balancing one mint

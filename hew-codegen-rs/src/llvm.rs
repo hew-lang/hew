@@ -13624,6 +13624,9 @@ fn lower_instruction_with_cancel_drops(
                 StringRetainCondition::Always => {
                     retain_string_value(fn_ctx, *value, "mir_share")?;
                 }
+                StringRetainCondition::AggregateBorrowedIngress => {
+                    retain_strings_in_borrowed_aggregate(fn_ctx, *value, "mir_aggregate_share")?;
+                }
                 StringRetainCondition::ActorStateRecordBorrowedIngress {
                     state_field,
                     record_path,
@@ -15805,6 +15808,468 @@ fn retain_string_value(fn_ctx: &FnCtx<'_, '_>, value: Place, label: &str) -> Cod
         )
         .llvm_ctx_with(|| format!("hew_string_clone retain for {label}"))?;
     Ok(())
+}
+
+/// Retain one string owner held at an aggregate leaf slot.
+///
+/// This is the address-based counterpart of [`retain_string_value`]. The
+/// recursive aggregate ingress walk already has the field address, so routing
+/// through a synthetic `Place` would lose the record/enum path authority.
+fn retain_string_slot(
+    fn_ctx: &FnCtx<'_, '_>,
+    slot: PointerValue<'_>,
+    slot_ty: BasicTypeEnum<'_>,
+    label: &str,
+) -> CodegenResult<()> {
+    let BasicTypeEnum::PointerType(_) = slot_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "aggregate borrowed-ingress string leaf has non-pointer slot type: {slot_ty:?}"
+        )));
+    };
+    let string = fn_ctx
+        .builder
+        .build_load(slot_ty, slot, &format!("{label}_string_load"))
+        .llvm_ctx_with(|| format!("aggregate borrowed-ingress StringRetain load for {label}"))?;
+    let clone_fn = get_or_declare_clone_helper(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &CloneHelper::Allocating {
+            name: "hew_string_clone",
+        },
+    );
+    fn_ctx
+        .builder
+        .build_call(
+            clone_fn,
+            &[string.into()],
+            &format!("{label}_string_retain"),
+        )
+        .llvm_ctx_with(|| {
+            format!("aggregate borrowed-ingress hew_string_clone retain for {label}")
+        })?;
+    Ok(())
+}
+
+/// Classify the borrowed ingress through the same recursive
+/// `StateFieldCloneKind` authority consumed by record/enum clone, drop, and
+/// overwrite-release synthesis.
+fn borrowed_aggregate_retain_kind(
+    fn_ctx: &FnCtx<'_, '_>,
+    ty: &ResolvedTy,
+) -> CodegenResult<StateFieldCloneKind> {
+    let record_layouts = codegen_record_layouts(fn_ctx);
+    let mut visited = HashSet::new();
+    hew_mir::classify_state_field_with_resource_handles(
+        ty,
+        &record_layouts,
+        fn_ctx.enum_layouts,
+        &[],
+        fn_ctx.resource_opaque_close,
+        &mut visited,
+    )
+    .map_err(|error| {
+        CodegenError::FailClosed(format!(
+            "aggregate borrowed-ingress value {ty} has no structural clone-kind authority: {error}"
+        ))
+    })
+}
+
+/// Whether a classified inline aggregate contains at least one string leaf.
+///
+/// Collection and indirect-enum storage is deliberately opaque here: their
+/// pointer leaves are transferred by overwrite neutralisation. This predicate
+/// also prevents a zero-string enum from emitting needless tag dispatch.
+fn aggregate_kind_contains_inline_string(
+    fn_ctx: &FnCtx<'_, '_>,
+    kind: &StateFieldCloneKind,
+    depth: u32,
+) -> CodegenResult<bool> {
+    if depth > OVERWRITE_RELEASE_MAX_DEPTH {
+        return Err(CodegenError::FailClosed(format!(
+            "aggregate borrowed-ingress string-capacity walk exceeded depth \
+             {OVERWRITE_RELEASE_MAX_DEPTH}"
+        )));
+    }
+    match kind {
+        StateFieldCloneKind::String => Ok(true),
+        StateFieldCloneKind::Tuple { elems } => {
+            for elem in elems {
+                if aggregate_kind_contains_inline_string(fn_ctx, elem, depth + 1)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        StateFieldCloneKind::Array { elem, len } => {
+            Ok(*len != 0 && aggregate_kind_contains_inline_string(fn_ctx, elem, depth + 1)?)
+        }
+        StateFieldCloneKind::UserRecord { name } => {
+            let fields = classify_record_drop_fields_for_key(fn_ctx, name)?;
+            for field in &fields {
+                if aggregate_kind_contains_inline_string(fn_ctx, field, depth + 1)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        StateFieldCloneKind::Enum { name } => {
+            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+                return Ok(false);
+            }
+            for variant in classify_enum_drop_variants_for_key(fn_ctx, name)? {
+                for field in &variant {
+                    if aggregate_kind_contains_inline_string(fn_ctx, field, depth + 1)? {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }
+        StateFieldCloneKind::BitCopy { .. }
+        | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. }
+        | StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::IoHandle { .. }
+        | StateFieldCloneKind::ClosurePair
+        | StateFieldCloneKind::OpaqueHandle { .. }
+        | StateFieldCloneKind::Resource { .. } => Ok(false),
+    }
+}
+
+/// Recursively retain every string occurrence in one borrowed inline
+/// aggregate.
+///
+/// A non-string projection load is a byte-copy alias. When it enters an owning
+/// record/tuple/enum sink, its nested strings need independent `+1` owners
+/// before the old aggregate's recursive overwrite drop releases its copies.
+///
+/// This cannot call the existing clone thunk: that thunk also clones
+/// collection/RC/bytes leaves, while overwrite neutralisation transfers those
+/// handles and would leak the extra clones. It therefore performs a
+/// string-only walk, but consumes the exact `StateFieldCloneKind` and
+/// record/enum classification authorities used by clone/drop/overwrite
+/// synthesis—never a second `ResolvedTy` name-to-layout resolver.
+fn retain_strings_in_borrowed_aggregate(
+    fn_ctx: &FnCtx<'_, '_>,
+    value: Place,
+    label: &str,
+) -> CodegenResult<()> {
+    let ty = place_resolved_ty(fn_ctx, value)?;
+    let kind = borrowed_aggregate_retain_kind(fn_ctx, ty)?;
+    if matches!(kind, StateFieldCloneKind::String) {
+        return Err(CodegenError::FailClosed(
+            "aggregate borrowed-ingress StringRetain received a scalar string".into(),
+        ));
+    }
+    if !aggregate_kind_contains_inline_string(fn_ctx, &kind, 0)? {
+        return Ok(());
+    }
+    let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
+    retain_strings_in_aggregate_slot(fn_ctx, slot, slot_ty, &kind, 0, label)
+}
+
+fn retain_strings_in_aggregate_slot<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    slot: PointerValue<'ctx>,
+    slot_ty: BasicTypeEnum<'ctx>,
+    kind: &StateFieldCloneKind,
+    depth: u32,
+    label: &str,
+) -> CodegenResult<()> {
+    if depth > OVERWRITE_RELEASE_MAX_DEPTH {
+        return Err(CodegenError::FailClosed(format!(
+            "aggregate borrowed-ingress string retain exceeded depth bound \
+             {OVERWRITE_RELEASE_MAX_DEPTH} at kind {kind:?}"
+        )));
+    }
+    if !aggregate_kind_contains_inline_string(fn_ctx, kind, depth)? {
+        return Ok(());
+    }
+    match kind {
+        StateFieldCloneKind::String => retain_string_slot(fn_ctx, slot, slot_ty, label),
+        StateFieldCloneKind::Tuple { elems } => {
+            let BasicTypeEnum::StructType(st) = slot_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress tuple has non-struct slot type: {slot_ty:?}"
+                )));
+            };
+            if st.count_fields() as usize != elems.len() {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress tuple has {} LLVM fields but {} classified fields",
+                    st.count_fields(),
+                    elems.len()
+                )));
+            }
+            for (idx, elem) in elems.iter().enumerate() {
+                let field_idx = u32::try_from(idx).map_err(|_| {
+                    CodegenError::FailClosed(
+                        "aggregate borrowed-ingress tuple arity exceeds u32".into(),
+                    )
+                })?;
+                let field_ty = st.get_field_type_at_index(field_idx).ok_or_else(|| {
+                    CodegenError::FailClosed(
+                        "aggregate borrowed-ingress tuple field layout drift".into(),
+                    )
+                })?;
+                let field_ptr = fn_ctx
+                    .builder
+                    .build_struct_gep(
+                        st,
+                        slot,
+                        field_idx,
+                        &format!("{label}_d{depth}_tuple_f{field_idx}"),
+                    )
+                    .llvm_ctx("aggregate borrowed-ingress tuple gep")?;
+                retain_strings_in_aggregate_slot(
+                    fn_ctx,
+                    field_ptr,
+                    field_ty,
+                    elem,
+                    depth + 1,
+                    label,
+                )?;
+            }
+            Ok(())
+        }
+        StateFieldCloneKind::Array { elem, len } => {
+            let BasicTypeEnum::ArrayType(array_ty) = slot_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress array has non-array slot type: {slot_ty:?}"
+                )));
+            };
+            if u64::from(array_ty.len()) != *len {
+                return Err(CodegenError::FailClosed(
+                    "aggregate borrowed-ingress array kind/layout length mismatch".into(),
+                ));
+            }
+            let elem_ty = array_ty.get_element_type();
+            for elem_idx in 0..array_ty.len() {
+                // SAFETY: `slot` addresses this fixed-size array and
+                // `elem_idx` is drawn from its declared in-bounds length.
+                let elem_ptr = unsafe {
+                    fn_ctx
+                        .builder
+                        .build_in_bounds_gep(
+                            array_ty,
+                            slot,
+                            &[
+                                fn_ctx.ctx.i32_type().const_zero(),
+                                fn_ctx.ctx.i32_type().const_int(u64::from(elem_idx), false),
+                            ],
+                            &format!("{label}_d{depth}_array_e{elem_idx}"),
+                        )
+                        .llvm_ctx("aggregate borrowed-ingress array gep")?
+                };
+                retain_strings_in_aggregate_slot(
+                    fn_ctx,
+                    elem_ptr,
+                    elem_ty,
+                    elem,
+                    depth + 1,
+                    label,
+                )?;
+            }
+            Ok(())
+        }
+        StateFieldCloneKind::UserRecord { name } => {
+            let BasicTypeEnum::StructType(st) = slot_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress record `{name}` has non-struct slot type: \
+                     {slot_ty:?}"
+                )));
+            };
+            let fields = classify_record_drop_fields_for_key(fn_ctx, name)?;
+            if st.count_fields() as usize != fields.len() {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress record `{name}` has {} LLVM fields but {} \
+                     classified fields",
+                    st.count_fields(),
+                    fields.len()
+                )));
+            }
+            for (idx, field) in fields.iter().enumerate() {
+                let field_idx = u32::try_from(idx).map_err(|_| {
+                    CodegenError::FailClosed(
+                        "aggregate borrowed-ingress record arity exceeds u32".into(),
+                    )
+                })?;
+                let field_ty = st.get_field_type_at_index(field_idx).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "aggregate borrowed-ingress record `{name}` field layout drift"
+                    ))
+                })?;
+                let field_ptr = fn_ctx
+                    .builder
+                    .build_struct_gep(
+                        st,
+                        slot,
+                        field_idx,
+                        &format!("{label}_d{depth}_record_f{field_idx}"),
+                    )
+                    .llvm_ctx("aggregate borrowed-ingress record gep")?;
+                retain_strings_in_aggregate_slot(
+                    fn_ctx,
+                    field_ptr,
+                    field_ty,
+                    field,
+                    depth + 1,
+                    label,
+                )?;
+            }
+            Ok(())
+        }
+        StateFieldCloneKind::Enum { name } => {
+            if crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts) {
+                return Ok(());
+            }
+            let BasicTypeEnum::StructType(outer_struct) = slot_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress enum `{name}` has non-struct slot type: \
+                     {slot_ty:?}"
+                )));
+            };
+            let variants = classify_enum_drop_variants_for_key(fn_ctx, name)?;
+            let layout = fn_ctx.machine_layouts.get(name).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress enum `{name}` has no tagged-union layout"
+                ))
+            })?;
+            if outer_struct != layout.outer_struct
+                || variants.len() != layout.variant_struct_tys.len()
+            {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate borrowed-ingress enum `{name}` classifier/layout drift"
+                )));
+            }
+            let current = fn_ctx.builder.get_insert_block().ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "aggregate borrowed-ingress enum retain has no insertion block".into(),
+                )
+            })?;
+            let parent = current.get_parent().ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "aggregate borrowed-ingress enum retain has no parent function".into(),
+                )
+            })?;
+            let tag_ptr = fn_ctx
+                .builder
+                .build_struct_gep(
+                    outer_struct,
+                    slot,
+                    0,
+                    &format!("{label}_d{depth}_enum_tag_ptr"),
+                )
+                .llvm_ctx("aggregate borrowed-ingress enum tag gep")?;
+            let tag = fn_ctx
+                .builder
+                .build_load(
+                    layout.tag_int_ty,
+                    tag_ptr,
+                    &format!("{label}_d{depth}_enum_tag"),
+                )
+                .llvm_ctx("aggregate borrowed-ingress enum tag load")?
+                .into_int_value();
+            let merge_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent, &format!("{label}_d{depth}_enum_merge"));
+            let trap_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent, &format!("{label}_d{depth}_enum_tag_oob"));
+            let mut cases = Vec::with_capacity(variants.len());
+            let mut variant_bbs = Vec::with_capacity(variants.len());
+            for idx in 0..variants.len() {
+                let bb = fn_ctx
+                    .ctx
+                    .append_basic_block(parent, &format!("{label}_d{depth}_enum_v{idx}"));
+                cases.push((layout.tag_int_ty.const_int(idx as u64, false), bb));
+                variant_bbs.push(bb);
+            }
+            fn_ctx
+                .builder
+                .build_switch(tag, trap_bb, &cases)
+                .llvm_ctx("aggregate borrowed-ingress enum tag switch")?;
+            fn_ctx.builder.position_at_end(trap_bb);
+            emit_trap_with_code_raw(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &fn_ctx.builder,
+                HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+                "aggregate_string_retain_tag_oob",
+            )?;
+            for (idx, variant) in variants.iter().enumerate() {
+                fn_ctx.builder.position_at_end(variant_bbs[idx]);
+                let payload = fn_ctx
+                    .builder
+                    .build_struct_gep(
+                        outer_struct,
+                        slot,
+                        1,
+                        &format!("{label}_d{depth}_enum_v{idx}_payload"),
+                    )
+                    .llvm_ctx("aggregate borrowed-ingress enum payload gep")?;
+                let variant_struct = layout.variant_struct_tys[idx];
+                if variant_struct.count_fields() as usize != variant.len() {
+                    return Err(CodegenError::FailClosed(format!(
+                        "aggregate borrowed-ingress enum `{name}` variant {idx} has {} LLVM \
+                         fields but {} classified fields",
+                        variant_struct.count_fields(),
+                        variant.len()
+                    )));
+                }
+                for (field_idx, field) in variant.iter().enumerate() {
+                    let field_idx = u32::try_from(field_idx).map_err(|_| {
+                        CodegenError::FailClosed(
+                            "aggregate borrowed-ingress enum payload arity exceeds u32".into(),
+                        )
+                    })?;
+                    let field_ty = variant_struct
+                        .get_field_type_at_index(field_idx)
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(format!(
+                                "aggregate borrowed-ingress enum `{name}` field layout drift"
+                            ))
+                        })?;
+                    let field_ptr = fn_ctx
+                        .builder
+                        .build_struct_gep(
+                            variant_struct,
+                            payload,
+                            field_idx,
+                            &format!("{label}_d{depth}_enum_v{idx}_f{field_idx}"),
+                        )
+                        .llvm_ctx("aggregate borrowed-ingress enum field gep")?;
+                    retain_strings_in_aggregate_slot(
+                        fn_ctx,
+                        field_ptr,
+                        field_ty,
+                        field,
+                        depth + 1,
+                        label,
+                    )?;
+                }
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(merge_bb)
+                    .llvm_ctx("aggregate borrowed-ingress enum merge branch")?;
+            }
+            fn_ctx.builder.position_at_end(merge_bb);
+            Ok(())
+        }
+        StateFieldCloneKind::BitCopy { .. }
+        | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. }
+        | StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::IoHandle { .. }
+        | StateFieldCloneKind::ClosurePair
+        | StateFieldCloneKind::OpaqueHandle { .. }
+        | StateFieldCloneKind::Resource { .. } => Ok(()),
+    }
 }
 
 /// Retain a borrowed loop-carried message string entering actor-state.

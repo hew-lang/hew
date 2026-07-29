@@ -305,12 +305,13 @@ mod tests {
         // provenance question to the ledger or the module authority. This is a
         // property of the SOURCE, so it holds for constructors nobody has
         // written yet.
-        const ASKS: [&str; 5] = [
+        const ASKS: [&str; 6] = [
             "note_let_binder_proven_foreign",
             "note_payload_binder_proven_foreign",
             "note_rebind_proven_foreign",
             "value_is_free_of_opaque_foreign_provenance",
             "proven_foreign_bindings",
+            "callee_returns_fresh_variant_payload",
         ];
         let source = include_str!("owner_mint.rs");
         let squeezed: String = source.chars().filter(|c| !c.is_whitespace()).collect();

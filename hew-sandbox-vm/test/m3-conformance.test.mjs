@@ -68,6 +68,26 @@ test("M3 fixture subset is explicit and complete", () => {
   }
 });
 
+test("Vec::get returns Option::None instead of trapping out of bounds", () => {
+  const bytecode = readJson("fixtures/06-vector-basics/bytecode.json");
+  const get = bytecode.functions
+    .flatMap((fn) => fn.blocks)
+    .flatMap((block) => block.instructions)
+    .find((instruction) => instruction.op === "vector.get");
+  assert.ok(get, "vector fixture must contain vector.get");
+  get.args[1] = { kind: "literal", value: 99 };
+
+  const trace = runBytecode(bytecode, {
+    fixtureId: "vector-get-none",
+    traceId: "trace:vector-get-none",
+    replay: { seed: 6, step_budget: 1000, virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 }, inputs: [] }
+  });
+
+  assert.equal(trace.result, "ok");
+  assert.deepEqual(trace.final_state.stdout, ["2\n", "-1\n"]);
+  assert.deepEqual(trace.final_state.runtime_failures, []);
+});
+
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
 }

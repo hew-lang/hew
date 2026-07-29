@@ -171,7 +171,7 @@ function packageWithInstructions(id, instructions, stdlibSymbols, locals = [loca
   return {
     schema_version: "hew.sandbox.bytecode.v0",
     package_id: `pkg:${id}`,
-    hew_version: "0.5.0-pre",
+    hew_version: "0.6.0-rc1",
     compiler_version: "test",
     profile: "sandbox.educational.v0",
     source_map: { sources: [], spans: [] },
@@ -244,7 +244,7 @@ function fakeTrace() {
     trace_id: "trace:playground-contract",
     fixture_id: "playground-contract",
     profile: "sandbox.educational.v0",
-    hew_version: "0.5.0-pre",
+    hew_version: "0.6.0-rc1",
     sandbox_version: "0.0.0-spec",
     result: "ok",
     replay: replay(42, 12),

@@ -331,6 +331,29 @@ fn empty_enum_carrier_projection_forwarding_keeps_tuple_and_enum_drop_authoritie
         !helper.contains("kind=record_in_place"),
         "the payload alias must not receive a separate RecordInPlace drop:\n{helper}"
     );
+    let helper_lines: Vec<_> = helper.lines().collect();
+    for exit in ["cancel[", "panic[", "return["] {
+        assert!(
+            helper_lines.iter().enumerate().any(|(index, line)| {
+                if !line.trim_start().starts_with(exit) {
+                    return false;
+                }
+                let drops: Vec<_> = helper_lines[index + 1..]
+                    .iter()
+                    .take_while(|drop| drop.starts_with("      "))
+                    .copied()
+                    .collect();
+                drops
+                    .iter()
+                    .any(|drop| drop.contains("ty=Option<Payload> kind=enum_in_place"))
+                    && drops.iter().any(|drop| {
+                        drop.contains("ty=(Option<Payload>, Vec<string>) kind=tuple_in_place")
+                    })
+            }),
+            "an active forwarded payload must keep both its enum authority and the residual \
+             tuple-sibling authority on a {exit} exit:\n{helper}"
+        );
+    }
 }
 
 #[cfg_attr(

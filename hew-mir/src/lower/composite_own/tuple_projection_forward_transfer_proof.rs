@@ -229,6 +229,140 @@ fn proven_empty_enum_carrier_allows_projection_forwarding() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the explicit six-block fixture keeps the disjoint transfer and empty-cleanup CFG \
+              visible to the ownership proof"
+)]
+fn disjoint_empty_assignment_cleanup_preserves_projection_forwarding() {
+    let carrier = enum_carrier_ty();
+    let blocks = vec![
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                Instr::ConstI64 {
+                    dest: Place::Local(5),
+                    value: 1,
+                },
+                Instr::Move {
+                    dest: Place::MachineTag(4),
+                    src: Place::Local(5),
+                },
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(4),
+                },
+            ],
+            terminator: Terminator::Branch {
+                cond: Place::Local(9),
+                then_target: 1,
+                else_target: 3,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![
+                Instr::TupleFieldLoad {
+                    tuple: Place::Local(0),
+                    field_index: 0,
+                    dest: Place::Local(1),
+                },
+                Instr::AggregateProjectionNeutralize {
+                    root: Place::Local(0),
+                    fields: vec![0],
+                    transferee: Place::Local(1),
+                    scope_exit_owner: None,
+                },
+            ],
+            terminator: Terminator::Branch {
+                cond: Place::Local(8),
+                then_target: 2,
+                else_target: 4,
+            },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 4 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![
+                Instr::Drop {
+                    place: Place::Local(2),
+                    ty: carrier.clone(),
+                    drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                        crate::ownership::InPlaceReleaseKind::Enum,
+                    )),
+                },
+                Instr::ConstI64 {
+                    dest: Place::Local(7),
+                    value: 1,
+                },
+                Instr::Move {
+                    dest: Place::MachineTag(6),
+                    src: Place::Local(7),
+                },
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(6),
+                },
+            ],
+            terminator: Terminator::Goto { target: 5 },
+        },
+        BasicBlock {
+            id: 4,
+            statements: vec![],
+            instructions: vec![Instr::Move {
+                dest: Place::Local(2),
+                src: Place::Local(1),
+            }],
+            terminator: Terminator::Goto { target: 5 },
+        },
+        BasicBlock {
+            id: 5,
+            statements: vec![],
+            instructions: vec![Instr::Move {
+                dest: Place::Local(3),
+                src: Place::Local(2),
+            }],
+            terminator: Terminator::Return,
+        },
+    ];
+    let proofs = derive_tuple_projection_forward_transfers(
+        &blocks,
+        &HashMap::new(),
+        &[(0, 0)].into_iter().collect(),
+        &[
+            ResolvedTy::Tuple(vec![carrier.clone(), ResolvedTy::I64]),
+            carrier.clone(),
+            carrier.clone(),
+            carrier.clone(),
+            carrier.clone(),
+            ResolvedTy::I64,
+            carrier.clone(),
+            ResolvedTy::I64,
+            ResolvedTy::Bool,
+            ResolvedTy::Bool,
+        ],
+        &HashMap::new(),
+        &enum_layouts(),
+    );
+    assert!(
+        proofs
+            .owner_exempt_roots
+            .get(&3)
+            .is_some_and(|roots| roots.contains(&0)),
+        "an enum-in-place cleanup confined to the alternate exact-empty assignment arm \
+         must not suppress the tuple sibling's residual drop authority"
+    );
+}
+
+#[test]
 fn owner_exemption_does_not_admit_an_unrelated_tuple_root() {
     let alias_of = [(10, 0), (11, 1)].into_iter().collect();
     let mut excluded = HashSet::new();

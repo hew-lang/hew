@@ -15,6 +15,9 @@ CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
 RUNBOOK = ROOT / "docs" / "release-runbook.md"
 UNIX_INSTALLER = ROOT / "installers" / "install.sh"
+PRE_RELEASE_VALIDATOR = ROOT / "scripts" / "pre-release-validate.sh"
+RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.sh"
+MAKEFILE = ROOT / "Makefile"
 
 
 def workflow() -> str:
@@ -494,6 +497,29 @@ def test_release_checksums_require_every_platform_asset() -> None:
     assert 'sha256sum "${assets[@]}"' in release
 
 
+def test_prerelease_validator_proves_external_staticlib_linking() -> None:
+    validator = PRE_RELEASE_VALIDATOR.read_text()
+    probe = RELEASE_LINK_PROBE.read_text()
+    makefile = MAKEFILE.read_text()
+
+    assert "verify_libhew_external_link" in validator
+    assert (
+        "scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a"
+        in validator
+    )
+    assert "hew.exe build .\\\\_smoke.hew -o .\\\\_smoke.exe" in validator
+    assert "ar t target/release-lib" not in validator
+    assert "target/release/hew _smoke.hew -o" not in validator
+    assert '"$WORK_DIR/release/bin/hew" build' in probe
+    assert "--link-lib" in probe
+    assert 'String::from("release-link-ok")' in probe
+    assert "test-release-lib-link:" in makefile
+    assert (
+        "scripts/test-release-lib-link.sh --hew $(RELEASE_DIR)/hew --archive $(RELEASE_LIB_DIR)/libhew.a"
+        in makefile
+    )
+
+
 def test_release_notes_and_runbook_keep_candidate_truthful() -> None:
     notes = RELEASE_NOTES.read_text()
     runbook = RUNBOOK.read_text()
@@ -535,6 +561,7 @@ _TESTS = [
     test_public_ecosystem_artifacts_follow_canonical_release,
     test_unix_installer_accepts_every_published_freebsd_architecture,
     test_release_checksums_require_every_platform_asset,
+    test_prerelease_validator_proves_external_staticlib_linking,
     test_release_notes_and_runbook_keep_candidate_truthful,
     test_contract_oracle_runs_in_required_ci,
 ]

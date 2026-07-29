@@ -289,9 +289,39 @@ fn returned_member_alias_read_blocks(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReturnedMemberReAdmissionPath {
+    Normal,
+    Abandonment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ReturnedMemberReAdmission {
     plan_index: usize,
     block: u32,
+    path: ReturnedMemberReAdmissionPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReturnedMemberReAdmissionAmbiguity {
+    first: ReturnedMemberReAdmission,
+    second: ReturnedMemberReAdmission,
+}
+
+fn returned_member_re_admission_path(exit: &ExitPath) -> ReturnedMemberReAdmissionPath {
+    match exit {
+        ExitPath::Panic { .. }
+        | ExitPath::Cancel { .. }
+        | ExitPath::Yield { .. }
+        | ExitPath::Suspend { .. } => ReturnedMemberReAdmissionPath::Abandonment,
+        ExitPath::Return { .. }
+        | ExitPath::Goto { .. }
+        | ExitPath::Branch { .. }
+        | ExitPath::Call { .. }
+        | ExitPath::Send { .. }
+        | ExitPath::Ask { .. }
+        | ExitPath::Select { .. }
+        | ExitPath::Join { .. } => ReturnedMemberReAdmissionPath::Normal,
+    }
 }
 
 /// Blocks reachable from `start` without executing `removed`.
@@ -360,11 +390,16 @@ fn select_returned_member_re_admissions(
     blocks: &[BasicBlock],
     block_reach: &HashMap<u32, HashSet<u32>>,
     candidates: &[ReturnedMemberReAdmission],
-) -> Vec<ReturnedMemberReAdmission> {
+) -> Result<Vec<ReturnedMemberReAdmission>, ReturnedMemberReAdmissionAmbiguity> {
     let mut suppressed = HashSet::new();
     for upstream in candidates {
         for downstream in candidates {
             if upstream.plan_index == downstream.plan_index {
+                continue;
+            }
+            if matches!(upstream.path, ReturnedMemberReAdmissionPath::Abandonment)
+                || matches!(downstream.path, ReturnedMemberReAdmissionPath::Abandonment)
+            {
                 continue;
             }
             let reaches_downstream = block_reach
@@ -378,16 +413,18 @@ fn select_returned_member_re_admissions(
             } else if block_dominates(blocks, upstream.block, downstream.block) {
                 suppressed.insert(downstream.plan_index);
             } else {
-                suppressed.insert(upstream.plan_index);
-                suppressed.insert(downstream.plan_index);
+                return Err(ReturnedMemberReAdmissionAmbiguity {
+                    first: *upstream,
+                    second: *downstream,
+                });
             }
         }
     }
-    candidates
+    Ok(candidates
         .iter()
         .copied()
         .filter(|candidate| !suppressed.contains(&candidate.plan_index))
-        .collect()
+        .collect())
 }
 
 /// Existing release plans a candidate can safely subsume.
@@ -405,9 +442,14 @@ fn existing_releases_replaced_by_candidate(
     block_reach: &HashMap<u32, HashSet<u32>>,
     candidate: ReturnedMemberReAdmission,
     existing: &[ReturnedMemberReAdmission],
-) -> Option<HashSet<usize>> {
+) -> Result<Option<HashSet<usize>>, ReturnedMemberReAdmissionAmbiguity> {
     let mut replaced = HashSet::new();
     for release in existing {
+        if matches!(candidate.path, ReturnedMemberReAdmissionPath::Abandonment)
+            || matches!(release.path, ReturnedMemberReAdmissionPath::Abandonment)
+        {
+            continue;
+        }
         let release_reaches_candidate = block_reach
             .get(&release.block)
             .is_some_and(|reachable| reachable.contains(&candidate.block));
@@ -419,22 +461,28 @@ fn existing_releases_replaced_by_candidate(
             if block_postdominates_release(blocks, release.block, candidate.block) {
                 replaced.insert(release.plan_index);
             } else {
-                return None;
+                return Err(ReturnedMemberReAdmissionAmbiguity {
+                    first: *release,
+                    second: candidate,
+                });
             }
         } else if candidate_reaches_release {
             if block_postdominates_release(blocks, candidate.block, release.block) {
                 // The existing release already covers every path leaving this
                 // candidate; adding the candidate would only release earlier.
-                return None;
+                return Ok(None);
             }
             if block_dominates(blocks, candidate.block, release.block) {
                 replaced.insert(release.plan_index);
             } else {
-                return None;
+                return Err(ReturnedMemberReAdmissionAmbiguity {
+                    first: candidate,
+                    second: *release,
+                });
             }
         }
     }
-    Some(replaced)
+    Ok(Some(replaced))
 }
 
 /// Drop-elaboration pass over a `CheckedMirFunction`.
@@ -575,7 +623,8 @@ pub(super) fn elaborate(
     dataflow_result: &dataflow::DataflowResult,
     precomputed_cow_drop_allowed: Option<&HashSet<BindingId>>,
     precomputed_local_bytes_drop_allowed: Option<&HashSet<BindingId>>,
-) -> ElaboratedMirFunction {
+) -> (ElaboratedMirFunction, Vec<MirDiagnostic>) {
+    let mut elaboration_diagnostics = Vec::new();
     // Statements stream: retained for snapshot/compat continuity with
     // the pre-Cluster-3 elaborator. Every non-`BitCopy` owned local
     // gets a checker-stream `Drop` entry in reverse-declaration order;
@@ -1460,12 +1509,23 @@ pub(super) fn elaborate(
             let mut candidates = Vec::new();
             for (plan_index, (exit, plan)) in drop_plans.iter().enumerate() {
                 let (block, goto_target) = match exit {
-                    ExitPath::Return { block } => (*block, None),
+                    ExitPath::Return { block }
+                    | ExitPath::Panic { block }
+                    | ExitPath::Cancel { block } => (*block, None),
+                    ExitPath::Yield { block, .. } | ExitPath::Suspend { block, .. } => {
+                        (*block, None)
+                    }
                     ExitPath::Goto { block, target } => (*block, Some(*target)),
                     _ => continue,
                 };
-                // This exit is at or after the hand-off: caller owns the value.
-                if reach.contains(&block) {
+                // Abandonment exits run their plan after the block's own
+                // instructions, except the function-entry cancellation branch
+                // which leaves before that block executes. A normal exit at or
+                // after the hand-off belongs to the caller; the entry cancel
+                // has not reached a later transfer even when block 0 contains it.
+                let is_entry_cancel =
+                    matches!(exit, ExitPath::Cancel { .. }) && block == ENTRY_BLOCK_ID;
+                if !is_entry_cancel && reach.contains(&block) {
                     continue;
                 }
                 if let Some(target) = goto_target {
@@ -1497,7 +1557,12 @@ pub(super) fn elaborate(
                 // Only re-admit where the value is definitely still owned. A
                 // `MaybeConsumed`/`Uninit`/`Consumed` state at this exit is
                 // ambiguous or already discharged — skip (fail-closed).
-                let Some(state_map) = dataflow_result.exit_states.get(&block) else {
+                let state_maps = if is_entry_cancel {
+                    &dataflow_result.entry_states
+                } else {
+                    &dataflow_result.exit_states
+                };
+                let Some(state_map) = state_maps.get(&block) else {
                     continue;
                 };
                 if !matches!(
@@ -1509,7 +1574,11 @@ pub(super) fn elaborate(
                 if plan.drops.iter().any(|drop| drop.place == place) {
                     continue;
                 }
-                candidates.push(ReturnedMemberReAdmission { plan_index, block });
+                candidates.push(ReturnedMemberReAdmission {
+                    plan_index,
+                    block,
+                    path: returned_member_re_admission_path(exit),
+                });
             }
 
             // Existing plans participate in the same dominance/post-dominance
@@ -1528,6 +1597,7 @@ pub(super) fn elaborate(
                         Some(ReturnedMemberReAdmission {
                             plan_index: index,
                             block: exit_block_id(exit),
+                            path: returned_member_re_admission_path(exit),
                         })
                     } else {
                         None
@@ -1535,21 +1605,62 @@ pub(super) fn elaborate(
                 })
                 .collect();
             let mut replacements: HashMap<usize, HashSet<usize>> = HashMap::new();
+            let mut ambiguity = None;
             candidates.retain(|candidate| {
-                let Some(replaced) = existing_releases_replaced_by_candidate(
+                let replaced = match existing_releases_replaced_by_candidate(
                     &checked.blocks,
                     &block_reach,
                     *candidate,
                     &existing_releases,
-                ) else {
-                    return false;
+                ) {
+                    Ok(Some(replaced)) => replaced,
+                    Ok(None) => return false,
+                    Err(found) => {
+                        ambiguity = Some(found);
+                        return false;
+                    }
                 };
                 replacements.insert(candidate.plan_index, replaced);
                 true
             });
+            if let Some(ambiguity) = ambiguity {
+                elaboration_diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::DropPlanUndetermined {
+                        block: ambiguity.first.block,
+                        reason: format!(
+                            "returned-member cleanup candidates at bb{} and bb{} partially overlap",
+                            ambiguity.first.block, ambiguity.second.block
+                        ),
+                    },
+                    note: "returned-member cleanup has no single exactly-once owner on every \
+                           normal path; refusing to emit a partial release plan"
+                        .to_string(),
+                });
+                continue;
+            }
 
-            let selected =
-                select_returned_member_re_admissions(&checked.blocks, &block_reach, &candidates);
+            let selected = match select_returned_member_re_admissions(
+                &checked.blocks,
+                &block_reach,
+                &candidates,
+            ) {
+                Ok(selected) => selected,
+                Err(ambiguity) => {
+                    elaboration_diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::DropPlanUndetermined {
+                            block: ambiguity.first.block,
+                            reason: format!(
+                                "returned-member cleanup candidates at bb{} and bb{} partially overlap",
+                                ambiguity.first.block, ambiguity.second.block
+                            ),
+                        },
+                        note: "returned-member cleanup has no single exactly-once owner on every \
+                               normal path; refusing to emit a partial release plan"
+                            .to_string(),
+                    });
+                    continue;
+                }
+            };
 
             let replaced_existing: HashSet<usize> = selected
                 .iter()
@@ -1881,29 +1992,32 @@ pub(super) fn elaborate(
         }
     }
 
-    ElaboratedMirFunction {
-        name: checked.name.clone(),
-        return_ty: checked.return_ty.clone(),
-        statements: elaborated_statements,
-        decisions: builder.decisions.clone(),
-        blocks: elab_blocks,
-        drop_plans,
-        coroutine: None,
-        // Lambda-actor capture set, populated by the MIR producer at
-        // each `HirExprKind::SpawnLambdaActor` site (see
-        // `Builder::lower_spawn_lambda_actor`). The HIR resolver
-        // forward-binds the lambda's own let-name before lowering the
-        // body, so a body-internal reference to that name resolves to
-        // a `BindingRef { resolved: Binding(let_id) }`; the resolver
-        // classifies that capture as `HirCaptureKind::Weak` and every
-        // other free-variable reference as `Strong`. The MIR producer
-        // copies the list through with the source binding's MIR
-        // `Place` attached. The structural fail-closed checker
-        // `validate_lambda_captures` enforces the invariants (Weak
-        // attaches to LambdaActorHandle; at most one Weak per actor
-        // handle) on the emitted ledger.
-        lambda_captures: builder.lambda_captures.clone(),
-    }
+    (
+        ElaboratedMirFunction {
+            name: checked.name.clone(),
+            return_ty: checked.return_ty.clone(),
+            statements: elaborated_statements,
+            decisions: builder.decisions.clone(),
+            blocks: elab_blocks,
+            drop_plans,
+            coroutine: None,
+            // Lambda-actor capture set, populated by the MIR producer at
+            // each `HirExprKind::SpawnLambdaActor` site (see
+            // `Builder::lower_spawn_lambda_actor`). The HIR resolver
+            // forward-binds the lambda's own let-name before lowering the
+            // body, so a body-internal reference to that name resolves to
+            // a `BindingRef { resolved: Binding(let_id) }`; the resolver
+            // classifies that capture as `HirCaptureKind::Weak` and every
+            // other free-variable reference as `Strong`. The MIR producer
+            // copies the list through with the source binding's MIR
+            // `Place` attached. The structural fail-closed checker
+            // `validate_lambda_captures` enforces the invariants (Weak
+            // attaches to LambdaActorHandle; at most one Weak per actor
+            // handle) on the emitted ledger.
+            lambda_captures: builder.lambda_captures.clone(),
+        },
+        elaboration_diagnostics,
+    )
 }
 /// Owning-block id for an `ExitPath`. Every variant carries a `block`
 /// field — surfacing it as a single function keeps `validate_drop_plan`
@@ -8348,14 +8462,17 @@ mod returned_member_read_aliases {
             ReturnedMemberReAdmission {
                 plan_index: 10,
                 block: 1,
+                path: ReturnedMemberReAdmissionPath::Normal,
             },
             ReturnedMemberReAdmission {
                 plan_index: 11,
                 block: 3,
+                path: ReturnedMemberReAdmissionPath::Normal,
             },
         ];
 
-        let selected = select_returned_member_re_admissions(&blocks, &block_reach, &candidates);
+        let selected = select_returned_member_re_admissions(&blocks, &block_reach, &candidates)
+            .expect("the later common candidate is unambiguous");
         assert_eq!(
             selected,
             vec![candidates[1]],
@@ -8403,14 +8520,17 @@ mod returned_member_read_aliases {
         let existing = [ReturnedMemberReAdmission {
             plan_index: 20,
             block: 1,
+            path: ReturnedMemberReAdmissionPath::Normal,
         }];
         let candidate = ReturnedMemberReAdmission {
             plan_index: 10,
             block: 3,
+            path: ReturnedMemberReAdmissionPath::Normal,
         };
 
         let replaced =
             existing_releases_replaced_by_candidate(&blocks, &block_reach, candidate, &existing)
+                .expect("the common postdominator must be comparable")
                 .expect("the common postdominator can replace the arm-local release");
         assert_eq!(replaced, HashSet::from([existing[0].plan_index]));
 
@@ -8424,6 +8544,57 @@ mod returned_member_read_aliases {
                  path={path:?}, replaced={replaced:?}"
             );
         }
+    }
+
+    /// Partial overlap counterfactual: one release can reach the other, but
+    /// neither covers all of the other's paths. Selecting either candidate
+    /// leaks one path and selecting both double-releases their overlap, so this
+    /// topology must reject instead of silently omitting every cleanup.
+    #[test]
+    fn partial_overlap_re_admission_is_rejected() {
+        let blocks = vec![
+            block(
+                0,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(1, Terminator::Goto { target: 3 }),
+            block(2, Terminator::Goto { target: 4 }),
+            block(
+                3,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 4,
+                    else_target: 5,
+                },
+            ),
+            block(4, Terminator::Goto { target: 5 }),
+            block(5, Terminator::Return),
+        ];
+        let block_reach: HashMap<u32, HashSet<u32>> = blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&blocks, block.id)))
+            .collect();
+        let candidates = [
+            ReturnedMemberReAdmission {
+                plan_index: 10,
+                block: 1,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 11,
+                block: 4,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+        ];
+
+        let ambiguity = select_returned_member_re_admissions(&blocks, &block_reach, &candidates)
+            .expect_err("partial overlap has no exactly-once cleanup owner");
+        assert_eq!(ambiguity.first, candidates[0]);
+        assert_eq!(ambiguity.second, candidates[1]);
     }
 }
 #[cfg(test)]

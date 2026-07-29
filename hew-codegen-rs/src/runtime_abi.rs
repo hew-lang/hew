@@ -4712,6 +4712,11 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_duplex_payload_free" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        // Channel endpoint close consumes one endpoint owner.
+        // (`hew-runtime/src/channel.rs`). Both are void(ptr).
+        "hew_channel_sender_close" | "hew_channel_receiver_close" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
         // hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32
         // (`hew-runtime/src/lambda_actor.rs:411`). Same signature shape
         // as hew_duplex_close — one ptr arg, i32 result discarded.

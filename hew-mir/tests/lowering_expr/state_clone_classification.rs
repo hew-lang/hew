@@ -20,7 +20,8 @@ use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::model::RecordLayout;
 use hew_mir::{
     classify_actor_state_fields, classify_state_field_with_enum_layouts, lower_hir_module,
-    ty_contains_unclonable_opaque, ClassificationError, IoHandleKind, StateFieldCloneKind,
+    ty_contains_unclonable_opaque, ClassificationError, IoHandleKind, ResourceCloseAuthority,
+    StateFieldCloneKind,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -134,7 +135,7 @@ fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped(
 
     let resource_kind = StateFieldCloneKind::Resource {
         name: "Dq".to_string(),
-        close_symbol: "Dq::close".to_string(),
+        close: ResourceCloseAuthority::User("Dq::close".to_string()),
     };
     let direct = find_actor(&pipeline, "Direct");
     assert_eq!(

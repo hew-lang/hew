@@ -12072,6 +12072,121 @@ fn emit_field_drop_step_bytes_fail_closed_on_non_struct_field() {
     }
 }
 
+#[test]
+fn builtin_resource_field_drop_interns_typed_runtime_release() {
+    for (name, descriptor, return_bits) in [
+        (
+            "Receiver",
+            hew_types::runtime_call::RuntimeDropDescriptor::ReceiverClose,
+            None,
+        ),
+        (
+            "LambdaPid",
+            hew_types::runtime_call::RuntimeDropDescriptor::LambdaActorHandleClose,
+            Some(32),
+        ),
+    ] {
+        let ctx = Context::create();
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let parent_st = ctx.struct_type(&[ptr_ty.into()], false);
+        let (llvm_mod, builder, slot, _) =
+            bytes_field_drop_test_harness(&ctx, parent_st, "builtin_resource_field_drop");
+        let td = host_target_data();
+        let ml = MachineLayoutMap::new();
+        let rs = RecordLayoutMap::new();
+        let w = empty_drop_witnesses(&td, &ml, &rs);
+
+        emit_field_drop_step(
+            &ctx,
+            &llvm_mod,
+            &builder,
+            Some(parent_st),
+            slot,
+            0,
+            &StateFieldCloneKind::Resource {
+                name: name.to_string(),
+                close: ResourceCloseAuthority::Runtime(descriptor),
+            },
+            &w,
+        )
+        .unwrap_or_else(|error| panic!("{name} resource drop failed: {error}"));
+        builder
+            .build_return(Some(&ctx.i32_type().const_zero()))
+            .expect("host return");
+
+        let close_fn = llvm_mod
+            .get_function(descriptor.c_symbol())
+            .unwrap_or_else(|| panic!("{} runtime declaration missing", descriptor.c_symbol()));
+        assert_eq!(close_fn.count_params(), 1);
+        assert_eq!(
+            close_fn
+                .get_type()
+                .get_return_type()
+                .map(|ty| ty.into_int_type().get_bit_width()),
+            return_bits,
+            "{} must retain its runtime ABI return type",
+            descriptor.c_symbol()
+        );
+        assert!(
+            llvm_mod.verify().is_ok(),
+            "{name} resource drop module must verify"
+        );
+        let ir = llvm_mod.print_to_string().to_string();
+        let call_prefix = if return_bits.is_some() {
+            "call i32"
+        } else {
+            "call void"
+        };
+        assert!(
+            ir.contains(&format!("{call_prefix} @{}", descriptor.c_symbol())),
+            "{name} drop must call its typed runtime release; IR:\n{ir}",
+        );
+    }
+}
+
+#[test]
+fn user_resource_field_drop_uses_generated_hew_function() {
+    let ctx = Context::create();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let parent_st = ctx.struct_type(&[ptr_ty.into()], false);
+    let (llvm_mod, builder, slot, _) =
+        bytes_field_drop_test_harness(&ctx, parent_st, "user_resource_field_drop");
+    llvm_mod.add_function(
+        "Pattern::free",
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    let td = host_target_data();
+    let ml = MachineLayoutMap::new();
+    let rs = RecordLayoutMap::new();
+    let w = empty_drop_witnesses(&td, &ml, &rs);
+
+    emit_field_drop_step(
+        &ctx,
+        &llvm_mod,
+        &builder,
+        Some(parent_st),
+        slot,
+        0,
+        &StateFieldCloneKind::Resource {
+            name: "Pattern".to_string(),
+            close: ResourceCloseAuthority::User("Pattern::free".to_string()),
+        },
+        &w,
+    )
+    .expect("user resource drop must resolve the generated Hew function");
+    builder
+        .build_return(Some(&ctx.i32_type().const_zero()))
+        .expect("host return");
+
+    assert!(llvm_mod.verify().is_ok());
+    let ir = llvm_mod.print_to_string().to_string();
+    assert!(
+        ir.contains("call void @\"Pattern::free\""),
+        "user resource drop must call the generated Hew function; IR:\n{ir}",
+    );
+}
+
 // ── overwrite-release synthesis (record / enum state-field re-store) ──
 //
 // The synthesised `__hew_{record,enum}_overwrite_release_<Name>(old, new)`
@@ -12153,7 +12268,9 @@ fn builtin_handle_field_overwrite_fails_closed_before_store() {
         src_val,
         &StateFieldCloneKind::Resource {
             name: "Receiver".to_string(),
-            close_symbol: "hew_channel_receiver_close".to_string(),
+            close: ResourceCloseAuthority::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::ReceiverClose,
+            ),
         },
         "record_receiver_f0",
         false,
@@ -12163,7 +12280,8 @@ fn builtin_handle_field_overwrite_fails_closed_before_store() {
         matches!(
             receiver_err,
             CodegenError::FailClosed(ref msg)
-                if msg.contains("builtin Receiver") && msg.contains("source-slot neutralisation")
+                if msg.contains("builtin resource Receiver")
+                    && msg.contains("source-slot neutralisation")
         ),
         "Receiver refusal must name the builtin and missing move protocol; got {receiver_err:?}"
     );
@@ -12175,7 +12293,7 @@ fn builtin_handle_field_overwrite_fails_closed_before_store() {
         src_val,
         &StateFieldCloneKind::Resource {
             name: "Receiver".to_string(),
-            close_symbol: "user$Receiver$close".to_string(),
+            close: ResourceCloseAuthority::User("user$Receiver$close".to_string()),
         },
         "user_receiver_f0",
         false,

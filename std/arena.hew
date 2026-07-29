@@ -78,7 +78,9 @@ pub type Arena<T> {
 /// The element type is inferred from the binding, e.g.
 /// `let store: arena.Arena<i64> = arena.new();`.
 pub fn new<T>() -> Arena<T> {
-    let arena_id = unsafe { hew_arena_instance_id_new() };
+    let arena_id = unsafe {
+        hew_arena_instance_id_new()
+    };
     if arena_id == 0 {
         panic("arena.new: arena identity space exhausted");
     }
@@ -86,13 +88,7 @@ pub fn new<T>() -> Arena<T> {
     let free: Vec<i64> = Vec::new();
     let generation_counter: Vec<i64> = [1];
     let clone_guard = ArenaCloneGuard { marker: 0 };
-    Arena {
-        clone_guard: clone_guard,
-        arena_id: arena_id,
-        generation_counter: generation_counter,
-        slots: slots,
-        free: free,
-    }
+    Arena { clone_guard: clone_guard, arena_id: arena_id, generation_counter: generation_counter, slots: slots, free: free }
 }
 
 impl<T> Arena<T> {
@@ -108,19 +104,11 @@ impl<T> Arena<T> {
         self.generation_counter.set(0, generation + 1);
         if self.free.is_empty() {
             self.slots.push(Slot { generation: generation, value: Some(value) });
-            Key {
-                arena_id: self.arena_id,
-                index: self.slots.len() - 1,
-                generation: generation,
-            }
+            Key { arena_id: self.arena_id, index: self.slots.len() - 1, generation: generation }
         } else {
             let index = self.free.pop();
             self.slots.set(index, Slot { generation: generation, value: Some(value) });
-            Key {
-                arena_id: self.arena_id,
-                index: index,
-                generation: generation,
-            }
+            Key { arena_id: self.arena_id, index: index, generation: generation }
         }
     }
     /// Return the value named by `key`, or `None` if the key is stale.

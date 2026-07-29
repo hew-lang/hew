@@ -2234,8 +2234,8 @@ impl Checker {
             return None;
         };
         let sig = self.lookup_named_method_sig(name, type_args, method)?;
-        Some(
-            self.apply_instantiated_call_signature(
+        let return_type = self
+            .apply_instantiated_call_signature(
                 &sig,
                 None,
                 args,
@@ -2245,8 +2245,62 @@ impl Checker {
                 },
                 true,
             )
-            .return_type,
-        )
+            .return_type;
+        Some(self.qualify_method_return_to_receiver_owner(name, &return_type))
+    }
+
+    /// Restore the source owner on bare nominal types in a qualified receiver's
+    /// method result.
+    ///
+    /// Impl signatures are registered while their declaring module is active,
+    /// where a self-module type is legitimately spelled bare (`Listener::accept
+    /// -> Connection`). At an imported call site the receiver has already
+    /// acquired its exact identity (`net.Listener`), so letting that bare return
+    /// escape would lose the owner again and make downstream layout/codegen
+    /// confuse it with a root or foreign `Connection`.
+    ///
+    /// Only names proven in the same owner's `type_defs` are qualified. An
+    /// already-qualified result (including `foo.Connection`) is authoritative
+    /// and unchanged, as are builtins and a method on a bare/root receiver.
+    fn qualify_method_return_to_receiver_owner(&self, receiver_name: &str, ty: &Ty) -> Ty {
+        let Some((owner, _)) = receiver_name.rsplit_once('.') else {
+            return ty.clone();
+        };
+        if !self.type_defs.contains_key(receiver_name) {
+            return ty.clone();
+        }
+
+        self.qualify_method_return_to_owner(owner, ty)
+    }
+
+    fn qualify_method_return_to_owner(&self, owner: &str, ty: &Ty) -> Ty {
+        let mapped =
+            ty.map_children_pub(&|child| self.qualify_method_return_to_owner(owner, child));
+        let Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } = mapped
+        else {
+            return mapped;
+        };
+        if name.contains('.') {
+            return Ty::Named {
+                name,
+                args,
+                builtin: None,
+            };
+        }
+        let qualified = format!("{owner}.{name}");
+        Ty::Named {
+            name: if self.type_defs.contains_key(&qualified) {
+                qualified
+            } else {
+                name
+            },
+            args,
+            builtin: None,
+        }
     }
 
     /// Enforce the actor mailbox boundary on every arg of an actor receive
@@ -8549,7 +8603,8 @@ impl Checker {
                             );
                         }
                     }
-                    return applied_sig.return_type;
+                    return self
+                        .qualify_method_return_to_receiver_owner(name, &applied_sig.return_type);
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.
                 // When the receiver is a generic type parameter (e.g. `T` in
@@ -9399,6 +9454,79 @@ mod tests {
                 "a bare user type named {user_name} must keep ordinary method dispatch"
             );
         }
+    }
+
+    #[test]
+    fn qualified_method_receiver_restores_only_its_own_return_identity() {
+        fn empty_type_def(name: &str) -> TypeDef {
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: name.to_string(),
+                type_params: Vec::new(),
+                bounds: HashMap::new(),
+                fields: HashMap::new(),
+                field_order: Vec::new(),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            }
+        }
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        for identity in [
+            "net.Listener",
+            "net.Connection",
+            "foo.Listener",
+            "foo.Connection",
+        ] {
+            checker
+                .type_defs
+                .insert(identity.to_string(), empty_type_def(identity));
+        }
+        let bare_connection = Ty::Named {
+            name: "Connection".to_string(),
+            args: Vec::new(),
+            builtin: None,
+        };
+
+        assert_eq!(
+            checker.qualify_method_return_to_receiver_owner(
+                "net.Listener",
+                &bare_connection,
+            ),
+            Ty::Named {
+                name: "net.Connection".to_string(),
+                args: Vec::new(),
+                builtin: None,
+            },
+            "a `net.Listener` method's module-local `Connection` return must regain `net` ownership",
+        );
+        assert_eq!(
+            checker.qualify_method_return_to_receiver_owner("foo.Listener", &bare_connection,),
+            Ty::Named {
+                name: "foo.Connection".to_string(),
+                args: Vec::new(),
+                builtin: None,
+            },
+            "a foreign same-short-name method result must retain its own source owner",
+        );
+
+        let foreign_connection = Ty::Named {
+            name: "foo.Connection".to_string(),
+            args: Vec::new(),
+            builtin: None,
+        };
+        assert_eq!(
+            checker.qualify_method_return_to_receiver_owner("net.Listener", &foreign_connection,),
+            foreign_connection,
+            "an already-qualified foreign result is authoritative and must not be rewritten",
+        );
+        assert_eq!(
+            checker.qualify_method_return_to_receiver_owner("Listener", &bare_connection,),
+            bare_connection,
+            "a root-local receiver has no module owner to project onto its result",
+        );
     }
 
     /// A pending lowering fact whose element type resolves to `Ty::Error` must be

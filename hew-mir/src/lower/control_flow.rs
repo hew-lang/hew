@@ -689,6 +689,16 @@ impl Builder {
             body_scope: body.scope,
         });
         let active_iteration_owner_mark = self.active_iteration_owners.len();
+        let active_snapshot_parent_mark = self.active_while_let_snapshot_parents.len();
+        if binding_iteration_owner.is_some() {
+            if let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(binding),
+                ..
+            } = &scrutinee.kind
+            {
+                self.active_while_let_snapshot_parents.push(*binding);
+            }
+        }
         if let Some((binding, ty)) = &scrutinee_owner {
             self.active_iteration_owners.push(ActiveIterationOwner {
                 scope_depth: self.active_scopes.len(),
@@ -737,6 +747,8 @@ impl Builder {
             .insert(self.current_block_id, body.scope);
         self.active_iteration_owners
             .truncate(active_iteration_owner_mark);
+        self.active_while_let_snapshot_parents
+            .truncate(active_snapshot_parent_mark);
         self.active_scopes.pop();
         self.loop_stack.pop();
         // Restore the prior `binding_locals` entries so the binding scope

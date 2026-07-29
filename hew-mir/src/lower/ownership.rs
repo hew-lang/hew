@@ -2559,9 +2559,11 @@ impl Builder {
     /// so it is safe inside the release block.
     pub(crate) fn emit_flag_gated_overwrite_release(
         &mut self,
+        binding: BindingId,
         dest: Place,
         target_ty: &ResolvedTy,
         flag: Place,
+        value: &HirExpr,
     ) {
         let zero = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::ConstI64 {
@@ -2584,6 +2586,7 @@ impl Builder {
         });
         self.start_block(release_bb);
         self.emit_local_overwrite_release(dest, target_ty);
+        self.emit_enum_overwrite_release(binding, dest, target_ty, value);
         self.finish_current_block(Terminator::Goto { target: cont_bb });
         self.start_block(cont_bb);
     }

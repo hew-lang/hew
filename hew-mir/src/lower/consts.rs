@@ -121,6 +121,7 @@ pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                 }
             };
             hew_hir::HirMatchArm {
+                scope: None,
                 predicate,
                 bindings: Vec::new(),
                 payload_predicates: Vec::new(),
@@ -229,6 +230,7 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
         ty,
     };
     let match_arm = |tag: Option<i64>, body: HirExpr| hew_hir::HirMatchArm {
+        scope: None,
         predicate: tag.map_or(hew_hir::HirMatchArmPredicate::Wildcard, |value| {
             hew_hir::HirMatchArmPredicate::Literal {
                 lit: HirLiteral::Integer(value),

@@ -867,6 +867,12 @@ struct Builder {
     /// explicit edge drop; returns/panic/cancellation leave them Live so the
     /// ordinary exit planner releases them.
     pub(crate) active_iteration_owners: Vec<ActiveIterationOwner>,
+    /// Owning enum bindings whose current generation was byte-copied into the
+    /// dedicated `while let` iteration snapshot before the loop body began.
+    /// Reassigning one of these bindings must not run the ordinary enum
+    /// overwrite release: the snapshot's back-edge/exit drop is the sole
+    /// authority for that old generation.
+    pub(crate) active_while_let_snapshot_parents: Vec<BindingId>,
     /// Map from each MIR-bound HIR `BindingId` to the HIR `ScopeId` it was
     /// declared in. Populated at every `MirStatement::Bind` push site (let
     /// statements, match-arm payload bindings, function parameters, for-range
@@ -1434,9 +1440,9 @@ struct Builder {
     /// `let` (so it dominates every consume and overwrite, including loop
     /// back-edges), set to 1 at each `mark_binding_moved`, gates the
     /// overwrite-release on `flag == 0`, and is reset to 0 after the overwrite
-    /// stores a fresh value. Scope-exit drops are unaffected: owned
-    /// record/string locals are released through the `elaborate` allow-set
-    /// prover (`CowValue` arm), not `owned_locals` / this flag.
+    /// stores a fresh value. The same flag guards any surviving scope-exit drop,
+    /// including an inline enum's tag-aware drop, so the moved generation is
+    /// skipped while a fresh post-store generation is released.
     pub(crate) overwrite_guard_flags: HashMap<BindingId, Place>,
     /// #2523: provenance for projected enum/machine payload binders, keyed on
     /// the binder's `BindingId`. Populated in `lower_match_enum_tag`'s binder
@@ -1444,6 +1450,19 @@ struct Builder {
     /// binder's `Consume`-intent move-out to emit `NeutralizePayloadSlot` for
     /// the source slot and `AggregateAlias` for the scrutinee.
     pub(crate) projected_payload_provenance: HashMap<BindingId, ProjectedPayloadProvenance>,
+    /// Path-sensitive delayed-release flags for direct `string` payload
+    /// binders projected from a mutable inline-enum owner. The flag starts at
+    /// one (the parent still owns the payload) and flips to zero when that
+    /// parent slot is overwritten while the binder remains lexically live.
+    /// Drop elaboration then promotes the binder to the sole release authority,
+    /// guarded on `flag == 0`, so the old payload survives every in-arm read
+    /// but is released on the arm's normal or early-exit edge.
+    pub(crate) projected_payload_overwrite_flags: HashMap<BindingId, Place>,
+    /// Binders for which lowering observed the parent-overwrite authority
+    /// transfer described by `projected_payload_overwrite_flags`. Kept
+    /// separate from the flag map so a binder whose parent is never
+    /// overwritten remains a plain non-owning projection alias.
+    pub(crate) projected_payload_overwrite_releases: HashSet<BindingId>,
     /// Set while lowering a match-arm guard expression that
     /// can fall through to a later arm. A projected heap-payload binder consumed
     /// with this flag set is rejected fail-closed (`GuardedConsume`): its

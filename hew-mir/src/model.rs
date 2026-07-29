@@ -6343,26 +6343,30 @@ pub struct ElabDrop {
     /// Path-sensitive exactly-once gate for a conditional ownership transfer.
     ///
     /// `None` for every idempotent / null-tolerant drop that needs no
-    /// path-sensitive transfer guard (Duplex, lambda, half-handle, `CowHeap`,
-    /// ordinary enum/tuple in-place, dyn-trait, and records that remain live
+    /// path-sensitive transfer guard (Duplex, lambda, half-handle, ordinary
+    /// `CowHeap`, enum/tuple in-place, dyn-trait, and records that remain live
     /// on every path).
     ///
     /// `Some(flag)` for a `DropKind::Resource` whose `drop_fn` is a
     /// `DropFnSpec::UserClose`, for the `DropKind::RecordInPlace` helper of a
     /// field-bearing user resource record, or for an ordinary record whose
-    /// whole value is transferred on only some paths. Resource close rituals
-    /// are not runtime idempotent; ordinary conditional records need the same
-    /// edge distinction so recursive field teardown runs only where the record
-    /// remained live.
-    /// `flag` is an `i64` local initialised to 0 at the binding's
-    /// introduction and set to 1 at each `IntentKind::Consume` use site.
-    /// Codegen gates the drop on `flag == 0` so a binding reached at a
-    /// `MaybeConsumed` join — Live on one predecessor, Consumed on the
-    /// other — releases exactly once on the live path and is skipped on the
-    /// already-consumed path. The drop-plan validator re-derives only
-    /// `kind` (via the Place-driven `drop_kind_for` SSOT) and never
-    /// inspects `guard`, so this runtime-gating annotation is orthogonal to
-    /// the structural drop-kind contract.
+    /// whole value is transferred on only some paths; for an inline enum
+    /// consumed on one path and reassigned on another; or for a direct string
+    /// payload binder that becomes the delayed release authority when its
+    /// parent enum is overwritten while the binder is live. Resource close
+    /// rituals are not runtime idempotent; conditional composites and delayed
+    /// payload releases need the same edge distinction so teardown runs only on
+    /// the path/generation that still owns the value.
+    /// For ordinary conditional transfers, `flag` is an `i64` local
+    /// initialised to 0 at the binding's introduction and set to 1 at each
+    /// `IntentKind::Consume` use site. A delayed projected-payload flag uses
+    /// the inverse history: it starts at 1 while the parent owns the payload
+    /// and becomes 0 when an overwrite transfers release authority to the
+    /// binder. In both protocols codegen gates the drop on `flag == 0`, so it
+    /// runs exactly on the path/generation represented by this `ElabDrop`.
+    /// The drop-plan validator re-derives only `kind` (via the Place-driven
+    /// `drop_kind_for` SSOT) and never inspects `guard`, so this runtime-gating
+    /// annotation is orthogonal to the structural drop-kind contract.
     pub guard: Option<Place>,
 }
 

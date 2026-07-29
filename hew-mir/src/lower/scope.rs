@@ -73,6 +73,22 @@ impl Builder {
             self.note_scope_span(span);
         }
     }
+
+    /// Record a binding against a known lexical scope rather than the current
+    /// lowering cursor's scope.
+    ///
+    /// Match payload binders are materialised before their body expression is
+    /// lowered. HIR supplies the synthetic arm scope that encloses bindings,
+    /// guard, and body, and match lowering pushes that scope before
+    /// materialising the binders. Recording the explicit id here keeps the
+    /// lifetime authoritative even when the arm is expression-bodied and has no
+    /// body block scope of its own.
+    pub(crate) fn record_binding_scope_in(&mut self, binding: BindingId, scope: ScopeId) {
+        self.binding_scope.insert(binding, scope);
+        if let Some(span) = self.current_span {
+            self.binding_decl_byte.insert(binding, span.0);
+        }
+    }
     /// Widen the active scope's recorded byte-extent to cover `span`, and record
     /// its parent (the frame directly below the active scope) the first time the
     /// scope is observed. Drives the `-g` `DILexicalBlock` PC ranges. A no-op

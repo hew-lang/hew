@@ -1290,7 +1290,12 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         format!("re{pattern:?}")
                     }
                 };
-                writeln!(out, "{pad}    arm {label}").expect("write to string");
+                writeln!(
+                    out,
+                    "{pad}    arm {label} scope={:?}",
+                    arm.scope.map(|scope| scope.0)
+                )
+                .expect("write to string");
                 for pred in &arm.payload_predicates {
                     writeln!(
                         out,

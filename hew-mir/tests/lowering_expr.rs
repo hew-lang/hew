@@ -31,6 +31,8 @@ mod elaborate;
 #[path = "lowering_expr/extern_wrapper_result_opacity.rs"]
 mod extern_wrapper_result_opacity;
 
+#[path = "lowering_expr/for_in_hash_projection_types.rs"]
+mod for_in_hash_projection_types;
 #[path = "lowering_expr/forawait_loopvar_release.rs"]
 mod forawait_loopvar_release;
 #[path = "lowering_expr/fresh_vec_projection_owner.rs"]

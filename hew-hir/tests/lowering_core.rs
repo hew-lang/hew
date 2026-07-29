@@ -15,6 +15,8 @@ mod bitcopy_inference;
 mod cross_module_machine_binding;
 #[path = "lowering_core/duplex_constructor_verify.rs"]
 mod duplex_constructor_verify;
+#[path = "lowering_core/for_in_hash_projection_types.rs"]
+mod for_in_hash_projection_types;
 #[path = "lowering_core/gen_block_lowering.rs"]
 mod gen_block_lowering;
 #[path = "lowering_core/impl_block_lowering.rs"]

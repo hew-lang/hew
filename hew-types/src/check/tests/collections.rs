@@ -278,6 +278,112 @@ fn hashset_clear_no_args_typechecks() {
 }
 
 #[test]
+fn hashset_for_in_keeps_real_receiver_type_separate_from_synthetic_vec_result() {
+    let source = r"
+        type SetBox { s: HashSet<i64>; }
+        type Outer { inner: SetBox; }
+
+        fn direct(s: HashSet<i64>) {
+            for x in s { let _ = x; }
+        }
+
+        fn field(b: SetBox) {
+            for x in b.s { let _ = x; }
+        }
+
+        fn nested(o: Outer) {
+            for x in o.inner.s { let _ = x; }
+        }
+
+        fn tuple_field(pair: (HashSet<i64>, i64)) {
+            for x in pair.0 { let _ = x; }
+        }
+    ";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+
+    let iterable_spans: Vec<_> = parsed
+        .program
+        .items
+        .iter()
+        .filter_map(|(item, _)| match item {
+            Item::Function(function)
+                if matches!(
+                    function.name.as_str(),
+                    "direct" | "field" | "nested" | "tuple_field"
+                ) =>
+            {
+                function.body.stmts.iter().find_map(|(statement, _)| {
+                    let Stmt::For { iterable, .. } = statement else {
+                        return None;
+                    };
+                    Some((function.name.clone(), iterable.1.clone()))
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(iterable_spans.len(), 4);
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.is_empty(),
+        "all HashSet place shapes must type-check: {:#?}",
+        output.errors
+    );
+
+    for (function_name, iterable_span) in iterable_spans {
+        let iterable_ty = output
+            .expr_types
+            .get(&SpanKey::from(&iterable_span))
+            .unwrap_or_else(|| panic!("missing real iterable type for `{function_name}`"));
+        assert!(
+            matches!(
+                iterable_ty,
+                Ty::Named {
+                    args,
+                    builtin: Some(BuiltinType::HashSet),
+                    ..
+                } if args == &[Ty::I64]
+            ),
+            "`{function_name}` real iterable span must remain HashSet<i64>, got {iterable_ty:?}"
+        );
+
+        let projection_span = iterable_span.start..iterable_span.start;
+        let projection_key = SpanKey::from(&projection_span);
+        let projection_ty = output
+            .expr_types
+            .get(&projection_key)
+            .unwrap_or_else(|| panic!("missing synthetic to_vec type for `{function_name}`"));
+        assert!(
+            matches!(
+                projection_ty,
+                Ty::Named {
+                    args,
+                    builtin: Some(BuiltinType::Vec),
+                    ..
+                } if args == &[Ty::I64]
+            ),
+            "`{function_name}` synthetic projection must be Vec<i64>, got {projection_ty:?}"
+        );
+        let resolved_call = output
+            .resolved_calls
+            .get(&projection_key)
+            .unwrap_or_else(|| panic!("missing synthetic to_vec call for `{function_name}`"));
+        assert_eq!(resolved_call.method_name, "to_vec");
+        assert_eq!(
+            resolved_call.target.symbol_name,
+            "hew_hashset_to_vec_layout"
+        );
+    }
+}
+
+#[test]
 fn vec_new_with_error_element_remains_error_typed() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let span = 0..8;

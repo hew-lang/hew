@@ -714,6 +714,10 @@ run_accept_expect_status "hashset_for_in_owned" 9
 # non-identifier shapes the bug hid.
 # HashSet via a struct field: 10+20+30 → exit 60.
 run_accept_expect_status "hashset_for_in_field" 60
+# HashSet via nested struct fields: the projection receiver keeps HashSet type.
+run_accept_expect_status "hashset_for_in_nested_field" 60
+# HashSet via a tuple field: the projection receiver keeps HashSet type.
+run_accept_expect_status "hashset_for_in_tuple_projection" 60
 # HashSet via a call result (also a single-eval witness): 10+20+30 → exit 60.
 run_accept_expect_status "hashset_for_in_call" 60
 # HashMap via a struct field: keys 6 + values 60 → exit 66.
@@ -721,6 +725,9 @@ run_accept_expect_status "hashmap_for_in_field" 66
 # HashMap via a call result (single-eval: keys()+values() borrow one temp, so
 # make_map() runs once): keys 6 + values 60 → exit 66.
 run_accept_expect_status "hashmap_for_in_call" 66
+# HashMap::into_iter via a record field: both synthetic Vec projections retain
+# the HashMap-typed field receiver, and the source remains live. Three entries.
+run_accept_expect_status "hashmap_into_iter_field" 3
 # Owned-element drop ratchet on the non-identifier route (field access): string
 # lens 2+3+4 → exit 9. Verified clean under the guard allocator (MallocScribble /
 # MallocGuardEdges) alongside the other owned for-in fixtures.

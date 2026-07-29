@@ -4382,7 +4382,18 @@ impl Builder {
                         self.fresh_variant_payload_binder_locals.insert(local);
                     }
                 }
-                if call_scrutinee_owner.is_some() && keep_for_drop_elab {
+                // Whole call-carrier payloads normally remain aliases of the
+                // shell and are released by its terminal composite drop.
+                // Recursive record payloads moved out as the match result are
+                // the narrow exception: record drop admission cannot infer
+                // the transfer through the MachineVariant projection. CoW
+                // strings/bytes already carry their own retain-aware transfer
+                // authority; exempting them here would admit both the binder
+                // and shell releases for one owner.
+                if call_scrutinee_owner.is_some()
+                    && keep_for_drop_elab
+                    && self.is_owned_aggregate_record_ty(&binding_ty)
+                {
                     if let Some(local) = base_local(dest) {
                         call_carrier_match_result_candidates.push((binding.binding, local));
                     }
@@ -4722,13 +4733,13 @@ impl Builder {
             }
             let value = self.lower_composite_result_value(&arm.body);
             let body_end_block_id = self.current_block_id;
-            // A direct whole-payload match result (`Some(g) => g`) transfers
-            // the selected field out of a proved-fresh call carrier. The
-            // carrier's active payload drop is suppressed on that arm, so the
-            // resulting binder is the sole recursive owner. Exempt exactly
-            // that moved-out binder from projection taint. Merely reading a
-            // payload in an otherwise statement-valued arm leaves the carrier
-            // as owner and must not create a second release.
+            // A direct whole-record match result (`Some(g) => g`) transfers the
+            // selected field out of a proved-fresh call carrier. The carrier's
+            // active payload drop is suppressed on that arm, so the resulting
+            // binder is the sole recursive owner. Exempt exactly that moved-out
+            // record binder from projection taint. Merely reading a payload in
+            // an otherwise statement-valued arm leaves the carrier as owner,
+            // while CoW leaves use their separate retain-aware authority.
             if let Some(value_local) = value.and_then(base_local) {
                 for (binding, local) in &call_carrier_match_result_candidates {
                     if *local == value_local {

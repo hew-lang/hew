@@ -5410,10 +5410,10 @@ pub(crate) fn get_or_declare_enum_drop_inplace<'ctx>(
 }
 
 /// Lookup-or-declare the synthesised per-record overwrite-release helper
-/// `fn(*mut old, *const new)`. Called by `lower_actor_state_field_store`
-/// before a record-typed state field is overwritten: the body neutralises
-/// (nulls) aliasing old non-String heap leaves, leaves old String owners for
-/// the drop spine to release, then runs
+/// `fn(*mut old, *const new)`. Called before a record-typed actor-state or
+/// ordinary record field is overwritten: the body neutralises (nulls) aliasing
+/// old non-String heap leaves, leaves old String owners for the drop spine, then
+/// runs
 /// `__hew_record_drop_inplace_<Record>` over what remains. See
 /// `emit_record_overwrite_release_body` for the alias model and the
 /// leak-over-UAF posture.
@@ -16541,6 +16541,52 @@ fn lower_record_field_store(
         .builder
         .build_load(field_ty, src_ptr, &format!("field_{idx}_store_src"))
         .llvm_ctx_with(|| format!("RecordFieldStore field {idx} load src"))?;
+
+    // An inline record field owns its recursively dropped leaves. Replacing
+    // the bytes without releasing the prior value leaks every old owning leaf.
+    // Reuse the alias-aware helper already used by actor-state record stores:
+    // it neutralises old leaves that alias `src`, then runs the ordinary record
+    // drop spine over the remainder. Resource records stay under their
+    // fail-closed ownership rules; replacing one requires move/close semantics
+    // rather than this ordinary aggregate overwrite path.
+    if let Some(ResolvedTy::Named {
+        name,
+        args,
+        builtin: None,
+        is_opaque: false,
+    }) = place_base_local(&src).and_then(|src_local| fn_ctx.local_tys.get(&src_local))
+    {
+        let full_key = if args.is_empty() {
+            name.clone()
+        } else {
+            mangle_with_shortened_args(name, args)
+        };
+        let short_key = if args.is_empty() {
+            short_name(name).to_string()
+        } else {
+            mangle_with_shortened_args(short_name(name), args)
+        };
+        let record_key = [full_key.as_str(), short_key.as_str()]
+            .into_iter()
+            .find(|key| fn_ctx.record_field_resolved_tys.contains_key(*key));
+        let is_resource_record = record_key.is_some_and(|key| {
+            fn_ctx.resource_record_close.iter().any(|(record_name, _)| {
+                record_name == key || short_name(record_name) == short_name(key)
+            })
+        });
+        if let Some(record_key) = record_key.filter(|_| !is_resource_record) {
+            let helper =
+                get_or_declare_record_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, record_key);
+            fn_ctx
+                .builder
+                .build_call(
+                    helper,
+                    &[field_ptr.into(), src_ptr.into()],
+                    &format!("field_{idx}_record_release"),
+                )
+                .llvm_ctx("RecordFieldStore record overwrite release")?;
+        }
+    }
     fn_ctx
         .builder
         .build_store(field_ptr, src_val)

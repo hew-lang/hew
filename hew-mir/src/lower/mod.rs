@@ -1226,11 +1226,12 @@ struct Builder {
     pub(crate) match_project_consumed_binder_locals: HashSet<u32>,
     /// Match-arm payload binders whose active `(variant, field)` was proven a
     /// fresh transferred return. This includes mixed-return wrappers with no
-    /// whole shell owner and selected payloads moved directly out as the result
-    /// of a proved-fresh call-scrutinee match. In the latter case the shell's
-    /// active payload drop is suppressed on that arm, so the binder is the one
-    /// and only owner of the selected field. These locals are exempt from the
-    /// ordinary interior-projection alias seed.
+    /// whole shell owner and recursive record payloads moved directly out as
+    /// the result of a proved-fresh call-scrutinee match. In the latter case
+    /// the shell's active payload drop is suppressed on that arm, so the binder
+    /// is the one and only owner of the selected field. `CoW` payloads retain
+    /// their separate retain-aware shell/binder authority. These locals are
+    /// exempt from the ordinary interior-projection alias seed.
     pub(crate) fresh_variant_payload_binder_locals: HashSet<u32>,
     /// Binding ids paired with `fresh_variant_payload_binder_locals`. Record
     /// drop admission is keyed by binding rather than local, so this is the

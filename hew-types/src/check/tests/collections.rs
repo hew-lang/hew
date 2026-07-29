@@ -1519,6 +1519,182 @@ fn vec_record_collection_field_push_routes_to_owned_abi() {
 }
 
 #[test]
+fn vec_iter_admits_recursive_enum_through_its_vec_field() {
+    // `VecIter::next` clones its item out. The `Array(Vec<RedisReply>)`
+    // back-edge is therefore admissible only because it closes through the
+    // Vec buffer and its element clone/drop descriptor; this exercises both
+    // Vec construction and the iterator's clone-totality gate.
+    let output = check_source(
+        r"
+        enum RedisReply {
+            Nil;
+            Int(i64);
+            Array(Vec<RedisReply>);
+        }
+
+        fn main() {
+            var replies: Vec<RedisReply> = [];
+            replies.push(RedisReply::Int(7));
+            for reply in replies {
+                match reply {
+                    RedisReply::Nil => {},
+                    RedisReply::Int(_) => {},
+                    RedisReply::Array(_) => {},
+                }
+            }
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "a Vec-indirected recursive enum must be iterable: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_iter_admits_generic_mutual_vec_and_hashmap_value_recursion() {
+    // The active-nominal witness is per declaration: `A -> Vec<B>` crosses
+    // one heap buffer, then `B -> HashMap<i64, A>` closes through the map's
+    // VALUE buffer. Neither type is recursively embedded inline.
+    let output = check_source(
+        r"
+        record A<T> { children: Vec<B<T>> }
+        record B<T> { parents: HashMap<i64, A<T>> }
+
+        fn main() {
+            var roots: Vec<A<i64>> = [];
+            for _ in roots {
+                let seen: i64 = 0;
+            }
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "mutual recursion closed only through Vec/map-value buffers must be iterable: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
+    // Uses can carry `pkg.Wrap<...>` while a declaration's members retain the
+    // local `Wrap<...>` spelling. The active stack must use the resolved
+    // declaration identity, or the progressively larger instantiations below
+    // evade the cycle guard.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.modules.insert("pkg".to_string());
+    checker.type_defs.insert(
+        "Wrap".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Record,
+            name: "Wrap".to_string(),
+            type_params: vec!["T".to_string()],
+            bounds: HashMap::new(),
+            fields: HashMap::from([(
+                "next".to_string(),
+                Ty::Named {
+                    name: "Wrap".to_string(),
+                    args: vec![Ty::Named {
+                        name: "Wrap".to_string(),
+                        args: vec![Ty::Named {
+                            name: "T".to_string(),
+                            args: vec![],
+                            builtin: None,
+                        }],
+                        builtin: None,
+                    }],
+                    builtin: None,
+                },
+            )]),
+            field_order: vec!["next".to_string()],
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    );
+    let ty = Ty::Named {
+        name: "pkg.Wrap".to_string(),
+        args: vec![Ty::I64],
+        builtin: None,
+    };
+
+    assert!(
+        !checker.validate_vec_iter_element_clone_type(&ty, &Span::from(0..0)),
+        "a qualified, diverging generic value cycle must reject without overflowing"
+    );
+    assert!(
+        checker
+            .errors
+            .iter()
+            .any(|error| error.message.contains("recursive")),
+        "the VecIter boundary must report the recursive layout: {:#?}",
+        checker.errors
+    );
+}
+
+#[test]
+fn vec_iter_rejects_direct_inline_recursive_declaration() {
+    // A direct self member has no heap indirection and therefore no finite
+    // value layout. This must stay a diagnostic rather than recursing through
+    // clone/drop classification until the checker overflows its stack.
+    let output = check_source(
+        r"
+        record Direct { next: Direct }
+
+        fn main() {
+            var nodes: Vec<Direct> = [];
+            for _ in nodes {
+                let seen: i64 = 0;
+            }
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("recursive")),
+        "direct inline recursion must be rejected, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_iter_rejects_mutual_inline_recursive_declarations() {
+    // The same rule applies across two nominals: neither `A -> B` nor `B -> A`
+    // crosses a container value slot, so the declaration pair is infinitely
+    // sized and must fail closed without a recursive checker walk.
+    let output = check_source(
+        r"
+        record A { nested: B }
+        record B { outer: A }
+
+        fn main() {
+            var roots: Vec<A> = [];
+            for _ in roots {
+                let seen: i64 = 0;
+            }
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("recursive")),
+        "mutual inline recursion must be rejected, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_record_hashmap_field_push_admitted() {
     // A record whose field is a `HashMap` is admitted — the map arg types
     // (`string`/`string`) are clonable, so the collection field is clonable.

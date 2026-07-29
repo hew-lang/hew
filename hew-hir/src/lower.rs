@@ -1948,6 +1948,34 @@ pub fn lower_program_with_mono_cap(
             };
             decl.is_opaque.then(|| decl.name.clone())
         }));
+    ctx.root_visible_source_type_short_names
+        .extend(program.items.iter().filter_map(|(item, _)| match item {
+            Item::TypeDecl(decl) => Some(decl.name.clone()),
+            Item::Record(decl) => Some(decl.name.clone()),
+            _ => None,
+        }));
+    if let Some(module_graph) = &program.module_graph {
+        for module_id in &module_graph.topo_order {
+            if *module_id == module_graph.root {
+                continue;
+            }
+            let Some(module_short) = module_id.path.last() else {
+                continue;
+            };
+            let Some(module) = module_graph.modules.get(module_id) else {
+                continue;
+            };
+            ctx.source_type_identities
+                .extend(module.items.iter().filter_map(|(item, _)| {
+                    let name = match item {
+                        Item::TypeDecl(decl) => &decl.name,
+                        Item::Record(decl) => &decl.name,
+                        _ => return None,
+                    };
+                    Some(format!("{module_short}.{name}"))
+                }));
+        }
+    }
 
     let mut builtin_receiver_impl_method_symbols: HashSet<String> = HashSet::new();
 
@@ -5771,6 +5799,16 @@ struct LowerCtx {
     /// `#[opaque] type Receiver {}` shadows the builtin by declaration identity
     /// even though its short name is registered in the builtin catalog.
     root_opaque_type_short_names: HashSet<String>,
+    /// Source-declared type names visible in the root namespace, including
+    /// declarations flattened from file imports. These identities must be
+    /// considered before the compiler-only `Task`, `Unit`, and
+    /// `CancellationToken` fallbacks, including for generic source types.
+    root_visible_source_type_short_names: HashSet<String>,
+    /// Exact `{module_short}.{type}` identities declared by non-root modules.
+    /// This lets the three compiler-special spellings retain their source
+    /// identity inside a declaring module and through named imports without
+    /// broadening the general builtin-shadow rules.
+    source_type_identities: HashSet<String>,
     /// Mirrors `Checker::current_module_idx`: 0 for root items, N for the N-th
     /// non-root module's items (1-based, matching topo order).  Used by
     /// `mk_key` to produce module-scoped `SpanKey` lookups that agree with
@@ -5949,6 +5987,8 @@ impl LowerCtx {
             opaque_type_short_names: HashSet::new(),
             non_opaque_type_short_names: HashSet::new(),
             root_opaque_type_short_names: HashSet::new(),
+            root_visible_source_type_short_names: HashSet::new(),
+            source_type_identities: HashSet::new(),
             current_module_idx: 0,
             root_item_ids: HashSet::new(),
             lowering_injected_items: false,
@@ -18969,6 +19009,63 @@ impl LowerCtx {
         }
     }
 
+    /// Resolve a source declaration that uses one of the three spellings with
+    /// dedicated HIR fallbacks (`Task`, `Unit`, or `CancellationToken`).
+    ///
+    /// This deliberately does not participate in general named-type
+    /// resolution: reserved primitives and contextual `Self` keep their
+    /// existing authority. It exists only so source identity wins before the
+    /// audited early arms below, including for generic `Task<T>` / `Unit<T>`.
+    fn resolve_early_source_type_ref(
+        &self,
+        name: &str,
+        args: Vec<ResolvedTy>,
+    ) -> Option<ResolvedTy> {
+        if name.contains('.') {
+            return None;
+        }
+
+        if let Some(canonical) = self
+            .import_type_name_aliases
+            .get(&(self.current_module_name.clone(), name.to_string()))
+        {
+            return Some(self.resolve_named_type_ref(canonical, args));
+        }
+
+        let current_module_is_file_import = self
+            .current_module_name
+            .as_deref()
+            .is_some_and(|module| self.file_import_module_names.contains(module));
+        if (self.current_module_name.is_none() || current_module_is_file_import)
+            && self.root_visible_source_type_short_names.contains(name)
+        {
+            return Some(if self.root_opaque_type_short_names.contains(name) {
+                ResolvedTy::named_opaque(name.to_string(), args)
+            } else {
+                ResolvedTy::named_user(name.to_string(), args)
+            });
+        }
+
+        if !current_module_is_file_import {
+            if let Some(module_short) = self
+                .current_module_name
+                .as_deref()
+                .map(hew_types::short_name)
+            {
+                let qualified = format!("{module_short}.{name}");
+                if self.source_type_identities.contains(&qualified) {
+                    return Some(if self.resolves_to_opaque_handle(&qualified, name) {
+                        ResolvedTy::named_opaque(qualified, args)
+                    } else {
+                        ResolvedTy::named_user(qualified, args)
+                    });
+                }
+            }
+        }
+
+        None
+    }
+
     fn qualify_current_module_record_ty(&self, ty: ResolvedTy) -> ResolvedTy {
         let ResolvedTy::Named {
             name,
@@ -19215,19 +19312,21 @@ impl LowerCtx {
                     "string" => ResolvedTy::String,
                     "duration" => ResolvedTy::Duration,
                     "bytes" => ResolvedTy::Bytes,
-                    "CancellationToken"
-                        if args.is_empty()
-                            && !(self.current_module_name.is_none()
-                                && self.root_opaque_type_short_names.contains(name)) =>
-                    {
-                        ResolvedTy::CancellationToken
-                    }
-                    "Unit" | "()" => ResolvedTy::Unit,
+                    "CancellationToken" => self
+                        .resolve_early_source_type_ref(name, args)
+                        .unwrap_or(ResolvedTy::CancellationToken),
+                    "Unit" => self
+                        .resolve_early_source_type_ref(name, args)
+                        .unwrap_or(ResolvedTy::Unit),
+                    "()" => ResolvedTy::Unit,
                     // `Task` is a compiler-internal value class with no user-source
                     // syntax. Writing `Task<T>` in any annotation position is a
                     // compile error. Use `fork name = call(...)` to obtain a task
                     // handle. (TI-5 structural enforcement.)
                     "Task" => {
+                        if let Some(source_ty) = self.resolve_early_source_type_ref(name, args) {
+                            return source_ty;
+                        }
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::TaskNotNameable,
                             ty.1.clone(),
@@ -30156,6 +30255,114 @@ mod tests {
                 Vec::new(),
             ),
             "a checker-authored bare std handle must recover its exact builtin identity"
+        );
+    }
+
+    fn named_type_ref(name: &str, args: Vec<Spanned<TypeExpr>>) -> Spanned<TypeExpr> {
+        (
+            TypeExpr::Named {
+                name: name.to_string(),
+                type_args: (!args.is_empty()).then_some(args),
+            },
+            0..0,
+        )
+    }
+
+    #[test]
+    fn source_identity_precedes_task_unit_and_cancellation_early_arms() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.root_visible_source_type_short_names.extend([
+            "Task".to_string(),
+            "Unit".to_string(),
+            "CancellationToken".to_string(),
+        ]);
+        ctx.root_opaque_type_short_names
+            .insert("CancellationToken".to_string());
+
+        let i64_arg = || vec![named_type_ref("i64", Vec::new())];
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("Task", i64_arg())),
+            ResolvedTy::named_user("Task".to_string(), vec![ResolvedTy::I64])
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("Unit", i64_arg())),
+            ResolvedTy::named_user("Unit".to_string(), vec![ResolvedTy::I64])
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("CancellationToken", Vec::new())),
+            ResolvedTy::named_opaque("CancellationToken".to_string(), Vec::new())
+        );
+        assert!(
+            !ctx.diagnostics
+                .iter()
+                .any(|diagnostic| matches!(diagnostic.kind, HirDiagnosticKind::TaskNotNameable)),
+            "a source-declared Task<T> must not trigger the compiler Task diagnostic"
+        );
+
+        ctx.root_visible_source_type_short_names.clear();
+        ctx.root_opaque_type_short_names.clear();
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("Unit", Vec::new())),
+            ResolvedTy::Unit
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("CancellationToken", Vec::new())),
+            ResolvedTy::CancellationToken
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("Task", i64_arg())),
+            ResolvedTy::Unit
+        );
+        assert!(
+            ctx.diagnostics
+                .iter()
+                .any(|diagnostic| matches!(diagnostic.kind, HirDiagnosticKind::TaskNotNameable)),
+            "only the genuine compiler Task spelling must be rejected"
+        );
+    }
+
+    #[test]
+    fn named_import_identity_precedes_task_unit_and_cancellation_early_arms() {
+        let tc_output = TypeCheckOutput {
+            import_type_name_aliases: HashMap::from([
+                ((None, "Task".to_string()), "foo.Task".to_string()),
+                ((None, "Unit".to_string()), "foo.Unit".to_string()),
+                (
+                    (None, "CancellationToken".to_string()),
+                    "foo.CancellationToken".to_string(),
+                ),
+            ]),
+            ..TypeCheckOutput::default()
+        };
+        let mut ctx = LowerCtx::new(
+            &tc_output,
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.opaque_type_short_names
+            .insert("foo.CancellationToken".to_string());
+
+        assert_eq!(
+            ctx.lower_type(&named_type_ref(
+                "Task",
+                vec![named_type_ref("i64", Vec::new())],
+            )),
+            ResolvedTy::named_user("foo.Task".to_string(), vec![ResolvedTy::I64])
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref(
+                "Unit",
+                vec![named_type_ref("i64", Vec::new())],
+            )),
+            ResolvedTy::named_user("foo.Unit".to_string(), vec![ResolvedTy::I64])
+        );
+        assert_eq!(
+            ctx.lower_type(&named_type_ref("CancellationToken", Vec::new())),
+            ResolvedTy::named_opaque("foo.CancellationToken".to_string(), Vec::new())
         );
     }
 

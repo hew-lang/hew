@@ -123,6 +123,7 @@ mod tests {
             hew_types::BuiltinType::AsyncGenerator
             | hew_types::BuiltinType::Stream
             | hew_types::BuiltinType::Sink
+            | hew_types::BuiltinType::Sender
             | hew_types::BuiltinType::Receiver => vec![ResolvedTy::I64],
             _ => vec![],
         };
@@ -225,6 +226,20 @@ mod tests {
             assert!(
                 findings(shadow.clone(), shadow).is_empty(),
                 "a user type named {name} must not acquire builtin close semantics"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_endpoint_diagnostics_recover_source_qualified_family() {
+        for (builtin, expected) in [
+            (hew_types::BuiltinType::Sender, "channel.Sender<i64>"),
+            (hew_types::BuiltinType::Receiver, "channel.Receiver<i64>"),
+        ] {
+            assert_eq!(
+                render_owned_handle_ty(&builtin_ty(builtin)),
+                expected,
+                "typed std endpoint diagnostics must retain their source family"
             );
         }
     }

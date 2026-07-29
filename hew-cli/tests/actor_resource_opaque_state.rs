@@ -337,6 +337,57 @@ fn file_imported_user_receiver_closes_once_without_runtime_close() {
 }
 
 #[test]
+fn builtin_cancellation_token_actor_state_uses_runtime_release() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("actor-builtin-cancellation-token-ir-")
+        .tempdir()
+        .expect("tempdir");
+    let source_path = dir.path().join("builtin_token.hew");
+    let source = r#"extern "C" {
+    fn hew_deque_new() -> CancellationToken;
+}
+
+actor Keeper {
+    let token: CancellationToken;
+}
+
+fn main() {
+    let token = unsafe { hew_deque_new() };
+    let _keeper = spawn Keeper(token: token);
+}
+"#;
+    std::fs::write(&source_path, source).expect("write builtin token source");
+
+    let output = Command::new(hew_binary())
+        .args([
+            "compile",
+            "--emit-dir",
+            dir.path().to_str().expect("emit dir utf-8"),
+            source_path.to_str().expect("source path utf-8"),
+        ])
+        .current_dir(repo_root())
+        .output()
+        .expect("compile builtin token IR");
+    assert!(
+        output.status.success(),
+        "genuine builtin CancellationToken actor state must compile;\n{}",
+        describe_output(&output)
+    );
+    let ll = std::fs::read_to_string(dir.path().join("builtin_token.ll")).expect("read emitted IR");
+    let drop_body = fn_body(&ll, "__hew_state_drop_");
+    assert!(
+        drop_body.contains("hew_cancel_token_release"),
+        "genuine builtin CancellationToken must retain runtime release lowering:\n{drop_body}"
+    );
+    assert!(
+        !drop_body.contains("CancellationToken::close"),
+        "genuine builtin CancellationToken must not acquire a user close:\n{drop_body}"
+    );
+}
+
+#[test]
 fn direct_resource_actor_state_uses_restart_clone_refusal_and_single_close_drop() {
     require_codegen();
 

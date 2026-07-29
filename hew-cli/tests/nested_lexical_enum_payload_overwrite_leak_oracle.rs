@@ -273,6 +273,38 @@ fn main() -> i64 {
 }
 "#;
 
+const CONDITIONAL_CONSUME_TEMPLATE: &str = r#"
+enum Box {
+    Full(string);
+    Empty;
+}
+
+fn exercise(take: bool, i: i64) -> string {
+    var opt = Box::Full(f"conditional-consume-{i}");
+    match opt {
+        Full(s) => {
+            opt = Box::Empty;
+            if take {
+                return s;
+            }
+            f"fallback-{i}"
+        },
+        Empty => f"empty-{i}",
+    }
+}
+
+fn main() {
+    var total = 0;
+    for i in 0..__FRAMES__ {
+        total = total + exercise(i % 2 == 0, i).len();
+        println("frame");
+    }
+    if total == 0 {
+        panic("missing payload");
+    }
+}
+"#;
+
 const UNSUPPORTED_LIVE_ALIAS_CASES: &[(&str, &str, &str)] = &[
     (
         "mixed_string_vec",
@@ -361,6 +393,10 @@ fn live_alias_source(frames: usize) -> String {
 
 fn self_alias_source(frames: usize) -> String {
     SELF_ALIAS_TEMPLATE.replace("__FRAMES__", &frames.to_string())
+}
+
+fn conditional_consume_source(frames: usize) -> String {
+    CONDITIONAL_CONSUME_TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
 
 fn dump_raw(source: &str, name: &str) -> String {
@@ -580,4 +616,74 @@ fn overwrite_ownership_controls_do_not_double_free_or_read_poison() {
             "{name} must execute every requested frame under allocator poisoning"
         );
     }
+}
+
+/// The parent overwrite transfers the old payload to the arm binder
+/// (`flag = 0`). A later conditional consume must re-arm that same flag only
+/// on the taken path; otherwise a shared arm-close plan can drop a string after
+/// release authority has moved onward.
+#[test]
+fn conditional_consume_rearms_the_delayed_release_flag() {
+    let raw = dump_raw(
+        &conditional_consume_source(1),
+        "conditional_consume_flag_transition",
+    );
+    let section = function_section(&raw, "exercise");
+    let mut assignments: std::collections::BTreeMap<&str, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    for line in section.lines() {
+        let Some((dest, value)) = line.trim().split_once(" = const.i64 ") else {
+            continue;
+        };
+        let counts = assignments.entry(dest).or_default();
+        match value {
+            "0" => counts.0 += 1,
+            "1" => counts.1 += 1,
+            _ => {}
+        }
+    }
+    assert!(
+        assignments
+            .values()
+            .any(|(zeros, ones)| *zeros >= 1 && *ones >= 2),
+        "one projected-payload flag must transition 1 (parent-owned) -> 0 \
+         (binder-owned) -> 1 (consumed onward) on the conditional consume path:\n{section}"
+    );
+}
+
+/// Runtime counterpart for the conditional flag transition: both the
+/// transferred return path and the live-binder fallthrough path release the
+/// old payload exactly once.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the deterministic poisoned-allocator contract is macOS-only"
+)]
+#[test]
+fn conditional_consume_after_live_alias_overwrite_drops_exactly_once() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("conditional-consume-live-enum-alias-")
+        .tempdir()
+        .expect("tempdir");
+    let source = conditional_consume_source(HIGH_FRAMES);
+    let bin = compile_to_native(&source, dir.path(), "conditional_consume_live_alias");
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "the consumed path must suppress the delayed binder drop while the live path keeps it:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| *line == "frame")
+            .count(),
+        HIGH_FRAMES,
+        "both conditional ownership paths must execute under allocator poisoning"
+    );
+    assert_eq!(
+        measure_leaks_exact(&bin),
+        (0, 0),
+        "conditional consume and non-consume paths must each release the payload exactly once"
+    );
 }

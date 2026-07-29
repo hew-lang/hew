@@ -1468,7 +1468,9 @@ struct Builder {
     /// parent slot is overwritten while the binder remains lexically live.
     /// Drop elaboration then promotes the binder to the sole release authority,
     /// guarded on `flag == 0`, so the old payload survives every in-arm read
-    /// but is released on the arm's normal or early-exit edge.
+    /// but is released on the arm's normal or early-exit edge. A later consume
+    /// of the binder flips the flag back to one on that runtime path: release
+    /// authority has moved onward, so a shared arm-close plan must skip it.
     pub(crate) projected_payload_overwrite_flags: HashMap<BindingId, Place>,
     /// Binders for which lowering observed the parent-overwrite authority
     /// transfer described by `projected_payload_overwrite_flags`. Kept

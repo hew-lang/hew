@@ -16,8 +16,9 @@ FreeBSD base includes `fetch(1)` — no extra packages needed:
 fetch -o - https://hew.sh/install | sh
 ```
 
-Prebuilt release tarballs: `hew-v<ver>-freebsd-x86_64.tar.gz` on the
-[releases page](https://github.com/hew-lang/hew/releases) (x86_64 only today).
+Prebuilt release tarballs: `hew-v<ver>-freebsd-x86_64.tar.gz` and
+`hew-v<ver>-freebsd-aarch64.tar.gz` on the
+[releases page](https://github.com/hew-lang/hew/releases).
 
 ## Quick Install (Windows)
 

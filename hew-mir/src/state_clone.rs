@@ -230,20 +230,17 @@ pub enum StateFieldCloneKind {
     /// type is a type-erased protocol tag and is never recursively cloned.
     ChannelSender,
 
-    /// `#[resource]` runtime handle that carries a user `close(self)` /
-    /// `free(self)` ritual (RAII-1). The single-slot opaque flavour —
-    /// `#[resource] #[opaque]` (e.g. `regex.Pattern` once F9 stamps it a
-    /// resource). Unlike a bare [`OpaqueHandle`] (no-op drop / documented
-    /// leak), a `Resource` field carries the `<Type>::<method>` close
-    /// `close_symbol` so the OWNING aggregate's drop spine runs the user close
-    /// EXACTLY ONCE on every exit path (sync return, task cancel, actor
-    /// shutdown), then null-stores the slot.
+    /// Close-owning runtime handle. This includes builtin resources such as
+    /// `Receiver` / `LambdaPid` and single-slot user `#[resource] #[opaque]`
+    /// handles. Unlike a bare [`OpaqueHandle`] (no-op drop / documented leak),
+    /// a `Resource` carries a typed [`ResourceCloseAuthority`] so the OWNING
+    /// aggregate's drop spine runs its close EXACTLY ONCE on every exit path
+    /// (sync return, task cancel, actor shutdown), then null-stores the slot.
     ///
-    /// **Drop**: `emit_field_drop_step` loads the handle pointer, calls
-    /// `close_symbol(handle)` (a `void(ptr)`, Unit-returning per W3.030), then
-    /// null-stores the field slot so a structurally-reachable second drop
-    /// (cancel-into-trap after a normal exit) short-circuits
-    /// (raii-null-after-move).
+    /// **Drop**: `emit_field_drop_step` loads the handle pointer and dispatches
+    /// either through the typed runtime ABI descriptor or the generated user
+    /// close function, then null-stores the field slot so a
+    /// structurally-reachable second drop short-circuits.
     ///
     /// **Clone**: refused at runtime — branch to the clone rollback chain and
     /// return the protocol failure code, mirroring [`ClosurePair`]. A
@@ -261,7 +258,21 @@ pub enum StateFieldCloneKind {
     /// [`OpaqueHandle`]: StateFieldCloneKind::OpaqueHandle
     /// [`ClosurePair`]: StateFieldCloneKind::ClosurePair
     /// [`UserRecord`]: StateFieldCloneKind::UserRecord
-    Resource { name: String, close_symbol: String },
+    Resource {
+        name: String,
+        close: ResourceCloseAuthority,
+    },
+}
+
+/// Closed dispatch authority for a resource field's exactly-once teardown.
+///
+/// Builtin resources retain their typed runtime descriptor through aggregate
+/// classification. User resources retain their generated Hew function symbol.
+/// Codegen must never infer one authority from the other's string spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ResourceCloseAuthority {
+    Runtime(hew_types::runtime_call::RuntimeDropDescriptor),
+    User(String),
 }
 
 /// Reusable structural clone/drop plan for one owned value.
@@ -1693,13 +1704,17 @@ fn classify_named(
     if matches!(builtin, Some(hew_types::BuiltinType::Receiver)) {
         return Ok(StateFieldCloneKind::Resource {
             name: "Receiver".to_string(),
-            close_symbol: "hew_channel_receiver_close".to_string(),
+            close: ResourceCloseAuthority::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::ReceiverClose,
+            ),
         });
     }
     if matches!(builtin, Some(hew_types::BuiltinType::LambdaPid)) {
         return Ok(StateFieldCloneKind::Resource {
             name: "LambdaPid".to_string(),
-            close_symbol: "hew_lambda_actor_release".to_string(),
+            close: ResourceCloseAuthority::Runtime(
+                hew_types::runtime_call::RuntimeDropDescriptor::LambdaActorHandleClose,
+            ),
         });
     }
     if matches!(
@@ -1773,7 +1788,7 @@ fn classify_named(
     {
         return Ok(StateFieldCloneKind::Resource {
             name: name.to_string(),
-            close_symbol: close_symbol.clone(),
+            close: ResourceCloseAuthority::User(close_symbol.clone()),
         });
     }
 
@@ -2473,7 +2488,7 @@ mod tests {
             StateFieldCloneKind::ClosurePair,
             StateFieldCloneKind::Resource {
                 name: "Pattern".to_string(),
-                close_symbol: "Pattern::free".to_string(),
+                close: ResourceCloseAuthority::User("Pattern::free".to_string()),
             },
             StateFieldCloneKind::OpaqueHandle {
                 name: "json.Value".to_string(),
@@ -2553,7 +2568,9 @@ mod tests {
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
             StateFieldCloneKind::Resource {
                 name: "LambdaPid".to_string(),
-                close_symbol: "hew_lambda_actor_release".to_string(),
+                close: ResourceCloseAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeDropDescriptor::LambdaActorHandleClose,
+                ),
             },
             "LambdaPid owns a runtime release and must never enter actor state as BitCopy",
         );
@@ -2644,7 +2661,7 @@ mod tests {
             .unwrap(),
             StateFieldCloneKind::Resource {
                 name: "Pattern".to_string(),
-                close_symbol: "Pattern::free".to_string(),
+                close: ResourceCloseAuthority::User("Pattern::free".to_string()),
             },
         );
     }
@@ -2710,7 +2727,7 @@ mod tests {
     fn resource_kind_predicates_and_drop_spine() {
         let res = StateFieldCloneKind::Resource {
             name: "Pattern".to_string(),
-            close_symbol: "Pattern::free".to_string(),
+            close: ResourceCloseAuthority::User("Pattern::free".to_string()),
         };
         // A bare resource leaf IS admitted to the owned-aggregate drop spine
         // (the close fires in the owning record's drop body) and is a resource.

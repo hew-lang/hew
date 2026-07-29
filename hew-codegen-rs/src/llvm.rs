@@ -74,8 +74,9 @@ use hew_mir::{
     CooperateSite, DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
     FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind,
     IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
-    RawMirFunction, RecordLayout, RegexLiteral, SourceOrigin, StateFieldCloneKind,
-    StringRetainCondition, SupervisorChildLayout, SuspendKind, Terminator, TrapKind,
+    RawMirFunction, RecordLayout, RegexLiteral, ResourceCloseAuthority, SourceOrigin,
+    StateFieldCloneKind, StringRetainCondition, SupervisorChildLayout, SuspendKind, Terminator,
+    TrapKind,
 };
 pub(crate) use hew_types::short_name;
 use hew_types::{
@@ -6805,11 +6806,12 @@ pub(crate) fn emit_field_drop_step<'ctx>(
             builder.position_at_end(cont_bb);
             Ok(())
         }
-        // Resource (`#[resource] #[opaque]` handle): the field slot holds the
-        // opaque handle pointer by value. Its sole release is the type's user
-        // `close(self)` method (validated to consume self and return Unit at
-        // MIR registry-build time — Q-β-C, W3.030). Load the handle, and on
-        // a non-null handle call `close_symbol(handle)` then null-store the
+        // Resource (`#[resource] #[opaque]` or builtin affine handle): the
+        // field slot holds the opaque handle pointer by value. Its sole release
+        // is selected by the typed classifier authority: a runtime drop
+        // descriptor for builtins, or the generated Hew close function for a
+        // user resource. Load the handle, and on
+        // a non-null handle call the selected close function, then null-store the
         // slot so any structurally-reachable second drop (cancel-into-trap
         // after a normal exit, actor-shutdown after a sync drop) lands on
         // `null` and short-circuits — the same idempotency posture the Bytes
@@ -6819,26 +6821,36 @@ pub(crate) fn emit_field_drop_step<'ctx>(
         // `close` body is not guaranteed null-tolerant), so the close call is
         // gated behind an explicit is-null branch.
         //
-        // Symbol resolution: `close_symbol` is the flattened `<Self>::<method>`
-        // name `declare_function` registers the LLVM function under
-        // (`func.name`), so `get_function` finds it directly. Absence means the
-        // `#[resource]`'s `close` body never reached `declare_function` — fail
-        // closed rather than silently no-op a resource drop (the same posture
-        // as `resolve_drop_fn`'s UserClose arm). A param-count != 1 means the
+        // User symbol resolution uses the flattened `<Self>::<method>` name
+        // `declare_function` registers. Runtime resources are declared from the
+        // carried descriptor through `intern_runtime_decl`. A param-count != 1 means the
         // close ABI drifted from `void(self)` (e.g. a non-Unit return added an
         // sret param) — fail closed instead of calling with a mismatched ABI.
-        StateFieldCloneKind::Resource { name, close_symbol } => {
-            let close_fn = llvm_mod.get_function(close_symbol).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "resource `{name}` field drop: no LLVM function for close symbol \
-                     `{close_symbol}` is registered. A `#[resource]`'s `close` body \
-                     must be declared in an inherent `impl` block whose flattened \
-                     `<Self>::<method>` symbol reaches `declare_function` before drop \
-                     synthesis (W3.030). Refusing to silently no-op a resource drop \
-                     (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
-                     lifecycle-symmetry)."
-                ))
-            })?;
+        StateFieldCloneKind::Resource { name, close } => {
+            let (close_fn, close_symbol) = match close {
+                ResourceCloseAuthority::Runtime(descriptor) => {
+                    let symbol = descriptor.c_symbol();
+                    let mut declarations = RuntimeDeclMap::new();
+                    (
+                        intern_runtime_decl(ctx, llvm_mod, &mut declarations, symbol)?,
+                        symbol,
+                    )
+                }
+                ResourceCloseAuthority::User(symbol) => {
+                    let close_fn = llvm_mod.get_function(symbol).ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "resource `{name}` field drop: no LLVM function for close symbol \
+                             `{symbol}` is registered. A `#[resource]`'s `close` body \
+                             must be declared in an inherent `impl` block whose flattened \
+                             `<Self>::<method>` symbol reaches `declare_function` before drop \
+                             synthesis (W3.030). Refusing to silently no-op a resource drop \
+                             (LESSONS: boundary-fail-closed, no-silent-no-op-stubs, \
+                             lifecycle-symmetry)."
+                        ))
+                    })?;
+                    (close_fn, symbol.as_str())
+                }
+            };
             if close_fn.count_params() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "resource `{name}` field drop: close symbol `{close_symbol}` has \
@@ -17320,14 +17332,14 @@ fn emit_field_overwrite_release(
         StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Connection,
         } => Ok(()),
-        StateFieldCloneKind::Resource { name, close_symbol }
-            if name == "Receiver" && close_symbol == "hew_channel_receiver_close" =>
-        {
-            Err(CodegenError::FailClosed(format!(
-                "field overwrite `{label}` reached codegen for builtin Receiver; MIR must \
-                 reject the store until it carries source-slot neutralisation"
-            )))
-        }
+        StateFieldCloneKind::Resource {
+            name,
+            close: ResourceCloseAuthority::Runtime(descriptor),
+        } => Err(CodegenError::FailClosed(format!(
+            "field overwrite `{label}` reached codegen for builtin resource {name} \
+                 ({descriptor:?}); MIR must reject the store until it carries \
+                 source-slot neutralisation"
+        ))),
         StateFieldCloneKind::BitCopy { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::Resource { .. }
@@ -18586,18 +18598,27 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
                 .llvm_ctx("local call Rc/Weak null store")?;
             Ok(())
         }
-        StateFieldCloneKind::Resource { close_symbol, .. } => {
+        StateFieldCloneKind::Resource { close, .. } => {
             let (slot, slot_ty) = place_pointer(fn_ctx, value)?;
             let handle = fn_ctx
                 .builder
                 .build_load(slot_ty, slot, "prepared_resource_handle")
                 .llvm_ctx("prepared resource handle load")?;
-            let helper = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                close_symbol,
-            )?;
+            let helper = match close {
+                ResourceCloseAuthority::Runtime(descriptor) => intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    descriptor.c_symbol(),
+                )?,
+                ResourceCloseAuthority::User(symbol) => {
+                    fn_ctx.llvm_mod.get_function(symbol).ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "prepared user resource close `{symbol}` is not declared"
+                        ))
+                    })?
+                }
+            };
             fn_ctx
                 .builder
                 .build_call(helper, &[handle.into()], "prepared_resource_close")

@@ -1,6 +1,6 @@
 # Funcupdate / reassign elaborated-MIR golden baselines (#2648 interface pin, MIR half).
 #
-# generating-revision: 427fe49fd (RC1 composed semantic tip; compilation was
+# generating-context: v0.6.0-rc1 integration branch (semantic state; compilation was
 #   unblocked by the follow-up exhaustive Sender classification only)
 #   (rebased forward from 3683c2ac5; the closure/gen-fn string fixtures were
 #   regenerated to carry the A240 string copy-on-write drop plan — string shares
@@ -62,6 +62,22 @@
 #   value path. This is a lowering/type-resolution correction, not an ownership
 #   relaxation: the changed chunk still has no release entries, and the
 #   fixture's reassign/actor Vec exactness tests retain the live owner proof.
+#   The follow-up guarded VecIter cleanup completes that same correction:
+#   `VecAcc__recv__checksum` now releases its `_7` iterator cursor on each of
+#   nine panic/cancel exits through the shared `_6` ownership guard. Its normal
+#   exhausted/return path keeps the existing iterator-consume handoff. No other
+#   function in var_record_reassign_ownership_test.elab.mir changed.
+#   Refreshed after projected-carrier borrowing forwards restored the leaf
+#   release authority. Only the imported `string$join` chunk in
+#   funcupdate_owned_field_drop_test.elab.mir changed: its `result = parts[0]`
+#   binder is forwarded through borrowing `hew_string_concat` calls, while the
+#   Vec carrier slot is neutralized. Five panic/cancel exit plans now release
+#   that binder. The successful overwrite already releases the old generation
+#   inline, and the successful return moves the live generation without a drop,
+#   so these additions are mutually exclusive rather than competing releases.
+#   `vec_string_projection_forward_has_one_release_per_exit` pins exactly one
+#   release per exceptional edge, one inline overwrite release, and none on the
+#   return edge.
 # dump-mode: hew compile --dump-mir elab <fixture>   (run from the repo root)
 # normalization: three run-variance normalizations — (1) the dump's function
 #   ORDER is nondeterministic (map iteration), so the harness splits both

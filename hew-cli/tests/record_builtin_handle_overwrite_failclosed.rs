@@ -10,9 +10,15 @@ use std::process::Command;
 use support::{describe_output, hew_binary, repo_root, tempdir};
 
 const BUILTIN_HANDLE_OVERWRITES: &str = r"
+import std::channel;
+import std::link_monitor;
+
 type SinkHolder { value: Sink<string> }
 type StreamHolder { value: Stream<string> }
 type GeneratorHolder { value: Generator<i64, ()> }
+type SenderHolder { value: channel.Sender<string> }
+type ReceiverHolder { value: channel.Receiver<string> }
+type MonitorHolder { value: link_monitor.MonitorRef }
 
 fn overwrite_sink(a: Sink<string>, b: Sink<string>) {
     var holder = SinkHolder { value: a };
@@ -29,6 +35,30 @@ fn overwrite_generator(
     b: Generator<i64, ()>,
 ) {
     var holder = GeneratorHolder { value: a };
+    holder.value = b;
+}
+
+fn overwrite_receiver(
+    a: channel.Receiver<string>,
+    b: channel.Receiver<string>,
+) {
+    var holder = ReceiverHolder { value: a };
+    holder.value = b;
+}
+
+fn overwrite_sender(
+    a: channel.Sender<string>,
+    b: channel.Sender<string>,
+) {
+    var holder = SenderHolder { value: a };
+    holder.value = b;
+}
+
+fn overwrite_monitor(
+    a: link_monitor.MonitorRef,
+    b: link_monitor.MonitorRef,
+) {
+    var holder = MonitorHolder { value: a };
     holder.value = b;
 }
 
@@ -63,10 +93,17 @@ fn ordinary_record_builtin_handle_overwrites_are_refused() {
         combined
             .matches("overwriting an owned handle field")
             .count(),
-        3,
-        "each Sink/Stream/Generator store must be rejected independently:\n{combined}"
+        6,
+        "each reachable close-bearing builtin store must be rejected independently:\n{combined}"
     );
-    for handle in ["Sink<string>", "Stream<string>", "Generator<i64, ()>"] {
+    for handle in [
+        "Sink<String>",
+        "Stream<String>",
+        "Generator<i64, ()>",
+        "channel.Sender<String>",
+        "channel.Receiver<String>",
+        "MonitorRef",
+    ] {
         assert!(
             combined.contains(handle),
             "refusal must name destination handle type `{handle}`:\n{combined}"

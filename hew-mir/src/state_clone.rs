@@ -76,7 +76,7 @@ use crate::model::{EnumLayout, RecordLayout};
 pub enum StateFieldCloneKind {
     /// Field whose bits constitute the value: primitives, `bool`, `char`,
     /// `Duration`, `Unit`, `Never`, and `#[repr(C)]` bit-copy aggregates
-    /// such as `HewActorRef` / `LocalPid<T>` / `RemotePid<T>` / `LambdaPid<M,R>`.
+    /// such as `HewActorRef` / `LocalPid<T>` / `RemotePid<T>`.
     ///
     /// Plan §4.5 A: "`HewActorRef` is `#[repr(C)]` bit-copyable — NOT
     /// refcount-bump". The Stage 3 wholesale `memcpy(dst, src,
@@ -1696,12 +1696,17 @@ fn classify_named(
             close_symbol: "hew_channel_receiver_close".to_string(),
         });
     }
+    if matches!(builtin, Some(hew_types::BuiltinType::LambdaPid)) {
+        return Ok(StateFieldCloneKind::Resource {
+            name: "LambdaPid".to_string(),
+            close_symbol: "hew_lambda_actor_release".to_string(),
+        });
+    }
     if matches!(
         builtin,
         Some(
             hew_types::BuiltinType::LocalPid
                 | hew_types::BuiltinType::RemotePid
-                | hew_types::BuiltinType::LambdaPid
                 | hew_types::BuiltinType::HewActor
         )
     ) {
@@ -2534,6 +2539,23 @@ mod tests {
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
             StateFieldCloneKind::BitCopy { size_bytes: 0 },
+        );
+    }
+
+    #[test]
+    fn lambda_pid_classifies_as_close_bearing_resource() {
+        let mut v = HashSet::new();
+        let ty = builtin(
+            hew_types::BuiltinType::LambdaPid,
+            vec![ResolvedTy::I64, ResolvedTy::Unit],
+        );
+        assert_eq!(
+            classify_state_field(&ty, &no_records(), &mut v).unwrap(),
+            StateFieldCloneKind::Resource {
+                name: "LambdaPid".to_string(),
+                close_symbol: "hew_lambda_actor_release".to_string(),
+            },
+            "LambdaPid owns a runtime release and must never enter actor state as BitCopy",
         );
     }
 

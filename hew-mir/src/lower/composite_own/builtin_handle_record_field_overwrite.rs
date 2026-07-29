@@ -30,14 +30,14 @@ pub(in crate::lower) fn detect_builtin_handle_record_field_overwrite(
             || matches!(
                 ty,
                 ResolvedTy::Named {
-                    builtin: Some(
-                        hew_types::BuiltinType::Stream
-                            | hew_types::BuiltinType::Sink
-                            | hew_types::BuiltinType::Generator
-                            | hew_types::BuiltinType::AsyncGenerator
-                    ),
+                    builtin: Some(builtin),
                     ..
-                }
+                } if builtin.close_method().is_some()
+                    || matches!(
+                        builtin,
+                        hew_types::BuiltinType::Generator
+                            | hew_types::BuiltinType::AsyncGenerator
+                    )
             )
     };
     let destination_field_ty = |record: Place, field_offset: FieldOffset| {
@@ -122,7 +122,8 @@ mod tests {
             hew_types::BuiltinType::Generator => vec![ResolvedTy::I64, ResolvedTy::Unit],
             hew_types::BuiltinType::AsyncGenerator
             | hew_types::BuiltinType::Stream
-            | hew_types::BuiltinType::Sink => vec![ResolvedTy::I64],
+            | hew_types::BuiltinType::Sink
+            | hew_types::BuiltinType::Receiver => vec![ResolvedTy::I64],
             _ => vec![],
         };
         ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args)
@@ -159,13 +160,18 @@ mod tests {
 
     #[test]
     fn every_close_bearing_builtin_record_overwrite_is_refused() {
-        let tys = [
-            builtin_ty(hew_types::BuiltinType::Stream),
-            builtin_ty(hew_types::BuiltinType::Sink),
-            builtin_ty(hew_types::BuiltinType::Generator),
-            builtin_ty(hew_types::BuiltinType::AsyncGenerator),
-            ResolvedTy::CancellationToken,
-        ];
+        let mut tys: Vec<_> = hew_types::builtin_types()
+            .iter()
+            .filter(|info| {
+                info.close_method.is_some()
+                    || matches!(
+                        info.kind,
+                        hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator
+                    )
+            })
+            .map(|info| builtin_ty(info.kind))
+            .collect();
+        tys.push(ResolvedTy::CancellationToken);
         for ty in tys {
             let checks = findings(ty.clone(), ty.clone());
             assert!(
@@ -209,5 +215,17 @@ mod tests {
             findings(shadow.clone(), shadow).is_empty(),
             "a user type named Stream must not acquire builtin-handle semantics"
         );
+        let receiver_shadow = ResolvedTy::named_user("Receiver", vec![ResolvedTy::I64]);
+        assert!(
+            findings(receiver_shadow.clone(), receiver_shadow).is_empty(),
+            "a user type named Receiver must not acquire channel-close semantics"
+        );
+        for name in ["Sender", "LambdaPid", "MonitorRef", "SendHalf", "RecvHalf"] {
+            let shadow = ResolvedTy::named_user(name, vec![ResolvedTy::I64]);
+            assert!(
+                findings(shadow.clone(), shadow).is_empty(),
+                "a user type named {name} must not acquire builtin close semantics"
+            );
+        }
     }
 }

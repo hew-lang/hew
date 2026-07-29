@@ -228,6 +228,18 @@ impl Builder {
         if let Some(scope) = self.active_scopes.last().copied() {
             self.scope_vec_iter_bindings
                 .push((scope, binding, binding_ty.clone()));
+            if let Some(source) = vec_iter_init_vec_source_expr(value) {
+                if source.intent == hew_hir::IntentKind::Capture {
+                    if let HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(source_binding),
+                        ..
+                    } = &source.kind
+                    {
+                        self.vec_iter_borrowed_sources
+                            .push((scope, *source_binding));
+                    }
+                }
+            }
         }
         if let Some(value_flag) = self.vec_iter_value_drop_flags.get(&value.site).copied() {
             self.push_instr(Instr::Move {
@@ -283,6 +295,8 @@ impl Builder {
         for (binding, cursor_ty) in to_drop.into_iter().rev() {
             let _ = self.emit_flag_gated_vec_iter_cursor_release(binding, &cursor_ty);
         }
+        self.vec_iter_borrowed_sources
+            .retain(|(scope, _)| *scope != scope_id);
     }
 
     /// Release the `vec` handle of every registered `for x in …` cursor

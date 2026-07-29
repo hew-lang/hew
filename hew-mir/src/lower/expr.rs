@@ -2043,6 +2043,32 @@ impl Builder {
         reason = "one exhaustive match keeps assignment boundary rules together"
     )]
     fn assign(&mut self, target: &HirExpr, value: &HirExpr) {
+        if let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(binding),
+        } = &target.kind
+        {
+            if self
+                .vec_iter_borrowed_sources
+                .iter()
+                .any(|(_, source)| source == binding)
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "reassigning `{name}` while a VecIter cursor borrows it"
+                        ),
+                        site: target.site,
+                    },
+                    note: "the active for-loop cursor reads this Vec's handle directly; \
+                           overwriting the source would release that handle while the cursor \
+                           can still execute. Reassign the Vec before entering the loop, or \
+                           wait until the loop has finished"
+                        .to_string(),
+                });
+                return;
+            }
+        }
         let copy_in = self.assign_target_stays_copy_in(target, value);
         let src = if copy_in {
             self.lower_value(value)
@@ -3814,7 +3840,26 @@ impl Builder {
                 // Lower each explicit field value to a Place, keyed by name.
                 let mut explicit: HashMap<String, Place> = HashMap::new();
                 for (fname, fexpr) in fields {
-                    if let Some(place) = self.lower_value_for_move(fexpr) {
+                    // The Vec for-in desugar marks only the borrowed source of
+                    // `VecIter { vec, idx }` as Capture. That field aliases a
+                    // still-owning source binding, while the cursor ownership
+                    // bit starts moved. Keep this one record ingress out of the
+                    // owned-carrier transfer funnel: moving and neutralizing
+                    // the source here would disable both release authorities.
+                    //
+                    // Fence the exception by record and field instead of
+                    // treating every CowValue Capture as non-transferring;
+                    // closure-environment and other aggregate ingress sites
+                    // retain their ordinary ownership-boundary semantics.
+                    let borrows_vec_iter_source = name.rsplit('.').next() == Some("VecIter")
+                        && fname == "vec"
+                        && fexpr.intent == hew_hir::IntentKind::Capture;
+                    let place = if borrows_vec_iter_source {
+                        self.lower_value(fexpr)
+                    } else {
+                        self.lower_value_for_move(fexpr)
+                    };
+                    if let Some(place) = place {
                         explicit.insert(fname.clone(), place);
                     }
                 }

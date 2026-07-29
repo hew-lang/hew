@@ -6,9 +6,10 @@
 //! the body and the cursor snapshot can be released independently.
 
 use hew_hir::{lower_program, IntentKind, ResolutionCtx};
+use hew_mir::model::NeutralizeAuthority;
 use hew_mir::{
-    lower_hir_module, CmpPred, DropFnSpec, InPlaceReleaseKind, Instr, IrPipeline, MirStatement,
-    Place, Terminator,
+    lower_hir_module, CmpPred, CowHeapRelease, DropFnSpec, DropKind, ExitPath, InPlaceReleaseKind,
+    Instr, IrPipeline, MirStatement, Place, Terminator,
 };
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::{Checker, ResolvedTy};
@@ -205,6 +206,236 @@ fn raw_instructions<'a>(pipeline: &'a IrPipeline, function: &str) -> Vec<&'a Ins
         .iter()
         .flat_map(|block| block.instructions.iter())
         .collect()
+}
+
+#[test]
+fn for_vec_capture_keeps_source_carrier_release_authority() {
+    let pipeline = pipeline(
+        r"
+        fn drain(values: Vec<i64>) {
+            for value in values {
+                let _ = value;
+            }
+        }
+
+        type Holder { values: Vec<i64> }
+
+        fn wrap(values: Vec<i64>) -> Holder {
+            Holder { values: values }
+        }
+        ",
+    );
+
+    let drain = raw_instructions(&pipeline, "drain");
+    assert!(
+        drain.iter().all(|instr| !matches!(
+            instr,
+            Instr::NeutralizePayloadSlot {
+                place: Place::Local(0),
+                authority: NeutralizeAuthority::WholeCarrierConsume,
+                ..
+            }
+        )),
+        "the Capture source borrowed by `VecIter.vec` must keep its carrier \
+         release authority: {drain:#?}"
+    );
+    let source_guards: std::collections::HashSet<_> = drain
+        .iter()
+        .filter_map(|instr| match instr {
+            Instr::ValueSnapshotDrop {
+                value: Place::Local(0),
+                guard: Some(guard),
+                ..
+            } => Some(*guard),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        source_guards.len(),
+        1,
+        "all exits must share the source Vec's one carrier guard"
+    );
+    let source_guard = *source_guards.iter().next().expect("source guard");
+    assert!(
+        drain.iter().any(|instr| matches!(
+            instr,
+            Instr::ConstI64 {
+                dest,
+                value: 0
+            } if *dest == source_guard
+        )) && drain.iter().all(|instr| !matches!(
+            instr,
+            Instr::ConstI64 {
+                dest,
+                value: 1
+            } if *dest == source_guard
+        )),
+        "the live source owner must stay armed on every loop path: {drain:#?}"
+    );
+
+    let wrap = raw_instructions(&pipeline, "wrap");
+    assert_eq!(
+        wrap.iter()
+            .filter(|instr| matches!(
+                instr,
+                Instr::NeutralizePayloadSlot {
+                    place: Place::Local(0),
+                    transferee: Some(_),
+                    authority: NeutralizeAuthority::WholeCarrierConsume,
+                }
+            ))
+            .count(),
+        1,
+        "ordinary aggregate ingress remains a real transfer: the source carrier \
+         must be neutralized exactly once in favour of the Holder owner"
+    );
+}
+
+#[test]
+fn borrowed_for_source_cannot_move_or_reassign_until_cursor_scope_closes() {
+    let pipeline = pipeline_allowing_mir_diagnostics(
+        r"
+        fn make() -> Vec<i64> {
+            [1, 2, 3]
+        }
+
+        fn take(values: Vec<i64>) {
+            let _ = values.len();
+        }
+
+        fn overwrite() {
+            var values = make();
+            for value in values {
+                values = make();
+                print(value);
+            }
+        }
+
+        fn consume() {
+            let values = make();
+            for value in values {
+                let _moved = values;
+                print(value);
+            }
+        }
+
+        fn after_loop() {
+            let values = make();
+            for value in values {
+                print(value);
+                print(values.len());
+            }
+            take(values);
+        }
+        ",
+    );
+
+    let constructs: Vec<_> = pipeline
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| match &diagnostic.kind {
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("while a VecIter cursor borrows it") =>
+            {
+                Some(construct.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        constructs.len(),
+        2,
+        "reassignment and whole-value movement must reject while the borrowed \
+         cursor is active, while reads and a post-loop move stay valid: {:#?}",
+        pipeline.diagnostics
+    );
+    assert!(
+        constructs
+            .iter()
+            .any(|construct| construct.starts_with("reassigning `values`"))
+            && constructs
+                .iter()
+                .any(|construct| construct.starts_with("moving `values`")),
+        "the two invalid ownership boundaries need distinct actionable diagnostics: \
+         {constructs:#?}"
+    );
+}
+
+#[test]
+fn vec_iter_yield_cancel_cleanup_is_path_exact_or_rejected() {
+    let pipeline = pipeline_allowing_mir_diagnostics(
+        r"
+        fn branch_selective(values: Vec<Vec<i64>>, ticks: Vec<i64>, move_value: bool) {
+            for value in values {
+                if move_value {
+                    let _moved = value;
+                } else {
+                    for tick in ticks {
+                        print(tick);
+                    }
+                }
+
+                for tick in ticks {
+                    print(tick);
+                }
+            }
+        }
+        ",
+    );
+
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct
+                    == "conditionally moved VecIter yield across an abandonment point"
+        ) && diagnostic
+            .note
+            .contains("omitting the release would leak the live path")),
+        "a joined cancellation point with MaybeConsumed payload authority must fail \
+         closed instead of leaking one predecessor or double-freeing the other: {:#?}",
+        pipeline.diagnostics
+    );
+
+    let function = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|candidate| candidate.name == "branch_selective")
+        .expect("missing elaborated MIR for `branch_selective`");
+    let cancel_payload_drops: Vec<_> = function
+        .drop_plans
+        .iter()
+        .filter_map(|(exit, plan)| match exit {
+            ExitPath::Cancel { block } => {
+                let count = plan
+                    .drops
+                    .iter()
+                    .filter(|drop| {
+                        drop.drop_fn.is_none()
+                            && drop.kind
+                                == DropKind::CowHeap {
+                                    release: CowHeapRelease::VecPlain,
+                                }
+                    })
+                    .count();
+                (count != 0).then_some((*block, count))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cancel_payload_drops.len(),
+        5,
+        "each cancellation point in the else-only inner loop has definite Live \
+         authority and must release the payload; the later joined MaybeConsumed \
+         loop must receive no unconditional payload drop: {:#?}",
+        function.drop_plans
+    );
+    assert!(
+        cancel_payload_drops.iter().all(|(_, count)| *count == 1),
+        "every definite-live cancellation edge owns exactly one payload release: \
+         {cancel_payload_drops:#?}"
+    );
 }
 
 fn vec_iter_release_guard_flags(

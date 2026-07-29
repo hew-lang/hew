@@ -461,6 +461,49 @@ impl Builder {
         }
     }
 
+    /// Convert the inline yielded-value release verdict into the equivalent
+    /// exit-plan drop kind. Plan drops carry heap/composite rituals in
+    /// `DropKind` with no `drop_fn`; keeping the inline `Release`/`InPlace`
+    /// carrier would route them through the unrelated resource-close
+    /// dispatcher at codegen.
+    fn generator_yield_plan_drop_kind(&self, ty: &ResolvedTy) -> Option<crate::model::DropKind> {
+        match self.generator_yield_drop_symbol(ty) {
+            ReleaseSymbolVerdict::Wired("hew_rc_drop") => Some(crate::model::DropKind::RcRelease),
+            ReleaseSymbolVerdict::Wired("hew_weak_drop_rc") => {
+                Some(crate::model::DropKind::WeakRelease)
+            }
+            ReleaseSymbolVerdict::Wired(symbol) => {
+                let mut release = crate::ownership::CowHeapRelease::from_symbol(symbol)?;
+                if matches!(release, crate::ownership::CowHeapRelease::VecOwnedElement)
+                    && matches!(
+                        ty,
+                        ResolvedTy::Named {
+                            builtin: Some(hew_types::BuiltinType::Vec),
+                            args,
+                            ..
+                        } if args.first().is_some_and(|elem| matches!(
+                            self.classify_vec_element_release(elem),
+                            VecElementRelease::ClosurePair
+                        ))
+                    )
+                {
+                    release = crate::ownership::CowHeapRelease::VecClosurePairs;
+                }
+                Some(crate::model::DropKind::CowHeap { release })
+            }
+            ReleaseSymbolVerdict::WiredInPlace(kind) => Some(match kind {
+                crate::ownership::InPlaceReleaseKind::Record => {
+                    crate::model::DropKind::RecordInPlace
+                }
+                crate::ownership::InPlaceReleaseKind::Enum => crate::model::DropKind::EnumInPlace,
+                crate::ownership::InPlaceReleaseKind::AggregateRecursive => {
+                    crate::model::DropKind::AggregateRecursive
+                }
+            }),
+            ReleaseSymbolVerdict::NoDropPath | ReleaseSymbolVerdict::Unwired(_) => None,
+        }
+    }
+
     /// The in-place thunk family (record vs enum) releasing an owned composite
     /// yield/recv payload, or `None` when the type is not an owned-ABI
     /// releasable composite. Admission is exactly
@@ -4671,6 +4714,7 @@ impl Builder {
                 }
             }
             let value = self.lower_composite_result_value(&arm.body);
+            let body_end_block_id = self.current_block_id;
 
             // Drain the entries this arm registered; break/continue inside the
             // body has already cloned-freed them on its edges.
@@ -4697,6 +4741,20 @@ impl Builder {
                 });
             }
             for (binding, place, ty, site) in generator_yield_drop_bindings {
+                if arm_is_fresh_owned_vec_iter_some {
+                    if let Some(kind) = self.generator_yield_plan_drop_kind(&ty) {
+                        self.vec_iter_yield_exit_drops
+                            .push(super::VecIterYieldExitDrop {
+                                binding,
+                                place,
+                                ty: ty.clone(),
+                                kind,
+                                body_start_block: body_start_block_id,
+                                body_end_block: body_end_block_id,
+                                site,
+                            });
+                    }
+                }
                 self.emit_generator_yield_binding_drop(
                     binding,
                     place,

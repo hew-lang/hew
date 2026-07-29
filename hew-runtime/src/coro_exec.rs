@@ -564,6 +564,27 @@ pub(crate) mod test_support {
         f.destroyed.fetch_add(1, Ordering::AcqRel);
     }
 
+    /// Destroy outline for a scratch frame whose raw handle is owned by the
+    /// executor rather than by a `Box<ScratchFrame>` retained in the test.
+    ///
+    /// Real `CoroSplit` destroy outlines run their cleanup and then free the
+    /// coroutine frame allocation. Most executor unit tests retain the outer
+    /// `Box` so they can inspect `destroyed` after cleanup, and therefore use
+    /// [`scratch_destroy`] directly. Dispatch tests cannot retain that box:
+    /// their trampoline hands the raw handle to the scheduler exactly as
+    /// production code does. Those handles use this outline so the mock also
+    /// models `CoroSplit`'s final frame-free edge instead of leaking the outer
+    /// `ScratchFrame` allocation.
+    unsafe extern "C" fn scratch_destroy_and_free(frame: *mut c_void) {
+        // SAFETY: `frame` is the live executor-owned ScratchFrame and this is
+        // its sole destroy call under the executor's FG1 transition.
+        unsafe { scratch_destroy(frame) };
+        // SAFETY: `into_executor_owned_handle` allocated this exact pointer via
+        // Box::into_raw. `scratch_destroy` nulled/freed heap_guard, so the Box's
+        // Drop implementation is a no-op for that inner allocation.
+        drop(unsafe { Box::from_raw(frame.cast::<ScratchFrame>()) });
+    }
+
     impl ScratchFrame {
         /// A scratch frame that completes after `suspends_before_done` resumes.
         ///
@@ -579,6 +600,19 @@ pub(crate) mod test_support {
                 destroyed: AtomicU32::new(0),
                 heap_guard: AtomicPtr::new(Box::into_raw(Box::new(0u64))),
             }
+        }
+
+        /// Allocate a scratch frame whose raw handle is transferred to the
+        /// continuation executor.
+        ///
+        /// Unlike a `Box<ScratchFrame>` retained by a unit test for post-destroy
+        /// assertions, this handle has no outside owner. Its destroy outline
+        /// therefore frees both the frame-owned guard and the outer frame,
+        /// matching the ownership contract of a real `CoroSplit` frame.
+        pub fn into_executor_owned_handle(suspends_before_done: u32) -> *mut c_void {
+            let mut frame = Box::new(Self::new(suspends_before_done));
+            frame.destroy = Some(scratch_destroy_and_free);
+            Box::into_raw(frame).cast::<c_void>()
         }
     }
 

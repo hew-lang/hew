@@ -21129,11 +21129,13 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
+        let some_arm_scope = self.ids.scope();
         let match_expr = self.make_expr(
             HirExprKind::Match {
                 scrutinee: Box::new(next_expr),
                 arms: vec![
                     HirMatchArm {
+                        scope: Some(some_arm_scope),
                         predicate: HirMatchArmPredicate::EnumVariant {
                             variant_match: hew_types::VariantMatch {
                                 type_name: "Option".to_string(),
@@ -21149,6 +21151,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: HirMatchArmPredicate::EnumVariant {
                             variant_match: hew_types::VariantMatch {
                                 type_name: "Option".to_string(),
@@ -22840,6 +22843,7 @@ impl LowerCtx {
                 };
                 vec![
                     HirMatchArm {
+                        scope: None,
                         predicate: some,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22849,6 +22853,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: none,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22868,6 +22873,7 @@ impl LowerCtx {
                 };
                 vec![
                     HirMatchArm {
+                        scope: None,
                         predicate: some,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22877,6 +22883,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: none,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22896,6 +22903,7 @@ impl LowerCtx {
                 };
                 vec![
                     HirMatchArm {
+                        scope: None,
                         predicate: ok,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22905,6 +22913,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: err,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22924,6 +22933,7 @@ impl LowerCtx {
                 };
                 vec![
                     HirMatchArm {
+                        scope: None,
                         predicate: ok,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22933,6 +22943,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: err,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -22984,6 +22995,7 @@ impl LowerCtx {
                     self.build_catalog_call("panic", vec![panic_msg_expr], span.clone());
                 vec![
                     HirMatchArm {
+                        scope: Some(self.ids.scope()),
                         predicate: payload_predicate,
                         bindings: vec![HirMatchArmBinding {
                             binding: payload_binding,
@@ -23003,6 +23015,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: empty_predicate,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -23039,6 +23052,7 @@ impl LowerCtx {
                 let fallback = self.lower_expr(args[0].expr(), IntentKind::Consume);
                 vec![
                     HirMatchArm {
+                        scope: Some(self.ids.scope()),
                         predicate: payload_predicate,
                         bindings: vec![HirMatchArmBinding {
                             binding: payload_binding,
@@ -23058,6 +23072,7 @@ impl LowerCtx {
                         span: span.clone(),
                     },
                     HirMatchArm {
+                        scope: None,
                         predicate: empty_predicate,
                         bindings: Vec::new(),
                         payload_predicates: Vec::new(),
@@ -23260,6 +23275,7 @@ impl LowerCtx {
 
         let arms = vec![
             HirMatchArm {
+                scope: Some(self.ids.scope()),
                 predicate: ok_predicate,
                 bindings: vec![HirMatchArmBinding {
                     binding: ok_binding,
@@ -23274,6 +23290,7 @@ impl LowerCtx {
                 span: span.clone(),
             },
             HirMatchArm {
+                scope: Some(self.ids.scope()),
                 predicate: err_predicate,
                 bindings: vec![HirMatchArmBinding {
                     binding: err_binding,
@@ -23323,6 +23340,7 @@ impl LowerCtx {
 
         let arms = vec![
             HirMatchArm {
+                scope: Some(self.ids.scope()),
                 predicate: some_predicate,
                 bindings: vec![HirMatchArmBinding {
                     binding: some_binding,
@@ -23337,6 +23355,7 @@ impl LowerCtx {
                 span: span.clone(),
             },
             HirMatchArm {
+                scope: None,
                 predicate: none_predicate,
                 bindings: Vec::new(),
                 payload_predicates: Vec::new(),
@@ -24491,6 +24510,9 @@ impl LowerCtx {
                 || !resolution.payload_variant_patterns.is_empty()
                 || has_payload_aggregate_subpatterns
                 || matches!(predicate, HirMatchArmPredicate::Binding { .. });
+            let arm_scope = needs_scope.then(|| self.ids.scope());
+            let previous_scope_id =
+                arm_scope.map(|scope| std::mem::replace(&mut self.current_scope_id, scope));
             if needs_scope {
                 self.push_scope();
             }
@@ -24554,6 +24576,9 @@ impl LowerCtx {
             }
             if binding_error {
                 let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                if let Some(previous) = previous_scope_id {
+                    self.current_scope_id = previous;
+                }
                 if needs_scope {
                     self.pop_scope();
                 }
@@ -24567,6 +24592,9 @@ impl LowerCtx {
                     "guarded match arm with nested aggregate payload destructure",
                     "match-expression-substrate",
                 );
+                if let Some(previous) = previous_scope_id {
+                    self.current_scope_id = previous;
+                }
                 if needs_scope {
                     self.pop_scope();
                 }
@@ -24590,6 +24618,9 @@ impl LowerCtx {
             }
             if pvp_error {
                 let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                if let Some(previous) = previous_scope_id {
+                    self.current_scope_id = previous;
+                }
                 if needs_scope {
                     self.pop_scope();
                 }
@@ -24627,6 +24658,9 @@ impl LowerCtx {
                 };
             }
 
+            if let Some(previous) = previous_scope_id {
+                self.current_scope_id = previous;
+            }
             if needs_scope {
                 self.pop_scope();
             }
@@ -24642,6 +24676,7 @@ impl LowerCtx {
             }
 
             hir_arms.push(HirMatchArm {
+                scope: arm_scope,
                 predicate,
                 bindings,
                 payload_predicates,

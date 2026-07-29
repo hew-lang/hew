@@ -2530,6 +2530,10 @@ pub struct HirPayloadVariantPredicate {
 /// is preserved for diagnostics.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirMatchArm {
+    /// Lexical scope introduced for the arm's pattern bindings, guard, and
+    /// body. `None` when the arm introduces no bindings and needs no synthetic
+    /// scope.
+    pub scope: Option<ScopeId>,
     /// The matching predicate for this arm.
     pub predicate: HirMatchArmPredicate,
     /// Payload or projected-field bindings introduced by this arm's pattern.

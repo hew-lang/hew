@@ -2310,13 +2310,27 @@ impl Builder {
                         // 0 after the store so the fresh value is released on the
                         // next overwrite.
                         if !rhs_may_alias_old {
-                            self.emit_flag_gated_overwrite_release(dest, &target.ty, flag);
+                            self.emit_flag_gated_overwrite_release(
+                                *binding, dest, &target.ty, flag, value,
+                            );
                         }
                         self.push_instr(Instr::Move { dest, src });
                         self.push_instr(Instr::ConstI64 {
                             dest: flag,
                             value: 0,
                         });
+                        if super::ty_is_heap_owning_enum_composite(
+                            &self.subst_ty(&target.ty),
+                            &self.record_field_orders,
+                            &self.enum_layouts,
+                        ) {
+                            // The reassignment constructs a fresh live enum
+                            // generation. Restore its scope-exit obligation;
+                            // per-exit dataflow excludes the consumed path and
+                            // the same overwrite flag guards a shared
+                            // MaybeConsumed join.
+                            self.set_owned_local_disposition(*binding, Disposition::ScopeExit);
+                        }
                     } else {
                         // #53: gated on the binding still owning live heap
                         // (scope-exit-live `owned_locals` membership) -- a
@@ -2331,6 +2345,7 @@ impl Builder {
                             })
                         {
                             self.emit_local_overwrite_release(dest, &target.ty);
+                            self.emit_enum_overwrite_release(*binding, dest, &target.ty, value);
                         }
                         self.push_instr(Instr::Move { dest, src });
                     }

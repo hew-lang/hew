@@ -541,7 +541,7 @@ pub(super) fn elaborate(
     // treats `MaybeConsumed` as Live (the move-checker rejects that only for
     // `MustConsume`/Linear types, not CoW values) and would otherwise fire the
     // drop on a branch where the buffer was already moved out.
-    let cow_drop_allowed = if let Some(precomputed) = precomputed_cow_drop_allowed {
+    let mut cow_drop_allowed = if let Some(precomputed) = precomputed_cow_drop_allowed {
         precomputed.clone()
     } else {
         let mut derived = derive_cow_sole_owner(
@@ -596,7 +596,7 @@ pub(super) fn elaborate(
     // proven not to escape; everything else leaks (as before W5.020) rather
     // than double-free. Empty when the builder carries no enum layouts (some
     // synthetic test pipelines), so those bodies keep the pre-W5.020 posture.
-    let enum_composite_drop_allowed = derive_enum_composite_drop_allowed(
+    let mut enum_composite_drop_allowed = derive_enum_composite_drop_allowed(
         &checked.blocks,
         &builder.suspend_kinds,
         &owned_locals_snapshot,
@@ -612,6 +612,11 @@ pub(super) fn elaborate(
         &builder.module_generic_fn_names,
         &builder.call_scrutinee_provenance.extern_table,
     );
+    // A mutable enum consumed on one path and reassigned on another carries a
+    // runtime ownership flag. Re-admit its fresh post-store generation: the
+    // guarded scope-exit drop fires only where the reassignment reset the flag
+    // to zero and is skipped where the prior value moved out.
+    enum_composite_drop_allowed.extend(builder.overwrite_guard_flags.keys().copied());
 
     // W5.016 — owned-element `Vec<T>` scope-exit drop allow-set. An owned Vec
     // earns its `hew_vec_free_owned` release UNLESS the fail-closed escape-scan
@@ -1099,12 +1104,31 @@ pub(super) fn elaborate(
         }
     }
 
-    let projection_alias_tainted = compute_projection_alias_taint(
+    // An in-arm parent overwrite transfers the old direct string payload's
+    // release authority to its still-live binder. Re-admit exactly those
+    // binders into the leaf drop class and remove their projection-alias
+    // suppression; their per-binder flag remains one on every path where the
+    // parent was not overwritten, so the resulting scope-exit drop is skipped
+    // there and cannot compete with the parent's recursive release.
+    cow_drop_allowed.extend(builder.projected_payload_overwrite_releases.iter().copied());
+    let mut projection_alias_tainted = compute_projection_alias_taint(
         &checked.blocks,
         &builder.match_project_consumed_binder_locals,
         &builder.fresh_variant_payload_binder_locals,
         &builder.locals,
     );
+    projection_alias_tainted.retain(|local| {
+        !builder
+            .projected_payload_overwrite_releases
+            .iter()
+            .any(|binding| {
+                builder
+                    .binding_locals
+                    .get(binding)
+                    .and_then(|place| base_local(*place))
+                    == Some(*local)
+            })
+    });
     let lifo_drops = build_lifo_drops(
         &owned_locals_snapshot,
         &builder.binding_locals,
@@ -1127,9 +1151,11 @@ pub(super) fn elaborate(
         &plain_vec_drop_allowed,
         &indirect_enum_drop_allowed,
         &builder.affine_release_flags,
+        &builder.overwrite_guard_flags,
         &builder.collection_drop_flags,
         &builder.actor_message_cow_drop_flags,
         &builder.conditional_record_drop_flags,
+        &builder.projected_payload_overwrite_flags,
         &projection_alias_tainted,
     );
     let ordinary_lifo_drops: Vec<ElabDrop> = lifo_drops
@@ -4906,9 +4932,11 @@ fn build_lifo_drops(
     plain_vec_drop_allowed: &HashSet<BindingId>,
     indirect_enum_drop_allowed: &HashSet<BindingId>,
     affine_release_flags: &HashMap<BindingId, Place>,
+    overwrite_guard_flags: &HashMap<BindingId, Place>,
     collection_drop_flags: &HashMap<BindingId, Place>,
     actor_message_cow_drop_flags: &HashMap<BindingId, Place>,
     conditional_record_drop_flags: &HashMap<BindingId, Place>,
+    projected_payload_overwrite_flags: &HashMap<BindingId, Place>,
     projection_alias_tainted: &HashSet<u32>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
@@ -5153,7 +5181,7 @@ fn build_lifo_drops(
                 ty: ty.clone(),
                 drop_fn: None,
                 kind: DropKind::EnumInPlace,
-                guard: None,
+                guard: overwrite_guard_flags.get(binding).copied(),
             });
             continue;
         }
@@ -5464,7 +5492,10 @@ fn build_lifo_drops(
                             ty: ty.clone(),
                             drop_fn: None,
                             kind: drop_kind_for(*place, ty, None),
-                            guard: actor_message_cow_drop_flags.get(binding).copied(),
+                            guard: actor_message_cow_drop_flags
+                                .get(binding)
+                                .or_else(|| projected_payload_overwrite_flags.get(binding))
+                                .copied(),
                         });
                     }
                 }

@@ -36,6 +36,7 @@ set -euo pipefail
 #   FREEBSD_HOST=user@freebsd-host
 #   WINDOWS_HOST=user@windows-host
 #   MACOS_TART_VM=macos-build
+#   HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@22
 #   HEW_WINDOWS_LLVM_PREFIX='C:\llvm-22'
 #   HEW_WINDOWS_CC=cl
 #   HEW_WINDOWS_CXX=cl
@@ -54,6 +55,7 @@ MACOS_HOST="${HEW_MACOS_HOST:-${MACOS_HOST:-}}"
 LINUX_AARCH64_HOST="${HEW_LINUX_AARCH64_HOST:-${LINUX_AARCH64_HOST:-}}"
 FREEBSD_HOST="${HEW_FREEBSD_HOST:-${FREEBSD_HOST:-}}"
 WINDOWS_HOST="${HEW_WINDOWS_HOST:-${WINDOWS_HOST:-}}"
+MACOS_LLVM_PREFIX="${HEW_MACOS_LLVM_PREFIX:-${MACOS_LLVM_PREFIX:-}}"
 
 WINDOWS_LLVM_PREFIX="${HEW_WINDOWS_LLVM_PREFIX:-C:\\llvm-22}"
 WINDOWS_LLVM_CONFIG="${HEW_WINDOWS_LLVM_CONFIG:-${WINDOWS_LLVM_PREFIX}\\lib\\cmake\\llvm\\LLVMConfig.cmake}"
@@ -319,6 +321,12 @@ validate_macos() {
     set +e
     (
         set -e
+        # Pass an explicitly configured prefix to the remote shell without
+        # relying on ssh AcceptEnv. %q keeps paths with spaces shell-safe.
+        local macos_llvm_assignment="HEW_MACOS_LLVM_PREFIX="
+        if [[ -n "$MACOS_LLVM_PREFIX" ]]; then
+            printf -v macos_llvm_assignment 'HEW_MACOS_LLVM_PREFIX=%q' "$MACOS_LLVM_PREFIX"
+        fi
         remote_stage=$(create_unix_remote_stage "${MACOS_HOST}")
         trap 'remove_unix_remote_stage "${MACOS_HOST}" "${remote_stage}"' EXIT
         echo "==> Staging local candidate on macOS: ${remote_stage}"
@@ -328,13 +336,52 @@ validate_macos() {
             . "${MACOS_HOST}:${remote_stage}/"
 
         echo "==> Building on macOS"
-        run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${MACOS_HOST}" bash -lc "'
+        run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${MACOS_HOST}" "${macos_llvm_assignment}" bash -lc "'
             set -eux
             cd ${remote_stage}
 
-            # Ensure LLVM is on PATH (Homebrew)
-            export PATH=\"/opt/homebrew/opt/llvm@22/bin:/opt/homebrew/bin:\$PATH\"
-            export LLVM_PREFIX=\"\$(brew --prefix llvm@22 2>/dev/null || echo /opt/homebrew/opt/llvm)\"
+            # Prefer an operator-supplied LLVM root. Otherwise try Homebrew
+            # when it exists, then probe the canonical versioned Homebrew
+            # prefixes directly so a working llvm@22 install does not require
+            # the brew executable to be on PATH.
+            configured_prefix=\"\${HEW_MACOS_LLVM_PREFIX:-}\"
+            llvm_prefix=\"\"
+            if [ -n \"\$configured_prefix\" ]; then
+                llvm_candidates=(\"\$configured_prefix\")
+            else
+                llvm_candidates=()
+                if command -v brew >/dev/null 2>&1; then
+                    brew_prefix=\"\$(brew --prefix llvm@22 2>/dev/null || true)\"
+                    if [ -n \"\$brew_prefix\" ]; then
+                        llvm_candidates+=(\"\$brew_prefix\")
+                    fi
+                fi
+                llvm_candidates+=(
+                    /opt/homebrew/opt/llvm@22
+                    /usr/local/opt/llvm@22
+                )
+            fi
+
+            for candidate in \"\${llvm_candidates[@]}\"; do
+                llvm_config=\"\$candidate/bin/llvm-config\"
+                [ -x \"\$llvm_config\" ] || continue
+                llvm_version=\"\$(\"\$llvm_config\" --version 2>/dev/null || true)\"
+                case \"\$llvm_version\" in
+                    22.*)
+                        llvm_prefix=\"\$candidate\"
+                        break
+                        ;;
+                esac
+            done
+
+            if [ -z \"\$llvm_prefix\" ]; then
+                echo \"FATAL: LLVM 22 was not found. Set HEW_MACOS_LLVM_PREFIX to an LLVM 22 root.\" >&2
+                exit 1
+            fi
+
+            export LLVM_PREFIX=\"\$llvm_prefix\"
+            export PATH=\"\$LLVM_PREFIX/bin:\$PATH\"
+            \"\$LLVM_PREFIX/bin/llvm-config\" --version
 
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib

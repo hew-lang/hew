@@ -34,6 +34,26 @@ def assert_isolated_staging(text: str) -> None:
     assert "${WINDOWS_HOST}:${remote_stage}/candidate.tar.gz" in text
 
 
+def assert_macos_llvm_discovery_contract(text: str) -> None:
+    """The macOS probe must work without brew and reject non-LLVM-22 roots."""
+    assert (
+        'MACOS_LLVM_PREFIX="${HEW_MACOS_LLVM_PREFIX:-${MACOS_LLVM_PREFIX:-}}"' in text
+    )
+    assert "printf -v macos_llvm_assignment 'HEW_MACOS_LLVM_PREFIX=%q'" in text
+    assert "command -v brew >/dev/null 2>&1" in text
+    assert "brew --prefix llvm@22 2>/dev/null || true" in text
+    assert (
+        "llvm_candidates+=(\n                    /opt/homebrew/opt/llvm@22\n                    /usr/local/opt/llvm@22"
+        in text
+    )
+    assert "$candidate/bin/llvm-config" in text
+    assert "$llvm_config" in text
+    assert "case" in text and "$llvm_version" in text
+    assert "22.*)" in text
+    assert "FATAL: LLVM 22 was not found." in text
+    assert "brew --prefix llvm@22 2>/dev/null || echo" not in text
+
+
 _FAKE_SSH = r"""#!/usr/bin/env bash
 set -eu
 printf 'ssh %s\n' "$*" >> "$FAKE_REMOTE_LOG"
@@ -121,6 +141,27 @@ def test_static_staging_contract() -> None:
     assert_isolated_staging(validator())
 
 
+def test_macos_llvm_discovery_contract() -> None:
+    assert_macos_llvm_discovery_contract(validator())
+
+
+def test_macos_llvm_discovery_mutations_are_rejected() -> None:
+    original = validator()
+    for mutation in (
+        original.replace(
+            "llvm_candidates+=(\n                    /opt/homebrew/opt/llvm@22",
+            "llvm_candidates+=(\n                    /opt/homebrew/opt/llvm",
+            1,
+        ),
+        original.replace("22.*)", "*)", 1),
+    ):
+        try:
+            assert_macos_llvm_discovery_contract(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("macOS LLVM discovery mutation escaped the contract")
+
+
 def test_checkout_overwrite_mutations_are_rejected() -> None:
     original = validator()
     for mutation in (
@@ -151,6 +192,14 @@ def test_macos_uses_only_the_staged_candidate() -> None:
     assert "fake-macos:/tmp/hew-pre-release.fake/" in calls
     assert "cd /tmp/hew-pre-release.fake" in calls
     assert "origin main" not in calls
+
+
+def test_macos_forwards_an_explicit_llvm_prefix_to_the_remote_shell() -> None:
+    result, calls = run_with_fake_remote(
+        "macos", {"HEW_MACOS_LLVM_PREFIX": "/custom/llvm 22"}
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "HEW_MACOS_LLVM_PREFIX=/custom/llvm\\ 22 bash -lc" in calls
 
 
 def test_freebsd_uses_only_the_staged_candidate() -> None:
@@ -227,9 +276,12 @@ def test_requested_unreachable_host_fails_closed() -> None:
 
 _TESTS = [
     test_static_staging_contract,
+    test_macos_llvm_discovery_contract,
+    test_macos_llvm_discovery_mutations_are_rejected,
     test_checkout_overwrite_mutations_are_rejected,
     test_linux_arm64_uses_only_the_staged_candidate,
     test_macos_uses_only_the_staged_candidate,
+    test_macos_forwards_an_explicit_llvm_prefix_to_the_remote_shell,
     test_freebsd_uses_only_the_staged_candidate,
     test_windows_uses_only_the_staged_candidate,
     test_malformed_remote_stage_is_rejected_before_sync,

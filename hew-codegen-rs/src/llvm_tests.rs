@@ -5511,6 +5511,126 @@ fn finish_test_fn(fn_ctx: &FnCtx<'_, '_>) {
     fn_ctx.builder.build_return(Some(&zero)).expect("ret 0");
 }
 
+#[test]
+fn aggregate_borrowed_ingress_array_retains_each_string_occurrence() {
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_array");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "array_retain_probe");
+    // Array surface lowering is not implemented yet, so construct the
+    // classifier-admitted LLVM slot directly to pin this recursive backend arm.
+    let array_ty = ctx.ptr_type(AddressSpace::default()).array_type(3);
+    let slot = fn_ctx
+        .builder
+        .build_alloca(array_ty, "local_0")
+        .expect("array fixture alloca");
+    fn_ctx.locals.insert(0, (slot, array_ty.into()));
+    fn_ctx
+        .local_tys
+        .insert(0, ResolvedTy::Array(Box::new(ResolvedTy::String), 3));
+    retain_strings_in_borrowed_aggregate(&fn_ctx, Place::Local(0), "array_probe")
+        .expect("fixed-array string retain walk must lower");
+    finish_test_fn(&fn_ctx);
+    assert!(m.verify().is_ok(), "array retain module must verify");
+    let ir = m.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call ptr @hew_string_clone").count(),
+        3,
+        "one retain per fixed-array string occurrence; ir:\n{ir}"
+    );
+    for idx in 0..3 {
+        assert!(
+            ir.contains(&format!("array_probe_d0_array_e{idx}")),
+            "array element {idx} must be reached by the recursive walk; ir:\n{ir}"
+        );
+    }
+}
+
+#[test]
+fn aggregate_borrowed_ingress_qualified_generic_record_uses_clone_kind_key() {
+    let key = hew_hir::mangle("Box", &[ResolvedTy::String]);
+    let record = MirRecordLayout {
+        name: key.clone(),
+        field_tys: vec![ResolvedTy::String],
+        field_names: vec![],
+    };
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_generic_record");
+    let mut harness = build_harness(&ctx, std::slice::from_ref(&record), &[]);
+    harness
+        .record_field_resolved_tys
+        .insert(key, vec![ResolvedTy::String]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "generic_record_retain_probe");
+    alloc_local(
+        &mut fn_ctx,
+        0,
+        ResolvedTy::named_user("qualified.Box", vec![ResolvedTy::String]),
+    );
+    retain_strings_in_borrowed_aggregate(&fn_ctx, Place::Local(0), "generic_record_probe")
+        .expect("qualified generic record must resolve through its clone-kind key");
+    finish_test_fn(&fn_ctx);
+    assert!(
+        m.verify().is_ok(),
+        "qualified generic record retain module must verify"
+    );
+    let ir = m.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call ptr @hew_string_clone").count(),
+        1,
+        "the generic record's substituted string field needs one retain; ir:\n{ir}"
+    );
+    assert!(
+        ir.contains("generic_record_probe_d0_record_f0"),
+        "the clone-kind record key must drive the field walk; ir:\n{ir}"
+    );
+}
+
+#[test]
+fn aggregate_borrowed_ingress_enum_invalid_tag_traps_fail_closed() {
+    let enum_fixtures = vec![MirEnumLayout {
+        name: "Payload".to_string(),
+        tag_width: 1,
+        variants: vec![
+            MachineVariantLayout {
+                name: "Hold".to_string(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
+            },
+            MachineVariantLayout {
+                name: "Empty".to_string(),
+                field_tys: vec![],
+                field_names: vec![],
+            },
+        ],
+        is_indirect: false,
+    }];
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_enum_oob");
+    let harness = build_harness(&ctx, &[], &enum_fixtures);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "enum_retain_probe");
+    fn_ctx.enum_layouts = &enum_fixtures;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::named_user("Payload", vec![]));
+    retain_strings_in_borrowed_aggregate(&fn_ctx, Place::Local(0), "enum_probe")
+        .expect("inline enum string retain walk must lower");
+    finish_test_fn(&fn_ctx);
+    assert!(m.verify().is_ok(), "enum retain module must verify");
+    let ir = m.print_to_string().to_string();
+    let oob_start = ir
+        .find("enum_probe_d0_enum_tag_oob:")
+        .expect("enum retain must emit an invalid-tag block");
+    let variant_start = ir[oob_start..]
+        .find("enum_probe_d0_enum_v0:")
+        .map(|offset| oob_start + offset)
+        .expect("enum retain must emit its first variant block");
+    let oob = &ir[oob_start..variant_start];
+    assert!(
+        oob.contains("call void @hew_trap_with_code")
+            && oob.contains("call void @llvm.trap")
+            && oob.contains("unreachable"),
+        "invalid enum tags must trap fail-closed; block:\n{oob}"
+    );
+}
+
 /// W5.011 Slice 1: a `DropKind::CowHeap { release: String }`
 /// ElabDrop on a `string` local must emit a single-`ptr`-arg call to
 /// `hew_string_drop` and null-store the slot afterwards

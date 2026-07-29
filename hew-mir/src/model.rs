@@ -5639,6 +5639,17 @@ pub struct FieldOffset(pub u32);
 pub enum StringRetainCondition {
     /// Always mint one additional string owner.
     Always,
+    /// Recursively mint owners for every string leaf in a borrowed inline
+    /// aggregate before that aggregate is copied into a new owner.
+    ///
+    /// Non-string `RecordFieldLoad` / `TupleFieldLoad` / enum-payload
+    /// projections are byte-copy aliases: the aggregate local has no owner of
+    /// its nested strings even though a later record/enum overwrite drop
+    /// reaches and releases them recursively. MIR emits this condition only
+    /// when projection-alias taint reaches an owning aggregate sink. Codegen
+    /// follows the concrete record/tuple/array/active-enum layout and retains
+    /// each string occurrence once.
+    AggregateBorrowedIngress,
     /// Mint an owner for a borrowed string entering an actor-state record.
     ///
     /// This is the count-balanced loop-carried `RecordInit` →

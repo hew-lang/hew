@@ -510,6 +510,9 @@ fn render_instr(instr: &Instr) -> String {
             StringRetainCondition::Always => {
                 format!("string.retain {}", render_place(value))
             }
+            StringRetainCondition::AggregateBorrowedIngress => {
+                format!("string.retain_aggregate {}", render_place(value))
+            }
             StringRetainCondition::ActorStateRecordBorrowedIngress {
                 state_field,
                 record_path,

@@ -1219,8 +1219,23 @@ fn collect_opaque_type_short_names(
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
-                let module_short = mod_id.path.last().map(String::as_str);
-                visit_items(&module.items, module_short, opaque, non_opaque);
+                let module_identity = mod_id.path.join(".");
+                visit_items(
+                    &module.items,
+                    Some(module_identity.as_str()),
+                    opaque,
+                    non_opaque,
+                );
+                if let Some(module_short) = mod_id.path.last().map(String::as_str) {
+                    if module_short != module_identity {
+                        // Preserve the established short-module spelling used
+                        // by imported-body lowering while also indexing the
+                        // full nested identity (`a.b.Handle`). Exact qualified
+                        // source references must not lose their opaque
+                        // discriminator merely because the module has depth >1.
+                        visit_items(&module.items, Some(module_short), opaque, non_opaque);
+                    }
+                }
             }
         }
     }
@@ -19113,6 +19128,16 @@ impl LowerCtx {
         // only a `builtin: None` bare root name can acquire the user-opaque
         // discriminator.
         let is_opaque = is_opaque
+            // `Ty::Named` has no opacity bit even when the checker preserved an
+            // exact qualified identity. Restore that declaration fact for any
+            // checker-authored qualified opaque name as well as the bare root
+            // case below. This matters for aggregate package modules that
+            // re-surface a source file: their copied function bodies carry the
+            // aggregate-qualified opaque identity (for example
+            // `http.ResponseHandle`), which is harvested as an exact opaque
+            // key but otherwise reached MIR as an ordinary user type.
+            || (builtin.is_none()
+                && self.resolves_to_opaque_handle(&name, hew_types::short_name(&name)))
             || (builtin.is_none()
                 && self.current_module_name.is_none()
                 && !name.contains('.')
@@ -30255,6 +30280,64 @@ mod tests {
                 Vec::new(),
             ),
             "a checker-authored bare std handle must recover its exact builtin identity"
+        );
+
+        ctx.current_module_name = Some("std.net.http".to_string());
+        ctx.opaque_type_short_names
+            .insert("http.ResponseHandle".to_string());
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "http.ResponseHandle".to_string(),
+                Vec::new(),
+            )),
+            ResolvedTy::named_opaque("http.ResponseHandle".to_string(), Vec::new()),
+            "a checker-authored qualified opaque identity must recover its declaration discriminator"
+        );
+    }
+
+    #[test]
+    fn nested_imported_opaque_identity_indexes_full_and_short_module_names() {
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        let parsed = hew_parser::parse("#[opaque] type Handle {}");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+
+        let root_id = ModuleId::root();
+        let nested_id = ModuleId::new(vec!["a".to_string(), "b".to_string()]);
+        let mut graph = ModuleGraph::new(root_id.clone());
+        graph
+            .add_module(Module {
+                id: nested_id.clone(),
+                items: parsed.program.items,
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .unwrap();
+        graph.topo_order = vec![nested_id, root_id];
+        let program = Program {
+            module_graph: Some(graph),
+            items: Vec::new(),
+            module_doc: None,
+        };
+
+        let mut opaque = HashSet::new();
+        let mut non_opaque = HashSet::new();
+        collect_opaque_type_short_names(&program, &mut opaque, &mut non_opaque);
+
+        assert!(opaque.contains("a.b.Handle"));
+        assert!(opaque.contains("b.Handle"));
+        assert!(opaque.contains("Handle"));
+
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.opaque_type_short_names = opaque;
+        assert_eq!(
+            ctx.resolve_named_type_ref("a.b.Handle", Vec::new()),
+            ResolvedTy::named_opaque("a.b.Handle".to_string(), Vec::new()),
         );
     }
 

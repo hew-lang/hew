@@ -1,12 +1,13 @@
 use super::{
-    build_down_hook_body, build_exit_hook_body, crash_action_return_ty, is_crash_info_payload_ty,
-    lower_function, resource_drop_fn, ActorHandlerLayout, ActorLayout, BindingId, BlockKind,
-    Builder, CheckedMirFunction, ChildSlot, CmpPred, ElabBlock, ElaboratedMirFunction, HashMap,
-    HashSet, HirActorDecl, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirLifecycleHookKind,
-    HirMachineDecl, HirMachineTransition, HirNodeId, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, Instr, IntentKind, LoweredFunction, MirDiagnostic, MirDiagnosticKind,
-    ParamOwnershipFacts, Place, PointerWidth, RawMirFunction, Rc, ResolvedRef, ResolvedTy, ScopeId,
-    SiteId, SourceOrigin, TaskEntryAdapterSymbols, Terminator, ThirFunction, TrapKind, ValueClass,
+    build_down_hook_body, build_exit_hook_body, crash_action_return_ty,
+    is_canonical_lifecycle_named_ty, is_crash_info_payload_ty, lower_function, resource_drop_fn,
+    ActorHandlerLayout, ActorLayout, BindingId, BlockKind, Builder, CheckedMirFunction, ChildSlot,
+    CmpPred, ElabBlock, ElaboratedMirFunction, HashMap, HashSet, HirActorDecl, HirBinding,
+    HirBlock, HirExpr, HirExprKind, HirFn, HirLifecycleHookKind, HirMachineDecl,
+    HirMachineTransition, HirNodeId, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    Instr, IntentKind, LoweredFunction, MirDiagnostic, MirDiagnosticKind, ParamOwnershipFacts,
+    Place, PointerWidth, RawMirFunction, Rc, ResolvedRef, ResolvedTy, ScopeId, SiteId,
+    SourceOrigin, TaskEntryAdapterSymbols, Terminator, ThirFunction, TrapKind, ValueClass,
     SENTINEL_CRASH_CODE_BINDING, SENTINEL_CRASH_CODE_NODE, SENTINEL_CRASH_CODE_SITE,
     SENTINEL_CRASH_MESSAGE_BINDING, SENTINEL_DOWN_CRASH_KIND_BINDING,
     SENTINEL_DOWN_LOCAL_SLOT_BINDING, SENTINEL_DOWN_LOCATION_BINDING,
@@ -812,8 +813,11 @@ fn lower_actor_lifecycle_handlers(
                 // two raw ABI params; other params pass through (there are none
                 // in the canonical shape).
                 let notification_param: Option<HirBinding> = hook.params.iter().find_map(|p| {
-                    matches!(&p.ty, ResolvedTy::Named { name, args, .. }
-                        if name == "CrashNotification" && args.is_empty())
+                    is_canonical_lifecycle_named_ty(
+                        &p.ty,
+                        hew_types::BuiltinType::CrashNotification,
+                        "failure.CrashNotification",
+                    )
                     .then(|| p.clone())
                 });
 
@@ -821,8 +825,11 @@ fn lower_actor_lifecycle_handlers(
                     .params
                     .iter()
                     .flat_map(|p| {
-                        let is_notification = matches!(&p.ty, ResolvedTy::Named { name, args, .. }
-                            if name == "CrashNotification" && args.is_empty());
+                        let is_notification = is_canonical_lifecycle_named_ty(
+                            &p.ty,
+                            hew_types::BuiltinType::CrashNotification,
+                            "failure.CrashNotification",
+                        );
                         if is_notification {
                             vec![
                                 HirBinding {

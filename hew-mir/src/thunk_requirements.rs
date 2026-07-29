@@ -135,6 +135,15 @@ impl IrPipeline {
             &mut record_seeds,
             collect_record_clone_inplace_seeds(&self.raw_mir, &self.record_layouts),
         );
+        let (field_store_record_seeds, field_store_enum_seeds) =
+            collect_record_field_store_overwrite_seeds(
+                &self.raw_mir,
+                &self.record_layouts,
+                &synthesis_enum_layouts,
+                &self.resource_record_close,
+            );
+        merge_seeds(&mut record_seeds, field_store_record_seeds);
+        merge_seeds(&mut enum_seeds, field_store_enum_seeds);
         merge_seeds(
             &mut enum_seeds,
             collect_enum_clone_inplace_seeds(&self.raw_mir, &self.enum_layouts),
@@ -529,6 +538,118 @@ fn collect_record_clone_inplace_seeds(
         }
     }
     seeds
+}
+
+/// Collect each registered inline-record or enum type overwritten through
+/// [`Instr::RecordFieldStore`].
+///
+/// Codegen selects cleanup from the destination field type and releases an
+/// inline aggregate through its record/enum overwrite helper before storing
+/// the replacement. Generic layouts are excluded from the synthesis pass's
+/// implicit direct-string seed scan, so the declaring store must seed the
+/// registered monomorphised layout or LLVM verification sees an unbodied
+/// internal declaration. Unknown layouts remain unseeded: codegen also
+/// declines to declare a helper without the same registered-layout witness.
+fn record_layout_for_ty<'a>(
+    ty: &ResolvedTy,
+    record_layouts: &'a [RecordLayout],
+) -> Option<&'a RecordLayout> {
+    let ResolvedTy::Named {
+        name,
+        args,
+        builtin: None,
+        is_opaque: false,
+    } = ty
+    else {
+        return None;
+    };
+    let short = short_name(name);
+    if args.is_empty() {
+        record_layouts
+            .iter()
+            .find(|layout| layout.name == *name || short_name(&layout.name) == short)
+    } else {
+        let full_mangled = mangle_layout_key(name, args);
+        let short_mangled = mangle_layout_key(short, args);
+        record_layouts
+            .iter()
+            .find(|layout| layout.name == full_mangled || layout.name == short_mangled)
+    }
+}
+
+fn enum_layout_key(name: &str, args: &[ResolvedTy], enum_layouts: &[EnumLayout]) -> Option<String> {
+    let short = short_name(name);
+    if args.is_empty() {
+        enum_layouts
+            .iter()
+            .find(|layout| layout.name == name || short_name(&layout.name) == short)
+            .map(|layout| layout.name.clone())
+    } else {
+        let full_mangled = mangle_layout_key(name, args);
+        let short_mangled = mangle_layout_key(short, args);
+        enum_layouts
+            .iter()
+            .find(|layout| layout.name == full_mangled || layout.name == short_mangled)
+            .map(|layout| layout.name.clone())
+    }
+}
+
+fn collect_record_field_store_overwrite_seeds(
+    raw_mir: &[RawMirFunction],
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    resource_record_close: &[(String, String)],
+) -> (Vec<String>, Vec<String>) {
+    let mut record_seeds = Vec::new();
+    let mut record_seen = HashSet::new();
+    let mut enum_seeds = Vec::new();
+    let mut enum_seen = HashSet::new();
+    for func in raw_mir {
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                let Instr::RecordFieldStore {
+                    record: Place::Local(record),
+                    field_offset,
+                    ..
+                } = instr
+                else {
+                    continue;
+                };
+                let Some(parent_ty) = func.locals.get(*record as usize) else {
+                    continue;
+                };
+                let Some(parent_layout) = record_layout_for_ty(parent_ty, record_layouts) else {
+                    continue;
+                };
+                let Some(field_ty) = parent_layout.field_tys.get(field_offset.0 as usize) else {
+                    continue;
+                };
+                let ResolvedTy::Named {
+                    name,
+                    args,
+                    builtin: None,
+                    is_opaque: false,
+                } = field_ty
+                else {
+                    continue;
+                };
+                if let Some(layout) = record_layout_for_ty(field_ty, record_layouts) {
+                    let key = layout.name.clone();
+                    if !resource_record_close.iter().any(|(resource, _)| {
+                        resource == &key || short_name(resource) == short_name(&key)
+                    }) && record_seen.insert(key.clone())
+                    {
+                        record_seeds.push(key);
+                    }
+                } else if let Some(key) = enum_layout_key(name, args, enum_layouts) {
+                    if enum_seen.insert(key.clone()) {
+                        enum_seeds.push(key);
+                    }
+                }
+            }
+        }
+    }
+    (record_seeds, enum_seeds)
 }
 
 /// Collect the monomorphised tagged-union layout key of every `EnumCloneInplace`
@@ -1402,4 +1523,145 @@ fn collect_wire_value_owned_vec_element_seeds(
     }
 
     (record_seeds, enum_seeds)
+}
+
+#[cfg(test)]
+mod record_field_store_overwrite_tests {
+    use super::*;
+    use crate::model::{
+        BasicBlock, FieldOffset, FunctionCallConv, MachineVariantLayout, SourceOrigin,
+    };
+
+    fn store_function(name: &str, parent_ty: ResolvedTy, src_ty: ResolvedTy) -> RawMirFunction {
+        RawMirFunction {
+            name: name.to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![parent_ty, src_ty],
+            local_names: vec![],
+            local_scopes: vec![],
+            local_decl_bytes: vec![],
+            scope_table: vec![],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![Instr::RecordFieldStore {
+                    record: Place::Local(0),
+                    field_offset: FieldOffset(0),
+                    src: Place::Local(1),
+                }],
+                terminator: Terminator::Return,
+            }],
+            decisions: vec![],
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
+            lambda_actor_user_param_locals: vec![],
+            span: None,
+            instr_spans: std::collections::BTreeMap::new(),
+            source_origin: SourceOrigin::Unknown,
+        }
+    }
+
+    #[test]
+    fn generic_record_field_store_seeds_monomorphised_helper() {
+        let key = mangle_layout_key("VecIter", &[ResolvedTy::String]);
+        let layouts = vec![
+            RecordLayout {
+                name: "Holder".to_string(),
+                field_tys: vec![ResolvedTy::named_user("VecIter", vec![ResolvedTy::String])],
+                field_names: vec!["iter".to_string()],
+            },
+            RecordLayout {
+                name: key.clone(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec!["current".to_string()],
+            },
+        ];
+        let funcs = vec![store_function(
+            "store_vec_iter",
+            ResolvedTy::named_user("Holder", vec![]),
+            ResolvedTy::named_user("VecIter", vec![ResolvedTy::String]),
+        )];
+
+        let (record_seeds, enum_seeds) =
+            collect_record_field_store_overwrite_seeds(&funcs, &layouts, &[], &[]);
+        assert_eq!(record_seeds, [key]);
+        assert!(enum_seeds.is_empty());
+    }
+
+    #[test]
+    fn generic_enum_field_store_seeds_monomorphised_helper() {
+        let key = mangle_layout_key("Maybe", &[ResolvedTy::String]);
+        let records = vec![RecordLayout {
+            name: "Holder".to_string(),
+            field_tys: vec![ResolvedTy::named_user("Maybe", vec![ResolvedTy::String])],
+            field_names: vec!["value".to_string()],
+        }];
+        let enums = vec![EnumLayout {
+            name: key.clone(),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Some".to_string(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec!["value".to_string()],
+            }],
+            is_indirect: false,
+        }];
+        let funcs = vec![store_function(
+            "store_maybe",
+            ResolvedTy::named_user("Holder", vec![]),
+            ResolvedTy::named_user("Maybe", vec![ResolvedTy::String]),
+        )];
+
+        let (record_seeds, enum_seeds) =
+            collect_record_field_store_overwrite_seeds(&funcs, &records, &enums, &[]);
+        assert!(record_seeds.is_empty());
+        assert_eq!(enum_seeds, [key]);
+    }
+
+    #[test]
+    fn unknown_or_resource_record_field_store_mints_no_helper_seed() {
+        let layouts = vec![
+            RecordLayout {
+                name: "UnknownHolder".to_string(),
+                field_tys: vec![ResolvedTy::named_user("Missing", vec![])],
+                field_names: vec!["value".to_string()],
+            },
+            RecordLayout {
+                name: "ResourceHolder".to_string(),
+                field_tys: vec![ResolvedTy::named_user("ResourceRecord", vec![])],
+                field_names: vec!["value".to_string()],
+            },
+            RecordLayout {
+                name: "ResourceRecord".to_string(),
+                field_tys: vec![ResolvedTy::String],
+                field_names: vec!["value".to_string()],
+            },
+        ];
+        let funcs = vec![
+            store_function(
+                "store_unknown",
+                ResolvedTy::named_user("UnknownHolder", vec![]),
+                ResolvedTy::named_user("Missing", vec![]),
+            ),
+            store_function(
+                "store_resource",
+                ResolvedTy::named_user("ResourceHolder", vec![]),
+                ResolvedTy::named_user("ResourceRecord", vec![]),
+            ),
+        ];
+        let (record_seeds, enum_seeds) = collect_record_field_store_overwrite_seeds(
+            &funcs,
+            &layouts,
+            &[],
+            &[(
+                "ResourceRecord".to_string(),
+                "ResourceRecord::close".to_string(),
+            )],
+        );
+        assert!(record_seeds.is_empty());
+        assert!(enum_seeds.is_empty());
+    }
 }

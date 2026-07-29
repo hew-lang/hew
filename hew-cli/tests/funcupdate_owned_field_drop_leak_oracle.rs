@@ -61,7 +61,7 @@
 
 mod support;
 
-use support::leak_slope::{measure_leaks, require_leaks_tool};
+use support::leak_slope::{measure_leaks, require_leaks_tool, run_under_malloc_scribble};
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -128,6 +128,53 @@ fn bytes_field_source(frames: usize) -> String {
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   h.count\n\
+         }}\n"
+    )
+}
+
+fn direct_string_field_store_source(frames: usize) -> String {
+    format!(
+        "import std::string;\n\
+         record Cfg {{ label: string, count: i64 }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var c = Cfg {{ label: string.repeat(\"a\", 32), count: 0 }};\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       c.label = string.repeat(\"b\", 32);\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if c.label.len() == 32 {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
+fn direct_string_self_store_source(frames: usize) -> String {
+    format!(
+        "import std::string;\n\
+         record Cfg {{ label: string }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var c = Cfg {{ label: string.repeat(\"self\", 32) }};\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       c.label = c.label;\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if c.label.len() == 128 {{ 0 }} else {{ 1 }}\n\
+         }}\n"
+    )
+}
+
+fn direct_bytes_field_store_source(frames: usize) -> String {
+    format!(
+        "record Holder {{ payload: bytes }}\n\
+         fn main() -> i64 {{\n\
+         \x20   var h = Holder {{ payload: \"initial\".to_bytes() }};\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       h.payload = \"replacement\".to_bytes();\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   if h.payload.len() == 11 {{ 0 }} else {{ 1 }}\n\
          }}\n"
     )
 }
@@ -469,7 +516,7 @@ fn assert_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize) -> 
         "{shape_name}: per-frame leak SLOPE — low_frames={LOW_FRAMES} low_leaks={low_leaks}, \
          high_frames={HIGH_FRAMES} high_leaks={high_leaks}. Excess of {} NODES over the \
          tolerance of {SLOPE_TOLERANCE} indicates the old field value is not being released \
-         at the functional-update site (pre-fix slope: ~1 node/frame per overridden owned \
+         at the field-replacement site (pre-fix slope: ~1 node/frame per overridden owned \
          field). Re-run with `MallocStackLogging=1 leaks --atExit -- {}` to identify the \
          leaked stack.",
         high_leaks.saturating_sub(low_leaks + SLOPE_TOLERANCE),
@@ -480,6 +527,21 @@ fn assert_frame_slope_below_tolerance(shape_name: &str, source_fn: fn(usize) -> 
         "{shape_name}: HIGH leak count is more than {SLOPE_TOLERANCE} below LOW \
          (low={low_leaks}, high={high_leaks}) — the binary did not finish before \
          `leaks --atExit` snapshotted. Increase the iteration count."
+    );
+}
+
+fn assert_scribble_clean(shape_name: &str, source: &str) {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("field-store-scribble-{shape_name}-"))
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(source, dir.path(), shape_name);
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "{shape_name} must not free the replacement through the old field owner:\n{}",
+        describe_output(&output)
     );
 }
 
@@ -505,6 +567,52 @@ fn funcupdate_string_field_no_per_frame_leak_slope() {
 #[test]
 fn funcupdate_bytes_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_bytes_field", bytes_field_source);
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn direct_string_field_store_has_flat_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "direct_string_field_store",
+        direct_string_field_store_source,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn direct_string_self_store_has_flat_leak_slope() {
+    assert_frame_slope_below_tolerance("direct_string_self_store", direct_string_self_store_source);
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn direct_bytes_field_store_has_flat_leak_slope() {
+    assert_frame_slope_below_tolerance("direct_bytes_field_store", direct_bytes_field_store_source);
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the deterministic poisoned-allocator contract is macOS-only"
+)]
+#[test]
+fn direct_string_field_stores_are_clean_under_malloc_scribble() {
+    assert_scribble_clean(
+        "direct_string_field_store",
+        &direct_string_field_store_source(32),
+    );
+    assert_scribble_clean(
+        "direct_string_self_store",
+        &direct_string_self_store_source(32),
+    );
 }
 
 /// `Vec<i64>` field override: pre-fix slope ~1.0 node/frame (one leaked

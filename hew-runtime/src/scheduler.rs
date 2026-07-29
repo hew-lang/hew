@@ -5908,8 +5908,7 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        Box::into_raw(frame).cast::<c_void>()
+        crate::coro_exec::test_support::ScratchFrame::into_executor_owned_handle(1)
     }
 
     /// PRODUCTION SUSPEND EDGE (D-A.2, commit 4): a handler that returns a
@@ -6062,8 +6061,7 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(2));
-        Box::into_raw(frame).cast::<c_void>()
+        crate::coro_exec::test_support::ScratchFrame::into_executor_owned_handle(2)
     }
 
     /// FULL PRODUCTION ROUND-TRIP (D-4 Pending-then-resume): a suspendable

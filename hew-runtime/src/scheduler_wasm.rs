@@ -3552,8 +3552,7 @@ mod tests {
         _data_size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        Box::into_raw(frame).cast::<c_void>()
+        crate::coro_exec::test_support::ScratchFrame::into_executor_owned_handle(1)
     }
 
     /// Actual-target WASM continuation probe whose destroy outline frees its
@@ -3850,8 +3849,7 @@ mod tests {
         unsafe {
             let _ = crate::reply_channel_wasm::hew_reply(ch.cast(), ptr::null_mut(), 0);
         }
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        Box::into_raw(frame).cast::<c_void>()
+        crate::coro_exec::test_support::ScratchFrame::into_executor_owned_handle(1)
     }
 
     /// Park an actor inside an `ask` whose handler suspended, and hand back the

@@ -4,21 +4,34 @@ use hew_mir::{lower_hir_module, DropKind, ExitPath, IrPipeline};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 const SOURCE: &str = r#"
+fn exists(path: string) -> bool {
+    path.len() > 0
+}
+
 actor Driver {
-    receive fn choose(take_x: bool) -> Result<string, string> {
-        let x = f"x={1}";
-        let y = f"y={2}";
-        var keep = take_x;
-        while keep {
-            keep = false;
+    receive fn resolve() -> string {
+        let path = f"path";
+        if !exists(path) {
+            let index = path + "/index.html";
+            var before = true;
+            while before {
+                before = false;
+            }
+            if exists(index) {
+                return index;
+            }
         }
-        if take_x { Err(x) } else { Ok(y) }
+        var after = true;
+        while after {
+            after = false;
+        }
+        path
     }
 }
 
 fn main() {
     let d = spawn Driver;
-    let _ = await d.choose(true);
+    let _ = await d.resolve();
 }
 "#;
 
@@ -58,28 +71,32 @@ fn is_string_drop(drop: &hew_mir::ElabDrop) -> bool {
 }
 
 #[test]
-fn returned_members_drop_on_loop_cancellation_with_their_normal_path_owners() {
+fn returned_member_cancellation_uses_one_owner_before_and_after_normal_goto() {
     let pipeline = pipeline();
     assert!(
         pipeline.diagnostics.is_empty(),
         "MIR diagnostics: {:#?}",
         pipeline.diagnostics
     );
-    let choose = pipeline
+    let resolve = pipeline
         .elaborated_mir
         .iter()
-        .find(|function| function.name == "Driver__recv__choose")
+        .find(|function| function.name == "Driver__recv__resolve")
         .expect("receive handler must be lowered");
 
-    let cancellation_owners: HashSet<_> = choose
+    let cancellation_owners: Vec<HashSet<_>> = resolve
         .drop_plans
         .iter()
         .filter(|(exit, _)| matches!(exit, ExitPath::Cancel { block } if *block != 0))
-        .flat_map(|(_, plan)| plan.drops.iter())
-        .filter(|drop| is_string_drop(drop))
-        .map(|drop| drop.place)
+        .map(|(_, plan)| {
+            plan.drops
+                .iter()
+                .filter(|drop| is_string_drop(drop))
+                .map(|drop| drop.place)
+                .collect()
+        })
         .collect();
-    let normal_path_owners: HashSet<_> = choose
+    let normal_path_owners: HashSet<_> = resolve
         .drop_plans
         .iter()
         .filter(|(exit, _)| matches!(exit, ExitPath::Goto { .. }))
@@ -89,23 +106,39 @@ fn returned_members_drop_on_loop_cancellation_with_their_normal_path_owners() {
         .collect();
 
     assert_eq!(
-        cancellation_owners.len(),
-        2,
-        "loop cancellation must release both still-owned returned members: {:#?}",
-        choose.drop_plans
-    );
-    assert_eq!(
-        cancellation_owners, normal_path_owners,
-        "cancellation must release the exact owners released by the divergent normal paths"
+        normal_path_owners.len(),
+        1,
+        "the scope-closing Goto must release index before the following loop: {:#?}",
+        resolve.drop_plans,
     );
     assert!(
-        choose
-            .drop_plans
+        cancellation_owners
             .iter()
-            .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
-            .flat_map(|(_, plan)| plan.drops.iter())
-            .all(|drop| !is_string_drop(drop)),
-        "the completed return transfers both members to the caller: {:#?}",
-        choose.drop_plans
+            .any(|owners| { owners.is_superset(&normal_path_owners) }),
+        "the loop before the Goto must still release index when cancellation \
+         bypasses its normal release: {:#?}",
+        resolve.drop_plans,
+    );
+    assert!(
+        cancellation_owners
+            .iter()
+            .any(|owners| !owners.is_empty() && owners.is_disjoint(&normal_path_owners)),
+        "the loop after the Goto must not release index again; its normal \
+         scope-close already owns that release: {:#?}",
+        resolve.drop_plans,
+    );
+    let returned_owners: HashSet<_> = resolve
+        .drop_plans
+        .iter()
+        .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .filter(|drop| is_string_drop(drop))
+        .map(|drop| drop.place)
+        .collect();
+    assert!(
+        normal_path_owners.is_disjoint(&returned_owners),
+        "the completed return transfers index to the caller rather than releasing \
+         it a second time: {:#?}",
+        resolve.drop_plans
     );
 }

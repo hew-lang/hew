@@ -128,7 +128,10 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libssl-dev pkg-config zlib1g-dev libzstd-dev
+          sudo apt-get install -y -qq \
+            libssl-dev pkg-config zlib1g-dev libzstd-dev mosquitto-clients
+          command -v mosquitto_pub
+          command -v mosquitto_sub
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -187,6 +190,12 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
+
+      - name: Run MQTT broker end-to-end oracle
+        # The Linux release lane has explicit mosquitto_pub/sub provisioning
+        # above, so this exercises a real external client against the shipped
+        # compiler's broker example before a release candidate is tagged.
+        run: make mqtt-broker-e2e
 
       # Browser-analysis WASM gate — Linux x86_64 only.
       # Installs wasm-pack + wasm32-unknown-unknown and runs the full playground

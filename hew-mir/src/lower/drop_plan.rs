@@ -1522,10 +1522,15 @@ pub(super) fn elaborate(
     // definitely `Live` (owned) at the source exit. This is purely additive: it
     // never removes an existing drop, and it emits one only where the value is
     // provably the still-live sole owner, so it can leak-fix without any
-    // double-free. Scoped to leaf CoW values (`string` / `bytes`) whose release
-    // is the unconditional `drop_kind_for` kind with no descriptor or
-    // path-flag; a member of any other type stays under the path-insensitive
-    // removal (leak, never a re-admitted double-free — fail-closed).
+    // double-free. Scoped to leaf CoW values (`string` / `bytes`) and scalar
+    // affine resources. The latter reconstruct the SAME typed close descriptor
+    // and consume guard as `build_lifo_drops`: a divergent return such as
+    // `if c { (s1, r1) } else { (s2, r2) }` transfers only one arm's
+    // Sink/Stream pair, while the other pair remains locally owned and must be
+    // closed on that arm-to-join edge. Field-bearing resource records stay
+    // excluded here because their release is the recursive `RecordInPlace`
+    // ritual rather than the scalar resource close; imprecision therefore
+    // remains leak-safe instead of selecting an incomplete teardown.
     // LESSONS: cleanup-all-exits, raii-null-after-move, boundary-fail-closed,
     // drop-allowset-from-value-flow.
     if !returned_member_transfer_blocks.is_empty() {
@@ -1619,10 +1624,41 @@ pub(super) fn elaborate(
             let Some(ty) = owned_ty_by_binding.get(binding).copied() else {
                 continue;
             };
-            if !matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
-                continue;
-            }
             let Some(&place) = builder.binding_locals.get(binding) else {
+                continue;
+            };
+            let re_admission_drop = if matches!(ty, ResolvedTy::String | ResolvedTy::Bytes) {
+                ElabDrop {
+                    place,
+                    ty: ty.clone(),
+                    drop_fn: None,
+                    kind: drop_kind_for(place, ty, None),
+                    guard: None,
+                }
+            } else if matches!(
+                ValueClass::of_ty(ty, &builder.type_classes),
+                ValueClass::AffineResource
+            ) && !builder.is_owned_aggregate_record_ty(ty)
+                && !(matches!(
+                    ty,
+                    ResolvedTy::Named {
+                        builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+                        ..
+                    }
+                ) && base_local(place)
+                    .is_some_and(|local| projection_alias_tainted.contains(&local)))
+            {
+                ElabDrop {
+                    place,
+                    ty: ty.clone(),
+                    drop_fn: place_aware_drop_fn(
+                        place,
+                        resource_drop_fn(ty, &builder.type_classes),
+                    ),
+                    kind: drop_kind_for(place, ty, None),
+                    guard: builder.affine_release_flags.get(binding).copied(),
+                }
+            } else {
                 continue;
             };
 
@@ -1836,13 +1872,7 @@ pub(super) fn elaborate(
             }
             for candidate in selected {
                 let plan = &mut drop_plans[candidate.plan_index].1;
-                plan.drops.push(ElabDrop {
-                    place,
-                    ty: ty.clone(),
-                    drop_fn: None,
-                    kind: drop_kind_for(place, ty, None),
-                    guard: None,
-                });
+                plan.drops.push(re_admission_drop.clone());
             }
         }
     }

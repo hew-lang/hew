@@ -6456,6 +6456,24 @@ pub enum DropKind {
     CowHeap {
         release: crate::ownership::CowHeapRelease,
     },
+    /// Abandon-edge release of the owned `vec` field inside a first-class
+    /// `VecIter<T>` cursor.
+    ///
+    /// `VecIter<T>` is an inline `{ Vec<T>, i64 }` record, not itself a
+    /// copy-on-write heap leaf. Its field-0 snapshot is nevertheless the sole
+    /// heap owner when the cursor's runtime ownership sidecar is zero. Normal
+    /// lexical/explicit exits release that field with `Instr::RecordFieldDrop`;
+    /// cancellation, panic, yield-destroy, and suspend-destroy paths carry this
+    /// kind in an [`ElabDrop`] guarded by the same sidecar.
+    ///
+    /// The typed `CowHeapRelease` payload preserves the Vec element refinement
+    /// (`plain`, owned-element, closure-pair). Codegen GEPs field 0, invokes the
+    /// selected Vec release, and null-stores the live field slot. The paired
+    /// [`ElabDrop::ty`] remains the enclosing `VecIter<T>` type and
+    /// [`ElabDrop::place`] remains its stack-local record.
+    VecIterCursor {
+        release: crate::ownership::CowHeapRelease,
+    },
     /// owned-string-record — function-scope in-place drop of a stack-local user record whose
     /// direct fields are only `BitCopy` values plus one or more `string` fields.
     /// The record identity lives in the paired [`ElabDrop::ty`], so the kind can

@@ -763,6 +763,17 @@ struct Builder {
     /// guarded inline-field mechanism is their sole drop authority, so no
     /// unconditional `RecordInPlace` exit-plan drop can compete.
     pub(crate) scope_vec_iter_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// Persistent declaration ledger for every registered first-class
+    /// `VecIter<T>` binding.
+    ///
+    /// `scope_vec_iter_bindings` is drained when lexical lowering emits the
+    /// normal-flow field release. Drop elaboration runs after that drain, so it
+    /// needs this append-only twin to recover cursor owners live at
+    /// cancellation/panic/yield/suspend abandonment exits. Each entry has a
+    /// parallel runtime bit in `vec_iter_drop_flags`; abandonment plans carry
+    /// that bit as `ElabDrop::guard`, preserving conditional moves and the
+    /// normal-resume/lexical-cleanup path exactly once.
+    pub(crate) vec_iter_scope_owner_ledger: Vec<(hew_hir::BindingId, ResolvedTy)>,
     /// Source Vec bindings borrowed by synthetic `for x in source` cursors,
     /// paired with the desugar scope that owns the cursor. A whole-value move
     /// or reassignment of the source while this entry is active would

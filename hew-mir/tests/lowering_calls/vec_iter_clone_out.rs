@@ -12,7 +12,7 @@ use hew_mir::{
     Instr, IrPipeline, MirStatement, Place, Terminator,
 };
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::{Checker, ResolvedTy};
+use hew_types::Checker;
 
 fn pipeline(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -664,7 +664,7 @@ fn first_class_vec_iter_owners_drop_at_scope_exit_but_return_transfers() {
 }
 
 #[test]
-fn cursor_assignment_drops_are_runtime_guarded_and_absent_from_exit_plans() {
+fn cursor_assignment_drops_are_runtime_guarded_and_exit_plans_are_abandon_only() {
     let pipeline = pipeline(
         r"
         fn reassign(first_values: Vec<Rc<i64>>, second_values: Vec<Rc<i64>>) {
@@ -740,18 +740,174 @@ fn cursor_assignment_drops_are_runtime_guarded_and_absent_from_exit_plans() {
         .iter()
         .find(|candidate| candidate.name == "reassign")
         .expect("missing elaborated MIR for `reassign`");
+    for (exit, plan) in &elaborated.drop_plans {
+        for drop in &plan.drops {
+            if !matches!(drop.kind, DropKind::VecIterCursor { .. }) {
+                continue;
+            }
+            assert!(
+                matches!(
+                    exit,
+                    ExitPath::Cancel { .. }
+                        | ExitPath::Panic { .. }
+                        | ExitPath::Yield { .. }
+                        | ExitPath::Suspend { .. }
+                ),
+                "a cursor field release may enter a drop plan only on an \
+                 abandonment edge, never normal flow: {exit:?} -> {drop:?}"
+            );
+            assert!(
+                drop.guard.is_some(),
+                "every abandonment cursor release must share the binding's \
+                 path-sensitive ownership sidecar: {exit:?} -> {drop:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn first_class_cursor_abandonment_plans_cover_cancel_panic_suspend_and_yield() {
+    let pipeline = pipeline(
+        r"
+        fn cancel_cursor(values: Vec<i64>) {
+            var cursor = values.iter();
+            var i: i64 = 0;
+            while i < 2 {
+                i = i + 1;
+            }
+            let _ = cursor.next();
+        }
+
+        fn panic_cursor(values: Vec<i64>, index: i64) {
+            var cursor = values.iter();
+            let _ = values[index];
+            let _ = cursor.next();
+        }
+
+        gen fn yield_cursor(values: Vec<i64>) -> i64 {
+            var cursor = values.iter();
+            yield 1;
+            let _ = cursor.next();
+        }
+
+        actor Sleeper {
+            receive fn park() {
+                let values: Vec<i64> = Vec::new();
+                values.push(1);
+                var cursor = values.iter();
+                sleep(10s);
+                let _ = cursor.next();
+            }
+        }
+        ",
+    );
+
+    let cursor_drops: Vec<_> = pipeline
+        .elaborated_mir
+        .iter()
+        .flat_map(|function| {
+            function.drop_plans.iter().flat_map(move |(exit, plan)| {
+                plan.drops
+                    .iter()
+                    .filter(|drop| matches!(drop.kind, DropKind::VecIterCursor { .. }))
+                    .map(move |drop| (function.name.as_str(), exit, drop))
+            })
+        })
+        .collect();
     assert!(
-        elaborated
-            .drop_plans
+        !cursor_drops.is_empty(),
+        "the fixture must produce first-class cursor abandon releases"
+    );
+    for (function, exit, drop) in &cursor_drops {
+        assert!(
+            drop.guard.is_some(),
+            "{function}: every cursor abandon release must be flag-gated: \
+             {exit:?} -> {drop:?}"
+        );
+        assert_eq!(
+            drop.kind,
+            DropKind::VecIterCursor {
+                release: CowHeapRelease::VecPlain,
+            },
+            "{function}: VecIter<i64> must select the plain Vec release"
+        );
+    }
+
+    for (needle, expected_path) in [
+        ("cancel_cursor", "cancel"),
+        ("panic_cursor", "panic"),
+        ("yield_cursor", "yield"),
+        ("park", "suspend"),
+    ] {
+        assert!(
+            cursor_drops.iter().any(|(function, exit, _)| {
+                function.contains(needle)
+                    && matches!(
+                        (expected_path, *exit),
+                        ("cancel", ExitPath::Cancel { .. })
+                            | ("panic", ExitPath::Panic { .. })
+                            | ("yield", ExitPath::Yield { .. })
+                            | ("suspend", ExitPath::Suspend { .. })
+                    )
+            }),
+            "`{needle}` must carry a guarded VecIter field release on its \
+             {expected_path} abandonment edge: {cursor_drops:#?}"
+        );
+    }
+
+    assert!(
+        cursor_drops.iter().all(|(_, exit, _)| !matches!(
+            exit,
+            ExitPath::Return { .. }
+                | ExitPath::Goto { .. }
+                | ExitPath::Branch { .. }
+                | ExitPath::Call { .. }
+                | ExitPath::Send { .. }
+                | ExitPath::Ask { .. }
+                | ExitPath::Select { .. }
+                | ExitPath::Join { .. }
+        )),
+        "resume/normal flow must retain the cursor for its lexical release: \
+         {cursor_drops:#?}"
+    );
+
+    assert_cursor_release_disarms_before_later_cancellation(&pipeline);
+}
+
+fn assert_cursor_release_disarms_before_later_cancellation(pipeline: &IrPipeline) {
+    let cancel = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "cancel_cursor")
+        .expect("cancel_cursor raw MIR");
+    let release_blocks: Vec<_> = cancel
+        .blocks
+        .iter()
+        .filter(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::RecordFieldDrop {
+                        field_offset: hew_mir::FieldOffset(0),
+                        ..
+                    }
+                )
+            })
+        })
+        .collect();
+    assert!(
+        release_blocks
             .iter()
-            .all(|(_, plan)| plan.drops.iter().all(|drop| !matches!(
-                &drop.ty,
-                ResolvedTy::Named { name, .. }
-                    if name.rsplit('.').next() == Some("VecIter")
+            .all(|block| block.instructions.iter().any(|instr| matches!(
+                instr,
+                Instr::ConstI64 {
+                    dest: Place::Local(_),
+                    value: 1
+                }
             ))),
-        "cursor ownership is discharged exactly by guarded inline field drops; \
-         no unconditional VecIter exit-plan drop may compete: {:#?}",
-        elaborated.drop_plans
+        "every normal cursor field release must disarm its sidecar before \
+         continuing, preventing a later cancellation checkpoint from reusing \
+         the same release authority: {release_blocks:#?}"
     );
 }
 

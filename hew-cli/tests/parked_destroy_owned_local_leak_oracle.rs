@@ -67,6 +67,43 @@ fn main() {
 }
 "#;
 
+/// A first-class `VecIter<i64>` owns a cloned Vec snapshot but is deliberately
+/// excluded from the ordinary owned-local LIFO. When the handler is destroyed
+/// while parked, the cursor's flag-gated abandon drop must release field 0;
+/// the resumed-only `for` remains unreachable, so no lexical cursor cleanup can
+/// mask a missing destroy-edge release.
+const PARKED_VEC_ITER_TEARDOWN: &str = r#"
+actor Sleeper {
+    receive fn work() {
+        let values: Vec<i64> = Vec::new();
+        values.push(40);
+        values.push(2);
+        let cursor = values.iter();
+        sleep(10s);
+        var sum: i64 = 0;
+        for value in cursor {
+            sum = sum + value;
+        }
+        println(f"{sum}");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child sleeper: Sleeper;
+}
+
+fn main() {
+    let sup = spawn App;
+    let s = sup.sleeper;
+    s.work();
+    sleep(200ms);
+    supervisor_stop(sup);
+}
+"#;
+
 /// Wall: a local MOVED OUT across the suspend must NOT be dropped on the abandon
 /// edge. `let ys = xs;` moves the `Vec` handle (xs and ys share ONE buffer); at
 /// the park xs is Consumed and ys is Live, so only ys is dropped on destroy.
@@ -234,6 +271,43 @@ fn parked_destroy_frees_owned_local_zero_leaks() {
         "destroy-while-parked leaked {leaks} node(s): the owned Vec live across \
          the sleep was not dropped on the coroutine abandon edge (#2395). Re-run \
          with `MallocStackLogging=1 leaks --atExit -- {}` for the leaked stack.",
+        bin.display()
+    );
+}
+
+/// First-class cursor regression: its cloned snapshot is not in
+/// `owned_locals`, so only the dedicated flag-gated `VecIter` abandon drop can
+/// free it when the coroutine is destroyed while parked.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn parked_destroy_frees_first_class_vec_iter_snapshot_zero_leaks() {
+    let shape = "parked_vec_iter_teardown";
+    require_leaks_tool();
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("parked-vec-iter-destroy-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(PARKED_VEC_ITER_TEARDOWN, dir.path(), shape);
+
+    let output = run_under_malloc_scribble(&bin);
+    assert!(
+        output.status.success(),
+        "destroy-while-parked VecIter teardown aborted under the poisoned \
+         allocator — the cursor snapshot release competed with another owner:\n{}",
+        describe_output(&output)
+    );
+
+    let leaks = measure_leaks(&bin);
+    assert_eq!(
+        leaks,
+        0,
+        "destroy-while-parked leaked {leaks} node(s): the first-class VecIter \
+         snapshot was not released on the coroutine abandon edge. Re-run with \
+         `MallocStackLogging=1 leaks --atExit -- {}` for the leaked stack.",
         bin.display()
     );
 }

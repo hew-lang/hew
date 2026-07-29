@@ -4380,9 +4380,11 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
 
 /// Compile `source` with `--dump-mir elab` and return the number of owned
 /// HANDLE-place releases (`Duplex::close` `drop_fn` / `LambdaActorRelease` drop
-/// kind) in `callee`'s elaborated body. The oracle: a callee returning an
+/// kind) in `callee`'s *return plans*. The oracle: a callee returning an
 /// aggregate of owned handle-place members (`Duplex`/lambda-actor handles) must
-/// report ZERO — the members are handed to the caller.
+/// report ZERO on the successful return path — the members are handed to the
+/// caller. Other plans, such as an exhaustiveness-fallthrough panic, correctly
+/// release still-live handles.
 ///
 /// A separate counter from `callee_handle_close_drops` because handle-place
 /// members register in `binding_locals` as their handle Place (not a `Local`),
@@ -4391,6 +4393,36 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
 /// `SendHalf`/`RecvHalf`/`LambdaActorHandle` Place lowering is unwired), so
 /// the runtime negative-control the Stream/Sink shapes use is impossible — this
 /// dump-mir assertion is the only oracle.
+fn return_plan_marker_count(body: &str, marker: &str) -> usize {
+    let mut in_return_plan = false;
+    let mut count = 0;
+    for line in body.lines() {
+        if line.starts_with("    return[") {
+            in_return_plan = true;
+        } else if line.starts_with("    ") && line.contains("] ->") {
+            in_return_plan = false;
+        }
+        if in_return_plan {
+            count += line.matches(marker).count();
+        }
+    }
+    count
+}
+
+#[test]
+fn return_plan_marker_count_excludes_required_panic_cleanup() {
+    let body = "  drop_plans:\n    return[bb1] ->\n      (none)\n    panic[bb2] ->\n      drop lambda1 kind=lambda_actor_release\n    return[bb3] ->\n      drop lambda2 kind=lambda_actor_release\n";
+    assert_eq!(return_plan_marker_count(body, "lambda_actor_release"), 1);
+    assert_eq!(
+        return_plan_marker_count(
+            "  drop_plans:\n    return[bb1] ->\n      drop lambda1 kind=lambda_actor_release\n      drop lambda2 kind=lambda_actor_release\n",
+            "lambda_actor_release",
+        ),
+        2,
+        "counterfactual: a second successful-return release must remain visible"
+    );
+}
+
 fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
     let dir = support::tempdir();
     let hew_src = dir.path().join("oracle.hew");
@@ -4415,7 +4447,7 @@ fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
     let end = rest.find("\nfn ").map_or(rest.len(), |i| i);
     let body = &rest[..end];
     // Structured renderer emits `kind=lambda_actor_release` (not `LambdaActorRelease`).
-    body.matches("lambda_actor_release").count()
+    return_plan_marker_count(body, "lambda_actor_release")
 }
 
 /// Oracle: a `(Sink, Stream)` tuple let-bound then returned BY NAME

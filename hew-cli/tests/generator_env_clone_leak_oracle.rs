@@ -278,6 +278,62 @@ fn main() {
 }
 "#;
 
+const CLOSURE_COUNTERFACTUALS: &str = r#"
+type Label {
+    text: string,
+}
+
+fn ordinary_factory(label: Label) -> fn() -> i64 {
+    || label.text.len()
+}
+
+fn noncapturing_generator_factory() -> fn() -> Generator<i64, ()> {
+    || {
+        gen {
+            yield 1;
+            yield 2;
+        }
+    }
+}
+
+fn ordinary_capture(i: i64) {
+    let label = Label { text: "ordinary-" + f"{i}" };
+    let read = ordinary_factory(label);
+    if read() <= 0 {
+        panic("ordinary capture");
+    }
+}
+
+fn noncapturing_generator() {
+    let make = noncapturing_generator_factory();
+    let g = make();
+    var total: i64 = 0;
+    loop {
+        match g.next() {
+            Some(value) => { total = total + value; },
+            None => { break; },
+        }
+    }
+    if total != 3 {
+        panic("noncapturing generator");
+    }
+}
+
+fn main() {
+    var ordinary: i64 = 0;
+    var noncapturing: i64 = 0;
+    var i: i64 = 0;
+    while i < __FRAMES__ {
+        ordinary_capture(i);
+        ordinary = ordinary + 1;
+        noncapturing_generator();
+        noncapturing = noncapturing + 1;
+        i = i + 1;
+    }
+    print(f"{ordinary}:{noncapturing}:OK");
+}
+"#;
+
 const BITCOPY_CONTROL: &str = r#"
 type Capture {
     label_len: i64,
@@ -598,6 +654,26 @@ fn generator_closure_env_clone_has_zero_leaks() {
     );
     run_exact(&bin, "128:128:128:128:OK");
     assert_zero_leaks(&bin, "generator-closure-env-clone");
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
+#[test]
+fn generator_closure_counterfactuals_have_zero_leaks() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("generator-env-clone-counterfactuals-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        &with_frames(CLOSURE_COUNTERFACTUALS, 128),
+        dir.path(),
+        "generator_closure_counterfactuals",
+    );
+    run_exact(&bin, "128:128:OK");
+    assert_zero_leaks(&bin, "generator-closure-counterfactuals");
 }
 
 #[cfg_attr(

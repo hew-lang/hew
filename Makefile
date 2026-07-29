@@ -734,7 +734,7 @@ test-cli:
 # binary, and the absence of ffi_link_e2e's real allocator slope probe. It runs
 # ignored tests too, so a newly ignored memory verdict cannot disappear behind
 # a green nextest summary.
-macos-leak-oracle: test-leak-oracle-selftest hew-native
+macos-leak-oracle: test-leak-oracle-selftest hew-native $(LIBHEW_READY)
 	scripts/macos-leak-oracle.sh
 
 # Platform-independent teeth for the leak harness and the runner's inventory

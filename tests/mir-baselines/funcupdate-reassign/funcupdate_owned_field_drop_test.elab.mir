@@ -2738,19 +2738,19 @@ fn string$join -> string
     return[bb11] ->
       (none)
     panic[bb12] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
     goto[bb13->bb8] ->
       (none)
     cancel[bb13] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
     panic[bb14] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
     goto[bb15->bb10] ->
       (none)
     cancel[bb15] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
     panic[bb16] ->
-      (none)
+      drop _12 ty=string kind=cow_heap(hew_string_drop)
 
 fn string::len -> i64
   statements:
@@ -3171,4 +3171,3 @@ fn duration::fmt -> string
       (none)
     return[bb1] ->
       (none)
-

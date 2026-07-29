@@ -596,31 +596,31 @@ fn VecAcc__recv__checksum -> i64
     branch[bb7: bb8/bb9] ->
       (none)
     panic[bb8] ->
-      (none)
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
     goto[bb9->bb6] ->
       (none)
     cancel[bb9] ->
-      (none)
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
     goto[bb10->bb1] ->
       (none)
     cancel[bb10] ->
-      (none)
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
     branch[bb11: bb15/bb16] ->
       (none)
     goto[bb12->bb2] ->
       (none)
     cancel[bb12] ->
-      (none)
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
     panic[bb13] ->
-      (none)
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
     branch[bb14: bb12/bb13] ->
       (none)
     panic[bb15] ->
-      (none)
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
     goto[bb16->bb10] ->
       (none)
     cancel[bb16] ->
-      (none)
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
     goto[bb17->bb10] ->
       (none)
     cancel[bb17] ->
@@ -630,13 +630,13 @@ fn VecAcc__recv__checksum -> i64
     branch[bb19: bb20/bb21] ->
       (none)
     panic[bb20] ->
-      (none)
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
     call[bb21 hew_vec_len -> bb22] ->
       (none)
     branch[bb22: bb23/bb24] ->
       (none)
     panic[bb23] ->
-      (none)
+      drop _7 ty=VecIter<i64> kind=vec_iter_cursor(hew_vec_free) guard=_6
     return[bb24] ->
       (none)
 

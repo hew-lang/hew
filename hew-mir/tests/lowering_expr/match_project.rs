@@ -1230,3 +1230,101 @@ fn main() -> i64 {
         "the return value, not either projected binder, owns each consumed payload"
     );
 }
+
+/// `string.join` exposes the same carrier boundary through a `Vec<string>`
+/// projection: the indexed element becomes `result`, then a borrowing concat
+/// reads it before the assignment releases the old generation. Pin both sides
+/// of that exactly-once split. Removing the delayed exit release leaks on
+/// panic/cancel; duplicating it competes with itself on the same exit.
+#[test]
+fn vec_string_projection_forward_has_one_release_per_exit() {
+    let pipeline = pipeline_with_tc(
+        r#"
+fn join_like(parts: Vec<string>, sep: string) -> string {
+    let n = parts.len();
+    if n == 0 {
+        return "";
+    }
+    var result = parts[0];
+    for i in 1 .. n {
+        result = result + sep + parts[i];
+    }
+    result
+}
+
+fn main() -> i64 {
+    join_like(["a", "b"], ",").len()
+}
+"#,
+    );
+
+    let function = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "join_like")
+        .expect("join_like elaborated MIR");
+    let delayed = function
+        .drop_plans
+        .iter()
+        .flat_map(|(exit, plan)| {
+            plan.drops.iter().filter_map(move |drop| {
+                (drop.ty == hew_types::ResolvedTy::String
+                    && matches!(drop.kind, DropKind::CowHeap { .. }))
+                .then_some((exit, drop))
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        delayed.len(),
+        5,
+        "the projected result must release on each of the five panic/cancel exits"
+    );
+    let owner = delayed[0].1.place;
+    assert!(
+        delayed.iter().all(|(_, drop)| drop.place == owner),
+        "all exceptional exits must release the same projected result owner"
+    );
+    for (exit, plan) in &function.drop_plans {
+        let releases = plan
+            .drops
+            .iter()
+            .filter(|drop| {
+                drop.place == owner
+                    && drop.ty == hew_types::ResolvedTy::String
+                    && matches!(drop.kind, DropKind::CowHeap { .. })
+            })
+            .count();
+        assert!(
+            releases <= 1,
+            "exit {exit:?} must not duplicate the projected result release"
+        );
+    }
+    assert!(
+        function
+            .drop_plans
+            .iter()
+            .filter(|(exit, _)| matches!(exit, ExitPath::Return { .. }))
+            .all(|(_, plan)| plan.drops.iter().all(|drop| drop.place != owner)),
+        "the successful return transfers the result instead of releasing it"
+    );
+
+    let inline_owner_releases = find_fn(&pipeline, "join_like")
+        .blocks
+        .iter()
+        .flat_map(|block| block.instructions.iter())
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::Drop {
+                    place,
+                    ty: hew_types::ResolvedTy::String,
+                    drop_fn: Some(hew_mir::DropFnSpec::Release("hew_string_drop")),
+                } if *place == owner
+            )
+        })
+        .count();
+    assert_eq!(
+        inline_owner_releases, 1,
+        "the successful loop iteration must release the old result generation once"
+    );
+}

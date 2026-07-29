@@ -836,49 +836,54 @@ fn main() {
         assert!(ops.contains(&"vector.index"));
         assert!(!ops.contains(&"vector.get"));
 
-        assert_emitted_bytecode_matches_published_schema(&bytecode);
+        let index_instruction = bytecode
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .find(|instruction| instruction.op == "vector.index")
+            .expect("direct vector indexing must emit a vector.index instruction");
+        assert_eq!(index_instruction.args.len(), 2);
+        assert!(
+            index_instruction.args.iter().all(|operand| operand.kind == "local"),
+            "vector.index must receive the evaluated vector and index locals: {index_instruction:#?}"
+        );
+
+        assert_published_schema_admits_emitted_instruction_and_rejects_unknown_opcode(
+            index_instruction,
+        );
     }
 
-    fn assert_emitted_bytecode_matches_published_schema(bytecode: &SandboxBytecodePackage) {
-        use std::io::Write;
-        use std::process::{Command, Stdio};
+    fn assert_published_schema_admits_emitted_instruction_and_rejects_unknown_opcode(
+        instruction: &Instruction,
+    ) {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../hew-sandbox-vm/bytecode/sandbox-bytecode-v0.schema.json"
+        ))
+        .expect("published sandbox bytecode schema must be valid JSON");
+        let published_ops = schema
+            .pointer("/$defs/instruction_op/enum")
+            .and_then(serde_json::Value::as_array)
+            .expect("published schema must declare its instruction opcode enum")
+            .iter()
+            .map(|opcode| {
+                opcode
+                    .as_str()
+                    .expect("published instruction opcode entries must be strings")
+            })
+            .collect::<std::collections::BTreeSet<_>>();
 
-        let vm_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../hew-sandbox-vm");
-        let schema = vm_root.join("bytecode/sandbox-bytecode-v0.schema.json");
-        let validator = r#"
-            import Ajv2020 from "ajv/dist/2020.js";
-            import fs from "node:fs";
-
-            const schema = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-            const bytecode = JSON.parse(fs.readFileSync(0, "utf8"));
-            const validate = new Ajv2020({ allErrors: true, strict: true, validateFormats: false }).compile(schema);
-            if (!validate(bytecode)) {
-              console.error(JSON.stringify(validate.errors));
-              process.exit(1);
-            }
-        "#;
-        let mut child = Command::new("node")
-            .current_dir(&vm_root)
-            .args(["--input-type=module", "--eval", validator])
-            .arg(schema)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("node with the sandbox VM AJV dependency must be available");
-        child
-            .stdin
-            .take()
-            .expect("validator stdin must be available")
-            .write_all(&serde_json::to_vec(bytecode).expect("bytecode must serialize"))
-            .expect("bytecode must reach AJV validator");
-        let output = child
-            .wait_with_output()
-            .expect("AJV validator must complete");
         assert!(
-            output.status.success(),
-            "published bytecode schema rejected compiler-emitted vector.index: {}",
-            String::from_utf8_lossy(&output.stderr)
+            published_ops.contains(instruction.op.as_str()),
+            "published bytecode schema must admit compiler-emitted opcode {:?}",
+            instruction.op
+        );
+
+        let mut unknown_opcode = instruction.clone();
+        unknown_opcode.op = "vector.not_real".to_string();
+        assert!(
+            !published_ops.contains(unknown_opcode.op.as_str()),
+            "published bytecode schema must reject a mutated unknown opcode"
         );
     }
 

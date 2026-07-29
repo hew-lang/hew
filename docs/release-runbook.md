@@ -121,6 +121,8 @@ Requires `.env.pre-release` in the repo root (gitignored):
 
 ```bash
 MACOS_HOST=my-mac.local
+# Optional when LLVM 22 is outside the standard Homebrew locations:
+HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@22
 LINUX_AARCH64_HOST=user@ubuntu-24-arm-host
 FREEBSD_HOST=user@freebsd-host
 WINDOWS_HOST=user@windows-host
@@ -134,6 +136,13 @@ for the exact bootstrap command sequence. The validator defaults to
 `LLVM_PREFIX=C:\llvm-22` and prepends `C:\llvm-22\bin` to `PATH`; override
 with `HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if
 that host uses a different compiler driver.
+
+The macOS validator requires an LLVM 22 root. It first honors
+`HEW_MACOS_LLVM_PREFIX` (or `MACOS_LLVM_PREFIX` in `.env.pre-release`), then
+uses `brew --prefix llvm@22` when `brew` is available, and finally probes
+`/opt/homebrew/opt/llvm@22` and `/usr/local/opt/llvm@22` directly. Each
+candidate is accepted only when its `bin/llvm-config --version` reports major
+version 22; an absent or different version fails validation before building.
 
 What `make pre-release` does:
 1. `make release` — release build of all binaries

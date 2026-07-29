@@ -805,8 +805,11 @@ fn run_generic_vec_for_in_collect_scalar_and_record() {
 /// #1929 Stage 2: pure-iteration proof for the generic for-in. `count<T>`
 /// increments an `i64` accumulator once per yielded element without touching
 /// the element value, isolating the `VecIter` desugar from the element-write
-/// path. The loop runs exactly once per element across three element ABIs —
-/// `i64` (3), `string` (4), and the Copy value-record `Point` (2).
+/// path. The loop runs exactly once per element across four concrete
+/// identities — `i64` (3), `string` (4), the Copy value-record `Point` (2),
+/// and a user-authored clone-total `MonitorRef` shadow (1). The last case pins
+/// the positive half of the builtin-resource identity boundary exercised by
+/// the fail-closed test below.
 #[test]
 fn run_generic_vec_for_in_count_across_element_abis() {
     require_codegen();
@@ -879,9 +882,9 @@ fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
         "expected the positional resource-record clone-totality diagnostic; got: {combined}"
     );
     assert!(
-        combined.contains("VecIter<link_monitor.MonitorRef>")
-            && combined.contains("resource `link_monitor.MonitorRef` has an affine close contract"),
-        "expected the builtin resource-record clone-totality diagnostic; got: {combined}"
+        combined.contains("VecIter<MonitorRef>")
+            && combined.contains("resource `MonitorRef` has an affine close contract"),
+        "expected the canonical builtin resource-record clone-totality diagnostic; got: {combined}"
     );
 }
 

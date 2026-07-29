@@ -4959,33 +4959,9 @@ fn place_is_owned_handoff_member(place: Place) -> bool {
         | Place::EnumTag(_) => false,
     }
 }
-fn retained_string_values_before(block: &BasicBlock, instr_index: usize) -> HashSet<Place> {
-    block.instructions[..instr_index]
-        .iter()
-        .rev()
-        .take_while(|instr| {
-            matches!(
-                instr,
-                Instr::BytesRetain { .. } | Instr::StringRetain { .. }
-            )
-        })
-        .filter_map(|instr| match instr {
-            // Only `Always` duplicates the ownership of `value` itself.
-            // `AggregateBorrowedIngress` walks *inline string leaves* and may
-            // legitimately be a no-op for an affine member such as
-            // `Sink<string>` / `Stream<string>`. Treating that marker as a
-            // whole-value clone hid the handle from returned-member flow, so
-            // the callee closed it after byte-copying it into the caller's
-            // tuple/record. Actor-state ingress is projection-scoped for the
-            // same reason and cannot prove ownership of the whole source.
-            Instr::StringRetain {
-                value,
-                condition: StringRetainCondition::Always,
-            } => Some(*value),
-            _ => None,
-        })
-        .collect()
-}
+mod returned_member_flow;
+use returned_member_flow::retained_string_values_before;
+
 /// W5.021 (defect #1) — fail-closed value-flow derivation of the owned member
 /// bindings that a function HANDS to its caller through a returned aggregate,
 /// and therefore must NOT also drop at its own scope exit.
@@ -5200,94 +5176,7 @@ fn compute_returned_flow_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
 }
 
 #[cfg(test)]
-mod returned_member_retain_scope {
-    use super::*;
-
-    fn returned_block(construct: Instr, condition: StringRetainCondition) -> BasicBlock {
-        BasicBlock {
-            id: 0,
-            statements: Vec::new(),
-            instructions: vec![
-                Instr::StringRetain {
-                    value: Place::Local(0),
-                    condition,
-                },
-                construct,
-                Instr::Move {
-                    dest: Place::ReturnSlot,
-                    src: Place::Local(1),
-                },
-            ],
-            terminator: Terminator::Return,
-        }
-    }
-
-    fn returned_members(block: BasicBlock, ty: ResolvedTy) -> HashSet<BindingId> {
-        let binding = BindingId(1);
-        derive_returned_aggregate_member_bindings(
-            &[block],
-            &[(binding, "member".to_string(), ty)],
-            &HashMap::from([(binding, Place::Local(0))]),
-        )
-    }
-
-    #[test]
-    fn aggregate_string_leaf_retain_does_not_clone_tuple_or_record_handle() {
-        let sink_ty =
-            ResolvedTy::named_builtin("Sink", BuiltinType::Sink, vec![ResolvedTy::String]);
-        let tuple_members = returned_members(
-            returned_block(
-                Instr::TupleConstruct {
-                    elements: vec![Place::Local(0)],
-                    dest: Place::Local(1),
-                },
-                StringRetainCondition::AggregateBorrowedIngress,
-            ),
-            sink_ty.clone(),
-        );
-        assert!(
-            tuple_members.contains(&BindingId(1)),
-            "a string-leaf retain marker must not hide an affine tuple member \
-             from return ownership transfer"
-        );
-
-        let record_members = returned_members(
-            returned_block(
-                Instr::RecordInit {
-                    ty: ResolvedTy::named_user("Pipe", vec![]),
-                    fields: vec![(FieldOffset(0), Place::Local(0))],
-                    dest: Place::Local(1),
-                },
-                StringRetainCondition::AggregateBorrowedIngress,
-            ),
-            sink_ty,
-        );
-        assert!(
-            record_members.contains(&BindingId(1)),
-            "a string-leaf retain marker must not hide an affine record field \
-             from return ownership transfer"
-        );
-    }
-
-    #[test]
-    fn whole_string_retain_keeps_the_callee_owner() {
-        let members = returned_members(
-            returned_block(
-                Instr::TupleConstruct {
-                    elements: vec![Place::Local(0)],
-                    dest: Place::Local(1),
-                },
-                StringRetainCondition::Always,
-            ),
-            ResolvedTy::String,
-        );
-        assert!(
-            !members.contains(&BindingId(1)),
-            "an unconditional string retain mints a caller owner, so the callee \
-             must keep and drop its original owner"
-        );
-    }
-}
+mod returned_member_retain_scope;
 
 /// Per-member map from a returned-aggregate member binding to the set of blocks
 /// where its value ENTERS the return flow — i.e. the block(s) containing the

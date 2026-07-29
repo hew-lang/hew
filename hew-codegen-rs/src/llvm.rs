@@ -15949,6 +15949,7 @@ fn aggregate_kind_contains_inline_string(
         | StateFieldCloneKind::HashSet { .. }
         | StateFieldCloneKind::Rc
         | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender
         | StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::OpaqueHandle { .. }
@@ -16282,6 +16283,7 @@ fn retain_strings_in_aggregate_slot<'ctx>(
         | StateFieldCloneKind::HashSet { .. }
         | StateFieldCloneKind::Rc
         | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender
         | StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::OpaqueHandle { .. }

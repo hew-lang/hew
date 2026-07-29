@@ -5547,6 +5547,47 @@ fn aggregate_borrowed_ingress_array_retains_each_string_occurrence() {
 }
 
 #[test]
+fn aggregate_borrowed_ingress_treats_channel_sender_as_non_string_terminal() {
+    let ctx = Context::create();
+    let m = ctx.create_module("aggregate_borrowed_ingress_sender");
+    let harness = build_harness(&ctx, &[], &[]);
+    let fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "sender_retain_probe");
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let tuple_ty = ctx.struct_type(&[ptr_ty.into(), ptr_ty.into()], false);
+    let slot = fn_ctx
+        .builder
+        .build_alloca(tuple_ty, "sender_tuple")
+        .expect("sender tuple alloca");
+    let kind = StateFieldCloneKind::Tuple {
+        elems: vec![
+            StateFieldCloneKind::String,
+            StateFieldCloneKind::ChannelSender,
+        ],
+    };
+    retain_strings_in_aggregate_slot(
+        &fn_ctx,
+        slot,
+        tuple_ty.into(),
+        &kind,
+        0,
+        "sender_tuple_probe",
+    )
+    .expect("string-only retain walk must skip the Sender handle");
+    finish_test_fn(&fn_ctx);
+    assert!(m.verify().is_ok(), "sender retain module must verify");
+    let ir = m.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call ptr @hew_string_clone").count(),
+        1,
+        "the string sibling needs one retain; ir:\n{ir}"
+    );
+    assert!(
+        !ir.contains("hew_channel_sender_clone"),
+        "the string-only walker must leave Sender ownership to its descriptor path; ir:\n{ir}"
+    );
+}
+
+#[test]
 fn aggregate_borrowed_ingress_qualified_generic_record_uses_clone_kind_key() {
     let key = hew_hir::mangle("Box", &[ResolvedTy::String]);
     let record = MirRecordLayout {

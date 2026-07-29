@@ -88,6 +88,33 @@ test("Vec::get returns Option::None instead of trapping out of bounds", () => {
   assert.deepEqual(trace.final_state.runtime_failures, []);
 });
 
+test("published bytecode schema admits vector.index and vector.get but rejects unknown opcodes", () => {
+  const emittedIndexing = structuredClone(readJson("fixtures/06-vector-basics/bytecode.json"));
+  const indexedInstruction = emittedIndexing.functions
+    .flatMap((fn) => fn.blocks)
+    .flatMap((block) => block.instructions)
+    .find((instruction) => instruction.op === "vector.get");
+  assert.ok(indexedInstruction, "vector fixture must contain compiler-shaped vector access");
+
+  // The compiler's direct indexing lowering uses the same vector/index operand
+  // shape as this emitted Vec::get fixture, but changes the opcode to the raw,
+  // bounds-trapping `vector.index` contract.
+  indexedInstruction.op = "vector.index";
+  assert.ok(validateBytecode(emittedIndexing), ajv.errorsText(validateBytecode.errors));
+
+  const optionGet = structuredClone(emittedIndexing);
+  optionGet.functions[0].blocks[0].instructions.find(
+    (instruction) => instruction.op === "vector.index"
+  ).op = "vector.get";
+  assert.ok(validateBytecode(optionGet), ajv.errorsText(validateBytecode.errors));
+
+  const unknownOpcode = structuredClone(emittedIndexing);
+  unknownOpcode.functions[0].blocks[0].instructions.find(
+    (instruction) => instruction.op === "vector.index"
+  ).op = "vector.not_real";
+  assert.equal(validateBytecode(unknownOpcode), false);
+});
+
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
 }

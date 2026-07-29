@@ -835,6 +835,51 @@ fn main() {
         let ops = all_instruction_ops(&bytecode);
         assert!(ops.contains(&"vector.index"));
         assert!(!ops.contains(&"vector.get"));
+
+        assert_emitted_bytecode_matches_published_schema(&bytecode);
+    }
+
+    fn assert_emitted_bytecode_matches_published_schema(bytecode: &SandboxBytecodePackage) {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let vm_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../hew-sandbox-vm");
+        let schema = vm_root.join("bytecode/sandbox-bytecode-v0.schema.json");
+        let validator = r#"
+            import Ajv2020 from "ajv/dist/2020.js";
+            import fs from "node:fs";
+
+            const schema = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const bytecode = JSON.parse(fs.readFileSync(0, "utf8"));
+            const validate = new Ajv2020({ allErrors: true, strict: true, validateFormats: false }).compile(schema);
+            if (!validate(bytecode)) {
+              console.error(JSON.stringify(validate.errors));
+              process.exit(1);
+            }
+        "#;
+        let mut child = Command::new("node")
+            .current_dir(&vm_root)
+            .args(["--input-type=module", "--eval", validator])
+            .arg(schema)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("node with the sandbox VM AJV dependency must be available");
+        child
+            .stdin
+            .take()
+            .expect("validator stdin must be available")
+            .write_all(&serde_json::to_vec(bytecode).expect("bytecode must serialize"))
+            .expect("bytecode must reach AJV validator");
+        let output = child
+            .wait_with_output()
+            .expect("AJV validator must complete");
+        assert!(
+            output.status.success(),
+            "published bytecode schema rejected compiler-emitted vector.index: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

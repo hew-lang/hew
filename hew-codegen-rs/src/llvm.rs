@@ -16484,14 +16484,38 @@ fn retain_string_for_actor_state_record_borrowed_ingress(
     )
 }
 
+/// Resolve a record type to the exact registered field-layout key.
+fn registered_record_layout_key(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Option<String> {
+    let ResolvedTy::Named {
+        name,
+        args,
+        builtin: None,
+        is_opaque: false,
+    } = ty
+    else {
+        return None;
+    };
+    let full_key = if args.is_empty() {
+        name.clone()
+    } else {
+        mangle_with_shortened_args(name, args)
+    };
+    let short_key = if args.is_empty() {
+        short_name(name).to_string()
+    } else {
+        mangle_with_shortened_args(short_name(name), args)
+    };
+    [full_key, short_key]
+        .into_iter()
+        .find(|key| fn_ctx.record_field_resolved_tys.contains_key(key))
+}
+
 /// Lower `Instr::RecordFieldStore { record, field_offset, src }` to a
-/// GEP+store on the record's alloca, taking the source value from the
-/// `src` place.
+/// release+GEP+store on the record's alloca.
 ///
-/// The aggregate record stays Live after the store — only the named field's
-/// bytes are overwritten. Mirrors `lower_record_field_load` structurally.
-/// Producer is `assign()` in `hew-mir/src/lower.rs` for the `r.x = v`
-/// target shape (Q297 Stage 1, Q299=(a)).
+/// The aggregate record stays live after the store. The old named field owner
+/// is released according to its MIR ownership kind before the replacement is
+/// stored. Producer is `assign()` in `hew-mir/src/lower.rs` for `r.x = v`.
 fn lower_record_field_store(
     fn_ctx: &FnCtx<'_, '_>,
     record: Place,
@@ -16542,50 +16566,32 @@ fn lower_record_field_store(
         .build_load(field_ty, src_ptr, &format!("field_{idx}_store_src"))
         .llvm_ctx_with(|| format!("RecordFieldStore field {idx} load src"))?;
 
-    // An inline record field owns its recursively dropped leaves. Replacing
-    // the bytes without releasing the prior value leaks every old owning leaf.
-    // Reuse the alias-aware helper already used by actor-state record stores:
-    // it neutralises old leaves that alias `src`, then runs the ordinary record
-    // drop spine over the remainder. Resource records stay under their
-    // fail-closed ownership rules; replacing one requires move/close semantics
-    // rather than this ordinary aggregate overwrite path.
-    if let Some(ResolvedTy::Named {
-        name,
-        args,
-        builtin: None,
-        is_opaque: false,
-    }) = place_base_local(&src).and_then(|src_local| fn_ctx.local_tys.get(&src_local))
-    {
-        let full_key = if args.is_empty() {
-            name.clone()
-        } else {
-            mangle_with_shortened_args(name, args)
-        };
-        let short_key = if args.is_empty() {
-            short_name(name).to_string()
-        } else {
-            mangle_with_shortened_args(short_name(name), args)
-        };
-        let record_key = [full_key.as_str(), short_key.as_str()]
-            .into_iter()
-            .find(|key| fn_ctx.record_field_resolved_tys.contains_key(*key));
-        let is_resource_record = record_key.is_some_and(|key| {
-            fn_ctx.resource_record_close.iter().any(|(record_name, _)| {
-                record_name == key || short_name(record_name) == short_name(key)
-            })
-        });
-        if let Some(record_key) = record_key.filter(|_| !is_resource_record) {
-            let helper =
-                get_or_declare_record_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, record_key);
-            fn_ctx
-                .builder
-                .build_call(
-                    helper,
-                    &[field_ptr.into(), src_ptr.into()],
-                    &format!("field_{idx}_record_release"),
-                )
-                .llvm_ctx("RecordFieldStore record overwrite release")?;
-        }
+    // Select cleanup from the destination field's MIR type, never from the
+    // source spelling or the LLVM slot shape. A well-typed store makes source
+    // and destination agree, but only the destination layout is the ownership
+    // authority for the value being abandoned.
+    let record_key = place_base_local(&record)
+        .and_then(|record_local| fn_ctx.local_tys.get(&record_local))
+        .and_then(|record_ty| registered_record_layout_key(fn_ctx, record_ty));
+    if let Some(record_key) = record_key {
+        let kinds = classify_record_drop_fields_for_key(fn_ctx, &record_key)?;
+        let kind = kinds.get(idx_usize).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "RecordFieldStore field offset {idx} has no ownership-kind entry \
+                 for record `{record_key}` ({} kinds registered)",
+                kinds.len()
+            ))
+        })?;
+        emit_field_overwrite_release(
+            fn_ctx,
+            field_ptr,
+            field_ty,
+            src_ptr,
+            src_val,
+            kind,
+            &format!("record_f{idx}"),
+            false,
+        )?;
     }
     fn_ctx
         .builder
@@ -16758,7 +16764,7 @@ fn lower_actor_state_field_load(
     // this was an unconditional bare load/store: the loaded value bit-
     // aliased the field's owned heap at refcount unchanged, so a third live
     // binding (`let t = x;`) held the same pointer the field's own
-    // overwrite-release guard (`emit_state_field_old_value_release`, below)
+    // overwrite-release guard (`emit_field_old_value_release`, below)
     // later freed out from under it — deterministic UAF/double-free on the
     // temp-bridged swap idiom (`let t = x; x = y; y = t;`), confirmed for
     // Vec (SIGABRT in descriptor-driven free), record (same), and string
@@ -17107,6 +17113,171 @@ fn emit_actor_state_field_clone_inplace_trap<'ctx>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn emit_field_overwrite_release(
+    fn_ctx: &FnCtx<'_, '_>,
+    field_ptr: PointerValue<'_>,
+    field_ty: BasicTypeEnum<'_>,
+    src_ptr: PointerValue<'_>,
+    src_val: BasicValueEnum<'_>,
+    kind: &StateFieldCloneKind,
+    label: &str,
+    release_resource_records: bool,
+) -> CodegenResult<()> {
+    match kind {
+        StateFieldCloneKind::Bytes => {
+            let triple_ty = bytes_triple_llvm_ty(fn_ctx.ctx);
+            let old_ptr_slot = fn_ctx
+                .builder
+                .build_struct_gep(triple_ty, field_ptr, 0, &format!("{label}_old_data_slot"))
+                .llvm_ctx("field overwrite old bytes data gep")?;
+            let old_ptr = fn_ctx
+                .builder
+                .build_load(
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                    old_ptr_slot,
+                    &format!("{label}_old_data"),
+                )
+                .llvm_ctx("field overwrite old bytes data load")?
+                .into_pointer_value();
+            let new_ptr = fn_ctx
+                .builder
+                .build_extract_value(src_val.into_struct_value(), 0, &format!("{label}_new_data"))
+                .llvm_ctx("field overwrite new bytes data extract")?
+                .into_pointer_value();
+            emit_field_old_value_release(
+                fn_ctx,
+                old_ptr,
+                new_ptr,
+                "hew_bytes_drop",
+                &format!("{label}_bytes"),
+            )
+        }
+        StateFieldCloneKind::String => {
+            let old_ptr = fn_ctx
+                .builder
+                .build_load(
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                    field_ptr,
+                    &format!("{label}_old_str"),
+                )
+                .llvm_ctx("field overwrite old string load")?
+                .into_pointer_value();
+            emit_field_old_value_release(
+                fn_ctx,
+                old_ptr,
+                src_val.into_pointer_value(),
+                "hew_string_drop",
+                &format!("{label}_str"),
+            )
+        }
+        StateFieldCloneKind::Rc
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender => {
+            if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "field overwrite `{label}`: refcounted kind {kind:?} requires a \
+                     pointer-typed slot, got {field_ty:?}"
+                )));
+            }
+            let helper = drop_helper_for_kind(kind)?.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "field overwrite `{label}`: refcounted kind {kind:?} has no drop helper"
+                ))
+            })?;
+            let old_ptr = fn_ctx
+                .builder
+                .build_load(
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                    field_ptr,
+                    &format!("{label}_old_rc"),
+                )
+                .llvm_ctx("field overwrite old refcounted handle load")?
+                .into_pointer_value();
+            emit_field_old_value_release(
+                fn_ctx,
+                old_ptr,
+                src_val.into_pointer_value(),
+                helper.name,
+                &format!("{label}_rc"),
+            )
+        }
+        StateFieldCloneKind::Vec { .. }
+        | StateFieldCloneKind::HashMap { .. }
+        | StateFieldCloneKind::HashSet { .. } => {
+            let witness = crate::layout::collection_layout_witness(kind)?.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "field overwrite `{label}`: collection kind {kind:?} has no layout witness"
+                ))
+            })?;
+            if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "field overwrite `{label}`: collection kind {kind:?} requires a \
+                     pointer-typed slot, got {field_ty:?}"
+                )));
+            }
+            let old_ptr = fn_ctx
+                .builder
+                .build_load(
+                    fn_ctx.ctx.ptr_type(AddressSpace::default()),
+                    field_ptr,
+                    &format!("{label}_old_coll"),
+                )
+                .llvm_ctx("field overwrite old collection load")?
+                .into_pointer_value();
+            emit_field_old_value_release(
+                fn_ctx,
+                old_ptr,
+                src_val.into_pointer_value(),
+                witness.drop_sym,
+                &format!("{label}_coll"),
+            )
+        }
+        StateFieldCloneKind::UserRecord { name } => {
+            if !release_resource_records
+                && fn_ctx
+                    .resource_record_close
+                    .iter()
+                    .any(|(record, _)| record == name || short_name(record) == short_name(name))
+            {
+                return Ok(());
+            }
+            let helper = get_or_declare_record_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name);
+            fn_ctx
+                .builder
+                .build_call(
+                    helper,
+                    &[field_ptr.into(), src_ptr.into()],
+                    &format!("{label}_record_release"),
+                )
+                .llvm_ctx("record field overwrite release call")?;
+            Ok(())
+        }
+        StateFieldCloneKind::Enum { name } => {
+            let helper = get_or_declare_enum_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name);
+            fn_ctx
+                .builder
+                .build_call(
+                    helper,
+                    &[field_ptr.into(), src_ptr.into()],
+                    &format!("{label}_enum_release"),
+                )
+                .llvm_ctx("enum field overwrite release call")?;
+            Ok(())
+        }
+        StateFieldCloneKind::Tuple { .. } | StateFieldCloneKind::Array { .. } => {
+            Err(CodegenError::FailClosed(format!(
+                "field overwrite `{label}` is not wired for aggregate kind {kind:?}"
+            )))
+        }
+        StateFieldCloneKind::BitCopy { .. }
+        | StateFieldCloneKind::IoHandle { .. }
+        | StateFieldCloneKind::ClosurePair
+        | StateFieldCloneKind::Resource { .. }
+        | StateFieldCloneKind::OpaqueHandle { .. } => Ok(()),
+    }
+}
+
 fn lower_actor_state_field_store(
     fn_ctx: &FnCtx<'_, '_>,
     field_offset: FieldOffset,
@@ -17168,7 +17339,7 @@ fn lower_actor_state_field_store(
     // MIR-level `StateFieldCloneKind` — never the LLVM struct shape, which a
     // user record with a `{ ptr, i32, i32 }` layout could alias. Emitted
     // AFTER the borrow-gated clone above so the pointer-inequality guard
-    // inside `emit_state_field_old_value_release` compares against the value
+    // inside `emit_field_old_value_release` compares against the value
     // actually stored. `None` kinds (non-handler functions, hand-built test
     // fixtures) keep the pre-fix posture.
     //
@@ -17201,188 +17372,16 @@ fn lower_actor_state_field_store(
                 kinds.len()
             ))
         })?;
-        match kind {
-            StateFieldCloneKind::Bytes => {
-                // The field slot holds the BytesTriple by value; its heap
-                // reference is the data pointer in triple field 0.
-                let triple_ty = bytes_triple_llvm_ty(fn_ctx.ctx);
-                let old_ptr_slot = fn_ctx
-                    .builder
-                    .build_struct_gep(
-                        triple_ty,
-                        field_ptr,
-                        0,
-                        &format!("actor_state_field_{idx}_old_data_slot"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore old bytes data gep")?;
-                let old_ptr = fn_ctx
-                    .builder
-                    .build_load(
-                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
-                        old_ptr_slot,
-                        &format!("actor_state_field_{idx}_old_data"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore old bytes data load")?
-                    .into_pointer_value();
-                let new_ptr = fn_ctx
-                    .builder
-                    .build_extract_value(
-                        src_val.into_struct_value(),
-                        0,
-                        &format!("actor_state_field_{idx}_new_data"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore new bytes data extract")?
-                    .into_pointer_value();
-                emit_state_field_old_value_release(
-                    fn_ctx,
-                    old_ptr,
-                    new_ptr,
-                    "hew_bytes_drop",
-                    &format!("state_f{idx}_bytes"),
-                )?;
-            }
-            StateFieldCloneKind::String => {
-                let old_ptr = fn_ctx
-                    .builder
-                    .build_load(
-                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
-                        field_ptr,
-                        &format!("actor_state_field_{idx}_old_str"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore old string load")?
-                    .into_pointer_value();
-                let new_ptr = src_val.into_pointer_value();
-                emit_state_field_old_value_release(
-                    fn_ctx,
-                    old_ptr,
-                    new_ptr,
-                    "hew_string_drop",
-                    &format!("state_f{idx}_str"),
-                )?;
-            }
-            StateFieldCloneKind::Rc
-            | StateFieldCloneKind::Weak
-            | StateFieldCloneKind::ChannelSender => {
-                if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
-                    return Err(CodegenError::FailClosed(format!(
-                        "ActorStateFieldStore field {idx}: refcounted handle kind \
-                         {kind:?} requires a pointer-typed slot, got {field_ty:?}"
-                    )));
-                }
-                let old_ptr = fn_ctx
-                    .builder
-                    .build_load(
-                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
-                        field_ptr,
-                        &format!("actor_state_field_{idx}_old_rc"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore old refcounted handle load")?
-                    .into_pointer_value();
-                let helper = drop_helper_for_kind(kind)?.ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "ActorStateFieldStore field {idx}: refcounted handle kind \
-                         {kind:?} has no drop helper"
-                    ))
-                })?;
-                emit_state_field_old_value_release(
-                    fn_ctx,
-                    old_ptr,
-                    src_val.into_pointer_value(),
-                    helper.name,
-                    &format!("state_f{idx}_rc"),
-                )?;
-            }
-            StateFieldCloneKind::Vec { .. }
-            | StateFieldCloneKind::HashMap { .. }
-            | StateFieldCloneKind::HashSet { .. } => {
-                // The field slot holds the collection handle pointer by
-                // value. The release symbol comes from the layout witness —
-                // the sole collection symbol-selection authority — so this
-                // release and the `state_drop` release derive from one
-                // descriptor and cannot drift (W4.045 UAF class). All three
-                // `*_free_*` symbols are null-tolerant, so the spawn-time
-                // zero-initialised first store needs no extra guard.
-                let witness = crate::layout::collection_layout_witness(kind)?.ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "ActorStateFieldStore field {idx}: collection kind {kind:?} \
-                         has no layout witness; `collection_layout_witness` and the \
-                         kind classifier have drifted"
-                    ))
-                })?;
-                if !matches!(field_ty, BasicTypeEnum::PointerType(_)) {
-                    return Err(CodegenError::FailClosed(format!(
-                        "ActorStateFieldStore field {idx}: collection kind {kind:?} \
-                         requires a pointer-typed handle slot, got {field_ty:?}; the \
-                         state layout and the kind classifier have drifted"
-                    )));
-                }
-                let old_ptr = fn_ctx
-                    .builder
-                    .build_load(
-                        fn_ctx.ctx.ptr_type(AddressSpace::default()),
-                        field_ptr,
-                        &format!("actor_state_field_{idx}_old_coll"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore old collection load")?
-                    .into_pointer_value();
-                let new_ptr = src_val.into_pointer_value();
-                emit_state_field_old_value_release(
-                    fn_ctx,
-                    old_ptr,
-                    new_ptr,
-                    witness.drop_sym,
-                    &format!("state_f{idx}_coll"),
-                )?;
-            }
-            StateFieldCloneKind::UserRecord { name } => {
-                // Embedded aggregate: byte-copied loads mean the incoming
-                // value can alias old heap leaves (functional update /
-                // self-store), so the release is the synthesised
-                // collect-neutralise-drop helper, not a bare drop-spine
-                // call. See `emit_record_overwrite_release_body`.
-                let helper =
-                    get_or_declare_record_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name);
-                fn_ctx
-                    .builder
-                    .build_call(
-                        helper,
-                        &[field_ptr.into(), src_ptr.into()],
-                        &format!("state_f{idx}_rec_release"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore record overwrite release")?;
-            }
-            StateFieldCloneKind::Enum { name } => {
-                let helper =
-                    get_or_declare_enum_overwrite_release(fn_ctx.ctx, fn_ctx.llvm_mod, name);
-                fn_ctx
-                    .builder
-                    .build_call(
-                        helper,
-                        &[field_ptr.into(), src_ptr.into()],
-                        &format!("state_f{idx}_enum_release"),
-                    )
-                    .llvm_ctx("ActorStateFieldStore enum overwrite release")?;
-            }
-            StateFieldCloneKind::Tuple { .. } | StateFieldCloneKind::Array { .. } => {
-                return Err(CodegenError::FailClosed(format!(
-                    "ActorStateFieldStore field {idx}: aggregate state-field reassignment \
-                     is not wired for kind {kind:?}"
-                )));
-            }
-            StateFieldCloneKind::BitCopy { .. }
-            | StateFieldCloneKind::IoHandle { .. }
-            // ClosurePair: closure-valued actor state is rejected at check
-            // time by the transitive closure-field walk, so no overwrite
-            // reaches this store; grouped with the no-release kinds.
-            | StateFieldCloneKind::ClosurePair
-            // Resource: leak-over-UAF on overwrite (clone refused; a
-            // move-and-restore could alias with no retain to compare). The
-            // neutralise step already nulled the slot; grouped with the
-            // no-release kinds. The final actor-shutdown drop closes a live
-            // handle.
-            | StateFieldCloneKind::Resource { .. }
-            | StateFieldCloneKind::OpaqueHandle { .. } => {}
-        }
+        emit_field_overwrite_release(
+            fn_ctx,
+            field_ptr,
+            field_ty,
+            src_ptr,
+            src_val,
+            kind,
+            &format!("state_f{idx}"),
+            true,
+        )?;
     }
     fn_ctx
         .builder
@@ -18075,13 +18074,13 @@ pub(crate) fn bytes_triple_llvm_ty(ctx: &Context) -> StructType<'_> {
     ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false)
 }
 
-/// Release the OLD heap reference of an actor state field that is about to
-/// be overwritten, guarded by pointer inequality against the NEW value.
+/// Release the old heap reference of a field that is about to be overwritten,
+/// guarded by pointer inequality against the replacement.
 ///
 /// The guard exists for the self-store shapes: a stored value whose heap
 /// pointer EQUALS the old field pointer arrived without a refcount bump
-/// (`buf = buf` round-trips the triple through a local via
-/// `ActorStateFieldLoad`, which byte-copies at rc unchanged). Releasing the
+/// (`buf = buf` may round-trip the handle through a local via a byte-copy at
+/// unchanged refcount). Releasing the
 /// old reference there would free the very buffer the field is about to
 /// re-own — a use-after-free. Skipping the release merely preserves the
 /// pre-fix posture for that shape (and for the slice-of-self store, whose
@@ -18092,7 +18091,7 @@ pub(crate) fn bytes_triple_llvm_ty(ctx: &Context) -> StructType<'_> {
 /// `hew_string_drop` null + static-string guard), so the spawn-time
 /// zero-initialised field needs no extra null check — null old vs non-null
 /// new takes the release edge and no-ops in the runtime.
-fn emit_state_field_old_value_release(
+fn emit_field_old_value_release(
     fn_ctx: &FnCtx<'_, '_>,
     old_ptr: PointerValue<'_>,
     new_ptr: PointerValue<'_>,

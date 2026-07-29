@@ -1024,6 +1024,7 @@ pub(crate) fn collection_layout_witness(
         | StateFieldCloneKind::Bytes
         | StateFieldCloneKind::Rc
         | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender
         | StateFieldCloneKind::Tuple { .. }
         | StateFieldCloneKind::Array { .. }
         | StateFieldCloneKind::IoHandle { .. }

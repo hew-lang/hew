@@ -213,6 +213,13 @@ pub fn classify_element_with(
                 ),
             ..
         } => VecElementToken::Layout,
+        // Sender is pointer-sized, but unlike general pointer-token handles it
+        // has a semantic clone/drop pair. Classify it as descriptor-backed so
+        // the owned Vec family can run those callbacks for each endpoint.
+        Ty::Named {
+            builtin: Some(crate::builtin_type::BuiltinType::Sender),
+            ..
+        } => VecElementToken::Layout,
         Ty::Named {
             builtin: Some(b), ..
         } if b.lowers_as_pointer_vec_element() => VecElementToken::Ptr,

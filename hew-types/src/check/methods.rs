@@ -2907,19 +2907,7 @@ impl Checker {
                 // These wrappers duplicate the OUTER handle semantically and
                 // do not clone their protocol/payload type argument. Keep them
                 // terminal, matching MIR's value-snapshot affine-marker proof.
-                if matches!(
-                    builtin,
-                    Some(
-                        BuiltinType::LocalPid
-                            | BuiltinType::RemotePid
-                            | BuiltinType::LambdaPid
-                            | BuiltinType::HewActor
-                            | BuiltinType::Rc
-                            | BuiltinType::Weak
-                            | BuiltinType::Sender
-                            | BuiltinType::Receiver
-                    )
-                ) {
+                if builtin.is_some_and(BuiltinType::is_affine_clone_terminal) {
                     return None;
                 }
                 if self.registry.is_resource(name) {
@@ -5329,7 +5317,9 @@ impl Checker {
                         }
                         return true;
                     }
-                    Some(BuiltinType::Rc | BuiltinType::Weak) => return args.len() == 1,
+                    Some(BuiltinType::Rc | BuiltinType::Weak | BuiltinType::Sender) => {
+                        return args.len() == 1;
+                    }
                     // Other builtin nominals are not user records/enums and
                     // have no owned-Vec thunk path.
                     Some(_) => return false,
@@ -5518,7 +5508,7 @@ impl Checker {
                 .all(|elem| self.vec_tuple_owned_field_admissible(elem)),
             Ty::String | Ty::Bytes => true,
             Ty::Named {
-                builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+                builtin: Some(BuiltinType::Rc | BuiltinType::Weak | BuiltinType::Sender),
                 args,
                 ..
             } => args.len() == 1,

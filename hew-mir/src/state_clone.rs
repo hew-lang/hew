@@ -223,6 +223,13 @@ pub enum StateFieldCloneKind {
     /// holds it. No refcount; no dup.
     OpaqueHandle { name: String },
 
+    /// A channel sender endpoint. Unlike general `#[resource]` handles, a
+    /// sender has a ratified semantic clone (`hew_channel_sender_clone`) and a
+    /// paired release (`hew_channel_sender_close`), so containers may clone
+    /// the OUTER endpoint even when its `T` argument is affine. The element
+    /// type is a type-erased protocol tag and is never recursively cloned.
+    ChannelSender,
+
     /// `#[resource]` runtime handle that carries a user `close(self)` /
     /// `free(self)` ritual (RAII-1). The single-slot opaque flavour —
     /// `#[resource] #[opaque]` (e.g. `regex.Pattern` once F9 stamps it a
@@ -328,7 +335,8 @@ fn clone_kind_is_total(
         | StateFieldCloneKind::String
         | StateFieldCloneKind::Bytes
         | StateFieldCloneKind::Rc
-        | StateFieldCloneKind::Weak => Ok(true),
+        | StateFieldCloneKind::Weak
+        | StateFieldCloneKind::ChannelSender => Ok(true),
         StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::Resource { .. }
@@ -528,6 +536,7 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -567,6 +576,7 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -615,6 +625,7 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -716,6 +727,7 @@ impl StateFieldCloneKind {
             | StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::IoHandle { .. }
             | StateFieldCloneKind::UserRecord { .. }
             | StateFieldCloneKind::Enum { .. }
@@ -1087,6 +1099,7 @@ pub fn classify_owned_string_record_fields(
             StateFieldCloneKind::Bytes
             | StateFieldCloneKind::Rc
             | StateFieldCloneKind::Weak
+            | StateFieldCloneKind::ChannelSender
             | StateFieldCloneKind::Tuple { .. }
             | StateFieldCloneKind::Array { .. }
             | StateFieldCloneKind::Vec { .. }
@@ -1469,10 +1482,7 @@ fn classify_named(
         return Ok(StateFieldCloneKind::Weak);
     }
     if matches!(builtin, Some(hew_types::BuiltinType::Sender)) {
-        return Ok(StateFieldCloneKind::Resource {
-            name: "Sender".to_string(),
-            close_symbol: "hew_channel_sender_close".to_string(),
-        });
+        return Ok(StateFieldCloneKind::ChannelSender);
     }
     if matches!(builtin, Some(hew_types::BuiltinType::Receiver)) {
         return Ok(StateFieldCloneKind::Resource {

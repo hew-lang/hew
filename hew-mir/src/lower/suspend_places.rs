@@ -106,7 +106,11 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // Snapshot cloning borrows the source and writes a fresh non-aliasing
         // destination; it must not suppress the sender original's drop.
         Instr::ValueSnapshotClone { .. } => vec![],
-        Instr::ValueSnapshotDrop { value, .. } => vec![*value],
+        Instr::ValueSnapshotDrop { value, guard, .. } => {
+            let mut places = vec![*value];
+            places.extend(*guard);
+            places
+        }
         Instr::BoolNot { operand, .. }
         | Instr::FloatNeg { operand, .. }
         | Instr::IntBitNot { operand, .. }

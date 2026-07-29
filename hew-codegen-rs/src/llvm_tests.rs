@@ -6168,7 +6168,7 @@ fn resolved_ty_element_owns_heap_for_owned_vec_matches_mir_table() {
         is_opaque: false,
     };
     // Identical to the MIR `is_owned_vec_element` table — keep in lockstep.
-    let table: [(ResolvedTy, bool); 11] = [
+    let table: [(ResolvedTy, bool); 13] = [
         (ResolvedTy::String, false),
         (ResolvedTy::Bytes, false),
         (ResolvedTy::I64, false),
@@ -6200,6 +6200,24 @@ fn resolved_ty_element_owns_heap_for_owned_vec_matches_mir_table() {
         ),
         (vec_of(ResolvedTy::I64), true),
         (vec_of(fn_elem.clone()), false),
+        (
+            ResolvedTy::Named {
+                name: "Sender".to_string(),
+                args: vec![ResolvedTy::I64],
+                builtin: Some(hew_types::BuiltinType::Sender),
+                is_opaque: true,
+            },
+            true,
+        ),
+        (
+            ResolvedTy::Named {
+                name: "Receiver".to_string(),
+                args: vec![ResolvedTy::I64],
+                builtin: Some(hew_types::BuiltinType::Receiver),
+                is_opaque: true,
+            },
+            false,
+        ),
         (fn_elem, false),
         (closure_elem, false),
     ];

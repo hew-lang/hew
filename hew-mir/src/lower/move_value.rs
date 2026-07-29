@@ -288,9 +288,22 @@ impl Builder {
                         )
                         .unwrap_or(false) =>
             {
+                // Every admitted carrier gets an explicit transfer guard.
+                // Heap-only carrier shapes happen to make their zeroed
+                // snapshot drop inert, but nested user-resource rituals do
+                // not: closing a structurally zeroed `Wrap<Token>` is still an
+                // observable second close. Keep this authority structural
+                // rather than attempting to rediscover every non-idempotent
+                // leaf in the snapshot plan.
+                let guard = self.alloc_local(ResolvedTy::I64);
+                self.push_instr(Instr::ConstI64 {
+                    dest: guard,
+                    value: 0,
+                });
                 self.owned_carrier_param_ids.insert(param.id);
                 self.owned_carrier_params.push(OwnedCarrierParam {
                     value: slot,
+                    guard,
                     ty: owned_ty,
                     plan,
                 });
@@ -505,6 +518,11 @@ impl Builder {
         self.record_owned_carrier_transfer(value);
         match target {
             OwnedCarrierNeutralizeTarget::Whole(source) => {
+                let transfer_guard = self
+                    .owned_carrier_params
+                    .iter()
+                    .find(|param| param.value == source)
+                    .map(|param| param.guard);
                 let dest = self.alloc_local(ty.clone());
                 self.push_instr(Instr::Move { dest, src: value });
                 self.push_instr(Instr::NeutralizePayloadSlot {
@@ -512,6 +530,12 @@ impl Builder {
                     transferee: Some(dest),
                     authority: crate::model::NeutralizeAuthority::WholeCarrierConsume,
                 });
+                if let Some(flag) = transfer_guard {
+                    self.push_instr(Instr::ConstI64 {
+                        dest: flag,
+                        value: 1,
+                    });
+                }
                 dest
             }
             OwnedCarrierNeutralizeTarget::Projection {
@@ -641,9 +665,26 @@ impl Builder {
             .supervisor_layout_map
             .values()
             .any(|layout| layout.bootstrap_symbol == callee_symbol);
+        // A captured user resource remains owned by its closure environment.
+        // The call-summary table does not carry an ItemId for inherent
+        // `Token::close(self)` calls, so the generic move gate below would
+        // misread the receiver as a borrow, byte-copy it out of the env, and
+        // close both the alias and the environment-owned value. Until Hew has
+        // a `FnOnce`/take-from-env protocol, reject that whole-value consume
+        // through the same existing capture-escape diagnostic.
+        let consumes_user_resource = args.iter().any(|arg| {
+            matches!(
+                super::resource_drop_fn(&self.subst_ty(&arg.ty), &self.type_classes),
+                Some(crate::model::DropFnSpec::UserClose(ref symbol))
+                    if symbol == callee_symbol
+            )
+        });
         args.iter()
             .enumerate()
             .map(|(index, arg)| {
+                if consumes_user_resource && self.reject_capture_env_whole_escape_expr(arg) {
+                    return None;
+                }
                 let is_move = move_all_args
                     || callee_item.is_some_and(|item| {
                         self.param_ownership

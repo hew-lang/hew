@@ -1144,6 +1144,7 @@ pub(crate) fn owned_elem_thunk_key(
                     | hew_types::BuiltinType::HashSet
                     | hew_types::BuiltinType::Rc
                     | hew_types::BuiltinType::Weak
+                    | hew_types::BuiltinType::Sender
             ),
             ..
         }

@@ -373,6 +373,33 @@ fn block_postdominates_release(blocks: &[BasicBlock], block: u32, postdominator:
             .all(|successor| block_postdominates(blocks, successor, postdominator))
 }
 
+/// Whether a normal Goto release executes before an abandonment release.
+///
+/// An abandonment edge leaves before its source block's terminator, so releases
+/// attached to that same block remain independent. A release on an earlier Goto
+/// is instead already complete on every path that reaches the later edge.
+fn normal_goto_precedes_abandonment(
+    blocks: &[BasicBlock],
+    block_reach: &HashMap<u32, HashSet<u32>>,
+    normal: ReturnedMemberReAdmission,
+    abandonment: ReturnedMemberReAdmission,
+) -> bool {
+    if !matches!(normal.path, ReturnedMemberReAdmissionPath::Normal)
+        || !matches!(abandonment.path, ReturnedMemberReAdmissionPath::Abandonment)
+        || normal.block == abandonment.block
+    {
+        return false;
+    }
+    let normal_is_goto = blocks.iter().any(|block| {
+        block.id == normal.block && matches!(block.terminator, Terminator::Goto { .. })
+    });
+    normal_is_goto
+        && block_reach
+            .get(&normal.block)
+            .is_some_and(|reachable| reachable.contains(&abandonment.block))
+        && block_dominates(blocks, normal.block, abandonment.block)
+}
+
 /// Select a path-compatible subset of locally valid returned-member releases.
 ///
 /// For two candidates `A -> B` on the same normal path:
@@ -418,6 +445,29 @@ fn select_returned_member_re_admissions(
                     second: *downstream,
                 });
             }
+        }
+    }
+    // Resolve normal releases before comparing them to abandonment exits. A
+    // later normal release can replace the Goto that otherwise dominates a
+    // cancellation; that cancellation then bypasses the surviving normal owner
+    // and must retain its own plan.
+    let surviving_normal_gotos: Vec<_> = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| {
+            !suppressed.contains(&candidate.plan_index)
+                && matches!(candidate.path, ReturnedMemberReAdmissionPath::Normal)
+        })
+        .collect();
+    for abandonment in candidates
+        .iter()
+        .copied()
+        .filter(|candidate| matches!(candidate.path, ReturnedMemberReAdmissionPath::Abandonment))
+    {
+        if surviving_normal_gotos.iter().any(|normal| {
+            normal_goto_precedes_abandonment(blocks, block_reach, *normal, abandonment)
+        }) {
+            suppressed.insert(abandonment.plan_index);
         }
     }
     Ok(candidates
@@ -1639,7 +1689,7 @@ pub(super) fn elaborate(
                 continue;
             }
 
-            let selected = match select_returned_member_re_admissions(
+            let mut selected = match select_returned_member_re_admissions(
                 &checked.blocks,
                 &block_reach,
                 &candidates,
@@ -1662,7 +1712,7 @@ pub(super) fn elaborate(
                 }
             };
 
-            let replaced_existing: HashSet<usize> = selected
+            let mut replaced_existing: HashSet<usize> = selected
                 .iter()
                 .flat_map(|candidate| {
                     replacements
@@ -1672,6 +1722,38 @@ pub(super) fn elaborate(
                         .copied()
                 })
                 .collect();
+            // Existing release plans are not candidates, so arbitration with
+            // abandonment exits occurs only after their normal replacements are
+            // known. A still-surviving normal Goto suppresses its later
+            // abandonment plan; a selected normal Goto replaces only the later
+            // existing abandonment it must execute before.
+            selected.retain(|candidate| {
+                !matches!(candidate.path, ReturnedMemberReAdmissionPath::Abandonment)
+                    || !existing_releases.iter().any(|release| {
+                        !replaced_existing.contains(&release.plan_index)
+                            && normal_goto_precedes_abandonment(
+                                &checked.blocks,
+                                &block_reach,
+                                *release,
+                                *candidate,
+                            )
+                    })
+            });
+            for candidate in &selected {
+                if !matches!(candidate.path, ReturnedMemberReAdmissionPath::Normal) {
+                    continue;
+                }
+                for release in &existing_releases {
+                    if normal_goto_precedes_abandonment(
+                        &checked.blocks,
+                        &block_reach,
+                        *candidate,
+                        *release,
+                    ) {
+                        replaced_existing.insert(release.plan_index);
+                    }
+                }
+            }
             for plan_index in replaced_existing {
                 drop_plans[plan_index]
                     .1
@@ -8544,6 +8626,158 @@ mod returned_member_read_aliases {
                  path={path:?}, replaced={replaced:?}"
             );
         }
+    }
+
+    /// A normal scope-closing Goto can precede a later loop cancellation. The
+    /// later cancel must not duplicate the already-completed release, but an
+    /// independent cancellation route that bypasses the Goto still owns one.
+    #[test]
+    fn normal_goto_replaces_only_the_later_loop_cancellation_release() {
+        let blocks = vec![
+            block(
+                0,
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 4,
+                },
+            ),
+            block(1, Terminator::Goto { target: 2 }),
+            block(2, Terminator::Goto { target: 2 }),
+            block(4, Terminator::Goto { target: 5 }),
+            block(5, Terminator::Return),
+        ];
+        let block_reach: HashMap<u32, HashSet<u32>> = blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&blocks, block.id)))
+            .collect();
+        let candidates = [
+            ReturnedMemberReAdmission {
+                plan_index: 10,
+                block: 1,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 11,
+                block: 2,
+                path: ReturnedMemberReAdmissionPath::Abandonment,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 12,
+                block: 4,
+                path: ReturnedMemberReAdmissionPath::Abandonment,
+            },
+        ];
+
+        let selected = select_returned_member_re_admissions(&blocks, &block_reach, &candidates)
+            .expect("the dominated loop cancellation has one prior release owner");
+        assert_eq!(
+            selected,
+            vec![candidates[0], candidates[2]],
+            "the post-Goto loop cancellation is redundant, while the route that bypasses \
+             the Goto retains cancellation coverage"
+        );
+        let abandoned_existing = existing_releases_replaced_by_candidate(
+            &blocks,
+            &block_reach,
+            candidates[0],
+            &candidates[1..],
+        )
+        .expect("the normal Goto is comparable to both cancellation plans")
+        .expect("cross-path authority arbitration occurs after candidate selection");
+        assert_eq!(
+            abandoned_existing,
+            HashSet::new(),
+            "normal/cancellation replacements must wait until normal candidates are final"
+        );
+        assert_eq!(
+            existing_releases_replaced_by_candidate(
+                &blocks,
+                &block_reach,
+                candidates[1],
+                &candidates[..1],
+            )
+            .expect("the cancellation is comparable to the preceding Goto"),
+            Some(HashSet::new()),
+            "normal/cancellation arbitration must wait until normal candidates are final"
+        );
+
+        for path in [&[0_u32, 1, 2][..], &[0_u32, 4][..]] {
+            let releases = selected
+                .iter()
+                .filter(|candidate| path.contains(&candidate.block))
+                .count();
+            assert_eq!(
+                releases, 1,
+                "each normal or cancellation path must have exactly one release: \
+                 path={path:?}, selected={selected:?}"
+            );
+        }
+    }
+
+    /// If a downstream normal Goto replaces A, a cancellation between A and the
+    /// replacement bypasses the final normal authority and must stay selected.
+    #[test]
+    fn later_normal_replacement_does_not_suppress_intermediate_cancellation() {
+        let blocks = vec![
+            block(0, Terminator::Goto { target: 1 }),
+            block(1, Terminator::Goto { target: 2 }),
+            block(2, Terminator::Goto { target: 3 }),
+            block(3, Terminator::Goto { target: 4 }),
+            block(4, Terminator::Return),
+        ];
+        let block_reach: HashMap<u32, HashSet<u32>> = blocks
+            .iter()
+            .map(|block| (block.id, blocks_reachable_from(&blocks, block.id)))
+            .collect();
+        let candidates = [
+            ReturnedMemberReAdmission {
+                plan_index: 10,
+                block: 1,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 11,
+                block: 2,
+                path: ReturnedMemberReAdmissionPath::Abandonment,
+            },
+            ReturnedMemberReAdmission {
+                plan_index: 12,
+                block: 3,
+                path: ReturnedMemberReAdmissionPath::Normal,
+            },
+        ];
+
+        let selected = select_returned_member_re_admissions(&blocks, &block_reach, &candidates)
+            .expect("the normal replacement and intermediate cancellation are unambiguous");
+        assert_eq!(
+            selected,
+            vec![candidates[1], candidates[2]],
+            "the replacement owns normal completion while the intermediate cancel \
+             retains its bypass cleanup"
+        );
+        let cancellation_releases = selected
+            .iter()
+            .filter(|candidate| {
+                matches!(candidate.path, ReturnedMemberReAdmissionPath::Abandonment)
+                    && candidate.block == 2
+            })
+            .count();
+        assert_eq!(
+            cancellation_releases, 1,
+            "the cancellation at bb2 must retain exactly one release: {selected:?}"
+        );
+        let normal_releases = selected
+            .iter()
+            .filter(|candidate| {
+                matches!(candidate.path, ReturnedMemberReAdmissionPath::Normal)
+                    && [0_u32, 1, 2, 3, 4].contains(&candidate.block)
+            })
+            .count();
+        assert_eq!(
+            normal_releases, 1,
+            "the normal continuation must retain exactly one release: {selected:?}"
+        );
     }
 
     /// Partial overlap counterfactual: one release can reach the other, but

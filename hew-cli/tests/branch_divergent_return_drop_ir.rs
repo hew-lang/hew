@@ -45,21 +45,34 @@ fn main() -> i64 {
 "#;
 
 const CANCELLATION_SOURCE: &str = r#"
+fn exists(path: string) -> bool {
+    path.len() > 0
+}
+
 actor Driver {
-    receive fn choose(take_x: bool) -> Result<string, string> {
-        let x = f"x={1}";
-        let y = f"y={2}";
-        var keep = take_x;
-        while keep {
-            keep = false;
+    receive fn resolve() -> string {
+        let path = f"path";
+        if !exists(path) {
+            let index = path + "/index.html";
+            var before = true;
+            while before {
+                before = false;
+            }
+            if exists(index) {
+                return index;
+            }
         }
-        if take_x { Err(x) } else { Ok(y) }
+        var after = true;
+        while after {
+            after = false;
+        }
+        path
     }
 }
 
 fn main() {
     let d = spawn Driver;
-    let _ = await d.choose(true);
+    let _ = await d.resolve();
 }
 "#;
 
@@ -180,7 +193,7 @@ fn nested_returned_string_scope_exit_is_discharged_exactly_once() {
 }
 
 #[test]
-fn loop_cancellation_releases_returned_members_before_their_handoff() {
+fn normal_goto_prevents_later_loop_cancellation_from_releasing_index_twice() {
     require_codegen();
     let dir = tempdir().expect("temporary fixture directory");
     let source = dir.path().join("cancelled_result.hew");
@@ -205,31 +218,47 @@ fn loop_cancellation_releases_returned_members_before_their_handoff() {
 
     let llvm = std::fs::read_to_string(emit_dir.join("cancelled_result.ll"))
         .expect("read emitted LLVM IR");
-    let choose = llvm_function(&llvm, "Driver__recv__choose");
-    let cancellation_blocks: Vec<_> = choose
+    let resolve = llvm_function(&llvm, "Driver__recv__resolve");
+    let normal_index_releases: Vec<_> = resolve
+        .split("\n\n")
+        .filter(|block| {
+            block.trim_start().starts_with("after_cooperate")
+                && block.contains("call void @hew_string_drop")
+                && block.contains("ptr %local_7")
+        })
+        .collect();
+    assert_eq!(
+        normal_index_releases.len(),
+        1,
+        "the scope-closing Goto must have one normal release authority for index:\n{resolve}"
+    );
+    let index_cancellation_blocks: Vec<_> = resolve
         .split("\n\n")
         .filter(|block| {
             block.trim_start().starts_with("cancel_exit")
                 && block.contains("call void @hew_string_drop")
+                && block.contains("ptr %local_7")
         })
         .collect();
     assert_eq!(
-        cancellation_blocks.len(),
-        1,
-        "only the post-initialization loop cancellation block may release returned members:\n{choose}"
-    );
-    let cancellation = cancellation_blocks[0];
-    assert_eq!(
-        cancellation.matches("call void @hew_string_drop").count(),
+        index_cancellation_blocks.len(),
         2,
-        "cancellation must release both returned-member owners before returning a zero result:\n{cancellation}"
+        "only cancellation paths that bypass the normal Goto may release index:\n{resolve}"
     );
     assert!(
-        cancellation.contains("ptr %local_10") && cancellation.contains("ptr %local_5"),
-        "cancellation must release the exact x/y owner slots that the divergent normal paths discharge:\n{cancellation}"
+        index_cancellation_blocks.iter().all(|block| {
+            block.trim_start().starts_with("cancel_exit9")
+                || block.trim_start().starts_with("cancel_exit22")
+        }),
+        "the retained index releases must belong to cancellation paths that run \
+         before the normal Goto:\n{index_cancellation_blocks:#?}"
     );
     assert!(
-        cancellation.contains("ret %\"Result$$string$string\" zeroinitializer"),
-        "cancellation must not hand off either member after releasing it:\n{cancellation}"
+        resolve
+            .split("\n\n")
+            .find(|block| block.trim_start().starts_with("cancel_exit36"))
+            .is_some_and(|block| !block.contains("ptr %local_7")),
+        "the later loop cancellation must not duplicate the index release after \
+         the normal Goto:\n{resolve}"
     );
 }

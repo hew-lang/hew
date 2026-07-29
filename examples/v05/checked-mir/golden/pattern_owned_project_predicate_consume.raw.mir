@@ -10,43 +10,45 @@ fn record_join(Packet) -> i64 [conv=default]
     _1: i64
     _2: i64
     _3: i64
-    _4: bool
-    _5: Token
-    _6: i64
-    _7: Token
-    _8: i64
+    _4: i64
+    _5: bool
+    _6: Token
+    _7: i64
+    _8: Token
+    _9: i64
   bb0:
     stmt: use BindingId(1) p site=SiteId(1) ty=Packet intent=Read
+    _1 = const.i64 0
     goto bb2
   bb1:
     stmt: return site=Some(SiteId(0)) ty=i64
-    ret = move _1
+    ret = move _2
     return
   bb2:
-    _2 = _0.field[0]
-    _3 = const.i64 0
-    _4 = icmp.eq _2 _3
-    branch _4 ? bb5 : bb3
+    _3 = _0.field[0]
+    _4 = const.i64 0
+    _5 = icmp.eq _3 _4
+    branch _5 ? bb5 : bb3
   bb3:
     stmt: bind BindingId(3) token site=SiteId(4) ty=Token
     stmt: use BindingId(1) p site=SiteId(1) ty=Packet intent=Consume
     stmt: use BindingId(3) token site=SiteId(5) ty=Token intent=Read
-    _7 = _0.field[1]
+    _8 = _0.field[1]
     drop_field_in_place _0.field[2] ty=string
-    _8 = _7.field[0]
-    _1 = move _8
+    _9 = _8.field[0]
+    _2 = move _9
     goto bb1
   bb4:
-    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
+    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall guard=_1
     trap(ExhaustivenessFallthrough)
   bb5:
     stmt: bind BindingId(2) token site=SiteId(2) ty=Token
     stmt: use BindingId(1) p site=SiteId(1) ty=Packet intent=Consume
     stmt: use BindingId(2) token site=SiteId(3) ty=Token intent=Read
-    _5 = _0.field[1]
+    _6 = _0.field[1]
     drop_field_in_place _0.field[2] ty=string
-    _6 = _5.field[0]
-    _1 = move _6
+    _7 = _6.field[0]
+    _2 = move _7
     goto bb1
 
 fn tuple_join((i64, Token, string)) -> i64 [conv=default]
@@ -55,43 +57,45 @@ fn tuple_join((i64, Token, string)) -> i64 [conv=default]
     _1: i64
     _2: i64
     _3: i64
-    _4: bool
-    _5: Token
-    _6: i64
-    _7: Token
-    _8: i64
+    _4: i64
+    _5: bool
+    _6: Token
+    _7: i64
+    _8: Token
+    _9: i64
   bb0:
     stmt: use BindingId(4) p site=SiteId(7) ty=(i64, Token, string) intent=Read
+    _1 = const.i64 0
     goto bb2
   bb1:
     stmt: return site=Some(SiteId(6)) ty=i64
-    ret = move _1
+    ret = move _2
     return
   bb2:
-    _2 = _0.0
-    _3 = const.i64 0
-    _4 = icmp.eq _2 _3
-    branch _4 ? bb5 : bb3
+    _3 = _0.0
+    _4 = const.i64 0
+    _5 = icmp.eq _3 _4
+    branch _5 ? bb5 : bb3
   bb3:
     stmt: bind BindingId(6) token site=SiteId(10) ty=Token
     stmt: use BindingId(4) p site=SiteId(7) ty=(i64, Token, string) intent=Consume
     stmt: use BindingId(6) token site=SiteId(11) ty=Token intent=Read
-    _7 = _0.1
+    _8 = _0.1
     drop_field_in_place _0.2 ty=string
-    _8 = _7.field[0]
-    _1 = move _8
+    _9 = _8.field[0]
+    _2 = move _9
     goto bb1
   bb4:
-    snapshot_drop _0 ty=(i64, Token, string) plan=Tuple { elems: [BitCopy { size_bytes: 8 }, UserRecord { name: "Token" }, String] } boundary=LocalCall
+    snapshot_drop _0 ty=(i64, Token, string) plan=Tuple { elems: [BitCopy { size_bytes: 8 }, UserRecord { name: "Token" }, String] } boundary=LocalCall guard=_1
     trap(ExhaustivenessFallthrough)
   bb5:
     stmt: bind BindingId(5) token site=SiteId(8) ty=Token
     stmt: use BindingId(4) p site=SiteId(7) ty=(i64, Token, string) intent=Consume
     stmt: use BindingId(5) token site=SiteId(9) ty=Token intent=Read
-    _5 = _0.1
+    _6 = _0.1
     drop_field_in_place _0.2 ty=string
-    _6 = _5.field[0]
-    _1 = move _6
+    _7 = _6.field[0]
+    _2 = move _7
     goto bb1
 
 fn record_whole(Packet) -> i64 [conv=default]
@@ -100,44 +104,46 @@ fn record_whole(Packet) -> i64 [conv=default]
     _1: i64
     _2: i64
     _3: i64
-    _4: bool
-    _5: Token
-    _6: i64
-    _7: Packet
-    _8: Token
-    _9: i64
+    _4: i64
+    _5: bool
+    _6: Token
+    _7: i64
+    _8: Packet
+    _9: Token
+    _10: i64
   bb0:
     stmt: use BindingId(7) p site=SiteId(13) ty=Packet intent=Read
+    _1 = const.i64 0
     goto bb2
   bb1:
     stmt: return site=Some(SiteId(12)) ty=i64
-    ret = move _1
+    ret = move _2
     return
   bb2:
-    _2 = _0.field[0]
-    _3 = const.i64 1
-    _4 = icmp.eq _2 _3
-    branch _4 ? bb5 : bb3
+    _3 = _0.field[0]
+    _4 = const.i64 1
+    _5 = icmp.eq _3 _4
+    branch _5 ? bb5 : bb3
   bb3:
     stmt: bind BindingId(9) whole site=SiteId(16) ty=Packet
     stmt: use BindingId(7) p site=SiteId(13) ty=Packet intent=Consume
     stmt: use BindingId(9) whole site=SiteId(18) ty=Packet intent=Read
-    _7 = move _0
-    _8 = _7.field[1]
-    _9 = _8.field[0]
-    _1 = move _9
+    _8 = move _0
+    _9 = _8.field[1]
+    _10 = _9.field[0]
+    _2 = move _10
     goto bb1
   bb4:
-    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
+    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall guard=_1
     trap(ExhaustivenessFallthrough)
   bb5:
     stmt: bind BindingId(8) token site=SiteId(14) ty=Token
     stmt: use BindingId(7) p site=SiteId(13) ty=Packet intent=Consume
     stmt: use BindingId(8) token site=SiteId(15) ty=Token intent=Read
-    _5 = _0.field[1]
+    _6 = _0.field[1]
     drop_field_in_place _0.field[2] ty=string
-    _6 = _5.field[0]
-    _1 = move _6
+    _7 = _6.field[0]
+    _2 = move _7
     goto bb1
 
 fn direct_return(Packet) -> i64 [conv=default]
@@ -146,44 +152,46 @@ fn direct_return(Packet) -> i64 [conv=default]
     _1: i64
     _2: i64
     _3: i64
-    _4: bool
-    _5: Token
-    _6: i64
-    _7: Token
-    _8: i64
+    _4: i64
+    _5: bool
+    _6: Token
+    _7: i64
+    _8: Token
+    _9: i64
   bb0:
     stmt: use BindingId(10) p site=SiteId(20) ty=Packet intent=Read
+    _1 = const.i64 0
     goto bb2
   bb1:
     stmt: return site=Some(SiteId(19)) ty=i64
-    ret = move _1
+    ret = move _2
     return
   bb2:
-    _2 = _0.field[0]
-    _3 = const.i64 2
-    _4 = icmp.eq _2 _3
-    branch _4 ? bb5 : bb3
+    _3 = _0.field[0]
+    _4 = const.i64 2
+    _5 = icmp.eq _3 _4
+    branch _5 ? bb5 : bb3
   bb3:
     stmt: bind BindingId(12) token site=SiteId(24) ty=Token
     stmt: use BindingId(10) p site=SiteId(20) ty=Packet intent=Consume
     stmt: use BindingId(12) token site=SiteId(25) ty=Token intent=Read
-    _7 = _0.field[1]
+    _8 = _0.field[1]
     drop_field_in_place _0.field[2] ty=string
-    _8 = _7.field[0]
-    _1 = move _8
+    _9 = _8.field[0]
+    _2 = move _9
     goto bb1
   bb4:
-    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall
+    snapshot_drop _0 ty=Packet plan=UserRecord { name: "Packet" } boundary=LocalCall guard=_1
     trap(ExhaustivenessFallthrough)
   bb5:
     stmt: bind BindingId(11) token site=SiteId(21) ty=Token
     stmt: use BindingId(10) p site=SiteId(20) ty=Packet intent=Consume
     stmt: use BindingId(11) token site=SiteId(23) ty=Token intent=Read
     stmt: return site=Some(SiteId(22)) ty=i64
-    _5 = _0.field[1]
+    _6 = _0.field[1]
     drop_field_in_place _0.field[2] ty=string
-    _6 = _5.field[0]
-    ret = move _6
+    _7 = _6.field[0]
+    ret = move _7
     return
   bb6:
     goto bb1

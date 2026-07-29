@@ -54,6 +54,7 @@ fn probe(bool) -> i64 [conv=default]
     _9: string
     _10: i64
     _11: i64
+    _12: i64
   bb0:
     stmt: use BindingId(1) good site=SiteId(13) ty=bool intent=Read
     _1 = call make(_0) -> bb1
@@ -73,10 +74,11 @@ fn probe(bool) -> i64 [conv=default]
     stmt: bind BindingId(3) a site=SiteId(17) ty=string
     stmt: use BindingId(3) a site=SiteId(18) ty=string intent=Read
     _9 = move mvar2.0.0
-    _10 = call hew_string_length(_9) -> bb7
+    _10 = const.i64 1
+    _11 = call hew_string_length(_9) -> bb7
   bb4:
-    _11 = const.i64 0
-    _3 = move _11
+    _12 = const.i64 0
+    _3 = move _12
     goto bb2
   bb5:
     trap(ExhaustivenessFallthrough)
@@ -85,7 +87,7 @@ fn probe(bool) -> i64 [conv=default]
     _8 = icmp.eq _4 _7
     branch _8 ? bb4 : bb5
   bb7:
-    _3 = move _10
+    _3 = move _11
     goto bb2
 
 fn main() -> i64 [conv=default]

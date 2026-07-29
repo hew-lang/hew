@@ -2,164 +2,172 @@ fn record_tail(Packet) -> i64 [conv=default]
   locals:
     _0: Packet
     _1: i64
-    _2: string
+    _2: i64
     _3: string
-    _4: i64
+    _4: string
     _5: i64
     _6: i64
-    _7: bool
+    _7: i64
+    _8: bool
   bb0:
     stmt: use BindingId(0) p site=SiteId(1) ty=Packet intent=Read
+    _1 = const.i64 0
     goto bb2
   bb1:
     stmt: return site=Some(SiteId(0)) ty=i64
-    ret = move _1
+    ret = move _2
     return
   bb2:
     stmt: bind BindingId(1) tag site=SiteId(2) ty=string
     stmt: bind BindingId(2) body site=SiteId(2) ty=string
     stmt: use BindingId(0) p site=SiteId(1) ty=Packet intent=Consume
     stmt: use BindingId(1) tag site=SiteId(4) ty=string intent=Read
-    _2 = _0.field[0]
+    _3 = _0.field[0]
     drop_field_in_place _0.field[0] ty=string
-    _3 = _0.field[1]
+    _4 = _0.field[1]
     drop_field_in_place _0.field[1] ty=string
-    _4 = call hew_string_length(_2) -> bb3
+    _5 = call hew_string_length(_3) -> bb3
   bb3:
     stmt: use BindingId(2) body site=SiteId(7) ty=string intent=Read
-    _5 = call hew_string_length(_3) -> bb4
+    _6 = call hew_string_length(_4) -> bb4
   bb4:
-    _6 ovf=_7 = add.checked.s _4 _5
-    branch _7 ? bb5 : bb6
+    _7 ovf=_8 = add.checked.s _5 _6
+    branch _8 ? bb5 : bb6
   bb5:
     trap(IntegerOverflow)
   bb6:
-    _1 = move _6
+    _2 = move _7
     goto bb1
 
 fn record_nontail(Packet) -> i64 [conv=default]
   locals:
     _0: Packet
     _1: i64
-    _2: string
+    _2: i64
     _3: string
-    _4: i64
+    _4: string
     _5: i64
     _6: i64
-    _7: bool
-    _8: i64
+    _7: i64
+    _8: bool
+    _9: i64
   bb0:
     stmt: use BindingId(3) p site=SiteId(10) ty=Packet intent=Read
+    _1 = const.i64 0
     goto bb2
   bb1:
     stmt: bind BindingId(6) total site=SiteId(9) ty=i64
     stmt: use BindingId(6) total site=SiteId(18) ty=i64 intent=Read
     stmt: return site=Some(SiteId(18)) ty=i64
-    _8 = move _1
-    ret = move _8
+    _9 = move _2
+    ret = move _9
     return
   bb2:
     stmt: bind BindingId(4) tag site=SiteId(11) ty=string
     stmt: bind BindingId(5) body site=SiteId(11) ty=string
     stmt: use BindingId(3) p site=SiteId(10) ty=Packet intent=Consume
     stmt: use BindingId(4) tag site=SiteId(13) ty=string intent=Read
-    _2 = _0.field[0]
+    _3 = _0.field[0]
     drop_field_in_place _0.field[0] ty=string
-    _3 = _0.field[1]
+    _4 = _0.field[1]
     drop_field_in_place _0.field[1] ty=string
-    _4 = call hew_string_length(_2) -> bb3
+    _5 = call hew_string_length(_3) -> bb3
   bb3:
     stmt: use BindingId(5) body site=SiteId(16) ty=string intent=Read
-    _5 = call hew_string_length(_3) -> bb4
+    _6 = call hew_string_length(_4) -> bb4
   bb4:
-    _6 ovf=_7 = add.checked.s _4 _5
-    branch _7 ? bb5 : bb6
+    _7 ovf=_8 = add.checked.s _5 _6
+    branch _8 ? bb5 : bb6
   bb5:
     trap(IntegerOverflow)
   bb6:
-    _1 = move _6
+    _2 = move _7
     goto bb1
 
 fn tuple_tail((string, string)) -> i64 [conv=default]
   locals:
     _0: (string, string)
     _1: i64
-    _2: string
+    _2: i64
     _3: string
-    _4: i64
+    _4: string
     _5: i64
     _6: i64
-    _7: bool
+    _7: i64
+    _8: bool
   bb0:
     stmt: use BindingId(7) p site=SiteId(20) ty=(string, string) intent=Read
+    _1 = const.i64 0
     goto bb2
   bb1:
     stmt: return site=Some(SiteId(19)) ty=i64
-    ret = move _1
+    ret = move _2
     return
   bb2:
     stmt: bind BindingId(8) left site=SiteId(21) ty=string
     stmt: bind BindingId(9) right site=SiteId(21) ty=string
     stmt: use BindingId(7) p site=SiteId(20) ty=(string, string) intent=Consume
     stmt: use BindingId(8) left site=SiteId(23) ty=string intent=Read
-    _2 = _0.0
+    _3 = _0.0
     drop_field_in_place _0.0 ty=string
-    _3 = _0.1
+    _4 = _0.1
     drop_field_in_place _0.1 ty=string
-    _4 = call hew_string_length(_2) -> bb3
+    _5 = call hew_string_length(_3) -> bb3
   bb3:
     stmt: use BindingId(9) right site=SiteId(26) ty=string intent=Read
-    _5 = call hew_string_length(_3) -> bb4
+    _6 = call hew_string_length(_4) -> bb4
   bb4:
-    _6 ovf=_7 = add.checked.s _4 _5
-    branch _7 ? bb5 : bb6
+    _7 ovf=_8 = add.checked.s _5 _6
+    branch _8 ? bb5 : bb6
   bb5:
     trap(IntegerOverflow)
   bb6:
-    _1 = move _6
+    _2 = move _7
     goto bb1
 
 fn tuple_nontail((string, string)) -> i64 [conv=default]
   locals:
     _0: (string, string)
     _1: i64
-    _2: string
+    _2: i64
     _3: string
-    _4: i64
+    _4: string
     _5: i64
     _6: i64
-    _7: bool
-    _8: i64
+    _7: i64
+    _8: bool
+    _9: i64
   bb0:
     stmt: use BindingId(10) p site=SiteId(29) ty=(string, string) intent=Read
+    _1 = const.i64 0
     goto bb2
   bb1:
     stmt: bind BindingId(13) total site=SiteId(28) ty=i64
     stmt: use BindingId(13) total site=SiteId(37) ty=i64 intent=Read
     stmt: return site=Some(SiteId(37)) ty=i64
-    _8 = move _1
-    ret = move _8
+    _9 = move _2
+    ret = move _9
     return
   bb2:
     stmt: bind BindingId(11) left site=SiteId(30) ty=string
     stmt: bind BindingId(12) right site=SiteId(30) ty=string
     stmt: use BindingId(10) p site=SiteId(29) ty=(string, string) intent=Consume
     stmt: use BindingId(11) left site=SiteId(32) ty=string intent=Read
-    _2 = _0.0
+    _3 = _0.0
     drop_field_in_place _0.0 ty=string
-    _3 = _0.1
+    _4 = _0.1
     drop_field_in_place _0.1 ty=string
-    _4 = call hew_string_length(_2) -> bb3
+    _5 = call hew_string_length(_3) -> bb3
   bb3:
     stmt: use BindingId(12) right site=SiteId(35) ty=string intent=Read
-    _5 = call hew_string_length(_3) -> bb4
+    _6 = call hew_string_length(_4) -> bb4
   bb4:
-    _6 ovf=_7 = add.checked.s _4 _5
-    branch _7 ? bb5 : bb6
+    _7 ovf=_8 = add.checked.s _5 _6
+    branch _8 ? bb5 : bb6
   bb5:
     trap(IntegerOverflow)
   bb6:
-    _1 = move _6
+    _2 = move _7
     goto bb1
 
 fn borrow_record(Packet) -> i64 [conv=default]

@@ -169,10 +169,80 @@ const ACCOUNTED_BELOW_BASELINE: &[(&str, &str, usize, &str)] = &[
     (
         "std/text/semver/semver.hew",
         "try_parse",
-        63,
-        "validated component strings transfer into the returned Version instead of being dropped after fixed-width parsing, so those releases are intentionally absent",
+        105,
+        "the current source retains major_str, minor_str, patch_str, pre, and build as owned strings in the returned Version; its remaining releases are the live error/cancel paths for the cloned and sliced intermediates, so the three transferred component owners are intentionally absent from the pre-migration 108-plan topology",
     ),
 ];
+
+// These files carry inlined copies of the same current `std::net::connect_timeout`
+// helper. The owner has no suspend edge: its twelve drops are the host's four
+// live terminal/error paths plus the eight formatting temporaries on the two
+// panic arms. `hew_tcp_connect_timeout(host, ...)` borrows `host`; it does not
+// retain or free it. The former 18-plan shape belonged to the pre-refactor
+// endpoint/control-flow topology, so these copies must remain pinned at 12
+// rather than silently accepting another loss.
+const ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES: &[(&str, &str)] = &[
+    ("examples/actor_net_reader.hew", "net$connect_timeout"),
+    ("examples/benchmarks/http_server.hew", "net$connect_timeout"),
+    (
+        "examples/benchmarks/http_server_expert.hew",
+        "net$connect_timeout",
+    ),
+    ("examples/chat_client.hew", "net$connect_timeout"),
+    ("examples/chat_server.hew", "net$connect_timeout"),
+    ("examples/curl_client.hew", "net$connect_timeout"),
+    ("examples/http_server.hew", "net$connect_timeout"),
+    (
+        "examples/net/await_http_roundtrip.hew",
+        "net$connect_timeout",
+    ),
+    ("examples/net/await_read.hew", "net$connect_timeout"),
+    ("examples/net/await_read_fanout.hew", "net$connect_timeout"),
+    ("examples/net/await_read_hup.hew", "net$connect_timeout"),
+    ("examples/net/http_await_service.hew", "net$connect_timeout"),
+    ("examples/net/probe_a_conn_field.hew", "net$connect_timeout"),
+    (
+        "examples/net/probe_b2_closure_await_outer_crash.hew",
+        "net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b2_closure_capture_await.hew",
+        "net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b2_closure_multi_await.hew",
+        "net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b2_closure_unit_await.hew",
+        "net$connect_timeout",
+    ),
+    (
+        "examples/net/probe_b3_closure_capture_noawait.hew",
+        "net$connect_timeout",
+    ),
+    ("examples/net/tls_client.hew", "net$connect_timeout"),
+    ("examples/quic_service/client.hew", "net$connect_timeout"),
+    ("examples/quic_service/server.hew", "net$connect_timeout"),
+    ("examples/static_server.hew", "net$connect_timeout"),
+    ("std/net/dns/dns.hew", "net$connect_timeout"),
+    ("std/net/http/http.hew", "net$connect_timeout"),
+    ("std/net/net.hew", "connect_timeout"),
+    ("std/net/quic/quic.hew", "net$connect_timeout"),
+    ("std/net/tls/tls.hew", "net$connect_timeout"),
+    ("std/net/websocket/websocket.hew", "net$connect_timeout"),
+];
+
+const NET_CONNECT_TIMEOUT_REASON: &str = "the current copied connect_timeout body has no suspend edge; its 12 elaborated drops cover host's four live terminal/error paths plus eight formatting temporaries, and hew_tcp_connect_timeout borrows (does not retain) host, so the former 18-plan pre-refactor endpoint topology is semantically obsolete";
+
+fn accounted_shortfalls() -> impl Iterator<Item = (&'static str, &'static str, usize, &'static str)>
+{
+    ACCOUNTED_BELOW_BASELINE.iter().copied().chain(
+        ACCOUNTED_NET_CONNECT_TIMEOUT_COPIES
+            .iter()
+            .map(|(file, function)| (*file, *function, 12, NET_CONNECT_TIMEOUT_REASON)),
+    )
+}
 
 fn capture_mode() -> bool {
     std::env::var_os("HEW_RELEASE_COUNT_CAPTURE").is_some()
@@ -355,9 +425,8 @@ fn no_shipped_program_silently_loses_a_release() {
     }
 
     let baseline = load_baseline();
-    let accounted: BTreeMap<(&str, &str), (usize, &str)> = ACCOUNTED_BELOW_BASELINE
-        .iter()
-        .map(|(file, function, count, reason)| ((*file, *function), (*count, *reason)))
+    let accounted: BTreeMap<(&str, &str), (usize, &str)> = accounted_shortfalls()
+        .map(|(file, function, count, reason)| ((file, function), (count, reason)))
         .collect();
 
     let mut drops: Vec<String> = Vec::new();
@@ -474,15 +543,15 @@ fn the_differential_reads_plan_drops_and_not_binding_statements() {
 #[test]
 fn every_accounted_shortfall_is_a_real_shortfall() {
     let baseline = load_baseline();
-    for (file, function, expected, reason) in ACCOUNTED_BELOW_BASELINE {
-        let Some(FileCounts::Functions(per)) = baseline.get(*file) else {
+    for (file, function, expected, reason) in accounted_shortfalls() {
+        let Some(FileCounts::Functions(per)) = baseline.get(file) else {
             panic!("{file} is accounted for but is not an accepted file in the baseline");
         };
-        let before = per.get(*function).unwrap_or_else(|| {
+        let before = per.get(function).unwrap_or_else(|| {
             panic!("{file}::{function} is accounted for but is not in the baseline")
         });
         assert!(
-            expected < before,
+            expected < *before,
             "{file}::{function} is accounted for at {expected} but the baseline is \
              {before}; an accounted entry must describe a SHORTFALL"
         );

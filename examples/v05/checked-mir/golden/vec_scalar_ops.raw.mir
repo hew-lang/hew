@@ -382,6 +382,7 @@ fn main() -> () [conv=default]
     goto bb53
   bb61:
     drop_field _69.field[0] ty=Vec<i64> fn=Release("hew_vec_free")
+    _68 = const.i64 1
     goto bb62
   bb62:
     stmt: eval site=SiteId(125) ty=()

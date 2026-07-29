@@ -51,6 +51,7 @@ fn probe(bool) -> i64 [conv=default]
     _6: string
     _7: i64
     _8: i64
+    _9: i64
   bb0:
     stmt: use BindingId(1) good site=SiteId(13) ty=bool intent=Read
     _1 = call make(_0) -> bb1
@@ -65,20 +66,21 @@ fn probe(bool) -> i64 [conv=default]
   bb2:
     stmt: bind BindingId(3) a site=SiteId(15) ty=string
     _6 = move mvar2.0.0
+    _7 = const.i64 1
     goto bb4
   bb3:
     stmt: return site=Some(SiteId(16)) ty=i64
-    _7 = const.i64 0
-    ret = move _7
+    _8 = const.i64 0
+    ret = move _8
     return
   bb4:
     stmt: use BindingId(3) a site=SiteId(18) ty=string intent=Read
-    _8 = call hew_string_length(_6) -> bb6
+    _9 = call hew_string_length(_6) -> bb6
   bb5:
     goto bb4
   bb6:
     stmt: return site=Some(SiteId(17)) ty=i64
-    ret = move _8
+    ret = move _9
     return
 
 fn main() -> i64 [conv=default]

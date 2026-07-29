@@ -245,6 +245,7 @@ fn main() -> () [conv=default]
     goto bb25
   bb32:
     drop_field _26.field[0] ty=Vec<string> fn=Release("hew_vec_free")
+    _25 = const.i64 1
     goto bb33
   bb33:
     stmt: eval site=SiteId(64) ty=()

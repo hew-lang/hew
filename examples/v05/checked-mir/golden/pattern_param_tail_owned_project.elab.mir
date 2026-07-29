@@ -15,8 +15,8 @@ fn record_tail -> i64
     cancel[bb0] ->
       (none)
     return[bb1] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
     call[bb2 hew_string_length -> bb3] ->
       (none)
     call[bb3 hew_string_length -> bb4] ->
@@ -24,13 +24,13 @@ fn record_tail -> i64
     branch[bb4: bb5/bb6] ->
       (none)
     panic[bb5] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
     goto[bb6->bb1] ->
       (none)
     cancel[bb6] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
 
 fn record_nontail -> i64
   statements:
@@ -51,8 +51,8 @@ fn record_nontail -> i64
     cancel[bb0] ->
       (none)
     return[bb1] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
     call[bb2 hew_string_length -> bb3] ->
       (none)
     call[bb3 hew_string_length -> bb4] ->
@@ -60,13 +60,13 @@ fn record_nontail -> i64
     branch[bb4: bb5/bb6] ->
       (none)
     panic[bb5] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
     goto[bb6->bb1] ->
       (none)
     cancel[bb6] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
 
 fn tuple_tail -> i64
   statements:
@@ -85,8 +85,8 @@ fn tuple_tail -> i64
     cancel[bb0] ->
       (none)
     return[bb1] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
     call[bb2 hew_string_length -> bb3] ->
       (none)
     call[bb3 hew_string_length -> bb4] ->
@@ -94,13 +94,13 @@ fn tuple_tail -> i64
     branch[bb4: bb5/bb6] ->
       (none)
     panic[bb5] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
     goto[bb6->bb1] ->
       (none)
     cancel[bb6] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
 
 fn tuple_nontail -> i64
   statements:
@@ -121,8 +121,8 @@ fn tuple_nontail -> i64
     cancel[bb0] ->
       (none)
     return[bb1] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
     call[bb2 hew_string_length -> bb3] ->
       (none)
     call[bb3 hew_string_length -> bb4] ->
@@ -130,13 +130,13 @@ fn tuple_nontail -> i64
     branch[bb4: bb5/bb6] ->
       (none)
     panic[bb5] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
     goto[bb6->bb1] ->
       (none)
     cancel[bb6] ->
+      drop _4 ty=string kind=cow_heap(hew_string_drop)
       drop _3 ty=string kind=cow_heap(hew_string_drop)
-      drop _2 ty=string kind=cow_heap(hew_string_drop)
 
 fn borrow_record -> i64
   statements:

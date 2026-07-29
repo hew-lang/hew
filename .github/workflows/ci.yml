@@ -460,6 +460,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config mold zlib1g-dev libzstd-dev
 
+      - name: Install MQTT E2E clients
+        if: env.RUN_CODE_PATH == 'true'
+        # mqtt-broker-e2e drives the Hew broker with real MQTT 3.1.1 clients;
+        # do not let an absent client turn that behavioural oracle into an
+        # implicit local-only target.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mosquitto-clients
+          command -v mosquitto_pub
+          command -v mosquitto_sub
+
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
@@ -734,6 +745,14 @@ jobs:
         # behind with the old call-site.
         run: make hew-check-all
       # <<< CI-PARITY-STEPS
+
+      - name: Run MQTT broker end-to-end oracle
+        if: env.RUN_CODE_PATH == 'true'
+        # The client tools were provisioned explicitly above. This is a real
+        # broker/client exchange, not the compile-only example coverage in the
+        # workspace suite. It stays outside CI-PARITY-STEPS because a local
+        # preflight cannot assume the external Mosquitto clients are installed.
+        run: make mqtt-broker-e2e
 
       - name: Run hew observe functional harness
         if: env.RUN_CODE_PATH == 'true'

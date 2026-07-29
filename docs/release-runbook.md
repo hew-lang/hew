@@ -128,14 +128,16 @@ FREEBSD_HOST=user@freebsd-host
 WINDOWS_HOST=user@windows-host
 ```
 
-Windows hosts also need a one-time LLVM 22 install that matches the tag
-release workflow: install into `C:\llvm-22` and verify
+Windows hosts also need Visual Studio C++ Build Tools with a Windows SDK and a
+one-time LLVM 22 install that matches the tag release workflow: install into
+`C:\llvm-22`, verify `vswhere.exe` can find the x64 C++ tools, and verify
 `C:\llvm-22\bin\clang.exe` exists before running `make pre-release`. See
 [`docs/cross-platform-build-guide.md`](cross-platform-build-guide.md#windows)
 for the exact bootstrap command sequence. The validator defaults to
-`LLVM_PREFIX=C:\llvm-22` and prepends `C:\llvm-22\bin` to `PATH`; override
-with `HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if
-that host uses a different compiler driver.
+`LLVM_PREFIX=C:\llvm-22`; it imports `VsDevCmd.bat` for the SDK/CRT environment
+before prepending `C:\llvm-22\bin` to `PATH`. Override with
+`HEW_WINDOWS_LLVM_PREFIX`, `HEW_WINDOWS_CC`, and `HEW_WINDOWS_CXX` if that host
+uses a different compiler driver.
 
 The macOS validator requires an LLVM 22 root. It first honors
 `HEW_MACOS_LLVM_PREFIX` (or `MACOS_LLVM_PREFIX` in `.env.pre-release`), then
@@ -193,9 +195,11 @@ but every arm must succeed before the graph rejoins:
    checksums. Its curated body must be the exact
    `docs/releases/<tag>.md` file for that tag.
 4. After the assets exist, complete both independent publication arms:
-   - Manually dispatch `.github/workflows/publish-npm-packages.yml` for
-     `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@0.6.0-rc1` through its actual
-     workflow, and wait for each result. A tag does not publish these packages.
+   - Manually dispatch `.github/workflows/publish-npm-packages.yml` with
+     `release_tag=v0.6.0-rc1` for
+     `@hew-lang/{wasm,sandbox-wasm,sandbox-vm}@0.6.0-rc1`, and wait for each
+     result. The workflow checks out that immutable tag and rejects a workspace
+     or sandbox package version mismatch. A tag does not publish these packages.
    - Wait for the release workflow's automated playground dispatch, then
      verify the published image, API, and `hew run` smoke path against the
      candidate version.

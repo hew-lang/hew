@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HEW_SHA = "0123456789abcdef0123456789abcdef01234567"
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+NPM_PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-npm-packages.yml"
 RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
@@ -21,10 +22,15 @@ RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.sh"
 WINDOWS_RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.ps1"
 SANITIZER_GATE = ROOT / "scripts" / "check-sanitizer-gate.sh"
 MAKEFILE = ROOT / "Makefile"
+RELEASE_BINARY_SMOKE = ROOT / "scripts" / "test-release-binary.sh"
 
 
 def workflow() -> str:
     return WORKFLOW.read_text()
+
+
+def npm_publish_workflow() -> str:
+    return NPM_PUBLISH_WORKFLOW.read_text()
 
 
 def playground_job(text: str | None = None) -> str:
@@ -238,6 +244,29 @@ def test_rc_tag_normalization_and_exact_release_body() -> None:
     assert 'VERSION="${RELEASE_TAG#v}"' in playground_job()
     assert "body_path: docs/releases/${{ env.RELEASE_TAG }}.md" in text
     assert RELEASE_NOTES.exists()
+
+
+def test_npm_publication_is_pinned_to_a_version_matching_release_tag() -> None:
+    text = npm_publish_workflow()
+    assert "      release_tag:\n" in text
+    assert "Immutable release tag to publish" in text
+    assert "        required: true\n" in text
+    assert "        type: string\n" in text
+    assert "  group: publish-npm-packages-${{ inputs.release_tag }}" in text
+    assert "          ref: ${{ inputs.release_tag }}" in text
+    assert (
+        "      - name: Verify immutable release identity and package versions\n" in text
+    )
+    assert "RELEASE_TAG: ${{ inputs.release_tag }}" in text
+    assert "^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$" in text
+    assert 'EXPECTED_VERSION="${RELEASE_TAG#v}"' in text
+    assert (
+        "Cargo.toml version ${WORKSPACE_VERSION} does not match ${RELEASE_TAG}" in text
+    )
+    assert (
+        "hew-sandbox-vm version ${SANDBOX_VM_VERSION} does not match ${RELEASE_TAG}"
+        in text
+    )
 
 
 def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
@@ -608,8 +637,59 @@ def test_contract_oracle_runs_in_required_ci() -> None:
     assert "make test-release-workflow-contract" in ci
 
 
+def _write_release_binary_smoke_double(path: Path) -> None:
+    """Emit the narrow CLI surface the --no-build smoke path uses."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" != "compile" || "${2:-}" != "hello_int.hew" ]]; then
+    echo "unexpected release-smoke invocation: $*" >&2
+    exit 91
+fi
+mkdir -p .tmp/compile-out
+printf '%s\\n' '#!/usr/bin/env bash' 'exit 42' > .tmp/compile-out/hello_int
+chmod +x .tmp/compile-out/hello_int
+"""
+    )
+    path.chmod(0o755)
+
+
+def _run_release_binary_target_dir_contract(target_dir: Path, env_value: str) -> None:
+    _write_release_binary_smoke_double(target_dir / "release" / "hew")
+    env = os.environ.copy()
+    env["CARGO_TARGET_DIR"] = env_value
+    result = subprocess.run(
+        ["bash", str(RELEASE_BINARY_SMOKE), "--no-build"],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS: release binary compiled fixture" in result.stdout
+
+
+def test_release_binary_smoke_honors_absolute_and_relative_target_dirs() -> None:
+    """The artifact probe must follow the target root Cargo was given."""
+    with tempfile.TemporaryDirectory(prefix="hew-release-smoke-absolute-") as absolute:
+        absolute_target = Path(absolute)
+        _run_release_binary_target_dir_contract(absolute_target, str(absolute_target))
+
+    with tempfile.TemporaryDirectory(
+        prefix=".tmp-release-smoke-relative-", dir=ROOT
+    ) as relative:
+        relative_target = Path(relative)
+        _run_release_binary_target_dir_contract(
+            relative_target, str(relative_target.relative_to(ROOT))
+        )
+
+
 _TESTS = [
     test_rc_tag_normalization_and_exact_release_body,
+    test_npm_publication_is_pinned_to_a_version_matching_release_tag,
     test_playground_dispatch_is_purpose_scoped_and_fail_closed,
     test_dispatch_uses_exact_playground_workflow_input_and_ref,
     test_dispatch_correlation_is_unique_and_bounded,
@@ -636,6 +716,7 @@ _TESTS = [
     test_sanitizer_gate_is_behavioral_and_release_scoped,
     test_release_notes_and_runbook_keep_candidate_truthful,
     test_contract_oracle_runs_in_required_ci,
+    test_release_binary_smoke_honors_absolute_and_relative_target_dirs,
 ]
 
 

@@ -16510,6 +16510,22 @@ fn registered_record_layout_key(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Opti
         .find(|key| fn_ctx.record_field_resolved_tys.contains_key(key))
 }
 
+fn is_unclonable_builtin_record_field(ty: &ResolvedTy) -> bool {
+    matches!(ty, ResolvedTy::CancellationToken)
+        || matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(builtin),
+                ..
+            } if builtin.close_method().is_some()
+                || matches!(
+                    builtin,
+                    hew_types::BuiltinType::Generator
+                        | hew_types::BuiltinType::AsyncGenerator
+                )
+        )
+}
+
 /// Lower `Instr::RecordFieldStore { record, field_offset, src }` to a
 /// release+GEP+store on the record's alloca.
 ///
@@ -16574,6 +16590,23 @@ fn lower_record_field_store(
         .and_then(|record_local| fn_ctx.local_tys.get(&record_local))
         .and_then(|record_ty| registered_record_layout_key(fn_ctx, record_ty));
     if let Some(record_key) = record_key {
+        let resolved_field_ty = fn_ctx
+            .record_field_resolved_tys
+            .get(&record_key)
+            .and_then(|fields| fields.get(idx_usize))
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "RecordFieldStore field offset {idx} has no resolved type entry \
+                     for record `{record_key}`"
+                ))
+            })?;
+        if is_unclonable_builtin_record_field(resolved_field_ty) {
+            return Err(CodegenError::FailClosed(format!(
+                "RecordFieldStore reached codegen for un-clonable builtin field \
+                 {resolved_field_ty:?}; MIR must reject the store until it carries \
+                 source-slot neutralisation"
+            )));
+        }
         let kinds = classify_record_drop_fields_for_key(fn_ctx, &record_key)?;
         let kind = kinds.get(idx_usize).ok_or_else(|| {
             CodegenError::FailClosed(format!(
@@ -17287,6 +17320,14 @@ fn emit_field_overwrite_release(
         StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Connection,
         } => Ok(()),
+        StateFieldCloneKind::Resource { name, close_symbol }
+            if name == "Receiver" && close_symbol == "hew_channel_receiver_close" =>
+        {
+            Err(CodegenError::FailClosed(format!(
+                "field overwrite `{label}` reached codegen for builtin Receiver; MIR must \
+                 reject the store until it carries source-slot neutralisation"
+            )))
+        }
         StateFieldCloneKind::BitCopy { .. }
         | StateFieldCloneKind::ClosurePair
         | StateFieldCloneKind::Resource { .. }

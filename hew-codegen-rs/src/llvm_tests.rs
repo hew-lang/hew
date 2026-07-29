@@ -12145,12 +12145,75 @@ fn builtin_handle_field_overwrite_fails_closed_before_store() {
         false,
     )
     .expect("Connection carries no per-field close obligation");
+    let receiver_err = emit_field_overwrite_release(
+        &fn_ctx,
+        field_ptr,
+        ptr_ty.into(),
+        src_ptr,
+        src_val,
+        &StateFieldCloneKind::Resource {
+            name: "Receiver".to_string(),
+            close_symbol: "hew_channel_receiver_close".to_string(),
+        },
+        "record_receiver_f0",
+        false,
+    )
+    .expect_err("builtin Receiver overwrite must fail closed");
+    assert!(
+        matches!(
+            receiver_err,
+            CodegenError::FailClosed(ref msg)
+                if msg.contains("builtin Receiver") && msg.contains("source-slot neutralisation")
+        ),
+        "Receiver refusal must name the builtin and missing move protocol; got {receiver_err:?}"
+    );
+    emit_field_overwrite_release(
+        &fn_ctx,
+        field_ptr,
+        ptr_ty.into(),
+        src_ptr,
+        src_val,
+        &StateFieldCloneKind::Resource {
+            name: "Receiver".to_string(),
+            close_symbol: "user$Receiver$close".to_string(),
+        },
+        "user_receiver_f0",
+        false,
+    )
+    .expect("a user resource shadow must not acquire builtin Receiver semantics");
 
     finish_test_fn(&fn_ctx);
     assert!(
         llvm_mod.verify().is_ok(),
         "defense-in-depth refusal must leave valid surrounding IR"
     );
+}
+
+#[test]
+fn record_field_overwrite_builtin_backstop_tracks_the_typed_close_set() {
+    for info in hew_types::builtin_types() {
+        let ty = ResolvedTy::named_builtin(info.canonical_name, info.kind, vec![]);
+        let expected = info.close_method.is_some()
+            || matches!(
+                info.kind,
+                hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator
+            );
+        assert_eq!(
+            is_unclonable_builtin_record_field(&ty),
+            expected,
+            "record overwrite backstop drifted for {:?}",
+            info.kind,
+        );
+    }
+    assert!(is_unclonable_builtin_record_field(
+        &ResolvedTy::CancellationToken
+    ));
+    for shadow in ["Sender", "Receiver", "LambdaPid", "MonitorRef"] {
+        assert!(
+            !is_unclonable_builtin_record_field(&ResolvedTy::named_user(shadow, vec![])),
+            "user shadow `{shadow}` must not acquire builtin close semantics",
+        );
+    }
 }
 
 /// Give the in-place drop helper a trivial body so the module verifies

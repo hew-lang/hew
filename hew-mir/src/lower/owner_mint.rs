@@ -284,6 +284,26 @@ impl Builder {
         let foreign = !self.value_is_free_of_opaque_foreign_provenance(producer);
         OwnerMintWarrant::new(OwnerMintOrigin::ForwardedFromAdmissionGate, foreign)
     }
+
+    /// Forward the string-only carrier admission for an anonymous borrowing-call
+    /// argument.
+    ///
+    /// The general composite provenance query deliberately treats every
+    /// indirect call as opaque. That is still correct for recursive/composite
+    /// release mints, but too coarse for a concrete `string` returned through
+    /// the compiler-owned `ClosureInvoke` ABI, which establishes one
+    /// independently releasable share. Re-run the same narrow admission that
+    /// selected this temp; direct opaque extern wrappers remain denied there.
+    pub(crate) fn owner_warrant_for_owned_string_carrier_temp(
+        &self,
+        producer: &HirExpr,
+    ) -> OwnerMintWarrant {
+        let admitted = matches!(
+            self.caller_borrowed_temp_arg_owned_ty(producer),
+            Some(ResolvedTy::String)
+        );
+        OwnerMintWarrant::new(OwnerMintOrigin::ForwardedFromAdmissionGate, !admitted)
+    }
 }
 
 #[cfg(test)]
@@ -305,13 +325,14 @@ mod tests {
         // provenance question to the ledger or the module authority. This is a
         // property of the SOURCE, so it holds for constructors nobody has
         // written yet.
-        const ASKS: [&str; 6] = [
+        const ASKS: [&str; 7] = [
             "note_let_binder_proven_foreign",
             "note_payload_binder_proven_foreign",
             "note_rebind_proven_foreign",
             "value_is_free_of_opaque_foreign_provenance",
             "proven_foreign_bindings",
             "callee_returns_fresh_variant_payload",
+            "caller_borrowed_temp_arg_owned_ty",
         ];
         let source = include_str!("owner_mint.rs");
         let squeezed: String = source.chars().filter(|c| !c.is_whitespace()).collect();

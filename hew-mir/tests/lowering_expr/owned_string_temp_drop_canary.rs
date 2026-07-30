@@ -51,6 +51,11 @@ fn pipeline_with_tc(source: &str) -> IrPipeline {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "type-check errors: {:#?}",
+        tc_output.errors
+    );
     let output = lower_program(
         &parsed.program,
         &tc_output,
@@ -465,25 +470,229 @@ fn bound_return_carrier_keeps_one_release_without_a_second_temp_owner() {
     );
 }
 
+const CLOSURE_STRING_CARRIER_SOURCE: &str = r#"
+        extern "C" {
+            fn host_opaque_string() -> string;
+        }
+
+        fn invoke(make: fn() -> string) -> string {
+            make()
+        }
+
+        fn opaque_extern_wrapper() -> string {
+            unsafe { host_opaque_string() }
+        }
+
+        fn borrow_len(value: string) -> i64 {
+            value.len()
+        }
+
+        fn captured(seed: string) -> i64 {
+            let make = || seed;
+            borrow_len(make())
+        }
+
+        fn parameter() -> i64 {
+            let identity = |value: string| value;
+            borrow_len(identity("parameter-owner".to_upper()))
+        }
+
+        fn fresh() -> i64 {
+            let make = || "x".to_upper();
+            borrow_len(make())
+        }
+
+        fn explicit_return_only() -> i64 {
+            let make = || -> string {
+                return "explicit-owner".to_upper();
+            };
+            borrow_len(make())
+        }
+
+        fn wrapped(seed: string) -> i64 {
+            let make = || seed;
+            borrow_len(invoke(make))
+        }
+
+        fn nested_runtime(seed: string) -> i64 {
+            let make = || seed;
+            make().len()
+        }
+
+        fn discarded() {
+            let make = || "discarded".to_upper();
+            make();
+        }
+
+        fn opaque_extern_direct() -> i64 {
+            borrow_len(opaque_extern_wrapper())
+        }
+        "#;
+
 #[test]
-fn opaque_return_path_does_not_mint_a_string_carrier_owner() {
-    let pl = pipeline_with_tc(
-        "fn opaque(make: fn() -> string) -> string { make() }\n\
-         fn borrow_len(value: string) -> i64 { value.len() }\n\
-         fn caller(make: fn() -> string) -> i64 { borrow_len(opaque(make)) }\n",
-    );
+fn closure_invoke_string_carriers_release_once_without_widening_opaque_externs() {
+    let pl = pipeline_with_tc(CLOSURE_STRING_CARRIER_SOURCE);
     assert_no_nyi(&pl);
     assert_eq!(
-        return_exit_string_drops(&pl, "caller"),
-        0,
-        "an indirect return path is ownership-opaque and must not gain a \
-         caller-side return-carrier owner"
+        string_retains(&pl, "__hew_closure_invoke_parameter_0"),
+        1,
+        "the identity closure shim must retain its borrowed string parameter \
+         before returning an independently releasable share"
     );
     assert_eq!(
-        inline_string_drops(&pl, "caller"),
+        string_retains(&pl, "__hew_closure_invoke_fresh_0"),
         0,
-        "the nested-temp derivation must consult the same return-carrier \
-         authority; a non-runtime symbol is not by itself proof of a `+1`"
+        "a closure shim returning a fresh string producer must not retain its \
+         already-owned result a second time"
+    );
+    for caller in ["captured", "fresh", "wrapped", "explicit_return_only"] {
+        assert_eq!(
+            total_string_drops(&pl, caller),
+            1,
+            "{caller}: every closure-invoke string result carries exactly one \
+             caller-owned share, including through a Hew wrapper"
+        );
+    }
+    assert_eq!(
+        total_string_drops(&pl, "parameter"),
+        2,
+        "the heap-producing closure argument keeps its original caller drop \
+         obligation while the identity result carries the shim-retained share"
+    );
+    assert_eq!(
+        inline_string_drops(&pl, "parameter"),
+        1,
+        "the fresh argument share must be released immediately after the \
+         borrowing CallClosure"
+    );
+    assert_eq!(
+        return_exit_string_drops(&pl, "parameter"),
+        1,
+        "the closure result retains a distinct share balanced by the existing \
+         caller-side result owner"
+    );
+    for caller in ["nested_runtime", "discarded"] {
+        assert_eq!(
+            inline_string_drops(&pl, caller),
+            1,
+            "{caller}: a bare CallClosure string temp must receive one inline \
+             release after its borrowing runtime use or discard"
+        );
+        assert_eq!(
+            return_exit_string_drops(&pl, caller),
+            0,
+            "{caller}: the bare CallClosure temp must not also acquire a \
+             binding-scoped owner"
+        );
+    }
+    assert_eq!(
+        total_string_drops(&pl, "opaque_extern_direct"),
+        0,
+        "the closure-only authority must not make a direct ownership-opaque \
+         extern wrapper releasable"
+    );
+}
+
+#[test]
+fn opaque_extern_string_return_cannot_be_laundered_through_function_value() {
+    let pl = pipeline_with_tc(
+        r#"
+        type FactoryBox {
+            make: fn() -> string;
+        }
+
+        extern "C" {
+            fn host_factory() -> fn() -> string;
+            fn host_factory_box() -> FactoryBox;
+            fn host_opaque_string() -> string;
+        }
+
+        fn borrow_len(value: string) -> i64 {
+            value.len()
+        }
+
+        fn direct_extern_factory() -> i64 {
+            let make = unsafe { host_factory() };
+            borrow_len(make())
+        }
+
+        fn aggregate_extern_factory() -> i64 {
+            let factory = unsafe { host_factory_box() };
+            borrow_len((factory.make)())
+        }
+
+        fn opaque_wrapper() -> string {
+            unsafe { host_opaque_string() }
+        }
+
+        fn closure_wrapped_extern() -> i64 {
+            let make = || opaque_wrapper();
+            borrow_len(make())
+        }
+
+        fn closure_explicit_return_extern() -> i64 {
+            let make = || -> string {
+                return opaque_wrapper();
+            };
+            borrow_len(make())
+        }
+
+        fn domestic_factory() -> fn() -> string {
+            || "domestic".to_upper()
+        }
+
+        fn domestic_factory_is_preserved() -> i64 {
+            let make = domestic_factory();
+            borrow_len(make())
+        }
+        "#,
+    );
+
+    let foreign_factory_refusals = pl
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                    if construct.contains(
+                        "returning a string-returning callable value"
+                    )
+            )
+        })
+        .count();
+    assert_eq!(
+        foreign_factory_refusals, 2,
+        "both direct and record-contained ownership-opaque extern factories \
+         must fail closed before their callable pairs can acquire the \
+         ClosureInvoke +1 return contract; \
+         diagnostics: {:#?}",
+        pl.diagnostics
+    );
+    let closure_refusals = pl
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
+                    if construct
+                        == "closure string return without an owned-return contract"
+            )
+        })
+        .count();
+    assert_eq!(
+        closure_refusals, 2,
+        "both tail and tail-less explicit-return closure paths forwarding an opaque \
+         string extern wrapper must remain fail-closed; \
+         diagnostics: {:#?}",
+        pl.diagnostics
+    );
+    assert_eq!(
+        total_string_drops(&pl, "domestic_factory_is_preserved"),
+        1,
+        "a Hew-produced callable remains admitted and its string result carries \
+         exactly one caller release"
     );
 }
 
@@ -697,7 +906,7 @@ fn opaque_wrapped(make: fn() -> string) -> i64 {
              exactly one caller-side release"
         );
     }
-    for caller in ["mixed_if", "static_literal", "borrowed", "opaque_wrapped"] {
+    for caller in ["mixed_if", "static_literal", "borrowed"] {
         assert_eq!(
             total_string_drops(&pl, caller),
             0,
@@ -705,6 +914,12 @@ fn opaque_wrapped(make: fn() -> string) -> i64 {
              a synthetic owner"
         );
     }
+    assert_eq!(
+        total_string_drops(&pl, "opaque_wrapped"),
+        1,
+        "the indirect closure ABI returns one independently releasable string \
+         share, so its Hew wrapper must propagate that carrier authority"
+    );
 }
 
 #[test]

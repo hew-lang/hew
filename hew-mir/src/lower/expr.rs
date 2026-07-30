@@ -3090,6 +3090,37 @@ impl Builder {
                     ResolvedTy::Function { params, ret } => (params.clone(), (**ret).clone()),
                     _ => unreachable!("guard above ensures Function ty"),
                 };
+                // A first-class string-returning named function crosses the
+                // uniform ClosureInvoke ABI. Admit it only when the module's
+                // string-carrier authority proves the target already returns
+                // one independently releasable share. This keeps an
+                // ownership-opaque extern (or a Hew wrapper around one) from
+                // being laundered merely by assigning it to `fn() -> string`.
+                // Ordinary closures are lowered through their own compiler
+                // shim, whose parameter/capture/fresh-result return paths
+                // establish this postcondition directly.
+                if matches!(fn_ret_ty, ResolvedTy::String)
+                    && !self
+                        .call_scrutinee_provenance
+                        .owned_string_return_carrier_symbols
+                        .contains(&fn_symbol)
+                {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!(
+                                "named function `{fn_symbol}` used as a first-class \
+                                 string-returning value without an owned-return contract"
+                            ),
+                            site: expr.site,
+                        },
+                        note: "a `fn(...) -> string` callable must return one independently \
+                               releasable string share; this target is ownership-opaque, so \
+                               routing it through ClosureInvoke would manufacture a caller \
+                               drop obligation"
+                            .to_string(),
+                    });
+                    return None;
+                }
                 let shim_name = format!(
                     "__hew_named_fn_invoke_{}",
                     Self::sanitize_symbol_component(&fn_symbol)
@@ -8387,7 +8418,7 @@ impl Builder {
         callee_item: Option<hew_hir::ItemId>,
         hir_args: &[hew_hir::HirExpr],
         ret_ty: &ResolvedTy,
-        _site: hew_hir::SiteId,
+        site: hew_hir::SiteId,
     ) -> Option<Place> {
         // `Terminator::Call` invariant (model.rs): a carried family IS the
         // callee identity — the symbol string must be its catalog
@@ -8410,6 +8441,9 @@ impl Builder {
         // admitted: their env word is null by construction.
         if ty_is_generator_handle(ret_ty) {
             self.reject_unproven_generator_fn_args(hir_args);
+        }
+        if self.reject_opaque_foreign_callable_result(callee_symbol, ret_ty, site) {
+            return None;
         }
         // U3 / U9 preflight, BEFORE any argument lowering so a refusal leaves no
         // partial MIR — the same posture the #2648 scrutinee reject takes. A
@@ -8521,7 +8555,11 @@ impl Builder {
             if self.parameter_locals.contains(&local) {
                 continue;
             }
-            let warrant = self.owner_warrant_for_admitted_temp(arg);
+            let warrant = if matches!(owned_ty, ResolvedTy::String) {
+                self.owner_warrant_for_owned_string_carrier_temp(arg)
+            } else {
+                self.owner_warrant_for_admitted_temp(arg)
+            };
             self.register_synthetic_owned_local(
                 SYNTHETIC_TEMP_ARG_NAME,
                 arg.site,
@@ -8574,6 +8612,46 @@ impl Builder {
         }
 
         dest
+    }
+
+    /// Reject a foreign result that can carry a callable returning `string`.
+    ///
+    /// Hew cannot manufacture an owned-return contract for an opaque callable
+    /// pair, including one nested in an aggregate returned by the extern.
+    fn reject_opaque_foreign_callable_result(
+        &mut self,
+        callee_symbol: &str,
+        ret_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> bool {
+        let concrete_ret_ty = self.subst_ty(ret_ty);
+        if !self
+            .call_scrutinee_provenance
+            .extern_table
+            .is_extern_name(callee_symbol)
+            || !crate::model::ty_contains_string_returning_callable(
+                &concrete_ret_ty,
+                &self.record_layouts_for_classification(),
+                &self.enum_layouts,
+            )
+        {
+            return false;
+        }
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: format!(
+                    "ownership-opaque extern `{callee_symbol}` returning a \
+                     string-returning callable value"
+                ),
+                site,
+            },
+            note: "a foreign callable pair has no Hew-owned return-share \
+                   contract; admitting it directly or through a tuple, record, \
+                   enum, or generic container could manufacture a caller \
+                   `hew_string_drop` when the callable is later invoked"
+                .to_string(),
+        });
+        true
     }
 
     /// Suspendable-caller flip for the four builtin recv/send/sleep families.

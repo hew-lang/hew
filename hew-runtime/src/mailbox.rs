@@ -2179,10 +2179,15 @@ unsafe fn send_with_overflow(
         return SendOutcome::Enqueued;
     }
 
-    // Bounded slow-path capacity check.
-    if mb.capacity > 0 {
-        let cur = mb.count.load(Ordering::Acquire);
-        if cur >= mb.capacity {
+    // Bounded mutex-backed mailboxes use the queue length as their sole
+    // admission predicate.  Keep this guard through count publication and
+    // enqueue: `count` can be published before a lock-free node is linked,
+    // but treating it as capacity here lets another producer observe "full"
+    // while the VecDeque is still empty and over-admit.
+    if mb.capacity > 0 && mb.use_slow_path {
+        let mut q = mb.slow_path.lock_or_recover();
+        let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
+        if len >= mb.capacity {
             match mb.overflow {
                 HewOverflowPolicy::DropNew => {
                     // SAFETY: caller guarantees `data` is valid for this send.
@@ -2196,7 +2201,6 @@ unsafe fn send_with_overflow(
                         return SendOutcome::Failed;
                     }
                     // Wait on condvar until space is available.
-                    let mut q = mb.slow_path.lock_or_recover();
                     loop {
                         if mb.closed.load(Ordering::Acquire) {
                             return SendOutcome::Closed;
@@ -2225,15 +2229,13 @@ unsafe fn send_with_overflow(
                     if node.is_null() {
                         return SendOutcome::Oom;
                     }
-                    mb.count.fetch_add(1, Ordering::Release);
-                    q.user_queue.push_back(node);
+                    enqueue_bounded_slow_path_node(mb, &mut q, node);
                     drop(q);
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                     return SendOutcome::Enqueued;
                 }
                 HewOverflowPolicy::Coalesce => {
-                    let mut q = mb.slow_path.lock_or_recover();
                     // Scan for an existing message with the same coalesce key.
                     // SAFETY: `data` validity guaranteed by caller.
                     let incoming_key = unsafe {
@@ -2317,8 +2319,7 @@ unsafe fn send_with_overflow(
                             if node.is_null() {
                                 return SendOutcome::Oom;
                             }
-                            mb.count.fetch_add(1, Ordering::Release);
-                            q.user_queue.push_back(node);
+                            enqueue_bounded_slow_path_node(mb, &mut q, node);
                             drop(q);
                             update_high_water_mark(mb);
                             MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
@@ -2339,8 +2340,7 @@ unsafe fn send_with_overflow(
                             if node.is_null() {
                                 return SendOutcome::Oom;
                             }
-                            q.user_queue.push_back(node);
-                            mb.count.fetch_add(1, Ordering::Release);
+                            enqueue_bounded_slow_path_node(mb, &mut q, node);
                             update_high_water_mark(mb);
                             MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                             return SendOutcome::DroppedOld;
@@ -2350,8 +2350,8 @@ unsafe fn send_with_overflow(
                 }
                 HewOverflowPolicy::DropOld => {
                     if drop_old_alloc_under_lock {
-                        // hew_mailbox_send path: lock first, then allocate.
-                        let mut q = mb.slow_path.lock_or_recover();
+                        // hew_mailbox_send path: the admission lock is already
+                        // held, then allocate the replacement.
                         if let Some(old) = q.user_queue.pop_front() {
                             // SAFETY: node was allocated by msg_node_alloc.
                             unsafe { hew_msg_node_free_with_message_drop(old, mb.message_drop_fn) };
@@ -2363,30 +2363,44 @@ unsafe fn send_with_overflow(
                         if node.is_null() {
                             return SendOutcome::Oom;
                         }
-                        mb.count.fetch_add(1, Ordering::Release);
-                        q.user_queue.push_back(node);
+                        enqueue_bounded_slow_path_node(mb, &mut q, node);
                     } else {
-                        // hew_mailbox_try_push path: allocate first, then lock.
+                        // The historical try_push path allocated first.  The
+                        // node is now allocated while holding the admission
+                        // lock so the below-capacity path has the same atomic
+                        // decision-to-publication boundary.
                         // SAFETY: `data` validity guaranteed by caller.
                         let node =
                             unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
                         if node.is_null() {
                             return SendOutcome::Oom;
                         }
-                        let mut q = mb.slow_path.lock_or_recover();
                         if let Some(old) = q.user_queue.pop_front() {
                             // SAFETY: node was allocated by msg_node_alloc.
                             unsafe { hew_msg_node_free_with_message_drop(old, mb.message_drop_fn) };
                             mb.count.fetch_sub(1, Ordering::Release);
                         }
-                        mb.count.fetch_add(1, Ordering::Release);
-                        q.user_queue.push_back(node);
+                        enqueue_bounded_slow_path_node(mb, &mut q, node);
                     }
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                     return SendOutcome::DroppedOld;
                 }
             }
+        } else {
+            // Below capacity is still a slow-path admission.  Do not delegate
+            // to enqueue_user_node: its lock-free publication order would
+            // expose `count` before this VecDeque node is protected.
+            // SAFETY: `data` validity guaranteed by caller.
+            let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
+            if node.is_null() {
+                return SendOutcome::Oom;
+            }
+            enqueue_bounded_slow_path_node(mb, &mut q, node);
+            drop(q);
+            update_high_water_mark(mb);
+            MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+            return SendOutcome::Enqueued;
         }
     }
 
@@ -2432,6 +2446,22 @@ unsafe fn enqueue_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
         update_high_water_mark(mb);
         MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Publish an already-allocated node to a bounded mutex-backed mailbox.
+///
+/// The caller must hold `slow_path` continuously from its capacity decision
+/// through this publication.  Unlike the lock-free queue, `count` is only an
+/// observability counter here: `user_queue.len()` is the sole admission
+/// predicate, so a producer whose count update is visible can never leave an
+/// apparently empty queue for another slow-path producer to over-admit.
+fn enqueue_bounded_slow_path_node(mb: &HewMailbox, q: &mut SlowPathQueue, node: *mut HewMsgNode) {
+    debug_assert!(mb.use_slow_path);
+    debug_assert!(mb.capacity > 0);
+    debug_assert!(i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX) < mb.capacity);
+
+    mb.count.fetch_add(1, Ordering::Release);
+    q.user_queue.push_back(node);
 }
 
 /// Link an exclusively owned node into the selected user queue.
@@ -2577,10 +2607,13 @@ unsafe fn send_aliased_with_overflow(
         return SendOutcome::Enqueued;
     }
 
-    // Bounded slow-path overflow handling.
-    if mb.capacity > 0 {
-        let cur = mb.count.load(Ordering::Acquire);
-        if cur >= mb.capacity {
+    // Bounded slow-path policies admit from the mutex-protected queue length,
+    // never from `count`.  Retain this guard from the decision until the node
+    // and its observability count are published.
+    if mb.capacity > 0 && mb.use_slow_path {
+        let mut q = mb.slow_path.lock_or_recover();
+        let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
+        if len >= mb.capacity {
             match mb.overflow {
                 HewOverflowPolicy::DropNew => {
                     // EXIT(drop-new): reject the new message.
@@ -2601,7 +2634,6 @@ unsafe fn send_aliased_with_overflow(
                         unsafe { hew_msg_node_free(node) };
                         return SendOutcome::Failed;
                     }
-                    let mut q = mb.slow_path.lock_or_recover();
                     loop {
                         if mb.closed.load(Ordering::Acquire) {
                             drop(q);
@@ -2631,8 +2663,7 @@ unsafe fn send_aliased_with_overflow(
                         q = mb.slow_path.lock_or_recover();
                     }
                     // EXIT(block-enqueued): capacity freed; node enqueued.
-                    mb.count.fetch_add(1, Ordering::Release);
-                    q.user_queue.push_back(node);
+                    enqueue_bounded_slow_path_node(mb, &mut q, node);
                     drop(q);
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
@@ -2642,7 +2673,6 @@ unsafe fn send_aliased_with_overflow(
                     // Envelope payloads are opaque refcounted buffers and
                     // cannot be byte-coalesced in place, so apply the
                     // configured coalesce *fallback* policy directly.
-                    let mut q = mb.slow_path.lock_or_recover();
                     match normalize_coalesce_fallback(mb.coalesce_fallback) {
                         HewOverflowPolicy::DropNew => {
                             drop(q);
@@ -2694,8 +2724,7 @@ unsafe fn send_aliased_with_overflow(
                                 q = mb.slow_path.lock_or_recover();
                             }
                             // EXIT(coalesce-fallback-block-enqueued).
-                            mb.count.fetch_add(1, Ordering::Release);
-                            q.user_queue.push_back(node);
+                            enqueue_bounded_slow_path_node(mb, &mut q, node);
                             drop(q);
                             update_high_water_mark(mb);
                             MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
@@ -2713,8 +2742,7 @@ unsafe fn send_aliased_with_overflow(
                             }
                             // EXIT(coalesce-fallback-drop-old): old freed,
                             // new node enqueued.
-                            q.user_queue.push_back(node);
-                            mb.count.fetch_add(1, Ordering::Release);
+                            enqueue_bounded_slow_path_node(mb, &mut q, node);
                             update_high_water_mark(mb);
                             MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                             return SendOutcome::DroppedOld;
@@ -2725,7 +2753,6 @@ unsafe fn send_aliased_with_overflow(
                     }
                 }
                 HewOverflowPolicy::DropOld => {
-                    let mut q = mb.slow_path.lock_or_recover();
                     if let Some(old) = q.user_queue.pop_front() {
                         // SAFETY: `old` was allocated by one of the
                         // msg_node_alloc family; released exactly once here.
@@ -2735,13 +2762,18 @@ unsafe fn send_aliased_with_overflow(
                         mb.count.fetch_sub(1, Ordering::Release);
                     }
                     // EXIT(drop-old): old freed, new node enqueued.
-                    q.user_queue.push_back(node);
-                    mb.count.fetch_add(1, Ordering::Release);
+                    enqueue_bounded_slow_path_node(mb, &mut q, node);
                     update_high_water_mark(mb);
                     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
                     return SendOutcome::DroppedOld;
                 }
             }
+        } else {
+            enqueue_bounded_slow_path_node(mb, &mut q, node);
+            drop(q);
+            update_high_water_mark(mb);
+            MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+            return SendOutcome::Enqueued;
         }
     }
 
@@ -3745,6 +3777,205 @@ mod tests {
                 high_water_mark <= i64::from(CAPACITY),
                 "bounded fast-path mailbox high-water mark {high_water_mark} exceeded capacity {CAPACITY}"
             );
+        }
+    }
+
+    /// Every bounded slow-path policy must decide admission from the protected
+    /// `VecDeque` length, not the independently published `count`.  Start all
+    /// producers together with no consumer: capacity one makes every eviction,
+    /// rejection, payload drop, and high-water result exact rather than a
+    /// timing-sensitive approximation.
+    #[test]
+    fn bounded_slow_path_copy_admission_never_overshoots_capacity() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const SENDERS: usize = 16;
+
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        for (policy, is_coalesce) in [
+            (HewOverflowPolicy::Block, false),
+            (HewOverflowPolicy::DropOld, false),
+            (HewOverflowPolicy::Coalesce, true),
+        ] {
+            MESSAGE_DROP_COUNT.store(0, Ordering::SeqCst);
+            // SAFETY: this test retains the mailbox until all producers join
+            // and is its only consumer.
+            unsafe {
+                let mb = if is_coalesce {
+                    let mb = hew_mailbox_new_coalesce(1);
+                    hew_mailbox_set_coalesce_config(mb, None, HewOverflowPolicy::DropOld);
+                    mb
+                } else {
+                    hew_mailbox_new_with_policy(1, policy)
+                };
+                hew_mailbox_set_message_drop_fn(mb, Some(message_test_drop_glue));
+
+                let start = Arc::new(Barrier::new(SENDERS + 1));
+                let successes = Arc::new(AtomicUsize::new(0));
+                let rejects = Arc::new(AtomicUsize::new(0));
+                let mut producers = Vec::with_capacity(SENDERS);
+                for producer in 0..SENDERS {
+                    let start = Arc::clone(&start);
+                    let successes = Arc::clone(&successes);
+                    let rejects = Arc::clone(&rejects);
+                    let mb_addr = mb.addr();
+                    producers.push(thread::spawn(move || {
+                        let value = i32::try_from(producer).expect("producer fits i32");
+                        start.wait();
+                        // SAFETY: the owner joins every producer before free.
+                        let rc = hew_mailbox_try_send(
+                            ptr::without_provenance_mut(mb_addr),
+                            i32::try_from(producer).expect("producer fits i32"),
+                            (&raw const value).cast_mut().cast(),
+                            size_of::<i32>(),
+                        );
+                        if rc == HewError::Ok as i32 {
+                            successes.fetch_add(1, Ordering::SeqCst);
+                        } else {
+                            assert_eq!(rc, HewError::ErrMailboxFull as i32);
+                            rejects.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }));
+                }
+
+                start.wait();
+                for producer in producers {
+                    producer.join().expect("producer panicked");
+                }
+
+                assert_eq!(hew_mailbox_len(mb), 1, "{policy:?} queue length");
+                assert_eq!(
+                    (*mb).high_water_mark.load(Ordering::Acquire),
+                    1,
+                    "{policy:?} high-water mark"
+                );
+                match policy {
+                    HewOverflowPolicy::Block => {
+                        assert_eq!(successes.load(Ordering::SeqCst), 1);
+                        assert_eq!(rejects.load(Ordering::SeqCst), SENDERS - 1);
+                        assert_eq!(MESSAGE_DROP_COUNT.load(Ordering::SeqCst), 0);
+                    }
+                    HewOverflowPolicy::DropOld | HewOverflowPolicy::Coalesce => {
+                        assert_eq!(successes.load(Ordering::SeqCst), SENDERS);
+                        assert_eq!(rejects.load(Ordering::SeqCst), 0);
+                        assert_eq!(
+                            MESSAGE_DROP_COUNT.load(Ordering::SeqCst),
+                            SENDERS - 1,
+                            "{policy:?} must release each evicted copy payload once"
+                        );
+                    }
+                    HewOverflowPolicy::DropNew | HewOverflowPolicy::Fail => unreachable!(),
+                }
+
+                let node = hew_mailbox_try_recv(mb);
+                assert!(!node.is_null());
+                hew_msg_node_free_with_message_drop(node, (*mb).message_drop_fn);
+                assert_eq!(
+                    MESSAGE_DROP_COUNT.load(Ordering::SeqCst),
+                    if matches!(policy, HewOverflowPolicy::Block) {
+                        1
+                    } else {
+                        SENDERS
+                    },
+                    "{policy:?} must release the surviving payload once"
+                );
+                hew_mailbox_free(mb);
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn bounded_slow_path_alias_admission_never_overshoots_capacity() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const SENDERS: usize = 16;
+
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        for (policy, is_coalesce) in [
+            (HewOverflowPolicy::Block, false),
+            (HewOverflowPolicy::DropOld, false),
+            (HewOverflowPolicy::Coalesce, true),
+        ] {
+            ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+            // SAFETY: mailbox and every allocated envelope remain live until
+            // the joined producers and final drain complete.
+            unsafe {
+                let mb = if is_coalesce {
+                    let mb = hew_mailbox_new_coalesce(1);
+                    hew_mailbox_set_coalesce_config(mb, None, HewOverflowPolicy::DropOld);
+                    mb
+                } else {
+                    hew_mailbox_new_with_policy(1, policy)
+                };
+                let start = Arc::new(Barrier::new(SENDERS + 1));
+                let successes = Arc::new(AtomicUsize::new(0));
+                let rejects = Arc::new(AtomicUsize::new(0));
+                let mut producers = Vec::with_capacity(SENDERS);
+                for producer in 0..SENDERS {
+                    let start = Arc::clone(&start);
+                    let successes = Arc::clone(&successes);
+                    let rejects = Arc::clone(&rejects);
+                    let mb_addr = mb.addr();
+                    producers.push(thread::spawn(move || {
+                        let payload = alloc_test_payload(&[u8::try_from(producer).unwrap_or(0)]);
+                        // SAFETY: this producer transfers its one refcount to
+                        // the send state machine exactly once.
+                        let env = hew_msg_envelope_new(payload, 1, Some(envelope_test_drop_glue));
+                        assert!(!env.is_null());
+                        start.wait();
+                        // SAFETY: mailbox outlives the joined producer.
+                        let outcome = send_aliased_with_overflow(
+                            &*ptr::without_provenance_mut::<HewMailbox>(mb_addr),
+                            i32::try_from(producer).expect("producer fits i32"),
+                            env,
+                            true,
+                        );
+                        if matches!(outcome, SendOutcome::Enqueued | SendOutcome::DroppedOld) {
+                            successes.fetch_add(1, Ordering::SeqCst);
+                        } else {
+                            assert!(matches!(outcome, SendOutcome::Failed));
+                            rejects.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }));
+                }
+
+                start.wait();
+                for producer in producers {
+                    producer.join().expect("producer panicked");
+                }
+
+                assert_eq!(hew_mailbox_len(mb), 1, "{policy:?} queue length");
+                assert_eq!(
+                    (*mb).high_water_mark.load(Ordering::Acquire),
+                    1,
+                    "{policy:?} high-water mark"
+                );
+                match policy {
+                    HewOverflowPolicy::Block => {
+                        assert_eq!(successes.load(Ordering::SeqCst), 1);
+                        assert_eq!(rejects.load(Ordering::SeqCst), SENDERS - 1);
+                    }
+                    HewOverflowPolicy::DropOld | HewOverflowPolicy::Coalesce => {
+                        assert_eq!(successes.load(Ordering::SeqCst), SENDERS);
+                        assert_eq!(rejects.load(Ordering::SeqCst), 0);
+                    }
+                    HewOverflowPolicy::DropNew | HewOverflowPolicy::Fail => unreachable!(),
+                }
+                assert_eq!(
+                    ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
+                    SENDERS - 1,
+                    "{policy:?} must release every rejected or evicted alias once"
+                );
+
+                let node = hew_mailbox_try_recv(mb);
+                assert!(!node.is_null());
+                hew_msg_node_free(node);
+                assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), SENDERS);
+                hew_mailbox_free(mb);
+            }
         }
     }
 

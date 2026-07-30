@@ -5,15 +5,30 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
 source "${ROOT}/scripts/lib/cargo-output-dir.sh"
 CARGO_DEBUG_DIR="$(cargo_debug_dir "${ROOT}")"
-HEW="${HEW_BIN:-${CARGO_DEBUG_DIR}/hew}"
-ADZE="${ADZE_BIN:-${CARGO_DEBUG_DIR}/adze}"
+HEW_INPUT="${HEW_BIN:-${CARGO_DEBUG_DIR}/hew}"
+ADZE_INPUT="${ADZE_BIN:-${CARGO_DEBUG_DIR}/adze}"
 
 fail() {
   echo "FAIL package-install: $*" >&2
   exit 1
 }
+
+absolute_command_path() {
+  local candidate="$1"
+
+  # The harness executes tools after changing into isolated fixture directories.
+  # Anchor caller-relative overrides before any of those directory changes.
+  case "${candidate}" in
+    /*) printf '%s\n' "${candidate}" ;;
+    *) printf '%s/%s\n' "$(pwd -P)" "${candidate}" ;;
+  esac
+}
+
+HEW="$(absolute_command_path "${HEW_INPUT}")"
+ADZE="$(absolute_command_path "${ADZE_INPUT}")"
 
 require_binary() {
   local bin="$1"

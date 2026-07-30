@@ -1099,7 +1099,7 @@ fn is_owned_vec_element_matches_codegen_owned_vec_table() {
         ),
         (
             ResolvedTy::named_builtin("Receiver", BuiltinType::Receiver, vec![ResolvedTy::I64]),
-            false,
+            true,
         ),
         (fn_elem, false),
         (closure_elem, false),

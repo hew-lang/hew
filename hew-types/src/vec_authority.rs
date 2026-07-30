@@ -213,11 +213,16 @@ pub fn classify_element_with(
                 ),
             ..
         } => VecElementToken::Layout,
-        // Sender is pointer-sized, but unlike general pointer-token handles it
-        // has a semantic clone/drop pair. Classify it as descriptor-backed so
-        // the owned Vec family can run those callbacks for each endpoint.
+        // Channel endpoints are pointer-sized but use descriptor-backed Vec
+        // storage. Sender has a clone/drop pair; Receiver is deliberately
+        // drop-only (its descriptor carries a null clone thunk). Keeping both
+        // off the plain pointer lane lets Vec teardown own the slot close.
         Ty::Named {
-            builtin: Some(crate::builtin_type::BuiltinType::Sender),
+            builtin:
+                Some(
+                    crate::builtin_type::BuiltinType::Sender
+                    | crate::builtin_type::BuiltinType::Receiver,
+                ),
             ..
         } => VecElementToken::Layout,
         Ty::Named {

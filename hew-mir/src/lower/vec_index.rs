@@ -13,6 +13,32 @@ use super::{
 };
 
 impl Builder {
+    fn reject_drop_only_receiver_index(
+        &mut self,
+        elem_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> bool {
+        if !matches!(
+            self.subst_ty(elem_ty),
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Receiver),
+                ..
+            }
+        ) {
+            return false;
+        }
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: "`Vec<channel.Receiver<_>>` index read".to_string(),
+                site,
+            },
+            note: "indexing would clone a receiver out of the Vec, but channel.Receiver<T> \
+                   is drop-only; consume the receiver through a moving operation instead."
+                .to_string(),
+        });
+        true
+    }
+
     /// Lower `xs[i]` (`HirExprKind::Index`) for a `Vec<T>` container.
     ///
     /// CFG shape (C-2 OOB trap pattern, mirrors B-2/B-5 bounds-check
@@ -54,6 +80,9 @@ impl Builder {
         elem_ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
+        if self.reject_drop_only_receiver_index(elem_ty, site) {
+            return None;
+        }
         // Lower the container and index sub-expressions.
         let vec_place = self.lower_value(container)?;
         let raw_index_place = self.lower_value(index)?;

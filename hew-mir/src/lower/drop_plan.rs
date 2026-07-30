@@ -4126,23 +4126,39 @@ pub(super) fn is_borrowing_call_abi(
 /// one item from the stream and decode it into the consumer's `Option<T>`
 /// slot; the stream handle itself is borrowed for the call and continues to
 /// live in the caller's slot afterwards (the caller's source drop is still
-/// the SOLE free of the stream's runtime context). Their suspending siblings
+/// the SOLE free of the stream's runtime context). The channel layout entries
+/// use the same endpoint-borrow contract: receive / try-receive move only the
+/// decoded payload into the caller's out slot, while send deep-copies only its
+/// payload into the queue. Sender/receiver close remains owned by the caller.
+/// Their suspending siblings
 /// ([`Terminator::SuspendingStreamNext`]) are already exempt because they are
 /// not [`Terminator::Call`]s; listing the blocking / non-suspending entries
 /// here keeps the same borrow-not-consume semantics for the
 /// `let (sink, input) = stream.pipe(N); input.try_recv()` shape that goes
 /// through [`Terminator::Call`].
 ///
-/// Kept narrow: each entry's Rust impl takes `*mut HewStream` and ONLY reads
-/// one queued item without mutating the handle's ownership; adding a callee
-/// that actually consumes the handle here would silently disable the
-/// double-free gate for its caller.
+/// Kept narrow: each entry's Rust impl takes a live endpoint pointer and
+/// leaves the endpoint's ownership in the caller's slot; adding a callee that
+/// actually consumes the handle here would silently disable the double-free
+/// gate for its caller.
 pub(super) fn is_handle_borrowing_call_abi(
     builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
 ) -> bool {
     use hew_types::runtime_call::RuntimeCallFamily as F;
-    matches!(builtin, Some(F::StreamNextLayout | F::StreamTryNextLayout))
+    matches!(
+        builtin,
+        Some(
+            F::StreamNextLayout
+                | F::StreamTryNextLayout
+                | F::ChannelRecvLayout
+                | F::ChannelTryRecvLayout
+                | F::ChannelSendLayout
+        )
+    )
 }
+
+#[cfg(test)]
+mod handle_borrowing_call_abi_tests;
 /// True when `ty` is a NON-OWNING owned-handle leaf: an actor pid
 /// (`Pid`/`LocalPid`/`RemotePid`, `handle_family() == ActorPid`) with NO
 /// `close`/release ABI (`close_method().is_none()`). Its drop frees nothing —

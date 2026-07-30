@@ -22502,7 +22502,8 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
                 Some(
                     hew_types::BuiltinType::Rc
                     | hew_types::BuiltinType::Weak
-                    | hew_types::BuiltinType::Sender,
+                    | hew_types::BuiltinType::Sender
+                    | hew_types::BuiltinType::Receiver,
                 ),
             ..
         } => true,

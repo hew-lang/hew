@@ -3778,6 +3778,37 @@ impl Builder {
             intent: IntentKind::Consume,
         });
     }
+
+    /// Commit a directly bound array-literal element to the Vec owned-move ABI.
+    ///
+    /// `hew_vec_push_owned_move` transfers the element bytes into the
+    /// descriptor-owned slot without a clone. This is unlike an ordinary
+    /// array-literal aggregate alias: its source must become truly consumed so
+    /// the Vec's element drop thunk is the sole close authority. The caller has
+    /// already proven the synthetic array receiver, exact known move symbol,
+    /// and concrete owned-element receiver; this helper only records the
+    /// matching checker consume fact and removes the source's scope-exit owner.
+    pub(crate) fn consume_owned_vec_move_array_element(&mut self, operand: &HirExpr) {
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(id),
+        } = &operand.kind
+        else {
+            return;
+        };
+        let ty = self.subst_ty(&operand.ty);
+        if !self.aggregate_ingress_moves_binding_ty(&ty) {
+            return;
+        }
+        self.statements.push(MirStatement::Use {
+            binding: *id,
+            name: name.clone(),
+            site: operand.site,
+            ty,
+            intent: IntentKind::Consume,
+        });
+        self.mark_binding_moved(*id);
+    }
     /// True when a `Let` RHS produces a named-function pair whose `env_ptr`
     /// is null by construction: a direct `Item`-resolved fn reference
     /// (`let f = double;`), a rebind of an already-exempt binding, or either

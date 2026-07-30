@@ -7,6 +7,29 @@ use super::{
     SnapshotFieldKind, SuspendKind,
 };
 
+/// Whether a scope-exit tuple can safely have one of its projected ownership
+/// slots cleared after the leaf is transferred to a local owner.
+///
+/// This is deliberately an identity allowlist, not a broad resource rule.
+/// `Sender` and `Receiver` close implementations accept their null/empty
+/// representation, just like the existing `Vec` and `CancellationToken`
+/// cases. Streams and generators use different lifecycle protocols and must
+/// keep going through their dedicated transfer paths.
+fn scope_exit_tuple_projection_has_null_safe_drop(ty: &ResolvedTy) -> bool {
+    ty == &ResolvedTy::CancellationToken
+        || matches!(
+            ty,
+            ResolvedTy::Named {
+                builtin: Some(
+                    hew_types::BuiltinType::Vec
+                        | hew_types::BuiltinType::Sender
+                        | hew_types::BuiltinType::Receiver
+                ),
+                ..
+            }
+        )
+}
+
 impl Builder {
     /// Emit a move-out payload-slot neutralize whose ownership is consumed into
     /// an in-flight expression (no destination local to name as the transferee).
@@ -44,10 +67,10 @@ impl Builder {
     ///
     /// Registered call carriers already name their root in
     /// `owned_carrier_neutralize`. An ordinary scope-exit tuple owner also
-    /// seeds a root-relative transfer for a `Vec` or `CancellationToken` leaf:
-    /// the load byte-copies the one owned pointer, so a later ownership
-    /// boundary must clear the tuple slot before the loaded value can become a
-    /// sole owner.
+    /// seeds a root-relative transfer for a `Vec`, `CancellationToken`, or
+    /// channel endpoint leaf: the load byte-copies the one owned pointer, so a
+    /// later ownership boundary must clear the tuple slot before the loaded
+    /// value can become a sole owner.
     ///
     /// This authority is deliberately limited to leaves whose structural drop
     /// accepts an empty representation after transfer. Other
@@ -66,15 +89,7 @@ impl Builder {
     ) {
         let authority = self.owned_carrier_authority(aggregate).or_else(|| {
             let field_ty = self.subst_ty(field_ty);
-            let has_empty_structural_drop = field_ty == ResolvedTy::CancellationToken
-                || matches!(
-                    field_ty,
-                    ResolvedTy::Named {
-                        builtin: Some(hew_types::BuiltinType::Vec),
-                        ..
-                    }
-                );
-            if !has_empty_structural_drop
+            if !scope_exit_tuple_projection_has_null_safe_drop(&field_ty)
                 || self.classify_field_load(&field_ty) != Some(FieldLoadClass::HandleTransfer)
             {
                 return None;
@@ -981,5 +996,49 @@ fn projection_root_use_is_invalid(instr: &Instr, root: Place, fields: &[u32]) ->
         _ => instr_source_places(instr)
             .into_iter()
             .any(|place| same_base_local(place, root)),
+    }
+}
+
+#[cfg(test)]
+mod scope_exit_tuple_projection_tests {
+    use super::scope_exit_tuple_projection_has_null_safe_drop;
+    use hew_types::{BuiltinType, ResolvedTy};
+
+    fn builtin_ty(builtin: BuiltinType) -> ResolvedTy {
+        ResolvedTy::named_builtin(builtin.canonical_name(), builtin, vec![ResolvedTy::String])
+    }
+
+    #[test]
+    fn admits_only_null_safe_channel_endpoint_leaves() {
+        assert!(scope_exit_tuple_projection_has_null_safe_drop(&builtin_ty(
+            BuiltinType::Sender
+        )));
+        assert!(scope_exit_tuple_projection_has_null_safe_drop(&builtin_ty(
+            BuiltinType::Receiver
+        )));
+        assert!(scope_exit_tuple_projection_has_null_safe_drop(&builtin_ty(
+            BuiltinType::Vec
+        )));
+        assert!(scope_exit_tuple_projection_has_null_safe_drop(
+            &ResolvedTy::CancellationToken
+        ));
+    }
+
+    #[test]
+    fn rejects_other_resource_protocols() {
+        for builtin in [
+            BuiltinType::Generator,
+            BuiltinType::AsyncGenerator,
+            BuiltinType::Stream,
+            BuiltinType::Sink,
+            BuiltinType::Duplex,
+            BuiltinType::SendHalf,
+            BuiltinType::RecvHalf,
+        ] {
+            assert!(
+                !scope_exit_tuple_projection_has_null_safe_drop(&builtin_ty(builtin)),
+                "{builtin:?} must retain its dedicated ownership protocol"
+            );
+        }
     }
 }

@@ -187,6 +187,21 @@ fn classified_runtime_symbol_from_root_is_guarded_to_header_aware() {
 }
 
 #[test]
+fn classified_encrypt_open_wrapper_from_root_is_header_aware() {
+    // `open` is the non-`must_` direct FFI spelling in std::crypto::encrypt.
+    // It allocates through `str_to_malloc`, just like the already-classified
+    // siblings. The stable classification keeps a root declaration from
+    // incorrectly taking the foreign-malloc adoption path.
+    assert!(hew_types::jit_symbols::is_classified_hew_ffi_symbol(
+        "hew_encrypt_open_hew"
+    ));
+    assert_eq!(
+        classify_extern_string_ownership(&ExternProvenance::Root, "hew_encrypt_open_hew"),
+        ExternStringOwnership::HeaderAware,
+    );
+}
+
+#[test]
 fn empty_module_provenance_is_unresolved() {
     // A named module carrying no identity is unrepresentable provenance: refuse
     // to guess a memory-unsafe direction.

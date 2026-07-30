@@ -315,6 +315,17 @@ fn encrypt_results_are_transferred() {
         },
         |text| assert_eq!(text, plaintext.as_c_str()),
     );
+    assert_transferred(
+        "hew_encrypt_open_hew",
+        // SAFETY: both borrowed triples stay live through the measurement.
+        || unsafe {
+            crate::encrypt::hew_encrypt_open_hew(
+                &raw const key_triple,
+                &raw const ciphertext_triple,
+            )
+        },
+        |text| assert_eq!(text, plaintext.as_c_str()),
+    );
 }
 
 #[test]

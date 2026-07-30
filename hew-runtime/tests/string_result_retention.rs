@@ -11,6 +11,7 @@ use std::ffi::{c_char, CStr, CString};
 use hew_runtime::bytes::{hew_bytes_drop, hew_bytes_from_static, hew_bytes_to_string};
 use hew_runtime::cabi::{cstring_ensure_unique, free_cstring};
 use hew_runtime::log_core::hew_log_encode_field_value;
+use hew_runtime::observe::{hew_observe_scrape, hew_observe_series};
 use hew_runtime::string::hew_char_to_string;
 
 fn assert_transferred(
@@ -88,4 +89,36 @@ fn local_runtime_string_results_are_transferred() {
     // SAFETY: `triple.ptr` is the one owner returned by
     // `hew_bytes_from_static`; all string conversions only borrowed it.
     unsafe { hew_bytes_drop(triple.ptr) };
+}
+
+/// Both observe exports allocate a new header-aware string per call and keep
+/// their metric state separate from the caller-owned output allocation.
+/// `assert_transferred` measures exactly that R1/R2/R3 contract before the
+/// compiler may promote either row to `result-retention = "transferred"`.
+#[test]
+fn observe_string_results_are_transferred() {
+    assert_transferred(
+        "hew_observe_scrape",
+        || hew_observe_scrape(),
+        |text| {
+            assert!(
+                text.to_str()
+                    .expect("observe scrape is UTF-8")
+                    .contains("heap_live_bytes"),
+                "scrape must remain a readable runtime snapshot"
+            );
+        },
+    );
+    assert_transferred(
+        "hew_observe_series",
+        || hew_observe_series(),
+        |text| {
+            assert!(
+                text.to_str()
+                    .expect("observe series is UTF-8")
+                    .contains("heap.live_bytes"),
+                "series must remain a readable runtime snapshot"
+            );
+        },
+    );
 }

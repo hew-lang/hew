@@ -911,6 +911,7 @@ stable-stdlib = [
   "hew_encrypt_last_open_error_code",
   "hew_compress_last_error",
   "hew_encrypt_last_seal_error_code",
+  "hew_encrypt_open_hew",
   "hew_encrypt_must_open_hew",
   "hew_encrypt_try_open_hew",
   "hew_encrypt_try_seal_base64_hew",
@@ -3642,6 +3643,14 @@ discharge-depth = "none"
 # authenticated encryption — hew-std/src/encrypt.rs. Key/ciphertext are
 # borrowed; seal/open results are fresh strings.
 [[ownership.contracts]]
+symbol = "hew_encrypt_open_hew"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
 symbol = "hew_encrypt_last_open_error_code"
 result = "none"
 params = []
@@ -3682,6 +3691,25 @@ result-retention = "transferred"
 symbol = "hew_encrypt_try_open_hew"
 result = "fresh"
 params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+# observe C ABI — hew-runtime/src/observe.rs allocates every scrape/series
+# result through str_to_malloc, retains no pointer into it, and the normal Hew
+# string release is the balancing shallow discharge.
+[[ownership.contracts]]
+symbol = "hew_observe_scrape"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_observe_series"
+result = "fresh"
+params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"

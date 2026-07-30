@@ -1398,9 +1398,12 @@ pub(super) fn derive_cow_sole_owner(
                 }
             }
         }
-        if let Some(local) =
-            fresh_string_producer_term_dest(&block.terminator, owned_string_return_carrier_symbols)
-                .and_then(base_local)
+        if let Some(local) = fresh_string_producer_term_dest(
+            &block.terminator,
+            suspend_kinds.get(&block.id),
+            owned_string_return_carrier_symbols,
+        )
+        .and_then(base_local)
         {
             if let Some(bits) = return_source_bits.get_mut(local as usize) {
                 *bits |= STRING_RETURN_SOURCE_OWNED;
@@ -1493,20 +1496,13 @@ pub(super) fn derive_cow_sole_owner(
                             _ => work.push(src_local),
                         }
                     }
-                    if let Terminator::Call {
-                        dest: Some(dest), ..
-                    } = &block.terminator
-                    {
-                        if base_local(*dest) == Some(local) {
+                    if let Some(dest) = fresh_string_producer_term_dest(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        owned_string_return_carrier_symbols,
+                    ) {
+                        if base_local(dest) == Some(local) {
                             saw_definition = true;
-                            if fresh_string_producer_term_dest(
-                                &block.terminator,
-                                owned_string_return_carrier_symbols,
-                            )
-                            .is_none()
-                            {
-                                return false;
-                            }
                         }
                     }
                 }
@@ -2795,13 +2791,16 @@ pub(super) fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> 
     }
     tainted
 }
-/// W5.011 P3 — the destination place of an instruction that produces a fresh,
-/// solely-owned `string` (a `+1` owner the caller must balance with exactly one
-/// `hew_string_drop`). A validated runtime-ABI producer qualifies directly;
-/// a `CallRuntimeAbi` that represents a declared extern qualifies only when the
-/// module's audited transferred-result projection carries its symbol. Everything
-/// else returns `None` (the local is not seeded as fresh, so it is never
-/// admitted — fail-closed).
+/// W5.011 P3 — the destination place of an instruction that produces one
+/// independently releasable `string` share (a `+1` owner the caller must balance
+/// with exactly one `hew_string_drop`). A validated runtime-ABI producer
+/// qualifies directly; a `CallRuntimeAbi` that represents a declared extern
+/// qualifies only when the module's audited transferred-result projection
+/// carries its symbol. A `CallClosure` returning `string` qualifies through the
+/// compiler-owned `ClosureInvoke` ABI: fresh results transfer their existing
+/// share, while returned parameters and capture/field loads are retained by the
+/// shim. Everything else returns `None` (the local is not seeded as fresh, so it
+/// is never admitted — fail-closed).
 fn fresh_string_producer_dest(
     instr: &Instr,
     owned_string_return_carrier_symbols: &HashSet<String>,
@@ -2819,14 +2818,25 @@ fn fresh_string_producer_dest(
         {
             call.dest()
         }
+        Instr::CallClosure {
+            ret_ty: ResolvedTy::String,
+            dest,
+            ..
+        } => *dest,
         _ => None,
     }
 }
-/// W5.011 P3 — the `Terminator::Call` analogue of [`fresh_string_producer_dest`]
-/// (string transforms like `to_uppercase` / `slice` and the `Vec<string>`
-/// getter `hew_vec_get_str` lower to block-terminating calls, not `Instr`s).
+/// W5.011 P3 — the terminator analogue of [`fresh_string_producer_dest`].
+///
+/// String transforms like `to_uppercase` / `slice` and the `Vec<string>`
+/// getter `hew_vec_get_str` lower to block-terminating calls. A suspending
+/// closure invocation lowers instead to a bare [`Terminator::Suspend`] whose
+/// [`SuspendKind::CallClosure`] side-table entry carries the result destination;
+/// its compiler-owned invoke ABI establishes the same independently releasable
+/// string share as [`Instr::CallClosure`].
 fn fresh_string_producer_term_dest(
     term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
     owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> Option<Place> {
     match term {
@@ -2837,6 +2847,35 @@ fn fresh_string_producer_term_dest(
             ..
         } if fresh_string_producer_term_admissible(callee, owned_string_return_carrier_symbols) => {
             *dest
+        }
+        Terminator::Suspend { .. } => match suspend_kind {
+            Some(SuspendKind::CallClosure {
+                ret_ty: ResolvedTy::String,
+                result_dest,
+                ..
+            }) => *result_dest,
+            _ => None,
+        },
+        _ => None,
+    }
+}
+fn fresh_string_producer_term_next(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+) -> Option<u32> {
+    match term {
+        Terminator::Call { next, .. } => Some(*next),
+        Terminator::Suspend { resume, .. }
+            if matches!(
+                suspend_kind,
+                Some(SuspendKind::CallClosure {
+                    ret_ty: ResolvedTy::String,
+                    result_dest: Some(_),
+                    ..
+                })
+            ) =>
+        {
+            Some(*resume)
         }
         _ => None,
     }
@@ -2937,6 +2976,7 @@ fn is_hew_string_concat_runtime_call(call: &crate::model::RuntimeCall) -> bool {
 fn is_fresh_string_producer_def(
     def: NestedDefSite,
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
     t: u32,
     owned_string_return_carrier_symbols: &HashSet<String>,
@@ -2949,7 +2989,11 @@ fn is_fresh_string_producer_def(
                     .or_else(|| string_field_load_producer_dest(instr, locals))
             }),
         NestedDefSite::Term { block } => block_by_id(blocks, block).and_then(|b| {
-            fresh_string_producer_term_dest(&b.terminator, owned_string_return_carrier_symbols)
+            fresh_string_producer_term_dest(
+                &b.terminator,
+                suspend_kinds.get(&block),
+                owned_string_return_carrier_symbols,
+            )
         }),
     };
     dest.and_then(base_local) == Some(t)
@@ -2978,6 +3022,52 @@ fn is_borrowing_string_runtime_instr_use(instr: &Instr, t: u32) -> bool {
                     .borrows_string_call_args()
     )
 }
+
+/// `CallClosure` borrows each by-value `string` argument through the
+/// compiler-owned `ClosureInvoke` ABI. The invoke shim retains a parameter only
+/// when it must mint another owner (for example, returning that parameter), so
+/// the caller's pre-existing temporary share remains its own drop obligation.
+fn is_borrowing_string_closure_instr_use(instr: &Instr, t: u32) -> bool {
+    matches!(
+        instr,
+        Instr::CallClosure { args, .. }
+            if args.iter().any(|place| place_refs_local(*place, t))
+    )
+}
+
+/// Continuation after a terminator that borrows `t` as a string argument.
+///
+/// Suspending closure calls lower through the `SuspendKind` side table. Their
+/// current carrier deliberately shares one resume/cleanup continuation; require
+/// that shape before placing the caller's balancing release there.
+fn borrowing_string_terminator_use_next(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+    t: u32,
+) -> Option<u32> {
+    match term {
+        Terminator::Call {
+            callee, args, next, ..
+        } if args.iter().any(|place| place_refs_local(*place, t))
+            && crate::runtime_symbols::callee_ownership_contract(callee)
+                .borrows_string_call_args() =>
+        {
+            Some(*next)
+        }
+        Terminator::Suspend {
+            resume, cleanup, ..
+        } if resume == cleanup => match suspend_kind {
+            Some(SuspendKind::CallClosure { args, .. })
+                if args.iter().any(|place| place_refs_local(*place, t)) =>
+            {
+                Some(*resume)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// `true` when control flows from `start` to `use_block` along a chain of
 /// single-predecessor `Call`-terminated blocks — so reaching `use_block`
 /// implies the block that produced `start` ran exactly once, and every block on
@@ -3222,9 +3312,11 @@ pub(super) fn derive_cow_fresh_borrowed_owner(
         owned_string_return_carrier_symbols,
     );
     for block in blocks {
-        if let Some(dest) =
-            fresh_string_producer_term_dest(&block.terminator, owned_string_return_carrier_symbols)
-        {
+        if let Some(dest) = fresh_string_producer_term_dest(
+            &block.terminator,
+            suspend_kinds.get(&block.id),
+            owned_string_return_carrier_symbols,
+        ) {
             if let Some(l) = base_local(dest) {
                 fresh.insert(l);
             }
@@ -3436,7 +3528,14 @@ fn collect_nested_temp_dataflow(
 fn collect_nested_temp_predecessor_counts(blocks: &[BasicBlock]) -> HashMap<u32, usize> {
     let mut pred_count = HashMap::new();
     for block in blocks {
-        for successor in block.successors() {
+        // Count predecessor BLOCKS, not parallel CFG edges. A suspending
+        // closure's multi-suspend carrier deliberately routes both `resume`
+        // and `cleanup` to the same continuation block; reaching that block
+        // still proves its single producer block ran. Counting both edges as
+        // two predecessors would falsely reject the otherwise straight-line
+        // result/drop path.
+        let successors: HashSet<u32> = block.successors().into_iter().collect();
+        for successor in successors {
             *pred_count.entry(successor).or_insert(0) += 1;
         }
     }
@@ -3511,6 +3610,7 @@ fn collect_nested_temp_source_uses(
 /// and wire-codec destinations whose `String` representation is caller-owned.
 fn collect_fresh_string_temp_defs(
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
     owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> Vec<(u32, NestedDefSite)> {
@@ -3533,9 +3633,12 @@ fn collect_fresh_string_temp_defs(
                 ));
             }
         }
-        if let Some(local) =
-            fresh_string_producer_term_dest(&block.terminator, owned_string_return_carrier_symbols)
-                .and_then(base_local)
+        if let Some(local) = fresh_string_producer_term_dest(
+            &block.terminator,
+            suspend_kinds.get(&block.id),
+            owned_string_return_carrier_symbols,
+        )
+        .and_then(base_local)
         {
             defs.push((local, NestedDefSite::Term { block: block.id }));
         }
@@ -3602,6 +3705,7 @@ fn propagate_linear_fresh_string_moves(
 ///   (a + b).len()           // concat temp, borrowed by hew_string_length
 ///   s.to_uppercase().len()  // to_uppercase temp, borrowed
 ///   xs[i].len()             // hew_vec_get_str temp (a +1 retain), borrowed
+///   identity(s.to_upper())   // ClosureInvoke borrows its string argument
 ///   a + b;                  // discarded concat temp (zero uses)
 /// ```
 ///
@@ -3630,10 +3734,11 @@ fn propagate_linear_fresh_string_moves(
 ///    `instr_source_places`, also sees borrow-excluded readers such as
 ///    `Instr::WireCodec`'s operand — plus `terminator_source_places` for
 ///    terminators), and (if present) that use is verified borrowing-only: a
-///    borrowing `Terminator::Call`, a string compare instruction, or the
-///    narrowly-proven nested `hew_string_concat` → `hew_string_concat`
-///    instruction chain. Any other use (`Move`/store/return/send/user-call/
-///    `WireCodec`) excludes it (leak, never double-free) — the reads-based
+///    borrowing `Terminator::Call`, direct/suspending `CallClosure`, a string
+///    compare instruction, or the narrowly-proven nested `hew_string_concat` →
+///    `hew_string_concat` instruction chain. Any other use
+///    (`Move`/store/return/send/user-call/`WireCodec`) excludes it (leak, never
+///    double-free) — the reads-based
 ///    table is what keeps a `Packet.from_json(a + b)` operand ALIVE past the
 ///    parse instead of routing it down the discard branch;
 /// 5. the drop site is provably dominated by the def and entered exactly once
@@ -3647,6 +3752,9 @@ fn propagate_linear_fresh_string_moves(
 ///        terminator) or a terminator `Call(next = U)` of the immediately
 ///        preceding block (require `U` single-predecessor) → drop at the front
 ///        of `T` (require `T` single-predecessor).
+///      * direct `CallClosure` instruction → drop immediately after the invoke;
+///        suspending `CallClosure` → drop at its single shared resume/cleanup
+///        continuation.
 ///
 /// Any other CFG shape fails closed (the temp leaks, as before this fix). The
 /// return is a list of `(block_id, insert_index, place, ty)` inline-drop
@@ -3663,8 +3771,12 @@ fn collect_nested_fresh_string_temp_drops(
     owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> Vec<(u32, usize, Place, ResolvedTy)> {
     let dataflow = collect_nested_temp_dataflow(blocks, suspend_kinds, binding_locals);
-    let mut defs =
-        collect_fresh_string_temp_defs(blocks, locals, owned_string_return_carrier_symbols);
+    let mut defs = collect_fresh_string_temp_defs(
+        blocks,
+        suspend_kinds,
+        locals,
+        owned_string_return_carrier_symbols,
+    );
     propagate_linear_fresh_string_moves(&mut defs, blocks, locals, &dataflow);
 
     defs.into_iter()
@@ -3678,6 +3790,7 @@ fn collect_nested_fresh_string_temp_drops(
                 &dataflow.binding_local_ids,
                 &dataflow.instr_writers,
                 &dataflow.source_uses,
+                suspend_kinds,
                 owned_string_return_carrier_symbols,
             )
         })
@@ -3703,6 +3816,7 @@ fn nested_fresh_string_temp_drop(
     binding_local_ids: &HashSet<u32>,
     instr_writers: &HashMap<u32, Vec<(u32, usize)>>,
     source_uses: &HashMap<u32, Vec<NestedUseSite>>,
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     owned_string_return_carrier_symbols: &HashSet<String>,
 ) -> Option<(u32, usize, Place, ResolvedTy)> {
     // 1. leaf `string` — bail unless this resolves to a leaf drop symbol.
@@ -3740,61 +3854,38 @@ fn nested_fresh_string_temp_drop(
         // Discarded terminator producer `Call(next = N)`: drop at the front of
         // its single-predecessor continuation.
         (NestedDefSite::Term { block }, None) => {
-            let n = call_terminator_next(&block_by_id(blocks, block)?.terminator)?;
+            let producer_block = block_by_id(blocks, block)?;
+            let n = fresh_string_producer_term_next(
+                &producer_block.terminator,
+                suspend_kinds.get(&block),
+            )?;
             (pred_count.get(&n).copied().unwrap_or(0) == 1).then_some((n, 0, drop_place, drop_ty))
         }
-        // Single use: it must be a borrowing terminator `Call`, and the def must
-        // dominate it (so the drop runs iff the temp was produced).
+        // Single use: it must be a borrowing runtime `Call` or a typed
+        // suspending `CallClosure`, and the def must dominate it (so the drop
+        // runs iff the temp was produced).
         (_, Some(NestedUseSite::Term { block: use_block })) => {
             let ub = *use_block;
-            let Terminator::Call {
-                callee, args, next, ..
-            } = &block_by_id(blocks, ub)?.terminator
-            else {
-                return None;
-            };
-            if !args.iter().any(|p| place_refs_local(*p, t)) {
-                return None;
-            }
-            if !crate::runtime_symbols::callee_ownership_contract(callee).borrows_string_call_args()
-            {
+            let use_block = block_by_id(blocks, ub)?;
+            let next = borrowing_string_terminator_use_next(
+                &use_block.terminator,
+                suspend_kinds.get(&ub),
+                t,
+            )?;
+            if pred_count.get(&next).copied().unwrap_or(0) != 1 {
                 return None;
             }
-            if pred_count.get(next).copied().unwrap_or(0) != 1 {
-                return None;
-            }
-            let def_dominates = match def {
-                // Instruction def in the use's own block precedes the terminator;
-                // otherwise the def block's `Call` continuation must reach the
-                // use block along a single-predecessor chain (see below).
-                NestedDefSite::Instr { block, .. } => {
-                    block == ub
-                        || block_by_id(blocks, block)
-                            .and_then(|b| call_terminator_next(&b.terminator))
-                            .is_some_and(|start| {
-                                dominates_use_via_single_pred_chain(blocks, start, ub, pred_count)
-                            })
-                }
-                // Terminator def `Call(next = U)`: `U` (and every block up to the
-                // use) is reached only from the def block along a
-                // single-predecessor chain, so the def ran. The multi-step chain
-                // is the #2726 f-string case, where a `to_string_*` conversion
-                // block splits the concat chain between the producing and
-                // consuming concats.
-                NestedDefSite::Term { block } => {
-                    call_terminator_next(&block_by_id(blocks, block)?.terminator).is_some_and(
-                        |start| dominates_use_via_single_pred_chain(blocks, start, ub, pred_count),
-                    )
-                }
-            };
-            def_dominates.then_some((*next, 0, drop_place, drop_ty))
+            let def_dominates =
+                nested_fresh_string_def_dominates(def, blocks, suspend_kinds, pred_count, ub, None);
+            def_dominates.then_some((next, 0, drop_place, drop_ty))
         }
         // Single instruction use: admit ONLY known borrowing instruction uses:
         // a string compare (`xs[i] == "hello"`, `xs[i] != s`, and the ordering
-        // family), a wire-codec read, or a runtime ABI call carrying the exact
-        // string-borrow contract (including nested concat and `string.len()`).
+        // family), a wire-codec read, a direct `CallClosure`, or a runtime ABI
+        // call carrying the exact string-borrow contract (including nested
+        // concat and `string.len()`).
         // Any other instruction use stays fail-closed (leak, never
-        // double-free): a `Move`/store/user-call/closure-call/unknown runtime
+        // double-free): a `Move`/store/trait-call/unknown runtime
         // call may take ownership, and the conservative leak is the safe side.
         (_, Some(NestedUseSite::Instr { block: ub, idx: ui })) => {
             let ub = *ub;
@@ -3802,9 +3893,11 @@ fn nested_fresh_string_temp_drop(
             let borrowing_use = is_borrowing_string_cmp_instr(use_instr, t)
                 || is_wire_codec_borrowing_string_use(use_instr, t)
                 || is_borrowing_string_runtime_instr_use(use_instr, t)
+                || is_borrowing_string_closure_instr_use(use_instr, t)
                 || (is_fresh_string_producer_def(
                     def,
                     blocks,
+                    suspend_kinds,
                     locals,
                     t,
                     owned_string_return_carrier_symbols,
@@ -3812,40 +3905,14 @@ fn nested_fresh_string_temp_drop(
             if !borrowing_use {
                 return None;
             }
-            let def_dominates = match def {
-                // Instruction def dominates the use when EITHER:
-                //   * it is an EARLIER instruction in the use's own block —
-                //     same-block straight-line execution means reaching the use
-                //     (which reads `t`) implies the def ran; OR
-                //   * the def block's terminator is a `Call` whose sole
-                //     continuation is the use block, and the use block has that
-                //     single predecessor. The def is an instruction in the def
-                //     block, which runs straight-line to its terminator; the
-                //     terminator's normal edge reaches the use block, whose only
-                //     predecessor is the def block — so reaching the use implies
-                //     the def ran. This is the multi-interpolation f-string
-                //     shape (#2726): a `to_string_*` conversion lowers to a
-                //     block-terminating `Call` that SPLITS the concat chain, so
-                //     the concat consuming an intermediate result lands one
-                //     block past that split. Same single-step domination the
-                //     terminator-def arm below already proves.
-                NestedDefSite::Instr { block, idx } => {
-                    (block == ub && idx < *ui)
-                        || block_by_id(blocks, block)
-                            .and_then(|b| call_terminator_next(&b.terminator))
-                            .is_some_and(|start| {
-                                dominates_use_via_single_pred_chain(blocks, start, ub, pred_count)
-                            })
-                }
-                // Terminator def `Call(next = U)`: `U` (and every block up to the
-                // use) is reached only from the def block along a
-                // single-predecessor chain, so the def ran before the use.
-                NestedDefSite::Term { block } => {
-                    call_terminator_next(&block_by_id(blocks, block)?.terminator).is_some_and(
-                        |start| dominates_use_via_single_pred_chain(blocks, start, ub, pred_count),
-                    )
-                }
-            };
+            let def_dominates = nested_fresh_string_def_dominates(
+                def,
+                blocks,
+                suspend_kinds,
+                pred_count,
+                ub,
+                Some(*ui),
+            );
             // Drop immediately after the compare instruction (straight-line in
             // its block), so the release runs exactly once on the path that
             // produced and borrowed the temp.
@@ -3853,6 +3920,39 @@ fn nested_fresh_string_temp_drop(
         }
     }
 }
+
+/// Prove that a fresh-string definition executes before its sole borrowing use.
+///
+/// `use_instr_idx = None` denotes a terminator use, which follows every
+/// instruction in its block. Cross-block admission requires a chain whose
+/// blocks each have one distinct predecessor, so reaching the use implies that
+/// the producer ran.
+fn nested_fresh_string_def_dominates(
+    def: NestedDefSite,
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    pred_count: &HashMap<u32, usize>,
+    use_block: u32,
+    use_instr_idx: Option<usize>,
+) -> bool {
+    match def {
+        NestedDefSite::Instr { block, idx } => {
+            (block == use_block && use_instr_idx.is_none_or(|use_idx| idx < use_idx))
+                || block_by_id(blocks, block)
+                    .and_then(|b| call_terminator_next(&b.terminator))
+                    .is_some_and(|start| {
+                        dominates_use_via_single_pred_chain(blocks, start, use_block, pred_count)
+                    })
+        }
+        NestedDefSite::Term { block } => block_by_id(blocks, block).is_some_and(|producer_block| {
+            fresh_string_producer_term_next(&producer_block.terminator, suspend_kinds.get(&block))
+                .is_some_and(|start| {
+                    dominates_use_via_single_pred_chain(blocks, start, use_block, pred_count)
+                })
+        }),
+    }
+}
+
 /// W5.011 P3 — splice the inline `hew_string_drop`s computed by
 /// [`collect_nested_fresh_string_temp_drops`] into `blocks`. Applied during
 /// lowering BEFORE `check_function` / drop elaboration so the dataflow observes
@@ -3974,9 +4074,18 @@ mod nested_fresh_string_temp_drop_admission {
         locals: &[ResolvedTy],
         binding_locals: &HashMap<BindingId, Place>,
     ) -> Vec<(u32, usize, Place, ResolvedTy)> {
+        collect_with_suspend(blocks, &HashMap::new(), locals, binding_locals)
+    }
+
+    fn collect_with_suspend(
+        blocks: &[BasicBlock],
+        suspend_kinds: &HashMap<u32, SuspendKind>,
+        locals: &[ResolvedTy],
+        binding_locals: &HashMap<BindingId, Place>,
+    ) -> Vec<(u32, usize, Place, ResolvedTy)> {
         collect_nested_fresh_string_temp_drops(
             blocks,
-            &HashMap::new(),
+            suspend_kinds,
             locals,
             binding_locals,
             &HashSet::new(),
@@ -4027,6 +4136,351 @@ mod nested_fresh_string_temp_drop_admission {
             "a proven fresh terminator-produced operand used once by borrowing concat \
              must be dropped immediately after that concat"
         );
+    }
+
+    #[test]
+    fn fresh_string_argument_to_direct_closure_gets_one_drop_after_call() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![Instr::CallClosure {
+                    callee: Place::Local(0),
+                    args: vec![Place::Local(2)],
+                    ret_ty: ResolvedTy::Unit,
+                    dest: None,
+                }],
+                Terminator::Return,
+            ),
+        ];
+
+        assert_eq!(
+            collect(&blocks, &locals_with(&[]), &HashMap::new()),
+            vec![(1, 1, Place::Local(2), ResolvedTy::String)],
+            "the ClosureInvoke shim borrows a by-value string argument; the \
+             caller must release its fresh temporary share exactly once after \
+             the direct call completes"
+        );
+    }
+
+    #[test]
+    fn fresh_string_argument_to_suspending_closure_gets_one_drop_on_resume() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            ),
+            ret_block(2),
+        ];
+        let suspend_kinds = HashMap::from([(
+            1,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: vec![Place::Local(2)],
+                ret_ty: ResolvedTy::Unit,
+                result_dest: None,
+            },
+        )]);
+
+        assert_eq!(
+            collect_with_suspend(&blocks, &suspend_kinds, &locals_with(&[]), &HashMap::new(),),
+            vec![(2, 0, Place::Local(2), ResolvedTy::String)],
+            "the shared resume/cleanup continuation balances the fresh argument \
+             share after a suspending ClosureInvoke completes"
+        );
+    }
+
+    #[test]
+    fn suspending_closure_balances_fresh_argument_and_borrowed_string_result() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            ),
+            block(
+                2,
+                vec![],
+                Terminator::Call {
+                    callee: "hew_string_length".to_string(),
+                    builtin: None,
+                    args: vec![Place::Local(3)],
+                    dest: Some(Place::Local(4)),
+                    next: 3,
+                },
+            ),
+            ret_block(3),
+        ];
+        let suspend_kinds = HashMap::from([(
+            1,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: vec![Place::Local(2)],
+                ret_ty: ResolvedTy::String,
+                result_dest: Some(Place::Local(3)),
+            },
+        )]);
+
+        assert_eq!(
+            collect_with_suspend(
+                &blocks,
+                &suspend_kinds,
+                &locals_with(&[(4, ResolvedTy::I64)]),
+                &HashMap::new(),
+            ),
+            vec![
+                (2, 0, Place::Local(2), ResolvedTy::String),
+                (3, 0, Place::Local(3), ResolvedTy::String),
+            ],
+            "the argument's original share and the closure's returned share \
+             are distinct obligations, each balanced after its last borrow"
+        );
+    }
+
+    #[test]
+    fn suspending_closure_balances_fresh_argument_and_discarded_string_result() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            ),
+            ret_block(2),
+        ];
+        let suspend_kinds = HashMap::from([(
+            1,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: vec![Place::Local(2)],
+                ret_ty: ResolvedTy::String,
+                result_dest: Some(Place::Local(3)),
+            },
+        )]);
+
+        assert_eq!(
+            collect_with_suspend(&blocks, &suspend_kinds, &locals_with(&[]), &HashMap::new(),),
+            vec![
+                (2, 0, Place::Local(2), ResolvedTy::String),
+                (2, 0, Place::Local(3), ResolvedTy::String),
+            ],
+            "a shared continuation can release both the borrowed argument share \
+             and an otherwise-discarded returned share exactly once"
+        );
+    }
+
+    #[test]
+    fn suspending_closure_argument_with_split_cleanup_stays_fail_closed() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 3,
+                    is_final: false,
+                },
+            ),
+            ret_block(2),
+            ret_block(3),
+        ];
+        let suspend_kinds = HashMap::from([(
+            1,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: vec![Place::Local(2)],
+                ret_ty: ResolvedTy::Unit,
+                result_dest: None,
+            },
+        )]);
+
+        assert!(
+            collect_with_suspend(&blocks, &suspend_kinds, &locals_with(&[]), &HashMap::new(),)
+                .is_empty(),
+            "a split cleanup path has no single exactly-once release site and \
+             must remain fail-closed"
+        );
+    }
+
+    #[test]
+    fn suspending_closure_string_temp_gets_one_drop_after_borrowing_runtime_use() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 1,
+                    is_final: false,
+                },
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Call {
+                    callee: "hew_string_length".to_string(),
+                    builtin: None,
+                    args: vec![Place::Local(2)],
+                    dest: Some(Place::Local(3)),
+                    next: 2,
+                },
+            ),
+            ret_block(2),
+        ];
+        let suspend_kinds = HashMap::from([(
+            0,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: Vec::new(),
+                ret_ty: ResolvedTy::String,
+                result_dest: Some(Place::Local(2)),
+            },
+        )]);
+
+        let drops = collect_with_suspend(
+            &blocks,
+            &suspend_kinds,
+            &locals_with(&[(3, ResolvedTy::I64)]),
+            &HashMap::new(),
+        );
+
+        assert_eq!(
+            drops,
+            vec![(2, 0, Place::Local(2), ResolvedTy::String)],
+            "a SuspendKind::CallClosure string result carries one independent \
+             share and must be released exactly once after `.len()` borrows it"
+        );
+    }
+
+    #[test]
+    fn discarded_suspending_closure_string_temp_gets_one_drop_on_resume() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 1,
+                    is_final: false,
+                },
+            ),
+            ret_block(1),
+        ];
+        let suspend_kinds = HashMap::from([(
+            0,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: Vec::new(),
+                ret_ty: ResolvedTy::String,
+                result_dest: Some(Place::Local(2)),
+            },
+        )]);
+
+        assert_eq!(
+            collect_with_suspend(&blocks, &suspend_kinds, &locals_with(&[]), &HashMap::new(),),
+            vec![(1, 0, Place::Local(2), ResolvedTy::String)],
+            "a discarded suspending closure string result must release its one \
+             independent share at the single-predecessor resume"
+        );
+    }
+
+    #[test]
+    fn unproven_suspend_results_are_not_laundered_as_string_producers() {
+        let blocks = vec![
+            block(
+                0,
+                vec![],
+                Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 1,
+                    is_final: false,
+                },
+            ),
+            ret_block(1),
+        ];
+        let cases = [
+            ("missing side-table", HashMap::new()),
+            (
+                "no result destination",
+                HashMap::from([(
+                    0,
+                    SuspendKind::CallClosure {
+                        callee: Place::Local(0),
+                        args: Vec::new(),
+                        ret_ty: ResolvedTy::String,
+                        result_dest: None,
+                    },
+                )]),
+            ),
+            (
+                "non-string result",
+                HashMap::from([(
+                    0,
+                    SuspendKind::CallClosure {
+                        callee: Place::Local(0),
+                        args: Vec::new(),
+                        ret_ty: ResolvedTy::Bytes,
+                        result_dest: Some(Place::Local(2)),
+                    },
+                )]),
+            ),
+            (
+                "non-closure suspend",
+                HashMap::from([(
+                    0,
+                    SuspendKind::TaskAwait {
+                        scope: Place::Local(0),
+                        task: Place::Local(1),
+                        result_dest: Some(Place::Local(2)),
+                    },
+                )]),
+            ),
+        ];
+
+        for (label, suspend_kinds) in cases {
+            assert!(
+                collect_with_suspend(&blocks, &suspend_kinds, &locals_with(&[]), &HashMap::new(),)
+                    .is_empty(),
+                "{label}: only a typed CallClosure result destination grants \
+                 the narrow string-carrier authority"
+            );
+        }
     }
 
     fn concat_term(lhs: u32, rhs: u32, dest: u32, next: u32) -> Terminator {

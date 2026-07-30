@@ -2318,6 +2318,120 @@ fn ty_contains_closure_value_inner(
     }
 }
 
+/// True when `ty` is, or transitively stores, a callable value whose result can
+/// itself reach a `string`-returning callable.
+///
+/// This is the foreign-ingress ownership boundary for callable pairs. An
+/// ownership-opaque extern may return a function pair directly or hide it
+/// inside a tuple, record, enum, or generic container. Once such a pair enters
+/// Hew, invoking its string-returning leaf through the uniform `ClosureInvoke` ABI
+/// would otherwise manufacture a caller drop obligation that the foreign
+/// implementation never promised. The walk mirrors [`ty_contains_closure_value`]
+/// for layout lookup and cycle handling, but it asks the narrower semantic
+/// question: only a callable whose return is `string` (or another type
+/// containing such a callable) qualifies. Callable parameter types are
+/// signatures, not values stored in the pair, so they do not contribute.
+#[must_use]
+pub fn ty_contains_string_returning_callable(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> bool {
+    ty_contains_string_returning_callable_inner(
+        ty,
+        record_layouts,
+        enum_layouts,
+        &mut HashSet::new(),
+    )
+}
+
+fn ty_contains_string_returning_callable_inner(
+    ty: &ResolvedTy,
+    record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    visited: &mut HashSet<String>,
+) -> bool {
+    match ty {
+        ResolvedTy::Function { ret, .. } | ResolvedTy::Closure { ret, .. } => {
+            matches!(ret.as_ref(), ResolvedTy::String)
+                || ty_contains_string_returning_callable_inner(
+                    ret,
+                    record_layouts,
+                    enum_layouts,
+                    visited,
+                )
+        }
+        ResolvedTy::Named { name, args, .. } => {
+            if args.iter().any(|arg| {
+                ty_contains_string_returning_callable_inner(
+                    arg,
+                    record_layouts,
+                    enum_layouts,
+                    visited,
+                )
+            }) {
+                return true;
+            }
+            let short = short_name(name);
+            if let Some(record) = record_layouts
+                .iter()
+                .find(|record| record.name == *name || short_name(&record.name) == short)
+            {
+                if visited.insert(record.name.clone()) {
+                    let found = record.field_tys.iter().any(|field_ty| {
+                        ty_contains_string_returning_callable_inner(
+                            field_ty,
+                            record_layouts,
+                            enum_layouts,
+                            visited,
+                        )
+                    });
+                    visited.remove(&record.name);
+                    if found {
+                        return true;
+                    }
+                }
+            }
+            if let Some(layout) = find_enum_layout(name, args, enum_layouts) {
+                if visited.insert(layout.name.clone()) {
+                    let found = layout.variants.iter().any(|variant| {
+                        variant.field_tys.iter().any(|field_ty| {
+                            ty_contains_string_returning_callable_inner(
+                                field_ty,
+                                record_layouts,
+                                enum_layouts,
+                                visited,
+                            )
+                        })
+                    });
+                    visited.remove(&layout.name);
+                    if found {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        ResolvedTy::Tuple(elements) => elements.iter().any(|element| {
+            ty_contains_string_returning_callable_inner(
+                element,
+                record_layouts,
+                enum_layouts,
+                visited,
+            )
+        }),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            ty_contains_string_returning_callable_inner(
+                inner,
+                record_layouts,
+                enum_layouts,
+                visited,
+            )
+        }
+        _ => false,
+    }
+}
+
 /// True when `ty` may own — transitively — an affine HANDLE leaf the owned-handle
 /// aggregate double-free gate (`detect_unproven_aggregate_handle_double_free`)
 /// guards: a `Generator`/`AsyncGenerator` context, a `CancellationToken`, or a
@@ -7611,6 +7725,49 @@ mod heap_owning_tests {
         }];
         let ty = ResolvedTy::named_user("Holder", vec![]);
         assert!(ty_contains_unclonable_opaque(&ty, &records, &[]));
+    }
+
+    #[test]
+    fn string_returning_callable_ingress_walks_callable_and_aggregate_shapes() {
+        let string_callable = ResolvedTy::Function {
+            params: Vec::new(),
+            ret: Box::new(ResolvedTy::String),
+        };
+        let scalar_callable = ResolvedTy::Function {
+            params: vec![string_callable.clone()],
+            ret: Box::new(ResolvedTy::I64),
+        };
+        assert!(ty_contains_string_returning_callable(
+            &string_callable,
+            &[],
+            &[]
+        ));
+        assert!(
+            !ty_contains_string_returning_callable(&scalar_callable, &[], &[]),
+            "a callable parameter is signature metadata, not a callable value \
+             stored inside the pair"
+        );
+        assert!(ty_contains_string_returning_callable(
+            &ResolvedTy::Tuple(vec![ResolvedTy::I64, string_callable.clone()]),
+            &[],
+            &[]
+        ));
+        assert!(ty_contains_string_returning_callable(
+            &ResolvedTy::named_user("Option", vec![string_callable.clone()]),
+            &[],
+            &[]
+        ));
+
+        let records = vec![RecordLayout {
+            name: "FactoryBox".to_string(),
+            field_tys: vec![ResolvedTy::I64, string_callable],
+            field_names: vec!["tag".to_string(), "make".to_string()],
+        }];
+        assert!(ty_contains_string_returning_callable(
+            &ResolvedTy::named_user("FactoryBox", vec![]),
+            &records,
+            &[]
+        ));
     }
 
     #[test]

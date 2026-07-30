@@ -2825,6 +2825,8 @@ pub(crate) fn build_call_scrutinee_provenance(
     let may_mutate = compute_may_mutate_heap_param(origin_fns);
     let provenance =
         compute_call_scrutinee_return_provenance(origin_fns, &extern_table, &may_mutate);
+    let owned_string_carrier_provenance =
+        compute_owned_string_return_carrier_provenance(origin_fns, &extern_table, &may_mutate);
     let retained_string_projection_returns =
         compute_fn_returns_retained_string_projection_owner(origin_fns);
     // The table-aware freshness authority: the coarse proof MINUS everything the
@@ -2857,20 +2859,18 @@ pub(crate) fn build_call_scrutinee_provenance(
         &declared_release,
     );
     // A string return needs one independently releasable share, not necessarily
-    // a pointer-distinct allocation. `Fresh(∅)` already has that postcondition.
-    // `ParamsOnly({PARAM})` has it too for a Hew body: returning a whole string
-    // parameter inserts `StringRetain`, while returning a string field/tuple
-    // projection goes through a retained field load. Calls propagate the same
-    // postcondition through this fixpoint. An OPAQUE bit is never rescuable.
+    // a pointer-distinct allocation. The string-specific fixpoint preserves the
+    // established direct-call rules (`Fresh(∅)` and `ParamsOnly({PARAM})`) and
+    // additionally reads an indirect call through the ClosureInvoke ABI's
+    // one-share postcondition. Calls propagate that fact through wrapper depth.
+    // An OPAQUE direct extern remains OPAQUE transitively.
     //
     // Do not filter on the origin's declared return type here: a generic origin
     // may declare `T` and be instantiated at `string`; the consumer checks the
     // concrete call-result type before consulting this set.
-    let owned_string_return_carriers = provenance
+    let owned_string_return_carriers = owned_string_carrier_provenance
         .iter()
-        .filter_map(|(&id, bits)| {
-            (!bits.is_opaque() && !launders_opaque_extern.contains(&id)).then_some(id)
-        })
+        .filter_map(|(&id, bits)| (!bits.is_opaque()).then_some(id))
         .collect::<HashSet<_>>();
     let owned_string_return_carrier_symbols = origin_fns
         .iter()
@@ -3725,7 +3725,14 @@ pub fn compute_local_binding_provenance(
     extern_table: &ExternContractTable,
     may_mutate: &HashMap<hew_hir::ItemId, bool>,
 ) -> HashMap<BindingId, AliasBits> {
-    local_binding_provenance_impl(f, provenance, extern_table, may_mutate).0
+    local_binding_provenance_impl(
+        f,
+        provenance,
+        extern_table,
+        may_mutate,
+        LocalProvenancePolicy::Precise,
+    )
+    .0
 }
 
 /// The CURRENT function's local-binding freshness facts for the S2b caller
@@ -3789,8 +3796,13 @@ pub fn compute_local_binding_freshness(
     extern_table: &ExternContractTable,
     may_mutate: &HashMap<hew_hir::ItemId, bool>,
 ) -> LocalBindingFreshness {
-    let (bits, aliased, pattern_binders) =
-        local_binding_provenance_impl(f, provenance, extern_table, may_mutate);
+    let (bits, aliased, pattern_binders) = local_binding_provenance_impl(
+        f,
+        provenance,
+        extern_table,
+        may_mutate,
+        LocalProvenancePolicy::Precise,
+    );
     let mut ref_counts: HashMap<BindingId, u32> = HashMap::new();
     let mut saw_unknown_form = false;
     count_binding_refs_in_block(&f.body, &mut ref_counts, &mut saw_unknown_form);
@@ -3803,11 +3815,18 @@ pub fn compute_local_binding_freshness(
     }
 }
 
+#[derive(Clone, Copy)]
+enum LocalProvenancePolicy {
+    Precise,
+    OwnedStringCarrier,
+}
+
 fn local_binding_provenance_impl(
     f: &HirFn,
     provenance: &HashMap<hew_hir::ItemId, AliasBits>,
     extern_table: &ExternContractTable,
     may_mutate: &HashMap<hew_hir::ItemId, bool>,
+    policy_kind: LocalProvenancePolicy,
 ) -> (
     HashMap<BindingId, AliasBits>,
     HashSet<BindingId>,
@@ -3862,15 +3881,27 @@ fn local_binding_provenance_impl(
     loop {
         let mut changed = false;
         for (&id, sources) in &collector.defs {
-            let policy = PrecisePolicy {
-                provenance,
-                extern_table,
-                local_bits: &bits,
-            };
             let mut new_bits = *bits.get(&id).unwrap_or(&AliasBits::EMPTY);
             for src in sources {
                 new_bits |= match src {
-                    DefSource::Value(e) => return_alias_bits(e, &policy),
+                    DefSource::Value(e) => match policy_kind {
+                        LocalProvenancePolicy::Precise => return_alias_bits(
+                            e,
+                            &PrecisePolicy {
+                                provenance,
+                                extern_table,
+                                local_bits: &bits,
+                            },
+                        ),
+                        LocalProvenancePolicy::OwnedStringCarrier => return_alias_bits(
+                            e,
+                            &OwnedStringCarrierPolicy {
+                                provenance,
+                                extern_table,
+                                local_bits: &bits,
+                            },
+                        ),
+                    },
                     DefSource::Opaque => AliasBits::OPAQUE,
                 };
             }
@@ -4800,6 +4831,64 @@ impl LeafPolicy for PrecisePolicy<'_> {
     }
 }
 
+/// String-return-carrier sibling of [`PrecisePolicy`].
+///
+/// This policy changes exactly one leaf: a call through a first-class callable
+/// value is an independently releasable carrier when its concrete result is a
+/// `string`. Every callable pair targets a compiler-generated
+/// `ClosureInvoke` shim, and those shims establish one caller-owned string
+/// share before returning: fresh results transfer their existing `+1`, string
+/// parameters are retained at the return edge, and string capture/field loads
+/// are retained when loaded.
+///
+/// The policy is consumed only by
+/// [`compute_owned_string_return_carrier_provenance`], whose result is queried
+/// only after the call site's concrete result type has been checked as
+/// `string`. It must never feed the general fresh-owner/composite authorities:
+/// an indirect call remains pointer-provenance-opaque there. Direct calls,
+/// including declared externs, delegate unchanged to [`PrecisePolicy`], so an
+/// ownership-opaque extern and every Hew wrapper that forwards it remain
+/// denied.
+#[derive(Debug)]
+struct OwnedStringCarrierPolicy<'a> {
+    provenance: &'a HashMap<hew_hir::ItemId, AliasBits>,
+    extern_table: &'a ExternContractTable,
+    local_bits: &'a HashMap<BindingId, AliasBits>,
+}
+
+impl OwnedStringCarrierPolicy<'_> {
+    fn precise(&self) -> PrecisePolicy<'_> {
+        PrecisePolicy {
+            provenance: self.provenance,
+            extern_table: self.extern_table,
+            local_bits: self.local_bits,
+        }
+    }
+}
+
+impl LeafPolicy for OwnedStringCarrierPolicy<'_> {
+    fn classify_call(&self, callee: &HirExpr) -> CallClass {
+        if !matches!(
+            &callee.kind,
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Item(_),
+                ..
+            }
+        ) {
+            return CallClass::Fresh;
+        }
+        self.precise().classify_call(callee)
+    }
+
+    fn leaf_bits(&self, expr: &HirExpr) -> AliasBits {
+        self.precise().leaf_bits(expr)
+    }
+
+    fn missing_position_bits(&self, enclosing: &HirExpr) -> AliasBits {
+        self.precise().missing_position_bits(enclosing)
+    }
+}
+
 /// The module return-provenance summary: `ItemId → ReturnProvenance`, a monotone
 /// least-fixpoint over the three-state lattice that starts every function at `∅`
 /// and grows by union to stability.
@@ -4842,6 +4931,62 @@ pub fn compute_call_scrutinee_return_provenance(
             let mut bits = provenance[&id];
             for e in &return_values {
                 bits |= return_alias_bits(e, &policy);
+            }
+            if bits != provenance[&id] {
+                provenance.insert(id, bits);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    provenance
+}
+
+/// String-specific module fixpoint proving that each function return path
+/// establishes one independently releasable carrier.
+///
+/// This mirrors [`compute_call_scrutinee_return_provenance`] but runs under
+/// [`OwnedStringCarrierPolicy`]. Keeping the tables separate is load-bearing:
+/// the general table must continue to classify indirect calls as `OPAQUE` for
+/// composite/destructive-owner decisions, while this table may use the
+/// `ClosureInvoke` string ABI's retained-share postcondition. Direct opaque
+/// externs are still `OPAQUE` and that bit propagates through arbitrary Hew
+/// wrapper depth.
+fn compute_owned_string_return_carrier_provenance(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    extern_table: &ExternContractTable,
+    may_mutate: &HashMap<hew_hir::ItemId, bool>,
+) -> HashMap<hew_hir::ItemId, ReturnProvenance> {
+    let mut provenance: HashMap<hew_hir::ItemId, AliasBits> =
+        fns.keys().map(|&id| (id, AliasBits::EMPTY)).collect();
+    loop {
+        let mut changed = false;
+        for (&id, &f) in fns {
+            let local_bits = local_binding_provenance_impl(
+                f,
+                &provenance,
+                extern_table,
+                may_mutate,
+                LocalProvenancePolicy::OwnedStringCarrier,
+            )
+            .0;
+            let policy = OwnedStringCarrierPolicy {
+                provenance: &provenance,
+                extern_table,
+                local_bits: &local_bits,
+            };
+            let mut return_values: Vec<&HirExpr> = Vec::new();
+            crate::lower::collect_return_values_in_block(&f.body, &mut return_values);
+            if let Some(tail) = &f.body.tail {
+                if !matches!(tail.ty, ResolvedTy::Unit | ResolvedTy::Never) {
+                    return_values.push(tail);
+                }
+            }
+            let mut bits = provenance[&id];
+            for value in return_values {
+                bits |= return_alias_bits(value, &policy);
             }
             if bits != provenance[&id] {
                 provenance.insert(id, bits);
@@ -5100,6 +5245,55 @@ pub(crate) mod tests {
         assert!(
             !authority.item_returns_retained_string_owner(fn_id(&module, "mixed")),
             "one forwarding return path must veto the retained-projection authority"
+        );
+    }
+
+    #[test]
+    fn indirect_string_carrier_authority_is_separate_and_extern_closed() {
+        let module = lower_source(
+            r#"
+            extern "C" {
+                fn host_opaque_string() -> string;
+            }
+
+            fn invoke(make: fn() -> string) -> string {
+                make()
+            }
+
+            fn invoke_via_local(make: fn() -> string) -> string {
+                let value = make();
+                value
+            }
+
+            fn opaque_wrapper() -> string {
+                unsafe { host_opaque_string() }
+            }
+            "#,
+        );
+        let origin_fns = origin_fns_of(&module);
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        let context = build_call_scrutinee_provenance(&module, &origin_fns, &coarse);
+
+        for name in ["invoke", "invoke_via_local"] {
+            let id = fn_id(&module, name);
+            assert!(
+                context.provenance[&id].is_opaque(),
+                "`{name}` must remain opaque to the general pointer/composite \
+                 freshness authority"
+            );
+            assert!(
+                context.owned_string_return_carriers.contains(&id),
+                "`{name}` must carry the ClosureInvoke ABI's independently \
+                 releasable string-share fact, including through a local alias"
+            );
+        }
+
+        let opaque = fn_id(&module, "opaque_wrapper");
+        assert!(
+            context.provenance[&opaque].is_opaque()
+                && !context.owned_string_return_carriers.contains(&opaque),
+            "a direct ownership-opaque extern wrapper must be denied by both \
+             authorities; the closure-only rule must not launder it"
         );
     }
 

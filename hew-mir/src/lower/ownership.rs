@@ -45,16 +45,29 @@ impl WholeParamEmbedClass {
 /// return-provenance authority. `EMPTY` means every reachable value path
 /// constructs or transfers exactly one caller-releasable string share. A named
 /// local is deliberately opaque here because its ordinary scope owner already
-/// carries the release. Any static literal, parameter root, mutable alias,
-/// indirect call, or unmodelled leaf likewise contributes `OPAQUE` and
-/// withholds the synthetic owner.
+/// carries the release. Any static literal, parameter root, mutable alias, or
+/// unmodelled leaf likewise contributes `OPAQUE` and withholds the synthetic
+/// owner. An indirect call through a typed callable is the one non-item call
+/// admitted: the compiler-owned `ClosureInvoke` ABI guarantees one releasable
+/// string share to its caller.
 struct BorrowedStringTempProducerPolicy<'a> {
     builder: &'a Builder,
 }
 
 impl crate::return_provenance::LeafPolicy for BorrowedStringTempProducerPolicy<'_> {
     fn classify_call(&self, callee: &HirExpr) -> crate::return_provenance::CallClass {
-        if self.builder.call_produces_fresh_owned_string(callee)
+        let indirect_closure_invoke = !matches!(
+            &callee.kind,
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Item(_),
+                ..
+            }
+        ) && matches!(
+            self.builder.subst_ty(&callee.ty),
+            ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+        );
+        if indirect_closure_invoke
+            || self.builder.call_produces_fresh_owned_string(callee)
             || self.builder.user_call_produces_owned_string_carrier(callee)
         {
             crate::return_provenance::CallClass::Fresh
@@ -95,6 +108,89 @@ impl crate::return_provenance::LeafPolicy for BorrowedStringTempProducerPolicy<'
     }
 }
 
+/// Return-carrier proof for one compiler-generated closure invoke shim.
+///
+/// Unlike [`BorrowedStringTempProducerPolicy`], a captured or closure-parameter
+/// string is admissible here: the shim lowers the former through a retaining
+/// `ClosureEnvFieldLoad` and inserts `StringRetain` for the latter at its return
+/// edge. Calls still use the module carrier authority, so a direct opaque
+/// extern wrapper poisons the proof instead of acquiring the closure ABI's
+/// caller-owned postcondition.
+struct ClosureStringReturnPolicy<'a> {
+    builder: &'a Builder,
+    retained_binding_returns: HashSet<BindingId>,
+}
+
+impl crate::return_provenance::LeafPolicy for ClosureStringReturnPolicy<'_> {
+    fn classify_call(&self, callee: &HirExpr) -> crate::return_provenance::CallClass {
+        let indirect_closure_invoke = !matches!(
+            &callee.kind,
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Item(_),
+                ..
+            }
+        ) && matches!(
+            self.builder.subst_ty(&callee.ty),
+            ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+        );
+        if indirect_closure_invoke
+            || self.builder.call_produces_fresh_owned_string(callee)
+            || self.builder.user_call_produces_owned_string_carrier(callee)
+        {
+            crate::return_provenance::CallClass::Fresh
+        } else {
+            crate::return_provenance::CallClass::Opaque
+        }
+    }
+
+    fn leaf_bits(&self, expr: &HirExpr) -> crate::return_provenance::AliasBits {
+        match &expr.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } if matches!(self.builder.subst_ty(&expr.ty), ResolvedTy::String)
+                && self.retained_binding_returns.contains(id) =>
+            {
+                crate::return_provenance::AliasBits::EMPTY
+            }
+            HirExprKind::Binary {
+                op: super::BinaryOp::Add,
+                ..
+            } if matches!(self.builder.subst_ty(&expr.ty), ResolvedTy::String) => {
+                crate::return_provenance::AliasBits::EMPTY
+            }
+            HirExprKind::ResolvedImplCall { target_symbol, .. }
+                if crate::runtime_symbols::callee_ownership_contract(target_symbol)
+                    .produces_fresh_owned_string() =>
+            {
+                crate::return_provenance::AliasBits::EMPTY
+            }
+            HirExprKind::ConnAwaitRead {
+                to_string: true,
+                deadline_ns: None,
+                ..
+            } if matches!(self.builder.subst_ty(&expr.ty), ResolvedTy::String) => {
+                // `await conn.read_string()` materialises bytes on the suspend
+                // resume edge, then converts them through
+                // `hew_bytes_to_string`. That runtime contract returns a fresh
+                // header-aware +1 string and borrows the bytes source, so the
+                // closure return transfers one independent share. Deadline
+                // reads return a Result carrier and are deliberately excluded.
+                crate::return_provenance::AliasBits::EMPTY
+            }
+            _ => crate::return_provenance::AliasBits::OPAQUE,
+        }
+    }
+
+    fn materialized_leaf_bits(&self, expr: &HirExpr) -> crate::return_provenance::AliasBits {
+        if matches!(self.builder.subst_ty(&expr.ty), ResolvedTy::String) {
+            crate::return_provenance::AliasBits::EMPTY
+        } else {
+            crate::return_provenance::AliasBits::OPAQUE
+        }
+    }
+}
+
 impl Builder {
     /// The ownership classify context over this builder's live registries — the
     /// same three tables the drop derivations read, bundled so
@@ -105,6 +201,44 @@ impl Builder {
             &self.enum_layouts,
             &self.type_classes,
         )
+    }
+
+    /// Whether every visible string return path of a closure body establishes
+    /// the `ClosureInvoke` ABI's one-share postcondition.
+    pub(crate) fn closure_body_returns_owned_string_carrier(
+        &self,
+        body: &HirExpr,
+        params: &[HirBinding],
+        captures: &[hew_hir::HirClosureCapture],
+    ) -> bool {
+        let retained_binding_returns = params
+            .iter()
+            .map(|binding| binding.id)
+            .chain(captures.iter().map(|capture| capture.binding))
+            .collect();
+        let policy = ClosureStringReturnPolicy {
+            builder: self,
+            retained_binding_returns,
+        };
+        let HirExprKind::Block(block) = &body.kind else {
+            return crate::return_provenance::return_alias_bits(body, &policy).is_fresh();
+        };
+        let mut return_values = Vec::new();
+        super::collect_return_values_in_block(block, &mut return_values);
+        if let Some(tail) = &block.tail {
+            // A unit/never tail after an explicit `return <value>` is not a
+            // value handed back by the closure and must not poison that path.
+            if !matches!(
+                self.subst_ty(&tail.ty),
+                ResolvedTy::Unit | ResolvedTy::Never
+            ) {
+                return_values.push(tail);
+            }
+        }
+        !return_values.is_empty()
+            && return_values
+                .into_iter()
+                .all(|value| crate::return_provenance::return_alias_bits(value, &policy).is_fresh())
     }
     /// The single registration authority for the per-function owned-locals
     /// ledger: every seam that introduces a scope-exit drop obligation routes

@@ -575,6 +575,21 @@ impl Builder {
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             ..self.child_builder_tables()
         };
+        if matches!(ret_ty, ResolvedTy::String)
+            && !self.closure_body_returns_owned_string_carrier(body, params, captures)
+        {
+            builder.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "closure string return without an owned-return contract".to_string(),
+                    site: body.site,
+                },
+                note: "a `fn(...) -> string` closure must return one independently \
+                       releasable share; this body can reach an ownership-opaque \
+                       string producer, so admitting its invoke result would \
+                       manufacture a caller drop obligation"
+                    .to_string(),
+            });
+        }
 
         let env_place = builder.alloc_local(env_ptr_ty.clone());
         for (idx, capture) in captures.iter().enumerate() {
@@ -603,6 +618,18 @@ impl Builder {
         }
         for param in params {
             let place = builder.alloc_local(param.ty.clone());
+            if let Place::Local(local) = place {
+                // Closure-invoke arguments use the same borrowed by-value ABI
+                // as ordinary Hew `string` parameters. Mirror `lower_params`
+                // here so return ownership derivation can distinguish the
+                // borrowed entry definition from a fresh producer: returning
+                // this slot must retain one share for the caller, while a
+                // fresh string result must not be retained again.
+                builder.parameter_locals.insert(local);
+                if matches!(builder.subst_ty(&param.ty), ResolvedTy::String) {
+                    builder.borrowed_string_param_locals.insert(local);
+                }
+            }
             builder.binding_locals.insert(param.id, place);
             builder.seed_fn_param_provenance(param);
         }

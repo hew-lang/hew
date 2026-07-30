@@ -33,8 +33,11 @@ source "$REPO_ROOT/scripts/lib/line-set.sh"
 # shellcheck source=scripts/lib/corpus-floor.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/stdlib-expected-failures.txt"
-HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
+HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
 STDLIB_DIR="$REPO_ROOT/std"
 
 usage() {

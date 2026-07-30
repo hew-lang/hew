@@ -49,6 +49,6 @@ o2-differential-outcomes	min	1169	200	per-test outcomes compared by the O0-vs-O2
 sandbox-vm-binaries	exact	4	-	VM-dependent hew-sandbox-wasm test binaries requiring whole-binary exclusion
 stdlib-int-surface-files	exact	74	-	tracked std/ .hew files scanned for removed int/uint aliases
 stdlib-proof-modules	exact	70	-	public stdlib modules mapped to executable proof fixtures
-stdlib-ratchet-files	exact	73	-	std/ .hew files type-checked by scripts/stdlib-ratchet.sh
+stdlib-ratchet-files	exact	74	-	std/ .hew files type-checked by scripts/stdlib-ratchet.sh
 surface-example-expectations	exact	14	-	v0.5 surface examples compared against a paired .expected
 ux-example-expectations	exact	27	-	ux and progressive tutorials compared against a paired .expected

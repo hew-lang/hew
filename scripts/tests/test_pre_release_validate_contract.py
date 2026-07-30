@@ -13,21 +13,42 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = ROOT / "scripts" / "pre-release-validate.sh"
+WINDOWS_BUILD_SCRIPT = ROOT / "scripts" / "windows-release-build.ps1"
 
 
 def validator() -> str:
     return VALIDATOR.read_text()
 
 
+def release_surface() -> str:
+    """All source that makes up the staged Windows release-build contract."""
+    return validator() + "\n" + WINDOWS_BUILD_SCRIPT.read_text()
+
+
 def assert_isolated_staging(text: str) -> None:
     assert "mktemp -d /tmp/hew-pre-release.XXXXXX" in text
     assert "hew-pre-release-' + [guid]::NewGuid()" in text
+    assert (
+        'WINDOWS_STAGE_ROOT="${HEW_WINDOWS_STAGE_ROOT:-${WINDOWS_STAGE_ROOT:-}}"'
+        in text
+    )
+    assert "\\$Drive.Free -lt 8GB" in text
     assert "^/tmp/hew-pre-release\\.[A-Za-z0-9._-]+$" in text
     assert "^[A-Za-z]:/[A-Za-z0-9._/\\ -]*/hew-pre-release-[0-9A-Fa-f-]+$" in text
     assert "--delete" not in text
     assert "git pull" not in text
     assert "git reset" not in text
     assert "git fetch" not in text
+    assert (
+        text.count("--exclude target --exclude .git --exclude build --exclude .tmp")
+        == 3
+    )
+    assert text.count("--exclude node_modules") == 3
+    assert (
+        "--exclude='./target' --exclude='./.git' --exclude='./build' --exclude='./.tmp'"
+        in text
+    )
+    assert "--exclude='node_modules'" in text
     assert '. "${MACOS_HOST}:${remote_stage}/"' in text
     assert '. "${LINUX_AARCH64_HOST}:${remote_stage}/"' in text
     assert '. "${FREEBSD_HOST}:${remote_stage}/"' in text
@@ -54,10 +75,42 @@ def assert_macos_llvm_discovery_contract(text: str) -> None:
     assert "brew --prefix llvm@22 2>/dev/null || echo" not in text
 
 
+def assert_windows_toolchain_bootstrap_contract(text: str) -> None:
+    assert "Microsoft Visual Studio\\Installer\\vswhere.exe" in text
+    assert "Microsoft.VisualStudio.Component.VC.Tools.x86.x64" in text
+    assert "Common7\\Tools\\VsDevCmd.bat" in text
+    assert "-no_logo -arch=x64 -host_arch=x64 >nul && set" in text
+    assert "[Environment]::SetEnvironmentVariable" in text
+    assert "$env:WindowsSdkDir" in text
+    assert "$env:LIB" in text
+    assert "$env:AWS_LC_SYS_PREBUILT_NASM = '1'" in text
+    assert "$env:CARGO_BUILD_JOBS = '2'" in text
+
+
+def assert_windows_staged_build_transport_contract(text: str) -> None:
+    assert 'run_windows_staged_build "${remote_stage}"' in text
+    assert "scripts/windows-release-build.ps1" in text
+    assert "Set-Location (Split-Path -Parent $PSScriptRoot)" in text
+    assert (
+        "cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release" in text
+    )
+    assert "release library consumer proof" in text
+    assert text.count("FromBase64String('${llvm_config_b64}')") == 2
+    assert text.count("FromBase64String('${llvm_prefix_b64}')") == 2
+    assert "Test-Path '${WINDOWS_LLVM_CONFIG}'" not in text
+    assert "$env:Path = '${WINDOWS_LLVM_PREFIX}" not in text
+
+
 _FAKE_SSH = r"""#!/usr/bin/env bash
 set -eu
 printf 'ssh %s\n' "$*" >> "$FAKE_REMOTE_LOG"
 case "$*" in
+  *"fake-windows"*" true")
+    # A real Windows OpenSSH server routes this through cmd.exe, where the
+    # Unix utility `true` does not exist. Keep the fake honest so the
+    # platform reachability probe must use PowerShell too.
+    exit 97
+    ;;
   *"mktemp -d /tmp/hew-pre-release.XXXXXX"*)
     printf '%s\n' "${FAKE_UNIX_STAGE:-/tmp/hew-pre-release.fake}"
     ;;
@@ -68,8 +121,9 @@ case "$*" in
     fi
     count=$((count + 1))
     printf '%s\n' "$count" > "$FAKE_WINDOWS_STATE"
-    if [ "$count" -eq 1 ]; then
-      printf '%s\n' "${FAKE_WINDOWS_STAGE:-C:/Temp/hew-pre-release-00000000-0000-0000-0000-000000000001}"
+    # Call 1 is the PowerShell reachability probe; call 2 creates the stage.
+    if [ "$count" -eq 2 ]; then
+      printf '%s\r\n' "${FAKE_WINDOWS_STAGE:-C:/Temp/hew-pre-release-00000000-0000-0000-0000-000000000001}"
     fi
     ;;
 esac
@@ -145,6 +199,14 @@ def test_macos_llvm_discovery_contract() -> None:
     assert_macos_llvm_discovery_contract(validator())
 
 
+def test_windows_toolchain_bootstrap_contract() -> None:
+    assert_windows_toolchain_bootstrap_contract(release_surface())
+
+
+def test_windows_staged_build_transport_contract() -> None:
+    assert_windows_staged_build_transport_contract(release_surface())
+
+
 def test_macos_llvm_discovery_mutations_are_rejected() -> None:
     original = validator()
     for mutation in (
@@ -162,6 +224,62 @@ def test_macos_llvm_discovery_mutations_are_rejected() -> None:
         raise AssertionError("macOS LLVM discovery mutation escaped the contract")
 
 
+def test_windows_toolchain_bootstrap_mutations_are_rejected() -> None:
+    original = release_surface()
+    for mutation in (
+        original.replace(
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "Microsoft.VisualStudio.Component.CoreEditor",
+            1,
+        ),
+        original.replace("Common7\\Tools\\VsDevCmd.bat", "missing.bat", 1),
+        original.replace("[Environment]::SetEnvironmentVariable", "Write-Output", 1),
+        original.replace(
+            "$env:AWS_LC_SYS_PREBUILT_NASM = '1'",
+            "$env:AWS_LC_SYS_PREBUILT_NASM = '0'",
+            1,
+        ),
+        original.replace(
+            "$env:CARGO_BUILD_JOBS = '2'", "$env:CARGO_BUILD_JOBS = '64'", 1
+        ),
+    ):
+        try:
+            assert_windows_toolchain_bootstrap_contract(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError(
+            "Windows developer-environment mutation escaped the contract"
+        )
+
+
+def test_windows_staged_build_transport_mutations_are_rejected() -> None:
+    original = release_surface()
+    for mutation in (
+        original.replace(
+            'run_windows_staged_build "${remote_stage}"', "Write-Output inline-build", 1
+        ),
+        original.replace(
+            "scripts/windows-release-build.ps1", "scripts/inline-build.ps1"
+        ),
+        original.replace(
+            "Set-Location (Split-Path -Parent $PSScriptRoot)", "Set-Location C:/hew", 1
+        ),
+        original.replace(
+            "FromBase64String('${llvm_config_b64}')", "'${WINDOWS_LLVM_CONFIG}'", 1
+        ),
+        original.replace(
+            "FromBase64String('${llvm_prefix_b64}')", "'${WINDOWS_LLVM_PREFIX}'", 1
+        ),
+    ):
+        try:
+            assert_windows_staged_build_transport_contract(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError(
+            "Windows staged-build transport mutation escaped the contract"
+        )
+
+
 def test_checkout_overwrite_mutations_are_rejected() -> None:
     original = validator()
     for mutation in (
@@ -174,6 +292,21 @@ def test_checkout_overwrite_mutations_are_rejected() -> None:
         except AssertionError:
             continue
         raise AssertionError("remote-checkout overwrite mutation escaped the contract")
+
+
+def test_ephemeral_output_exclusion_mutations_are_rejected() -> None:
+    original = validator()
+    for mutation in (
+        original.replace(" --exclude .tmp", "", 1),
+        original.replace("--exclude='./.tmp' ", "", 1),
+        original.replace(" --exclude node_modules", "", 1),
+        original.replace("--exclude='node_modules' ", "", 1),
+    ):
+        try:
+            assert_isolated_staging(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("ephemeral candidate output escaped the staging contract")
 
 
 def test_linux_arm64_uses_only_the_staged_candidate() -> None:
@@ -214,12 +347,44 @@ def test_freebsd_uses_only_the_staged_candidate() -> None:
 def test_windows_uses_only_the_staged_candidate() -> None:
     result, calls = run_with_fake_remote("windows")
     assert result.returncode == 0, result.stdout + result.stderr
+    assert "fake-windows true" not in calls
+    assert calls.count("-EncodedCommand") >= 2
     assert "scp " in calls
     assert (
         "fake-windows:C:/Temp/hew-pre-release-00000000-0000-0000-0000-000000000001/candidate.tar.gz"
         in calls
     )
+    assert "windows-release-build.ps1" in validator()
+    encoded_calls = [line for line in calls.splitlines() if "-EncodedCommand" in line]
+    assert encoded_calls
+    # Windows OpenSSH runs the remote invocation through cmd.exe. The staged
+    # build launcher must stay well below cmd.exe's 8191-character limit;
+    # the former inline build payload was far larger than this bound.
+    assert max(map(len, encoded_calls)) < 4096
     assert "origin main" not in calls
+
+
+def test_windows_accepts_a_safe_spacious_stage_root() -> None:
+    stage = (
+        "P:/hew-pre-release-stages/hew-pre-release-00000000-0000-0000-0000-000000000001"
+    )
+    result, calls = run_with_fake_remote(
+        "windows",
+        {
+            "HEW_WINDOWS_STAGE_ROOT": "P:/hew-pre-release-stages",
+            "FAKE_WINDOWS_STAGE": stage,
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"fake-windows:{stage}/candidate.tar.gz" in calls
+
+
+def test_windows_rejects_an_unsafe_stage_root_before_sync() -> None:
+    result, calls = run_with_fake_remote(
+        "windows", {"HEW_WINDOWS_STAGE_ROOT": "P:/hew-stages'; injected"}
+    )
+    assert result.returncode != 0
+    assert "scp " not in calls
 
 
 def test_malformed_remote_stage_is_rejected_before_sync() -> None:
@@ -277,13 +442,20 @@ def test_requested_unreachable_host_fails_closed() -> None:
 _TESTS = [
     test_static_staging_contract,
     test_macos_llvm_discovery_contract,
+    test_windows_toolchain_bootstrap_contract,
+    test_windows_staged_build_transport_contract,
     test_macos_llvm_discovery_mutations_are_rejected,
+    test_windows_toolchain_bootstrap_mutations_are_rejected,
+    test_windows_staged_build_transport_mutations_are_rejected,
     test_checkout_overwrite_mutations_are_rejected,
+    test_ephemeral_output_exclusion_mutations_are_rejected,
     test_linux_arm64_uses_only_the_staged_candidate,
     test_macos_uses_only_the_staged_candidate,
     test_macos_forwards_an_explicit_llvm_prefix_to_the_remote_shell,
     test_freebsd_uses_only_the_staged_candidate,
     test_windows_uses_only_the_staged_candidate,
+    test_windows_accepts_a_safe_spacious_stage_root,
+    test_windows_rejects_an_unsafe_stage_root_before_sync,
     test_malformed_remote_stage_is_rejected_before_sync,
     test_staging_failure_cannot_be_masked_by_a_later_remote_command,
     test_requested_unreachable_host_fails_closed,

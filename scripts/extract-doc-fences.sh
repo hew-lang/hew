@@ -41,7 +41,7 @@
 #                               The dir is created if absent; contents are
 #                               replaced each run.
 #   --hew-bin <path>            Override the hew binary.
-#                               Default: target/debug/hew
+#                               Default: Cargo's resolved debug output.
 
 set -euo pipefail
 
@@ -52,10 +52,13 @@ source "$REPO_ROOT/scripts/lib/line-set.sh"
 # shellcheck source=scripts/lib/corpus-floor.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
 
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/doc-test-expected-failures.txt"
 OUTDIR="$REPO_ROOT/.tmp/doc-fences"
-HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
+HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
 
 DOCS=(
     "docs/hew-language-guide.md:guide"
@@ -73,7 +76,7 @@ do not block the gate, but new failures always do.
 Options:
   --expected-failures <path>  Override default (scripts/doc-test-expected-failures.txt).
   --outdir <dir>              Override scratch directory (default: .tmp/doc-fences/).
-  --hew-bin <path>            Override hew binary (default: target/debug/hew).
+  --hew-bin <path>            Override hew binary (default: Cargo's resolved debug output).
   --help                      Show this message.
 EOF
 }

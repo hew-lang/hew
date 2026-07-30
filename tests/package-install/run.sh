@@ -4,8 +4,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HEW="${ROOT}/target/debug/hew"
-ADZE="${ROOT}/target/debug/adze"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+source "${ROOT}/scripts/lib/cargo-output-dir.sh"
+CARGO_DEBUG_DIR="$(cargo_debug_dir "${ROOT}")"
+HEW="${HEW_BIN:-${CARGO_DEBUG_DIR}/hew}"
+ADZE="${ADZE_BIN:-${CARGO_DEBUG_DIR}/adze}"
 
 fail() {
   echo "FAIL package-install: $*" >&2

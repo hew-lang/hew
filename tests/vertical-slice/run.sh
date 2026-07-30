@@ -15,11 +15,25 @@ resolve_timeout() {
 TIMEOUT="$(resolve_timeout)"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HEW="${HEW_BIN:-${ROOT}/target/debug/hew}"
+# Keep direct runs aligned with Cargo's target-dir and build-target resolution.
+# RC1 gates use an isolated target tree, and falling back to the repository's
+# default target would silently exercise an older compiler binary than the one
+# built below.
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/lib/cargo-output-dir.sh"
+cargo_debug_dir="$(cargo_debug_dir "${ROOT}")"
+HEW="${HEW_BIN:-${cargo_debug_dir}/hew}"
 
 # libhew.a is the combined runtime+stdlib static library linked into native outputs.
 cargo build -q -p hew-lib
 cargo build -q -p hew-cli
+
+if [[ ! -x "${HEW}" ]]; then
+  echo "error: Hew compiler binary not found at ${HEW}" >&2
+  echo "       set HEW_BIN or check Cargo's resolved debug output directory" >&2
+  exit 1
+fi
 
 mkdir -p "${ROOT}/.tmp"
 accept_output="${ROOT}/.tmp/vertical-slice-accept-output.txt"

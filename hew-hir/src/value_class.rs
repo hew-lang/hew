@@ -71,8 +71,15 @@ pub fn lookup_type_marker_for_ty(
         return None;
     };
 
-    if builtin.is_some() {
-        return lookup_type_marker(name, type_classes);
+    if let Some(builtin) = builtin {
+        // Builtin ownership is an identity fact, not a spelling convention.
+        // In particular, a user record named `Sender` or `Receiver` must not
+        // inherit the channel endpoint's resource/drop class merely because
+        // the compiler also has a builtin with that short name.  Use the
+        // carried discriminator and its canonical registration so qualified
+        // spellings such as `channel.Sender<T>` retain the endpoint class.
+        return crate::builtin_type_classes::builtin_type_registration(builtin.canonical_name())
+            .map(|registration| registration.marker);
     }
 
     if !args.is_empty() {

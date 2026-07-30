@@ -257,6 +257,19 @@ pub fn crash_info_type_registration() -> &'static BuiltinTypeRegistration {
 /// program-start so user programs never need to see the compiler-internal table.
 pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
     for registration in builtin_type_registrations() {
+        // Channel endpoints are admitted through `ResolvedTy::Named.builtin`,
+        // never through an unqualified table row.  Keeping a bare `Sender` or
+        // `Receiver` resource row here would make a same-named user record
+        // acquire the endpoint close/drop plan before declaration metadata is
+        // available.  The typed lookup in `lookup_type_marker_for_ty` reads
+        // this registration directly, including for `channel.Sender` and
+        // `channel.Receiver` spellings.
+        if matches!(
+            registration.builtin,
+            BuiltinType::Sender | BuiltinType::Receiver
+        ) {
+            continue;
+        }
         debug_assert!(
             registration.marker != ResourceMarker::BitCopy || registration.close_method.is_none(),
             "BitCopy builtin types must not register close methods"
@@ -309,14 +322,13 @@ mod tests {
     }
 
     #[test]
-    fn channel_endpoints_are_seeded_as_resources() {
+    fn channel_endpoints_use_typed_registration_not_bare_seed_rows() {
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
         for endpoint in ["Sender", "Receiver"] {
-            assert_eq!(
-                table.get(endpoint),
-                Some(&(ResourceMarker::Resource, Some("close".to_string()))),
-                "{endpoint} must carry its runtime close through ValueClass admission"
+            assert!(
+                !table.contains_key(endpoint),
+                "{endpoint} must not make a same-named user declaration into a builtin resource"
             );
         }
     }
@@ -326,14 +338,29 @@ mod tests {
         let mut table: TypeClassTable = HashMap::default();
         seed_builtin_type_classes(&mut table);
         for (name, builtin) in [
-            ("Sender", BuiltinType::Sender),
-            ("Receiver", BuiltinType::Receiver),
+            ("channel.Sender", BuiltinType::Sender),
+            ("channel.Receiver", BuiltinType::Receiver),
         ] {
             let ty = ResolvedTy::named_builtin(name, builtin, vec![ResolvedTy::String]);
             assert_eq!(
                 ValueClass::of_ty(&ty, &table),
                 ValueClass::AffineResource,
                 "{name}<string> must enter resource drop elaboration"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_endpoint_names_without_builtin_identity_are_not_resources() {
+        let mut table: TypeClassTable = HashMap::default();
+        seed_builtin_type_classes(&mut table);
+
+        for name in ["Sender", "Receiver", "channel.Sender", "channel.Receiver"] {
+            let ty = ResolvedTy::named_user(name, vec![ResolvedTy::String]);
+            assert_ne!(
+                ValueClass::of_ty(&ty, &table),
+                ValueClass::AffineResource,
+                "user `{name}` without builtin identity must not receive channel endpoint teardown"
             );
         }
     }

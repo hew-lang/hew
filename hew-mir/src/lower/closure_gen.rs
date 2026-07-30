@@ -661,12 +661,13 @@ impl Builder {
         let mut blocks = builder.finalize_blocks(Terminator::Return);
         apply_nested_fresh_string_temp_drops(
             &mut blocks,
-            &builder.suspend_kinds,
+            &mut builder.suspend_kinds,
             &builder.locals,
             &builder.binding_locals,
             &builder
                 .call_scrutinee_provenance
                 .owned_string_return_carrier_symbols,
+            &mut builder.suspend_abandon_extra_drops,
             &mut builder.instr_spans,
         );
         // #2542 — mirror the closure-shim ramp's string splice for the bytes
@@ -2223,12 +2224,13 @@ impl Builder {
         // inline drop as a read of its temp and codegen emits the release.
         apply_nested_fresh_string_temp_drops(
             &mut blocks,
-            &body_builder.suspend_kinds,
+            &mut body_builder.suspend_kinds,
             &body_builder.locals,
             &body_builder.binding_locals,
             &body_builder
                 .call_scrutinee_provenance
                 .owned_string_return_carrier_symbols,
+            &mut body_builder.suspend_abandon_extra_drops,
             &mut body_builder.instr_spans,
         );
         // #2542 — the gen-body ramp needs the identical bytes user-call-result

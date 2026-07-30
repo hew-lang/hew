@@ -402,6 +402,17 @@ struct ReplyChannelSwap {
         allow(dead_code, reason = "read only by the native-only crash unwind path")
     )]
     driver_channel: *mut c_void,
+    /// Caller-owned fresh strings borrowed by the synchronous child-advance
+    /// call. A normal pop discards these obligations because the parent keeps
+    /// running to its ordinary MIR drop. A trap/longjmp bypasses that drop, so
+    /// [`reply_channel_swap_unwind`] releases each value after tearing down the
+    /// driver channel. The vector is populated only by the compiler-owned
+    /// suspending-closure driver.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(dead_code, reason = "read only by the native-only crash unwind path")
+    )]
+    unwind_string_args: Vec<*mut c_void>,
 }
 
 thread_local! {
@@ -458,7 +469,32 @@ pub extern "C" fn hew_context_reply_channel_swap_push(ch: *mut c_void) {
             saved_channel,
             saved_consumed,
             driver_channel: ch,
+            unwind_string_args: Vec::new(),
         });
+    });
+}
+
+/// Attach one caller-owned fresh string to the innermost synchronous
+/// suspending-closure call.
+///
+/// The normal pop deliberately does not release it: normal completion and
+/// parked abandonment have their own mutually-exclusive MIR authorities. If
+/// the child traps before returning its coroutine handle (or during a later
+/// synchronous `hew_cont_resume`), scheduler crash recovery unwinds this frame
+/// and releases the argument because control can no longer reach either MIR
+/// edge. Ownership multiplicity is preserved: two proven shares may carry the
+/// same COW data pointer and therefore require two recorded drops.
+#[no_mangle]
+pub extern "C" fn hew_context_reply_channel_swap_add_string_cleanup(value: *mut c_void) {
+    if value.is_null() {
+        return;
+    }
+    REPLY_CHANNEL_SWAP_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let Some(swap) = stack.last_mut() else {
+            return;
+        };
+        swap.unwind_string_args.push(value);
     });
 }
 
@@ -509,6 +545,11 @@ pub(crate) fn reply_channel_swap_unwind() {
             // driver via `hew_reply_channel_new` and retained once; teardown
             // cancels and releases both refs, matching the abandon path.
             unsafe { teardown_driver_channel(swap.driver_channel) };
+        }
+        for value in swap.unwind_string_args {
+            // SAFETY: codegen registers only a caller-owned live Hew string
+            // argument whose normal MIR release was bypassed by this unwind.
+            unsafe { crate::string::hew_string_drop(value.cast()) };
         }
     }
 }
@@ -1033,6 +1074,167 @@ mod tests {
             "the swap stack is drained after a balanced push/pop"
         );
 
+        let _ = set_current_context(prev);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe fn test_string_with_refs(value: &str, refs: usize) -> *mut c_void {
+        assert!(refs > 0);
+        let string = crate::cabi::alloc_cstring_from_str(value);
+        assert!(!string.is_null());
+        for _ in 1..refs {
+            // SAFETY: `string` remains live for all requested ownership shares.
+            unsafe { crate::cabi::cstring_retain(string) };
+        }
+        string.cast()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe fn assert_unique_test_string_and_drop(value: *mut c_void) {
+        // `cstring_ensure_unique` returns the same pointer iff exactly one
+        // ownership share remains. If an unwind under-dropped, it returns a
+        // fresh copy and leaves the original at one ref; release both before
+        // failing so the negative assertion itself does not leak.
+        // SAFETY: callers pass a live test cstring with at least one share.
+        let unique = unsafe { crate::cabi::cstring_ensure_unique(value.cast()) };
+        if unique.cast::<c_void>() != value {
+            // SAFETY: ensure_unique left one live share at each pointer.
+            unsafe {
+                crate::cabi::free_cstring(value.cast());
+                crate::cabi::free_cstring(unique);
+            }
+            panic!("reply-channel swap unwind did not release the exact expected string shares");
+        }
+        // SAFETY: the equality above proves `value` is the one remaining live
+        // ownership share.
+        unsafe { crate::cabi::free_cstring(unique) };
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn normal_swap_pop_preserves_registered_string_obligation_for_mir() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+        let mut ctx = HewExecutionContext::default();
+        let prev = set_current_context(&raw mut ctx);
+        // SAFETY: creates one live test cstring share released below.
+        let value = unsafe { test_string_with_refs("normal-pop-owner", 1) };
+
+        hew_context_reply_channel_swap_push(0x0D0D_0D0D_usize as *mut c_void);
+        hew_context_reply_channel_swap_add_string_cleanup(value);
+        hew_context_reply_channel_swap_pop();
+
+        assert_eq!(reply_channel_swap_stack_depth(), 0);
+        // SAFETY: normal pop must leave the sole share live for the caller's
+        // ordinary MIR continuation drop.
+        unsafe { assert_unique_test_string_and_drop(value) };
+        let _ = set_current_context(prev);
+    }
+
+    #[test]
+    fn nested_swap_pop_restores_reply_channels_in_lifo_order() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+        let ambient = 0x0A0A_0A0A_usize as *mut c_void;
+        let outer = 0x0B0B_0B0B_usize as *mut c_void;
+        let inner = 0x0C0C_0C0C_usize as *mut c_void;
+        let mut ctx = HewExecutionContext {
+            reply_channel: ambient,
+            ..HewExecutionContext::default()
+        };
+        let prev = set_current_context(&raw mut ctx);
+
+        hew_context_reply_channel_swap_push(outer);
+        hew_context_reply_channel_swap_push(inner);
+        assert_eq!(ctx.reply_channel, inner);
+        assert_eq!(reply_channel_swap_stack_depth(), 2);
+
+        hew_context_reply_channel_swap_pop();
+        assert_eq!(
+            ctx.reply_channel, outer,
+            "popping the inner swap must restore the enclosing driver channel"
+        );
+        assert_eq!(reply_channel_swap_stack_depth(), 1);
+
+        hew_context_reply_channel_swap_pop();
+        assert_eq!(
+            ctx.reply_channel, ambient,
+            "popping the outer swap must restore the ambient dispatch channel"
+        );
+        assert_eq!(reply_channel_swap_stack_depth(), 0);
+        let _ = set_current_context(prev);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn crash_swap_unwind_releases_one_registered_string_share() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+        let baseline = crate::reply_channel::active_channel_count();
+        let mut ctx = HewExecutionContext::default();
+        let prev = set_current_context(&raw mut ctx);
+        let driver = crate::reply_channel::hew_reply_channel_new();
+        assert!(!driver.is_null());
+        // SAFETY: `driver` was just created and is live.
+        unsafe { crate::reply_channel::hew_reply_channel_retain(driver) };
+        // Keep one sentinel ref so the test can inspect the post-unwind count;
+        // the second ref is the caller obligation registered on the swap.
+        // SAFETY: creates two live test cstring shares released below.
+        let value = unsafe { test_string_with_refs("crash-unwind-owner", 2) };
+
+        hew_context_reply_channel_swap_push(driver.cast());
+        hew_context_reply_channel_swap_add_string_cleanup(value);
+        reply_channel_swap_unwind();
+
+        assert_eq!(reply_channel_swap_stack_depth(), 0);
+        assert_eq!(crate::reply_channel::active_channel_count(), baseline);
+        // SAFETY: unwind must have released exactly the registered share,
+        // leaving the sentinel as the unique owner.
+        unsafe { assert_unique_test_string_and_drop(value) };
+        let _ = set_current_context(prev);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn nested_swap_unwind_preserves_same_pointer_ownership_multiplicity() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+        let baseline = crate::reply_channel::active_channel_count();
+        let mut ctx = HewExecutionContext::default();
+        let prev = set_current_context(&raw mut ctx);
+        let outer_driver = crate::reply_channel::hew_reply_channel_new();
+        let inner_driver = crate::reply_channel::hew_reply_channel_new();
+        assert!(!outer_driver.is_null() && !inner_driver.is_null());
+        // SAFETY: both driver channels were just created and are live.
+        unsafe {
+            crate::reply_channel::hew_reply_channel_retain(outer_driver);
+            crate::reply_channel::hew_reply_channel_retain(inner_driver);
+        }
+        // One sentinel + two distinct ownership obligations carrying the SAME
+        // COW data pointer. Raw-pointer dedup would release only one and fail
+        // the uniqueness assertion below.
+        // SAFETY: creates three live test cstring shares released below.
+        let shared = unsafe { test_string_with_refs("two-shares-one-pointer", 3) };
+        // SAFETY: creates two live test cstring shares released below.
+        let inner = unsafe { test_string_with_refs("nested-inner-owner", 2) };
+
+        hew_context_reply_channel_swap_push(outer_driver.cast());
+        hew_context_reply_channel_swap_add_string_cleanup(shared);
+        hew_context_reply_channel_swap_add_string_cleanup(shared);
+        hew_context_reply_channel_swap_push(inner_driver.cast());
+        hew_context_reply_channel_swap_add_string_cleanup(inner);
+        assert_eq!(reply_channel_swap_stack_depth(), 2);
+
+        reply_channel_swap_unwind();
+
+        assert_eq!(reply_channel_swap_stack_depth(), 0);
+        assert_eq!(crate::reply_channel::active_channel_count(), baseline);
+        // SAFETY: two outer obligations and one inner obligation were released;
+        // each pointer retains only its explicit sentinel share.
+        unsafe {
+            assert_unique_test_string_and_drop(shared);
+            assert_unique_test_string_and_drop(inner);
+        }
         let _ = set_current_context(prev);
     }
 

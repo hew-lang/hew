@@ -26700,6 +26700,7 @@ fn dispatch_collapsed_suspend<'ctx>(
         SuspendKind::CallClosure {
             callee,
             args,
+            fresh_string_args,
             ret_ty,
             result_dest,
         } => crate::suspend::emit_suspending_call_closure_terminator(
@@ -26707,6 +26708,7 @@ fn dispatch_collapsed_suspend<'ctx>(
             crate::suspend::SuspendingCallClosureEmit {
                 callee: *callee,
                 args: args.clone(),
+                fresh_string_args: fresh_string_args.clone(),
                 ret_ty,
                 result_dest: *result_dest,
                 resume,

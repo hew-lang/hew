@@ -4216,6 +4216,15 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // ambient actor channel, AND the child's consumed-bit flip is isolated
         // from the outer dispatch's fallback/orphan-reply routing.
         "hew_context_reply_channel_swap_push" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_context_reply_channel_swap_add_string_cleanup(value: *mut c_void)
+        // -> void (`hew-runtime/src/execution_context.rs`). Adds a caller-owned
+        // fresh string argument to the innermost synchronous closure-driver
+        // swap. Normal pop leaves it for MIR; crash unwind releases it because
+        // the child trap bypassed both the normal continuation and the parked
+        // suspend-exit plan.
+        "hew_context_reply_channel_swap_add_string_cleanup" => {
+            ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
         // hew_context_reply_channel_swap_pop() -> void
         // (`hew-runtime/src/execution_context.rs`). Closes the innermost swap on
         // the NORMAL-return edge: restores the outer reply-channel pointer +

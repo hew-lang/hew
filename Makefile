@@ -7,6 +7,7 @@
 #     bin/hew              — compiler driver (Rust)
 #     bin/adze             — package manager (Rust)
 #     bin/hew-observe      — TUI actor observer (Rust)
+#     bin/hew-lsp          — language server (Rust)
 #     lib/libhew.a         — combined library: runtime + all stdlib packages
 #     lib/wasm32-wasip1/*.a — WASM runtime + focused wire stdlib archives
 #     std/*.hew            — standard library stubs
@@ -144,17 +145,19 @@ LINK_UP2 :=
 LINK_UP3 :=
 endif
 
-# ── The combined runtime + stdlib archive as a real file target ─────────────
+# ── The combined runtime + stdlib archive ───────────────────────────────────
 #
 # `cargo build -p hew-cli` produces the compiler DRIVER only; linking a compiled
-# Hew program additionally needs hew-lib's staticlib sitting beside it. Naming
-# the archive as a file (rather than hiding it behind a .PHONY target) is what
-# lets make rebuild it when a runtime or stdlib source changes, instead of
-# assuming whatever is already on disk is current.
+# Hew program additionally needs hew-lib's staticlib sitting beside it.
 #
 # Cargo emits `hew.lib` on MSVC and `libhew.a` everywhere else; keep the whole
 # build graph cross-platform so a fresh Windows host uses the same edges as
 # Linux/macOS rather than a bespoke manual `cargo build -p hew-lib` follow-up.
+#
+# Do not put `$(LIBHEW)` itself in Make's target graph. Cargo permits target
+# directories containing spaces, while Make splits expanded target and
+# prerequisite names on whitespace. The phony build edge below lets Cargo
+# perform its own incremental freshness check without corrupting the graph.
 ifeq ($(OS),Windows_NT)
 LIBHEW_NAME := hew.lib
 else
@@ -177,10 +180,9 @@ treat the archive as having no sources. Run '$(LIBHEW_INPUTS_SCRIPT) files' to s
 endif
 
 # Prerequisite bundle for every target that LINKS a native Hew program.
-# `$(LIBHEW)` rebuilds the archive through the file rule when a source moved;
-# the order-only `check-libhew-fresh` then re-asserts freshness at the point of
-# use without itself forcing a rebuild.
-LIBHEW_READY := $(LIBHEW) | check-libhew-fresh
+# Cargo performs the incremental rebuild through `libhew-debug`; the order-only
+# freshness oracle then re-asserts the archive at the point of use.
+LIBHEW_READY := libhew-debug | check-libhew-fresh
 
 # Host triple used to populate lib/<triple>/ for target-aware lib lookup.
 HOST_TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/ { print $$2 }')
@@ -225,11 +227,9 @@ hew: hew-native
 
 # Build the native artifacts required for `hew build` from a source checkout:
 # the driver plus hew-lib's staticlib (`target/debug/libhew.a` on Unix,
-# `target/debug/hew.lib` on Windows). The archive comes from the $(LIBHEW) file
-# rule, so a runtime or stdlib edit rebuilds it instead of leaving a stale one
-# in place. Keep this target cross-platform so fresh Windows hosts use the same
-# build graph as Linux/macOS.
-hew-native: $(LIBHEW)
+# `target/debug/hew.lib` on Windows). Keep this target cross-platform so fresh
+# Windows hosts use the same build graph as Linux/macOS.
+hew-native: libhew-debug
 	cargo build -p hew-cli $(CARGO_TARGET_FLAG)
 
 # Build the adze package manager (debug)
@@ -269,36 +269,30 @@ runtime:
 # The hew-lib umbrella crate depends on hew-runtime + all stdlib crates;
 # Cargo produces a single deduplicated staticlib.
 #
-# `stdlib` is the human-facing alias; $(LIBHEW) below is the rule that does the
-# work and carries the source prerequisites.
-stdlib: $(LIBHEW)
+# `stdlib` is the human-facing alias.
+stdlib: libhew-debug
 
-# The archive rebuilds whenever any hew-lib / hew-runtime / hew-std source
-# moves, or the dependency graph changes. Cargo leaves the archive's mtime
-# alone when nothing changed, so stamp it here: the file rule has just proven
-# the archive is current, and recording that keeps make (and the mtime-based
-# freshness check) from re-running on every invocation.
-$(LIBHEW): $(LIBHEW_SRCS)
+# Cargo owns freshness for its configurable output tree. This target remains
+# phony deliberately: a fixed Make stamp cannot distinguish two different
+# CARGO_TARGET_DIR/build.target/build.target-dir selections without putting the
+# possibly space-bearing output path back into Make's target graph.
+.PHONY: libhew-debug
+libhew-debug: $(LIBHEW_SRCS)
 	cargo build -p hew-lib $(CARGO_TARGET_FLAG)
-	@touch $@
 
 # Build the WASM runtime + the consolidated stdlib archive (libhew_std.a).
 #
-# Real file rules over the same input set as $(LIBHEW), for the same reason: a
-# phony target that rebuilds only when asked leaves `make wasm-runtime` able to
-# report success over an archive from an older checkout.
-WASM_RUNTIME_LIB := $(WASM_DEBUG_DIR)/libhew_runtime.a
-WASM_STD_LIB := $(WASM_DEBUG_DIR)/libhew_std.a
-
-$(WASM_RUNTIME_LIB): $(LIBHEW_SRCS)
+# Keep the Cargo output filenames out of Make's target graph for the same
+# spacious-target-directory reason as libhew-debug. Cargo's own incremental
+# graph makes repeated invocations cheap and authoritative.
+.PHONY: wasm-runtime-debug wasm-std-debug
+wasm-runtime-debug: $(LIBHEW_SRCS)
 	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
-	@touch $@
 
-$(WASM_STD_LIB): $(LIBHEW_SRCS)
+wasm-std-debug: $(LIBHEW_SRCS)
 	cargo build -p hew-std --target wasm32-wasip1
-	@touch $@
 
-wasm-runtime: $(WASM_RUNTIME_LIB) $(WASM_STD_LIB)
+wasm-runtime: wasm-runtime-debug wasm-std-debug
 
 # Build the hew-wasm browser analysis-only module (requires: cargo install wasm-pack)
 wasm:
@@ -409,8 +403,8 @@ ci-preflight-smoke:
 # ORDER-ONLY prerequisite of every target that links a native Hew program (see
 # $(LIBHEW_READY)) so it fires at the point of use locally, not only in CI
 # after the damage is done.
-check-libhew-fresh: $(LIBHEW)
-	scripts/check-libhew-fresh.sh --debug-dir $(DEBUG_DIR)
+check-libhew-fresh: libhew-debug
+	scripts/check-libhew-fresh.sh --debug-dir "$(DEBUG_DIR)"
 
 # Opt-in merge-queue parity preflight.
 ci-preflight-strict:
@@ -571,19 +565,19 @@ assemble: | hew-native adze observe runtime stdlib wasm-runtime
 	@rm -rf $(BUILD_DIR)/std
 	@mkdir -p $(BUILD_DIR)/std
 	@# Compiler driver
-	@ln -sfn $(LINK_UP2)$(DEBUG_DIR)/hew                $(BUILD_DIR)/bin/hew
+	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew"                "$(BUILD_DIR)/bin/hew"
 	@# Package manager
-	@ln -sfn $(LINK_UP2)$(DEBUG_DIR)/adze               $(BUILD_DIR)/bin/adze
+	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/adze"               "$(BUILD_DIR)/bin/adze"
 	@# TUI actor observer (sibling binary — `hew observe` delegates here)
-	@ln -sfn $(LINK_UP2)$(DEBUG_DIR)/hew-observe        $(BUILD_DIR)/bin/hew-observe
+	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/hew-observe"        "$(BUILD_DIR)/bin/hew-observe"
 	@# Combined Hew library (runtime + all stdlib packages)
-	@ln -sfn $(LINK_UP2)$(DEBUG_DIR)/libhew.a           $(BUILD_DIR)/lib/libhew.a
+	@ln -sfn "$(LINK_UP2)$(DEBUG_DIR)/libhew.a"           "$(BUILD_DIR)/lib/libhew.a"
 	@# WASM runtime + focused wire stdlib archives (symlink if built)
 	@for lib in libhew_runtime.a libhew_std.a; do \
-		if [ -f $(WASM_DEBUG_DIR)/$$lib ]; then \
+		if [ -f "$(WASM_DEBUG_DIR)/$$lib" ]; then \
 			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
-			ln -sfn $(LINK_UP3)$(WASM_DEBUG_DIR)/$$lib \
-				$(BUILD_DIR)/lib/wasm32-wasip1/$$lib; \
+			ln -sfn "$(LINK_UP3)$(WASM_DEBUG_DIR)/$$lib" \
+				"$(BUILD_DIR)/lib/wasm32-wasip1/$$lib"; \
 		fi; \
 	done
 	@# Native per-triple lib symlinks — mirrors the wasm32-wasip1 pattern,
@@ -592,15 +586,15 @@ assemble: | hew-native adze observe runtime stdlib wasm-runtime
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f $(CARGO_TARGET_ROOT)/$$triple/debug/libhew.a ]; then \
+		if [ -f "$(CARGO_TARGET_ROOT)/$$triple/debug/libhew.a" ]; then \
 			lib_path="$(CARGO_TARGET_ROOT)/$$triple/debug/libhew.a"; \
-		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(DEBUG_DIR)/libhew.a ]; then \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f "$(DEBUG_DIR)/libhew.a" ]; then \
 			lib_path="$(DEBUG_DIR)/libhew.a"; \
 		else \
 			continue; \
 		fi; \
 		mkdir -p $(BUILD_DIR)/lib/$$triple; \
-		ln -sfn $(LINK_UP3)$$lib_path $(BUILD_DIR)/lib/$$triple/libhew.a; \
+		ln -sfn "$(LINK_UP3)$$lib_path" "$(BUILD_DIR)/lib/$$triple/libhew.a"; \
 	done
 	@# Standard library stubs (one symlink per file so the dir stays flat)
 	@for f in std/*.hew; do \
@@ -626,6 +620,7 @@ release:
 	$(RELEASE_PREP)
 	$(RELEASE_ENV) cargo build -p hew-cli --release $(CARGO_TARGET_FLAG)
 	$(RELEASE_ENV) cargo build -p adze-cli --release $(CARGO_TARGET_FLAG)
+	$(RELEASE_ENV) cargo build -p hew-lsp --release $(CARGO_TARGET_FLAG)
 	$(RELEASE_ENV) cargo build -p hew-observe --release $(CARGO_TARGET_FLAG)
 	$(RELEASE_ENV) cargo build -p hew-lib --profile release-lib $(CARGO_TARGET_FLAG)
 	$(RELEASE_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
@@ -644,8 +639,10 @@ pre-release: release
 # is absent or stale.  The operator supplies the Cloudflare token via
 # `wrangler login` or CLOUDFLARE_API_TOKEN in the shell — it is never in
 # this file.
-publish-docs: $(RELEASE_DIR)/hew ## Build stdlib docs; print wrangler deploy command for hew-docs
-	$(RELEASE_DIR)/hew doc std/ --output-dir $(CARGO_TARGET_ROOT)/doc/
+publish-docs: ## Build stdlib docs; print wrangler deploy command for hew-docs
+	@test -f "$(RELEASE_DIR)/hew" \
+		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
+	"$(RELEASE_DIR)/hew" doc std/ --output-dir "$(CARGO_TARGET_ROOT)/doc/"
 	@echo ""
 	@echo "Docs generated at $(CARGO_TARGET_ROOT)/doc/."
 	@echo "Deploy with: wrangler pages deploy $(CARGO_TARGET_ROOT)/doc/ --project-name hew-docs"
@@ -657,39 +654,40 @@ test-release-lib-link:
 ifeq ($(OS),Windows_NT)
 	@powershell -NoProfile -ExecutionPolicy Bypass -File "$(CURDIR)/scripts/test-release-lib-link.ps1" -Hew "$(RELEASE_HEW)" -Archive "$(RELEASE_LIBHEW)"
 else
-	@$(CURDIR)/scripts/test-release-lib-link.sh --hew $(RELEASE_HEW) --archive $(RELEASE_LIBHEW)
+	@"$(CURDIR)/scripts/test-release-lib-link.sh" --hew "$(RELEASE_HEW)" --archive "$(RELEASE_LIBHEW)"
 endif
 
 # Assemble build/ with release symlinks.
 assemble-release:
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
-	@ln -sfn $(LINK_UP2)$(RELEASE_DIR)/hew              $(BUILD_DIR)/bin/hew
-	@ln -sfn $(LINK_UP2)$(RELEASE_DIR)/adze             $(BUILD_DIR)/bin/adze
-	@ln -sfn $(LINK_UP2)$(RELEASE_DIR)/hew-observe      $(BUILD_DIR)/bin/hew-observe
+	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew"              "$(BUILD_DIR)/bin/hew"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/adze"             "$(BUILD_DIR)/bin/adze"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew-lsp"          "$(BUILD_DIR)/bin/hew-lsp"
+	@ln -sfn "$(LINK_UP2)$(RELEASE_DIR)/hew-observe"      "$(BUILD_DIR)/bin/hew-observe"
 	@# Combined Hew library (runtime + all stdlib packages), from the non-LTO
 	@# release-lib profile — never the fat-LTO target/release archive.
 	@$(MAKE) test-release-lib-link
-	@ln -sfn $(LINK_UP2)$(RELEASE_LIB_DIR)/libhew.a     $(BUILD_DIR)/lib/libhew.a
+	@ln -sfn "$(LINK_UP2)$(RELEASE_LIB_DIR)/libhew.a"     "$(BUILD_DIR)/lib/libhew.a"
 	@for lib in libhew_runtime.a libhew_std.a; do \
-		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
+		if [ -f "$(WASM_RELEASE_DIR)/$$lib" ]; then \
 			mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
-			ln -sfn $(LINK_UP3)$(WASM_RELEASE_DIR)/$$lib \
-				$(BUILD_DIR)/lib/wasm32-wasip1/$$lib; \
+			ln -sfn "$(LINK_UP3)$(WASM_RELEASE_DIR)/$$lib" \
+				"$(BUILD_DIR)/lib/wasm32-wasip1/$$lib"; \
 		fi; \
 	done
 	@# Native per-triple lib symlinks — mirrors the wasm32-wasip1 pattern.
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f $(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a ]; then \
+		if [ -f "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a" ]; then \
 			lib_path="$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a"; \
-		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(RELEASE_LIB_DIR)/libhew.a ]; then \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f "$(RELEASE_LIB_DIR)/libhew.a" ]; then \
 			lib_path="$(RELEASE_LIB_DIR)/libhew.a"; \
 		else \
 			continue; \
 		fi; \
 		mkdir -p $(BUILD_DIR)/lib/$$triple; \
-		ln -sfn $(LINK_UP3)$$lib_path $(BUILD_DIR)/lib/$$triple/libhew.a; \
+		ln -sfn "$(LINK_UP3)$$lib_path" "$(BUILD_DIR)/lib/$$triple/libhew.a"; \
 	done
 	@rm -rf $(BUILD_DIR)/std
 	@ln -sfn ../std $(BUILD_DIR)/std
@@ -717,7 +715,7 @@ test-rust: wasm-runtime runtime $(LIBHEW_READY)
 	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
 		set -e; \
 		cargo nextest run --workspace --profile ci --no-run; \
-		test -f $(LIBHEW); \
+		test -f "$(LIBHEW)"; \
 		cargo nextest run --workspace --profile ci; \
 	else \
 		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
@@ -1205,7 +1203,7 @@ hew-fmt-check: hew
 	@total=$$(find std examples -name "*.hew" | wc -l | tr -d ' '); \
 	bash scripts/lib/corpus-floor.sh hew-fmt-check-files "$$total" || exit 1; \
 	find std examples -name "*.hew" -print0 \
-	    | xargs -0 $(DEBUG_DIR)/hew fmt --check \
+	    | xargs -0 "$(DEBUG_DIR)/hew" fmt --check \
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
 
@@ -1380,34 +1378,37 @@ test-sys-lane-closure:
 # Release-artefact preconditions for `install`. A macro rather than a target:
 # it is only ever meaningful as the first step of `install`'s recipe.
 define require_release_artifacts
-	@test -f $(RELEASE_DIR)/hew \
+	@test -f "$(RELEASE_DIR)/hew" \
 		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
-	@test -f $(RELEASE_DIR)/adze \
+	@test -f "$(RELEASE_DIR)/adze" \
 		|| { echo "Error: release adze not built. Run 'make release' first."; exit 1; }
-	@test -f $(RELEASE_DIR)/hew-observe \
+	@test -f "$(RELEASE_DIR)/hew-lsp" \
+		|| { echo "Error: release hew-lsp not built. Run 'make release' first."; exit 1; }
+	@test -f "$(RELEASE_DIR)/hew-observe" \
 		|| { echo "Error: release hew-observe not built. Run 'make release' first."; exit 1; }
-	@test -f $(RELEASE_LIB_DIR)/libhew.a \
+	@test -f "$(RELEASE_LIB_DIR)/libhew.a" \
 		|| { echo "Error: libhew.a not built. Run 'make release' first."; exit 1; }
-	@test -f $(WASM_RELEASE_DIR)/libhew_runtime.a \
+	@test -f "$(WASM_RELEASE_DIR)/libhew_runtime.a" \
 		|| { echo "Error: wasm runtime not built. Run 'make release' first."; exit 1; }
 endef
 
 install:
 	$(call require_release_artifacts)
 	@echo "==> Installing to $(DESTDIR)$(PREFIX)"
-	install -d $(DESTDIR)$(PREFIX)/bin
-	install -d $(DESTDIR)$(PREFIX)/lib
-	install -d $(DESTDIR)$(PREFIX)/std
-	install -d $(DESTDIR)$(PREFIX)/completions
-	install -m 755 $(RELEASE_DIR)/hew                $(DESTDIR)$(PREFIX)/bin/hew
-	install -m 755 $(RELEASE_DIR)/adze               $(DESTDIR)$(PREFIX)/bin/adze
-	install -m 755 $(RELEASE_DIR)/hew-observe        $(DESTDIR)$(PREFIX)/bin/hew-observe
-	install -m 644 $(RELEASE_LIB_DIR)/libhew.a       $(DESTDIR)$(PREFIX)/lib/libhew.a
+	install -d "$(DESTDIR)$(PREFIX)/bin"
+	install -d "$(DESTDIR)$(PREFIX)/lib"
+	install -d "$(DESTDIR)$(PREFIX)/std"
+	install -d "$(DESTDIR)$(PREFIX)/completions"
+	install -m 755 "$(RELEASE_DIR)/hew"                "$(DESTDIR)$(PREFIX)/bin/hew"
+	install -m 755 "$(RELEASE_DIR)/adze"               "$(DESTDIR)$(PREFIX)/bin/adze"
+	install -m 755 "$(RELEASE_DIR)/hew-lsp"            "$(DESTDIR)$(PREFIX)/bin/hew-lsp"
+	install -m 755 "$(RELEASE_DIR)/hew-observe"        "$(DESTDIR)$(PREFIX)/bin/hew-observe"
+	install -m 644 "$(RELEASE_LIB_DIR)/libhew.a"       "$(DESTDIR)$(PREFIX)/lib/libhew.a"
 	@for lib in libhew_runtime.a libhew_std.a; do \
-		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
-			install -d $(DESTDIR)$(PREFIX)/lib/wasm32-wasip1; \
-			install -m 644 $(WASM_RELEASE_DIR)/$$lib \
-				$(DESTDIR)$(PREFIX)/lib/wasm32-wasip1/$$lib; \
+		if [ -f "$(WASM_RELEASE_DIR)/$$lib" ]; then \
+			install -d "$(DESTDIR)$(PREFIX)/lib/wasm32-wasip1"; \
+			install -m 644 "$(WASM_RELEASE_DIR)/$$lib" \
+				"$(DESTDIR)$(PREFIX)/lib/wasm32-wasip1/$$lib"; \
 		fi; \
 	done
 	@# Native per-triple lib subtree — mirrors assemble-release and gives
@@ -1415,15 +1416,15 @@ install:
 	@for triple in $(NATIVE_LIB_TRIPLES); do \
 		[ -n "$$triple" ] || continue; \
 		lib_path=""; \
-		if [ -f $(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a ]; then \
+		if [ -f "$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a" ]; then \
 			lib_path="$(CARGO_TARGET_ROOT)/$$triple/release-lib/libhew.a"; \
-		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f $(RELEASE_LIB_DIR)/libhew.a ]; then \
+		elif [ "$$triple" = "$(HOST_TRIPLE)" ] && [ -f "$(RELEASE_LIB_DIR)/libhew.a" ]; then \
 			lib_path="$(RELEASE_LIB_DIR)/libhew.a"; \
 		else \
 			continue; \
 		fi; \
-		install -d $(DESTDIR)$(PREFIX)/lib/$$triple; \
-		install -m 644 $$lib_path $(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a; \
+		install -d "$(DESTDIR)$(PREFIX)/lib/$$triple"; \
+		install -m 644 "$$lib_path" "$(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a"; \
 	done
 	cp -r std/. $(DESTDIR)$(PREFIX)/std/
 	install -m 644 completions/hew.bash              $(DESTDIR)$(PREFIX)/completions/

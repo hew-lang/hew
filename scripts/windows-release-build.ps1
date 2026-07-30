@@ -81,20 +81,47 @@ Assert-NativeSuccess 'cargo build release binaries'
 cargo build -p hew-lib --profile release-lib
 Assert-NativeSuccess 'cargo build hew-lib'
 
-if (-not (Test-Path '.\target\release-lib\hew.lib')) {
-    throw 'target/release-lib/hew.lib missing after cargo build --profile release-lib'
+function Resolve-CargoProfileDir([string]$Profile) {
+    $Python = Get-Command python3 -ErrorAction SilentlyContinue
+    if ($null -eq $Python) {
+        $Python = Get-Command python -ErrorAction SilentlyContinue
+    }
+    if ($null -eq $Python) {
+        throw 'Python 3 is required to resolve Cargo release output directories'
+    }
+
+    $Output = @(& $Python.Source .\scripts\cargo-output-dir.py --profile $Profile)
+    Assert-NativeSuccess "Cargo $Profile output directory resolution"
+    if ($Output.Count -ne 1 -or [string]::IsNullOrWhiteSpace($Output[0])) {
+        throw "Cargo $Profile output directory resolution returned an invalid path"
+    }
+    return $Output[0].Trim()
 }
-& .\scripts\test-release-lib-link.ps1 -Hew .\target\release\hew.exe -Archive .\target\release-lib\hew.lib
+
+$ReleaseDir = Resolve-CargoProfileDir 'release'
+$ReleaseLibDir = Resolve-CargoProfileDir 'release-lib'
+$Hew = Join-Path $ReleaseDir 'hew.exe'
+$ReleaseLib = Join-Path $ReleaseLibDir 'hew.lib'
+[System.IO.File]::WriteAllText(
+    (Join-Path (Get-Location) '.hew-release-dir'),
+    $ReleaseDir,
+    [System.Text.UTF8Encoding]::new($false)
+)
+
+if (-not (Test-Path $ReleaseLib)) {
+    throw "$ReleaseLib missing after cargo build --profile release-lib"
+}
+& .\scripts\test-release-lib-link.ps1 -Hew $Hew -Archive $ReleaseLib
 Assert-NativeSuccess 'release library consumer proof'
 
-& .\target\release\hew.exe --version
+& $Hew --version
 Assert-NativeSuccess 'hew.exe --version'
 
-& .\target\release\adze.exe --version
+& (Join-Path $ReleaseDir 'adze.exe') --version
 Assert-NativeSuccess 'adze.exe --version'
 
-& .\target\release\hew-lsp.exe --version
+& (Join-Path $ReleaseDir 'hew-lsp.exe') --version
 Assert-NativeSuccess 'hew-lsp.exe --version'
 
-& .\target\release\hew-observe.exe --version
+& (Join-Path $ReleaseDir 'hew-observe.exe') --version
 Assert-NativeSuccess 'hew-observe.exe --version'

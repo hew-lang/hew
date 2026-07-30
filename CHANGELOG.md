@@ -1,14 +1,12 @@
 # Changelog
 
-## [0.6.0-rc1] — unreleased (in preparation)
+## [0.6.0-rc1] - 2026-07-29
 
-This is the first release candidate for v0.6. **The tag is not cut yet** — this
-entry tracks the major work landed on the v0.6 line and will be finalized when
-the candidate ships. v0.6 completes the ownership model, closes a batch of
-actor and machine correctness gaps, and reshapes several language surfaces. The
-headline change is that ownership and drop elaboration are now unconditional and
-type-directed: every owned value is released exactly once, with no reliance on
-ad-hoc per-shape heap walkers.
+Hew v0.6.0-rc1 is the first release candidate for v0.6. It completes the
+ownership model, closes a batch of actor and machine correctness gaps, and
+reshapes several language surfaces. The headline change is that ownership and
+drop elaboration are now unconditional and type-directed: every owned value is
+released exactly once, with no reliance on ad-hoc per-shape heap walkers.
 
 ### Changed — ownership and drop elaboration
 

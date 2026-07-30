@@ -88,6 +88,9 @@ TEST_TIMEOUT="${HEW_TIMEOUT_TEST:-900}"
 # shellcheck source=scripts/lib/timeout.sh
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/lib/timeout.sh"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/lib/cargo-output-dir.sh"
 
 # ── State tracking ───────────────────────────────────────────────────────────
 
@@ -260,6 +263,9 @@ validate_linux() {
     banner "Linux (local static-link build)"
 
     local log="${LOG_DIR}/linux.log"
+    local release_dir release_lib_dir
+    release_dir=$(cargo_profile_dir "$REPO_ROOT" release)
+    release_lib_dir=$(cargo_profile_dir "$REPO_ROOT" release-lib)
 
     set +e
     (
@@ -272,12 +278,12 @@ validate_linux() {
         run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-lib --profile release-lib 2>&1
 
         echo "==> Step 2: Verify binaries exist and run"
-        target/release/hew --version
-        target/release/adze --version
-        target/release/hew-lsp --version
-        target/release/hew-observe --version
-        test -f target/release-lib/libhew.a
-        verify_libhew_external_link target/release/hew target/release-lib/libhew.a
+        "${release_dir}/hew" --version
+        "${release_dir}/adze" --version
+        "${release_dir}/hew-lsp" --version
+        "${release_dir}/hew-observe" --version
+        test -f "${release_lib_dir}/libhew.a"
+        verify_libhew_external_link "${release_dir}/hew" "${release_lib_dir}/libhew.a"
 
         echo "==> Step 3: Smoke test — run a Hew program"
         local smoke_file_base
@@ -286,7 +292,7 @@ validate_linux() {
         mv "$smoke_file_base" "$smoke_file"
         write_smoke_test "$smoke_file"
         local output
-        output=$(run_with_timeout "${SMOKE_TIMEOUT}" target/release/hew run "$smoke_file")
+        output=$(run_with_timeout "${SMOKE_TIMEOUT}" "${release_dir}/hew" run "$smoke_file")
         rm -f "$smoke_file"
 
         if echo "$output" | grep -q "Hello from Hew"; then
@@ -300,7 +306,7 @@ validate_linux() {
         run_with_timeout "${TEST_TIMEOUT}" bash -o pipefail -lc 'cargo test -p hew-runtime --quiet 2>&1 | tail -3'
 
         echo "==> Step 5: Verify no dynamic LLVM/MLIR dependencies"
-        if ldd target/release/hew 2>/dev/null | grep -qi 'llvm\|mlir'; then
+        if ldd "${release_dir}/hew" 2>/dev/null | grep -qi 'llvm\|mlir'; then
             echo "FATAL: Binary dynamically links LLVM/MLIR"
             exit 1
         fi
@@ -318,11 +324,12 @@ validate_linux() {
         mkdir -p "${package_root}/bin" "${package_root}/lib/x86_64-unknown-linux-gnu" \
             "${package_root}/std" "${package_stage}"
 
-        cp target/release/hew target/release/adze target/release/hew-lsp target/release/hew-observe "${package_root}/bin/"
+        cp "${release_dir}/hew" "${release_dir}/adze" "${release_dir}/hew-lsp" \
+            "${release_dir}/hew-observe" "${package_root}/bin/"
         chmod +x "${package_root}/bin/"*
-        verify_libhew_external_link target/release/hew target/release-lib/libhew.a
-        cp target/release-lib/libhew.a "${package_root}/lib/"
-        cp target/release-lib/libhew.a "${package_root}/lib/x86_64-unknown-linux-gnu/"
+        verify_libhew_external_link "${release_dir}/hew" "${release_lib_dir}/libhew.a"
+        cp "${release_lib_dir}/libhew.a" "${package_root}/lib/"
+        cp "${release_lib_dir}/libhew.a" "${package_root}/lib/x86_64-unknown-linux-gnu/"
         cp -r std/. "${package_root}/std/"
 
         tar czf "${package_tarball}" -C "${archive_root}" "${archive_name}"
@@ -433,11 +440,15 @@ validate_macos() {
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
 
-            target/release/hew --version
-            target/release/adze --version
-            target/release/hew-lsp --version
-            target/release/hew-observe --version
-            scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a
+            release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
+            release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
+            \"\$release_dir/hew\" --version
+            \"\$release_dir/adze\" --version
+            \"\$release_dir/hew-lsp\" --version
+            \"\$release_dir/hew-observe\" --version
+            scripts/test-release-lib-link.sh \
+                --hew \"\$release_dir/hew\" \
+                --archive \"\$release_lib_dir/libhew.a\"
 
             echo \"==> Smoke test: hew run (guards against process-exit SIGABRT — issue #1606)\"
             make stdlib
@@ -509,15 +520,19 @@ validate_linux_aarch64() {
             rustup target add wasm32-wasip1
             cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 
-            target/release/hew --version
-            target/release/adze --version
-            target/release/hew-lsp --version
-            target/release/hew-observe --version
-            test -f target/release-lib/libhew.a
-            scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a
+            release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
+            release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
+            \"\$release_dir/hew\" --version
+            \"\$release_dir/adze\" --version
+            \"\$release_dir/hew-lsp\" --version
+            \"\$release_dir/hew-observe\" --version
+            test -f \"\$release_lib_dir/libhew.a\"
+            scripts/test-release-lib-link.sh \
+                --hew \"\$release_dir/hew\" \
+                --archive \"\$release_lib_dir/libhew.a\"
 
             printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
-            target/release/hew build _smoke.hew -o _smoke_bin
+            \"\$release_dir/hew\" build _smoke.hew -o _smoke_bin
             chmod +x _smoke_bin
             ./_smoke_bin | grep -q \"Hello from Hew release test\"
             rm -f _smoke.hew _smoke_bin
@@ -578,11 +593,15 @@ validate_freebsd() {
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
 
-            target/release/hew --version
-            target/release/adze --version
-            target/release/hew-lsp --version
-            target/release/hew-observe --version
-            scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a
+            release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
+            release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
+            \"\$release_dir/hew\" --version
+            \"\$release_dir/adze\" --version
+            \"\$release_dir/hew-lsp\" --version
+            \"\$release_dir/hew-observe\" --version
+            scripts/test-release-lib-link.sh \
+                --hew \"\$release_dir/hew\" \
+                --archive \"\$release_lib_dir/libhew.a\"
 
             echo \"FreeBSD build succeeded\"
         '"
@@ -670,6 +689,13 @@ Set-Location '${remote_stage}'
 \$Utf8 = [System.Text.Encoding]::UTF8
 \$LlvmPrefix = \$Utf8.GetString([Convert]::FromBase64String('${llvm_prefix_b64}'))
 \$env:Path = \"\$LlvmPrefix\\bin;\" + \$env:Path
+\$ReleaseDir = [System.IO.File]::ReadAllText(
+    (Join-Path (Get-Location) '.hew-release-dir')
+).Trim()
+if ([string]::IsNullOrWhiteSpace(\$ReleaseDir)) {
+    throw 'Staged Windows build did not record its Cargo release output directory'
+}
+\$Hew = Join-Path \$ReleaseDir 'hew.exe'
 \$smokeProgram = 'fn main() { println(\"smoke-ok\") }'
 Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
 
@@ -680,7 +706,7 @@ try {
         [System.Text.UTF8Encoding]::new(\$false)
     )
 
-    & .\\target\\release\\hew.exe build .\\_smoke.hew -o .\\_smoke.exe
+    & \$Hew build .\\_smoke.hew -o .\\_smoke.exe
     Assert-NativeSuccess 'hew.exe smoke build'
 
     if (-not (Test-Path .\\_smoke.exe)) {

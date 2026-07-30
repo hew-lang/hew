@@ -106,6 +106,73 @@ static SYS_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSw
 static USER_COUNT_PUBLICATION_HOOK: crate::lifetime::PoisonSafe<Option<MpscPostSwapPreLinkHook>> =
     crate::lifetime::PoisonSafe::new(None);
 
+/// Deterministic rendezvous for a bounded `Block` sender after it has proved
+/// the mailbox full while holding `slow_path`, joined `block_wait`, and
+/// rechecked closure, but immediately before it releases the queue and
+/// atomically releases the predicate mutex in `Condvar::wait`.
+///
+/// Targeting by mailbox identity keeps unrelated parallel tests out of the
+/// rendezvous. The hook is consumed on first use so a spurious wake cannot
+/// attempt the same two-party barrier a second time.
+#[cfg(test)]
+type BlockPreWaitHook = (
+    usize,
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+);
+
+#[cfg(test)]
+static BLOCK_PRE_WAIT_HOOK: crate::lifetime::PoisonSafe<Option<BlockPreWaitHook>> =
+    crate::lifetime::PoisonSafe::new(None);
+
+#[cfg(test)]
+struct BlockPreWaitHookGuard;
+
+#[cfg(test)]
+impl BlockPreWaitHookGuard {
+    fn install(
+        mailbox: *mut HewMailbox,
+    ) -> (
+        Self,
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<std::sync::Barrier>,
+    ) {
+        let entered = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(2));
+        BLOCK_PRE_WAIT_HOOK.access(|hook| {
+            assert!(hook.is_none(), "block pre-wait hook already installed");
+            *hook = Some((mailbox.addr(), entered.clone(), release.clone()));
+        });
+        (Self, entered, release)
+    }
+}
+
+#[cfg(test)]
+impl Drop for BlockPreWaitHookGuard {
+    fn drop(&mut self) {
+        BLOCK_PRE_WAIT_HOOK.access(|hook| *hook = None);
+    }
+}
+
+#[cfg(test)]
+fn run_block_pre_wait_hook(mailbox: &HewMailbox) {
+    let mailbox_addr = std::ptr::from_ref(mailbox).addr();
+    let rendezvous = BLOCK_PRE_WAIT_HOOK.access(|hook| {
+        if hook
+            .as_ref()
+            .is_some_and(|(target, _, _)| *target == mailbox_addr)
+        {
+            hook.take().map(|(_, entered, release)| (entered, release))
+        } else {
+            None
+        }
+    });
+    if let Some((entered, release)) = rendezvous {
+        entered.wait();
+        release.wait();
+    }
+}
+
 #[cfg(test)]
 pub(crate) struct SysCountPublicationHookGuard;
 
@@ -974,7 +1041,7 @@ impl DetachedTerminalNodes {
     /// Every node in this list must remain exclusively owned by the list.
     unsafe fn retire(mut self, mailbox: &HewMailbox) {
         if self.notify_not_full {
-            mailbox.not_full.notify_all();
+            mailbox.notify_not_full_all();
         }
         while !self.head.is_null() {
             let node = self.head;
@@ -1572,6 +1639,14 @@ pub struct HewMailbox {
     /// Serialises terminal drains across the terminal publisher, an active
     /// scheduler owner, and a producer helping after its wake CAS loses.
     terminal_reclaiming: Mutex<()>,
+    /// Predicate mutex for senders parked on `not_full`.
+    ///
+    /// This is deliberately separate from `slow_path`: coalescing invokes
+    /// externally supplied key and payload-drop callbacks while the queue is
+    /// protected, and those callbacks may close the actor. Close must
+    /// serialize with the check-to-park seam without recursively acquiring
+    /// the queue mutex.
+    block_wait: Mutex<()>,
     /// Condvar notified when a user message is consumed, waking blocked senders.
     not_full: Condvar,
     /// High-water mark: maximum `count` value observed.
@@ -1581,6 +1656,20 @@ pub struct HewMailbox {
 }
 
 impl HewMailbox {
+    /// Wake one bounded sender without permitting a notification to pass
+    /// between that sender's final predicate check and its condvar wait.
+    fn notify_not_full_one(&self) {
+        let _wait = self.block_wait.lock_or_recover();
+        self.not_full.notify_one();
+    }
+
+    /// Wake every bounded sender under the same check-to-park protocol as
+    /// [`Self::notify_not_full_one`].
+    fn notify_not_full_all(&self) {
+        let _wait = self.block_wait.lock_or_recover();
+        self.not_full.notify_all();
+    }
+
     /// Read-only accessor: `true` when the mailbox uses the mutex
     /// slow-path queue for user messages (rather than the lock-free
     /// MPSC queue).  Used by the Phase α aliased-send gate (now
@@ -1714,6 +1803,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
         terminal_reclaiming: Mutex::new(()),
+        block_wait: Mutex::new(()),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: false,
@@ -1753,6 +1843,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
         terminal_reclaiming: Mutex::new(()),
+        block_wait: Mutex::new(()),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -1801,6 +1892,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
         terminal_reclaiming: Mutex::new(()),
+        block_wait: Mutex::new(()),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: needs_slow_path(policy),
@@ -1841,6 +1933,7 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
         closed: std::sync::atomic::AtomicBool::new(false),
         stop_requested: std::sync::atomic::AtomicBool::new(false),
         terminal_reclaiming: Mutex::new(()),
+        block_wait: Mutex::new(()),
         not_full: Condvar::new(),
         high_water_mark: AtomicI64::new(0),
         use_slow_path: true,
@@ -2112,7 +2205,20 @@ unsafe fn send_with_overflow(
                         if len < mb.capacity {
                             break;
                         }
-                        q = mb.not_full.wait_or_recover(q);
+                        // Join the condvar predicate mutex before releasing the
+                        // queue. Close/capacity notifiers take `block_wait`, so
+                        // they cannot pass this sender's final checks before
+                        // it atomically parks.
+                        let wait = mb.block_wait.lock_or_recover();
+                        if mb.closed.load(Ordering::Acquire) {
+                            return SendOutcome::Closed;
+                        }
+                        #[cfg(test)]
+                        run_block_pre_wait_hook(mb);
+                        drop(q);
+                        let wait = mb.not_full.wait_or_recover(wait);
+                        drop(wait);
+                        q = mb.slow_path.lock_or_recover();
                     }
                     // SAFETY: `data` validity guaranteed by caller.
                     let node = unsafe { msg_node_alloc(msg_type, data, data_size, reply_channel) };
@@ -2194,7 +2300,16 @@ unsafe fn send_with_overflow(
                                 if len < mb.capacity {
                                     break;
                                 }
-                                q = mb.not_full.wait_or_recover(q);
+                                let wait = mb.block_wait.lock_or_recover();
+                                if mb.closed.load(Ordering::Acquire) {
+                                    return SendOutcome::Closed;
+                                }
+                                #[cfg(test)]
+                                run_block_pre_wait_hook(mb);
+                                drop(q);
+                                let wait = mb.not_full.wait_or_recover(wait);
+                                drop(wait);
+                                q = mb.slow_path.lock_or_recover();
                             }
                             // SAFETY: `data` validity guaranteed by caller.
                             let node =
@@ -2500,7 +2615,20 @@ unsafe fn send_aliased_with_overflow(
                         if len < mb.capacity {
                             break;
                         }
-                        q = mb.not_full.wait_or_recover(q);
+                        let wait = mb.block_wait.lock_or_recover();
+                        if mb.closed.load(Ordering::Acquire) {
+                            drop(wait);
+                            drop(q);
+                            // SAFETY: `node` remains owned here.
+                            unsafe { hew_msg_node_free(node) };
+                            return SendOutcome::Closed;
+                        }
+                        #[cfg(test)]
+                        run_block_pre_wait_hook(mb);
+                        drop(q);
+                        let wait = mb.not_full.wait_or_recover(wait);
+                        drop(wait);
+                        q = mb.slow_path.lock_or_recover();
                     }
                     // EXIT(block-enqueued): capacity freed; node enqueued.
                     mb.count.fetch_add(1, Ordering::Release);
@@ -2550,7 +2678,20 @@ unsafe fn send_aliased_with_overflow(
                                 if len < mb.capacity {
                                     break;
                                 }
-                                q = mb.not_full.wait_or_recover(q);
+                                let wait = mb.block_wait.lock_or_recover();
+                                if mb.closed.load(Ordering::Acquire) {
+                                    drop(wait);
+                                    drop(q);
+                                    // SAFETY: `node` remains owned here.
+                                    unsafe { hew_msg_node_free(node) };
+                                    return SendOutcome::Closed;
+                                }
+                                #[cfg(test)]
+                                run_block_pre_wait_hook(mb);
+                                drop(q);
+                                let wait = mb.not_full.wait_or_recover(wait);
+                                drop(wait);
+                                q = mb.slow_path.lock_or_recover();
                             }
                             // EXIT(coalesce-fallback-block-enqueued).
                             mb.count.fetch_add(1, Ordering::Release);
@@ -3096,8 +3237,14 @@ pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) {
     // SAFETY: Caller guarantees `mb` is valid.
     let mb = unsafe { &*mb };
     if !mb.closed.swap(true, Ordering::AcqRel) {
-        // Wake any senders blocked on a full mailbox.
-        mb.not_full.notify_all();
+        // Blocking senders join `block_wait` while still owning the queue,
+        // recheck `closed`, release the queue, and atomically release
+        // `block_wait` in `Condvar::wait`. Joining that dedicated predicate
+        // mutex here prevents a one-shot close notification from passing the
+        // check-to-park seam without recursively acquiring `slow_path` from a
+        // coalesce key/drop callback. Always use the protocol: a sender may
+        // already be parked even if coalesce configuration changed afterward.
+        mb.notify_not_full_all();
     }
 }
 
@@ -3198,7 +3345,7 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
             mb.count.fetch_sub(1, Ordering::Release);
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
             drop(q);
-            mb.not_full.notify_one();
+            mb.notify_not_full_one();
             return RecvNode {
                 node,
                 origin: Origin::User,
@@ -3802,6 +3949,111 @@ mod tests {
     }
 
     #[test]
+    fn coalesce_block_drop_callback_may_close_same_mailbox() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        // SAFETY: the mailbox stays allocated until the worker completes and
+        // the process-wide callback target is cleared.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            hew_mailbox_set_coalesce_config(mb, None, HewOverflowPolicy::Block);
+            hew_mailbox_set_message_drop_fn(mb, Some(reentrant_close_message_drop_glue));
+            REENTRANT_CLOSE_MAILBOX.store(mb.addr(), Ordering::Release);
+
+            let first = PriceUpdate {
+                symbol: 7,
+                price: 10,
+            };
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    1,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+
+            let mb_addr = mb.addr();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let replacement = PriceUpdate {
+                    symbol: 7,
+                    price: 20,
+                };
+                // A matching key replaces the queued payload and invokes its
+                // typed destructor while coalescing owns `slow_path`.
+                let result = hew_mailbox_send(
+                    ptr::without_provenance_mut(mb_addr),
+                    1,
+                    (&raw const replacement).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                );
+                let _ = done_tx.send(result);
+            });
+
+            let result = done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("re-entrant close from coalesce drop callback deadlocked");
+            assert_eq!(result, HewError::Ok as i32);
+            worker.join().expect("coalescing sender panicked");
+            assert!((*mb).closed.load(Ordering::Acquire));
+
+            REENTRANT_CLOSE_MAILBOX.store(0, Ordering::Release);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn coalesce_block_key_callback_may_close_same_mailbox() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        // SAFETY: the mailbox stays allocated until the worker completes and
+        // the process-wide callback target is cleared.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            hew_mailbox_set_coalesce_config(
+                mb,
+                Some(reentrant_close_coalesce_key),
+                HewOverflowPolicy::Block,
+            );
+            REENTRANT_CLOSE_MAILBOX.store(mb.addr(), Ordering::Release);
+
+            let first: i32 = 10;
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    7,
+                    (&raw const first).cast_mut().cast(),
+                    size_of::<i32>(),
+                ),
+                HewError::Ok as i32
+            );
+
+            let mb_addr = mb.addr();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let replacement: i32 = 20;
+                let result = hew_mailbox_send(
+                    ptr::without_provenance_mut(mb_addr),
+                    7,
+                    (&raw const replacement).cast_mut().cast(),
+                    size_of::<i32>(),
+                );
+                let _ = done_tx.send(result);
+            });
+
+            let result = done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("re-entrant close from coalesce key callback deadlocked");
+            assert_eq!(result, HewError::Ok as i32);
+            worker.join().expect("coalescing sender panicked");
+            assert!((*mb).closed.load(Ordering::Acquire));
+
+            REENTRANT_CLOSE_MAILBOX.store(0, Ordering::Release);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
     fn replace_releases_envelope_exactly_once() {
         let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
         ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
@@ -4232,6 +4484,248 @@ mod tests {
                 "hew_mailbox_send on closed mailbox must return ErrActorStopped, not ErrClosed"
             );
 
+            hew_mailbox_free(mb);
+        }
+    }
+
+    /// A close published after the blocking copy-send path checks `closed`,
+    /// but before it parks, must still wake that sender with
+    /// `ErrActorStopped`. The rendezvous forces the exact lost-notification
+    /// window; no timing delay or follow-up notification participates.
+    #[test]
+    fn block_close_in_check_to_park_gap_wakes_copy_sender() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        // SAFETY: the mailbox remains live until both spawned threads join.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block);
+            let filler: i32 = 1;
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    0,
+                    (&raw const filler).cast_mut().cast(),
+                    size_of::<i32>(),
+                ),
+                HewError::Ok as i32
+            );
+
+            let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
+            let mb_addr = mb.addr();
+            let sender = std::thread::spawn(move || {
+                let value: i32 = 2;
+                // SAFETY: main keeps the mailbox live through this join and
+                // `value` remains readable for the duration of the call.
+                hew_mailbox_send(
+                    ptr::without_provenance_mut(mb_addr),
+                    1,
+                    (&raw const value).cast_mut().cast(),
+                    size_of::<i32>(),
+                )
+            });
+
+            // Sender owns slow_path + block_wait and has rechecked closed=false.
+            entered.wait();
+            let closer = std::thread::spawn(move || {
+                // SAFETY: main keeps the mailbox live through this join.
+                mailbox_close(ptr::without_provenance_mut(mb_addr));
+            });
+
+            // Close publishes before it joins block_wait. Once observed here,
+            // releasing the sender forces it to park before close can notify.
+            let close_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !(*mb).closed.load(Ordering::Acquire) {
+                assert!(
+                    std::time::Instant::now() < close_deadline,
+                    "closer did not publish the closed predicate"
+                );
+                std::thread::yield_now();
+            }
+            release.wait();
+
+            closer.join().expect("closer thread panicked");
+            assert_eq!(
+                sender.join().expect("sender thread panicked"),
+                HewError::ErrActorStopped as i32,
+                "the one close notification must wake the pre-wait sender"
+            );
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn coalesce_block_close_in_check_to_park_gap_wakes_copy_sender() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        // SAFETY: the mailbox remains live until both spawned threads join.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::Block);
+            let filler = PriceUpdate {
+                symbol: 1,
+                price: 10,
+            };
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    7,
+                    (&raw const filler).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+
+            let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
+            let mb_addr = mb.addr();
+            let sender = std::thread::spawn(move || {
+                let value = PriceUpdate {
+                    symbol: 2,
+                    price: 20,
+                };
+                // Different key: the full Coalesce mailbox must take its
+                // blocking fallback and reach the forced pre-wait seam.
+                hew_mailbox_send(
+                    ptr::without_provenance_mut(mb_addr),
+                    7,
+                    (&raw const value).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                )
+            });
+
+            entered.wait();
+            let closer = std::thread::spawn(move || {
+                mailbox_close(ptr::without_provenance_mut(mb_addr));
+            });
+            let close_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !(*mb).closed.load(Ordering::Acquire) {
+                assert!(
+                    std::time::Instant::now() < close_deadline,
+                    "closer did not publish the closed predicate"
+                );
+                std::thread::yield_now();
+            }
+            release.wait();
+
+            closer.join().expect("closer thread panicked");
+            assert_eq!(
+                sender.join().expect("sender thread panicked"),
+                HewError::ErrActorStopped as i32,
+                "Coalesce→Block copy sender must wake on close"
+            );
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn coalesce_block_drain_in_check_to_park_gap_wakes_copy_sender() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        // SAFETY: the mailbox remains live until the worker joins.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            hew_mailbox_set_coalesce_config(mb, Some(price_symbol_key), HewOverflowPolicy::Block);
+            let filler = PriceUpdate {
+                symbol: 1,
+                price: 10,
+            };
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    7,
+                    (&raw const filler).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                ),
+                HewError::Ok as i32
+            );
+
+            let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
+            let mb_addr = mb.addr();
+            let sender = std::thread::spawn(move || {
+                let value = PriceUpdate {
+                    symbol: 2,
+                    price: 20,
+                };
+                hew_mailbox_send(
+                    ptr::without_provenance_mut(mb_addr),
+                    7,
+                    (&raw const value).cast_mut().cast(),
+                    size_of::<PriceUpdate>(),
+                )
+            });
+
+            entered.wait();
+            release.wait();
+            let first = hew_mailbox_try_recv(mb);
+            assert!(!first.is_null());
+            hew_msg_node_free(first);
+
+            assert_eq!(
+                sender.join().expect("sender panicked"),
+                HewError::Ok as i32,
+                "capacity notification must wake Coalesce→Block sender"
+            );
+            let second = hew_mailbox_try_recv(mb);
+            assert!(!second.is_null());
+            assert_eq!((*(*second).data.cast::<PriceUpdate>()).symbol, 2);
+            hew_msg_node_free(second);
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn block_one_capacity_wake_then_close_wakes_remaining_sender() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        // SAFETY: the mailbox remains live until both senders join.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block);
+            let filler: i32 = 1;
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    0,
+                    (&raw const filler).cast_mut().cast(),
+                    size_of::<i32>(),
+                ),
+                HewError::Ok as i32
+            );
+
+            let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
+            let mb_addr = mb.addr();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let mut workers = Vec::new();
+            for value in [2_i32, 3_i32] {
+                let done_tx = done_tx.clone();
+                workers.push(std::thread::spawn(move || {
+                    let result = hew_mailbox_send(
+                        ptr::without_provenance_mut(mb_addr),
+                        value,
+                        (&raw const value).cast_mut().cast(),
+                        size_of::<i32>(),
+                    );
+                    done_tx.send(result).expect("result receiver remains live");
+                }));
+            }
+            drop(done_tx);
+
+            entered.wait();
+            release.wait();
+            let first = hew_mailbox_try_recv(mb);
+            assert!(!first.is_null());
+            hew_msg_node_free(first);
+
+            assert_eq!(
+                done_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("one sender must consume the capacity wake"),
+                HewError::Ok as i32
+            );
+            mailbox_close(mb);
+            assert_eq!(
+                done_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("close must wake the remaining sender"),
+                HewError::ErrActorStopped as i32
+            );
+            for worker in workers {
+                worker.join().expect("sender panicked");
+            }
             hew_mailbox_free(mb);
         }
     }
@@ -5053,6 +5547,7 @@ mod tests {
     static ENVELOPE_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
     static ENVELOPE_DROP_LOCK: Mutex<()> = Mutex::new(());
     static MESSAGE_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static REENTRANT_CLOSE_MAILBOX: AtomicUsize = AtomicUsize::new(0);
 
     unsafe extern "C" fn envelope_test_drop_glue(_payload: *mut c_void) {
         ENVELOPE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
@@ -5064,6 +5559,33 @@ mod tests {
         _payload_size: usize,
     ) {
         MESSAGE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe extern "C" fn reentrant_close_message_drop_glue(
+        _msg_type: i32,
+        _payload: *mut c_void,
+        _payload_size: usize,
+    ) {
+        let mailbox_addr = REENTRANT_CLOSE_MAILBOX.load(Ordering::Acquire);
+        if mailbox_addr != 0 {
+            // SAFETY: the owning test keeps the mailbox live until the
+            // coalescing send and all resulting drop callbacks complete.
+            unsafe { mailbox_close(ptr::without_provenance_mut(mailbox_addr)) };
+        }
+    }
+
+    unsafe extern "C" fn reentrant_close_coalesce_key(
+        msg_type: i32,
+        _payload: *mut c_void,
+        _payload_size: usize,
+    ) -> u64 {
+        let mailbox_addr = REENTRANT_CLOSE_MAILBOX.load(Ordering::Acquire);
+        if mailbox_addr != 0 {
+            // SAFETY: the owning test keeps the mailbox live through callback
+            // completion.
+            unsafe { mailbox_close(ptr::without_provenance_mut(mailbox_addr)) };
+        }
+        u64::try_from(msg_type).unwrap_or_default()
     }
 
     fn alloc_test_payload(bytes: &[u8]) -> *mut c_void {
@@ -5716,16 +6238,17 @@ mod tests {
         }
     }
 
-    /// EXIT(block-closed-while-waiting): a blocked aliased sender that is
-    /// woken by a concurrent close must free its node and release the
-    /// envelope exactly once. The close is observed at the top of the wait
-    /// loop, so the exit is deterministic regardless of whether the sender
-    /// actually parked.
+    /// EXIT(block-closed-while-waiting): close is published in the exact gap
+    /// after a blocked aliased sender checks `closed` but before it enters
+    /// `Condvar::wait`. The closer must join `block_wait`, so its one-shot
+    /// notification happens only after the sender atomically releases that
+    /// predicate mutex into the wait. This is the lost-wake counterexample:
+    /// notifying without acquiring the predicate mutex strands the sender.
     #[test]
     fn envelope_alias_send_block_closed_while_waiting_releases_once() {
         let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
         ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
-        // SAFETY: the mailbox outlives the worker thread (joined before free).
+        // SAFETY: the mailbox outlives both worker threads (joined before free).
         unsafe {
             let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Block);
             let filler: i32 = 1;
@@ -5739,6 +6262,7 @@ mod tests {
                 HewError::Ok as i32
             );
 
+            let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
             let mb_addr = mb as usize;
             let worker = std::thread::spawn(move || {
                 // SAFETY: main joins this thread before freeing `mb`
@@ -5752,20 +6276,27 @@ mod tests {
                 )
             });
 
-            // Close the mailbox to wake the (possibly-)parked sender.
-            // `mailbox_close` notifies once; if that notify races ahead of
-            // the worker reaching `not_full.wait` (e.g. under ASan's slow
-            // timing) it would be lost, so re-notify until the worker
-            // actually finishes. Extra notifies are harmless — the wait
-            // loop re-checks `closed` on every wake. (Production blocked
-            // senders are woken by recurring recv/close traffic; only this
-            // single-shot test needs the explicit re-notify.)
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            mailbox_close(mb);
-            while !worker.is_finished() {
-                (*mb).not_full.notify_all();
-                std::thread::sleep(std::time::Duration::from_millis(1));
+            // The sender owns slow_path + block_wait at the check-to-park seam.
+            entered.wait();
+
+            let closer = std::thread::spawn(move || {
+                // SAFETY: main joins this thread before freeing `mb`.
+                mailbox_close(mb_addr as *mut HewMailbox);
+            });
+
+            // `mailbox_close` publishes closed before joining block_wait.
+            // Prove publication happened while the sender still owns that
+            // predicate mutex; the closer cannot yet have notified.
+            let close_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !(*mb).closed.load(Ordering::Acquire) {
+                assert!(
+                    std::time::Instant::now() < close_deadline,
+                    "closer did not publish the closed predicate"
+                );
+                std::thread::yield_now();
             }
+            release.wait();
+            closer.join().expect("closer thread panicked");
 
             assert!(
                 worker.join().unwrap(),
@@ -5777,6 +6308,65 @@ mod tests {
                 "block-closed-while-waiting exit must release the envelope exactly once"
             );
 
+            hew_mailbox_free(mb);
+        }
+    }
+
+    #[test]
+    fn envelope_alias_send_coalesce_block_close_gap_releases_once() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: the mailbox outlives both worker threads.
+        unsafe {
+            let mb = hew_mailbox_new_coalesce(1);
+            hew_mailbox_set_coalesce_config(mb, None, HewOverflowPolicy::Block);
+            let filler: i32 = 1;
+            assert_eq!(
+                hew_mailbox_send(
+                    mb,
+                    0,
+                    (&raw const filler).cast_mut().cast(),
+                    size_of::<i32>(),
+                ),
+                HewError::Ok as i32
+            );
+
+            let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
+            let mb_addr = mb.addr();
+            let worker = std::thread::spawn(move || {
+                let mb = ptr::without_provenance_mut::<HewMailbox>(mb_addr);
+                let payload = alloc_test_payload(b"coalesce-closed");
+                let env = hew_msg_envelope_new(payload, 15, Some(envelope_test_drop_glue));
+                matches!(
+                    send_aliased_with_overflow(&*mb, 2, env, false),
+                    SendOutcome::Closed
+                )
+            });
+
+            entered.wait();
+            let closer = std::thread::spawn(move || {
+                mailbox_close(ptr::without_provenance_mut(mb_addr));
+            });
+            let close_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !(*mb).closed.load(Ordering::Acquire) {
+                assert!(
+                    std::time::Instant::now() < close_deadline,
+                    "closer did not publish the closed predicate"
+                );
+                std::thread::yield_now();
+            }
+            release.wait();
+
+            closer.join().expect("closer thread panicked");
+            assert!(
+                worker.join().expect("aliased sender panicked"),
+                "Coalesce→Block aliased sender must wake closed"
+            );
+            assert_eq!(
+                ENVELOPE_DROP_COUNT.load(Ordering::SeqCst),
+                1,
+                "closed Coalesce→Block alias must release once"
+            );
             hew_mailbox_free(mb);
         }
     }
@@ -5802,6 +6392,7 @@ mod tests {
                 HewError::Ok as i32
             );
 
+            let (_hook, entered, release) = BlockPreWaitHookGuard::install(mb);
             let mb_addr = mb as usize;
             let worker = std::thread::spawn(move || {
                 // SAFETY: main joins this thread before freeing `mb`
@@ -5815,19 +6406,15 @@ mod tests {
                 )
             });
 
-            // Free capacity by draining the filler, which notifies once.
-            // As above, re-notify until the worker finishes so a notify
-            // that races ahead of the worker parking cannot strand it.
-            // Capacity stays free (len 0 < cap 1) so every wake lets the
-            // worker enqueue.
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            // Prove the sender reached the check-to-park seam while owning the
+            // queue + predicate mutexes. Release it, then drain: receive first
+            // waits for the queue and its notification then waits for
+            // block_wait until the sender atomically enters Condvar::wait.
+            entered.wait();
+            release.wait();
             let filler_node = hew_mailbox_try_recv(mb);
             assert!(!filler_node.is_null());
             hew_msg_node_free(filler_node); // copy-mode: does not touch the counter
-            while !worker.is_finished() {
-                (*mb).not_full.notify_all();
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
 
             assert!(
                 worker.join().unwrap(),

@@ -6,6 +6,7 @@ and a requested but unavailable platform must fail the run.
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -99,6 +100,37 @@ def assert_windows_staged_build_transport_contract(text: str) -> None:
     assert text.count("FromBase64String('${llvm_prefix_b64}')") == 2
     assert "Test-Path '${WINDOWS_LLVM_CONFIG}'" not in text
     assert "$env:Path = '${WINDOWS_LLVM_PREFIX}" not in text
+
+
+def assert_cargo_output_dir_contract(text: str) -> None:
+    """Every staged validator must inspect the artifacts Cargo just emitted."""
+    windows = WINDOWS_BUILD_SCRIPT.read_text()
+    assert 'source "${REPO_ROOT}/scripts/lib/cargo-output-dir.sh"' in text
+    assert 'cargo_profile_dir "$REPO_ROOT" release' in text
+    assert 'cargo_profile_dir "$REPO_ROOT" release-lib' in text
+    # macOS, Linux aarch64, and FreeBSD each resolve both native profiles.
+    assert text.count("scripts/cargo-output-dir.py --profile release)") == 3
+    assert text.count("scripts/cargo-output-dir.py --profile release-lib)") == 3
+    # The staged Windows build resolves its paths and records the release
+    # directory for the separate smoke process.
+    assert ".hew-release-dir" in text
+    assert r".\scripts\cargo-output-dir.py --profile $Profile" in windows
+    assert ".hew-release-dir" in windows
+    assert "$ReleaseDir = Resolve-CargoProfileDir 'release'" in windows
+    assert "$ReleaseLibDir = Resolve-CargoProfileDir 'release-lib'" in windows
+    assert "$Hew = Join-Path $ReleaseDir 'hew.exe'" in windows
+    assert "$ReleaseLib = Join-Path $ReleaseLibDir 'hew.lib'" in windows
+
+    for stale in (
+        "target/release/hew",
+        "target/release/adze",
+        "target/release/hew-lsp",
+        "target/release/hew-observe",
+        "target/release-lib/libhew.a",
+        r".\target\release",
+        r".\target\release-lib",
+    ):
+        assert stale not in text + "\n" + windows
 
 
 _FAKE_SSH = r"""#!/usr/bin/env bash
@@ -207,6 +239,10 @@ def test_windows_staged_build_transport_contract() -> None:
     assert_windows_staged_build_transport_contract(release_surface())
 
 
+def test_cargo_output_dir_contract() -> None:
+    assert_cargo_output_dir_contract(validator())
+
+
 def test_macos_llvm_discovery_mutations_are_rejected() -> None:
     original = validator()
     for mutation in (
@@ -278,6 +314,25 @@ def test_windows_staged_build_transport_mutations_are_rejected() -> None:
         raise AssertionError(
             "Windows staged-build transport mutation escaped the contract"
         )
+
+
+def test_cargo_output_dir_mutations_are_rejected() -> None:
+    original = validator()
+    for mutation in (
+        original.replace(
+            '"${release_dir}/hew" --version', "target/release/hew --version", 1
+        ),
+        original.replace(
+            r"release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"",
+            r"release_dir=\"target/release\"",
+            1,
+        ),
+    ):
+        try:
+            assert_cargo_output_dir_contract(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("Cargo output-directory mutation escaped the contract")
 
 
 def test_checkout_overwrite_mutations_are_rejected() -> None:
@@ -439,14 +494,165 @@ def test_requested_unreachable_host_fails_closed() -> None:
     assert "unreachable" in result.stdout
 
 
+_FAKE_CARGO = r"""#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  metadata)
+    exec "$REAL_CARGO" "$@"
+    ;;
+  build)
+    exit 0
+    ;;
+  test)
+    printf '%s\n' 'test result: ok. 1 passed; 0 failed' '' ''
+    exit 0
+    ;;
+  *)
+    printf 'unexpected fake cargo invocation: %s\n' "$*" >&2
+    exit 93
+    ;;
+esac
+"""
+
+_FAKE_HEW = r"""#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  --version)
+    printf '%s\n' 'hew 0.6.0-rc1'
+    ;;
+  run)
+    printf '%s\n' 'Hello from Hew release test' 'pkg-smoke-ok'
+    ;;
+  build)
+    output=''
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == '-o' ]]; then
+        output="${2:-}"
+        break
+      fi
+      shift
+    done
+    [[ -n "$output" ]] || exit 94
+    printf '%s\n' '#!/usr/bin/env bash' \
+      'printf "%s\\n" "release-native-link-ok"' > "$output"
+    chmod +x "$output"
+    ;;
+  *)
+    printf 'unexpected fake hew invocation: %s\n' "$*" >&2
+    exit 95
+    ;;
+esac
+"""
+
+_FAKE_VERSION_BINARY = r"""#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == '--version' ]]
+printf '%s\n' 'hew component 0.6.0-rc1'
+"""
+
+_FAKE_RUSTC = r"""#!/usr/bin/env bash
+set -euo pipefail
+output=''
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == '-o' ]]; then
+    output="${2:-}"
+    break
+  fi
+  shift
+done
+[[ -n "$output" ]] || exit 96
+printf '%s\n' 'fake static archive' > "$output"
+"""
+
+
+def _write_executable(path: Path, source: str) -> None:
+    path.write_text(source)
+    path.chmod(0o755)
+
+
+def _run_linux_target_dir_contract(
+    target_dir: Path, *, cargo_target_dir: str | None, cargo_home: Path
+) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    release = target_dir / "release"
+    release_lib = target_dir / "release-lib"
+    release.mkdir()
+    release_lib.mkdir()
+    _write_executable(release / "hew", _FAKE_HEW)
+    for name in ("adze", "hew-lsp", "hew-observe"):
+        _write_executable(release / name, _FAKE_VERSION_BINARY)
+    (release_lib / "libhew.a").write_text("fake archive")
+
+    bin_dir = cargo_home / "test-bin"
+    bin_dir.mkdir(parents=True)
+    _write_executable(bin_dir / "cargo", _FAKE_CARGO)
+    _write_executable(bin_dir / "rustc", _FAKE_RUSTC)
+    _write_executable(bin_dir / "ldd", "#!/usr/bin/env bash\nexit 0\n")
+    bash_env = cargo_home / "bash-env"
+    bash_env.write_text(f'export PATH="{bin_dir}:$PATH"\n')
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "BASH_ENV": str(bash_env),
+            "CARGO_HOME": str(cargo_home),
+            "REAL_CARGO": shutil.which("cargo", path=os.environ["PATH"]) or "cargo",
+            "HEW_TIMEOUT_LOCAL_BUILD": "10",
+            "HEW_TIMEOUT_SMOKE": "10",
+            "HEW_TIMEOUT_TEST": "10",
+        }
+    )
+    env.pop("CARGO_BUILD_TARGET", None)
+    if cargo_target_dir is None:
+        env.pop("CARGO_TARGET_DIR", None)
+        (cargo_home / "config.toml").write_text(
+            f'[build]\ntarget-dir = "{target_dir}"\n'
+        )
+    else:
+        env["CARGO_TARGET_DIR"] = cargo_target_dir
+
+    result = subprocess.run(
+        ["bash", str(VALIDATOR), "linux"],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "All platforms passed" in result.stdout
+
+
+def test_linux_validator_honors_nondefault_cargo_target_dir() -> None:
+    with tempfile.TemporaryDirectory(prefix="hew-prerelease-target-env-") as raw:
+        temp = Path(raw)
+        target = temp / "cargo artifacts with spaces"
+        _run_linux_target_dir_contract(
+            target, cargo_target_dir=str(target), cargo_home=temp / "cargo-home"
+        )
+
+
+def test_linux_validator_honors_cargo_build_target_dir_configuration() -> None:
+    with tempfile.TemporaryDirectory(prefix="hew-prerelease-target-config-") as raw:
+        temp = Path(raw)
+        target = temp / "configured cargo artifacts"
+        _run_linux_target_dir_contract(
+            target, cargo_target_dir=None, cargo_home=temp / "cargo-home"
+        )
+
+
 _TESTS = [
     test_static_staging_contract,
     test_macos_llvm_discovery_contract,
     test_windows_toolchain_bootstrap_contract,
     test_windows_staged_build_transport_contract,
+    test_cargo_output_dir_contract,
     test_macos_llvm_discovery_mutations_are_rejected,
     test_windows_toolchain_bootstrap_mutations_are_rejected,
     test_windows_staged_build_transport_mutations_are_rejected,
+    test_cargo_output_dir_mutations_are_rejected,
     test_checkout_overwrite_mutations_are_rejected,
     test_ephemeral_output_exclusion_mutations_are_rejected,
     test_linux_arm64_uses_only_the_staged_candidate,
@@ -459,6 +665,8 @@ _TESTS = [
     test_malformed_remote_stage_is_rejected_before_sync,
     test_staging_failure_cannot_be_masked_by_a_later_remote_command,
     test_requested_unreachable_host_fails_closed,
+    test_linux_validator_honors_nondefault_cargo_target_dir,
+    test_linux_validator_honors_cargo_build_target_dir_configuration,
 ]
 
 

@@ -9,7 +9,8 @@ This is the concrete expansion of the `ci-full-run-pre-tag` todo.
 - [ ] `main` CI is green (check [Actions → CI](../../actions/workflows/ci.yml))
 - [ ] The release branch `gate-sanitizers` job is green: ASan executed and passed, and TSan/Miri have bounded behavioral ledger entries for this release version in `release-sanitizer-waiver.toml` (see Known gaps)
 - [ ] FreeBSD nightly is green or has a known-issue note (check [Actions → FreeBSD CI](../../actions/workflows/freebsd.yml))
-- [ ] CHANGELOG.md `[Unreleased]` section is populated
+- [ ] CHANGELOG.md has either a populated `[Unreleased]` section or the dated
+      `[X.Y.Z]` section for the intended release
 - [ ] Curated GitHub release notes are drafted at `docs/releases/vX.Y.Z.md`
 - [ ] Version in workspace `Cargo.toml` is still the *previous* release (bump happens below)
 
@@ -217,8 +218,8 @@ branch. In particular, `gate-sanitizers` must have executed ASan successfully
 and accepted the bounded TSan/Miri behavioral ledger for the release version.
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag -s v0.6.0-rc1 -m "Hew v0.6.0-rc1"
+git push origin v0.6.0-rc1
 ```
 
 This triggers `.github/workflows/release.yml`, which:

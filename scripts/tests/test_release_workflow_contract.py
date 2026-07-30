@@ -2,7 +2,9 @@
 
 import os
 import re
+import shutil
 import subprocess
+import tarfile
 import tempfile
 import textwrap
 from pathlib import Path
@@ -16,6 +18,7 @@ RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
 RUNBOOK = ROOT / "docs" / "release-runbook.md"
+CHANGELOG = ROOT / "CHANGELOG.md"
 UNIX_INSTALLER = ROOT / "installers" / "install.sh"
 PRE_RELEASE_VALIDATOR = ROOT / "scripts" / "pre-release-validate.sh"
 RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.sh"
@@ -23,6 +26,7 @@ WINDOWS_RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.ps1"
 SANITIZER_GATE = ROOT / "scripts" / "check-sanitizer-gate.sh"
 MAKEFILE = ROOT / "Makefile"
 RELEASE_BINARY_SMOKE = ROOT / "scripts" / "test-release-binary.sh"
+PACKAGE_BUILDER = ROOT / "installers" / "build-packages.sh"
 
 
 def workflow() -> str:
@@ -536,11 +540,11 @@ def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     makefile = MAKEFILE.read_text()
 
     assert "verify_libhew_external_link" in validator
-    assert (
-        "scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a"
-        in validator
-    )
-    assert "hew.exe build .\\\\_smoke.hew -o .\\\\_smoke.exe" in validator
+    assert "scripts/cargo-output-dir.py --profile release" in validator
+    assert "scripts/cargo-output-dir.py --profile release-lib" in validator
+    assert r"--hew \"\$release_dir/hew\"" in validator
+    assert r"--archive \"\$release_lib_dir/libhew.a\"" in validator
+    assert r"& \$Hew build .\\_smoke.hew -o .\\_smoke.exe" in validator
     assert "ar t target/release-lib" not in validator
     assert "target/release/hew _smoke.hew -o" not in validator
     assert '"$WORK_DIR/release/bin/hew" build' in probe
@@ -551,7 +555,7 @@ def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     assert "Copy-Item -LiteralPath $Archive" in windows_probe
     assert "& $StagedHew build" in windows_probe
     assert "test-release-lib-link:" in makefile
-    assert "--hew $(RELEASE_HEW) --archive $(RELEASE_LIBHEW)" in makefile
+    assert '--hew "$(RELEASE_HEW)" --archive "$(RELEASE_LIBHEW)"' in makefile
     assert "scripts/test-release-lib-link.ps1" in makefile
     assert "RELEASE_HEW := $(RELEASE_DIR)/hew.exe" in makefile
     assert "RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/hew.lib" in makefile
@@ -618,11 +622,46 @@ def test_sanitizer_gate_is_behavioral_and_release_scoped() -> None:
         assert ledger.count(field) >= 2
 
 
-def test_release_notes_and_runbook_keep_candidate_truthful() -> None:
+def test_release_record_is_durable_and_tag_ready() -> None:
+    changelog = CHANGELOG.read_text()
     notes = RELEASE_NOTES.read_text()
     runbook = RUNBOOK.read_text()
-    assert "v0.6.0-rc1" in notes
-    assert "not a final release" in notes
+    notes_words = " ".join(notes.split())
+    runbook_words = " ".join(runbook.split())
+
+    current_changelog = changelog.split("### Changed", maxsplit=1)[0]
+    assert "## [0.6.0-rc1] - 2026-07-29" in current_changelog
+    for provisional in (
+        "unreleased",
+        "tag is not cut",
+        "will be finalized when",
+        "in preparation",
+    ):
+        assert provisional not in current_changelog.lower()
+
+    assert "v0.6.0-rc1" in notes_words
+    assert "first release candidate for v0.6.0" in notes_words
+    assert "not the final v0.6.0 release" in notes_words
+    assert "Publication for this first RC is deliberately staged" in notes_words
+    assert (
+        "The signed tag publishes the platform assets and checksums first"
+        in notes_words
+    )
+    assert "npm publication is not inferred from the tag" in notes_words
+    for pre_tag_only in (
+        "tag and final changelog date remain intentionally unset",
+        "This candidate does not claim",
+    ):
+        assert pre_tag_only not in notes_words
+
+    assert (
+        "CHANGELOG.md has either a populated `[Unreleased]` section or the dated "
+        "`[X.Y.Z]` section for the intended release"
+    ) in runbook_words
+    assert 'git tag -s v0.6.0-rc1 -m "Hew v0.6.0-rc1"' in runbook
+    assert "git push origin v0.6.0-rc1" in runbook
+    assert "git tag v0.4.0" not in runbook
+    assert "git push origin v0.4.0" not in runbook
     assert "every release bar and the final-candidate checklist are green" in runbook
     assert "Manually dispatch" in runbook
     assert "both independent publication arms" in runbook
@@ -687,6 +726,253 @@ def test_release_binary_smoke_honors_absolute_and_relative_target_dirs() -> None
         )
 
 
+def test_local_release_builds_and_assembles_every_shipped_binary() -> None:
+    makefile = MAKEFILE.read_text()
+    release = makefile[
+        makefile.index("release:\n") : makefile.index("\n# Validate release builds")
+    ]
+    assembly = makefile[
+        makefile.index("assemble-release:\n") : makefile.index("\n# ── Tests")
+    ]
+    install = makefile[
+        makefile.index("define require_release_artifacts\n") : makefile.index(
+            "\nuninstall:"
+        )
+    ]
+
+    for package in ("hew-cli", "adze-cli", "hew-lsp", "hew-observe"):
+        assert f"cargo build -p {package} --release" in release
+    for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+        name = re.escape(binary)
+        assert re.search(
+            rf'^\s*@ln -sfn "\$\(LINK_UP2\)\$\(RELEASE_DIR\)/{name}"\s+'
+            rf'"\$\(BUILD_DIR\)/bin/{name}"$',
+            assembly,
+            re.MULTILINE,
+        )
+        assert f'@test -f "$(RELEASE_DIR)/{binary}" \\' in install
+        assert f'install -m 755 "$(RELEASE_DIR)/{binary}"' in install
+        assert f'"$(DESTDIR)$(PREFIX)/bin/{binary}"' in install
+    assert "cargo build -p hew-lib --profile release-lib" in release
+    assert "$(RELEASE_LIB_DIR)/libhew.a" in assembly
+
+
+def _make_dry_run(target: str, cargo_target_dir: Path, *make_overrides: str) -> str:
+    env = os.environ.copy()
+    env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
+    result = subprocess.run(
+        ["make", "-n", target, *make_overrides],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "warning: overriding commands for target" not in result.stderr
+    assert "warning: ignoring old commands for target" not in result.stderr
+    return result.stdout
+
+
+def test_make_release_surfaces_quote_spacious_cargo_target_dir() -> None:
+    """Make must not split Cargo artifact paths into targets or shell words."""
+    with tempfile.TemporaryDirectory(prefix="hew-make-output-contract-") as raw:
+        cargo_target_dir = Path(raw) / "cargo artifacts with spaces"
+        release_dir = cargo_target_dir / "release"
+        release_lib_dir = cargo_target_dir / "release-lib"
+
+        assembly = _make_dry_run("assemble-release", cargo_target_dir)
+        install = _make_dry_run("install", cargo_target_dir)
+        debug = _make_dry_run("assemble", cargo_target_dir)
+        target_triple = "x86_64-unknown-linux-gnu"
+        cross_assembly = _make_dry_run(
+            "assemble-release",
+            cargo_target_dir,
+            f"TARGET_TRIPLE={target_triple}",
+        )
+
+        for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+            source = release_dir / binary
+            assert f'"{source}"' in assembly
+            assert f'"{source}"' in install
+
+        release_archive = release_lib_dir / "libhew.a"
+        assert f'--archive "{release_archive}"' in assembly
+        assert f'"{release_archive}"' in install
+
+        # The same invariant applies to debug and explicit wasm target layouts.
+        assert f'"{cargo_target_dir / "debug" / "hew"}"' in debug
+        wasm_debug = cargo_target_dir / "wasm32-wasip1" / "debug"
+        assert f'"{wasm_debug}/$lib"' in debug
+
+        cross_release = cargo_target_dir / target_triple / "release"
+        cross_release_lib = cargo_target_dir / target_triple / "release-lib"
+        assert f'"{cross_release / "hew-lsp"}"' in cross_assembly
+        assert f'--archive "{cross_release_lib / "libhew.a"}"' in cross_assembly
+
+
+_PACKAGING_CARGO_DOUBLE = """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if args and args[0] == "metadata":
+    print(json.dumps({"target_directory": os.environ["MOCK_TARGET_ROOT"]}))
+    raise SystemExit(0)
+
+with Path(os.environ["MOCK_CARGO_LOG"]).open("a") as stream:
+    stream.write("cargo " + " ".join(args) + "\\n")
+
+root = Path(os.environ.get("CARGO_TARGET_DIR", os.environ["MOCK_TARGET_ROOT"]))
+if not root.is_absolute():
+    root = Path.cwd() / root
+target = ""
+if "--target" in args:
+    target = args[args.index("--target") + 1]
+elif os.environ.get("CARGO_BUILD_TARGET"):
+    target = os.environ["CARGO_BUILD_TARGET"]
+elif os.environ.get("MOCK_BUILD_TARGET"):
+    target = os.environ["MOCK_BUILD_TARGET"]
+if target:
+    root /= target
+
+profile = "release-lib" if "--profile" in args else "release"
+out = root / profile
+out.mkdir(parents=True, exist_ok=True)
+if profile == "release-lib":
+    (out / "libhew.a").write_bytes(b"release-lib-archive")
+else:
+    # A stale/wrong-profile archive proves package assembly did not copy this.
+    (out / "libhew.a").write_bytes(b"fat-lto-release-archive")
+    program = (
+        "#!/usr/bin/env bash\\n"
+        'if [[ "${1:-}" == "completions" ]]; then printf "mock completion\\\\n"; fi\\n'
+    )
+    for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+        path = out / binary
+        path.write_text(program)
+        path.chmod(0o755)
+"""
+
+
+def test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive() -> None:
+    """Execute the real packager against env- and config-selected layouts."""
+    scenarios = ("CARGO_TARGET_DIR", "build.target-dir")
+    for scenario in scenarios:
+        with tempfile.TemporaryDirectory(
+            prefix=f"hew-package-{scenario.lower().replace('.', '-')}-"
+        ) as directory:
+            repo = Path(directory) / "hew"
+            (repo / "installers").mkdir(parents=True)
+            (repo / "scripts" / "lib").mkdir(parents=True)
+            (repo / "std").mkdir()
+            (repo / "mock-bin").mkdir()
+
+            for source, destination in (
+                (PACKAGE_BUILDER, repo / "installers" / "build-packages.sh"),
+                (
+                    ROOT / "scripts" / "cargo-output-dir.py",
+                    repo / "scripts" / "cargo-output-dir.py",
+                ),
+                (
+                    ROOT / "scripts" / "lib" / "toml_compat.py",
+                    repo / "scripts" / "lib" / "toml_compat.py",
+                ),
+            ):
+                shutil.copy2(source, destination)
+                destination.chmod(0o755)
+
+            (repo / "std" / "prelude.hew").write_text("// packaging fixture\n")
+            for name in ("LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "README.md"):
+                (repo / name).write_text(f"{name}\n")
+
+            cargo = repo / "mock-bin" / "cargo"
+            cargo.write_text(_PACKAGING_CARGO_DOUBLE)
+            cargo.chmod(0o755)
+            cargo_log = repo / "cargo.log"
+            target_root = repo / ".cargo-artifacts"
+            build_target = "x86_64-contract-linux-gnu"
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{repo / 'mock-bin'}:{env['PATH']}",
+                    "MOCK_CARGO_LOG": str(cargo_log),
+                    "MOCK_TARGET_ROOT": str(target_root),
+                }
+            )
+            env.pop("CARGO_TARGET_DIR", None)
+            env.pop("CARGO_BUILD_TARGET", None)
+            if scenario == "CARGO_TARGET_DIR":
+                env["CARGO_TARGET_DIR"] = ".cargo-artifacts"
+                env["CARGO_BUILD_TARGET"] = build_target
+            else:
+                (repo / ".cargo").mkdir()
+                (repo / ".cargo" / "config.toml").write_text(
+                    "[build]\n"
+                    'target-dir = ".cargo-artifacts"\n'
+                    f'target = "{build_target}"\n'
+                )
+                # The command double mirrors Cargo's parsed configuration while
+                # the production resolver itself reads the config target.
+                env["MOCK_BUILD_TARGET"] = build_target
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(repo / "installers" / "build-packages.sh"),
+                    "--version",
+                    "0.6.0-rc1",
+                    "--arch",
+                    "x86_64",
+                    "--only",
+                    "tarball",
+                ],
+                cwd=repo,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert result.returncode == 0, (
+                scenario + "\n" + result.stdout + result.stderr
+            )
+
+            calls = cargo_log.read_text().splitlines()
+            assert calls == [
+                "cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release",
+                "cargo build -p hew-lib --profile release-lib",
+            ]
+
+            archive = repo / "dist" / "hew-v0.6.0-rc1-linux-x86_64.tar.gz"
+            package_root = "hew-v0.6.0-rc1-linux-x86_64"
+            with tarfile.open(archive) as package:
+                names = set(package.getnames())
+                for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+                    assert f"{package_root}/bin/{binary}" in names
+                member = package.extractfile(f"{package_root}/lib/libhew.a")
+                assert member is not None
+                assert member.read() == b"release-lib-archive"
+
+
+def test_musl_packaging_uses_explicit_target_release_lib_output() -> None:
+    builder = PACKAGE_BUILDER.read_text()
+    assert (
+        'cargo build --profile release-lib --target "${musl_target}" -p hew-lib'
+        in builder
+    )
+    assert (
+        '_cargo_output_dir --native --profile release-lib --target "${musl_target}"'
+        in builder
+    )
+    assert "${REPO_DIR}/target/release" not in builder
+    assert "${REPO_DIR}/target/${musl_target}" not in builder
+
+
 _TESTS = [
     test_rc_tag_normalization_and_exact_release_body,
     test_npm_publication_is_pinned_to_a_version_matching_release_tag,
@@ -714,9 +1000,13 @@ _TESTS = [
     test_every_release_lane_executes_the_library_consumer_proof,
     test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh,
     test_sanitizer_gate_is_behavioral_and_release_scoped,
-    test_release_notes_and_runbook_keep_candidate_truthful,
+    test_release_record_is_durable_and_tag_ready,
     test_contract_oracle_runs_in_required_ci,
     test_release_binary_smoke_honors_absolute_and_relative_target_dirs,
+    test_local_release_builds_and_assembles_every_shipped_binary,
+    test_make_release_surfaces_quote_spacious_cargo_target_dir,
+    test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive,
+    test_musl_packaging_uses_explicit_target_release_lib_output,
 ]
 
 

@@ -9959,8 +9959,12 @@ fn suspend_carrier_lowers_to_presplit_coroutine() {
         "must emit coro.id + coro.suspend:\n{ir}"
     );
     assert!(
-        ir.contains(crate::coro::CONT_FRAME_ALLOC),
-        "frame allocation must route through hew_cont_frame_alloc:\n{ir}"
+        ir.contains(crate::coro::CONT_FRAME_ALLOC_TRACKED),
+        "coroutine frame allocation must route through the tracked sibling:\n{ir}"
+    );
+    assert!(
+        ir.contains(crate::coro::CONT_FRAME_HANDOFF),
+        "every normal ramp return must hand its tracked frame to the caller:\n{ir}"
     );
     assert!(
         crate::coro::module_has_coroutines(&module),
@@ -9969,6 +9973,23 @@ fn suspend_carrier_lowers_to_presplit_coroutine() {
     module
         .verify()
         .unwrap_or_else(|e| panic!("pre-split coroutine module failed verify: {e}"));
+}
+
+fn llvm_defined_function_body<'a>(ir: &'a str, name: &str) -> &'a str {
+    let marker = format!("@{name}(");
+    let start = ir
+        .match_indices("define ")
+        .find_map(|(start, _)| {
+            let line_end = ir[start..].find('\n').map(|offset| start + offset)?;
+            ir[start..line_end].contains(&marker).then_some(start)
+        })
+        .unwrap_or_else(|| panic!("missing LLVM function `{name}`:\n{ir}"));
+    let tail = &ir[start..];
+    let end = tail
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("unterminated LLVM function `{name}`"))
+        + 3;
+    &tail[..end]
 }
 
 /// Build a coroutine `IrPipeline` whose bb0 carries a `SuspendKind::StreamSend`
@@ -10144,6 +10165,24 @@ fn assert_coro_splits_clean_for_triple(triple: &str) {
     assert!(
         ir.contains("@__hew_coro_probe.destroy"),
         "{triple}: CoroSplit must produce a .destroy outline:\n{ir}"
+    );
+    let ramp = llvm_defined_function_body(&ir, "__hew_coro_probe");
+    assert!(
+        ramp.contains("call ptr @hew_cont_frame_alloc_tracked("),
+        "{triple}: the post-CoroSplit ramp must allocate through the tracked \
+         coroutine-only allocator:\n{ramp}"
+    );
+    assert!(
+        ramp.contains("call void @hew_cont_frame_handoff("),
+        "{triple}: the post-CoroSplit ramp must hand off before returning its \
+         handle:\n{ramp}"
+    );
+    let resume = llvm_defined_function_body(&ir, "__hew_coro_probe.resume");
+    assert!(
+        resume.contains("call void @hew_cont_frame_handoff("),
+        "{triple}: CoroSplit must preserve the shared-return handoff call in the \
+         resume outline; the runtime phase tag makes this clone a no-op before \
+         `hew_cont_resume` performs the authoritative Resume leave:\n{resume}"
     );
     module
         .verify()

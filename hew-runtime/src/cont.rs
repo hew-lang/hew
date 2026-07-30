@@ -11,12 +11,16 @@
 //!
 //! This module owns two responsibilities:
 //!
-//! 1. **The coro frame allocator** (`hew_cont_frame_alloc` / `hew_cont_frame_free`).
+//! 1. **The coro frame allocators** (`hew_cont_frame_alloc`,
+//!    `hew_cont_frame_alloc_tracked`, and `hew_cont_frame_free`).
 //!    `llvm.coro.alloc` / `llvm.coro.free` bridge to a size-only / pointer-only
 //!    allocator (the C++ `operator new`/`delete` shape). LLVM's
 //!    `coro.free` only hands back the raw frame pointer, never its size, so this
-//!    allocator stores the block size in an 8-byte header it prepends to every
-//!    frame and reads back at free time. The bytes themselves route through the
+//!    allocator stores the block size and a tracked-frame marker in a 16-byte
+//!    header it prepends to every frame and reads back at free time. Coroutine
+//!    ramps use the tracked sibling so native crash recovery can identify only
+//!    allocations known to be live on the killed synchronous call stack;
+//!    generator companions remain untracked. The bytes themselves route through the
 //!    runtime's general heap allocator [`crate::mem::hew_alloc`] /
 //!    [`crate::mem::hew_dealloc`] — NOT libc `malloc`, which is the wasip1
 //!    requirement the W6.006 spike pinned (criterion C3). The frame is
@@ -44,15 +48,20 @@
 //!
 //! # Ownership / teardown (single owner)
 //!
-//! The coroutine frame is owned by whoever holds the [`HewCont`] handle (the
-//! runtime's continuation table / actor slot, once slice 4 wires it). There is
-//! exactly ONE teardown owner: `hew_cont_destroy` → the `cleanup` outline.
+//! After a ramp hands the coroutine frame to its caller, it is owned by whoever
+//! holds the [`HewCont`] handle (the runtime's continuation table / actor slot,
+//! once slice 4 wires it). There is exactly ONE ordinary teardown owner:
+//! `hew_cont_destroy` → the `cleanup` outline.
 //! Normal completion (the body running off its end through the final
 //! `coro.suspend(i1 true)`) frees only the body's locals and leaves the frame
 //! live for the executor to observe `done == true` and reclaim via `destroy`.
 //! A completed coroutine must be destroyed exactly once; resuming a
 //! final-suspended coroutine is a use-error the compiler's `trap` arm guards
-//! against. This single-owner discipline is what the spike's MallocScribble +
+//! against. A native trap that kills a ramp/resume before handoff is the narrow
+//! exception: crash recovery raw-frees only positively tracked active frames,
+//! never invokes `coro.destroy` on a running frame, and excludes the
+//! scheduler-owned resumed root so its existing destroy authority remains
+//! unique. This single-owner discipline is what the spike's MallocScribble +
 //! `leaks --atExit` accounting proved leak-/double-free-clean (criterion C4).
 //!
 //! # WASM parity (CLAUDE.md §4)
@@ -71,6 +80,7 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr;
 
@@ -88,6 +98,41 @@ const FRAME_ALIGN: usize = 16;
 /// [`FRAME_ALIGN`] stride (not just 8) so the pointer handed to LLVM stays
 /// 16-byte aligned. The size is stored as a `u64` at the start of this header.
 const FRAME_HEADER: usize = FRAME_ALIGN;
+
+/// Marker stored in the second word of a coroutine frame header.
+///
+/// Only allocations made by [`hew_cont_frame_alloc_tracked`] carry this marker.
+/// Generator companions and environments continue to use
+/// [`hew_cont_frame_alloc`] and remain deliberately outside crash-frame
+/// reclamation: they require typed teardown that a raw crash unwind cannot
+/// provide.
+const TRACKED_COROUTINE_FRAME_MAGIC: u64 = 0x4845_5743_4f52_4f31;
+
+thread_local! {
+    /// Coroutine frames synchronously executing on this worker thread.
+    ///
+    /// A tracked ramp allocation pushes immediately. A normal ramp return hands
+    /// the frame to its caller and pops it. `hew_cont_resume` brackets the
+    /// CoroSplit resume outline with the same enter/leave pair. A signal
+    /// longjmp skips the normal pop and leaves the positively tracked frames
+    /// here for scheduler crash recovery to reclaim in LIFO order.
+    static ACTIVE_COROUTINE_FRAMES: RefCell<Vec<ActiveCoroutineFrame>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveCoroutinePhase {
+    /// A newly allocated coroutine ramp is executing before returning a handle.
+    Ramp,
+    /// `hew_cont_resume` is driving a `CoroSplit` `.resume` outline.
+    Resume,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ActiveCoroutineFrame {
+    frame: *mut c_void,
+    phase: ActiveCoroutinePhase,
+}
 
 /// The outcome of polling a continuation, as a C-ABI tagged value.
 ///
@@ -132,6 +177,32 @@ pub enum ResumePoll {
 /// `coro.free` lowering) owns that single free edge.
 #[no_mangle]
 pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
+    // SAFETY: this is the untracked allocation entry point; the shared helper
+    // accepts any size and returns a frame requiring one matching free.
+    unsafe { allocate_frame(size, false) }
+}
+
+/// Allocate and activate a coroutine frame for a `CoroSplit` ramp.
+///
+/// Unlike [`hew_cont_frame_alloc`], this entry point marks the allocation as a
+/// real coroutine frame and pushes it onto the current thread's active-frame
+/// stack. Generated coroutine prologues use only this sibling. A normal ramp
+/// return calls [`hew_cont_frame_handoff`] immediately before returning the
+/// handle; a trap/longjmp skips that handoff, leaving the frame positively
+/// identified for crash recovery.
+///
+/// # Safety
+///
+/// Same allocation contract as [`hew_cont_frame_alloc`]. The returned block,
+/// if non-null, must be handed off or reclaimed exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cont_frame_alloc_tracked(size: u64) -> *mut c_void {
+    // SAFETY: the shared helper accepts any size and records successful tracked
+    // allocations on the current active stack.
+    unsafe { allocate_frame(size, true) }
+}
+
+unsafe fn allocate_frame(size: u64, tracked: bool) -> *mut c_void {
     if size == 0 {
         return ptr::null_mut();
     }
@@ -152,17 +223,36 @@ pub unsafe extern "C" fn hew_cont_frame_alloc(size: u64) -> *mut c_void {
     if base.is_null() {
         return ptr::null_mut();
     }
-    // Store the full block size in the header so the free edge can reconstruct
-    // the exact (size, align) pair hew_dealloc requires. `write_unaligned` is
-    // unconditionally sound (base is in fact FRAME_ALIGN-aligned, but this does
-    // not rely on the static alignment of a `*mut u8`).
+    // Store the full block size and the optional tracked-coroutine marker in
+    // the header. `write_unaligned` is unconditionally sound (base is in fact
+    // FRAME_ALIGN-aligned, but this does not rely on the static alignment of a
+    // `*mut u8`).
     // SAFETY: base points to at least FRAME_HEADER (>= 8) writable bytes that
     // hew_alloc just handed out.
-    unsafe { ptr::write_unaligned(base.cast::<u64>(), total as u64) };
+    unsafe {
+        ptr::write_unaligned(base.cast::<u64>(), total as u64);
+        ptr::write_unaligned(
+            base.add(size_of::<u64>()).cast::<u64>(),
+            if tracked {
+                TRACKED_COROUTINE_FRAME_MAGIC
+            } else {
+                0
+            },
+        );
+    }
     crate::observe::record_coroutine_frame_alloc(size as u64);
     // SAFETY: the allocation is total = FRAME_HEADER + size bytes, so advancing
     // by FRAME_HEADER lands within the block with `size` usable bytes ahead.
-    unsafe { base.add(FRAME_HEADER).cast::<c_void>() }
+    let frame = unsafe { base.add(FRAME_HEADER).cast::<c_void>() };
+    if tracked {
+        ACTIVE_COROUTINE_FRAMES.with(|active| {
+            active.borrow_mut().push(ActiveCoroutineFrame {
+                frame,
+                phase: ActiveCoroutinePhase::Ramp,
+            });
+        });
+    }
+    frame
 }
 
 /// Release a coroutine frame previously returned by [`hew_cont_frame_alloc`].
@@ -186,6 +276,13 @@ pub unsafe extern "C" fn hew_cont_frame_free(frame: *mut c_void) {
     if frame.is_null() {
         return;
     }
+    remove_matching_active_frame(frame);
+    // SAFETY: caller guarantees `frame` is a live allocation from one of the
+    // frame allocator siblings.
+    unsafe { free_frame_allocation(frame) };
+}
+
+unsafe fn free_frame_allocation(frame: *mut c_void) {
     // SAFETY: frame came from hew_cont_frame_alloc as base + FRAME_HEADER, so
     // subtracting FRAME_HEADER recovers the original block base.
     let base = unsafe { frame.cast::<u8>().sub(FRAME_HEADER) };
@@ -196,6 +293,143 @@ pub unsafe extern "C" fn hew_cont_frame_free(frame: *mut c_void) {
     // SAFETY: base/total/FRAME_ALIGN are exactly the (ptr, size, align) triple
     // hew_alloc returned, so this is the symmetric free hew_dealloc requires.
     unsafe { hew_dealloc(base, total, FRAME_ALIGN as u64) };
+}
+
+unsafe fn frame_is_tracked(frame: *mut c_void) -> bool {
+    if frame.is_null() {
+        return false;
+    }
+    // SAFETY: callers supply a live frame allocation. Its header begins one
+    // FRAME_HEADER stride before the public frame pointer.
+    let base = unsafe { frame.cast::<u8>().sub(FRAME_HEADER) };
+    // SAFETY: the marker occupies the second u64 word in the 16-byte header.
+    unsafe {
+        ptr::read_unaligned(base.add(size_of::<u64>()).cast::<u64>())
+            == TRACKED_COROUTINE_FRAME_MAGIC
+    }
+}
+
+fn active_coroutine_enter(frame: *mut c_void) -> bool {
+    // SAFETY: this helper is called only with a live continuation handle. The
+    // marker gates admission so untracked companion/environment allocations can
+    // never enter the raw crash-reclamation authority.
+    if frame.is_null() || !unsafe { frame_is_tracked(frame) } {
+        return false;
+    }
+    ACTIVE_COROUTINE_FRAMES.with(|active| {
+        active.borrow_mut().push(ActiveCoroutineFrame {
+            frame,
+            phase: ActiveCoroutinePhase::Resume,
+        });
+    });
+    true
+}
+
+fn active_coroutine_leave(frame: *mut c_void, phase: ActiveCoroutinePhase) -> bool {
+    if frame.is_null() {
+        return false;
+    }
+    ACTIVE_COROUTINE_FRAMES.with(|active| {
+        let mut active = active.borrow_mut();
+        if !active
+            .last()
+            .is_some_and(|record| record.frame == frame && record.phase == phase)
+        {
+            return false;
+        }
+        active.pop();
+        true
+    })
+}
+
+fn remove_matching_active_frame(frame: *mut c_void) -> bool {
+    if frame.is_null() {
+        return false;
+    }
+    ACTIVE_COROUTINE_FRAMES.with(|active| {
+        let mut active = active.borrow_mut();
+        let Some(index) = active
+            .iter()
+            .rposition(|candidate| candidate.frame == frame)
+        else {
+            return false;
+        };
+        active.remove(index);
+        true
+    })
+}
+
+/// Transfer a normally-returned ramp frame from the active TLS stack to its
+/// caller.
+///
+/// The handoff is intentionally pointer-only and does not inspect the frame:
+/// `CoroSplit` may retain the shared return block in cleanup outlines after the
+/// frame has already been freed. In that outline the pointer is dangling but
+/// cannot match a live active record, so the call is a safe no-op.
+#[no_mangle]
+pub extern "C" fn hew_cont_frame_handoff(frame: *mut c_void) {
+    // CoroSplit may clone the presplit shared return block into a `.resume`
+    // outline. The phase check makes that cloned call a no-op: only a newly
+    // allocated ramp record can be handed off; `hew_cont_resume` owns the
+    // matching Resume-phase leave.
+    let _ = active_coroutine_leave(frame, ActiveCoroutinePhase::Ramp);
+}
+
+#[cfg(any(not(target_arch = "wasm32"), test))]
+unsafe fn drain_active_coroutine_frames_excluding(
+    excluded: *mut c_void,
+    mut reclaim: impl FnMut(*mut c_void),
+) -> usize {
+    ACTIVE_COROUTINE_FRAMES.with(|active| {
+        let mut active = active.borrow_mut();
+        let mut retained_excluded = None;
+        let mut reclaimed = 0;
+        while let Some(record) = active.pop() {
+            let frame = record.frame;
+            if !excluded.is_null() && frame == excluded && retained_excluded.is_none() {
+                retained_excluded = Some(record);
+                continue;
+            }
+            // SAFETY: only the tracked allocator and tracked resume-enter path
+            // can populate this stack. Re-check the header marker before raw
+            // reclamation so corrupted/mismatched records fail closed.
+            if unsafe { frame_is_tracked(frame) } {
+                reclaim(frame);
+                reclaimed += 1;
+            }
+        }
+        if let Some(record) = retained_excluded {
+            // The pop loop preserved the Vec's capacity, so restoring the one
+            // scheduler-owned root does not allocate on the crash path.
+            active.push(record);
+        }
+        reclaimed
+    })
+}
+
+/// Raw-reclaim every crash-abandoned active coroutine except one optional
+/// scheduler-owned root.
+///
+/// Frames are drained in LIFO order. This never calls `coro.destroy`: each
+/// reclaimed frame was RUNNING when signal recovery killed its native stack,
+/// so its suspend cleanup outline is not legal to re-enter. The operation frees
+/// only positively tracked coroutine allocations and therefore makes no claim
+/// to run typed destructors for arbitrary frame-owned values.
+///
+/// `excluded` is used by resumed-handler recovery: the actor slot remains the
+/// sole owner of that root, and `abandon_resuming_after_crash` frees it after
+/// nested frames have been drained.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn reclaim_active_coroutine_frames_excluding(excluded: *mut c_void) -> usize {
+    // SAFETY: scheduler calls this only after longjmp/unwind has killed every
+    // non-excluded active frame on this thread.
+    unsafe {
+        drain_active_coroutine_frames_excluding(excluded, |frame| {
+            // SAFETY: the drain admitted only a positively tracked live frame
+            // whose synchronous execution was abandoned by crash recovery.
+            free_frame_allocation(frame);
+        })
+    }
 }
 
 /// Resume a suspended continuation — `llvm.coro.resume(handle)`.
@@ -217,11 +451,18 @@ pub unsafe extern "C" fn hew_cont_resume(handle: *mut c_void) {
     if handle.is_null() {
         return;
     }
+    let tracked = active_coroutine_enter(handle);
     // SAFETY: handle is a live, suspended coroutine frame per the fn contract.
     // The transmute targets the resume fn-ptr stored at frame slot 0 by
     // CoroSplit; LLVM's coro lowering guarantees that layout for any frame
     // produced by coro.begin.
-    unsafe { coro_resume(handle) }
+    unsafe { coro_resume(handle) };
+    if tracked {
+        debug_assert!(
+            active_coroutine_leave(handle, ActiveCoroutinePhase::Resume),
+            "tracked coroutine resume returned with a mismatched active-frame stack"
+        );
+    }
 }
 
 /// Report whether a continuation has reached its final suspend —
@@ -555,6 +796,140 @@ mod tests {
     fn frame_free_null_is_noop() {
         // SAFETY: null free is a documented no-op.
         unsafe { hew_cont_frame_free(ptr::null_mut()) };
+    }
+
+    fn active_frames() -> Vec<*mut c_void> {
+        ACTIVE_COROUTINE_FRAMES
+            .with(|active| active.borrow().iter().map(|record| record.frame).collect())
+    }
+
+    #[test]
+    fn tracked_crash_frames_drain_in_lifo_order() {
+        // SAFETY: allocate three tracked test frames and raw-free them exactly
+        // once after the drain transfers their ownership into `order`.
+        unsafe {
+            let outer = hew_cont_frame_alloc_tracked(32);
+            let child = hew_cont_frame_alloc_tracked(48);
+            let nested = hew_cont_frame_alloc_tracked(64);
+            let mut order = Vec::new();
+            let reclaimed = drain_active_coroutine_frames_excluding(ptr::null_mut(), |frame| {
+                order.push(frame);
+            });
+            assert_eq!(reclaimed, 3);
+            assert_eq!(order, [nested, child, outer]);
+            assert!(active_frames().is_empty());
+            for frame in order {
+                free_frame_allocation(frame);
+            }
+        }
+    }
+
+    #[test]
+    fn active_frame_mismatch_preserves_lifo_stack() {
+        // SAFETY: allocate two tracked frames and free each exactly once after
+        // exercising the pointer-only handoff discipline.
+        unsafe {
+            let outer = hew_cont_frame_alloc_tracked(32);
+            let inner = hew_cont_frame_alloc_tracked(48);
+            assert_eq!(active_frames(), [outer, inner]);
+
+            hew_cont_frame_handoff(outer);
+            assert_eq!(
+                active_frames(),
+                [outer, inner],
+                "a non-top handoff must not punch through a nested active frame"
+            );
+            hew_cont_frame_handoff(inner);
+            hew_cont_frame_handoff(outer);
+            assert!(active_frames().is_empty());
+
+            hew_cont_frame_free(inner);
+            hew_cont_frame_free(outer);
+        }
+    }
+
+    #[test]
+    fn null_and_untracked_frames_never_enter_active_stack() {
+        // SAFETY: zero-sized tracked allocation is a documented null result;
+        // the untracked allocation is freed exactly once below.
+        unsafe {
+            let null = hew_cont_frame_alloc_tracked(0);
+            assert!(null.is_null());
+            hew_cont_frame_handoff(null);
+            assert!(!active_coroutine_enter(null));
+            assert!(!active_coroutine_leave(null, ActiveCoroutinePhase::Resume));
+
+            let companion = hew_cont_frame_alloc(32);
+            assert!(!active_coroutine_enter(companion));
+            assert!(active_frames().is_empty());
+            hew_cont_frame_free(companion);
+        }
+    }
+
+    #[test]
+    fn normal_handoff_and_frame_free_remove_active_records() {
+        // SAFETY: both tracked frames are freed exactly once. `handoff` removes
+        // the first; the public free removes the second matching active record.
+        unsafe {
+            let handed_off = hew_cont_frame_alloc_tracked(32);
+            hew_cont_frame_handoff(handed_off);
+            assert!(active_frames().is_empty());
+            hew_cont_frame_free(handed_off);
+
+            let freed_while_active = hew_cont_frame_alloc_tracked(48);
+            assert_eq!(active_frames(), [freed_while_active]);
+            hew_cont_frame_free(freed_while_active);
+            assert!(active_frames().is_empty());
+        }
+    }
+
+    #[test]
+    fn split_resume_handoff_clone_does_not_consume_resume_record() {
+        // SAFETY: one tracked frame is handed off from its ramp, entered as a
+        // resume, then freed exactly once after the resume record is removed.
+        unsafe {
+            let frame = hew_cont_frame_alloc_tracked(48);
+            hew_cont_frame_handoff(frame);
+            assert!(active_frames().is_empty());
+
+            assert!(active_coroutine_enter(frame));
+            assert_eq!(active_frames(), [frame]);
+            // CoroSplit clones the shared return block into `.resume`; this
+            // generated Ramp-phase handoff must not steal Resume ownership.
+            hew_cont_frame_handoff(frame);
+            assert_eq!(active_frames(), [frame]);
+            assert!(active_coroutine_leave(frame, ActiveCoroutinePhase::Resume));
+            assert!(active_frames().is_empty());
+            hew_cont_frame_free(frame);
+        }
+    }
+
+    #[test]
+    fn resumed_root_exclusion_reclaims_only_nested_frames() {
+        // SAFETY: the drain transfers child/grandchild ownership into `order`;
+        // the excluded root remains active and is released by its sole owner.
+        unsafe {
+            let root = hew_cont_frame_alloc_tracked(32);
+            let child = hew_cont_frame_alloc_tracked(48);
+            let nested = hew_cont_frame_alloc_tracked(64);
+            let mut order = Vec::new();
+            let reclaimed = drain_active_coroutine_frames_excluding(root, |frame| {
+                order.push(frame);
+            });
+            assert_eq!(reclaimed, 2);
+            assert_eq!(order, [nested, child]);
+            assert_eq!(
+                active_frames(),
+                [root],
+                "the scheduler-owned resumed root remains for \
+                 abandon_resuming_after_crash"
+            );
+            for frame in order {
+                free_frame_allocation(frame);
+            }
+            hew_cont_frame_free(root);
+            assert!(active_frames().is_empty());
+        }
     }
 
     /// `done`/`destroy`/`resume`/`poll` on a null handle are fail-closed: done

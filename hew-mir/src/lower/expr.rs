@@ -1487,6 +1487,15 @@ impl Builder {
                 }
                 let diag_len_before_value = self.diagnostics.len();
                 let value_place = self.lower_let_value(binding.id, value);
+                let is_for_await_handle_cursor = ty_is_stream_handle(&binding_ty)
+                    && binding.name.starts_with(FOR_ITER_CURSOR_NAME_PREFIX);
+                // Record only the desugar's explicit consuming rebind. The
+                // later backend `Move` below verifies that this HIR source and
+                // the synthetic cursor really share the whole-value hand-off.
+                let for_await_handoff_source = (is_for_await_handle_cursor
+                    && value.intent == IntentKind::Consume)
+                    .then(|| dyn_rebind_source_binding(value))
+                    .flatten();
                 // Cascade suppression: a `let` whose initializer failed to lower
                 // (`None`) AFTER emitting its own diagnostic poisons the binding,
                 // so a later `BindingRef` to it stays silent instead of stacking
@@ -1560,12 +1569,12 @@ impl Builder {
                 }
                 self.pending_closure_literal_heap = None;
                 self.decide(value);
-                self.statements.push(MirStatement::Bind {
-                    binding: binding.id,
-                    name: binding.name.clone(),
-                    site: value.site,
-                    ty: binding_ty.clone(),
-                });
+                self.push_bind_statement(
+                    binding.id,
+                    binding.name.clone(),
+                    value.site,
+                    binding_ty.clone(),
+                );
                 self.record_binding_scope(binding.id);
                 // W3.031 Stage 1: discriminate the dyn-trait owned-binding
                 // case structurally on `value.ty` rather than on `binding.ty`.
@@ -1743,9 +1752,7 @@ impl Builder {
                     // elsewhere must keep its move-checked function-exit close,
                     // or the unconditional inline close would free a moved-out
                     // handle (see `FOR_ITER_CURSOR_NAME_PREFIX`).
-                    if ty_is_stream_handle(&binding_ty)
-                        && binding.name.starts_with(FOR_ITER_CURSOR_NAME_PREFIX)
-                    {
+                    if is_for_await_handle_cursor {
                         if let Some(scope) = self.active_scopes.last().copied() {
                             self.scope_stream_bindings.push((
                                 scope,
@@ -1809,6 +1816,19 @@ impl Builder {
                             let slot = self.alloc_local(binding_ty.clone());
                             self.push_instr(Instr::Move { dest: slot, src });
                             self.binding_locals.insert(binding.id, slot);
+                            if let Some(source_binding) = for_await_handoff_source {
+                                if self.binding_locals.get(&source_binding) == Some(&src) {
+                                    self.for_await_handle_handoffs.push(
+                                        super::ForAwaitHandleHandoff {
+                                            source_binding,
+                                            cursor_binding: binding.id,
+                                            handoff_block: self.current_block_id,
+                                            site: value.site,
+                                            ty: binding_ty.clone(),
+                                        },
+                                    );
+                                }
+                            }
                         }
                         // Machine sub-structure places (`MachineTag` and
                         // `MachineVariant`) are addressing primitives — they
@@ -2389,12 +2409,12 @@ impl Builder {
                     // drop semantics (it does not touch `owned_locals`, which is
                     // populated only at `let`/param sites), so scope-exit drop
                     // accounting for `h` is unchanged.
-                    self.statements.push(MirStatement::Bind {
-                        binding: *binding,
-                        name: name.clone(),
-                        site: target.site,
-                        ty: self.subst_ty(&target.ty),
-                    });
+                    self.push_bind_statement(
+                        *binding,
+                        name.clone(),
+                        target.site,
+                        self.subst_ty(&target.ty),
+                    );
                 } else if let Some(source) = self.capture_env_sources.get(binding).cloned() {
                     // #1′ BorrowMut write-back: the assignment target is a
                     // captured `var` reassigned inside the closure body
@@ -6267,12 +6287,12 @@ impl Builder {
                     let companion = SENTINEL_RECV_GEN_COMPANION_BINDING;
                     let companion_name = "__hew_recv_gen_companion".to_string();
                     let companion_ty = self.subst_ty(&expr.ty);
-                    self.statements.push(MirStatement::Bind {
-                        binding: companion,
-                        name: companion_name.clone(),
-                        site: expr.site,
-                        ty: companion_ty.clone(),
-                    });
+                    self.push_bind_statement(
+                        companion,
+                        companion_name.clone(),
+                        expr.site,
+                        companion_ty.clone(),
+                    );
                     // Wire `binding_locals` BEFORE `register_owned_local`:
                     // `register_owned_local` reads the slot to classify
                     // ownership, and drop elaboration resolves the drop place
@@ -8139,12 +8159,7 @@ impl Builder {
         ty: &ResolvedTy,
         site: SiteId,
     ) {
-        self.statements.push(MirStatement::Bind {
-            binding: binding_id,
-            name: name.to_string(),
-            site,
-            ty: ty.clone(),
-        });
+        self.push_bind_statement(binding_id, name.to_string(), site, ty.clone());
         self.record_binding_scope(binding_id);
         if self.binding_seeds_drop_elaboration(ty)
             && !self.owned_locals.iter().any(|entry| {

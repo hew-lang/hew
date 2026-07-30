@@ -337,120 +337,171 @@ entry:
   %local_1 = alloca i64, align 8
   %local_2 = alloca i64, align 8
   %local_3 = alloca i64, align 8
-  %local_4 = alloca i8, align 1
-  %local_5 = alloca i64, align 8
-  %local_6 = alloca i8, align 1
-  %local_7 = alloca i64, align 8
-  %local_8 = alloca i8, align 1
-  %local_9 = alloca i64, align 8
+  %local_4 = alloca i64, align 8
+  %local_5 = alloca i8, align 1
+  %local_6 = alloca i64, align 8
+  %local_7 = alloca i8, align 1
+  %local_8 = alloca i64, align 8
+  %local_9 = alloca i8, align 1
   %local_10 = alloca i64, align 8
   %local_11 = alloca i64, align 8
+  %local_12 = alloca i64, align 8
   store %Color %0, ptr %local_0, align 1
+  store i64 0, ptr %local_1, align 8
   %hew_actor_cooperate = call i32 @hew_actor_cooperate()
   %hew_cooperate_is_cancel = icmp eq i32 %hew_actor_cooperate, 2
   br i1 %hew_cooperate_is_cancel, label %cancel_exit, label %after_cooperate
 
 bb0:                                              ; preds = %after_cooperate
+  store i64 0, ptr %local_1, align 8
   %machine_tag_ptr = getelementptr inbounds nuw %Color, ptr %local_0, i32 0, i32 0
   %move_iN_load = load i8, ptr %machine_tag_ptr, align 1
   %move_iN_zext = zext i8 %move_iN_load to i64
-  store i64 %move_iN_zext, ptr %local_2, align 8
-  store i64 0, ptr %local_3, align 8
-  %cmp_lhs = load i64, ptr %local_2, align 8
-  %cmp_rhs = load i64, ptr %local_3, align 8
+  store i64 %move_iN_zext, ptr %local_3, align 8
+  store i64 0, ptr %local_4, align 8
+  %cmp_lhs = load i64, ptr %local_3, align 8
+  %cmp_rhs = load i64, ptr %local_4, align 8
   %cmp_bit = icmp eq i64 %cmp_lhs, %cmp_rhs
   %cmp_zext = zext i1 %cmp_bit to i8
-  store i8 %cmp_zext, ptr %local_4, align 1
-  %cond_load = load i8, ptr %local_4, align 1
+  store i8 %cmp_zext, ptr %local_5, align 1
+  %cond_load = load i8, ptr %local_5, align 1
   %cond_nz = icmp ne i8 %cond_load, 0
   br i1 %cond_nz, label %bb2, label %bb6
 
-bb1:                                              ; preds = %after_cooperate15, %after_cooperate10, %after_cooperate5
-  %move_load = load i64, ptr %local_1, align 8
+bb1:                                              ; preds = %after_cooperate27, %after_cooperate18, %after_cooperate9
+  %move_load = load i64, ptr %local_2, align 8
   store i64 %move_load, ptr %return_slot, align 8
-  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
-  %ret_val = load i64, ptr %return_slot, align 8
-  ret i64 %ret_val
+  %carrier_drop_flag1 = load i64, ptr %local_1, align 8
+  %carrier_drop_live2 = icmp eq i64 %carrier_drop_flag1, 0
+  br i1 %carrier_drop_live2, label %carrier_drop_live_only3, label %carrier_drop_merge4
 
 bb2:                                              ; preds = %bb0
-  store i64 0, ptr %local_9, align 8
-  %move_load1 = load i64, ptr %local_9, align 8
-  store i64 %move_load1, ptr %local_1, align 8
-  %hew_actor_cooperate2 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel3 = icmp eq i32 %hew_actor_cooperate2, 2
-  br i1 %hew_cooperate_is_cancel3, label %cancel_exit4, label %after_cooperate5
+  store i64 0, ptr %local_10, align 8
+  %move_load5 = load i64, ptr %local_10, align 8
+  store i64 %move_load5, ptr %local_2, align 8
+  %hew_actor_cooperate6 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel7 = icmp eq i32 %hew_actor_cooperate6, 2
+  br i1 %hew_cooperate_is_cancel7, label %cancel_exit8, label %after_cooperate9
 
 bb3:                                              ; preds = %bb6
-  store i64 1, ptr %local_10, align 8
-  %move_load6 = load i64, ptr %local_10, align 8
-  store i64 %move_load6, ptr %local_1, align 8
-  %hew_actor_cooperate7 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel8 = icmp eq i32 %hew_actor_cooperate7, 2
-  br i1 %hew_cooperate_is_cancel8, label %cancel_exit9, label %after_cooperate10
+  store i64 1, ptr %local_11, align 8
+  %move_load14 = load i64, ptr %local_11, align 8
+  store i64 %move_load14, ptr %local_2, align 8
+  %hew_actor_cooperate15 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel16 = icmp eq i32 %hew_actor_cooperate15, 2
+  br i1 %hew_cooperate_is_cancel16, label %cancel_exit17, label %after_cooperate18
 
 bb4:                                              ; preds = %bb7
-  store i64 2, ptr %local_11, align 8
-  %move_load11 = load i64, ptr %local_11, align 8
-  store i64 %move_load11, ptr %local_1, align 8
-  %hew_actor_cooperate12 = call i32 @hew_actor_cooperate()
-  %hew_cooperate_is_cancel13 = icmp eq i32 %hew_actor_cooperate12, 2
-  br i1 %hew_cooperate_is_cancel13, label %cancel_exit14, label %after_cooperate15
+  store i64 2, ptr %local_12, align 8
+  %move_load23 = load i64, ptr %local_12, align 8
+  store i64 %move_load23, ptr %local_2, align 8
+  %hew_actor_cooperate24 = call i32 @hew_actor_cooperate()
+  %hew_cooperate_is_cancel25 = icmp eq i32 %hew_actor_cooperate24, 2
+  br i1 %hew_cooperate_is_cancel25, label %cancel_exit26, label %after_cooperate27
 
 bb5:                                              ; preds = %bb7
-  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
-  call void @hew_trap_with_code(i32 208)
-  call void @llvm.trap()
-  unreachable
+  %carrier_drop_flag32 = load i64, ptr %local_1, align 8
+  %carrier_drop_live33 = icmp eq i64 %carrier_drop_flag32, 0
+  br i1 %carrier_drop_live33, label %carrier_drop_live_only34, label %carrier_drop_merge35
 
 bb6:                                              ; preds = %bb0
-  store i64 1, ptr %local_5, align 8
-  %cmp_lhs16 = load i64, ptr %local_2, align 8
-  %cmp_rhs17 = load i64, ptr %local_5, align 8
-  %cmp_bit18 = icmp eq i64 %cmp_lhs16, %cmp_rhs17
-  %cmp_zext19 = zext i1 %cmp_bit18 to i8
-  store i8 %cmp_zext19, ptr %local_6, align 1
-  %cond_load20 = load i8, ptr %local_6, align 1
-  %cond_nz21 = icmp ne i8 %cond_load20, 0
-  br i1 %cond_nz21, label %bb3, label %bb7
+  store i64 1, ptr %local_6, align 8
+  %cmp_lhs36 = load i64, ptr %local_3, align 8
+  %cmp_rhs37 = load i64, ptr %local_6, align 8
+  %cmp_bit38 = icmp eq i64 %cmp_lhs36, %cmp_rhs37
+  %cmp_zext39 = zext i1 %cmp_bit38 to i8
+  store i8 %cmp_zext39, ptr %local_7, align 1
+  %cond_load40 = load i8, ptr %local_7, align 1
+  %cond_nz41 = icmp ne i8 %cond_load40, 0
+  br i1 %cond_nz41, label %bb3, label %bb7
 
 bb7:                                              ; preds = %bb6
-  store i64 2, ptr %local_7, align 8
-  %cmp_lhs22 = load i64, ptr %local_2, align 8
-  %cmp_rhs23 = load i64, ptr %local_7, align 8
-  %cmp_bit24 = icmp eq i64 %cmp_lhs22, %cmp_rhs23
-  %cmp_zext25 = zext i1 %cmp_bit24 to i8
-  store i8 %cmp_zext25, ptr %local_8, align 1
-  %cond_load26 = load i8, ptr %local_8, align 1
-  %cond_nz27 = icmp ne i8 %cond_load26, 0
-  br i1 %cond_nz27, label %bb4, label %bb5
+  store i64 2, ptr %local_8, align 8
+  %cmp_lhs42 = load i64, ptr %local_3, align 8
+  %cmp_rhs43 = load i64, ptr %local_8, align 8
+  %cmp_bit44 = icmp eq i64 %cmp_lhs42, %cmp_rhs43
+  %cmp_zext45 = zext i1 %cmp_bit44 to i8
+  store i8 %cmp_zext45, ptr %local_9, align 1
+  %cond_load46 = load i8, ptr %local_9, align 1
+  %cond_nz47 = icmp ne i8 %cond_load46, 0
+  br i1 %cond_nz47, label %bb4, label %bb5
 
 cancel_exit:                                      ; preds = %entry
-  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
-  ret i64 0
+  %carrier_drop_flag = load i64, ptr %local_1, align 8
+  %carrier_drop_live = icmp eq i64 %carrier_drop_flag, 0
+  br i1 %carrier_drop_live, label %carrier_drop_live_only, label %carrier_drop_merge
 
 after_cooperate:                                  ; preds = %entry
   br label %bb0
 
-cancel_exit4:                                     ; preds = %bb2
+carrier_drop_live_only:                           ; preds = %cancel_exit
   call void @__hew_enum_drop_inplace_Color(ptr %local_0)
+  br label %carrier_drop_merge
+
+carrier_drop_merge:                               ; preds = %carrier_drop_live_only, %cancel_exit
   ret i64 0
 
-after_cooperate5:                                 ; preds = %bb2
+carrier_drop_live_only3:                          ; preds = %bb1
+  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
+  br label %carrier_drop_merge4
+
+carrier_drop_merge4:                              ; preds = %carrier_drop_live_only3, %bb1
+  %ret_val = load i64, ptr %return_slot, align 8
+  ret i64 %ret_val
+
+cancel_exit8:                                     ; preds = %bb2
+  %carrier_drop_flag10 = load i64, ptr %local_1, align 8
+  %carrier_drop_live11 = icmp eq i64 %carrier_drop_flag10, 0
+  br i1 %carrier_drop_live11, label %carrier_drop_live_only12, label %carrier_drop_merge13
+
+after_cooperate9:                                 ; preds = %bb2
   br label %bb1
 
-cancel_exit9:                                     ; preds = %bb3
+carrier_drop_live_only12:                         ; preds = %cancel_exit8
   call void @__hew_enum_drop_inplace_Color(ptr %local_0)
+  br label %carrier_drop_merge13
+
+carrier_drop_merge13:                             ; preds = %carrier_drop_live_only12, %cancel_exit8
   ret i64 0
 
-after_cooperate10:                                ; preds = %bb3
+cancel_exit17:                                    ; preds = %bb3
+  %carrier_drop_flag19 = load i64, ptr %local_1, align 8
+  %carrier_drop_live20 = icmp eq i64 %carrier_drop_flag19, 0
+  br i1 %carrier_drop_live20, label %carrier_drop_live_only21, label %carrier_drop_merge22
+
+after_cooperate18:                                ; preds = %bb3
   br label %bb1
 
-cancel_exit14:                                    ; preds = %bb4
+carrier_drop_live_only21:                         ; preds = %cancel_exit17
   call void @__hew_enum_drop_inplace_Color(ptr %local_0)
+  br label %carrier_drop_merge22
+
+carrier_drop_merge22:                             ; preds = %carrier_drop_live_only21, %cancel_exit17
   ret i64 0
 
-after_cooperate15:                                ; preds = %bb4
+cancel_exit26:                                    ; preds = %bb4
+  %carrier_drop_flag28 = load i64, ptr %local_1, align 8
+  %carrier_drop_live29 = icmp eq i64 %carrier_drop_flag28, 0
+  br i1 %carrier_drop_live29, label %carrier_drop_live_only30, label %carrier_drop_merge31
+
+after_cooperate27:                                ; preds = %bb4
   br label %bb1
+
+carrier_drop_live_only30:                         ; preds = %cancel_exit26
+  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
+  br label %carrier_drop_merge31
+
+carrier_drop_merge31:                             ; preds = %carrier_drop_live_only30, %cancel_exit26
+  ret i64 0
+
+carrier_drop_live_only34:                         ; preds = %bb5
+  call void @__hew_enum_drop_inplace_Color(ptr %local_0)
+  br label %carrier_drop_merge35
+
+carrier_drop_merge35:                             ; preds = %carrier_drop_live_only34, %bb5
+  call void @hew_trap_with_code(i32 208)
+  call void @llvm.trap()
+  unreachable
 }
 
 define i64 @main() {

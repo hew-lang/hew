@@ -420,6 +420,7 @@ fn regex$new -> Pattern
       drop _12 ty=string kind=cow_heap(hew_string_drop)
     cancel[bb8] ->
       drop _12 ty=string kind=cow_heap(hew_string_drop)
+      drop _4 ty=Pattern kind=resource fn=user_close(Pattern::close) guard=_5
 
 fn i8::fmt -> string
   statements:

@@ -456,6 +456,17 @@ struct Builder {
     /// or at function-body finalisation. Once a block is sealed it lives
     /// in `pending_blocks` until the function's body walk completes.
     pub(crate) statements: Vec<MirStatement>,
+    /// Total append-only declaration order for every binding introduced in
+    /// this function, including parameters and bindings that deliberately do
+    /// not enter `owned_locals` (for example tuple-derived channel handles and
+    /// their synthetic `for await` cursors). Drop-plan merges use this as the
+    /// LIFO rank authority; the ownership ledger is only an admission ledger
+    /// and therefore cannot supply a total lexical order.
+    pub(crate) binding_declaration_order: Vec<BindingId>,
+    /// Deduplication sidecar for `binding_declaration_order`. A binding may be
+    /// observed through a specialised lowering path more than once, but its
+    /// declaration ordinal is fixed by the first observation.
+    binding_declaration_seen: HashSet<BindingId>,
     /// Backend-authority stream for the *current* basic block. Populated
     /// in lock-step with `statements` by `lower_value` so the checker
     /// and the emitter agree on what each `SiteId` resolves to. Drained
@@ -834,6 +845,12 @@ struct Builder {
     /// second close, and the inline `Instr::Drop` null-stores the slot
     /// (`raii-null-after-move`; the runtime close symbols also null-guard).
     pub(crate) scope_stream_bindings: Vec<(ScopeId, hew_hir::BindingId, ResolvedTy)>,
+    /// Append-only provenance for a user-owned stream/receiver moved directly
+    /// into a synthetic `for await` cursor. The lexical cursor close is emitted
+    /// inline and may be unreachable when a coroutine is destroyed while
+    /// suspended, so elaboration uses this hand-off to select the live owner on
+    /// each terminal edge.
+    pub(crate) for_await_handle_handoffs: Vec<ForAwaitHandleHandoff>,
     /// Active per-iteration generator-yielded heap value bindings, recorded
     /// while lowering a `for v in gen()` (or `match g.next()`) consuming body so
     /// a `break`/`continue` inside that body frees the current iteration's
@@ -6001,6 +6018,19 @@ enum FieldLoadClass {
 /// read a written-down fact rather than re-deriving ownership from the
 /// instruction stream at each pass.
 #[derive(Debug, Clone)]
+pub(crate) struct ForAwaitHandleHandoff {
+    pub(crate) source_binding: BindingId,
+    pub(crate) cursor_binding: BindingId,
+    pub(crate) handoff_block: u32,
+    #[allow(
+        dead_code,
+        reason = "the ledger retains the source witness for diagnostics and future provenance validation"
+    )]
+    pub(crate) site: SiteId,
+    pub(crate) ty: ResolvedTy,
+}
+
+#[derive(Debug, Clone)]
 struct OwnedLocalEntry {
     /// The HIR binding this owned local backs.
     binding: BindingId,
@@ -6146,6 +6176,35 @@ struct CaptureEnvOwnedLoad {
 }
 
 impl Builder {
+    /// Record a binding's declaration ordinal once.
+    ///
+    /// Parameters call this directly because they do not emit
+    /// `MirStatement::Bind`; every statement-backed binding flows through
+    /// `push_bind_statement` below.
+    fn note_binding_declaration(&mut self, binding: BindingId) {
+        if self.binding_declaration_seen.insert(binding) {
+            self.binding_declaration_order.push(binding);
+        }
+    }
+
+    /// Append a checker-stream binding declaration and update the total
+    /// declaration-order ledger at the same seam.
+    pub(crate) fn push_bind_statement(
+        &mut self,
+        binding: BindingId,
+        name: String,
+        site: SiteId,
+        ty: ResolvedTy,
+    ) {
+        self.note_binding_declaration(binding);
+        self.statements.push(MirStatement::Bind {
+            binding,
+            name,
+            site,
+            ty,
+        });
+    }
+
     /// Bundle this builder's module-scoped readiness tables for the
     /// codegen-readiness diagnostic gate.
     fn layout_readiness(&self) -> LayoutReadiness<'_> {
@@ -6254,6 +6313,7 @@ impl Builder {
         // prefix invariant structural: all parameter slots first, all helper
         // locals second.
         for param in &func.params {
+            self.note_binding_declaration(param.id);
             let slot = self.alloc_local(param.ty.clone());
             self.binding_locals.insert(param.id, slot);
             if let Place::Local(local) = slot {

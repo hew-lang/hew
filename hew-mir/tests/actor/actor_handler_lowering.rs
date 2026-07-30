@@ -1930,7 +1930,7 @@ fn actor_lifecycle_crash_lowers_to_actor_handler_function() {
 }
 
 #[test]
-fn qualified_failure_lifecycle_payloads_expand_to_runtime_abi() {
+fn canonical_failure_lifecycle_payloads_expand_to_runtime_abi() {
     use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
     let mut parsed = hew_parser::parse(
@@ -1944,7 +1944,7 @@ fn qualified_failure_lifecycle_payloads_expand_to_runtime_abi() {
             }
 
             #[on(exit)]
-            fn on_exit(note: failure.CrashNotification) {}
+            fn on_exit(note: CrashNotification) {}
         }
 
         fn main() {}

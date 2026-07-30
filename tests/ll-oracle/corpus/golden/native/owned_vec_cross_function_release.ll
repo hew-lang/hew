@@ -801,32 +801,56 @@ entry:
   %return_slot = alloca %Holder, align 8
   %local_0 = alloca %Holder, align 8
   %local_1 = alloca %Holder, align 8
-  %local_2 = alloca %Holder, align 8
-  %local_3 = alloca %Holder, align 8
+  %local_2 = alloca i64, align 8
+  %local_3 = alloca i64, align 8
   %local_4 = alloca %Holder, align 8
+  %local_5 = alloca %Holder, align 8
+  %local_6 = alloca %Holder, align 8
   store %Holder %0, ptr %local_0, align 8
   store %Holder %1, ptr %local_1, align 8
+  store i64 0, ptr %local_3, align 8
+  store i64 0, ptr %local_2, align 8
   br label %bb0
 
 bb0:                                              ; preds = %entry
+  store i64 0, ptr %local_2, align 8
+  store i64 0, ptr %local_3, align 8
   %move_load = load %Holder, ptr %local_0, align 8
-  store %Holder %move_load, ptr %local_2, align 8
+  store %Holder %move_load, ptr %local_4, align 8
   store %Holder zeroinitializer, ptr %local_0, align 8
-  %move_load1 = load %Holder, ptr %local_2, align 8
-  store %Holder %move_load1, ptr %local_3, align 8
+  store i64 1, ptr %local_2, align 8
+  %move_load1 = load %Holder, ptr %local_4, align 8
+  store %Holder %move_load1, ptr %local_5, align 8
   %move_load2 = load %Holder, ptr %local_1, align 8
-  store %Holder %move_load2, ptr %local_4, align 8
+  store %Holder %move_load2, ptr %local_6, align 8
   store %Holder zeroinitializer, ptr %local_1, align 8
-  %rfd_0_gep = getelementptr inbounds nuw %Holder, ptr %local_3, i32 0, i32 0
+  store i64 1, ptr %local_3, align 8
+  %rfd_0_gep = getelementptr inbounds nuw %Holder, ptr %local_5, i32 0, i32 0
   %rfd_0_raw_load = load ptr, ptr %rfd_0_gep, align 8
   call void @hew_vec_free_owned(ptr %rfd_0_raw_load)
   store ptr null, ptr %rfd_0_gep, align 8
-  %move_load3 = load %Holder, ptr %local_4, align 8
-  store %Holder %move_load3, ptr %local_3, align 8
-  %move_load4 = load %Holder, ptr %local_3, align 8
+  %move_load3 = load %Holder, ptr %local_6, align 8
+  store %Holder %move_load3, ptr %local_5, align 8
+  %move_load4 = load %Holder, ptr %local_5, align 8
   store %Holder %move_load4, ptr %return_slot, align 8
+  %carrier_drop_flag = load i64, ptr %local_3, align 8
+  %carrier_drop_live = icmp eq i64 %carrier_drop_flag, 0
+  br i1 %carrier_drop_live, label %carrier_drop_live_only, label %carrier_drop_merge
+
+carrier_drop_live_only:                           ; preds = %bb0
   call void @__hew_record_drop_inplace_Holder(ptr %local_1)
+  br label %carrier_drop_merge
+
+carrier_drop_merge:                               ; preds = %carrier_drop_live_only, %bb0
+  %carrier_drop_flag5 = load i64, ptr %local_2, align 8
+  %carrier_drop_live6 = icmp eq i64 %carrier_drop_flag5, 0
+  br i1 %carrier_drop_live6, label %carrier_drop_live_only7, label %carrier_drop_merge8
+
+carrier_drop_live_only7:                          ; preds = %carrier_drop_merge
   call void @__hew_record_drop_inplace_Holder(ptr %local_0)
+  br label %carrier_drop_merge8
+
+carrier_drop_merge8:                              ; preds = %carrier_drop_live_only7, %carrier_drop_merge
   %ret_val = load %Holder, ptr %return_slot, align 8
   ret %Holder %ret_val
 }

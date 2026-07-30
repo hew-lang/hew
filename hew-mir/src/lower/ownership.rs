@@ -171,12 +171,7 @@ impl Builder {
         let binding =
             BindingId(SYNTHETIC_OWNED_TEMP_BINDING_BASE - self.synthetic_owned_temp_bindings);
         self.synthetic_owned_temp_bindings += 1;
-        self.statements.push(MirStatement::Bind {
-            binding,
-            name: name.to_string(),
-            site,
-            ty: ty.clone(),
-        });
+        self.push_bind_statement(binding, name.to_string(), site, ty.clone());
         self.binding_locals.insert(binding, Place::Local(local));
         self.record_binding_scope(binding);
         self.register_owned_local(binding, name.to_string(), ty, warrant);
@@ -1385,6 +1380,7 @@ impl Builder {
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()
     }
+
     /// The WHOLE per-function owned-locals ledger — every entry regardless of
     /// disposition, in registration order — including bindings retracted off the
     /// scope-exit-live set by a [`Builder::set_owned_local_disposition`] write.

@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -100,6 +101,81 @@ def test_missing_build_target() -> None:
     )
 
 
+def test_metadata_failure_fails_closed() -> None:
+    original_run = cargo_output_dir.subprocess.run
+    original_target_dir = os.environ.pop("CARGO_TARGET_DIR", None)
+    cargo_output_dir.subprocess.run = lambda *args, **kwargs: SimpleNamespace(
+        returncode=101,
+        stdout=b"",
+        stderr=b"workspace metadata failed",
+    )
+    try:
+        try:
+            cargo_output_dir.target_root()
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError(
+                "metadata failure fell back to a stale target directory"
+            )
+    finally:
+        cargo_output_dir.subprocess.run = original_run
+        if original_target_dir is not None:
+            os.environ["CARGO_TARGET_DIR"] = original_target_dir
+
+
+def test_missing_cargo_fails_closed() -> None:
+    original_run = cargo_output_dir.subprocess.run
+    original_target_dir = os.environ.pop("CARGO_TARGET_DIR", None)
+
+    def missing_cargo(*args: object, **kwargs: object) -> object:
+        raise OSError("cargo is unavailable")
+
+    cargo_output_dir.subprocess.run = missing_cargo
+    try:
+        try:
+            cargo_output_dir.target_root()
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("missing cargo fell back to a stale target directory")
+    finally:
+        cargo_output_dir.subprocess.run = original_run
+        if original_target_dir is not None:
+            os.environ["CARGO_TARGET_DIR"] = original_target_dir
+
+
+def test_malformed_metadata_fails_closed() -> None:
+    original_run = cargo_output_dir.subprocess.run
+    original_target_dir = os.environ.pop("CARGO_TARGET_DIR", None)
+    malformed = (
+        b'{"workspace_root": "/tmp/no-target"}',
+        b'{"target_directory": ""}',
+        b'{"target_directory": ["/tmp/not-a-string"]}',
+    )
+    try:
+        for output in malformed:
+            cargo_output_dir.subprocess.run = lambda *args, _output=output, **kwargs: (
+                SimpleNamespace(
+                    returncode=0,
+                    stdout=_output,
+                    stderr=b"",
+                )
+            )
+            try:
+                cargo_output_dir.target_root()
+            except SystemExit as exc:
+                assert exc.code == 1
+            else:
+                raise AssertionError(
+                    f"malformed metadata fell back to a stale target directory: {output!r}"
+                )
+    finally:
+        cargo_output_dir.subprocess.run = original_run
+        if original_target_dir is not None:
+            os.environ["CARGO_TARGET_DIR"] = original_target_dir
+
+
 _TESTS = (
     test_build_table_string,
     test_root_dotted_key,
@@ -109,6 +185,9 @@ _TESTS = (
     test_quoted_build_table,
     test_malformed_config_fails_closed,
     test_missing_build_target,
+    test_metadata_failure_fails_closed,
+    test_missing_cargo_fails_closed,
+    test_malformed_metadata_fails_closed,
 )
 
 

@@ -100,6 +100,7 @@ def target_root() -> Path:
         # spelled the way the caller and Cargo spell it.
         return Path(os.path.abspath(REPO_ROOT / env))
 
+    failures: list[str] = []
     for extra in (["--offline"], []):
         try:
             out = subprocess.run(
@@ -108,17 +109,24 @@ def target_root() -> Path:
                 capture_output=True,
                 check=False,
             )
-        except OSError:
-            break
+        except OSError as err:
+            die(f"cannot execute cargo metadata: {err}")
         if out.returncode == 0:
             try:
-                return Path(json.loads(out.stdout)["target_directory"]).resolve()
-            except (ValueError, KeyError):
-                break
+                target_directory = json.loads(out.stdout)["target_directory"]
+            except (ValueError, KeyError, TypeError) as err:
+                die(f"cargo metadata returned no valid target_directory: {err}")
+            if not isinstance(target_directory, str) or not target_directory:
+                die("cargo metadata returned an empty or non-string target_directory")
+            return Path(target_directory).resolve()
+        mode = "offline" if extra else "online"
+        stderr = out.stderr.decode("utf-8", errors="replace").strip()
+        failures.append(f"{mode}: exit {out.returncode}: {stderr or '<no stderr>'}")
 
-    # No cargo, or a workspace cargo cannot read: the default is the only
-    # answer left, and it is the one Cargo would use too.
-    return (REPO_ROOT / "target").resolve()
+    die(
+        "cargo metadata could not resolve the artifact output directory; "
+        + " | ".join(failures)
+    )
 
 
 def config_build_target() -> str:

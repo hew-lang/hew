@@ -30,6 +30,7 @@ TARGETS = (
     "test-doc-examples",
     "test-ux-examples",
     "test-surface-examples",
+    "hew-check-all",
     "checked-mir-verify",
     "checked-mir-golden",
     "checked-mir-run",

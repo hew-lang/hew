@@ -551,18 +551,10 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
           CARGO_INCREMENTAL: "0"
-        run: |
-          # `make test-rust` carries `$(LIBHEW_READY)` and asserts the archive
-          # exists before running. This step invokes nextest directly, so it
-          # must build the archive itself — the workspace build used to produce
-          # it as a side effect, which is not a guarantee.
-          cargo build -p hew-lib
-          test -f target/debug/libhew.a
-          # parity-cmd: make test
-          cargo nextest run --workspace \
-            --exclude hew-wasm \
-            --exclude hew-cabi \
-            --profile ci
+        # `make test` owns the complete native/WASI/libhew prerequisite graph
+        # and the workspace nextest policy. Keeping that edge real makes the
+        # hosted suite exercise the same fresh artifacts as local preflight.
+        run: make test
 
       - name: Run C-ABI crate tests
         if: env.RUN_CODE_PATH == 'true'

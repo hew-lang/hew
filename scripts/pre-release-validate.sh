@@ -80,6 +80,10 @@ RESET='\033[0m'
 
 SSH_CHECK_TIMEOUT="${HEW_TIMEOUT_SSH_CHECK:-15}"
 SYNC_TIMEOUT="${HEW_TIMEOUT_SYNC:-300}"
+# Removing a staged Windows release tree includes Cargo's registry/cache and
+# release/LTO outputs, so size cleanup like transport rather than a reachability
+# probe. Keep this independently tunable for slower Windows filesystems.
+REMOTE_CLEANUP_TIMEOUT="${HEW_TIMEOUT_REMOTE_CLEANUP:-${SYNC_TIMEOUT}}"
 LOCAL_BUILD_TIMEOUT="${HEW_TIMEOUT_LOCAL_BUILD:-1800}"
 REMOTE_BUILD_TIMEOUT="${HEW_TIMEOUT_REMOTE_BUILD:-1800}"
 SMOKE_TIMEOUT="${HEW_TIMEOUT_SMOKE:-120}"
@@ -186,6 +190,14 @@ run_windows_staged_build() {
     # proof live in the staged candidate at scripts/windows-release-build.ps1.
     run_windows_powershell "${REMOTE_BUILD_TIMEOUT}" "
 \$ErrorActionPreference = 'Stop'
+# Keep every high-volume write on the already space-checked candidate drive.
+# These process-local values deliberately override a full host TEMP/TMP or an
+# inherited Cargo target directory without requiring persistent host changes.
+\$env:TEMP = '${remote_stage}/.tmp'
+\$env:TMP = \$env:TEMP
+\$env:CARGO_TARGET_DIR = '${remote_stage}/target'
+\$env:CARGO_HOME = '${remote_stage}/.cargo-home'
+New-Item -ItemType Directory -Force -Path \$env:TEMP, \$env:CARGO_TARGET_DIR, \$env:CARGO_HOME | Out-Null
 \$Utf8 = [System.Text.Encoding]::UTF8
 \$env:HEW_WINDOWS_LLVM_CONFIG = \$Utf8.GetString([Convert]::FromBase64String('${llvm_config_b64}'))
 \$env:HEW_WINDOWS_LLVM_PREFIX = \$Utf8.GetString([Convert]::FromBase64String('${llvm_prefix_b64}'))
@@ -248,10 +260,16 @@ Write-Output (\$Stage.Replace('\\', '/'))
 remove_windows_remote_stage() {
     local stage="$1"
     if [[ "$stage" =~ ^[A-Za-z]:/[A-Za-z0-9._/\ -]*/hew-pre-release-[0-9A-Fa-f-]+$ ]]; then
-        run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
+        if ! run_windows_powershell "${REMOTE_CLEANUP_TIMEOUT}" "
 \$ErrorActionPreference = 'Stop'
-Remove-Item -LiteralPath '${stage}' -Recurse -Force -ErrorAction SilentlyContinue
-" >/dev/null 2>&1 || true
+if (Test-Path -LiteralPath '${stage}') {
+    Remove-Item -LiteralPath '${stage}' -Recurse -Force -ErrorAction Stop
+}
+" >/dev/null 2>&1; then
+            # Cleanup is best-effort so an EXIT trap cannot replace the build
+            # result, but a stranded multi-GB stage must remain visible.
+            echo "WARNING: Windows remote candidate cleanup timed out or failed after ${REMOTE_CLEANUP_TIMEOUT}s: ${stage}" >&2
+        fi
     else
         echo "refusing to remove unexpected Windows remote path: ${stage}" >&2
     fi
@@ -675,56 +693,6 @@ Write-Host \"Found \$LlvmConfig\"
 
         echo "==> Building on Windows with the LLVM toolchain"
         run_windows_staged_build "${remote_stage}"
-
-        echo "==> Smoke test on Windows"
-        run_windows_powershell "${SMOKE_TIMEOUT}" "
-\$ErrorActionPreference = 'Stop'
-function Assert-NativeSuccess([string]\$Label) {
-    if (\$LASTEXITCODE -ne 0) {
-        throw \"\${Label} failed with exit code \$LASTEXITCODE\"
-    }
-}
-
-Set-Location '${remote_stage}'
-\$Utf8 = [System.Text.Encoding]::UTF8
-\$LlvmPrefix = \$Utf8.GetString([Convert]::FromBase64String('${llvm_prefix_b64}'))
-\$env:Path = \"\$LlvmPrefix\\bin;\" + \$env:Path
-\$ReleaseDir = [System.IO.File]::ReadAllText(
-    (Join-Path (Get-Location) '.hew-release-dir')
-).Trim()
-if ([string]::IsNullOrWhiteSpace(\$ReleaseDir)) {
-    throw 'Staged Windows build did not record its Cargo release output directory'
-}
-\$Hew = Join-Path \$ReleaseDir 'hew.exe'
-\$smokeProgram = 'fn main() { println(\"smoke-ok\") }'
-Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
-
-try {
-    [System.IO.File]::WriteAllText(
-        (Join-Path (Get-Location) '_smoke.hew'),
-        \$smokeProgram,
-        [System.Text.UTF8Encoding]::new(\$false)
-    )
-
-    & \$Hew build .\\_smoke.hew -o .\\_smoke.exe
-    Assert-NativeSuccess 'hew.exe smoke build'
-
-    if (-not (Test-Path .\\_smoke.exe)) {
-        throw 'Smoke build did not produce .\\_smoke.exe'
-    }
-
-    \$output = & .\\_smoke.exe
-    Assert-NativeSuccess '_smoke.exe run'
-
-    if (\$output -notmatch 'smoke-ok') {
-        throw \"Smoke test failed: expected smoke-ok, got \$output\"
-    }
-
-    Write-Host 'Smoke test passed'
-} finally {
-    Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
-}
-"
     ) > "$log" 2>&1
     local status=$?
     set -e

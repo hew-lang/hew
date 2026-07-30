@@ -5871,13 +5871,14 @@ struct LowerCtx {
     /// and sibling alias lookups agrees with the checker's inserts for depth-≥2
     /// importers; the short last segment would diverge and miss.
     current_module_name: Option<String>,
-    /// Explicit named-import resolution table: maps `(importer_module,
-    /// binding)` → canonical qualified source identity for both
-    /// `import m::{ T }` and `import m::{ T as U }`.
+    /// Checker-authoritative import resolution table: maps `(importer_module,
+    /// source spelling)` → canonical qualified source identity for named/glob
+    /// imports and canonical lifecycle whole-module aliases.
     ///
     /// Sourced from [`hew_types::check::TypeCheckOutput::import_type_name_aliases`]
     /// at `LowerCtx::new` time and consulted in:
-    /// - `resolve_named_type_ref`: type-annotation position (`fn f(x: Tag)`).
+    /// - `resolve_named_type_ref`: type-annotation position (`fn f(x: Tag)` or
+    ///   `fn f(x: lifecycle.CrashNotification)`).
     /// - `lookup_variant_ctor`: `Tag::Variant` enum-constructor paths.
     ///
     /// Per-module keying prevents a same-named alias from a different imported
@@ -9595,8 +9596,20 @@ impl LowerCtx {
         // outside the per-method loop so it pays the cost once. Restore the
         // previous value (almost always `None`) on exit so nested
         // impl-lowering reentry — should it ever arise — does not leak state.
+        let resolved_impl_self_ty = self.lower_type(&decl.target_type);
+        // `HirImplBlock::self_type_name` is receiver identity metadata, not a
+        // callable-symbol prefix. Imported non-colliding impls deliberately
+        // retain a bare prefix (`Value::push_int`) for the checker-aligned
+        // function registry, while their resolved receiver type carries the
+        // source identity (`toml.Value`). Preserve both facts: MIR compares
+        // this metadata with parameter zero to distinguish a true receiver
+        // from an associated function's ordinary first argument.
+        let hir_impl_self_type_name = match &resolved_impl_self_ty {
+            ResolvedTy::Named { name, .. } => name.clone(),
+            _ => base_symbol_self_name.to_string(),
+        };
         let prior_self_ty = self.current_impl_self_ty.take();
-        self.current_impl_self_ty = Some(self.lower_type(&decl.target_type));
+        self.current_impl_self_ty = Some(resolved_impl_self_ty);
         // For imported impl blocks, apply the same-module fn-name rewrite map
         // (bare helper name → mangled qualified symbol) to method bodies, just
         // as `lower_imported_fn_with_name` does for free functions. Methods
@@ -9706,7 +9719,7 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             trait_name: decl.trait_bound.as_ref().map(|b| b.name.clone()),
-            self_type_name: base_symbol_self_name.to_string(),
+            self_type_name: hir_impl_self_type_name,
             type_params,
             self_type_concrete_args,
             type_aliases,
@@ -18959,6 +18972,23 @@ impl LowerCtx {
                         return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
                     }
                     return ResolvedTy::named_opaque(qualified, args);
+                }
+            }
+        }
+
+        // A whole-module lifecycle alias is canonical only when the checker
+        // proved that its import resolves to the shipped std source. Consume
+        // the exact TypeCheckOutput fact before treating this qualified
+        // spelling as an ordinary user nominal; module spelling alone is not
+        // lifecycle authority.
+        if name.contains('.') {
+            if let Some(canonical) = self
+                .import_type_name_aliases
+                .get(&(self.current_module_name.clone(), name.to_string()))
+                .cloned()
+            {
+                if canonical != name {
+                    return self.resolve_named_type_ref(&canonical, args);
                 }
             }
         }
@@ -30496,6 +30526,39 @@ mod tests {
             ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
             ResolvedTy::named_user("CrashNotification", Vec::new()),
             "a user-authored same-spelling record must not acquire the lifecycle ABI"
+        );
+    }
+
+    #[test]
+    fn checker_proven_whole_module_lifecycle_alias_canonicalizes_in_hir() {
+        let tc_output = TypeCheckOutput {
+            import_type_name_aliases: HashMap::from([(
+                (None, "f.CrashNotification".to_string()),
+                "failure.CrashNotification".to_string(),
+            )]),
+            ..TypeCheckOutput::default()
+        };
+        let ctx = LowerCtx::new(
+            &tc_output,
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+
+        assert_eq!(
+            ctx.resolve_named_type_ref("f.CrashNotification", Vec::new()),
+            ResolvedTy::named_user("failure.CrashNotification", Vec::new()),
+            "HIR must consume the checker's exact qualified lifecycle identity"
+        );
+
+        let unproven = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        assert_eq!(
+            unproven.resolve_named_type_ref("f.CrashNotification", Vec::new()),
+            ResolvedTy::named_user("f.CrashNotification", Vec::new()),
+            "module spelling without a checker fact must remain an ordinary nominal"
         );
     }
 

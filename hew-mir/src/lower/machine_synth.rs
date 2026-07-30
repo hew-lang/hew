@@ -808,60 +808,56 @@ fn lower_actor_lifecycle_handlers(
                     });
                     continue;
                 }
-                emitted_symbols.insert(emit_name.clone(), duplicate_label);
 
-                // The CrashNotification payload param (if present) expands to the
-                // two raw ABI params; other params pass through (there are none
-                // in the canonical shape).
-                let notification_param: Option<HirBinding> = hook.params.iter().find_map(|p| {
-                    is_canonical_lifecycle_named_ty(
-                        &p.ty,
-                        hew_types::BuiltinType::CrashNotification,
-                        "failure.CrashNotification",
-                    )
-                    .then(|| p.clone())
-                });
-
-                let abi_params: Vec<HirBinding> = hook
-                    .params
-                    .iter()
-                    .flat_map(|p| {
-                        let is_notification = is_canonical_lifecycle_named_ty(
+                // Checker/HIR must hand MIR exactly one canonical lifecycle
+                // payload. Passing an unrecognised aggregate through here would
+                // silently emit a handler whose ABI disagrees with the runtime's
+                // `(u64, i32)` call site, so fail closed before raw MIR emission.
+                let Some(notification_param) = hook.params.first().filter(|p| {
+                    hook.params.len() == 1
+                        && is_canonical_lifecycle_named_ty(
                             &p.ty,
                             hew_types::BuiltinType::CrashNotification,
                             "failure.CrashNotification",
-                        );
-                        if is_notification {
-                            vec![
-                                HirBinding {
-                                    id: SENTINEL_EXIT_ACTOR_ID_BINDING,
-                                    name: "__exit_actor_id".to_string(),
-                                    ty: ResolvedTy::U64,
-                                    mutable: false,
-                                    span: p.span.clone(),
-                                    is_consume: false,
-                                },
-                                HirBinding {
-                                    id: SENTINEL_EXIT_KIND_TAG_BINDING,
-                                    name: "__exit_kind_tag".to_string(),
-                                    ty: ResolvedTy::I32,
-                                    mutable: false,
-                                    span: p.span.clone(),
-                                    is_consume: false,
-                                },
-                            ]
-                        } else {
-                            vec![p.clone()]
-                        }
-                    })
-                    .collect();
-
-                let body = if let Some(note_param) = notification_param {
-                    build_exit_hook_body(hook.body.clone(), &note_param)
-                } else {
-                    hook.body.clone()
+                        )
+                }) else {
+                    diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "actor `{}` #[on(exit)] hook `{}` reached MIR without exactly \
+                                 one canonical failure.CrashNotification parameter",
+                                actor.name, hook.name
+                            ),
+                        },
+                        note: "#[on(exit)] runtime ABI is fixed to scalar (u64 actor_id, i32 \
+                               crash_kind); checker/HIR lifecycle identity must agree before \
+                               MIR emission"
+                            .to_string(),
+                    });
+                    continue;
                 };
+                emitted_symbols.insert(emit_name.clone(), duplicate_label);
 
+                let abi_params = vec![
+                    HirBinding {
+                        id: SENTINEL_EXIT_ACTOR_ID_BINDING,
+                        name: "__exit_actor_id".to_string(),
+                        ty: ResolvedTy::U64,
+                        mutable: false,
+                        span: notification_param.span.clone(),
+                        is_consume: false,
+                    },
+                    HirBinding {
+                        id: SENTINEL_EXIT_KIND_TAG_BINDING,
+                        name: "__exit_kind_tag".to_string(),
+                        ty: ResolvedTy::I32,
+                        mutable: false,
+                        span: notification_param.span.clone(),
+                        is_consume: false,
+                    },
+                ];
+
+                let body = build_exit_hook_body(hook.body.clone(), notification_param);
                 let synthetic_fn = HirFn {
                     id: actor.id,
                     node: actor.node,

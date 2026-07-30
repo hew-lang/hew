@@ -108,18 +108,37 @@ pub fn detect_recursive_value_type_cycles(
     let mut edges: HashMap<(String, String), ValueTypeCycleEdge> = HashMap::new();
     let mut direct_edges: HashSet<(String, String)> = HashSet::new();
 
+    // Graph identity is the TypeDef TABLE KEY, not `TypeDef::name`.
+    // Imported definitions are deliberately stored under collision-free
+    // qualified keys while retaining their source-local name in the value
+    // (`"link_monitor.DownReason"` -> `TypeDef { name: "DownReason", ... }`).
+    // Indexing the table by the value name therefore panics for real imported
+    // enum payloads. Keeping keys end-to-end also distinguishes same-leaf-name
+    // types from different modules.
     let mut value_type_names: Vec<&str> = type_defs
-        .values()
-        .filter(|td| is_value_type_node(td))
-        .map(|td| td.name.as_str())
+        .iter()
+        .filter(|(_, td)| is_value_type_node(td))
+        .map(|(key, _)| key.as_str())
         .collect();
     value_type_names.sort_unstable();
 
     for name in &value_type_names {
-        let td = &type_defs[*name];
+        let Some(td) = type_defs.get(*name) else {
+            // `name` was harvested from this exact table above. Stay robust if
+            // this routine is ever adapted to a mutating map without turning a
+            // diagnostic pass into a compiler panic.
+            continue;
+        };
         let mut refs = HashSet::new();
-        collect_value_type_edges_for_def(td, type_defs, &mut refs, &mut edges, &mut direct_edges);
-        adj.insert(td.name.as_str(), refs);
+        collect_value_type_edges_for_def(
+            td,
+            type_defs,
+            &mut refs,
+            &mut edges,
+            &mut direct_edges,
+            name,
+        );
+        adj.insert(name, refs);
     }
 
     let sccs = tarjan_scc(&value_type_names, &adj);
@@ -197,6 +216,7 @@ fn collect_value_type_edges_for_def<'a>(
     refs: &mut HashSet<&'a str>,
     edges: &mut HashMap<(String, String), ValueTypeCycleEdge>,
     direct_edges: &mut HashSet<(String, String)>,
+    def_key: &str,
 ) {
     match td.kind {
         TypeDefKind::Enum => {
@@ -214,7 +234,7 @@ fn collect_value_type_edges_for_def<'a>(
                                 refs,
                                 edges,
                                 direct_edges,
-                                &td.name,
+                                def_key,
                                 &member_desc,
                                 true,
                                 &mut HashSet::new(),
@@ -234,7 +254,7 @@ fn collect_value_type_edges_for_def<'a>(
                                 refs,
                                 edges,
                                 direct_edges,
-                                &td.name,
+                                def_key,
                                 &member_desc,
                                 true,
                                 &mut HashSet::new(),
@@ -254,7 +274,7 @@ fn collect_value_type_edges_for_def<'a>(
                     refs,
                     edges,
                     direct_edges,
-                    &td.name,
+                    def_key,
                     &member_desc,
                     true,
                     &mut HashSet::new(),
@@ -353,25 +373,25 @@ fn collect_value_type_refs<'a>(
             }
             Some(_) => {}
             None => {
-                let Some(target_def) = type_defs.get(name) else {
+                let Some((target_key, target_def)) = type_defs.get_key_value(name) else {
                     return;
                 };
                 if !is_value_type_node(target_def) {
                     return;
                 }
 
-                out.insert(target_def.name.as_str());
-                let edge_key = (from.to_string(), target_def.name.clone());
+                out.insert(target_key.as_str());
+                let edge_key = (from.to_string(), target_key.clone());
                 if is_direct_edge {
                     direct_edges.insert(edge_key.clone());
                 }
                 edges.entry(edge_key).or_insert_with(|| ValueTypeCycleEdge {
                     from: from.to_string(),
-                    to: target_def.name.clone(),
+                    to: target_key.clone(),
                     member_desc: member_desc.to_string(),
                 });
 
-                let key = (target_def.name.clone(), args.clone());
+                let key = (target_key.clone(), args.clone());
                 if !visited_value_types.insert(key) {
                     return;
                 }
@@ -386,7 +406,7 @@ fn collect_value_type_refs<'a>(
                 // into its fields again only re-derives edges the outer frame
                 // already owns. Skipping that descent keeps the SCC graph
                 // complete while making the walk terminate.
-                if !active.insert(target_def.name.clone()) {
+                if !active.insert(target_key.clone()) {
                     return;
                 }
                 collect_instantiated_value_type_fields(
@@ -401,7 +421,7 @@ fn collect_value_type_refs<'a>(
                     visited_value_types,
                     active,
                 );
-                active.remove(target_def.name.as_str());
+                active.remove(target_key.as_str());
             }
         },
         _ => {}
@@ -534,14 +554,14 @@ fn collect_actor_refs<'a>(
                     name: actor_name, ..
                 }) = args.first()
                 {
-                    if let Some(actor_def) = type_defs.get(actor_name) {
-                        out.insert(actor_def.name.as_str());
+                    if let Some((actor_key, _)) = type_defs.get_key_value(actor_name) {
+                        out.insert(actor_key.as_str());
                     }
                 }
             } else {
                 // Transitively follow struct fields
-                if let Some(td) = type_defs.get(name) {
-                    let struct_name = td.name.as_str();
+                if let Some((type_key, td)) = type_defs.get_key_value(name) {
+                    let struct_name = type_key.as_str();
                     let key = (struct_name.to_string(), args.clone());
                     if (td.kind == crate::check::TypeDefKind::Struct
                         || td.kind == crate::check::TypeDefKind::Record)
@@ -791,6 +811,31 @@ mod tests {
         assert_eq!(cycles[0].edge.from, "Tree");
         assert_eq!(cycles[0].edge.to, "Tree");
         assert_eq!(cycles[0].edge.member_desc, "variant `Node`");
+    }
+
+    #[test]
+    fn qualified_table_keys_need_not_match_source_local_type_names() {
+        let (_, crash_kind) = make_enum(
+            "CrashKind",
+            HashMap::from([("Crashed".to_string(), VariantDef::Unit)]),
+        );
+        let (_, down_reason) = make_enum(
+            "DownReason",
+            HashMap::from([(
+                "Crashed".to_string(),
+                VariantDef::Tuple(vec![named_type("failure.CrashKind")]),
+            )]),
+        );
+        let type_defs = HashMap::from([
+            ("failure.CrashKind".to_string(), crash_kind),
+            ("link_monitor.DownReason".to_string(), down_reason),
+        ]);
+
+        let cycles = detect_recursive_value_type_cycles(&type_defs);
+        assert!(
+            cycles.is_empty(),
+            "an imported enum carrying a canonical lifecycle enum is acyclic: {cycles:?}"
+        );
     }
 
     #[test]

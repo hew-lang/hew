@@ -319,6 +319,14 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
         "qualified alias uses must consume both imports: {:?}",
         output.warnings
     );
+    assert_eq!(
+        output
+            .import_type_name_aliases
+            .get(&(None, "f.CrashNotification".to_string()))
+            .map(String::as_str),
+        Some("failure.CrashNotification"),
+        "the checker must publish its proven whole-module lifecycle identity for HIR"
+    );
 }
 
 #[test]

@@ -5657,6 +5657,29 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
             term.cleanup
         )));
     }
+    // Snapshot THIS block's already-elaborated suspend-abandon plan before
+    // building either synchronous child-advance window. These are precisely
+    // the typed owners that would have run if the caller reached its ordinary
+    // parked destroy edge. A synchronous child trap bypasses that edge, so the
+    // swap records the same obligations for crash unwind; no ownership is
+    // inferred from LLVM slot shape.
+    let suspend_block = fn_ctx.suspend_abandon_block.get();
+    let mut frame_cleanup_drops = fn_ctx
+        .drop_plans
+        .iter()
+        .find_map(|(exit, plan)| match exit {
+            hew_mir::ExitPath::Suspend { block, .. } if *block == suspend_block => {
+                Some(plan.drops.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    // Fresh by-value string arguments already have a value-addressed unwind
+    // obligation in this same swap. If MIR also retains the exact argument
+    // slot in the Suspend plan, registering its typed slot thunk would release
+    // the same owner twice on crash. Deduplicate only exact Place identity;
+    // no type/shape heuristic is allowed to suppress a distinct frame owner.
+    frame_cleanup_drops.retain(|drop| !term.fresh_string_args.contains(&drop.place));
 
     // Resolve the live execution context (the closure's leading ctx arg — the
     // resume-installed context after a suspend, not the dangling spilled param).
@@ -5801,6 +5824,7 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
     // by the scheduler's `reply_channel_swap_unwind`, so restoration is
     // structurally guaranteed on every exit path, not just the normal return.
     let unwind_string_args = &term.fresh_string_args;
+    let unwind_frame_drops = &frame_cleanup_drops;
     let swap_in = |label: &str| -> CodegenResult<()> {
         fn_ctx
             .builder
@@ -5828,6 +5852,7 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
                 )
                 .llvm_ctx("hew_context_reply_channel_swap_add_string_cleanup call")?;
         }
+        crate::llvm::emit_frame_cleanup_registrations(fn_ctx, unwind_frame_drops)?;
         Ok(())
     };
     let swap_out = |label: &str| -> CodegenResult<()> {

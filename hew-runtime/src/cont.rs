@@ -309,6 +309,69 @@ unsafe fn frame_is_tracked(frame: *mut c_void) -> bool {
     }
 }
 
+/// Return the currently executing tracked coroutine frame when `slot..slot+size`
+/// lies wholly within its payload.
+///
+/// The frame pointer is sourced from the active-frame TLS rather than from the
+/// caller. That makes the header reads below safe and prevents crash-cleanup
+/// registration from acquiring authority over an arbitrary allocation.
+pub(crate) fn active_top_frame_containing(slot: *mut c_void, size: u64) -> Option<*mut c_void> {
+    ACTIVE_COROUTINE_FRAMES.with(|active| {
+        let frame = active.borrow().last()?.frame;
+        tracked_frame_contains_range(frame, slot, size).then_some(frame)
+    })
+}
+
+/// Check that a positively tracked active frame still contains a registered
+/// cleanup range. Crash unwind uses this as a debug-time invariant before
+/// invoking a typed drop thunk.
+pub(crate) fn active_frame_contains_range(
+    frame: *mut c_void,
+    slot: *mut c_void,
+    size: u64,
+) -> bool {
+    let is_active = ACTIVE_COROUTINE_FRAMES
+        .with(|active| active.borrow().iter().any(|record| record.frame == frame));
+    is_active && tracked_frame_contains_range(frame, slot, size)
+}
+
+fn tracked_frame_contains_range(frame: *mut c_void, slot: *mut c_void, size: u64) -> bool {
+    if slot.is_null() {
+        return false;
+    }
+    let Ok(size) = usize::try_from(size) else {
+        return false;
+    };
+    // SAFETY: callers source `frame` from the live active-frame stack. The
+    // marker is rechecked so only positively tracked coroutine allocations
+    // qualify.
+    if !unsafe { frame_is_tracked(frame) } {
+        return false;
+    }
+
+    // SAFETY: a tracked frame has the allocator header immediately before its
+    // public payload pointer.
+    let base = unsafe { frame.cast::<u8>().sub(FRAME_HEADER) };
+    // SAFETY: the first header word is the allocation size written by
+    // `allocate_frame`.
+    let total = unsafe { ptr::read_unaligned(base.cast::<u64>()) };
+    let Ok(total) = usize::try_from(total) else {
+        return false;
+    };
+    let Some(payload_size) = total.checked_sub(FRAME_HEADER) else {
+        return false;
+    };
+    let frame_start = frame as usize;
+    let Some(frame_end) = frame_start.checked_add(payload_size) else {
+        return false;
+    };
+    let slot_start = slot as usize;
+    let Some(slot_end) = slot_start.checked_add(size) else {
+        return false;
+    };
+    slot_start >= frame_start && slot_end <= frame_end
+}
+
 fn active_coroutine_enter(frame: *mut c_void) -> bool {
     // SAFETY: this helper is called only with a live continuation handle. The
     // marker gates admission so untracked companion/environment allocations can
@@ -417,8 +480,9 @@ unsafe fn drain_active_coroutine_frames_excluding(
 /// to run typed destructors for arbitrary frame-owned values.
 ///
 /// `excluded` is used by resumed-handler recovery: the actor slot remains the
-/// sole owner of that root, and `abandon_resuming_after_crash` frees it after
-/// nested frames have been drained.
+/// sole owner of that root allocation, and `abandon_resuming_after_crash` frees
+/// it after nested frames have been drained. Typed field drops run separately
+/// before this raw drain.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn reclaim_active_coroutine_frames_excluding(excluded: *mut c_void) -> usize {
     // SAFETY: scheduler calls this only after longjmp/unwind has killed every

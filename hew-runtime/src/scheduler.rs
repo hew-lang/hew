@@ -2234,15 +2234,18 @@ unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewEx
         let _ = crate::actor::hew_actor_state_lock_release_after_panic(actor);
     }
 
+    // The actor slot remains the sole raw-allocation owner of the resumed
+    // handler root. Exclude it while raw-reclaiming nested synchronous child
+    // ramps; `abandon_resuming_after_crash` below removes/frees that root exactly
+    // once. Its typed field obligations are independent and run in swap unwind.
+    let scheduler_root = a.suspended_cont.load(Ordering::Acquire);
     // A child suspending-closure call that trapped/longjmped inside the resume
     // bypassed the driver's swap-pop and driver-channel teardown. Restore the
-    // outer reply routing and tear those channels down BEFORE reading the reply
-    // channel below (mirrors the fresh-dispatch crash branch).
+    // outer reply routing, tear those channels down, and typed-drop abandoned
+    // frame slots before raw reclamation. Root field drops run here exactly
+    // once; only its raw frame allocation remains reserved for the actor-slot
+    // authority below.
     crate::execution_context::reply_channel_swap_unwind();
-    // The actor slot remains the sole teardown owner of the resumed handler
-    // root. Exclude it while raw-reclaiming nested synchronous child ramps;
-    // `abandon_resuming_after_crash` below removes/frees that root exactly once.
-    let scheduler_root = a.suspended_cont.load(Ordering::Acquire);
     // SAFETY: the recovery longjmp killed the active resume stack. The drain
     // frees only positively tracked nested frames and preserves
     // `scheduler_root` for the actor-slot authority.
@@ -2290,8 +2293,9 @@ unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewEx
     // stays alive. Frees the frame block WITHOUT running the `coro.destroy`
     // cleanup outline — the coroutine was RUNNING (between suspend points) when
     // it trapped, so re-running the last suspend's cleanup would double-free the
-    // registrations its resume edge already released. Frame-owned Hew heap values
-    // are arena-backed and reclaimed by the arena reset below.
+    // registrations its resume edge already released. Reply-swap unwind above
+    // already ran the root's registered typed field drops; arena reset below
+    // reclaims the remaining arena-backed state.
     // SAFETY: the longjmp killed the resume, so no concurrent resume/destroy can
     // run; this worker owns the actor exclusively.
     let _ = unsafe { crate::coro_exec::abandon_resuming_after_crash(a) };

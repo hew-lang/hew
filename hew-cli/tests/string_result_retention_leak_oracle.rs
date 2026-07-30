@@ -208,6 +208,15 @@ fn static_crash_source() -> String {
 const SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE: &str = r#"
 import std::observe;
 
+record RootBundle {
+    text: string,
+    data: bytes,
+}
+
+fn make_root_nested(label: string) -> fn() -> i64 {
+    || label.len()
+}
+
 actor Gate {
     receive fn tick() -> i64 {
         sleep(5ms);
@@ -220,6 +229,13 @@ actor Runner {
 
     receive fn go(trigger: i64) -> i64 {
         let gate_pid = gate;
+        let root_string = "root-resume-owner".to_upper();
+        let root_bytes = "root-resume-bytes".to_bytes();
+        let root_record = RootBundle {
+            text: "root-record-owner".to_upper(),
+            data: "root-record-bytes".to_bytes(),
+        };
+        let root_nested = make_root_nested("root-nested-owner".to_upper());
         let resume_then_crash = |value: string| {
             let _ = match await gate_pid.tick() {
                 Ok(n) => n,
@@ -231,6 +247,14 @@ actor Runner {
             value
         };
         let _ = resume_then_crash("resume-crash-owner".to_upper());
+        if root_string.len()
+            + root_bytes.len()
+            + root_record.text.len()
+            + root_record.data.len()
+            + root_nested()
+            == -1 {
+            panic("root owner guard");
+        }
         7
     }
 }
@@ -311,6 +335,58 @@ fn main() {
 }
 "#;
 
+    TEMPLATE.replace("__FRAMES__", &frames.to_string())
+}
+
+/// Capture-bearing twin of the frame-only restart fixture. Each of the three
+/// caller frames owns one fresh string in the exact `ExitPath::Suspend` plan
+/// opened around its synchronous child ramp.
+fn nested_captured_string_crash_restart_source(frames: usize) -> String {
+    const TEMPLATE: &str = r#"
+actor Gate {
+    receive fn tick() -> i64 { 1 }
+}
+
+actor Crasher {
+    let gate: LocalPid<Gate>;
+
+    receive fn run() -> i64 {
+        let outer_owner = "outer-crash-owner".to_upper();
+        let outer = |outer_gate: LocalPid<Gate>| {
+            if outer_owner == "unreachable" { panic("outer capture guard"); }
+            let middle_owner = "middle-crash-owner".to_upper();
+            let middle = |middle_gate: LocalPid<Gate>| {
+                if middle_owner == "unreachable" { panic("middle capture guard"); }
+                let inner_owner = "inner-crash-owner".to_upper();
+                let inner = |inner_gate: LocalPid<Gate>| {
+                    if inner_owner == "unreachable" { panic("inner capture guard"); }
+                    panic("nested synchronous ramp crash");
+                    let _ = match await inner_gate.tick() {
+                        Ok(n) => n,
+                        Err(_) => 0,
+                    };
+                    inner_owner
+                };
+                inner(middle_gate)
+            };
+            middle(outer_gate)
+        };
+        let _ = outer(gate);
+        7
+    }
+}
+
+fn main() {
+    let gate = spawn Gate;
+    for _ in 0..__FRAMES__ {
+        let crasher = spawn Crasher(gate: gate);
+        match await crasher.run() {
+            Ok(_) => panic("nested crash unexpectedly returned"),
+            Err(_) => println("restarted"),
+        }
+    }
+}
+"#;
     TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
 
@@ -442,6 +518,33 @@ fn suspending_closure_codegen_registers_fresh_arg_for_initial_ramp_and_resume() 
     );
 }
 
+#[test]
+fn suspending_closure_later_resume_crash_drains_typed_root_owners_once() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("suspending-closure-resume-root-owners-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE,
+        dir.path(),
+        "suspending_closure_resume_root_owners",
+    );
+    let output = run_fixture(&bin, "run later-resume typed-root cleanup fixture");
+    assert!(
+        output.status.success(),
+        "later-resume typed-root cleanup fixture failed (a poisoned-header abort \
+         here is a double drop):\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "crash-fallback\nmain-done\n0\n",
+        "string, Bytes, record, and nested-closure owners must be drained before \
+         the crashed root frame is reclaimed"
+    );
+}
+
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "exact crash differential needs macOS `leaks(1)` / the Darwin poisoned allocator"
@@ -557,6 +660,19 @@ fn nested_suspending_closure_crash_restart_has_zero_leak_slope() {
     assert_frame_slope_below_tolerance_exact_lines(
         "nested_suspending_closure_crash_restart",
         nested_suspending_closure_crash_restart_source,
+        std::convert::identity,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "exact crash leak slope needs macOS `leaks(1)` / the Darwin poisoned allocator"
+)]
+#[test]
+fn nested_captured_strings_crash_restart_has_zero_leak_slope() {
+    assert_frame_slope_below_tolerance_exact_lines(
+        "nested_captured_strings_crash_restart",
+        nested_captured_string_crash_restart_source,
         std::convert::identity,
     );
 }

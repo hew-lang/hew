@@ -1883,6 +1883,17 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// a re-entrant one, so a plain `Cell` is sufficient. Initial `0` is
     /// overwritten before any suspend emitter runs.
     pub(crate) suspend_abandon_block: std::cell::Cell<u32>,
+    /// Temporary exact-place rebinding used only while synthesising a typed
+    /// synchronous-crash cleanup thunk.  The thunk receives the address of one
+    /// coroutine-frame slot as its sole `ptr` parameter; rebinding lets the
+    /// ordinary, exhaustively matched `emit_one_elab_drop_unguarded` authority
+    /// emit that slot's ritual without maintaining a second drop-kind switch.
+    ///
+    /// The override is installed and cleared synchronously while the module
+    /// builder is positioned in the thunk body.  Ordinary function lowering
+    /// always observes `None`.
+    pub(crate) elab_drop_slot_override:
+        std::cell::Cell<Option<(Place, PointerValue<'ctx>, BasicTypeEnum<'ctx>)>>,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -4039,6 +4050,11 @@ pub(crate) fn place_pointer<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     place: Place,
 ) -> CodegenResult<(PointerValue<'ctx>, BasicTypeEnum<'ctx>)> {
+    if let Some((overridden, slot, slot_ty)) = fn_ctx.elab_drop_slot_override.get() {
+        if place == overridden {
+            return Ok((slot, slot_ty));
+        }
+    }
     match place {
         Place::Local(id) => fn_ctx.locals.get(&id).copied().ok_or_else(|| {
             CodegenError::FailClosed(format!("local {id} not allocated before use"))
@@ -21628,6 +21644,214 @@ fn emit_one_elab_drop(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<
     emit_one_elab_drop_borrow_aware(fn_ctx, drop)
 }
 
+/// Register every typed frame-resident owner in a suspending-closure block's
+/// existing abandon plan with the innermost synchronous-call swap.
+///
+/// Normal swap-pop discards these obligations: MIR remains the ordinary
+/// lifetime authority.  A synchronous child crash bypasses both the pop and
+/// the coroutine's suspend/cleanup outline, so runtime unwind invokes the
+/// registered `void(ptr slot)` thunks before the raw frame allocation is
+/// reclaimed.  The plan is supplied by MIR; codegen neither guesses owners nor
+/// invents destructor kinds here.
+pub(crate) fn emit_frame_cleanup_registrations(
+    fn_ctx: &FnCtx<'_, '_>,
+    drops: &[ElabDrop],
+) -> CodegenResult<()> {
+    for drop in drops {
+        if let Some(flag) = drop.guard {
+            let (flag_ptr, flag_ty) = place_pointer(fn_ctx, flag)?;
+            let BasicTypeEnum::IntType(flag_ty) = flag_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "synchronous-crash frame cleanup guard {flag:?} for {:?} is \
+                     not an integer local",
+                    drop.place
+                )));
+            };
+            let flag_value = fn_ctx
+                .builder
+                .build_load(flag_ty, flag_ptr, "frame_cleanup_drop_flag")
+                .llvm_ctx("frame-cleanup drop-flag load")?
+                .into_int_value();
+            let live = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    flag_value,
+                    flag_ty.const_zero(),
+                    "frame_cleanup_drop_live",
+                )
+                .llvm_ctx("frame-cleanup drop-flag compare")?;
+            emit_gated_drop_region(
+                fn_ctx,
+                live,
+                ("frame_cleanup_guard_live", "frame_cleanup_guard_merge"),
+                || emit_borrow_aware_frame_cleanup_registration(fn_ctx, drop),
+            )?;
+        } else {
+            emit_borrow_aware_frame_cleanup_registration(fn_ctx, drop)?;
+        }
+    }
+    Ok(())
+}
+
+fn emit_borrow_aware_frame_cleanup_registration(
+    fn_ctx: &FnCtx<'_, '_>,
+    drop: &ElabDrop,
+) -> CodegenResult<()> {
+    if let (Some(borrow_mode), Some(base)) = (fn_ctx.borrow_mode, place_base_local(&drop.place)) {
+        if fn_ctx.borrow_drop_tainted.contains(&base) {
+            let copy_mode = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    borrow_mode,
+                    borrow_mode.get_type().const_zero(),
+                    "frame_cleanup_is_copy",
+                )
+                .llvm_ctx("frame-cleanup borrow-mode compare")?;
+            return emit_gated_drop_region(
+                fn_ctx,
+                copy_mode,
+                ("frame_cleanup_copy_only", "frame_cleanup_copy_merge"),
+                || emit_unguarded_frame_cleanup_registration(fn_ctx, drop),
+            );
+        }
+    }
+    emit_unguarded_frame_cleanup_registration(fn_ctx, drop)
+}
+
+fn frame_cleanup_thunk_name(drop: &ElabDrop) -> String {
+    // The descriptor intentionally excludes the concrete Place and guard:
+    // those are caller-frame facts evaluated before registration.  The thunk
+    // ritual is determined entirely by (type, kind, drop_fn), so equal rituals
+    // share one module function. Two independently seeded FNV-1a lanes make a
+    // compact deterministic 128-bit symbol key.
+    let descriptor = format!("{:?}|{:?}|{:?}", drop.ty, drop.kind, drop.drop_fn);
+    let mut lo = 0xcbf2_9ce4_8422_2325_u64;
+    let mut hi = 0x8422_2325_cbf2_9ce4_u64;
+    for byte in descriptor.bytes() {
+        lo ^= u64::from(byte);
+        lo = lo.wrapping_mul(0x0000_0100_0000_01b3);
+        hi ^= u64::from(byte).rotate_left(1);
+        hi = hi.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("__hew_frame_cleanup_{hi:016x}{lo:016x}")
+}
+
+/// Synthesize (or reuse) a `void(ptr slot)` thunk by running the ordinary
+/// unguarded `ElabDrop` authority with the descriptor's exact Place rebound to
+/// the thunk parameter.  The exhaustive match in
+/// `emit_one_elab_drop_unguarded` is deliberately the only supported-kind
+/// table: an incoherent or unsupported descriptor returns its existing
+/// fail-closed codegen error instead of becoming an untyped/free-only cleanup.
+fn get_or_emit_frame_cleanup_thunk<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    drop: &ElabDrop,
+    slot_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let name = frame_cleanup_thunk_name(drop);
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&name) {
+        return Ok(existing);
+    }
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let thunk = fn_ctx.llvm_mod.add_function(
+        &name,
+        fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    thunk.set_linkage(Linkage::Internal);
+    let entry = fn_ctx.ctx.append_basic_block(thunk, "entry");
+    let saved_block = fn_ctx.builder.get_insert_block();
+    fn_ctx.builder.position_at_end(entry);
+    let slot = thunk
+        .get_first_param()
+        .ok_or_else(|| CodegenError::Llvm(format!("{name} has no slot parameter")))?
+        .into_pointer_value();
+    fn_ctx
+        .elab_drop_slot_override
+        .set(Some((drop.place, slot, slot_ty)));
+    let emitted = emit_one_elab_drop_unguarded(fn_ctx, drop);
+    fn_ctx.elab_drop_slot_override.set(None);
+    if emitted.is_ok() {
+        fn_ctx
+            .builder
+            .build_return(None)
+            .llvm_ctx("frame-cleanup thunk return")?;
+    }
+    if let Some(block) = saved_block {
+        fn_ctx.builder.position_at_end(block);
+    }
+    emitted?;
+    Ok(thunk)
+}
+
+fn emit_unguarded_frame_cleanup_registration(
+    fn_ctx: &FnCtx<'_, '_>,
+    drop: &ElabDrop,
+) -> CodegenResult<()> {
+    let (slot, slot_ty) = place_pointer(fn_ctx, drop.place)?;
+    let thunk = get_or_emit_frame_cleanup_thunk(fn_ctx, drop, slot_ty)?;
+    let size = fn_ctx.target_data.get_store_size(&slot_ty);
+    let add_cleanup = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_context_reply_channel_swap_add_frame_cleanup",
+    )?;
+    let registered = fn_ctx
+        .builder
+        .build_call(
+            add_cleanup,
+            &[
+                slot.into(),
+                fn_ctx.ctx.i64_type().const_int(size, false).into(),
+                thunk.as_global_value().as_pointer_value().into(),
+            ],
+            "suspending_closure_add_frame_cleanup",
+        )
+        .llvm_ctx("hew_context_reply_channel_swap_add_frame_cleanup call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(
+                "hew_context_reply_channel_swap_add_frame_cleanup returned void".into(),
+            )
+        })?
+        .into_int_value();
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("frame-cleanup registration has no parent function".into())
+        })?;
+    let accepted_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "frame_cleanup_registered");
+    let rejected_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "frame_cleanup_rejected");
+    fn_ctx
+        .builder
+        .build_conditional_branch(registered, accepted_bb, rejected_bb)
+        .llvm_ctx("frame-cleanup registration result branch")?;
+    fn_ctx.builder.position_at_end(rejected_bb);
+    let trap = Intrinsic::find("llvm.trap")
+        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap, &[], "frame_cleanup_registration_trap")
+        .llvm_ctx("frame-cleanup registration trap")?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .llvm_ctx("frame-cleanup registration unreachable")?;
+    fn_ctx.builder.position_at_end(accepted_bb);
+    Ok(())
+}
+
 /// Borrow-mode-aware drop emission (the pre-#1933 `emit_one_elab_drop`
 /// body). Split out so the path-sensitive resource drop-flag guard can wrap
 /// it: a flag-gated resource close still honours the borrow-mode suppression
@@ -31531,6 +31755,7 @@ fn lower_function<'ctx>(
         },
         drop_plans,
         suspend_abandon_block: std::cell::Cell::new(0),
+        elab_drop_slot_override: std::cell::Cell::new(None),
     };
 
     // Fail-closed boundary: reject composite returns whose heap-owning payload

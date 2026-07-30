@@ -2044,13 +2044,24 @@ impl Builder {
             // is fire-and-forget here, but an ask-shaped `.send` must fail
             // closed in statement position too rather than lower as a tell that
             // silently drops the reply (`no-fail-open-fallback-after-authority`).
-            let _ = self.lower_runtime_call(
-                &symbol,
-                args,
-                site,
-                RuntimeCallContext::Discarded,
-                Some(&expr.ty),
-            );
+            if matches!(symbol.as_str(), "hew_observe_scrape" | "hew_observe_series")
+                && matches!(self.subst_ty(&expr.ty), ResolvedTy::String)
+            {
+                // Keep a discarded transferred string on the value route used
+                // by ordinary extern expressions. That materialises the final
+                // unsafe-block-normalised local, which the shared audited
+                // fresh-temp collector owns and releases. The bespoke observe
+                // helper's old Discarded route had no such local to audit.
+                let _ = self.lower_value(expr);
+            } else {
+                let _ = self.lower_runtime_call(
+                    &symbol,
+                    args,
+                    site,
+                    RuntimeCallContext::Discarded,
+                    Some(&expr.ty),
+                );
+            }
         } else {
             // Discarded expression. Any fresh-owned `string` temporary the
             // expression produces — `xs[i]`/`xs.get(i)` over `Vec<string>`
@@ -9388,8 +9399,20 @@ impl Builder {
         for arg in hir_args {
             args.push(self.lower_value(arg)?);
         }
-        let dest =
-            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(return_ty));
+        // A transferred `string` result must materialise even in statement
+        // position. The shared fresh-owner temporary pass then sees the
+        // audited producer and emits its one `hew_string_drop` on the normal
+        // continuation. Omitting this destination used to discard the raw
+        // pointer before that machinery could account for it (a leak), while
+        // an observe-specific drop here would bypass the authority used by
+        // every other transferred extern result.
+        let dest = if matches!(return_ty, ResolvedTy::String)
+            || context == RuntimeCallContext::ValueNeeded
+        {
+            Some(self.alloc_local(return_ty))
+        } else {
+            None
+        };
         self.push_runtime_call(symbol, args, dest);
         dest
     }

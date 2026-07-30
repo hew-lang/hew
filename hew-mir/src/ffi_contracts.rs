@@ -259,6 +259,34 @@ mod tests {
     }
 
     #[test]
+    fn observe_and_encrypt_open_transfers_are_audited() {
+        // These direct C-ABI results all cross into Hew `string`, so their
+        // classification must name the exact release the string drop plan
+        // emits and carry the measured retention proof that licenses it.
+        for symbol in [
+            "hew_observe_scrape",
+            "hew_observe_series",
+            "hew_encrypt_open_hew",
+        ] {
+            let contract = extern_ownership_contract(symbol)
+                .contract()
+                .unwrap_or_else(|| panic!("{symbol} must carry an ownership contract"));
+            assert_eq!(contract.result, ExternResultOwnership::Fresh, "{symbol}");
+            assert_eq!(contract.release_symbol, "hew_string_drop", "{symbol}");
+            assert_eq!(
+                contract.discharge_depth,
+                ReleaseDischargeDepth::Shallow,
+                "{symbol}"
+            );
+            assert_eq!(
+                contract.result_retention,
+                ExternResultRetention::Transferred,
+                "{symbol}"
+            );
+        }
+    }
+
+    #[test]
     fn known_contracts_readable() {
         // `hew_json_free` consumes its single value parameter
         // (hew-std/src/json.rs reconstructs and drops `val`).

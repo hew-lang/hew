@@ -478,6 +478,10 @@ pub struct HewCluster {
     /// any of its observable deliveries (see `guarded_delivery_rendezvous`).
     #[cfg(test)]
     guarded_delivery_probe: Mutex<Option<Arc<GuardedDeliveryProbe>>>,
+    /// Test-only park point after the membership callback's per-step gate has
+    /// succeeded and immediately before the callback is entered.
+    #[cfg(test)]
+    guarded_membership_callback_probe: Mutex<Option<Arc<GuardedDeliveryProbe>>>,
 }
 
 /// Test-only handshake for the post-claim park point.
@@ -891,6 +895,8 @@ impl HewCluster {
             guarded_emission_probe: Mutex::new(None),
             #[cfg(test)]
             guarded_delivery_probe: Mutex::new(None),
+            #[cfg(test)]
+            guarded_membership_callback_probe: Mutex::new(None),
         }
     }
 
@@ -1208,6 +1214,29 @@ impl HewCluster {
         *self.guarded_delivery_probe.lock_or_recover() = probe;
     }
 
+    /// Test-only rendezvous after the membership callback's successful
+    /// per-step gate and immediately before callback entry.
+    #[cfg(test)]
+    fn guarded_membership_callback_rendezvous(&self) {
+        let probe = self
+            .guarded_membership_callback_probe
+            .lock_or_recover()
+            .clone();
+        if let Some(probe) = probe {
+            let _ = probe.entered.send(());
+            let _ = probe.release.lock_or_recover().recv();
+        }
+    }
+
+    /// Park guarded membership-callback delivery on `probe` after its gate.
+    #[cfg(test)]
+    pub(crate) fn set_guarded_membership_callback_probe(
+        &self,
+        probe: Option<Arc<GuardedDeliveryProbe>>,
+    ) {
+        *self.guarded_membership_callback_probe.lock_or_recover() = probe;
+    }
+
     fn deliver_member_transition(&self, transition: &MemberTransition) {
         let membership_event = transition.membership_event();
         // Present for the whole of the observable delivery below when the
@@ -1321,6 +1350,10 @@ impl HewCluster {
             return;
         }
         if let Some(event) = membership_event {
+            #[cfg(test)]
+            if in_flight.is_some() {
+                self.guarded_membership_callback_rendezvous();
+            }
             let _ = self.with_membership_callback_dispatch(|callback, user_data| {
                 callback(transition.node_id, event, user_data);
             });

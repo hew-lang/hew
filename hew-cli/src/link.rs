@@ -807,11 +807,34 @@ fn hew_lib_candidates(
     name: &str,
     triple: &str,
 ) -> Vec<std::path::PathBuf> {
-    vec![
+    let cargo_profiles: &[&str] = match exe_dir.file_name().and_then(|name| name.to_str()) {
+        // A debug compiler normally has a matching debug archive. Keep the
+        // shipped non-LTO profile ahead of a potentially stale release build.
+        Some("debug") => &["debug", "release-lib", "release"],
+        Some("release" | "release-lib") => &["release-lib", "release", "debug"],
+        _ => &[],
+    };
+
+    let mut candidates = vec![
         // Installed target-aware layouts.
         exe_dir.join("../lib").join(triple).join(name),
         exe_dir.join("../lib/hew").join(triple).join(name), // /usr/lib/hew/<triple>/
         exe_dir.join("../lib64/hew").join(triple).join(name), // /usr/lib64/hew/<triple>/
+    ];
+
+    // Cargo places a cross-target archive under the same target root as the
+    // compiler binary: <target-dir>/<triple>/<profile>/<archive>. This must be
+    // checked before any flat host archive, including when CARGO_TARGET_DIR is
+    // outside the repository.
+    if let Some(target_dir) = exe_dir.parent() {
+        candidates.extend(
+            cargo_profiles
+                .iter()
+                .map(|profile| target_dir.join(triple).join(profile).join(name)),
+        );
+    }
+
+    candidates.extend([
         // Flat installed fallback layouts.
         exe_dir.join("../lib").join(name),
         exe_dir.join("../lib/hew").join(name), // /usr/lib/hew/
@@ -850,7 +873,9 @@ fn hew_lib_candidates(
             .join(name),
         exe_dir.join("../../target/wasm32-wasip1/debug").join(name),
         exe_dir.join("../../hew-runtime/target/release").join(name),
-    ]
+    ]);
+
+    candidates
 }
 
 fn verify_no_unresolved_hew_wasm_imports(output_path: &str) -> Result<(), String> {
@@ -2051,6 +2076,26 @@ mod tests {
             .expect("same-dir host fallback candidate");
         assert!(cross_release_index < host_same_dir_index);
         assert!(cross_debug_index < host_same_dir_index);
+    }
+
+    #[test]
+    fn hew_lib_candidates_follow_an_external_cargo_target_dir() {
+        let exe_dir = std::path::Path::new("/scratch/cargo-out/debug");
+        let triple = "aarch64-unknown-linux-gnu";
+        let candidates = hew_lib_candidates(exe_dir, "libhew.a", triple);
+        let cross_debug =
+            std::path::PathBuf::from("/scratch/cargo-out/aarch64-unknown-linux-gnu/debug/libhew.a");
+        let host_debug = std::path::PathBuf::from("/scratch/cargo-out/debug/libhew.a");
+        let cross_debug_index = candidates
+            .iter()
+            .position(|path| path == &cross_debug)
+            .expect("cross-target archive under external target root");
+        let host_debug_index = candidates
+            .iter()
+            .position(|path| path == &host_debug)
+            .expect("flat host archive");
+
+        assert!(cross_debug_index < host_debug_index);
     }
 
     #[test]

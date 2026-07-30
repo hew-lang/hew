@@ -1,10 +1,14 @@
 //! Full-`Location` routing for distributed actor delivery.
 
 use crate::node_identity::{Location, NodeId};
+#[cfg(test)]
+use crate::util::MutexExt;
 use crate::util::RwLockExt;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_int;
 use std::sync::RwLock;
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
 
 /// Return value used by internal route-slot probes when no connection is live.
 const HEW_ROUTE_MISSING: c_int = -1;
@@ -50,6 +54,17 @@ pub struct HewRoutingTable {
     local_node: Option<NodeId>,
     local_session_incarnation: Option<u32>,
     local_route_slot: u16,
+    /// Test-only park point before route registration begins.
+    #[cfg(test)]
+    add_route_probe: Mutex<Option<Arc<RouteAddProbe>>>,
+}
+
+/// Test-only handshake before a route-registration attempt.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct RouteAddProbe {
+    pub(crate) entered: std::sync::mpsc::Sender<()>,
+    pub(crate) release: Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
 /// Create a routing table for one authenticated node lifetime.
@@ -79,6 +94,8 @@ pub(crate) fn hew_routing_table_new(
         local_node,
         local_session_incarnation,
         local_route_slot,
+        #[cfg(test)]
+        add_route_probe: Mutex::new(None),
     }))
 }
 
@@ -94,20 +111,39 @@ pub(crate) unsafe fn hew_routing_table_free(table: *mut HewRoutingTable) {
     }
 }
 
-/// Publish or replace a live authenticated route.
-///
-/// Reusing a receiver-local route slot for a different `NodeId` tombstones the
-/// prior identity before the replacement becomes visible.
+/// Check whether an admission's immutable coordinates can be represented by
+/// this routing table.
 ///
 /// # Reserved route slots
 ///
 /// Slot `0` is local dispatch and the table's own `local_route_slot` names this
-/// process. Registering a peer on either is refused, because this function is
+/// process. Registering a peer on either is refused, because route publication is
 /// what makes `LocationRoute::Remote`'s packed actor id: `hew_pid_make(slot, ..)`
 /// on a reserved slot yields a pid that `hew_pid_is_local` reports as LOCAL for
 /// an actor that lives on another node — and `hew_routing_conn_for_route_slot`
 /// would refuse to route to it, so the peer would also be silently unreachable.
 /// Refusing the registration is what keeps that pid unrepresentable.
+///
+/// # Safety
+///
+/// `table` must point to a live routing table.
+pub(crate) unsafe fn hew_routing_can_add_route(
+    table: *mut HewRoutingTable,
+    route_slot: u16,
+    session_incarnation: u32,
+) -> bool {
+    if table.is_null() || route_slot == 0 || session_incarnation == 0 {
+        return false;
+    }
+    // SAFETY: caller guarantees `table` validity.
+    let table = unsafe { &*table };
+    route_slot != table.local_route_slot
+}
+
+/// Publish or replace a live authenticated route.
+///
+/// Reusing a receiver-local route slot for a different `NodeId` tombstones the
+/// prior identity before the replacement becomes visible.
 ///
 /// # Safety
 ///
@@ -120,14 +156,13 @@ pub(crate) unsafe fn hew_routing_add_route(
     conn: c_int,
     publication_token: u64,
 ) -> bool {
-    if table.is_null() || route_slot == 0 || session_incarnation == 0 {
+    // SAFETY: inherited from this function's contract.
+    if !unsafe { hew_routing_can_add_route(table, route_slot, session_incarnation) } {
         return false;
     }
-    // SAFETY: caller guarantees `table` validity.
+    // SAFETY: `hew_routing_can_add_route` accepted the non-null table and the
+    // caller guarantees that allocation remains live.
     let table = unsafe { &*table };
-    if route_slot == table.local_route_slot {
-        return false;
-    }
     let mut state = table.state.write_or_recover();
 
     if let Some(previous_node) = state.by_slot.get(&route_slot).copied() {
@@ -156,6 +191,21 @@ pub(crate) unsafe fn hew_routing_add_route(
         },
     );
     true
+}
+
+#[cfg(test)]
+impl HewRoutingTable {
+    pub(crate) fn route_add_rendezvous(&self) {
+        let probe = self.add_route_probe.lock_or_recover().clone();
+        if let Some(probe) = probe {
+            let _ = probe.entered.send(());
+            let _ = probe.release.lock_or_recover().recv();
+        }
+    }
+
+    pub(crate) fn set_add_route_probe(&self, probe: Option<Arc<RouteAddProbe>>) {
+        *self.add_route_probe.lock_or_recover() = probe;
+    }
 }
 
 /// Remove a route only when the exact connection publication still owns it.

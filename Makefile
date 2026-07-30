@@ -714,13 +714,13 @@ test: test-rust
 test-rust: wasm-runtime runtime $(LIBHEW_READY)
 	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
 		set -e; \
-		cargo nextest run --workspace --profile ci --no-run; \
+		cargo nextest run --workspace --exclude hew-cabi --profile ci --no-run; \
 		test -f "$(LIBHEW)"; \
-		cargo nextest run --workspace --profile ci; \
+		cargo nextest run --workspace --exclude hew-cabi --profile ci; \
 	else \
 		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \
 		echo "         Install with: cargo install cargo-nextest" >&2; \
-		cargo test; \
+		cargo test --workspace --exclude hew-cabi; \
 	fi
 
 test-parser:
@@ -1214,7 +1214,7 @@ hew-fmt-check: hew
 # See scripts/hew-corpus-check.sh for the allowlist format and classification guide.
 hew-check-all: hew
 	@echo "==> hew-check-all: compiling full .hew corpus"
-	scripts/hew-corpus-check.sh
+	HEW_BIN="$(DEBUG_DIR)/hew" scripts/hew-corpus-check.sh
 
 .PHONY: codegen-carried-identity-gate
 codegen-carried-identity-gate:

@@ -92,14 +92,57 @@ def assert_windows_staged_build_transport_contract(text: str) -> None:
     assert 'run_windows_staged_build "${remote_stage}"' in text
     assert "scripts/windows-release-build.ps1" in text
     assert "Set-Location (Split-Path -Parent $PSScriptRoot)" in text
+    # The single build/consumer/smoke process must override a potentially full
+    # host C: temp directory with paths rooted in the already space-checked,
+    # uniquely staged candidate.
+    assert text.count("\\$env:TEMP = '${remote_stage}/.tmp'") == 1
+    assert text.count("\\$env:TMP = \\$env:TEMP") == 1
+    assert text.count("\\$env:CARGO_TARGET_DIR = '${remote_stage}/target'") == 1
+    assert text.count("\\$env:CARGO_HOME = '${remote_stage}/.cargo-home'") == 1
+    assert (
+        text.count(
+            "New-Item -ItemType Directory -Force -Path "
+            "\\$env:TEMP, \\$env:CARGO_TARGET_DIR, \\$env:CARGO_HOME | Out-Null"
+        )
+        == 1
+    )
     assert (
         "cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release" in text
     )
     assert "release library consumer proof" in text
+    assert "& $Hew build $SmokeSource -o $SmokeOutput" in text
+    assert "Smoke test passed" in text
     assert text.count("FromBase64String('${llvm_config_b64}')") == 2
-    assert text.count("FromBase64String('${llvm_prefix_b64}')") == 2
+    assert text.count("FromBase64String('${llvm_prefix_b64}')") == 1
     assert "Test-Path '${WINDOWS_LLVM_CONFIG}'" not in text
     assert "$env:Path = '${WINDOWS_LLVM_PREFIX}" not in text
+
+
+def assert_windows_remote_cleanup_contract(text: str) -> None:
+    # The stage now owns Cargo's target, registry/cache, and temp trees. Cleanup
+    # must therefore have a transport-scale budget, report failure, and still
+    # return success from the EXIT trap so it cannot mask the build result.
+    assert (
+        'REMOTE_CLEANUP_TIMEOUT="${HEW_TIMEOUT_REMOTE_CLEANUP:-${SYNC_TIMEOUT}}"'
+        in text
+    )
+    assert 'if ! run_windows_powershell "${REMOTE_CLEANUP_TIMEOUT}" "' in text
+    assert (
+        "WARNING: Windows remote candidate cleanup timed out or failed after "
+        "${REMOTE_CLEANUP_TIMEOUT}s: ${stage}" in text
+    )
+    assert (
+        "Remove-Item -LiteralPath '${stage}' -Recurse -Force -ErrorAction Stop" in text
+    )
+    assert "if (Test-Path -LiteralPath '${stage}') {" in text
+    assert (
+        "Remove-Item -LiteralPath '${stage}' -Recurse -Force -ErrorAction Stop\n"
+        '}\n" >/dev/null 2>&1; then' in text
+    )
+    assert (
+        "Remove-Item -LiteralPath '${stage}' -Recurse -Force "
+        "-ErrorAction SilentlyContinue" not in text
+    )
 
 
 def assert_cargo_output_dir_contract(text: str) -> None:
@@ -111,15 +154,41 @@ def assert_cargo_output_dir_contract(text: str) -> None:
     # macOS, Linux aarch64, and FreeBSD each resolve both native profiles.
     assert text.count("scripts/cargo-output-dir.py --profile release)") == 3
     assert text.count("scripts/cargo-output-dir.py --profile release-lib)") == 3
-    # The staged Windows build resolves its paths and records the release
-    # directory for the separate smoke process.
-    assert ".hew-release-dir" in text
-    assert r".\scripts\cargo-output-dir.py --profile $Profile" in windows
+    # Windows has no Python dependency: its own cached Cargo JSON build output
+    # is the sole artifact-path authority. This covers custom target roots,
+    # configured build targets, and path spaces without a filesystem search.
     assert ".hew-release-dir" in windows
-    assert "$ReleaseDir = Resolve-CargoProfileDir 'release'" in windows
-    assert "$ReleaseLibDir = Resolve-CargoProfileDir 'release-lib'" in windows
-    assert "$Hew = Join-Path $ReleaseDir 'hew.exe'" in windows
-    assert "$ReleaseLib = Join-Path $ReleaseLibDir 'hew.lib'" in windows
+    assert "--release --message-format=json" in windows
+    assert "--profile release-lib --message-format=json" in windows
+    assert "Get-CargoCompilerArtifacts" in windows
+    assert "ConvertFrom-Json -ErrorAction Stop" in windows
+    assert "if ($Message.reason -eq 'compiler-artifact')" in windows
+    assert "Resolve-UniqueCargoArtifact" in windows
+    assert "did not emit exactly one $LeafName artifact" in windows
+    assert "'hew.exe' 'release binary build' -Executable" in windows
+    assert "'adze.exe' 'release binary build' -Executable" in windows
+    assert "'hew-lsp.exe' 'release binary build' -Executable" in windows
+    assert "'hew-observe.exe' 'release binary build' -Executable" in windows
+    assert "'hew.lib' 'release-lib build'" in windows
+    assert (
+        "$ReleaseArtifacts = Get-CargoCompilerArtifacts $ReleaseBuildMessages "
+        "'release binary build'" in windows
+    )
+    assert (
+        "$ReleaseLibArtifacts = Get-CargoCompilerArtifacts $ReleaseLibBuildMessages "
+        "'release-lib build'" in windows
+    )
+    assert "$ReleaseDir = Split-Path -Parent $Hew" in windows
+    assert "$ReleaseLibDir = Split-Path -Parent $ReleaseLib" in windows
+    assert "& $Adze --version" in windows
+    assert "& $HewLsp --version" in windows
+    assert "& $HewObserve --version" in windows
+    assert "Join-Path $ReleaseDir 'adze.exe'" not in windows
+    assert "Join-Path $ReleaseDir 'hew-lsp.exe'" not in windows
+    assert "Join-Path $ReleaseDir 'hew-observe.exe'" not in windows
+    assert "cargo-output-dir.py" not in windows
+    assert "Get-Command python" not in windows
+    assert "Python 3 is required" not in windows
 
     for stale in (
         "target/release/hew",
@@ -239,6 +308,10 @@ def test_windows_staged_build_transport_contract() -> None:
     assert_windows_staged_build_transport_contract(release_surface())
 
 
+def test_windows_remote_cleanup_contract() -> None:
+    assert_windows_remote_cleanup_contract(validator())
+
+
 def test_cargo_output_dir_contract() -> None:
     assert_cargo_output_dir_contract(validator())
 
@@ -306,6 +379,28 @@ def test_windows_staged_build_transport_mutations_are_rejected() -> None:
         original.replace(
             "FromBase64String('${llvm_prefix_b64}')", "'${WINDOWS_LLVM_PREFIX}'", 1
         ),
+        original.replace(
+            "\\$env:TEMP = '${remote_stage}/.tmp'",
+            "\\$env:TEMP = 'C:/Temp'",
+            1,
+        ),
+        original.replace("\\$env:TMP = \\$env:TEMP", "\\$env:TMP = 'C:/Temp'", 1),
+        original.replace(
+            "\\$env:CARGO_TARGET_DIR = '${remote_stage}/target'",
+            "\\$env:CARGO_TARGET_DIR = 'C:/hew-target'",
+            1,
+        ),
+        original.replace(
+            "\\$env:CARGO_HOME = '${remote_stage}/.cargo-home'",
+            "\\$env:CARGO_HOME = 'C:/Users/hew/.cargo'",
+            1,
+        ),
+        original.replace(
+            "New-Item -ItemType Directory -Force -Path "
+            "\\$env:TEMP, \\$env:CARGO_TARGET_DIR, \\$env:CARGO_HOME | Out-Null",
+            "Write-Output skipped-candidate-directories",
+            1,
+        ),
     ):
         try:
             assert_windows_staged_build_transport_contract(mutation)
@@ -314,6 +409,50 @@ def test_windows_staged_build_transport_mutations_are_rejected() -> None:
         raise AssertionError(
             "Windows staged-build transport mutation escaped the contract"
         )
+
+
+def test_windows_remote_cleanup_mutations_are_rejected() -> None:
+    original = validator()
+    for mutation in (
+        original.replace(
+            'REMOTE_CLEANUP_TIMEOUT="${HEW_TIMEOUT_REMOTE_CLEANUP:-${SYNC_TIMEOUT}}"',
+            'REMOTE_CLEANUP_TIMEOUT="${SSH_CHECK_TIMEOUT}"',
+            1,
+        ),
+        original.replace(
+            'if ! run_windows_powershell "${REMOTE_CLEANUP_TIMEOUT}" "',
+            'if ! run_windows_powershell "${SSH_CHECK_TIMEOUT}" "',
+            1,
+        ),
+        original.replace(
+            "WARNING: Windows remote candidate cleanup timed out or failed after ",
+            "ignored cleanup failure after ",
+            1,
+        ),
+        original.replace(
+            "Remove-Item -LiteralPath '${stage}' -Recurse -Force -ErrorAction Stop",
+            "Remove-Item -LiteralPath '${stage}' -Recurse -Force "
+            "-ErrorAction SilentlyContinue",
+            1,
+        ),
+        original.replace(
+            "if (Test-Path -LiteralPath '${stage}') {",
+            "if ($false) {",
+            1,
+        ),
+        original.replace(
+            "Remove-Item -LiteralPath '${stage}' -Recurse -Force -ErrorAction Stop\n"
+            '}\n" >/dev/null 2>&1; then',
+            "Remove-Item -LiteralPath '${stage}' -Recurse -Force -ErrorAction Stop\n"
+            '}\n" >/dev/null 2>&1 || true',
+            1,
+        ),
+    ):
+        try:
+            assert_windows_remote_cleanup_contract(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("Windows remote cleanup mutation escaped the contract")
 
 
 def test_cargo_output_dir_mutations_are_rejected() -> None:
@@ -333,6 +472,87 @@ def test_cargo_output_dir_mutations_are_rejected() -> None:
         except AssertionError:
             continue
         raise AssertionError("Cargo output-directory mutation escaped the contract")
+
+
+def test_windows_cargo_json_artifact_mutations_are_rejected() -> None:
+    original = WINDOWS_BUILD_SCRIPT.read_text()
+    for mutation in (
+        original.replace("--release --message-format=json", "--release", 1),
+        original.replace("ConvertFrom-Json -ErrorAction Stop", "ConvertFrom-String", 1),
+        original.replace(
+            "if ($Message.reason -eq 'compiler-artifact')",
+            "if ($Message.reason -eq 'build-finished')",
+            1,
+        ),
+        original.replace(
+            "did not emit exactly one $LeafName artifact", "artifact missing", 1
+        ),
+        original.replace(
+            "$Adze = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'adze.exe' 'release binary build' -Executable",
+            "$Adze = Join-Path $ReleaseDir 'adze.exe'",
+            1,
+        ),
+        original.replace(
+            "$HewLsp = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew-lsp.exe' 'release binary build' -Executable",
+            "$HewLsp = Join-Path $ReleaseDir 'hew-lsp.exe'",
+            1,
+        ),
+        original.replace(
+            "$HewObserve = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew-observe.exe' 'release binary build' -Executable",
+            "$HewObserve = Join-Path $ReleaseDir 'hew-observe.exe'",
+            1,
+        ),
+        original.replace(
+            "$ReleaseDir = Split-Path -Parent $Hew",
+            "$ReleaseDir = '.\\target\\release'",
+            1,
+        ),
+        original.replace(
+            "$ReleaseLibDir = Split-Path -Parent $ReleaseLib",
+            "$ReleaseLibDir = '.\\target\\release-lib'",
+            1,
+        ),
+        original.replace(
+            "Get-CargoCompilerArtifacts $ReleaseBuildMessages 'release binary build'",
+            "Resolve-CargoProfileDir 'release'",
+            1,
+        ),
+    ):
+        try:
+            windows = mutation
+            assert "--release --message-format=json" in windows
+            assert "--profile release-lib --message-format=json" in windows
+            assert "Get-CargoCompilerArtifacts" in windows
+            assert "ConvertFrom-Json -ErrorAction Stop" in windows
+            assert "if ($Message.reason -eq 'compiler-artifact')" in windows
+            assert "Resolve-UniqueCargoArtifact" in windows
+            assert "did not emit exactly one $LeafName artifact" in windows
+            assert "'adze.exe' 'release binary build' -Executable" in windows
+            assert "'hew-lsp.exe' 'release binary build' -Executable" in windows
+            assert "'hew-observe.exe' 'release binary build' -Executable" in windows
+            assert (
+                "$ReleaseArtifacts = Get-CargoCompilerArtifacts $ReleaseBuildMessages "
+                "'release binary build'" in windows
+            )
+            assert (
+                "$ReleaseLibArtifacts = Get-CargoCompilerArtifacts $ReleaseLibBuildMessages "
+                "'release-lib build'" in windows
+            )
+            assert "$ReleaseDir = Split-Path -Parent $Hew" in windows
+            assert "$ReleaseLibDir = Split-Path -Parent $ReleaseLib" in windows
+            assert "& $Adze --version" in windows
+            assert "& $HewLsp --version" in windows
+            assert "& $HewObserve --version" in windows
+            assert "Join-Path $ReleaseDir 'adze.exe'" not in windows
+            assert "Join-Path $ReleaseDir 'hew-lsp.exe'" not in windows
+            assert "Join-Path $ReleaseDir 'hew-observe.exe'" not in windows
+            assert "cargo-output-dir.py" not in windows
+            assert "Get-Command python" not in windows
+        except AssertionError:
+            continue
+        raise AssertionError(
+            "Windows Cargo JSON artifact mutation escaped the contract"
+        )
 
 
 def test_checkout_overwrite_mutations_are_rejected() -> None:
@@ -421,12 +641,12 @@ def test_windows_uses_only_the_staged_candidate() -> None:
 
 def test_windows_accepts_a_safe_spacious_stage_root() -> None:
     stage = (
-        "P:/hew-pre-release-stages/hew-pre-release-00000000-0000-0000-0000-000000000001"
+        "P:/hew pre-release stages/hew-pre-release-00000000-0000-0000-0000-000000000001"
     )
     result, calls = run_with_fake_remote(
         "windows",
         {
-            "HEW_WINDOWS_STAGE_ROOT": "P:/hew-pre-release-stages",
+            "HEW_WINDOWS_STAGE_ROOT": "P:/hew pre-release stages",
             "FAKE_WINDOWS_STAGE": stage,
         },
     )
@@ -648,11 +868,14 @@ _TESTS = [
     test_macos_llvm_discovery_contract,
     test_windows_toolchain_bootstrap_contract,
     test_windows_staged_build_transport_contract,
+    test_windows_remote_cleanup_contract,
     test_cargo_output_dir_contract,
     test_macos_llvm_discovery_mutations_are_rejected,
     test_windows_toolchain_bootstrap_mutations_are_rejected,
     test_windows_staged_build_transport_mutations_are_rejected,
+    test_windows_remote_cleanup_mutations_are_rejected,
     test_cargo_output_dir_mutations_are_rejected,
+    test_windows_cargo_json_artifact_mutations_are_rejected,
     test_checkout_overwrite_mutations_are_rejected,
     test_ephemeral_output_exclusion_mutations_are_rejected,
     test_linux_arm64_uses_only_the_staged_candidate,

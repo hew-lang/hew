@@ -96,10 +96,79 @@ fn llvm_function<'a>(llvm: &'a str, name: &str) -> &'a str {
         })
         .unwrap_or_else(|| panic!("missing `{name}` in LLVM IR:\n{llvm}"));
     let tail = &llvm[start..];
+    let mut offset = 0;
     let end = tail
-        .find("\n}\n")
+        .split_inclusive('\n')
+        .find_map(|line| {
+            offset += line.len();
+            (line.trim_end_matches(['\r', '\n']) == "}").then_some(offset)
+        })
         .unwrap_or_else(|| panic!("unterminated `{name}` definition in LLVM IR:\n{tail}"));
-    &tail[..end + 2]
+    &tail[..end]
+}
+
+fn llvm_blocks(function: &str) -> Vec<&str> {
+    let mut blocks = Vec::new();
+    let mut block_start = 0;
+    let mut line_start = 0;
+
+    for line in function.split_inclusive('\n') {
+        let line_end = line_start + line.len();
+        if line.trim().is_empty() {
+            if block_start < line_start {
+                blocks.push(&function[block_start..line_start]);
+            }
+            block_start = line_end;
+        }
+        line_start = line_end;
+    }
+    if block_start < function.len() {
+        blocks.push(&function[block_start..]);
+    }
+    blocks
+}
+
+#[test]
+fn llvm_function_slicing_preserves_crlf_and_finds_logical_blocks() {
+    let llvm = concat!(
+        "define internal i64 @probe() {\r\n",
+        "entry:\r\n",
+        "  br label %done\r\n",
+        "\r\n",
+        "done:\r\n",
+        "  ret i64 42\r\n",
+        "}\r\n",
+        "define internal void @next() {\r\n",
+        "entry:\r\n",
+        "  ret void\r\n",
+        "}\r\n",
+    );
+    let probe = llvm_function(llvm, "probe");
+
+    assert_eq!(
+        probe,
+        concat!(
+            "define internal i64 @probe() {\r\n",
+            "entry:\r\n",
+            "  br label %done\r\n",
+            "\r\n",
+            "done:\r\n",
+            "  ret i64 42\r\n",
+            "}\r\n",
+        )
+    );
+    assert!(
+        !probe.contains("@next"),
+        "function slicing must stop at the standalone closing brace"
+    );
+    assert_eq!(
+        llvm_blocks(probe),
+        [
+            "define internal i64 @probe() {\r\nentry:\r\n  br label %done\r\n",
+            "done:\r\n  ret i64 42\r\n}\r\n",
+        ],
+        "logical block parsing must preserve the original CRLF content"
+    );
 }
 
 #[test]
@@ -219,8 +288,10 @@ fn normal_goto_prevents_later_loop_cancellation_from_releasing_index_twice() {
     let llvm = std::fs::read_to_string(emit_dir.join("cancelled_result.ll"))
         .expect("read emitted LLVM IR");
     let resolve = llvm_function(&llvm, "Driver__recv__resolve");
-    let normal_index_releases: Vec<_> = resolve
-        .split("\n\n")
+    let blocks = llvm_blocks(resolve);
+    let normal_index_releases: Vec<_> = blocks
+        .iter()
+        .copied()
         .filter(|block| {
             block.trim_start().starts_with("after_cooperate")
                 && block.contains("call void @hew_string_drop")
@@ -232,8 +303,9 @@ fn normal_goto_prevents_later_loop_cancellation_from_releasing_index_twice() {
         1,
         "the scope-closing Goto must have one normal release authority for index:\n{resolve}"
     );
-    let index_cancellation_blocks: Vec<_> = resolve
-        .split("\n\n")
+    let index_cancellation_blocks: Vec<_> = blocks
+        .iter()
+        .copied()
         .filter(|block| {
             block.trim_start().starts_with("cancel_exit")
                 && block.contains("call void @hew_string_drop")
@@ -254,8 +326,9 @@ fn normal_goto_prevents_later_loop_cancellation_from_releasing_index_twice() {
          before the normal Goto:\n{index_cancellation_blocks:#?}"
     );
     assert!(
-        resolve
-            .split("\n\n")
+        blocks
+            .iter()
+            .copied()
             .find(|block| block.trim_start().starts_with("cancel_exit36"))
             .is_some_and(|block| !block.contains("ptr %local_7")),
         "the later loop cancellation must not duplicate the index release after \

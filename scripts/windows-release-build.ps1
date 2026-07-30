@@ -75,53 +75,132 @@ if ([string]::IsNullOrWhiteSpace($env:CARGO_BUILD_JOBS)) {
     $env:CARGO_BUILD_JOBS = '2'
 }
 
-cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
+# Cargo's JSON compiler-artifact messages are the authority for every path
+# below.  Do not reconstruct target/release from the filesystem: CARGO_TARGET_DIR,
+# build.target-dir, build.target, and target paths containing spaces all move the
+# actual output location.  Capturing these messages from THIS build also makes a
+# stale executable/archive elsewhere on disk unusable as release evidence.
+$ReleaseBuildMessages = @(
+    & cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release --message-format=json
+)
 Assert-NativeSuccess 'cargo build release binaries'
 
-cargo build -p hew-lib --profile release-lib
+$ReleaseLibBuildMessages = @(
+    & cargo build -p hew-lib --profile release-lib --message-format=json
+)
 Assert-NativeSuccess 'cargo build hew-lib'
 
-function Resolve-CargoProfileDir([string]$Profile) {
-    $Python = Get-Command python3 -ErrorAction SilentlyContinue
-    if ($null -eq $Python) {
-        $Python = Get-Command python -ErrorAction SilentlyContinue
+function Get-CargoCompilerArtifacts([object[]]$Messages, [string]$BuildLabel) {
+    $Artifacts = @()
+    foreach ($Line in $Messages) {
+        if ([string]::IsNullOrWhiteSpace([string]$Line)) {
+            continue
+        }
+        try {
+            $Message = $Line | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            throw "Cargo $BuildLabel emitted non-JSON output while artifact paths were required: $Line"
+        }
+        if ($Message.reason -eq 'compiler-artifact') {
+            $Artifacts += $Message
+        }
     }
-    if ($null -eq $Python) {
-        throw 'Python 3 is required to resolve Cargo release output directories'
+    if ($Artifacts.Count -eq 0) {
+        throw "Cargo $BuildLabel emitted no compiler-artifact messages"
     }
-
-    $Output = @(& $Python.Source .\scripts\cargo-output-dir.py --profile $Profile)
-    Assert-NativeSuccess "Cargo $Profile output directory resolution"
-    if ($Output.Count -ne 1 -or [string]::IsNullOrWhiteSpace($Output[0])) {
-        throw "Cargo $Profile output directory resolution returned an invalid path"
-    }
-    return $Output[0].Trim()
+    return @($Artifacts)
 }
 
-$ReleaseDir = Resolve-CargoProfileDir 'release'
-$ReleaseLibDir = Resolve-CargoProfileDir 'release-lib'
-$Hew = Join-Path $ReleaseDir 'hew.exe'
-$ReleaseLib = Join-Path $ReleaseLibDir 'hew.lib'
+function Resolve-UniqueCargoArtifact(
+    [object[]]$Artifacts,
+    [string]$LeafName,
+    [string]$BuildLabel,
+    [switch]$Executable
+) {
+    $Matches = @()
+    foreach ($Artifact in $Artifacts) {
+        if ($Executable) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$Artifact.executable) -and
+                [System.IO.Path]::GetFileName([string]$Artifact.executable) -ieq $LeafName) {
+                $Matches += [string]$Artifact.executable
+            }
+            continue
+        }
+        foreach ($Filename in @($Artifact.filenames)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$Filename) -and
+                [System.IO.Path]::GetFileName([string]$Filename) -ieq $LeafName) {
+                $Matches += [string]$Filename
+            }
+        }
+    }
+
+    $Matches = @($Matches | Select-Object -Unique)
+    if ($Matches.Count -ne 1) {
+        $Rendered = if ($Matches.Count -eq 0) { '<none>' } else { $Matches -join '; ' }
+        throw "Cargo $BuildLabel did not emit exactly one $LeafName artifact (found $($Matches.Count): $Rendered)"
+    }
+    if (-not (Test-Path -LiteralPath $Matches[0] -PathType Leaf)) {
+        throw "Cargo $BuildLabel reported $LeafName at $($Matches[0]), but that exact artifact is missing"
+    }
+    return $Matches[0]
+}
+
+$ReleaseArtifacts = Get-CargoCompilerArtifacts $ReleaseBuildMessages 'release binary build'
+$ReleaseLibArtifacts = Get-CargoCompilerArtifacts $ReleaseLibBuildMessages 'release-lib build'
+$Hew = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew.exe' 'release binary build' -Executable
+$Adze = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'adze.exe' 'release binary build' -Executable
+$HewLsp = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew-lsp.exe' 'release binary build' -Executable
+$HewObserve = Resolve-UniqueCargoArtifact $ReleaseArtifacts 'hew-observe.exe' 'release binary build' -Executable
+$ReleaseLib = Resolve-UniqueCargoArtifact $ReleaseLibArtifacts 'hew.lib' 'release-lib build'
+$ReleaseDir = Split-Path -Parent $Hew
+$ReleaseLibDir = Split-Path -Parent $ReleaseLib
 [System.IO.File]::WriteAllText(
     (Join-Path (Get-Location) '.hew-release-dir'),
     $ReleaseDir,
     [System.Text.UTF8Encoding]::new($false)
 )
 
-if (-not (Test-Path $ReleaseLib)) {
-    throw "$ReleaseLib missing after cargo build --profile release-lib"
-}
 & .\scripts\test-release-lib-link.ps1 -Hew $Hew -Archive $ReleaseLib
 Assert-NativeSuccess 'release library consumer proof'
 
 & $Hew --version
 Assert-NativeSuccess 'hew.exe --version'
 
-& (Join-Path $ReleaseDir 'adze.exe') --version
+& $Adze --version
 Assert-NativeSuccess 'adze.exe --version'
 
-& (Join-Path $ReleaseDir 'hew-lsp.exe') --version
+& $HewLsp --version
 Assert-NativeSuccess 'hew-lsp.exe --version'
 
-& (Join-Path $ReleaseDir 'hew-observe.exe') --version
+& $HewObserve --version
 Assert-NativeSuccess 'hew-observe.exe --version'
+
+# Compile and execute a minimal program in this same process so it inherits the
+# candidate-local TEMP/TMP, Cargo target, LLVM, and Visual Studio environment
+# established by the staged launcher and this script.
+$SmokeSource = Join-Path (Get-Location) '_smoke.hew'
+$SmokeOutput = Join-Path (Get-Location) '_smoke.exe'
+Remove-Item -LiteralPath $SmokeSource, $SmokeOutput -Force -ErrorAction SilentlyContinue
+try {
+    [System.IO.File]::WriteAllText(
+        $SmokeSource,
+        'fn main() { println("smoke-ok") }',
+        [System.Text.UTF8Encoding]::new($false)
+    )
+
+    & $Hew build $SmokeSource -o $SmokeOutput
+    Assert-NativeSuccess 'hew.exe smoke build'
+    if (-not (Test-Path -LiteralPath $SmokeOutput -PathType Leaf)) {
+        throw "Smoke build did not produce $SmokeOutput"
+    }
+
+    $SmokeResult = & $SmokeOutput
+    Assert-NativeSuccess '_smoke.exe run'
+    if ($SmokeResult -notmatch 'smoke-ok') {
+        throw "Smoke test failed: expected smoke-ok, got $SmokeResult"
+    }
+    Write-Host 'Smoke test passed'
+} finally {
+    Remove-Item -LiteralPath $SmokeSource, $SmokeOutput -Force -ErrorAction SilentlyContinue
+}

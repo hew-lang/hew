@@ -23,6 +23,7 @@ UNIX_INSTALLER = ROOT / "installers" / "install.sh"
 PRE_RELEASE_VALIDATOR = ROOT / "scripts" / "pre-release-validate.sh"
 RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.sh"
 WINDOWS_RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.ps1"
+WINDOWS_RELEASE_BUILD = ROOT / "scripts" / "windows-release-build.ps1"
 SANITIZER_GATE = ROOT / "scripts" / "check-sanitizer-gate.sh"
 MAKEFILE = ROOT / "Makefile"
 RELEASE_BINARY_SMOKE = ROOT / "scripts" / "test-release-binary.sh"
@@ -535,6 +536,7 @@ def test_release_checksums_require_every_platform_asset() -> None:
 
 def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     validator = PRE_RELEASE_VALIDATOR.read_text()
+    windows_build = WINDOWS_RELEASE_BUILD.read_text()
     probe = RELEASE_LINK_PROBE.read_text()
     windows_probe = WINDOWS_RELEASE_LINK_PROBE.read_text()
     makefile = MAKEFILE.read_text()
@@ -544,7 +546,7 @@ def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     assert "scripts/cargo-output-dir.py --profile release-lib" in validator
     assert r"--hew \"\$release_dir/hew\"" in validator
     assert r"--archive \"\$release_lib_dir/libhew.a\"" in validator
-    assert r"& \$Hew build .\\_smoke.hew -o .\\_smoke.exe" in validator
+    assert "& $Hew build $SmokeSource -o $SmokeOutput" in windows_build
     assert "ar t target/release-lib" not in validator
     assert "target/release/hew _smoke.hew -o" not in validator
     assert '"$WORK_DIR/release/bin/hew" build' in probe

@@ -1282,6 +1282,7 @@ codegen-stable = [
   "hew_cont_poll",
   "hew_cont_resume",
   "hew_context_install",
+  "hew_context_reply_channel_swap_add_string_cleanup",
   "hew_context_reply_channel_swap_pop",
   "hew_context_reply_channel_swap_push",
   "hew_context_restore",

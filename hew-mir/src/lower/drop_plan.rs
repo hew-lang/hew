@@ -2174,13 +2174,13 @@ pub(super) fn elaborate(
         }
     }
 
-    // #2395 decision 2 — append each suspend's escape-poisoned abandon-edge drops
-    // (today: the `SuspendKind::StreamSend` in-flight value) to its
-    // `ExitPath::Suspend` plan. `drops_for_exit`'s `BindingState` filter cannot
-    // see an escape-poisoned value, so it is stashed at the pump lowering site
-    // (keyed by the suspend block id) and folded in here. Appended AFTER the
-    // generic drops so it releases in the same LIFO order codegen walks; codegen
-    // fires the whole plan on the case-1 destroy edge only.
+    // Append each suspend's escape-poisoned abandon-edge drops (an in-flight
+    // `StreamSend` value or fresh string arguments to a suspending
+    // `CallClosure`) to its `ExitPath::Suspend` plan. `drops_for_exit`'s
+    // `BindingState` filter cannot see these values, so lowering records them by
+    // suspend block id and folds them in here. Appended AFTER the generic drops
+    // so they release in the same LIFO order codegen walks; codegen fires the
+    // whole plan on the case-1 destroy edge only.
     for (exit, plan) in &mut drop_plans {
         if let ExitPath::Suspend { block, .. } = exit {
             if let Some(extra) = builder.suspend_abandon_extra_drops.get(block) {

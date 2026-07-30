@@ -182,6 +182,7 @@ pub(crate) struct SuspendingChannelRecvEmit {
 pub(crate) struct SuspendingCallClosureEmit<'a> {
     pub(crate) callee: Place,
     pub(crate) args: Vec<Place>,
+    pub(crate) fresh_string_args: Vec<Place>,
     pub(crate) ret_ty: &'a ResolvedTy,
     pub(crate) result_dest: Option<Place>,
     pub(crate) resume: u32,
@@ -5763,6 +5764,12 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_context_reply_channel_swap_pop",
     )?;
+    let swap_add_string_cleanup_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_context_reply_channel_swap_add_string_cleanup",
+    )?;
     let cont_poll_fn = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -5793,11 +5800,34 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
     // `ch`; `swap_out` restores both. The crash/trap edge is covered separately
     // by the scheduler's `reply_channel_swap_unwind`, so restoration is
     // structurally guaranteed on every exit path, not just the normal return.
+    let unwind_string_args = &term.fresh_string_args;
     let swap_in = |label: &str| -> CodegenResult<()> {
         fn_ctx
             .builder
             .build_call(swap_push_fn, &[ch.into()], label)
             .llvm_ctx("hew_context_reply_channel_swap_push call")?;
+        for place in unwind_string_args {
+            let (slot, slot_ty) = place_pointer(fn_ctx, *place)?;
+            let BasicTypeEnum::PointerType(_) = slot_ty else {
+                return Err(CodegenError::FailClosed(format!(
+                    "suspending closure unwind string argument {place:?} has \
+                     non-pointer LLVM slot type {slot_ty:?}"
+                )));
+            };
+            let value = fn_ctx
+                .builder
+                .build_load(slot_ty, slot, "suspending_closure_unwind_string_arg")
+                .llvm_ctx("SuspendingCallClosure unwind string arg load")?
+                .into_pointer_value();
+            fn_ctx
+                .builder
+                .build_call(
+                    swap_add_string_cleanup_fn,
+                    &[value.into()],
+                    "suspending_closure_add_string_cleanup",
+                )
+                .llvm_ctx("hew_context_reply_channel_swap_add_string_cleanup call")?;
+        }
         Ok(())
     };
     let swap_out = |label: &str| -> CodegenResult<()> {

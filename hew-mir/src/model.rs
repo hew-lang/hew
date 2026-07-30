@@ -2637,6 +2637,11 @@ pub enum SuspendKind {
     CallClosure {
         callee: Place,
         args: Vec<Place>,
+        /// Exact caller-owned fresh-string shares whose normal release can be
+        /// bypassed by a synchronous child trap before this suspend is reached.
+        /// Codegen attaches these obligations to the scoped closure-driver
+        /// swap; normal pop discards them and native crash unwind releases them.
+        fresh_string_args: Vec<Place>,
         ret_ty: ResolvedTy,
         result_dest: Option<Place>,
     },

@@ -9,10 +9,10 @@ use super::{
     place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
     shift_instr_spans_on_insert, terminator_source_places, vec_iter_record_layout_key,
     ActorStateLoadMode, BTreeMap, BasicBlock, BindingId, Builder, BytesDropDerivation,
-    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, FieldOffset, HashMap, HashSet,
-    Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite, Place, RawMirFunction,
-    ResolvedTy, SelectArmKind, SiteId, StringDropDerivation, StringRetainCondition,
-    StringRetainSite, SuspendKind, Terminator,
+    BytesRetainPlacement, BytesRetainSite, ClosureEnvFieldOwnership, DropKind, ElabDrop,
+    FieldOffset, HashMap, HashSet, Instr, IntentKind, MirStatement, NestedDefSite, NestedUseSite,
+    Place, RawMirFunction, ResolvedTy, SelectArmKind, SiteId, StringDropDerivation,
+    StringRetainCondition, StringRetainSite, SuspendKind, Terminator,
 };
 
 const STRING_RETURN_SOURCE_BORROWED: u8 = 0b001;
@@ -3753,8 +3753,9 @@ fn propagate_linear_fresh_string_moves(
 ///        preceding block (require `U` single-predecessor) → drop at the front
 ///        of `T` (require `T` single-predecessor).
 ///      * direct `CallClosure` instruction → drop immediately after the invoke;
-///        suspending `CallClosure` → drop at its single shared resume/cleanup
-///        continuation.
+///        suspending `CallClosure` → drop at its single shared normal
+///        continuation, plus a mutually-exclusive twin in the suspend's
+///        destroy-while-parked exit plan.
 ///
 /// Any other CFG shape fails closed (the temp leaks, as before this fix). The
 /// return is a list of `(block_id, insert_index, place, ty)` inline-drop
@@ -3796,6 +3797,47 @@ fn collect_nested_fresh_string_temp_drops(
         })
         .collect()
 }
+
+/// The suspend block whose destroy-while-parked edge bypasses the normal
+/// continuation drop for `place`.
+///
+/// A suspending closure call borrows its string argument. Normal completion
+/// reaches the shared `resume == cleanup` MIR continuation, but LLVM coroutine
+/// case-1 abandonment runs the suspend block's [`crate::model::ExitPath::Suspend`]
+/// plan and branches directly to the coroutine cleanup outline. Find that
+/// suspend so [`apply_nested_fresh_string_temp_drops`] can register an
+/// abandon-only twin of the normal inline drop. Require one unambiguous match;
+/// anything else remains fail-closed.
+fn suspending_closure_argument_abandon_block(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    continuation: u32,
+    place: Place,
+) -> Option<u32> {
+    let local = base_local(place)?;
+    let mut matches = blocks.iter().filter_map(|block| {
+        let Terminator::Suspend {
+            resume,
+            cleanup,
+            is_final: false,
+        } = block.terminator
+        else {
+            return None;
+        };
+        if resume != continuation || cleanup != continuation {
+            return None;
+        }
+        matches!(
+            suspend_kinds.get(&block.id),
+            Some(SuspendKind::CallClosure { args, .. })
+                if args.iter().any(|arg| place_refs_local(*arg, local))
+        )
+        .then_some(block.id)
+    });
+    let suspend_block = matches.next()?;
+    matches.next().is_none().then_some(suspend_block)
+}
+
 /// Per-candidate admission for [`collect_nested_fresh_string_temp_drops`].
 /// Returns the inline-drop insertion `(block_id, insert_index, place, ty)` if
 /// the fresh-`string` temp `t` (defined at `def`) satisfies every fail-closed
@@ -3961,10 +4003,11 @@ fn nested_fresh_string_def_dominates(
 /// earlier splice does not shift a later (lower-index) one.
 pub(super) fn apply_nested_fresh_string_temp_drops(
     blocks: &mut [BasicBlock],
-    suspend_kinds: &HashMap<u32, SuspendKind>,
+    suspend_kinds: &mut HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
     binding_locals: &HashMap<BindingId, Place>,
     owned_string_return_carrier_symbols: &HashSet<String>,
+    suspend_abandon_extra_drops: &mut HashMap<u32, Vec<ElabDrop>>,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
     let insertions = collect_nested_fresh_string_temp_drops(
@@ -3979,6 +4022,40 @@ pub(super) fn apply_nested_fresh_string_temp_drops(
     }
     let mut by_block: HashMap<u32, Vec<(usize, Place, ResolvedTy)>> = HashMap::new();
     for (bid, idx, place, ty) in insertions {
+        if let Some(suspend_block) =
+            suspending_closure_argument_abandon_block(blocks, suspend_kinds, bid, place)
+        {
+            // Coroutine abandonment never reaches `bid`: `emit_suspend_point`
+            // runs this suspend exit plan after the CallClosure driver's child
+            // and reply-channel teardown, then branches directly to
+            // `coro.cleanup`. Register the anonymous argument's congruent drop
+            // there. Normal completion instead reaches the inline drop below,
+            // so the two releases are mutually exclusive.
+            suspend_abandon_extra_drops
+                .entry(suspend_block)
+                .or_default()
+                .push(ElabDrop {
+                    place,
+                    ty: ty.clone(),
+                    drop_fn: None,
+                    kind: DropKind::CowHeap {
+                        release: crate::ownership::CowHeapRelease::String,
+                    },
+                    guard: None,
+                });
+            if let Some(SuspendKind::CallClosure {
+                fresh_string_args, ..
+            }) = suspend_kinds.get_mut(&suspend_block)
+            {
+                // One entry per MIR ownership obligation, not per raw pointer:
+                // two distinct retained locals may alias the same COW buffer
+                // and still require two unwind drops. Repeated appearances of
+                // the SAME temp in one borrowing arg list remain one owner.
+                if !fresh_string_args.contains(&place) {
+                    fresh_string_args.push(place);
+                }
+            }
+        }
         by_block.entry(bid).or_default().push((idx, place, ty));
     }
     for block in blocks.iter_mut() {
@@ -4191,6 +4268,7 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: vec![Place::Local(2)],
+                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::Unit,
                 result_dest: None,
             },
@@ -4202,6 +4280,78 @@ mod nested_fresh_string_temp_drop_admission {
             "the shared resume/cleanup continuation balances the fresh argument \
              share after a suspending ClosureInvoke completes"
         );
+    }
+
+    #[test]
+    fn suspending_closure_fresh_argument_gets_resume_and_abandon_xor_drops() {
+        let mut blocks = vec![
+            block(
+                0,
+                vec![],
+                fresh_string_call("hew_string_to_uppercase", 2, 1),
+            ),
+            block(
+                1,
+                vec![],
+                Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            ),
+            ret_block(2),
+        ];
+        let mut suspend_kinds = HashMap::from([(
+            1,
+            SuspendKind::CallClosure {
+                callee: Place::Local(0),
+                args: vec![Place::Local(2)],
+                fresh_string_args: Vec::new(),
+                ret_ty: ResolvedTy::Unit,
+                result_dest: None,
+            },
+        )]);
+        let mut abandon_drops = HashMap::new();
+
+        apply_nested_fresh_string_temp_drops(
+            &mut blocks,
+            &mut suspend_kinds,
+            &locals_with(&[]),
+            &HashMap::new(),
+            &HashSet::new(),
+            &mut abandon_drops,
+            &mut BTreeMap::new(),
+        );
+
+        assert!(matches!(
+            blocks[2].instructions.as_slice(),
+            [Instr::Drop {
+                place: Place::Local(2),
+                ty: ResolvedTy::String,
+                ..
+            }]
+        ));
+        assert_eq!(
+            abandon_drops.get(&1),
+            Some(&vec![ElabDrop {
+                place: Place::Local(2),
+                ty: ResolvedTy::String,
+                drop_fn: None,
+                kind: DropKind::CowHeap {
+                    release: crate::ownership::CowHeapRelease::String,
+                },
+                guard: None,
+            }]),
+            "normal resume and destroy-while-parked are mutually exclusive, \
+             so each edge must carry one congruent release for the fresh arg"
+        );
+        assert!(matches!(
+            suspend_kinds.get(&1),
+            Some(SuspendKind::CallClosure {
+                fresh_string_args,
+                ..
+            }) if fresh_string_args == &[Place::Local(2)]
+        ));
     }
 
     #[test]
@@ -4239,6 +4389,7 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: vec![Place::Local(2)],
+                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::String,
                 result_dest: Some(Place::Local(3)),
             },
@@ -4284,6 +4435,7 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: vec![Place::Local(2)],
+                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::String,
                 result_dest: Some(Place::Local(3)),
             },
@@ -4325,6 +4477,7 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: vec![Place::Local(2)],
+                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::Unit,
                 result_dest: None,
             },
@@ -4368,6 +4521,7 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: Vec::new(),
+                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::String,
                 result_dest: Some(Place::Local(2)),
             },
@@ -4407,6 +4561,7 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: Vec::new(),
+                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::String,
                 result_dest: Some(Place::Local(2)),
             },
@@ -4443,6 +4598,7 @@ mod nested_fresh_string_temp_drop_admission {
                     SuspendKind::CallClosure {
                         callee: Place::Local(0),
                         args: Vec::new(),
+                        fresh_string_args: Vec::new(),
                         ret_ty: ResolvedTy::String,
                         result_dest: None,
                     },
@@ -4455,6 +4611,7 @@ mod nested_fresh_string_temp_drop_admission {
                     SuspendKind::CallClosure {
                         callee: Place::Local(0),
                         args: Vec::new(),
+                        fresh_string_args: Vec::new(),
                         ret_ty: ResolvedTy::Bytes,
                         result_dest: Some(Place::Local(2)),
                     },

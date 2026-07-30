@@ -741,16 +741,16 @@ struct Builder {
     /// carrier/Terminator field) so the carriers collapse onto one
     /// `Terminator::Suspend` while the emitted IR stays byte-identical.
     pub(crate) suspend_kinds: HashMap<u32, SuspendKind>,
-    /// #2395 decision 2 — abandon-edge drops for a suspend's escape-poisoned
-    /// value that the generic `drops_for_exit` `BindingState` filter cannot see.
-    /// Today the sole member is the `SuspendKind::StreamSend` in-flight yield
-    /// value: it is escape-poisoned (so no scope-exit drop competes on the
-    /// resume path) and its resume-edge release is the pump's inline `after_send`
-    /// `Instr::Drop`. Keyed by the id of the block carrying the
-    /// `Terminator::Suspend` (the SAME key `suspend_kinds` uses). Appended to the
-    /// matching `ExitPath::Suspend` plan AFTER `enumerate_exits`, so the value is
-    /// freed exactly once on the destroy-while-parked edge — mutually exclusive
-    /// with the resume-edge drop (abandon XOR resume).
+    /// Abandon-edge drops for a suspend's escape-poisoned values that the
+    /// generic `drops_for_exit` `BindingState` filter cannot see. These include
+    /// a `SuspendKind::StreamSend` in-flight yield and fresh string arguments to
+    /// a suspending `SuspendKind::CallClosure`: neither has a competing
+    /// scope-exit drop, and each has an inline normal-completion drop. Keyed by
+    /// the id of the block carrying the `Terminator::Suspend` (the SAME key
+    /// `suspend_kinds` uses). Appended to the matching `ExitPath::Suspend` plan
+    /// AFTER `enumerate_exits`, so each value is freed exactly once on the
+    /// destroy-while-parked edge — mutually exclusive with its resume-edge drop
+    /// (abandon XOR resume).
     pub(crate) suspend_abandon_extra_drops: HashMap<u32, Vec<ElabDrop>>,
     pub(crate) owned_locals: Vec<OwnedLocalEntry>,
     /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
@@ -5295,12 +5295,13 @@ pub(crate) fn lower_function(
     // single-predecessor-dominated temps earn an inline `hew_string_drop`.
     apply_nested_fresh_string_temp_drops(
         &mut blocks,
-        &builder.suspend_kinds,
+        &mut builder.suspend_kinds,
         &builder.locals,
         &builder.binding_locals,
         &builder
             .call_scrutinee_provenance
             .owned_string_return_carrier_symbols,
+        &mut builder.suspend_abandon_extra_drops,
         &mut builder.instr_spans,
     );
     // #2542 — release nested fresh-owned `bytes` user-call-result temporaries

@@ -3637,6 +3637,7 @@ impl Builder {
                         self.record_suspend_kind(SuspendKind::CallClosure {
                             callee: callee_place,
                             args: arg_places.clone(),
+                            fresh_string_args: Vec::new(),
                             ret_ty: ret_ty.clone(),
                             result_dest: dest,
                         });

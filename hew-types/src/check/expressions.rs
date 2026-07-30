@@ -935,8 +935,18 @@ impl Checker {
         // with a clear diagnostic rather than a silent double-free.
         if !self.vec_element_has_copy_layout(&elem_ty) {
             let resolved_elem = self.subst.resolve(&elem_ty);
-            let clonable = matches!(resolved_elem, Ty::String | Ty::Bytes)
-                || self.vec_owned_element_admissible(&elem_ty);
+            // `Receiver<T>` has only the descriptor MOVE-in lane. An array
+            // repeat would need clone-in for every slot, which is forbidden.
+            let receiver_drop_only = matches!(
+                resolved_elem,
+                Ty::Named {
+                    builtin: Some(BuiltinType::Receiver),
+                    ..
+                }
+            );
+            let clonable = !receiver_drop_only
+                && (matches!(resolved_elem, Ty::String | Ty::Bytes)
+                    || self.vec_owned_element_admissible(&elem_ty));
             if !clonable {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,

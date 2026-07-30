@@ -22,7 +22,7 @@
 #    ASan libhew.a.
 # 3. Run each binary with ASAN_OPTIONS=detect_leaks=1.
 #
-# Three fixture probes:
+# Fixture probes include:
 #   clean-probe (--emit-obj path)
 #       A compiled Hew binary exercising the previously-leaky Vec<string>
 #       index-into-compare and local drop shapes (now fixed); must produce ZERO
@@ -64,6 +64,17 @@
 #       A match-consumed resource payload with heap-owning sibling variants and
 #       an actor-state resource enum overwritten Loaded→Broken. Both must remain
 #       leak- and double-free-clean through recursive enum/record drop thunks.
+#   drop-only Vec<channel.Receiver<T>>
+#       Repeatedly moves the sole Receiver authority into `[rx]`, closes the
+#       paired Sender, and returns through the Vec's clone-null/drop-present
+#       element descriptor. A stale source owner double-closes under ASan; a
+#       missing slot drop leaves one channel allocation family per iteration
+#       for LSan.
+#   cloneable Vec<channel.Sender<T>>
+#       Repeatedly moves the sole Sender authority into `[tx]`, clones the Vec
+#       through its descriptor clone thunk, drops both Vecs, and explicitly
+#       closes the paired Receiver. An under-retained clone or duplicate close
+#       is an ASan failure; a missing sender-slot release is an LSan failure.
 #
 # SHIM: Linux-only gate.  On macOS the leak oracle is the `leaks --atExit`
 # path in hew-cli/tests/*_leak_oracle.rs; ASan + LSan on Darwin does not
@@ -401,6 +412,13 @@ SORT_STRINGS_MERGE_SRC="${ROOT}/tests/vertical-slice/accept/sort_strings_merge_a
 # exactly one return share on every path and the anonymous caller carrier must
 # release exactly once. LSan catches a missing release; ASan catches over-release.
 OWNED_STRING_RETURN_CARRIER_SRC="${ROOT}/tests/vertical-slice/accept/owned_string_return_carrier_asan.hew"
+# A Receiver has no semantic clone. Its Vec slot is populated only through the
+# owned-move ABI and released through a descriptor with a null clone thunk and
+# an in-place receiver-close drop thunk.
+VEC_RECEIVER_DROP_ONLY_SRC="${ROOT}/tests/vertical-slice/accept/vec_receiver_drop_only_asan.hew"
+# Sender is cloneable, so this companion fixture exercises the descriptor's
+# clone thunk plus both Vec destructors and the paired receiver close.
+VEC_SENDER_CLONE_DROP_SRC="${ROOT}/tests/vertical-slice/accept/vec_sender_clone_drop_asan.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -473,6 +491,12 @@ compile_asan_fixture "iterative string merge ownership" "${SORT_STRINGS_MERGE_SR
 
 OWNED_STRING_RETURN_CARRIER_BIN="${WORK_DIR}/owned_string_return_carrier_asan"
 compile_asan_fixture "owned string return carrier" "${OWNED_STRING_RETURN_CARRIER_SRC}" "${OWNED_STRING_RETURN_CARRIER_BIN}"
+
+VEC_RECEIVER_DROP_ONLY_BIN="${WORK_DIR}/vec_receiver_drop_only_asan"
+compile_asan_fixture "drop-only Receiver Vec lifecycle" "${VEC_RECEIVER_DROP_ONLY_SRC}" "${VEC_RECEIVER_DROP_ONLY_BIN}"
+
+VEC_SENDER_CLONE_DROP_BIN="${WORK_DIR}/vec_sender_clone_drop_asan"
+compile_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_CLONE_DROP_SRC}" "${VEC_SENDER_CLONE_DROP_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -646,6 +670,18 @@ else
 fi
 
 if run_asan_fixture "owned string return carrier" "${OWNED_STRING_RETURN_CARRIER_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "drop-only Receiver Vec lifecycle" "${VEC_RECEIVER_DROP_ONLY_BIN}" 0; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+fi
+
+if run_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_CLONE_DROP_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))

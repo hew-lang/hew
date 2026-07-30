@@ -174,6 +174,8 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(Duplex, BuiltinTypeShape::Opaque),
     registration!(Sink, BuiltinTypeShape::Opaque),
     registration!(Stream, BuiltinTypeShape::Opaque),
+    registration!(Sender, BuiltinTypeShape::Opaque),
+    registration!(Receiver, BuiltinTypeShape::Opaque),
     registration!(Vec, BuiltinTypeShape::Opaque),
     registration!(HashMap, BuiltinTypeShape::Opaque),
     registration!(HashSet, BuiltinTypeShape::Opaque),
@@ -304,6 +306,36 @@ mod tests {
             table.get("Stream"),
             Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
+    }
+
+    #[test]
+    fn channel_endpoints_are_seeded_as_resources() {
+        let mut table: TypeClassTable = HashMap::default();
+        seed_builtin_type_classes(&mut table);
+        for endpoint in ["Sender", "Receiver"] {
+            assert_eq!(
+                table.get(endpoint),
+                Some(&(ResourceMarker::Resource, Some("close".to_string()))),
+                "{endpoint} must carry its runtime close through ValueClass admission"
+            );
+        }
+    }
+
+    #[test]
+    fn channel_endpoint_named_tys_resolve_to_affine_resources() {
+        let mut table: TypeClassTable = HashMap::default();
+        seed_builtin_type_classes(&mut table);
+        for (name, builtin) in [
+            ("Sender", BuiltinType::Sender),
+            ("Receiver", BuiltinType::Receiver),
+        ] {
+            let ty = ResolvedTy::named_builtin(name, builtin, vec![ResolvedTy::String]);
+            assert_eq!(
+                ValueClass::of_ty(&ty, &table),
+                ValueClass::AffineResource,
+                "{name}<string> must enter resource drop elaboration"
+            );
+        }
     }
 
     #[test]

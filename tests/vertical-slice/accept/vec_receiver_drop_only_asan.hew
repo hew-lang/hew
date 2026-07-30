@@ -1,0 +1,24 @@
+import std::channel::channel;
+// Receiver is a drop-only Vec element: construction moves the sole endpoint
+// authority into a descriptor-backed slot, and returning closes that slot
+// exactly once. ASan catches a duplicate source/slot close; LSan catches an
+// omitted slot close and its retained channel state.
+fn exercise_receiver_vec_drop() {
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    tx.close();
+    let receivers: Vec<channel.Receiver<i64>> = [rx];
+    if receivers.len() != 1 {
+        panic("receiver Vec move failed");
+    }
+}
+
+fn main() {
+    var i: i64 = 0;
+    while i < 256 {
+        exercise_receiver_vec_drop();
+        i = i + 1;
+    }
+    if i != 256 {
+        panic("receiver Vec loop did not complete");
+    }
+}

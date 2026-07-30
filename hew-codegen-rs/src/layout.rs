@@ -1198,6 +1198,21 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     elem_llvm_ty: BasicTypeEnum<'ctx>,
     label: &str,
 ) -> CodegenResult<PointerValue<'ctx>> {
+    // `Receiver<T>` is affine and has a close protocol but no semantic clone.
+    // Its Vec descriptor is therefore clone-null/drop-present: the array
+    // literal lowering moves the sole pointer into its slot through
+    // `hew_vec_push_owned_move`, then `hew_vec_free_owned` invokes the close
+    // wrapper below. This must precede the generic thunk lookup, whose
+    // clone+drop contract is intentionally too strong for this drop-only case.
+    if matches!(
+        elem_resolved_ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Receiver),
+            ..
+        }
+    ) {
+        return receiver_vec_elem_layout_descriptor_ptr(ctx, llvm_mod, target_data, elem_llvm_ty);
+    }
     let Some((kind, key)) = crate::thunks::owned_elem_thunk_key(regs, elem_resolved_ty) else {
         return Err(CodegenError::FailClosed(format!(
             "owned Vec element `{elem_resolved_ty:?}` has no resolvable record/enum \
@@ -1306,6 +1321,107 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     g.set_linkage(Linkage::Private);
     g.set_initializer(&init);
     Ok(g.as_pointer_value())
+}
+
+/// Emit the one clone-null descriptor shared by every
+/// `Vec<channel.Receiver<T>>` instantiation.
+///
+/// The endpoint's representation is one pointer word regardless of `T`. The
+/// runtime's move-in ABI byte-transfers that word without consulting
+/// `clone_fn`; the descriptor's drop thunk loads the slot and calls the
+/// receiver close exactly once during `hew_vec_free_owned`'s element walk.
+fn receiver_vec_elem_layout_descriptor_ptr<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    elem_llvm_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    const LAYOUT_NAME: &str = "__hew_vec_elem_layout_channel_receiver_drop_only";
+    const DROP_NAME: &str = "__hew_vec_channel_receiver_drop_inplace";
+
+    let BasicTypeEnum::PointerType(ptr_ty) = elem_llvm_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "Vec<channel.Receiver<_>> must lower to a pointer slot, got {elem_llvm_ty:?}"
+        )));
+    };
+    if let Some(layout) = llvm_mod.get_global(LAYOUT_NAME) {
+        return Ok(layout.as_pointer_value());
+    }
+
+    let drop_fn = llvm_mod.get_function(DROP_NAME).unwrap_or_else(|| {
+        llvm_mod.add_function(
+            DROP_NAME,
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::Internal),
+        )
+    });
+    if drop_fn.count_basic_blocks() == 0 {
+        let runtime_close = llvm_mod
+            .get_function("hew_channel_receiver_close")
+            .unwrap_or_else(|| {
+                llvm_mod.add_function(
+                    "hew_channel_receiver_close",
+                    ctx.void_type().fn_type(&[ptr_ty.into()], false),
+                    Some(Linkage::External),
+                )
+            });
+        let entry = ctx.append_basic_block(drop_fn, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        let slot = drop_fn
+            .get_nth_param(0)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "receiver Vec drop wrapper is missing its slot parameter".to_string(),
+                )
+            })?
+            .into_pointer_value();
+        let receiver = builder
+            .build_load(ptr_ty, slot, "receiver_slot")
+            .llvm_ctx("receiver Vec drop wrapper load slot")?;
+        builder
+            .build_call(runtime_close, &[receiver.into()], "receiver_slot_close")
+            .llvm_ctx("receiver Vec drop wrapper close")?;
+        // The buffer is released immediately after the descriptor walk, but
+        // nulling preserves the close protocol's idempotent moved-from state.
+        builder
+            .build_store(slot, ptr_ty.const_null())
+            .llvm_ctx("receiver Vec drop wrapper clear slot")?;
+        builder
+            .build_return(None)
+            .llvm_ctx("receiver Vec drop wrapper return")?;
+    }
+
+    let (size, align) = abi_size_align(elem_llvm_ty, Some(target_data))?;
+    let size_ty = ctx.ptr_sized_int_type(target_data, None);
+    let i8_ty = ctx.i8_type();
+    let layout_ty = ctx.struct_type(
+        &[
+            size_ty.into(),
+            size_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+    let init = layout_ty.const_named_struct(&[
+        size_ty.const_int(size, false).into(),
+        size_ty.const_int(u64::from(align), false).into(),
+        i8_ty
+            .const_int(
+                ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+                false,
+            )
+            .into(),
+        ptr_ty.const_null().into(),
+        drop_fn.as_global_value().as_pointer_value().into(),
+    ]);
+    let layout = llvm_mod.add_global(layout_ty, None, LAYOUT_NAME);
+    layout.set_constant(true);
+    layout.set_linkage(Linkage::Private);
+    layout.set_initializer(&init);
+    Ok(layout.as_pointer_value())
 }
 
 /// Emit the release-only descriptor for boxed closure-pair Vec elements.

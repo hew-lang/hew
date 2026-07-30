@@ -29,7 +29,7 @@
 # drifts without somebody saying so out loud.
 #
 # key	mode	floor	slack	description
-asan-fixture-gates	exact	19	-	ASan/LSan fixture verdicts asserted by scripts/asan-fixture-check.sh
+asan-fixture-gates	exact	21	-	ASan/LSan fixture verdicts asserted by scripts/asan-fixture-check.sh
 checked-mir-fixtures	exact	57	-	golden-MIR fixtures under examples/v05/checked-mir
 ci-parity-marked-steps	exact	29	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
 ci-required-checks	exact	33	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
@@ -44,7 +44,7 @@ hew-fmt-check-files	min	648	150	std/ and examples/ .hew sources checked by make 
 hew-suite-tests	min	1169	200	tests executed by hew test tests/hew under the suite ratchet
 ll-oracle-fixtures	exact	15	-	ll-oracle corpus fixtures under tests/ll-oracle/corpus
 macos-leak-oracle-binaries	exact	107	-	nonempty hew-cli memory-oracle binaries selected by scripts/macos-leak-oracle.sh, including ffi_link_e2e
-macos-leak-oracle-tests	exact	708	-	test verdicts selected by scripts/macos-leak-oracle.sh, including ffi_link_e2e
+macos-leak-oracle-tests	exact	711	-	test verdicts selected by scripts/macos-leak-oracle.sh, including ffi_link_e2e
 o2-differential-outcomes	min	1169	200	per-test outcomes compared by the O0-vs-O2 differential gate
 sandbox-vm-binaries	exact	4	-	VM-dependent hew-sandbox-wasm test binaries requiring whole-binary exclusion
 stdlib-int-surface-files	exact	74	-	tracked std/ .hew files scanned for removed int/uint aliases

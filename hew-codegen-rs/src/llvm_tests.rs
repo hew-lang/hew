@@ -6307,7 +6307,7 @@ fn resolved_ty_element_owns_heap_for_owned_vec_matches_mir_table() {
                 builtin: Some(hew_types::BuiltinType::Receiver),
                 is_opaque: true,
             },
-            false,
+            true,
         ),
         (fn_elem, false),
         (closure_elem, false),

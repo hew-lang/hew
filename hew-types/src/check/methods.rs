@@ -5371,7 +5371,15 @@ impl Checker {
                         }
                         return true;
                     }
-                    Some(BuiltinType::Rc | BuiltinType::Weak | BuiltinType::Sender) => {
+                    // Sender is cloneable while Receiver is deliberately
+                    // drop-only. Both need descriptor-backed Vec storage;
+                    // copy/clone surfaces reject Receiver separately.
+                    Some(
+                        BuiltinType::Rc
+                        | BuiltinType::Weak
+                        | BuiltinType::Sender
+                        | BuiltinType::Receiver,
+                    ) => {
                         return args.len() == 1;
                     }
                     // Other builtin nominals are not user records/enums and

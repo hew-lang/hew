@@ -371,7 +371,8 @@ impl Builder {
                         | hew_types::BuiltinType::HashSet
                         | hew_types::BuiltinType::Rc
                         | hew_types::BuiltinType::Weak
-                        | hew_types::BuiltinType::Sender,
+                        | hew_types::BuiltinType::Sender
+                        | hew_types::BuiltinType::Receiver,
                     ),
                 ..
             } => true,
@@ -1011,6 +1012,46 @@ impl Builder {
         };
         args.first()
             .is_some_and(|elem| self.is_owned_vec_element(elem))
+    }
+
+    /// `Receiver<T>` slots have a descriptor close thunk but no clone thunk.
+    /// Sender is intentionally excluded: it remains a normal cloneable
+    /// descriptor-backed element. The predicate is used only to refuse Vec
+    /// operations that would manufacture a second endpoint owner.
+    fn vec_receiver_has_drop_only_receiver_element(&self, vec_ty: &ResolvedTy) -> bool {
+        let ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::Vec),
+            ..
+        } = self.subst_ty(vec_ty)
+        else {
+            return false;
+        };
+        matches!(
+            args.first(),
+            Some(ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Receiver),
+                ..
+            })
+        )
+    }
+
+    fn reject_drop_only_receiver_vec_operation(
+        &mut self,
+        operation: &str,
+        site: SiteId,
+    ) -> Option<Place> {
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: format!("`Vec<channel.Receiver<_>>::{operation}()`"),
+                site,
+            },
+            note: "channel.Receiver<T> is a drop-only Vec element: this operation would clone \
+                   or copy a receiver slot. Move a receiver through a consuming operation \
+                   instead."
+                .to_string(),
+        });
+        None
     }
 
     /// Prove that a concrete collection payload has a total semantic clone and
@@ -2184,6 +2225,11 @@ impl Builder {
                          type_args; Vec impls are registered with one element type",
                         type_args.len()
                     );
+                }
+                if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty) {
+                    let _ = self
+                        .reject_drop_only_receiver_vec_operation("index set copy-in", target.site);
+                    return;
                 }
                 let Some(receiver_place) = self.lower_value(receiver) else {
                     return;
@@ -4967,23 +5013,24 @@ impl Builder {
                 // W5.016: finalize the owned-vs-BitCopy Vec element ABI through
                 // the SINGLE consumer-side authority (`is_owned_vec_element`, the
                 // same predicate get/set/pop and scope-exit-free consult). A
-                // `hew_vec_push_layout` whose receiver Vec has an owned
-                // (heap-owning) element must route to `hew_vec_push_owned` so the
-                // push agrees with the owned constructor descriptor — otherwise a
-                // BitCopy push op on an owned-constructed handle trips the runtime
-                // layout-aware abort. This upgrade is the array-literal-desugar
-                // path's owned-ness decision: the HIR desugar bakes
-                // `hew_vec_push_layout` from the marker-only `ValueClass`, which
-                // cannot see structural heap-ownership; MIR owns that structural
-                // authority. A genuine checker-resolved owned `.push()` already
-                // carries `hew_vec_push_owned`, and a real BitCopy element returns
-                // false here, so this only ever corrects the synthesized guess —
-                // it never re-derives the checker's impl-resolution verdict
+                // `hew_vec_push_layout` or `hew_vec_push_ptr` whose receiver Vec
+                // has an owned (heap-owning) element must route to an owned push
+                // so the ingress agrees with the owned constructor descriptor.
+                // Otherwise a pointer/layout push byte-copies an affine handle
+                // into the Vec while retaining the source close, which W3.053
+                // correctly refuses. This upgrade is the array-literal-desugar
+                // path's owned-ness decision: the HIR desugar bakes the plain
+                // ABI from marker-only `ValueClass`, which cannot see structural
+                // heap-ownership; MIR owns that authority. A genuine
+                // checker-resolved owned `.push()` already carries
+                // `hew_vec_push_owned`, and a real BitCopy element returns false
+                // here, so this only ever corrects the synthesized guess — it
+                // never re-derives the checker's impl-resolution verdict
                 // (`dedup-semantic-boundary`).
                 //
                 // The owned-rewrite predicate is *family-gated* (must be a Vec
-                // push) AND *symbol-keyed* (must be the `_layout` variant the
-                // HIR desugar emits). The family gate ensures we never
+                // push) AND *symbol-keyed* (must be a plain `_layout` or `_ptr`
+                // variant the HIR desugar emits). The family gate ensures we never
                 // accidentally consult `vec_receiver_has_owned_element` for a
                 // non-Vec call; the symbol check distinguishes the synthetic
                 // `_layout` from a real per-element-type symbol the checker
@@ -5031,23 +5078,18 @@ impl Builder {
                 } else if matches!(
                     target_family,
                     hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push)
-                ) && target_symbol == "hew_vec_push_layout"
-                    && self.vec_receiver_has_owned_element(&receiver.ty)
+                ) && matches!(
+                    target_symbol.as_str(),
+                    "hew_vec_push_layout" | "hew_vec_push_ptr"
+                ) && self.vec_receiver_has_owned_element(&receiver.ty)
                 {
                     // Array literals are HIR-desugared to pushes into a synthetic
-                    // Vec temp; the element operand is a FRESH, single-use
-                    // `record_init` temp constructed solely for the Vec (even a
-                    // named-binding element `[a, ..]` is re-constructed into a
-                    // throwaway temp first). A COPY-IN deep clone
-                    // (`hew_vec_push_owned`) would then leak that temp's owned
-                    // heap — it has no binding and no scope-exit drop to retain
-                    // the original (`container-ingress-ownership-is-per-container`
-                    // COPY-IN retain assumes a tracked source). Route the
-                    // array-literal owned push to the MOVE-in variant, which
-                    // transfers the element's heap into the slot without a clone;
-                    // the source temp is then dead. A user-authored
-                    // `v.push(existing_owned)` keeps the COPY-IN clone (its source
-                    // binding lives on and retains its own drop).
+                    // Vec receiver. Their owned elements enter via the MOVE-in
+                    // ABI: a fresh rvalue has no source drop to balance a
+                    // clone-in, while a direct binding is consumed below so the
+                    // descriptor slot is its sole owner. A user-authored
+                    // `v.push(existing_owned)` keeps COPY-IN semantics (the
+                    // source binding lives on and retains its own drop).
                     if matches!(
                         &receiver.kind,
                         HirExprKind::BindingRef { name, .. } if name.starts_with("__hew_array_")
@@ -5112,6 +5154,20 @@ impl Builder {
                     callee
                 };
 
+                // Receiver slots intentionally have no descriptor clone thunk.
+                // A non-synthetic `push`/`set` that remains on the COPY-IN ABI
+                // would reach `hew_vec_push/set_owned` and ask the runtime to
+                // clone that endpoint. Array-literal and fresh-rvalue MOVE-in
+                // have already been rewritten to their `_move` siblings above,
+                // so rejecting only these exact symbols preserves the sole
+                // supported construction path without weakening Sender.
+                if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty)
+                    && matches!(callee.as_str(), "hew_vec_push_owned" | "hew_vec_set_owned")
+                {
+                    return self
+                        .reject_drop_only_receiver_vec_operation("push/set copy-in", expr.site);
+                }
+
                 // `hew_vec_get_clone` is the clone-out choke used by both
                 // ordinary `Vec::get` and `VecIter::next`.  Concrete sites were
                 // already admitted by the checker.  Generic sites reach this
@@ -5123,6 +5179,9 @@ impl Builder {
                 // resources, opaque handles, and unresolved layouts fail
                 // closed instead of receiving a shallow clone.
                 if callee == "hew_vec_get_clone" {
+                    if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty) {
+                        return self.reject_drop_only_receiver_vec_operation("get", expr.site);
+                    }
                     let concrete_receiver = self.subst_ty(&receiver.ty);
                     let ResolvedTy::Named {
                         args: receiver_args,
@@ -5174,6 +5233,10 @@ impl Builder {
                     callee.as_str(),
                     "hew_vec_clone" | "hew_vec_clone_layout" | "hew_vec_clone_owned"
                 ) {
+                    if self.vec_receiver_has_drop_only_receiver_element(&receiver.ty) {
+                        return self
+                            .reject_drop_only_receiver_vec_operation("clone/iter", expr.site);
+                    }
                     let concrete_receiver = self.subst_ty(&receiver.ty);
                     let ResolvedTy::Named {
                         args: receiver_args,
@@ -5375,6 +5438,12 @@ impl Builder {
                         hew_types::VecMethod::Push | hew_types::VecMethod::Set
                     )
                 );
+                // This synthetic-array call's exact known move ABI transfers
+                // (rather than clone-copies) its element argument into the Vec
+                // descriptor slot. An unknown call, normal `Vec::push`, and
+                // every ordinary copy-in path remain source-owning.
+                let vec_owned_move_array_ingress =
+                    is_array_literal_push && callee == "hew_vec_push_owned_move";
 
                 // Lower receiver as arg[0], then explicit args.
                 let receiver_place = self.lower_value(receiver)?;
@@ -5404,7 +5473,9 @@ impl Builder {
                     if move_ingress {
                         self.consume_moved_builtin_method_arg(arg);
                     }
-                    if is_array_literal_push {
+                    if vec_owned_move_array_ingress {
+                        self.consume_owned_vec_move_array_element(arg);
+                    } else if is_array_literal_push {
                         self.alias_moved_owned_operand(arg);
                     }
                     if is_vec_element_store {
@@ -7630,6 +7701,16 @@ impl Builder {
                 return None;
             }
         };
+
+        if matches!(
+            elem_ty,
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::Receiver),
+                ..
+            }
+        ) {
+            return self.reject_drop_only_receiver_vec_operation("range slice", site);
+        }
 
         let slice_symbol = match &elem_ty {
             ResolvedTy::Bool

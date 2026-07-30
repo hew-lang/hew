@@ -1930,21 +1930,61 @@ fn actor_lifecycle_crash_lowers_to_actor_handler_function() {
 }
 
 #[test]
+fn exit_hook_with_uncanonicalized_payload_fails_closed_before_raw_mir() {
+    let mut ids = IdGen::default();
+    let exit_return = return_none_stmt(&mut ids);
+    let note = binding(
+        &mut ids,
+        "note",
+        ResolvedTy::named_user("f.CrashNotification", Vec::new()),
+    );
+    let mut watcher = actor(&mut ids, "Watcher", vec![]);
+    watcher.lifecycle_hooks = vec![HirLifecycleHook {
+        kind: HirLifecycleHookKind::Exit,
+        name: "on_exit".to_string(),
+        params: vec![note],
+        return_ty: ResolvedTy::Unit,
+        body: block(&mut ids, vec![exit_return], None, ResolvedTy::Unit),
+        span: 0..0,
+    }];
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(watcher)]));
+    assert!(
+        !pipeline
+            .raw_mir
+            .iter()
+            .any(|function| function.name == "Watcher__on_exit"),
+        "MIR must not emit a handler with an aggregate parameter where the runtime calls (u64, i32)"
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                MirDiagnosticKind::UnsupportedNode { reason }
+                    if reason.contains("without exactly one canonical")
+            )
+        }),
+        "the checker/HIR ABI mismatch must produce a fail-closed MIR diagnostic: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
 fn canonical_failure_lifecycle_payloads_expand_to_runtime_abi() {
     use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
     let mut parsed = hew_parser::parse(
         r#"
-        import std::failure;
+        import std::failure as f;
 
         actor Watcher {
             #[on(crash)]
-            fn on_crash(info: failure.CrashInfo) -> failure.CrashAction {
+            fn on_crash(info: CrashInfo) -> CrashAction {
                 panic("stop")
             }
 
             #[on(exit)]
-            fn on_exit(note: CrashNotification) {}
+            fn on_exit(note: f.CrashNotification) {}
         }
 
         fn main() {}
@@ -1972,6 +2012,11 @@ fn canonical_failure_lifecycle_payloads_expand_to_runtime_abi() {
         })
         .expect("fixture import must exist");
     import.resolved_items = Some(failure_items.clone());
+    let failure_source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-mir has a workspace parent")
+        .join("std/failure.hew");
+    import.resolved_source_paths = vec![failure_source.clone()];
     let root_id = ModuleId::root();
     let failure_id = ModuleId::new(vec!["std".to_string(), "failure".to_string()]);
     let mut graph = ModuleGraph::new(root_id.clone());
@@ -1980,7 +2025,7 @@ fn canonical_failure_lifecycle_payloads_expand_to_runtime_abi() {
             id: failure_id.clone(),
             items: failure_items,
             imports: Vec::new(),
-            source_paths: Vec::new(),
+            source_paths: vec![failure_source],
             doc: None,
         })
         .expect("failure module id must be unique");

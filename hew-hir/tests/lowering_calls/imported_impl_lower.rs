@@ -309,6 +309,55 @@ fn imported_impl_methods_registered_and_emitted() {
 }
 
 #[test]
+fn imported_opaque_impl_keeps_resolved_self_identity_and_bare_symbol() {
+    // An imported opaque type must preserve its module-qualified identity in
+    // `HirImplBlock`, even though the checker-aligned function symbol remains
+    // bare. MIR uses the former to distinguish a named receiver from an
+    // associated function's ordinary first argument.
+    let imported_src = r"
+#[opaque]
+pub type Handle {
+}
+
+trait Touch {
+    fn touch(self) -> Handle;
+}
+
+impl Touch for Handle {
+    fn touch(handle: Handle) -> Handle {
+        handle
+    }
+}
+";
+    let root_src = r"
+fn main() -> i64 {
+    0
+}
+";
+    let program = build_imported_module_program_src(imported_src, root_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+
+    let impl_block = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Impl(block) if block.trait_name.as_deref() == Some("Touch") => Some(block),
+            _ => None,
+        })
+        .expect("expected imported opaque `Touch for Handle` impl metadata");
+    assert_eq!(impl_block.self_type_name, "shapes.Handle");
+    assert_eq!(impl_block.method_symbols, vec!["Handle::touch"]);
+
+    let result = output.into_result();
+    assert!(
+        result.is_ok(),
+        "imported opaque impl must lower cleanly. Got: {:#?}",
+        result.err()
+    );
+}
+
+#[test]
 fn imported_impl_body_using_ok_err_ctor_is_not_skipped() {
     // A method whose body constructs `Ok(..)` / `Err(..)` must NOT be skipped:
     // the variant constructors resolve through `machine_ctor_registry`, not

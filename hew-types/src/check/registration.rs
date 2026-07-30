@@ -1417,7 +1417,7 @@ impl Checker {
     fn seed_resolved_lifecycle_import_bindings(
         &mut self,
         module: &hew_parser::module::Module,
-        importer: &str,
+        importer: Option<&str>,
         module_graph: &hew_parser::module::ModuleGraph,
     ) {
         for (item, _) in &module.items {
@@ -1456,7 +1456,7 @@ impl Checker {
                 .unwrap_or_else(|| owner.to_string());
             if decl.spec.is_none() {
                 self.module_import_bindings.insert(
-                    (Some(importer.to_string()), module_binding.clone()),
+                    (importer.map(str::to_owned), module_binding.clone()),
                     canonical_module,
                 );
             }
@@ -1470,7 +1470,7 @@ impl Checker {
                 let source_identity = format!("{owner}.{source_name}");
                 if target_is_canonical {
                     self.canonical_lifecycle_import_authority.insert((
-                        Some(importer.to_string()),
+                        importer.map(str::to_owned),
                         if decl.spec.is_none() {
                             module_binding.clone()
                         } else {
@@ -1483,6 +1483,19 @@ impl Checker {
                         },
                         source_identity.clone(),
                     ));
+                    if decl.spec.is_none() {
+                        // HIR does not re-resolve module imports. Publish the
+                        // checker-proven whole-module spelling so a hook
+                        // annotation such as `f.CrashNotification` retains the
+                        // canonical lifecycle identity across TypeCheckOutput.
+                        let qualified_surface = format!("{module_binding}.{source_name}");
+                        if qualified_surface != source_identity {
+                            self.import_type_name_aliases.insert(
+                                (importer.map(str::to_owned), qualified_surface),
+                                source_identity.clone(),
+                            );
+                        }
+                    }
                 }
                 let Some(binding) =
                     StdlibBarePublication::Import(&decl.spec).bare_binding(source_name)
@@ -1492,11 +1505,11 @@ impl Checker {
                 self.known_types.insert(binding.clone());
                 self.record_published_bare_type(&binding, &source_identity);
                 self.import_type_name_aliases.insert(
-                    (Some(importer.to_string()), binding.clone()),
+                    (importer.map(str::to_owned), binding.clone()),
                     source_identity,
                 );
                 self.unqualified_to_module
-                    .insert((Some(importer.to_string()), binding), owner.to_string());
+                    .insert((importer.map(str::to_owned), binding), owner.to_string());
             }
         }
     }
@@ -1534,11 +1547,19 @@ impl Checker {
             let Some(binding) = StdlibBarePublication::Import(&decl.spec).bare_binding(source_name)
             else {
                 if decl.spec.is_none() {
+                    let source_identity = format!("{owner}.{source_name}");
                     self.canonical_lifecycle_import_authority.insert((
                         importer.map(str::to_owned),
                         module_binding.clone(),
-                        format!("{owner}.{source_name}"),
+                        source_identity.clone(),
                     ));
+                    let qualified_surface = format!("{module_binding}.{source_name}");
+                    if qualified_surface != source_identity {
+                        self.import_type_name_aliases.insert(
+                            (importer.map(str::to_owned), qualified_surface),
+                            source_identity,
+                        );
+                    }
                 }
                 continue;
             };
@@ -1609,7 +1630,7 @@ impl Checker {
                 if let Some(module) = mg.modules.get(mod_id) {
                     let module_name = mod_id.path.join(".");
                     self.current_module = Some(module_name.clone());
-                    self.seed_resolved_lifecycle_import_bindings(module, &module_name, mg);
+                    self.seed_resolved_lifecycle_import_bindings(module, Some(&module_name), mg);
                     // Temporarily scope local_type_defs so that resolve_type_expr
                     // inside field type resolution does not inject fresh type vars
                     // on handle types from this module.
@@ -1675,6 +1696,18 @@ impl Checker {
             }
         }
         self.current_module = None;
+
+        // The root module follows the same source-order-independent rule as
+        // imported modules: direct, canonical lifecycle import edges and every
+        // root-owned nominal name must be visible before the first record/enum
+        // member annotation is resolved. This is deliberately a narrow seed:
+        // only graph-proven shipped lifecycle sources acquire ABI authority.
+        if let Some(ref mg) = program.module_graph {
+            if let Some(root) = mg.modules.get(&mg.root) {
+                self.seed_resolved_lifecycle_import_bindings(root, None, mg);
+            }
+        }
+        self.seed_type_registration_scope(&program.items);
 
         // Process root module items (full registration with namespace dedup).
         for (item, span) in &program.items {
@@ -1775,6 +1808,42 @@ impl Checker {
                 | Item::Impl(_)
                 | Item::Function(_)
                 | Item::ExternBlock(_) => {}
+            }
+        }
+    }
+
+    /// Seed root-owned names before resolving any root declaration members.
+    ///
+    /// Besides making declarations source-order independent, this is the
+    /// local-shadow boundary for source-owned lifecycle spellings: a local
+    /// `CrashNotification` remains an ordinary user type even when a canonical
+    /// std import with the same leaf name is present.
+    fn seed_type_registration_scope(&mut self, items: &[Spanned<Item>]) {
+        for (item, _) in items {
+            match item {
+                Item::TypeDecl(td) => {
+                    self.local_type_defs.insert(td.name.clone());
+                    self.source_type_defs.insert(td.name.clone());
+                }
+                Item::Actor(ad) => {
+                    self.local_type_defs.insert(ad.name.clone());
+                    self.source_type_defs.insert(ad.name.clone());
+                }
+                Item::TypeAlias(ta) => {
+                    self.source_type_defs.insert(ta.name.clone());
+                }
+                Item::Record(rd) => {
+                    self.local_type_defs.insert(rd.name.clone());
+                    self.source_type_defs.insert(rd.name.clone());
+                }
+                Item::Machine(md) => {
+                    self.local_type_defs.insert(md.name.clone());
+                    self.source_type_defs.insert(md.name.clone());
+                    let event_type_name = format!("{}Event", md.name);
+                    self.local_type_defs.insert(event_type_name.clone());
+                    self.source_type_defs.insert(event_type_name);
+                }
+                _ => {}
             }
         }
     }

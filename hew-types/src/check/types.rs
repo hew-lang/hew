@@ -503,25 +503,23 @@ pub struct TypeCheckOutput {
     /// See [`crate::check::dispatch`] module docs for the full Stage A
     /// substrate ownership rationale and downstream consumer ordering.
     pub resolved_calls: HashMap<SpanKey, crate::check::dispatch::ResolvedCall>,
-    /// Import type alias resolution table for HIR lowering.
+    /// Checker-authoritative imported type identities for HIR lowering.
     ///
-    /// Maps each bare alias name to its canonical qualified source identity for
-    /// every `import m::{ T as U }` where the alias binding (`U`) differs from
-    /// Import type alias map: maps `(module, alias-binding)` → canonical
-    /// qualified source identity, for every `import m::{ T as U }` where the
-    /// binding name (`U`) differs from the original name (`T`).
+    /// Maps `(module, source spelling)` to the canonical qualified source
+    /// identity. Named/glob imports use their bare binding; canonical lifecycle
+    /// whole-module imports additionally publish the exact qualified spelling
+    /// (`f.CrashNotification`).
     ///
     /// Example: `import hew::aliassrc::{ Payload as Tag }` in module `None`
     /// (root program) → `(None, "Tag") → "aliassrc.Payload"`.
     ///
-    /// Keyed by `(Option<String>, String)` — `(importer_module, alias)` — so
-    /// an alias introduced in one module cannot overwrite a same-named alias
-    /// from another module (the flat-string approach caused last-write-wins
-    /// cross-module pollution).
+    /// Keyed by importer so a binding introduced in one module cannot overwrite
+    /// a same-named binding from another module.
     ///
     /// HIR `lower_type` consults this table in `resolve_named_type_ref` as a
-    /// **fallback** (after local / builtin / record-registry lookups), so a
-    /// local `type U` in the same module as `import m::{ Payload as U }` wins.
+    /// **fallback** for bare bindings (so a local `type U` still wins), while
+    /// checker-proven qualified lifecycle spellings are consumed before HIR
+    /// classifies them as ordinary user nominals.
     pub import_type_name_aliases: HashMap<(Option<String>, String), String>,
 }
 

@@ -3,7 +3,7 @@
 # Windows toolchain: builds LLVM 22.1.0 from source on a windows-2022
 # runner using MSVC + Ninja, installs to C:\llvm-22, packages as a Hew-owned
 # toolchain archive (.tar.gz), generates a SHA-256 checksum, and publishes to
-# a versioned toolchain release (toolchain/llvm-22.1.0-windows-msvc-v3).
+# a versioned toolchain release (toolchain/llvm-22.1.0-windows-msvc-v4).
 # release.yml downloads and verifies that asset instead of building LLVM at
 # release time.
 # The publish step is idempotent — it skips if the versioned asset already
@@ -41,8 +41,8 @@ env:
   # Versioned toolchain release tag and asset name for the Hew-owned Windows
   # LLVM package. Bump the v-suffix (v2, v3, …) when the packaging or layout
   # changes without a LLVM version bump. Must match release.yml exactly.
-  TOOLCHAIN_TAG: "toolchain/llvm-22.1.0-windows-msvc-v3"
-  ASSET_NAME: "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
+  TOOLCHAIN_TAG: "toolchain/llvm-22.1.0-windows-msvc-v4"
+  ASSET_NAME: "hew-llvm-22.1.0-windows-msvc-v4.tar.gz"
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
@@ -264,6 +264,9 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         shell: pwsh
         run: |
+          # LLVM's integrated rpmalloc exports malloc/free/calloc/realloc.
+          # Hew links LLVM statically through llvm-sys against the UCRT, so
+          # use the platform allocator and keep those CRT exports unique.
           cmake -S D:\llvm-src\llvm -B D:\llvm-build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
@@ -281,6 +284,7 @@ jobs:
             -DLLVM_ENABLE_BINDINGS=OFF `
             -DLLVM_ENABLE_ZLIB=OFF `
             -DLLVM_ENABLE_ZSTD=OFF `
+            -DLLVM_INTEGRATED_CRT_ALLOC=OFF `
             -DLLVM_BUILD_LLVM_DYLIB=OFF `
             -DBUILD_SHARED_LIBS=OFF
 
@@ -337,6 +341,35 @@ jobs:
             exit 1
           }
 
+          # llvm-sys links the installed LLVM archives statically on MSVC.
+          # rpmalloc.c.obj exports the same CRT allocation symbols as UCRT and
+          # makes the later lld-link invocation fail with duplicate definitions.
+          # Inspect the packaged archives directly so a CMake-default change
+          # cannot publish a broken toolchain revision.
+          $llvmAr = "C:\llvm-22\bin\llvm-ar.exe"
+          if (-not (Test-Path $llvmAr -PathType Leaf)) {
+            Write-Host "::error::Required LLVM archive inspector missing: $llvmAr"
+            exit 1
+          }
+          $rpmallocMembers = [System.Collections.Generic.List[string]]::new()
+          foreach ($archive in Get-ChildItem -Path "C:\llvm-22\lib" -Filter "*.lib" -File) {
+            $members = & $llvmAr t $archive.FullName
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::llvm-ar could not inspect $($archive.FullName)"
+              exit 1
+            }
+            foreach ($member in $members) {
+              if ($member -match '(?i)(^|[\\/])rpmalloc\.c\.obj$') {
+                $rpmallocMembers.Add("$($archive.Name): $member")
+              }
+            }
+          }
+          if ($rpmallocMembers.Count -ne 0) {
+            Write-Host "::error::Integrated rpmalloc leaked into the Windows LLVM archives: $($rpmallocMembers -join '; ')"
+            exit 1
+          }
+          Write-Host "OK: no rpmalloc.c.obj in installed LLVM archives"
+
           $sizeMB = [math]::Round(
             (Get-ChildItem C:\llvm-22 -Recurse -ErrorAction SilentlyContinue |
               Measure-Object -Property Length -Sum).Sum / 1MB
@@ -366,7 +399,7 @@ jobs:
                --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
             gh release create "$TOOLCHAIN_TAG" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "LLVM 22.1.0 Windows MSVC toolchain (v2)" \
+              --title "LLVM 22.1.0 Windows MSVC toolchain (v4)" \
               --notes "Source-built LLVM 22.1.0 for Hew Windows release builds. Layout: llvm-22/. Not a Hew product release." \
               --latest=false \
               --prerelease
@@ -408,4 +441,3 @@ jobs:
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
         with:
           subject-path: ${{ env.ASSET_NAME }}
-

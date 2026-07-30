@@ -16,6 +16,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 NPM_PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-npm-packages.yml"
 RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+COVERAGE_NIGHTLY_WORKFLOW = ROOT / ".github" / "workflows" / "coverage-nightly.yml"
 RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
 RUNBOOK = ROOT / "docs" / "release-runbook.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
@@ -28,6 +29,11 @@ SANITIZER_GATE = ROOT / "scripts" / "check-sanitizer-gate.sh"
 MAKEFILE = ROOT / "Makefile"
 RELEASE_BINARY_SMOKE = ROOT / "scripts" / "test-release-binary.sh"
 PACKAGE_BUILDER = ROOT / "installers" / "build-packages.sh"
+WINDOWS_LLVM_PREBUILD = ROOT / ".github" / "workflows" / "prebuild-llvm.yml"
+SETUP_LLVM_ACTION = ROOT / ".github" / "actions" / "setup-llvm" / "action.yml"
+WINDOWS_BUILD_GUIDE = ROOT / "docs" / "cross-platform-build-guide.md"
+WINDOWS_LLVM_TOOLCHAIN_TAG = "toolchain/llvm-22.1.0-windows-msvc-v4"
+WINDOWS_LLVM_TOOLCHAIN_ASSET = "hew-llvm-22.1.0-windows-msvc-v4.tar.gz"
 
 
 def workflow() -> str:
@@ -678,6 +684,118 @@ def test_contract_oracle_runs_in_required_ci() -> None:
     assert "make test-release-workflow-contract" in ci
 
 
+def workflow_job(text: str, name: str) -> str:
+    """Return one top-level GitHub Actions job without parsing unrelated YAML."""
+    start = text.index(f"  {name}:\n")
+    next_job = re.search(r"^  [a-z][a-z0-9-]*:\n", text[start + 1 :], re.MULTILINE)
+    end = start + 1 + next_job.start() if next_job else len(text)
+    return text[start:end]
+
+
+def assert_windows_job_initialises_msvc_before_native_linking(job: str) -> None:
+    """Require precisely one MSVC environment import before LLVM/Cargo use."""
+    setup_msvc = "uses: ./.github/actions/setup-msvc"
+    setup_llvm = "uses: ./.github/actions/setup-llvm"
+    assert job.count(setup_msvc) == 1
+    assert setup_msvc in job and setup_llvm in job
+    assert job.index(setup_msvc) < job.index(setup_llvm)
+    assert job.index(setup_msvc) < job.index("cargo ")
+
+
+def test_windows_test_workflows_initialise_msvc_before_lld_link() -> None:
+    workflows = (
+        (CI_WORKFLOW.read_text(), "build-and-test-windows"),
+        (COVERAGE_NIGHTLY_WORKFLOW.read_text(), "full-windows"),
+        (RELEASE_GATE.read_text(), "gate-windows"),
+    )
+    for text, name in workflows:
+        assert_windows_job_initialises_msvc_before_native_linking(
+            workflow_job(text, name)
+        )
+
+
+def test_windows_test_workflow_msvc_ordering_mutations_are_rejected() -> None:
+    job = workflow_job(CI_WORKFLOW.read_text(), "build-and-test-windows")
+    setup_msvc = "uses: ./.github/actions/setup-msvc"
+    setup_llvm = "uses: ./.github/actions/setup-llvm"
+    for mutation in (
+        job.replace(setup_msvc, "", 1),
+        job.replace(setup_msvc, setup_msvc + "\n        " + setup_msvc, 1),
+        job.replace(setup_msvc, "__MSVC_STEP__", 1)
+        .replace(setup_llvm, setup_msvc, 1)
+        .replace("__MSVC_STEP__", setup_llvm, 1),
+    ):
+        try:
+            assert_windows_job_initialises_msvc_before_native_linking(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("Windows MSVC setup mutation escaped the contract")
+
+
+def assert_windows_llvm_toolchain_contract(
+    prebuild: str, setup_action: str, release: str, build_guide: str
+) -> None:
+    """Keep static llvm-sys linking on Windows compatible with the UCRT."""
+    assert "-DLLVM_INTEGRATED_CRT_ALLOC=OFF" in prebuild
+    assert "llvm-ar.exe" in prebuild
+    assert "rpmalloc\\.c\\.obj" in prebuild
+    assert f'TOOLCHAIN_TAG: "{WINDOWS_LLVM_TOOLCHAIN_TAG}"' in prebuild
+    assert f'ASSET_NAME: "{WINDOWS_LLVM_TOOLCHAIN_ASSET}"' in prebuild
+    assert f'asset="{WINDOWS_LLVM_TOOLCHAIN_ASSET}"' in setup_action
+    assert f'"{WINDOWS_LLVM_TOOLCHAIN_ASSET}")' in setup_action
+    assert f"releases/download/{WINDOWS_LLVM_TOOLCHAIN_TAG}/${{asset}}" in setup_action
+    assert f'$toolchainTag = "{WINDOWS_LLVM_TOOLCHAIN_TAG}"' in release
+    assert f'$asset        = "{WINDOWS_LLVM_TOOLCHAIN_ASSET}"' in release
+    assert release.count(f'$asset = "{WINDOWS_LLVM_TOOLCHAIN_ASSET}"') == 2
+    assert "windows-msvc-v3" not in "\n".join((prebuild, setup_action, release))
+    assert "-DLLVM_INTEGRATED_CRT_ALLOC=OFF" in build_guide
+
+
+def test_windows_llvm_toolchain_disables_integrated_crt_allocator() -> None:
+    assert_windows_llvm_toolchain_contract(
+        WINDOWS_LLVM_PREBUILD.read_text(),
+        SETUP_LLVM_ACTION.read_text(),
+        workflow(),
+        WINDOWS_BUILD_GUIDE.read_text(),
+    )
+
+
+def test_windows_llvm_toolchain_allocator_mutations_are_rejected() -> None:
+    prebuild = WINDOWS_LLVM_PREBUILD.read_text()
+    setup_action = SETUP_LLVM_ACTION.read_text()
+    release = workflow()
+    build_guide = WINDOWS_BUILD_GUIDE.read_text()
+    for mutation in (
+        (
+            prebuild.replace(
+                "-DLLVM_INTEGRATED_CRT_ALLOC=OFF",
+                "-DLLVM_INTEGRATED_CRT_ALLOC=ON",
+                1,
+            ),
+            setup_action,
+            release,
+            build_guide,
+        ),
+        (
+            prebuild,
+            setup_action,
+            release.replace(
+                WINDOWS_LLVM_TOOLCHAIN_TAG,
+                "toolchain/llvm-22.1.0-windows-msvc-v3",
+                1,
+            ),
+            build_guide,
+        ),
+    ):
+        try:
+            assert_windows_llvm_toolchain_contract(*mutation)
+        except AssertionError:
+            continue
+        raise AssertionError(
+            "Windows LLVM allocator safety mutation escaped the contract"
+        )
+
+
 def _write_release_binary_smoke_double(path: Path) -> None:
     """Emit the narrow CLI surface the --no-build smoke path uses."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1004,6 +1122,10 @@ _TESTS = [
     test_sanitizer_gate_is_behavioral_and_release_scoped,
     test_release_record_is_durable_and_tag_ready,
     test_contract_oracle_runs_in_required_ci,
+    test_windows_test_workflows_initialise_msvc_before_lld_link,
+    test_windows_test_workflow_msvc_ordering_mutations_are_rejected,
+    test_windows_llvm_toolchain_disables_integrated_crt_allocator,
+    test_windows_llvm_toolchain_allocator_mutations_are_rejected,
     test_release_binary_smoke_honors_absolute_and_relative_target_dirs,
     test_local_release_builds_and_assembles_every_shipped_binary,
     test_make_release_surfaces_quote_spacious_cargo_target_dir,

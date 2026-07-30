@@ -208,6 +208,10 @@ Windows assembly and bounds Cargo build parallelism for predictable memory use.
 
 If you need to build LLVM locally instead of using the release archive:
 
+Use the MSVC/UCRT allocator: LLVM's integrated rpmalloc object exports
+`malloc`/`free`/`calloc`/`realloc`, which conflicts when `llvm-sys` links LLVM
+statically with `lld-link`.
+
 ```powershell
 choco install ninja cmake -y
 
@@ -235,6 +239,7 @@ cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
   -DLLVM_ENABLE_BINDINGS=OFF `
   -DLLVM_ENABLE_ZLIB=OFF `
   -DLLVM_ENABLE_ZSTD=OFF `
+  -DLLVM_INTEGRATED_CRT_ALLOC=OFF `
   -DLLVM_ENABLE_DIA_SDK=OFF `
   -DLLVM_ENABLE_ASSERTIONS=OFF `
   -DLLVM_BUILD_LLVM_DYLIB=OFF `

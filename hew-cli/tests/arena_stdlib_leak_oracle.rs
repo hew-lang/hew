@@ -52,6 +52,10 @@ fn arena_holder_insert_remove_source(cycles: usize) -> String {
     )
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "poisoned allocator is macOS-only; a host without it must record a skip"
+)]
 #[test]
 fn stdlib_arena_holder_insert_remove_has_flat_leak_slope() {
     require_codegen();

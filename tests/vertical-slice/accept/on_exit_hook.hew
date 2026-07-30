@@ -15,7 +15,7 @@
 // is to prove the exit-hook attribute + dispatch wiring compiles and links.
 // Runtime delivery (a linked peer crash firing the hook with the right
 // CrashNotification) is covered by hew-runtime tests.
-import std::failure;
+import std::failure::{CrashNotification};
 
 actor Watcher {
     #[on(exit)]

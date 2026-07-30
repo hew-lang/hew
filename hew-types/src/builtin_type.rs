@@ -301,6 +301,25 @@ impl BuiltinType {
         }
     }
 
+    /// Whether this is a stdlib declaration whose ABI identity is known to the
+    /// compiler but whose lexical authority and field/variant layout remain
+    /// source-owned.  Such a type is never admitted by its bare catalog name:
+    /// a named/glob/aliased import must publish that spelling, or the program
+    /// must use the imported owner's qualified spelling.  The no-search-path
+    /// inline-test bootstrap is the sole prelude exception.
+    #[must_use]
+    pub const fn requires_source_import(self) -> bool {
+        matches!(
+            self,
+            Self::CrashNotification
+                | Self::CrashKind
+                | Self::MonitorId
+                | Self::DownTarget
+                | Self::DownReason
+                | Self::DownNotification
+        )
+    }
+
     #[must_use]
     pub const fn handle_family(self) -> Option<BuiltinHandleFamily> {
         match self {
@@ -499,6 +518,37 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
         .iter()
         .find(|info| info.canonical_name == name)
         .map(|info| info.kind)
+}
+
+/// Look up a source-owned lifecycle builtin by either its bare name or its
+/// canonical source identity (`failure.CrashNotification`, for example).
+///
+/// This is deliberately narrower than [`lookup_builtin_type`]: callers use it
+/// to enforce source import authority, not to make arbitrary catalog names
+/// globally visible.
+#[must_use]
+pub fn lookup_source_owned_lifecycle_type(name: &str) -> Option<BuiltinType> {
+    let (owner, bare) = name.split_once('.').unwrap_or(("", name));
+    let builtin = lookup_builtin_type(bare)?;
+    builtin
+        .requires_source_import()
+        .then_some(builtin)
+        .filter(|_| {
+            owner.is_empty()
+                || matches!(
+                    (owner, builtin),
+                    (
+                        "failure",
+                        BuiltinType::CrashNotification | BuiltinType::CrashKind
+                    ) | (
+                        "link_monitor",
+                        BuiltinType::MonitorId
+                            | BuiltinType::DownTarget
+                            | BuiltinType::DownReason
+                            | BuiltinType::DownNotification
+                    )
+                )
+        })
 }
 
 #[cfg(test)]

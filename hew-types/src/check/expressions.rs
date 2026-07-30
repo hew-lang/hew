@@ -1156,6 +1156,12 @@ impl Checker {
             );
             return Ty::Error;
         }
+        let Ok(canonical_lifecycle_name) =
+            self.canonicalize_source_lifecycle_value_path(name, span)
+        else {
+            return Ty::Error;
+        };
+        let name = canonical_lifecycle_name.as_deref().unwrap_or(name);
         // Module-qualified value constructor reference encoded as a flat
         // `Identifier("module.Type::Variant")` by `parse_dot_postfix` when no
         // call-args or brace-body follow.  Dispatch to the fail-closed
@@ -6182,6 +6188,12 @@ impl Checker {
         variant_name: &str,
         span: &Span,
     ) -> Ty {
+        let lifecycle_surface = format!("{module_short}.{type_name}::{variant_name}");
+        let Ok(canonical_lifecycle) =
+            self.canonicalize_source_lifecycle_value_path(&lifecycle_surface, span)
+        else {
+            return Ty::Error;
+        };
         if !self.modules.contains(module_short) {
             let similar =
                 crate::error::find_similar(module_short, self.modules.iter().map(String::as_str));
@@ -6224,7 +6236,10 @@ impl Checker {
             );
             return Ty::Error;
         };
-        let qualified_type = format!("{module_short}.{type_name}");
+        let qualified_type = canonical_lifecycle
+            .as_deref()
+            .and_then(|path| path.split_once("::").map(|(ty, _)| ty.to_string()))
+            .unwrap_or_else(|| format!("{module_short}.{type_name}"));
         match variant {
             VariantDef::Unit => {
                 // Instantiate type params with fresh inference vars so generic
@@ -6295,6 +6310,13 @@ impl Checker {
         base: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
+        let Ok(canonical_lifecycle_name) =
+            self.canonicalize_source_lifecycle_value_path(name, span)
+        else {
+            return Ty::Error;
+        };
+        let name = canonical_lifecycle_name.as_deref().unwrap_or(name);
+
         // Module-qualified diagnostic pre-pass: when `name` has the shape
         // `module.Type::Variant` and `module` is a known module alias, route
         // the failure modes (no exported type / no such variant) through the

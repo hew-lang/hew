@@ -6,6 +6,131 @@ use super::coerce::cast_is_valid;
 use super::*;
 
 impl Checker {
+    /// Canonicalise a qualified lifecycle type through the current importer's
+    /// whole-module binding.  The returned binding is the lexical qualifier
+    /// that must be marked used (`f` in `f.CrashNotification`); the canonical
+    /// identity always retains the std source owner (`failure.CrashNotification`).
+    pub(super) fn canonical_source_lifecycle_type_name(
+        &self,
+        name: &str,
+    ) -> Option<(String, String)> {
+        let (binding, tail) = name.split_once('.')?;
+        let bare = tail.split_once("::").map_or(tail, |(ty, _)| ty);
+        let owner = match self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), binding.to_string()))
+            .map(String::as_str)
+        {
+            Some("std.failure") => "failure",
+            Some("std.link_monitor") => "link_monitor",
+            Some(_) => return None,
+            None => binding,
+        };
+        let canonical = format!("{owner}.{bare}");
+        crate::lookup_source_owned_lifecycle_type(&canonical)
+            .map(|_| (canonical, binding.to_string()))
+    }
+
+    /// Whether this source-owned lifecycle identity is available from the
+    /// module currently being checked.  `type_defs` is intentionally not part
+    /// of this proof: it is a program-global declaration table, so a sibling
+    /// or transitive import must not authorize this module's qualified use.
+    pub(super) fn source_lifecycle_identity_is_in_scope(&self, name: &str, binding: &str) -> bool {
+        if crate::lookup_source_owned_lifecycle_type(name).is_none() {
+            return false;
+        }
+
+        // This is deliberately independent of `type_visibility` and the
+        // ordinary import maps. Those registries describe source spelling and
+        // can legitimately contain a user-backed module named `std.failure`.
+        // Only this source-path-proven authority may mint a lifecycle identity.
+        self.canonical_lifecycle_import_authority.contains(&(
+            self.current_module.clone(),
+            binding.to_string(),
+            name.to_string(),
+        ))
+    }
+
+    /// Apply lifecycle import authority to a value-level record/enum path.
+    ///
+    /// Returns `Ok(None)` for an ordinary source path, `Ok(Some(canonical))`
+    /// for an authorized lifecycle path, and `Err(())` after reporting an
+    /// unauthorized lifecycle construction/reference.  Both module-qualified
+    /// paths (`f.DownReason::Crashed`) and type-qualified paths
+    /// (`DownReason::Crashed`) pass through this seam.
+    pub(super) fn canonicalize_source_lifecycle_value_path(
+        &mut self,
+        path: &str,
+        span: &Span,
+    ) -> Result<Option<String>, ()> {
+        let type_surface = path.split_once("::").map_or(path, |(ty, _)| ty);
+        let suffix = path.strip_prefix(type_surface).unwrap_or_default();
+
+        let resolved = if type_surface.contains('.') {
+            self.canonical_source_lifecycle_type_name(type_surface)
+        } else if !self.local_type_defs.contains(type_surface)
+            && !self.source_type_defs.contains(type_surface)
+            && crate::lookup_source_owned_lifecycle_type(type_surface).is_some()
+        {
+            let canonical = self.published_bare_type_qualified(type_surface);
+            canonical.and_then(|canonical| {
+                crate::lookup_source_owned_lifecycle_type(&canonical)?;
+                let owner = canonical.split_once('.')?.0;
+                let binding = if self
+                    .unqualified_to_module
+                    .contains_key(&(self.current_module.clone(), type_surface.to_string()))
+                {
+                    type_surface.to_string()
+                } else {
+                    owner.to_string()
+                };
+                Some((canonical, binding))
+            })
+        } else {
+            None
+        };
+
+        let Some((canonical, binding)) = resolved else {
+            // A bare lifecycle type-qualified path is recognizable even when
+            // no import published it. Reject it here instead of allowing the
+            // program-global constructor table to supply authority.
+            if !type_surface.contains('.')
+                && !self.local_type_defs.contains(type_surface)
+                && !self.source_type_defs.contains(type_surface)
+                && crate::lookup_source_owned_lifecycle_type(type_surface).is_some()
+            {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    span,
+                    format!("unknown type `{type_surface}`"),
+                    vec![format!(
+                        "import the owning module before using `{type_surface}`"
+                    )],
+                );
+                return Err(());
+            }
+            return Ok(None);
+        };
+
+        if !self.in_stdlib_registration
+            && !self.source_lifecycle_identity_is_in_scope(&canonical, &binding)
+        {
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedType,
+                span,
+                format!("unknown type `{type_surface}`"),
+                vec![format!(
+                    "import the owning module before using `{type_surface}`"
+                )],
+            );
+            return Err(());
+        }
+        self.used_modules
+            .borrow_mut()
+            .insert(ImportKey::new(self.current_module.clone(), binding));
+        Ok(Some(format!("{canonical}{suffix}")))
+    }
+
     /// The QUALIFIED identity (`owner.Name`) a bare TYPE reference resolves to
     /// when exactly one imported module PUBLISHED the bare binding into the
     /// current importer and a qualified def for it is registered; `None`
@@ -297,13 +422,23 @@ impl Checker {
     /// `Gadget { … }` reject the same ill-formed cases identically rather than
     /// the constructor silently binding a last-write-wins bare def.
     pub(super) fn report_bare_type_scope_error(&mut self, name: &str, span: &Span) -> bool {
+        // While registering shipped stdlib declarations, their own source
+        // member signatures are being collected before normal importer-scope
+        // bindings exist. That registration pass supplies the declaration
+        // authority; user-written references still take the guarded path.
+        if self.in_stdlib_registration {
+            return false;
+        }
         if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
             return false;
         }
-        // Builtin surfaces resolve to their builtin identity regardless of which
-        // module exports them, so the qualified-by-default publication gate does
-        // not apply — never reject a bare builtin name.
-        if crate::lookup_builtin_type(name).is_some() || builtin_named_type(name).is_some() {
+        // Compiler-intrinsic builtin surfaces resolve regardless of import.
+        // Source-layout lifecycle payloads deliberately do not: their catalog
+        // discriminator is ABI metadata, not lexical authority. They must flow
+        // through the ordinary published-binding path below.
+        if crate::lookup_builtin_type(name).is_some_and(|builtin| !builtin.requires_source_import())
+            || builtin_named_type(name).is_some()
+        {
             return false;
         }
         let mut owner_modules: Vec<&str> = self
@@ -323,6 +458,37 @@ impl Checker {
             .get(&(self.current_module.clone(), name.to_string()))
             .map(|identities| identities.iter().cloned().collect())
             .unwrap_or_default();
+        if published_identities.is_empty()
+            && owner_modules.is_empty()
+            && crate::lookup_source_owned_lifecycle_type(name).is_some()
+        {
+            let span_key = SpanKey::in_module(span, self.current_module_idx);
+            if self
+                .reported_undefined_named_types
+                .insert((name.to_string(), span_key))
+            {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    span,
+                    format!("unknown type `{name}`"),
+                    vec![format!(
+                        "import the lifecycle type explicitly, e.g. `import std::{}::{{ {name} }}`",
+                        if matches!(
+                            crate::lookup_source_owned_lifecycle_type(name),
+                            Some(
+                                crate::BuiltinType::CrashNotification
+                                    | crate::BuiltinType::CrashKind
+                            )
+                        ) {
+                            "failure"
+                        } else {
+                            "link_monitor"
+                        }
+                    )],
+                );
+            }
+            return true;
+        }
         if published_identities.len() > 1 {
             let mut candidates: Vec<String> = published_identities.clone();
             candidates.sort();
@@ -1863,6 +2029,31 @@ impl Checker {
                 if let Some(aliased) = self.type_aliases.get(name) {
                     return aliased.clone();
                 }
+                // A qualified lifecycle source identity is valid only when its
+                // canonical owner was imported directly by this lexical module.
+                // Whole-module aliases retain canonical identity (`f.CrashKind`
+                // -> `failure.CrashKind`) while user/transitive definitions with
+                // the same spelling remain ordinary source types.
+                let lifecycle_qualified = self.canonical_source_lifecycle_type_name(name);
+                if let Some((canonical, binding)) = lifecycle_qualified.as_ref() {
+                    if !self.in_stdlib_registration
+                        && !self.source_lifecycle_identity_is_in_scope(canonical, binding)
+                    {
+                        let span_key = SpanKey::in_module(&te.1, self.current_module_idx);
+                        if self
+                            .reported_undefined_named_types
+                            .insert((name.clone(), span_key))
+                        {
+                            self.report_error_with_suggestions(
+                                TypeErrorKind::UndefinedType,
+                                &te.1,
+                                format!("unknown type `{name}`"),
+                                vec![format!("import the owning module before using `{name}`")],
+                            );
+                        }
+                        return Ty::Error;
+                    }
+                }
                 // Qualify unqualified handle types only when imported and
                 // unambiguous. Collect owned strings so this borrow of
                 // `known_types` ends before the `&mut self` scope-error call
@@ -1892,10 +2083,48 @@ impl Checker {
                 // record constructor in `check_struct_init`, so a type position
                 // (`fn f(x: Gadget)`) and a construction (`Gadget { … }`) reject
                 // the ill-formed cases identically.
-                if !is_local && self.report_bare_type_scope_error(name, &te.1) {
+                if !is_local
+                    && !name.contains('.')
+                    && self.report_bare_type_scope_error(name, &te.1)
+                {
                     return Ty::Error;
                 }
-                let resolved_name = if is_local && self.type_defs.contains_key(name) {
+                // A named/glob lifecycle import must carry the same canonical
+                // source proof as a whole-module qualified import. Ordinary
+                // bare-publication tables describe only a module's spelling,
+                // so a user-backed `std.failure::{CrashNotification}` cannot
+                // mint the lifecycle ABI identity.
+                let published_lifecycle = (!is_local && !name.contains('.'))
+                    .then(|| self.published_bare_type_qualified(name))
+                    .flatten()
+                    .filter(|canonical| {
+                        crate::lookup_source_owned_lifecycle_type(canonical).is_some()
+                    });
+                if let Some(canonical) = published_lifecycle {
+                    if !self.in_stdlib_registration
+                        && !self.source_lifecycle_identity_is_in_scope(&canonical, name)
+                    {
+                        let span_key = SpanKey::in_module(&te.1, self.current_module_idx);
+                        if self
+                            .reported_undefined_named_types
+                            .insert((name.clone(), span_key))
+                        {
+                            self.report_error_with_suggestions(
+                                TypeErrorKind::UndefinedType,
+                                &te.1,
+                                format!("unknown type `{name}`"),
+                                vec![format!("import the owning module before using `{name}`")],
+                            );
+                        }
+                        return Ty::Error;
+                    }
+                }
+                let resolved_name = if let Some((canonical, binding)) = lifecycle_qualified {
+                    self.used_modules
+                        .borrow_mut()
+                        .insert(ImportKey::new(self.current_module.clone(), binding));
+                    canonical
+                } else if is_local && self.type_defs.contains_key(name) {
                     // A bare reference to a locally-defined type normally binds
                     // to the bare `type_defs` key. But when checking a non-root
                     // module, the bare key is last-write-wins across modules that
@@ -2036,7 +2265,15 @@ impl Checker {
                         }
                     }
                 }
-                let builtin = crate::lookup_builtin_type(resolved_name.as_str());
+                let builtin =
+                    crate::lookup_builtin_type(resolved_name.as_str()).filter(|builtin| {
+                        // A raw bare spelling of a source-owned lifecycle type has
+                        // no authority. Real named/glob imports and the isolated
+                        // prelude bootstrap canonicalise it to `owner.Type` above.
+                        !builtin.requires_source_import()
+                            || resolved_name.contains('.')
+                            || self.in_stdlib_registration
+                    });
                 // A bare name that shadows a builtin via a local `type X {}` decl
                 // normally binds to the source decl (`builtin: None`). Collection
                 // and substrate-handle builtins are the exception only while

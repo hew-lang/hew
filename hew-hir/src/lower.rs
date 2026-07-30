@@ -19004,36 +19004,14 @@ impl LowerCtx {
             }
         }
 
-        // `CrashNotification` is source-layout-backed, but the lifecycle ABI
-        // needs to retain its compiler discriminator after a bare `import
-        // std::failure`.  Do this only for the exact shipped source identity
-        // collected from the module graph, and only after local declarations
-        // and explicit imports have had their normal shadowing precedence.
-        // A root `record CrashNotification` therefore remains a user nominal,
-        // as does a non-stdlib package's same-spelling declaration.
-        if !name.contains('.')
-            && self
-                .canonical_std_source_type_identities
-                .contains("failure.CrashNotification")
-            && name == "CrashNotification"
-        {
-            return ResolvedTy::named_builtin(
-                BuiltinType::CrashNotification.canonical_name(),
-                BuiltinType::CrashNotification,
-                args,
-            );
-        }
-
-        // Some always-in-scope std records are source-layout-backed rather
-        // than compiler-layout-backed (`DownNotification`,
-        // `CrashNotification`, their payload enums, ...). Their bare names
-        // are present in the global record registry but intentionally absent
-        // from the HIR builtin registration table. Preserve that source layout
-        // after import bindings have had a chance to resolve. Compiler-owned
-        // records such as CrashInfo/CrashAction/MonitorRef have registrations
-        // and continue to the discriminator-bearing builtin path below.
+        // A global record registry is layout metadata, not lexical authority.
+        // In particular, source-owned lifecycle payloads must reach this point
+        // through the checker-published import binding above; their bare
+        // catalog spelling must never become valid merely because another
+        // module loaded the record declaration.
         if !name.contains('.')
             && self.record_registry.contains_key(name)
+            && hew_types::lookup_source_owned_lifecycle_type(name).is_none()
             && crate::builtin_type_classes::builtin_type_registration(type_name).is_none()
             && !self.resolves_to_opaque_handle(name, type_name)
         {
@@ -19070,7 +19048,9 @@ impl LowerCtx {
             crate::builtin_type_classes::builtin_type_registration(type_name)
         {
             ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
-        } else if let Some(builtin) = hew_types::lookup_builtin_type(type_name) {
+        } else if let Some(builtin) = hew_types::lookup_builtin_type(type_name)
+            .filter(|builtin| !builtin.requires_source_import())
+        {
             ResolvedTy::named_builtin(type_name.to_string(), builtin, args)
         } else if self.resolves_to_opaque_handle(name, type_name) {
             ResolvedTy::named_opaque(name.to_string(), args)
@@ -19328,7 +19308,8 @@ impl LowerCtx {
     /// from canonical `std.*`.
     fn qualified_source_builtin(&self, name: &str) -> Option<BuiltinType> {
         if !name.contains('.') {
-            return hew_types::lookup_builtin_type(name);
+            return hew_types::lookup_builtin_type(name)
+                .filter(|builtin| !builtin.requires_source_import());
         }
 
         let current_std_owner = self
@@ -30471,7 +30452,7 @@ mod tests {
     }
 
     #[test]
-    fn bare_canonical_crash_notification_keeps_lifecycle_identity_after_record_registration() {
+    fn imported_crash_notification_keeps_source_identity_after_record_registration() {
         let mut ctx = LowerCtx::new(
             &TypeCheckOutput::default(),
             MONOMORPHISATION_REGISTRY_CAP,
@@ -30487,35 +30468,34 @@ mod tests {
                 fields: Vec::new(),
             },
         );
+        ctx.import_type_name_aliases.insert(
+            (None, "CrashNotification".to_string()),
+            "failure.CrashNotification".to_string(),
+        );
 
         assert_eq!(
             ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
-            ResolvedTy::named_builtin(
-                BuiltinType::CrashNotification.canonical_name(),
-                BuiltinType::CrashNotification,
-                Vec::new(),
-            ),
-            "the bare canonical std lifecycle payload must retain its ABI discriminator"
+            ResolvedTy::named_user("failure.CrashNotification", Vec::new()),
+            "a published lifecycle import must retain its owner-qualified source identity"
         );
 
-        // An authored root declaration outranks the shipped declaration and
-        // must never gain the lifecycle-hook ABI by short spelling alone.
+        // Without the checker-published import binding, a globally registered
+        // std declaration is layout metadata only and must not grant the bare
+        // spelling lifecycle authority.
+        ctx.import_type_name_aliases.clear();
+        assert_eq!(
+            ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
+            ResolvedTy::named_user("CrashNotification", Vec::new()),
+            "a global std record must not make its bare lifecycle name implicit"
+        );
+
+        // An authored root declaration likewise remains an ordinary nominal.
         ctx.root_visible_source_type_short_names
             .insert("CrashNotification".to_string());
         assert_eq!(
             ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
             ResolvedTy::named_user("CrashNotification", Vec::new()),
-            "a user-authored same-spelling record remains nominal"
-        );
-
-        // Without shipped provenance, a record-registry entry is likewise an
-        // ordinary nominal rather than a forged lifecycle payload.
-        ctx.root_visible_source_type_short_names.clear();
-        ctx.canonical_std_source_type_identities.clear();
-        assert_eq!(
-            ctx.resolve_named_type_ref("CrashNotification", Vec::new()),
-            ResolvedTy::named_user("CrashNotification", Vec::new()),
-            "a non-canonical same-spelling record must not acquire the lifecycle ABI"
+            "a user-authored same-spelling record must not acquire the lifecycle ABI"
         );
     }
 

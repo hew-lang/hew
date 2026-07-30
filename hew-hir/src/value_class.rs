@@ -78,8 +78,26 @@ pub fn lookup_type_marker_for_ty(
         // the compiler also has a builtin with that short name.  Use the
         // carried discriminator and its canonical registration so qualified
         // spellings such as `channel.Sender<T>` retain the endpoint class.
-        return crate::builtin_type_classes::builtin_type_registration(builtin.canonical_name())
-            .map(|registration| registration.marker);
+        if let Some(registration) =
+            crate::builtin_type_classes::builtin_type_registration(builtin.canonical_name())
+        {
+            return Some(registration.marker);
+        }
+        // Some lifecycle payload builtins (`CrashNotification`, `CrashKind`,
+        // `MonitorId`, `DownTarget`, `DownReason`, `DownNotification`, ...)
+        // are "source-layout-backed": they carry the compiler discriminator
+        // for identity purposes (so a same-spelling user record can never be
+        // mistaken for the ABI payload), but — unlike `Vec`/`Sender`/
+        // `CrashInfo`/`MonitorRef` — they have no entry in
+        // `BUILTIN_TYPE_REGISTRATIONS` because their shape (enum payload
+        // variants, nested named fields) does not fit that compiler-hardcoded
+        // scalar table. Their real marker lives in `type_classes`, populated
+        // from the actual `.hew` declaration by
+        // `finalize_user_record_value_classes` / the stdlib prelude
+        // registration. Fall through to the bare-name lookup below instead of
+        // forcing every one of these to `Unknown` (W_B3: this used to make
+        // `note.actor_id` / `note.kind` field reads on a `#[on(exit)]` hook
+        // permanently unresolvable, even with `import std::failure;`).
     }
 
     if !args.is_empty() {

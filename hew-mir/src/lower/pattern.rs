@@ -1927,12 +1927,12 @@ impl Builder {
             } = &arm.predicate
             {
                 let binding_ty = self.subst_ty(ty);
-                self.statements.push(MirStatement::Bind {
-                    binding: *binding_id,
-                    name: name.clone(),
-                    site: arm.body.site,
-                    ty: binding_ty.clone(),
-                });
+                self.push_bind_statement(
+                    *binding_id,
+                    name.clone(),
+                    arm.body.site,
+                    binding_ty.clone(),
+                );
                 self.record_binding_scope(*binding_id);
                 let dest = self.alloc_local(binding_ty);
                 self.push_instr(Instr::Move {
@@ -2145,12 +2145,12 @@ impl Builder {
 
         for binding in &arm.bindings {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: arm.body.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                arm.body.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — the payload binder's owner is minted over a field of the
             // scrutinee, so the provenance question is the scrutinee's. The
@@ -2228,12 +2228,7 @@ impl Builder {
         } = &arm.predicate
         {
             let binding_ty = self.subst_ty(ty);
-            self.statements.push(MirStatement::Bind {
-                binding: *binding_id,
-                name: name.clone(),
-                site: arm.body.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(*binding_id, name.clone(), arm.body.site, binding_ty.clone());
             self.record_binding_scope(*binding_id);
             let warrant =
                 self.owner_warrant_for_scrutinee_payload(*binding_id, scrutinee, &binding_ty);
@@ -4327,12 +4322,12 @@ impl Builder {
             let mut generator_yield_drop_bindings = Vec::new();
             for binding in &arm.bindings {
                 let binding_ty = self.subst_ty(&binding.ty);
-                self.statements.push(MirStatement::Bind {
-                    binding: binding.binding,
-                    name: binding.name.clone(),
-                    site: arm.body.site,
-                    ty: binding_ty.clone(),
-                });
+                self.push_bind_statement(
+                    binding.binding,
+                    binding.name.clone(),
+                    arm.body.site,
+                    binding_ty.clone(),
+                );
                 self.record_match_arm_binding_scope(binding.binding, arm);
                 // A mixed-return wrapper has no shell owner: the whole Result
                 // may contain an opaque sibling. Its selected payload can still
@@ -4631,12 +4626,12 @@ impl Builder {
             // `Some`-payload concerns and cannot apply at nesting depth ≥ 1.
             for (src_local, src_variant_idx, binding) in nested_binding_jobs {
                 let binding_ty = self.subst_ty(&binding.ty);
-                self.statements.push(MirStatement::Bind {
-                    binding: binding.binding,
-                    name: binding.name.clone(),
-                    site: arm.body.site,
-                    ty: binding_ty.clone(),
-                });
+                self.push_bind_statement(
+                    binding.binding,
+                    binding.name.clone(),
+                    arm.body.site,
+                    binding_ty.clone(),
+                );
                 self.record_match_arm_binding_scope(binding.binding, arm);
                 let warrant = self.owner_warrant_for_scrutinee_payload(
                     binding.binding,
@@ -4959,12 +4954,7 @@ impl Builder {
             return;
         };
         let binding_ty = self.subst_ty(ty);
-        self.statements.push(MirStatement::Bind {
-            binding: *binding_id,
-            name: name.clone(),
-            site: arm.body.site,
-            ty: binding_ty.clone(),
-        });
+        self.push_bind_statement(*binding_id, name.clone(), arm.body.site, binding_ty.clone());
         self.record_binding_scope(*binding_id);
         let dest = self.alloc_local(binding_ty);
         self.push_instr(Instr::Move {

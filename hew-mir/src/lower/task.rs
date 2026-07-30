@@ -1673,12 +1673,12 @@ impl Builder {
                     Place::Local(n) => self.locals[n as usize].clone(),
                     _ => arm.body.ty.clone(),
                 };
-                self.statements.push(MirStatement::Bind {
-                    binding: binding_id,
-                    name: binding_name.clone(),
-                    site: arm.body.site,
-                    ty: ty_of_place.clone(),
-                });
+                self.push_bind_statement(
+                    binding_id,
+                    binding_name.clone(),
+                    arm.body.site,
+                    ty_of_place.clone(),
+                );
                 self.record_binding_scope(binding_id);
                 // The select-arm binding owns the value the runtime
                 // materialises into its slot on the win edge (the reply

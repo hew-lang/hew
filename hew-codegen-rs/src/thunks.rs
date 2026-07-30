@@ -2930,8 +2930,8 @@ pub(crate) fn emit_actor_sys_dispatch_trampoline<'ctx>(
     // M-7-R: emit the `HewSysMsg::Exit` → `#[on(exit)]` case body. The runtime
     // delivers `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind:
     // i32 }` as the message payload; unpack `crashed_actor_id` and `crash_kind`
-    // (the M-6 projection) and call `__on_exit(ctx, actor_id, crash_kind,
-    // borrow_mode)`. The hook is a run-to-completion ActorHandler returning unit,
+    // (the M-6 projection) and call `__on_exit(ctx, actor_id, crash_kind)`.
+    // The hook is a run-to-completion ActorHandler returning unit,
     // so the dispatch contributes `null` to the suspend-handle phi.
     if let (Some(on_exit_bb), Some(on_exit_symbol)) = (on_exit_bb, &layout.on_exit_symbol) {
         builder.position_at_end(on_exit_bb);

@@ -638,7 +638,7 @@ fn regex$new(string) -> Pattern [conv=default]
     _4: Pattern
     _5: i64
     _6: ()
-    _7: PatternHandle
+    _7: regex.PatternHandle
     _8: bool
     _9: bool
     _10: string

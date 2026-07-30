@@ -2,8 +2,8 @@ use super::{
     base_local, binding_reassignment_values_in_block, integer_bit_width, integer_signedness,
     ty_is_heap_owning_enum_composite, ActiveIterationOwner, Builder, CmpPred, HashSet, HirExpr,
     HirExprKind, HirStmtKind, Instr, IntArithOp, IntSignedness, LoopFrame, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, ProjectedPayloadOrigin, ProjectedPayloadRejectReason,
-    ResolvedRef, ResolvedTy, Terminator, TrapKind, SYNTHETIC_CALL_SCRUTINEE_NAME,
+    MirDiagnosticKind, Place, ProjectedPayloadOrigin, ProjectedPayloadRejectReason, ResolvedRef,
+    ResolvedTy, Terminator, TrapKind, SYNTHETIC_CALL_SCRUTINEE_NAME,
     SYNTHETIC_WHILE_LET_ITERATION_NAME,
 };
 
@@ -134,12 +134,12 @@ impl Builder {
 
         for binding in bindings {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -184,12 +184,12 @@ impl Builder {
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -573,12 +573,12 @@ impl Builder {
         let scrutinee_origin = self.classify_scrutinee_origin(scrutinee);
         for binding in bindings {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -626,12 +626,12 @@ impl Builder {
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -1436,12 +1436,12 @@ impl Builder {
         let scrutinee_origin = self.classify_scrutinee_origin(scrutinee);
         for binding in bindings {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -1486,12 +1486,12 @@ impl Builder {
         }
         for (src_local, src_variant_idx, binding) in nested_binding_jobs {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: scrutinee.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                scrutinee.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — an `if let` / `while let` / `let else` payload binder is a
             // field of the scrutinee; the warrant puts the scrutinee's
@@ -1978,12 +1978,12 @@ impl Builder {
         // bookkeeping; it carries a sentinel SiteId(0) because the loop
         // variable has no checker-recorded call site.
         self.binding_locals.insert(binding.id, counter);
-        self.statements.push(MirStatement::Bind {
-            binding: binding.id,
-            name: binding.name.clone(),
-            site: hew_hir::SiteId(0),
-            ty: counter_ty.clone(),
-        });
+        self.push_bind_statement(
+            binding.id,
+            binding.name.clone(),
+            hew_hir::SiteId(0),
+            counter_ty.clone(),
+        );
         self.record_binding_scope(binding.id);
 
         self.active_scopes.push(body.scope);

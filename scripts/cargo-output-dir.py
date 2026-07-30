@@ -76,15 +76,6 @@ def _configured_target(config: dict[str, Any], path: Path) -> str | None:
     die(f"{path} has a non-string build.target value")
 
 
-def _fallback_build_target(text: str, path: Path) -> str:
-    """Read Cargo's build.target through the dependency-free TOML parser."""
-    try:
-        config = toml_compat.loads(text)
-    except toml_compat.TOMLDecodeError as err:
-        die(f"cannot parse {path}: {err}")
-    return _configured_target(config, path) or ""
-
-
 def _load_toml(text: str, path: Path) -> dict[str, Any]:
     if tomllib is None:
         try:

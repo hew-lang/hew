@@ -14,7 +14,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HEW="${HEW_BIN:-${ROOT}/target/debug/hew}"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+source "${ROOT}/scripts/lib/cargo-output-dir.sh"
+HEW="${HEW_BIN:-$(cargo_debug_dir "${ROOT}")/hew}"
 DIR="${ROOT}/tests/pkg-import"
 PKGS="${DIR}/pkgs"
 

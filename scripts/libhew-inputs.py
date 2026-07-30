@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import os
 import sys
-import tomllib
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import toml_compat
 
 ROOT_INPUT_CRATE = "hew-lib"
 INPUT_FILE_NAMES = ("Cargo.toml", "build.rs")
@@ -53,7 +55,7 @@ def sibling_crate_name(path: str, manifest: str) -> str:
 
 def path_dependencies(manifest: str) -> list[str]:
     with open(manifest, "rb") as handle:
-        table = tomllib.load(handle)
+        table = toml_compat.load(handle)
 
     tables = [table]
     tables.extend(

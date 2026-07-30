@@ -43,10 +43,13 @@ source "$REPO_ROOT/scripts/lib/line-set.sh"
 # shellcheck source=scripts/lib/corpus-floor.sh
 # shellcheck disable=SC1091
 source "$REPO_ROOT/scripts/lib/corpus-floor.sh"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "$REPO_ROOT/scripts/lib/cargo-output-dir.sh"
 EXPECTED_FAILURES_FILE="$REPO_ROOT/scripts/hew-suite-expected-failures.txt"
 # HEW_BIN is overridable for parser tests (point it at a stub that replays
 # captured runner output); production callers use the default.
-HEW_BIN="${HEW_BIN:-$REPO_ROOT/target/debug/hew}"
+HEW_BIN="${HEW_BIN:-$(cargo_debug_dir "$REPO_ROOT")/hew}"
 TESTS_DIR="$REPO_ROOT/tests/hew"
 EMIT_O0_OUTCOMES_FILE=""
 

@@ -38,6 +38,7 @@ set -euo pipefail
 #   MACOS_TART_VM=macos-build
 #   HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@22
 #   HEW_WINDOWS_LLVM_PREFIX='C:\llvm-22'
+#   HEW_WINDOWS_STAGE_ROOT='P:/hew-pre-release-stages'
 #   HEW_WINDOWS_CC=cl
 #   HEW_WINDOWS_CXX=cl
 #
@@ -59,6 +60,9 @@ MACOS_LLVM_PREFIX="${HEW_MACOS_LLVM_PREFIX:-${MACOS_LLVM_PREFIX:-}}"
 
 WINDOWS_LLVM_PREFIX="${HEW_WINDOWS_LLVM_PREFIX:-C:\\llvm-22}"
 WINDOWS_LLVM_CONFIG="${HEW_WINDOWS_LLVM_CONFIG:-${WINDOWS_LLVM_PREFIX}\\lib\\cmake\\llvm\\LLVMConfig.cmake}"
+WINDOWS_STAGE_ROOT="${HEW_WINDOWS_STAGE_ROOT:-${WINDOWS_STAGE_ROOT:-}}"
+# Normalize the optional root before validating/interpolating it.
+WINDOWS_STAGE_ROOT="${WINDOWS_STAGE_ROOT//\\//}"
 WINDOWS_CC="${HEW_WINDOWS_CC:-cl}"
 WINDOWS_CXX="${HEW_WINDOWS_CXX:-cl}"
 
@@ -163,6 +167,32 @@ run_windows_powershell() {
         "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}"
 }
 
+powershell_utf8_base64() {
+    python3 -c 'import base64, sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$1"
+}
+
+run_windows_staged_build() {
+    local remote_stage="$1"
+    local llvm_config_b64 llvm_prefix_b64 cc_b64 cxx_b64
+    llvm_config_b64=$(powershell_utf8_base64 "$WINDOWS_LLVM_CONFIG")
+    llvm_prefix_b64=$(powershell_utf8_base64 "$WINDOWS_LLVM_PREFIX")
+    cc_b64=$(powershell_utf8_base64 "$WINDOWS_CC")
+    cxx_b64=$(powershell_utf8_base64 "$WINDOWS_CXX")
+
+    # Keep the OpenSSH/cmd.exe command small. The complete build and consumer
+    # proof live in the staged candidate at scripts/windows-release-build.ps1.
+    run_windows_powershell "${REMOTE_BUILD_TIMEOUT}" "
+\$ErrorActionPreference = 'Stop'
+\$Utf8 = [System.Text.Encoding]::UTF8
+\$env:HEW_WINDOWS_LLVM_CONFIG = \$Utf8.GetString([Convert]::FromBase64String('${llvm_config_b64}'))
+\$env:HEW_WINDOWS_LLVM_PREFIX = \$Utf8.GetString([Convert]::FromBase64String('${llvm_prefix_b64}'))
+\$env:HEW_WINDOWS_CC = \$Utf8.GetString([Convert]::FromBase64String('${cc_b64}'))
+\$env:HEW_WINDOWS_CXX = \$Utf8.GetString([Convert]::FromBase64String('${cxx_b64}'))
+& '${remote_stage}/scripts/windows-release-build.ps1'
+if (\$LASTEXITCODE -ne 0) { throw \"staged Windows build failed with exit code \$LASTEXITCODE\" }
+"
+}
+
 create_unix_remote_stage() {
     local host="$1"
     local stage
@@ -188,12 +218,28 @@ remove_unix_remote_stage() {
 }
 
 create_windows_remote_stage() {
-    run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
+    local root_init="\$Root = [System.IO.Path]::GetTempPath()"
+    if [[ -n "$WINDOWS_STAGE_ROOT" ]]; then
+        printf -v root_init "\$Root = '%s'" "$WINDOWS_STAGE_ROOT"
+    fi
+    local stage
+    stage=$(run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
 \$ErrorActionPreference = 'Stop'
-\$Stage = Join-Path ([System.IO.Path]::GetTempPath()) ('hew-pre-release-' + [guid]::NewGuid())
+${root_init}
+\$DriveName = [System.IO.Path]::GetPathRoot(\$Root).Substring(0, 1)
+\$Drive = Get-PSDrive -Name \$DriveName -PSProvider FileSystem
+if (\$Drive.Free -lt 8GB) {
+    throw \"Windows candidate stage \$Root has only \$([math]::Round(\$Drive.Free / 1GB, 2)) GiB free; at least 8 GiB is required\"
+}
+New-Item -ItemType Directory -Path \$Root -Force | Out-Null
+\$Stage = Join-Path \$Root ('hew-pre-release-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path \$Stage | Out-Null
 Write-Output (\$Stage.Replace('\\', '/'))
-"
+")
+    # Windows OpenSSH preserves PowerShell's CRLF line ending. Command
+    # substitution strips the LF but leaves a trailing CR, which must not
+    # become part of the validated/scp'd path.
+    printf '%s' "${stage//$'\r'/}"
 }
 
 remove_windows_remote_stage() {
@@ -331,7 +377,8 @@ validate_macos() {
         trap 'remove_unix_remote_stage "${MACOS_HOST}" "${remote_stage}"' EXIT
         echo "==> Staging local candidate on macOS: ${remote_stage}"
         run_with_timeout "${SYNC_TIMEOUT}" rsync -az \
-            --exclude target --exclude .git --exclude build \
+            --exclude target --exclude .git --exclude build --exclude .tmp \
+            --exclude node_modules \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
             . "${MACOS_HOST}:${remote_stage}/"
 
@@ -430,7 +477,8 @@ validate_linux_aarch64() {
         trap 'remove_unix_remote_stage "${LINUX_AARCH64_HOST}" "${remote_stage}"' EXIT
         echo "==> Staging local candidate on Linux aarch64: ${remote_stage}"
         run_with_timeout "${SYNC_TIMEOUT}" rsync -az \
-            --exclude target --exclude .git --exclude build \
+            --exclude target --exclude .git --exclude build --exclude .tmp \
+            --exclude node_modules \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
             . "${LINUX_AARCH64_HOST}:${remote_stage}/"
 
@@ -506,7 +554,8 @@ validate_freebsd() {
         trap 'remove_unix_remote_stage "${FREEBSD_HOST}" "${remote_stage}"' EXIT
         echo "==> Staging local candidate on FreeBSD: ${remote_stage}"
         run_with_timeout "${SYNC_TIMEOUT}" rsync -az \
-            --exclude target --exclude .git --exclude build \
+            --exclude target --exclude .git --exclude build --exclude .tmp \
+            --exclude node_modules \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
             . "${FREEBSD_HOST}:${remote_stage}/"
 
@@ -552,12 +601,20 @@ validate_windows() {
     banner "Windows (via SSH to ${WINDOWS_HOST})"
 
     local log="${LOG_DIR}/windows.log"
+    local llvm_config_b64 llvm_prefix_b64
+    llvm_config_b64=$(powershell_utf8_base64 "$WINDOWS_LLVM_CONFIG")
+    llvm_prefix_b64=$(powershell_utf8_base64 "$WINDOWS_LLVM_PREFIX")
 
     if [[ -z "$WINDOWS_HOST" ]]; then
         fail "windows" "WINDOWS_HOST not configured"
         return 1
     fi
-    if ! run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh -o ConnectTimeout=5 "${WINDOWS_HOST}" true 2>/dev/null; then
+    if [[ -n "$WINDOWS_STAGE_ROOT" && ! "$WINDOWS_STAGE_ROOT" =~ ^[A-Za-z]:/[A-Za-z0-9._/\ -]+$ ]]; then
+        fail "windows" "HEW_WINDOWS_STAGE_ROOT is not a safe absolute Windows path"
+        return 1
+    fi
+    if ! run_windows_powershell "${SSH_CHECK_TIMEOUT}" \
+        "\$ErrorActionPreference = 'Stop'; Write-Output 'reachable'" >/dev/null 2>&1; then
         fail "windows" "${WINDOWS_HOST} unreachable"
         return 1
     fi
@@ -574,7 +631,8 @@ validate_windows() {
         candidate_archive="${LOG_DIR}/windows-candidate.tar.gz"
         echo "==> Staging local candidate on Windows: ${remote_stage}"
         tar -czf "${candidate_archive}" \
-            --exclude='./target' --exclude='./.git' --exclude='./build' \
+            --exclude='./target' --exclude='./.git' --exclude='./build' --exclude='./.tmp' \
+            --exclude='node_modules' \
             --exclude='*.o' --exclude='*.a' --exclude='*.d' .
         run_with_timeout "${SYNC_TIMEOUT}" scp "${candidate_archive}" \
             "${WINDOWS_HOST}:${remote_stage}/candidate.tar.gz"
@@ -588,58 +646,16 @@ Remove-Item -LiteralPath '${remote_stage}/candidate.tar.gz' -Force
         echo "==> Verifying Windows LLVM install"
         run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
 \$ErrorActionPreference = 'Stop'
-if (-not (Test-Path '${WINDOWS_LLVM_CONFIG}')) {
-    throw 'Missing ${WINDOWS_LLVM_CONFIG}. Bootstrap LLVM 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation.'
+\$Utf8 = [System.Text.Encoding]::UTF8
+\$LlvmConfig = \$Utf8.GetString([Convert]::FromBase64String('${llvm_config_b64}'))
+if (-not (Test-Path \$LlvmConfig)) {
+    throw \"Missing \$LlvmConfig. Bootstrap LLVM 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation.\"
 }
-Write-Host 'Found ${WINDOWS_LLVM_CONFIG}'
+Write-Host \"Found \$LlvmConfig\"
 "
 
         echo "==> Building on Windows with the LLVM toolchain"
-        # PowerShell here-strings embed Rust and Hew source. Their quotes are
-        # data for PowerShell, not Bash syntax.
-        # shellcheck disable=SC1078,SC1079,SC2140
-        run_windows_powershell "${REMOTE_BUILD_TIMEOUT}" "
-\$ErrorActionPreference = 'Stop'
-function Assert-NativeSuccess([string]\$Label) {
-    if (\$LASTEXITCODE -ne 0) {
-        throw \"\${Label} failed with exit code \$LASTEXITCODE\"
-    }
-}
-
-Set-Location '${remote_stage}'
-if (-not (Test-Path '${WINDOWS_LLVM_CONFIG}')) {
-    throw 'Missing ${WINDOWS_LLVM_CONFIG}. Bootstrap LLVM 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation.'
-}
-
-\$env:LLVM_PREFIX = '${WINDOWS_LLVM_PREFIX}'
-\$env:Path = '${WINDOWS_LLVM_PREFIX}\\bin;' + \$env:Path
-\$env:CC = '${WINDOWS_CC}'
-\$env:CXX = '${WINDOWS_CXX}'
-
-cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
-Assert-NativeSuccess 'cargo build release binaries'
-
-cargo build -p hew-lib --profile release-lib
-Assert-NativeSuccess 'cargo build hew-lib'
-
-if (-not (Test-Path '.\\target\\release-lib\\hew.lib')) {
-    throw 'target/release-lib/hew.lib missing after cargo build --profile release-lib'
-}
-& .\\scripts\\test-release-lib-link.ps1 -Hew .\\target\\release\\hew.exe -Archive .\\target\\release-lib\\hew.lib
-Assert-NativeSuccess 'release library consumer proof'
-
-& .\\target\\release\\hew.exe --version
-Assert-NativeSuccess 'hew.exe --version'
-
-& .\\target\\release\\adze.exe --version
-Assert-NativeSuccess 'adze.exe --version'
-
-& .\\target\\release\\hew-lsp.exe --version
-Assert-NativeSuccess 'hew-lsp.exe --version'
-
-& .\\target\\release\\hew-observe.exe --version
-Assert-NativeSuccess 'hew-observe.exe --version'
-"
+        run_windows_staged_build "${remote_stage}"
 
         echo "==> Smoke test on Windows"
         run_windows_powershell "${SMOKE_TIMEOUT}" "
@@ -651,7 +667,9 @@ function Assert-NativeSuccess([string]\$Label) {
 }
 
 Set-Location '${remote_stage}'
-\$env:Path = '${WINDOWS_LLVM_PREFIX}\\bin;' + \$env:Path
+\$Utf8 = [System.Text.Encoding]::UTF8
+\$LlvmPrefix = \$Utf8.GetString([Convert]::FromBase64String('${llvm_prefix_b64}'))
+\$env:Path = \"\$LlvmPrefix\\bin;\" + \$env:Path
 \$smokeProgram = 'fn main() { println(\"smoke-ok\") }'
 Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
 

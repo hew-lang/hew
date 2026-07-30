@@ -73,7 +73,7 @@
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
 .PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
-.PHONY: clean install uninstall verify-ffi test-verify-ffi
+.PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest
@@ -456,9 +456,9 @@ fuzz-corpus:
 FUZZ_ORACLE_FULL ?=
 fuzz-oracle: hew-native runtime $(LIBHEW_READY)
 	@if [ -n "$(FUZZ_ORACLE_FULL)" ]; then \
-		python3 scripts/fuzz/run-oracle.py --full --timeout 30; \
+		python3 scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --full --timeout 30; \
 	else \
-		python3 scripts/fuzz/run-oracle.py --timeout 30; \
+		python3 scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --timeout 30; \
 	fi
 
 # Oracle self-tests: four independently-failable checks that prove the
@@ -466,7 +466,7 @@ fuzz-oracle: hew-native runtime $(LIBHEW_READY)
 # (unexpected-pass and unexpected-fail both fail closed), and refuses to
 # report PASS over a candidate set below its floor.
 fuzz-oracle-selftest: hew-native runtime $(LIBHEW_READY)
-	bash scripts/fuzz/oracle-selftest.sh
+	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/fuzz/oracle-selftest.sh
 
 bootstrap: install-hooks
 
@@ -788,29 +788,29 @@ test-compiler-pipeline: wasm-runtime $(LIBHEW_READY)
 # Build libhew first and verify freshness so native fixture links do not test
 # against stale runtime/stdlib archives on a fresh checkout or CI runner.
 test-vertical-slice: hew-native runtime $(LIBHEW_READY)
-	bash tests/vertical-slice/run.sh
+	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/vertical-slice/run.sh
 
 # Cross-module package-import oracle: fixtures importing the in-tree
 # `hew::testffi` package through `hew run --pkg-path` — imported-actor value
 # asks, imported-type trait methods, and the [native] auto-link path.
 test-pkg-import: hew-native runtime $(LIBHEW_READY)
-	bash tests/pkg-import/run.sh
+	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/pkg-import/run.sh
 
 # Package-manager consumer oracle: publish-like local setup, `hew package
 # install`, lock/materialization assertions, `hew check`, and exact `hew run`
 # stdout under an isolated HOME.
 test-package-install: hew-native adze runtime $(LIBHEW_READY)
-	bash tests/package-install/run.sh
+	HEW_BIN="$(DEBUG_DIR)/hew" ADZE_BIN="$(DEBUG_DIR)/adze" bash tests/package-install/run.sh
 
 # Golden MIR corpus (examples/v05/checked-mir): byte-identical --dump-mir
 # oracle for internal retyping work. `checked-mir-verify` re-dumps every
 # fixture and diffs against the committed goldens; `checked-mir-golden`
 # recaptures them (only in a commit that justifies the dump change).
 checked-mir-verify: hew
-	bash scripts/checked-mir-corpus.sh verify
+	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/checked-mir-corpus.sh verify
 
 checked-mir-golden: hew
-	bash scripts/checked-mir-corpus.sh golden
+	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/checked-mir-corpus.sh golden
 
 # Execution gate for the same corpus: build and run every fixture and diff
 # a transcript (exit status + verbatim stdout) against its committed
@@ -822,10 +822,10 @@ checked-mir-golden: hew
 # the expectation set is closed both ways: a fixture with `main` and no
 # expectation fails, an expectation for a fixture without `main` fails.
 checked-mir-run: hew runtime stdlib check-libhew-fresh
-	bash scripts/checked-mir-corpus.sh run
+	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/checked-mir-corpus.sh run
 
 checked-mir-expect: hew runtime stdlib check-libhew-fresh
-	bash scripts/checked-mir-corpus.sh expect
+	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/checked-mir-corpus.sh expect
 
 # Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
 # pure codegen refactor (dedup, extract-helper, file-split) emits zero changed
@@ -834,10 +834,10 @@ checked-mir-expect: hew runtime stdlib check-libhew-fresh
 # justifies the IR change, with the diff in the commit body).  Both native and
 # wasm32 targets are covered.
 ll-diff: hew
-	bash scripts/ll-corpus.sh verify
+	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/ll-corpus.sh verify
 
 ll-golden: hew
-	bash scripts/ll-corpus.sh golden
+	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/ll-corpus.sh golden
 
 # Self-test for the ll-byte-identity normaliser: six independently-failable
 # cases that prove string-content changes and numeric-const NAME changes are
@@ -878,14 +878,14 @@ test-runtime-unit:
 # env var keep their original standalone behaviour).
 test-hew-ratchet: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running Hew test suite (ratcheted)"
-	scripts/hew-suite-ratchet.sh $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
+	HEW_BIN="$(DEBUG_DIR)/hew" scripts/hew-suite-ratchet.sh $(if $(HEW_O0_OUTCOMES_FILE),--emit-o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 # The -O0-vs-O2 differential-exec parity gate: every compiled `.hew` program
 # must behave identically at -O0 and -O2. The no-miscompile oracle for the LLVM
 # middle-end pipeline (RC9). A divergence is a miscompile and a full stop.
 test-o2-differential: hew-native runtime $(LIBHEW_READY)
 	@echo "==> Running -O0-vs-O2 differential-exec parity gate"
-	scripts/o2-differential.sh $(if $(HEW_O0_OUTCOMES_FILE),--o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
+	HEW_BIN="$(DEBUG_DIR)/hew" scripts/o2-differential.sh $(if $(HEW_O0_OUTCOMES_FILE),--o0-outcomes "$(HEW_O0_OUTCOMES_FILE)")
 
 o2-differential-selftest:
 	bash scripts/o2-differential-selftest.sh
@@ -913,13 +913,13 @@ test-check-gate-reachability:
 
 test-stdlib-ratchet: hew
 	@echo "==> Type-checking stdlib (ratcheted)"
-	scripts/stdlib-ratchet.sh
+	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-ratchet.sh
 
 # Verify the public stdlib index has exactly one executable fixture proof per
 # module, and that each manifest fixture is run by its declared test command.
 test-stdlib-execution-proofs:
 	@echo "==> Verifying public stdlib execution proofs"
-	scripts/stdlib-execution-proof.sh --check
+	HEW_BIN="$(DEBUG_DIR)/hew" scripts/stdlib-execution-proof.sh --check
 
 # Run every examples/ux and examples/progressive tutorial against its paired
 # .expected file. The shared runner fails closed on missing/orphan expectations,
@@ -988,7 +988,7 @@ test-example-expectations-selftest:
 # Run `make test-doc-examples` after any docs/ change to confirm no fence
 # regressions were introduced.
 test-doc-examples: hew
-	@scripts/extract-doc-fences.sh
+	@HEW_BIN="$(DEBUG_DIR)/hew" scripts/extract-doc-fences.sh
 
 # Exercise pipe-safe membership wiring across every shell ratchet, then drive
 # matching and mutated doc-failure sets through the production harness.
@@ -1187,6 +1187,8 @@ test-sandbox-parity-coverage-check:
 test-release-workflow-contract:
 	python3 scripts/tests/test_release_workflow_contract.py
 	python3 scripts/tests/test_pre_release_validate_contract.py
+	python3 scripts/tests/test_cargo_output_dir.py
+	python3 scripts/tests/test_target_dir_gate_wiring.py
 
 # Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
 # and scan commit-message bodies of commits not yet on origin/main for the same tokens.
@@ -1346,6 +1348,12 @@ verify-ffi:
 
 test-verify-ffi:
 	python3 scripts/tests/test_verify_ffi_symbols.py
+
+# The release macOS validator uses Python 3.10, which has no stdlib tomllib.
+# Force the dependency-free parser even on newer CI interpreters and run every
+# production consumer of repository TOML policy/configuration.
+test-python310-toml-compat:
+	HEW_FORCE_TOML_FALLBACK=1 python3 scripts/tests/test_toml_compat.py
 
 # ── System-lane closure ────────────────────────────────────────────────────
 # docs/internal/jit-host-abi.md forbids any `stable` symbol from producing,

@@ -2771,6 +2771,23 @@ pub struct Checker {
     /// failure precisely (e.g. `module 'm' has no exported type 'T'`) instead of
     /// leaking through to the bare-identifier "undefined variable" fallback.
     pub(super) module_type_exports: HashMap<String, HashSet<String>>,
+    /// Canonical full source module for each lexical whole-module binding.
+    ///
+    /// For `import std::failure as f`, `(current_module, "f")` maps to
+    /// `"std.failure"`.  Qualified lifecycle types use this table to preserve
+    /// their canonical source identity instead of treating the alias spelling
+    /// (`f.CrashNotification`) as a distinct nominal type.  The key is scoped
+    /// to the importer, so an alias imported by a sibling cannot authorize the
+    /// current module.
+    pub(super) module_import_bindings: HashMap<(Option<String>, String), String>,
+    /// Lifecycle identities authorized for one lexical import binding.
+    ///
+    /// Entries are `(importing_module, binding, canonical_identity)`, for
+    /// example `(None, "f", "failure.CrashNotification")`.  Unlike ordinary
+    /// type visibility and import tables, this authority is written only after
+    /// the import target's exact source path has been proven to be the shipped
+    /// `std.failure` or `std.link_monitor` source.
+    pub(super) canonical_lifecycle_import_authority: HashSet<(Option<String>, String, String)>,
     /// Qualified type names (`module.Type`) for which a visibility-violation
     /// diagnostic has already been emitted in the current check pass.  Prevents
     /// duplicate `E_VISIBILITY` errors when the same private/package type appears in
@@ -3368,6 +3385,8 @@ impl Checker {
             user_modules: HashSet::new(),
             module_fn_exports: HashSet::new(),
             module_type_exports: HashMap::new(),
+            module_import_bindings: HashMap::new(),
+            canonical_lifecycle_import_authority: HashSet::new(),
             reported_type_visibility_violations: HashSet::new(),
             reported_undefined_named_types: HashSet::new(),
             reported_borrow_types_outside_extern: HashSet::new(),

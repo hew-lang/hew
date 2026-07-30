@@ -1,5 +1,5 @@
-import std::link_monitor::{DownNotification, DownReason, DownTarget};
-
+// Reject: source-owned lifecycle types require a published import binding.
+// Omitting one must fail in checker resolution, never in HIR/MIR layout.
 actor Watcher {
     #[on(down)]
     fn on_down(note: DownNotification) {
@@ -11,14 +11,6 @@ actor Watcher {
             DownTarget::Remote(location) => {
                 let _location = location;
             }
-        }
-        match note.reason {
-            DownReason::Exited => {}
-            DownReason::Crashed(kind) => {
-                let _kind = kind;
-            }
-            DownReason::MonitorLost => {}
-            DownReason::LocalShutdown => {}
         }
     }
 }

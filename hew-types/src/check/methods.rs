@@ -2044,11 +2044,26 @@ impl Checker {
         if !self.modules.contains(module_short) {
             return None;
         }
-        let exports = self.module_type_exports.get(module_short)?;
+        let canonical_source = self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), module_short.to_string()))
+            .map(String::as_str);
+        let resolved_module = match canonical_source {
+            Some("std.failure") => "failure",
+            Some("std.link_monitor") => "link_monitor",
+            _ => {
+                // User-module registration historically keys all qualified exports
+                // on the lexical alias. Preserve that general import behaviour
+                // while canonical std lifecycle modules resolve through their
+                // source owner.
+                module_short
+            }
+        };
+        let exports = self.module_type_exports.get(resolved_module)?;
         if !exports.contains(type_name) {
             return None;
         }
-        let qualified = format!("{module_short}.{type_name}");
+        let qualified = format!("{resolved_module}.{type_name}");
         self.type_defs.get(&qualified).cloned()
     }
 
@@ -6555,7 +6570,14 @@ impl Checker {
                 // method contains "::" → treat as a qualified variant constructor rather than a
                 // module function. Mirrors the lookup in check_call (calls.rs:407-465).
                 if method.contains("::") {
-                    let constructor_match = self.lookup_variant_constructor(method);
+                    let lifecycle_surface = format!("{name}.{method}");
+                    let Ok(canonical_lifecycle) =
+                        self.canonicalize_source_lifecycle_value_path(&lifecycle_surface, span)
+                    else {
+                        return Ty::Error;
+                    };
+                    let constructor_surface = canonical_lifecycle.as_deref().unwrap_or(method);
+                    let constructor_match = self.lookup_variant_constructor(constructor_surface);
                     if let Some((type_name, expected_params, type_params)) = constructor_match {
                         let type_param_count = type_params.len();
                         let mut inferred_args = Vec::new();

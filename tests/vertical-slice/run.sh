@@ -1757,6 +1757,27 @@ run_accept_expect_stdout "on_exit_hook_delivery"
 # DownNotification payload and route HewSysMsg::Down through actor dispatch.
 run_accept_expect_status "on_down_hook" 42
 
+# Diagnostic-honesty counterfactuals (W_B3): lifecycle payload records are
+# source-owned. Their bare spelling requires a named/glob/aliased publication;
+# an omitted import must fail during checker resolution, never as an
+# internal-looking HIR/MIR layout failure. The two accept fixtures above pin
+# the imported form; the checker unit matrix pins unused-import accounting.
+echo "RUN on_exit_hook_missing_import (reject)"
+expect_check_fail_contains_without \
+  "${ROOT}/tests/vertical-slice/reject/on_exit_hook_missing_import.hew" \
+  "unknown type \`CrashNotification\`" \
+  "CheckerBoundaryViolation" \
+  "on_exit_hook_missing_import"
+echo "PASS on_exit_hook_missing_import (reject)"
+
+echo "RUN on_down_hook_missing_import (reject)"
+expect_check_fail_contains_without \
+  "${ROOT}/tests/vertical-slice/reject/on_down_hook_missing_import.hew" \
+  "unknown type \`DownNotification\`" \
+  "CheckerBoundaryViolation" \
+  "on_down_hook_missing_import"
+echo "PASS on_down_hook_missing_import (reject)"
+
 # `#[max_heap(N)]` wire-through — direct spawn path:
 #   1. MIR dump confirms SpawnActor carries max_heap=65536,
 #      proving the annotation propagated from HIR through MIR.

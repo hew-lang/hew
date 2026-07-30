@@ -980,6 +980,12 @@ impl Checker {
                 }
             }
             Pattern::Identifier(name) => {
+                if self
+                    .canonicalize_source_lifecycle_value_path(name, span)
+                    .is_err()
+                {
+                    return;
+                }
                 // Determine if this identifier names a constructor (unit variant) so we
                 // can gate `reject_machine_event_pattern_outside_transition`.  Use scope
                 // resolution rather than the old uppercase-first casing heuristic (#2116):
@@ -1007,6 +1013,12 @@ impl Checker {
                     .define_with_span(name.clone(), ty.clone(), is_mutable, span.clone());
             }
             Pattern::Constructor { name, patterns } => {
+                if self
+                    .canonicalize_source_lifecycle_value_path(name, span)
+                    .is_err()
+                {
+                    return;
+                }
                 if self.reject_machine_event_pattern_outside_transition(ty, span) {
                     return;
                 }
@@ -1057,6 +1069,12 @@ impl Checker {
                 }
             }
             Pattern::Struct { name, fields, .. } => {
+                if self
+                    .canonicalize_source_lifecycle_value_path(name, span)
+                    .is_err()
+                {
+                    return;
+                }
                 if self.reject_machine_event_pattern_outside_transition(ty, span) {
                     return;
                 }

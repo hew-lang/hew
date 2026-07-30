@@ -564,8 +564,14 @@ impl Checker {
             return Some(result_ty);
         }
 
+        let Ok(canonical_lifecycle) =
+            self.canonicalize_source_lifecycle_value_path(&func_name, span)
+        else {
+            return Some(Ty::Error);
+        };
+        let constructor_name = canonical_lifecycle.as_deref().unwrap_or(&func_name);
         if let Some((type_name, expected_params, type_params)) =
-            self.lookup_variant_constructor(&func_name)
+            self.lookup_variant_constructor(constructor_name)
         {
             let mut inferred_args = Self::expected_constructor_type_args(
                 &resolved_expected,
@@ -954,7 +960,13 @@ impl Checker {
         // to avoid cloning the entire type_defs map.
         //
         // Handle both unqualified (`Circle(5)`) and qualified (`Shape::Circle(5)`) forms.
-        let constructor_match = self.lookup_variant_constructor(&func_name);
+        let Ok(canonical_lifecycle) =
+            self.canonicalize_source_lifecycle_value_path(&func_name, span)
+        else {
+            return Ty::Error;
+        };
+        let constructor_name = canonical_lifecycle.as_deref().unwrap_or(&func_name);
+        let constructor_match = self.lookup_variant_constructor(constructor_name);
         if let Some((type_name, expected_params, type_params)) = constructor_match {
             let type_param_count = type_params.len();
             if type_param_count == 0 {

@@ -1117,6 +1117,7 @@ impl Checker {
                 &items,
                 StdlibBarePublication::Prelude,
             );
+            self.record_canonical_lifecycle_prelude_authority("std.link_monitor");
             // The on-disk stdlib path derives this from the `#[resource]` marker
             // in `stdlib_loader` (resource types are pushed into `drop_types`),
             // which makes the trait registry treat `MonitorRef` as move-only so
@@ -1157,6 +1158,7 @@ impl Checker {
                 &items,
                 StdlibBarePublication::Prelude,
             );
+            self.record_canonical_lifecycle_prelude_authority("std.failure");
         }
     }
 
@@ -1404,6 +1406,182 @@ impl Checker {
         }
     }
 
+    /// Seed lifecycle import bindings from module-graph edges before type
+    /// declaration members are pre-registered.
+    ///
+    /// `collect_types` intentionally runs before the ordinary import pass, but
+    /// enum/record members can themselves name an imported lifecycle type
+    /// (`std.link_monitor`'s `Crashed(CrashKind)`).  A source declaration alone
+    /// is not authority: require a matching resolved graph edge, then publish
+    /// exactly the same lexical/canonical bindings the later import pass would.
+    fn seed_resolved_lifecycle_import_bindings(
+        &mut self,
+        module: &hew_parser::module::Module,
+        importer: &str,
+        module_graph: &hew_parser::module::ModuleGraph,
+    ) {
+        for (item, _) in &module.items {
+            let Item::Import(decl) = item else {
+                continue;
+            };
+            let Some(resolved) = module
+                .imports
+                .iter()
+                .find(|edge| edge.target.path == decl.path)
+            else {
+                continue;
+            };
+            let canonical_module = resolved.target.path.join(".");
+            let owner = match canonical_module.as_str() {
+                "std.failure" => "failure",
+                "std.link_monitor" => "link_monitor",
+                _ => continue,
+            };
+            let target_is_canonical =
+                module_graph
+                    .modules
+                    .get(&resolved.target)
+                    .is_some_and(|target| {
+                        target.source_paths.iter().any(|source| {
+                            crate::module_registry::is_canonical_stdlib_module_source(
+                                source,
+                                &canonical_module,
+                            )
+                        })
+                    });
+            let module_binding = decl
+                .module_alias
+                .clone()
+                .or_else(|| decl.path.last().cloned())
+                .unwrap_or_else(|| owner.to_string());
+            if decl.spec.is_none() {
+                self.module_import_bindings.insert(
+                    (Some(importer.to_string()), module_binding.clone()),
+                    canonical_module,
+                );
+            }
+
+            let lifecycle_names: &[&str] = match owner {
+                "failure" => &["CrashNotification", "CrashKind"],
+                "link_monitor" => &["MonitorId", "DownTarget", "DownReason", "DownNotification"],
+                _ => unreachable!("matched canonical lifecycle owner"),
+            };
+            for source_name in lifecycle_names {
+                let source_identity = format!("{owner}.{source_name}");
+                if target_is_canonical {
+                    self.canonical_lifecycle_import_authority.insert((
+                        Some(importer.to_string()),
+                        if decl.spec.is_none() {
+                            module_binding.clone()
+                        } else {
+                            let Some(binding) =
+                                StdlibBarePublication::Import(&decl.spec).bare_binding(source_name)
+                            else {
+                                continue;
+                            };
+                            binding
+                        },
+                        source_identity.clone(),
+                    ));
+                }
+                let Some(binding) =
+                    StdlibBarePublication::Import(&decl.spec).bare_binding(source_name)
+                else {
+                    continue;
+                };
+                self.known_types.insert(binding.clone());
+                self.record_published_bare_type(&binding, &source_identity);
+                self.import_type_name_aliases.insert(
+                    (Some(importer.to_string()), binding.clone()),
+                    source_identity,
+                );
+                self.unqualified_to_module
+                    .insert((Some(importer.to_string()), binding), owner.to_string());
+            }
+        }
+    }
+
+    /// Record direct lexical authority for lifecycle types imported from an
+    /// exact shipped stdlib source.  A user module can be named `std.failure`,
+    /// so module spelling and ordinary visibility are intentionally not proof.
+    fn record_canonical_lifecycle_import_authority(
+        &mut self,
+        decl: &ImportDecl,
+        importer: Option<&str>,
+    ) {
+        let module_name = decl.path.join(".");
+        let owner = match module_name.as_str() {
+            "std.failure" => "failure",
+            "std.link_monitor" => "link_monitor",
+            _ => return,
+        };
+        if !decl.resolved_source_paths.iter().any(|source| {
+            crate::module_registry::is_canonical_stdlib_module_source(source, &module_name)
+        }) {
+            return;
+        }
+        let module_binding = decl
+            .module_alias
+            .clone()
+            .or_else(|| decl.path.last().cloned())
+            .unwrap_or_else(|| owner.to_string());
+        let lifecycle_names: &[&str] = match owner {
+            "failure" => &["CrashNotification", "CrashKind"],
+            "link_monitor" => &["MonitorId", "DownTarget", "DownReason", "DownNotification"],
+            _ => unreachable!("matched canonical lifecycle owner"),
+        };
+        for source_name in lifecycle_names {
+            let Some(binding) = StdlibBarePublication::Import(&decl.spec).bare_binding(source_name)
+            else {
+                if decl.spec.is_none() {
+                    self.canonical_lifecycle_import_authority.insert((
+                        importer.map(str::to_owned),
+                        module_binding.clone(),
+                        format!("{owner}.{source_name}"),
+                    ));
+                }
+                continue;
+            };
+            self.canonical_lifecycle_import_authority.insert((
+                importer.map(str::to_owned),
+                binding,
+                format!("{owner}.{source_name}"),
+            ));
+        }
+    }
+
+    /// The isolated-checker prelude is compiled from the shipped lifecycle
+    /// sources. Preserve its intentionally import-free bare spellings, but
+    /// make that trust explicit with the same canonical-source proof used for
+    /// ordinary imports.
+    fn record_canonical_lifecycle_prelude_authority(&mut self, module_name: &str) {
+        let owner = match module_name {
+            "std.failure" => "failure",
+            "std.link_monitor" => "link_monitor",
+            _ => return,
+        };
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-types crate has a workspace parent")
+            .join("std")
+            .join(format!("{owner}.hew"));
+        if !crate::module_registry::is_canonical_stdlib_module_source(&source, module_name) {
+            return;
+        }
+        let lifecycle_names: &[&str] = match owner {
+            "failure" => &["CrashNotification", "CrashKind"],
+            "link_monitor" => &["MonitorId", "DownTarget", "DownReason", "DownNotification"],
+            _ => unreachable!("matched canonical lifecycle owner"),
+        };
+        for source_name in lifecycle_names {
+            self.canonical_lifecycle_import_authority.insert((
+                None,
+                (*source_name).to_string(),
+                format!("{owner}.{source_name}"),
+            ));
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "type registration handles all root item variants in one place"
@@ -1431,6 +1609,7 @@ impl Checker {
                 if let Some(module) = mg.modules.get(mod_id) {
                     let module_name = mod_id.path.join(".");
                     self.current_module = Some(module_name.clone());
+                    self.seed_resolved_lifecycle_import_bindings(module, &module_name, mg);
                     // Temporarily scope local_type_defs so that resolve_type_expr
                     // inside field type resolution does not inject fresh type vars
                     // on handle types from this module.
@@ -7642,11 +7821,23 @@ impl Checker {
                     let resource_wrapper_types = info.resource_wrapper_types.clone();
                     let drop_types = info.drop_types.clone();
 
-                    let short = module_path
+                    let canonical_short = module_path
                         .rsplit("::")
                         .next()
                         .unwrap_or(&module_path)
                         .to_string();
+                    let short = decl
+                        .module_alias
+                        .clone()
+                        .unwrap_or_else(|| canonical_short.clone());
+
+                    // Registry-backed stdlib imports can also carry a resolved
+                    // Hew source surface.  Grant lifecycle authority only when
+                    // that surface identifies the exact shipped source file;
+                    // the registry's successful lookup by module spelling is
+                    // not itself provenance proof.
+                    let importer = self.current_module.clone();
+                    self.record_canonical_lifecycle_import_authority(decl, importer.as_deref());
 
                     // Register extern C function signatures
                     for func in functions {
@@ -7679,6 +7870,12 @@ impl Checker {
 
                     // Register module and clean names
                     self.modules.insert(short.clone());
+                    if decl.spec.is_none() {
+                        self.module_import_bindings.insert(
+                            (self.current_module.clone(), short.clone()),
+                            module_path.replace("::", "."),
+                        );
+                    }
                     if let Some(span) = import_span {
                         self.import_spans.insert(
                             ImportKey::new(self.current_module.clone(), short.clone()),
@@ -7728,7 +7925,7 @@ impl Checker {
                         self.register_resolved_stdlib_hew_source(
                             decl,
                             &module_path,
-                            &short,
+                            &canonical_short,
                             &module_full_path,
                             resolved_items,
                             StdlibBarePublication::Import(&decl.spec),
@@ -7829,6 +8026,11 @@ impl Checker {
                 // File imports register top-level names without a module namespace.
                 self.register_file_import_items(resolved_items);
             } else {
+                // Lifecycle nominal identities require stronger provenance than
+                // the ordinary resolved-item surface: only an exact canonical
+                // stdlib source path can grant this import binding authority.
+                let importer = self.current_module.clone();
+                self.record_canonical_lifecycle_import_authority(decl, importer.as_deref());
                 // The qualifier a bare reference reaches this module's names
                 // through. A whole-module alias (`import path as m;`) overrides
                 // the default last-segment qualifier, so the module's qualified
@@ -7839,6 +8041,12 @@ impl Checker {
                     .unwrap_or_else(|| decl.path.last().expect("import path is non-empty").clone());
                 self.modules.insert(short.clone());
                 self.user_modules.insert(short.clone());
+                if decl.spec.is_none() {
+                    self.module_import_bindings.insert(
+                        (self.current_module.clone(), short.clone()),
+                        decl.path.join("."),
+                    );
+                }
                 if let Some(span) = import_span {
                     self.import_spans.insert(
                         ImportKey::new(self.current_module.clone(), short.clone()),

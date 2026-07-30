@@ -37,7 +37,10 @@ pub use actor_protocol::{
     compute_default_msg_id, qualified_handler_name, ActorHandlerDescriptor, ActorHandlerSpec,
     ActorProtocolCollision, ActorProtocolDescriptor,
 };
-pub use builtin_type::{builtin_types, lookup_builtin_type, BuiltinType, BuiltinTypeInfo};
+pub use builtin_type::{
+    builtin_types, lookup_builtin_type, lookup_source_owned_lifecycle_type, BuiltinType,
+    BuiltinTypeInfo,
+};
 pub use check::{
     builtin_function_names, directive_suppresses, ActorMethodKind, ActorStateGuard, ArmResolution,
     AssignTargetKind, AssignTargetShape, Bound, CallAbiHint, CaptureModeOrigin, Checker, ChildKind,

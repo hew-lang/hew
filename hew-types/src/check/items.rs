@@ -1729,12 +1729,9 @@ impl Checker {
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_crash_notification = is_canonical_std_named_type(
-                    &pty,
-                    crate::BuiltinType::CrashNotification,
-                    "failure.CrashNotification",
-                );
-                if !is_crash_notification {
+                let is_crash_notification =
+                    is_canonical_lifecycle_source_type(&pty, "failure.CrashNotification");
+                if !is_crash_notification && !matches!(pty, Ty::Error) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         p.ty.1.clone(),
@@ -1814,12 +1811,9 @@ impl Checker {
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_down_notification = is_canonical_std_named_type(
-                    &pty,
-                    crate::BuiltinType::DownNotification,
-                    "link_monitor.DownNotification",
-                );
-                if !is_down_notification {
+                let is_down_notification =
+                    is_canonical_lifecycle_source_type(&pty, "link_monitor.DownNotification");
+                if !is_down_notification && !matches!(pty, Ty::Error) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         p.ty.1.clone(),
@@ -2616,6 +2610,21 @@ fn is_canonical_std_named_type(
         } if args.is_empty()
             && (*resolved_builtin == Some(builtin)
                 || (resolved_builtin.is_none() && name == source_identity))
+    )
+}
+
+/// Lifecycle payload records are source-owned: after resolution, only their
+/// canonical owner-qualified source identity proves the hook ABI.  Unlike
+/// compiler-intrinsic carriers, a bare builtin discriminator is not authority
+/// for these records because it has no accompanying source layout.
+fn is_canonical_lifecycle_source_type(ty: &Ty, source_identity: &str) -> bool {
+    matches!(
+        ty,
+        Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } if args.is_empty() && name == source_identity
     )
 }
 

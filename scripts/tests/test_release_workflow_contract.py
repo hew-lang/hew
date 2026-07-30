@@ -265,11 +265,15 @@ def test_npm_publication_is_pinned_to_a_version_matching_release_tag() -> None:
     assert "        type: string\n" in text
     assert "  group: publish-npm-packages-${{ inputs.release_tag }}" in text
     assert "          ref: ${{ inputs.release_tag }}" in text
+    assert "          fetch-depth: 0" in text
     assert (
         "      - name: Verify immutable release identity and package versions\n" in text
     )
     assert "RELEASE_TAG: ${{ inputs.release_tag }}" in text
     assert "^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$" in text
+    assert 'git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"' in text
+    assert 'git rev-parse "refs/tags/${RELEASE_TAG}^{commit}"' in text
+    assert 'if [ "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]; then' in text
     assert 'EXPECTED_VERSION="${RELEASE_TAG#v}"' in text
     assert (
         "Cargo.toml version ${WORKSPACE_VERSION} does not match ${RELEASE_TAG}" in text
@@ -278,6 +282,17 @@ def test_npm_publication_is_pinned_to_a_version_matching_release_tag() -> None:
         "hew-sandbox-vm version ${SANDBOX_VM_VERSION} does not match ${RELEASE_TAG}"
         in text
     )
+    assert 'if [[ "${EXPECTED_VERSION}" == *-* ]]; then' in text
+    assert "NPM_DIST_TAG=next" in text
+    assert "NPM_DIST_TAG=latest" in text
+    assert 'echo "NPM_DIST_TAG=${NPM_DIST_TAG}" >> "${GITHUB_ENV}"' in text
+    publish_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith('npm publish "${PKG_DIR}"')
+    ]
+    assert len(publish_lines) == 3
+    assert all('--tag "${NPM_DIST_TAG}"' in line for line in publish_lines)
 
 
 def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:

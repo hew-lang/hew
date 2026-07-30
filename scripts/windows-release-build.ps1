@@ -28,6 +28,16 @@ $LlvmPrefix = $env:HEW_WINDOWS_LLVM_PREFIX
 if (-not (Test-Path $LlvmConfig)) {
     throw "Missing $LlvmConfig. Bootstrap LLVM 22 at C:\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation."
 }
+$LlvmConfigExe = Join-Path $LlvmPrefix 'bin\llvm-config.exe'
+if (-not (Test-Path $LlvmConfigExe -PathType Leaf)) {
+    throw "Missing $LlvmConfigExe. HEW_WINDOWS_LLVM_PREFIX must name an LLVM 22 installation."
+}
+$LlvmVersion = & $LlvmConfigExe --version
+Assert-NativeSuccess 'llvm-config.exe --version'
+if ([string]::IsNullOrWhiteSpace([string]$LlvmVersion) -or $LlvmVersion -notmatch '^22\.1\.\d+\s*$') {
+    throw "Expected LLVM 22.1.x from $LlvmConfigExe, got: $LlvmVersion"
+}
+Write-Host "Using LLVM $LlvmVersion from $LlvmPrefix"
 
 # $PSScriptRoot is <candidate>/scripts. Build only the staged candidate, never
 # a checkout that happens to exist on the host.
@@ -64,6 +74,9 @@ if ([string]::IsNullOrWhiteSpace($env:WindowsSdkDir) -or [string]::IsNullOrWhite
 Write-Host "Using Visual Studio developer environment: $VsDevCmd"
 
 $env:LLVM_PREFIX = $LlvmPrefix
+# llvm-sys 221 reads this versioned variable before falling back to PATH. Set
+# it explicitly so a stale host setting cannot redirect the staged build.
+$env:LLVM_SYS_221_PREFIX = $LlvmPrefix
 $env:Path = "$LlvmPrefix\bin;" + $env:Path
 $env:CC = $env:HEW_WINDOWS_CC
 $env:CXX = $env:HEW_WINDOWS_CXX

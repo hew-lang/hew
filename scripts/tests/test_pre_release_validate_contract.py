@@ -88,6 +88,16 @@ def assert_windows_toolchain_bootstrap_contract(text: str) -> None:
     assert "$env:CARGO_BUILD_JOBS = '2'" in text
 
 
+def assert_windows_llvm_binding_contract(text: str) -> None:
+    """The staged build must bind llvm-sys to its validated LLVM 22.1 root."""
+    assert "$LlvmConfigExe = Join-Path $LlvmPrefix 'bin\\llvm-config.exe'" in text
+    assert "Test-Path $LlvmConfigExe -PathType Leaf" in text
+    assert "$LlvmVersion = & $LlvmConfigExe --version" in text
+    assert "Assert-NativeSuccess 'llvm-config.exe --version'" in text
+    assert "$LlvmVersion -notmatch '^22\\.1\\.\\d+\\s*$'" in text
+    assert "$env:LLVM_SYS_221_PREFIX = $LlvmPrefix" in text
+
+
 def assert_windows_staged_build_transport_contract(text: str) -> None:
     assert 'run_windows_staged_build "${remote_stage}"' in text
     assert "scripts/windows-release-build.ps1" in text
@@ -304,6 +314,10 @@ def test_windows_toolchain_bootstrap_contract() -> None:
     assert_windows_toolchain_bootstrap_contract(release_surface())
 
 
+def test_windows_llvm_binding_contract() -> None:
+    assert_windows_llvm_binding_contract(release_surface())
+
+
 def test_windows_staged_build_transport_contract() -> None:
     assert_windows_staged_build_transport_contract(release_surface())
 
@@ -359,6 +373,28 @@ def test_windows_toolchain_bootstrap_mutations_are_rejected() -> None:
         raise AssertionError(
             "Windows developer-environment mutation escaped the contract"
         )
+
+
+def test_windows_llvm_binding_mutations_are_rejected() -> None:
+    original = release_surface()
+    for mutation in (
+        original.replace(
+            "$env:LLVM_SYS_221_PREFIX = $LlvmPrefix",
+            "$env:LLVM_SYS_221_PREFIX = 'C:\\llvm-stale'",
+            1,
+        ),
+        original.replace(
+            "$LlvmVersion = & $LlvmConfigExe --version",
+            "$LlvmVersion = '22.1.0'",
+            1,
+        ),
+        original.replace("^22\\.1\\.\\d+\\s*$", ".*", 1),
+    ):
+        try:
+            assert_windows_llvm_binding_contract(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("Windows LLVM binding mutation escaped the contract")
 
 
 def test_windows_staged_build_transport_mutations_are_rejected() -> None:

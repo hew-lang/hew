@@ -4233,6 +4233,18 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_context_reply_channel_swap_add_string_cleanup" => {
             ctx.void_type().fn_type(&[ptr_ty.into()], false)
         }
+        // hew_context_reply_channel_swap_add_frame_cleanup(
+        //     slot: *mut c_void, size: u64, cleanup: unsafe extern "C" fn(*mut c_void)
+        // ) -> bool (`hew-runtime/src/execution_context.rs`). Records a typed
+        // coroutine-frame slot obligation on the innermost synchronous
+        // closure-driver swap. Normal pop discards it; crash unwind invokes the
+        // thunk before raw frame reclamation. False means the slot was not
+        // positively contained in the active top frame; callers trap rather
+        // than weakening the ownership boundary.
+        "hew_context_reply_channel_swap_add_frame_cleanup" => ctx.bool_type().fn_type(
+            &[ptr_ty.into(), i64_ty.into(), ptr_ty.into()],
+            false,
+        ),
         // hew_context_reply_channel_swap_pop() -> void
         // (`hew-runtime/src/execution_context.rs`). Closes the innermost swap on
         // the NORMAL-return edge: restores the outer reply-channel pointer +

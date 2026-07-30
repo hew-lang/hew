@@ -365,10 +365,11 @@ pub unsafe fn destroy_parked(a: &HewActor) -> ExecGuard {
 /// `hew_await_cancel_complete` + `hew_await_cancel_free`; re-running the abandon
 /// cleanup would double-free that registration (surfaced under
 /// `MallocGuardEdges` + the `await cancel release on released registration`
-/// debug-assert). Frame-owned Hew heap values are arena-backed and reclaimed by
-/// the crash path's `hew_arena_reset`, so freeing only the frame box is the
-/// complete, crash-correct reclamation — matching the fresh-dispatch crash
-/// branch, which likewise abandons in-flight frame state and resets the arena.
+/// debug-assert). Before this raw free, reply-swap crash unwind invokes the
+/// resumed root's registered typed field drops exactly once; the later
+/// `hew_arena_reset` reclaims remaining arena-backed state. This function
+/// therefore owns only the frame allocation, matching the fresh-dispatch
+/// branch's typed-unwind → raw-drain ordering.
 ///
 /// This is DISTINCT from [`destroy_parked`], which REFUSES a `Resuming` tag to
 /// protect a LIVE concurrent resume (FG2 — see

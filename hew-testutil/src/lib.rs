@@ -371,29 +371,20 @@ impl BoundedChild {
 
     #[cfg(windows)]
     fn terminate_process_group(&mut self, label: &str) -> Result<bool, BoundedExecError> {
-        match self.job.as_ref() {
-            Some(job) => {
-                job.terminate().map_err(|error| {
-                    BoundedExecError::failed(label, format!("cannot terminate job object: {error}"))
-                })?;
-                self.child.wait().map_err(|error| {
-                    BoundedExecError::failed(
-                        label,
-                        format!("cannot reap child after timeout: {error}"),
-                    )
-                })?;
-                Ok(true)
-            }
-            None => {
-                let tree_killed = windows_kill_taskkill(&mut self.child, label)?;
-                self.child.wait().map_err(|error| {
-                    BoundedExecError::failed(
-                        label,
-                        format!("cannot reap child after timeout: {error}"),
-                    )
-                })?;
-                Ok(tree_killed)
-            }
+        if let Some(job) = self.job.as_ref() {
+            job.terminate().map_err(|error| {
+                BoundedExecError::failed(label, format!("cannot terminate job object: {error}"))
+            })?;
+            self.child.wait().map_err(|error| {
+                BoundedExecError::failed(label, format!("cannot reap child after timeout: {error}"))
+            })?;
+            Ok(true)
+        } else {
+            let tree_killed = windows_kill_taskkill(&mut self.child, label)?;
+            self.child.wait().map_err(|error| {
+                BoundedExecError::failed(label, format!("cannot reap child after timeout: {error}"))
+            })?;
+            Ok(tree_killed)
         }
     }
 

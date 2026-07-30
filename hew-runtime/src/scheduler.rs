@@ -2239,6 +2239,14 @@ unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewEx
     // outer reply routing and tear those channels down BEFORE reading the reply
     // channel below (mirrors the fresh-dispatch crash branch).
     crate::execution_context::reply_channel_swap_unwind();
+    // The actor slot remains the sole teardown owner of the resumed handler
+    // root. Exclude it while raw-reclaiming nested synchronous child ramps;
+    // `abandon_resuming_after_crash` below removes/frees that root exactly once.
+    let scheduler_root = a.suspended_cont.load(Ordering::Acquire);
+    // SAFETY: the recovery longjmp killed the active resume stack. The drain
+    // frees only positively tracked nested frames and preserves
+    // `scheduler_root` for the actor-slot authority.
+    let _ = unsafe { crate::cont::reclaim_active_coroutine_frames_excluding(scheduler_root) };
 
     // Capture the crashed resume's reply-channel state from the still-installed
     // resume context (carrying the handler's stashed reply channel) before
@@ -3249,6 +3257,17 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     // abandon path.
                     if dispatch_result.is_err() {
                         crate::execution_context::reply_channel_swap_unwind();
+                        // A Rust unwind can also bypass the normal ramp handoff.
+                        // Typed swap obligations drain first; then raw-free only
+                        // positively tracked running coroutine frames. Initial
+                        // dispatch has no scheduler-owned root to exclude.
+                        // SAFETY: catch_unwind proves the synchronous ramp stack
+                        // is dead on this worker.
+                        let _ = unsafe {
+                            crate::cont::reclaim_active_coroutine_frames_excluding(
+                                std::ptr::null_mut(),
+                            )
+                        };
                     }
 
                     let reply_consumed = current_reply_channel_consumed_on(ec_ptr);
@@ -3358,6 +3377,16 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     // dispatch reply channel below, so the fallback reply targets
                     // the real outer channel and no channel ref leaks.
                     crate::execution_context::reply_channel_swap_unwind();
+                    // The signal longjmp killed every synchronously running
+                    // ramp before it could hand its frame to a caller. Drain
+                    // their positively tracked allocations in LIFO order only
+                    // after the typed reply-swap obligations above. An initial
+                    // dispatch has no scheduler-owned root to exclude.
+                    // SAFETY: recovery proves these active native stacks can no
+                    // longer resume on this worker.
+                    let _ = unsafe {
+                        crate::cont::reclaim_active_coroutine_frames_excluding(std::ptr::null_mut())
+                    };
                     // Capture the crashed dispatch's reply-channel state from
                     // the still-installed ctx before restoring `prev_context`.
                     // The ctx pointer becomes stale after the restore, so we

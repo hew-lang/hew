@@ -158,6 +158,7 @@ fn main() {
 
 const SUSPENDING_CLOSURE_FRESH_CRASH_SOURCE: &str = r#"
 import std::net::{Listener};
+import std::observe;
 
 extern "C" {
     fn hew_tcp_listener_local_port(listener: Listener) -> i32;
@@ -181,6 +182,7 @@ actor Reader {
 }
 
 fn main() {
+    let frame_baseline = observe.read("coroutines.frame_bytes_live");
     let listener = net.listen("127.0.0.1:0");
     let port = unsafe {
         hew_tcp_listener_local_port(listener)
@@ -192,6 +194,7 @@ fn main() {
         Err(_) => println("crash-fallback"),
     }
     println("main-done");
+    println(observe.read("coroutines.frame_bytes_live") - frame_baseline);
 }
 "#;
 
@@ -200,6 +203,115 @@ fn static_crash_source() -> String {
         r#"read_once("crash-owner".to_upper())"#,
         r#"read_once("crash-owner")"#,
     )
+}
+
+const SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE: &str = r#"
+import std::observe;
+
+actor Gate {
+    receive fn tick() -> i64 {
+        sleep(5ms);
+        1
+    }
+}
+
+actor Runner {
+    let gate: LocalPid<Gate>;
+
+    receive fn go(trigger: i64) -> i64 {
+        let gate_pid = gate;
+        let resume_then_crash = |value: string| {
+            let _ = match await gate_pid.tick() {
+                Ok(n) => n,
+                Err(_) => 0,
+            };
+            if trigger >= 0 {
+                panic("crash after child resume");
+            }
+            value
+        };
+        let _ = resume_then_crash("resume-crash-owner".to_upper());
+        7
+    }
+}
+
+fn main() {
+    let frame_baseline = observe.read("coroutines.frame_bytes_live");
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let r = await runner.go(0);
+    match r {
+        Ok(_) => println("unexpected-ok"),
+        Err(_) => println("crash-fallback"),
+    }
+    println("main-done");
+    println(observe.read("coroutines.frame_bytes_live") - frame_baseline);
+}
+"#;
+
+fn static_resume_crash_source() -> String {
+    SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE.replace(
+        r#"resume_then_crash("resume-crash-owner".to_upper())"#,
+        r#"resume_then_crash("resume-crash-owner")"#,
+    )
+}
+
+/// Three nested suspending-closure ramps per actor crash, repeated through a
+/// fresh actor restart loop. Each line is printed only after the crash fallback
+/// has resolved and the live coroutine-frame byte gauge has returned to the
+/// main coroutine's baseline.
+fn nested_suspending_closure_crash_restart_source(frames: usize) -> String {
+    const TEMPLATE: &str = r#"
+import std::observe;
+
+actor Gate {
+    receive fn tick() -> i64 {
+        1
+    }
+}
+
+actor Crasher {
+    let gate: LocalPid<Gate>;
+
+    receive fn run() -> i64 {
+        let gate_pid = gate;
+        let outer = |outer_gate: LocalPid<Gate>, outer_value: string| {
+            let middle = |middle_gate: LocalPid<Gate>, middle_value: string| {
+                let inner = |inner_gate: LocalPid<Gate>, inner_value: string| {
+                    panic("nested synchronous ramp crash");
+                    let _ = match await inner_gate.tick() {
+                        Ok(n) => n,
+                        Err(_) => 0,
+                    };
+                    inner_value
+                };
+                inner(middle_gate, middle_value)
+            };
+            middle(outer_gate, outer_value)
+        };
+        let _ = outer(gate_pid, "nested-crash-owner".to_upper());
+        7
+    }
+}
+
+fn main() {
+    let frame_baseline = observe.read("coroutines.frame_bytes_live");
+    let gate = spawn Gate;
+    for _ in 0..__FRAMES__ {
+        let crasher = spawn Crasher(gate: gate);
+        let result = await crasher.run();
+        if observe.read("coroutines.frame_bytes_live") != frame_baseline {
+            panic("nested crash left coroutine-frame bytes live");
+        }
+        match result {
+            Ok(_) => panic("nested crash unexpectedly returned"),
+            Err(_) => println("restarted"),
+        }
+    }
+}
+"#;
+
+    TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
 
 fn llvm_function_body<'a>(ir: &'a str, name: &str) -> &'a str {
@@ -361,9 +473,9 @@ fn suspending_closure_sync_crash_releases_only_the_fresh_argument_delta() {
         );
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
-            "crash-fallback\nmain-done\n",
+            "crash-fallback\nmain-done\n0\n",
             "{label} fixture must exercise the actor crash fallback and return \
-             control to main"
+             control to main with no additional live coroutine-frame bytes"
         );
     }
 
@@ -374,5 +486,77 @@ fn suspending_closure_sync_crash_releases_only_the_fresh_argument_delta() {
         "the heap-producing argument must add no leak over the static-literal \
          control after a synchronous child-ramp crash; fresh={fresh_leaks:?}, \
          static={static_leaks:?}"
+    );
+    assert_eq!(
+        static_leaks,
+        (1, 48),
+        "the only admitted residual is the shared Connection handle constructed \
+         before the trap; raw running-frame reclamation must not claim its typed \
+         close authority or retain either 96-byte coroutine frame"
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "exact crash differential needs macOS `leaks(1)` / the Darwin poisoned allocator"
+)]
+#[test]
+fn suspending_closure_later_resume_crash_reclaims_nested_frame_only() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("suspending-closure-resume-crash-")
+        .tempdir()
+        .expect("tempdir");
+    let fresh_bin = compile_to_native(
+        SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE,
+        dir.path(),
+        "suspending_closure_fresh_resume_crash",
+    );
+    let static_bin = compile_to_native(
+        &static_resume_crash_source(),
+        dir.path(),
+        "suspending_closure_static_resume_crash",
+    );
+
+    for (label, bin) in [("fresh", &fresh_bin), ("static", &static_bin)] {
+        let output = run_fixture(bin, &format!("run {label} later-resume crash fixture"));
+        assert!(
+            output.status.success(),
+            "{label} later-resume crash fixture failed:\n{}",
+            describe_output(&output)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "crash-fallback\nmain-done\n0\n",
+            "{label} later-resume crash must preserve the scheduler root's sole \
+             teardown while returning live frame bytes to baseline"
+        );
+    }
+
+    let fresh_leaks = measure_leaks_exact(&fresh_bin);
+    let static_leaks = measure_leaks_exact(&static_bin);
+    assert_eq!(
+        fresh_leaks, static_leaks,
+        "a later child-resume crash must add neither a frame leak nor a fresh \
+         string leak over the static control; fresh={fresh_leaks:?}, \
+         static={static_leaks:?}"
+    );
+    assert_eq!(
+        static_leaks,
+        (0, 0),
+        "the actor-ask resume fixture carries no unrelated typed resource floor"
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator"
+)]
+#[test]
+fn nested_suspending_closure_crash_restart_has_zero_leak_slope() {
+    assert_frame_slope_below_tolerance_exact_lines(
+        "nested_suspending_closure_crash_restart",
+        nested_suspending_closure_crash_restart_source,
+        std::convert::identity,
     );
 }

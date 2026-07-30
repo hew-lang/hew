@@ -26948,6 +26948,12 @@ fn lower_terminator<'ctx>(
                 // SuspendingAsk-driven coroutine, whose natural completion IS this
                 // Return (no explicit final suspend in its MIR).
                 if coro.has_explicit_final_suspend {
+                    crate::coro::emit_coro_frame_handoff(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &fn_ctx.builder,
+                        coro.handle,
+                    )?;
                     fn_ctx
                         .builder
                         .build_return(Some(&coro.handle))
@@ -29037,6 +29043,12 @@ fn emit_cancel_trap_or_return(fn_ctx: &FnCtx<'_, '_>) -> CodegenResult<()> {
     // via `coro.destroy`. Returning the logical value would `ret i64` from a
     // `ptr`-returning function (an LLVM verify failure).
     if let Some(coro) = fn_ctx.coro {
+        crate::coro::emit_coro_frame_handoff(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &fn_ctx.builder,
+            coro.handle,
+        )?;
         fn_ctx
             .builder
             .build_return(Some(&coro.handle))

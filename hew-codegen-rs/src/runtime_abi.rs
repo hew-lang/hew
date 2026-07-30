@@ -4170,6 +4170,14 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // generator companions allocate through it so their drop free is the
         // symmetric `hew_cont_frame_free` partner.
         "hew_cont_frame_alloc" => ptr_ty.fn_type(&[i64_ty.into()], false),
+        // hew_cont_frame_alloc_tracked(size: u64) -> ptr. Coroutine ramps use
+        // this sibling so synchronous crash recovery has positive allocation
+        // provenance; companions/environments stay on the untracked allocator.
+        "hew_cont_frame_alloc_tracked" => ptr_ty.fn_type(&[i64_ty.into()], false),
+        // hew_cont_frame_handoff(handle: ptr) -> void. Emitted immediately
+        // before every normal coroutine-ramp return to transfer the frame out
+        // of the active TLS stack and into its caller's ownership.
+        "hew_cont_frame_handoff" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // hew_gen_coro_destroy(companion: *mut c_void) -> void (cont.rs). Single
         // teardown owner of a generator value: destroys the coro frame (handle at
         // companion offset 0) then frees the companion. Null-safe.

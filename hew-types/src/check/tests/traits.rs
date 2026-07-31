@@ -260,6 +260,116 @@ fn receiver_identity_allows_nonreceiver_arguments() {
 }
 
 #[test]
+fn generic_impl_inference_and_receiver_identity_share_one_signature() {
+    let output = check_source(
+        r"
+        type Box<T> { value: T }
+
+        impl<T> Box<T> {
+            fn get(boxed: Box<T>, value: T) -> _ {
+                value
+            }
+        }
+
+        trait Fluent<T> {
+            #[returns_receiver]
+            fn with(consuming self, value: T) -> Self;
+        }
+
+        impl<T> Fluent<T> for Box<T> {
+            #[returns_receiver]
+            fn with(consuming self, value: T) -> Box<T> {
+                self
+            }
+        }
+
+        fn main() {
+            let box = Box { value: 1 };
+            box.with(2);
+            box.with(3);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "generic impl inference and exact generic receiver identity must coexist: {:#?}",
+        output.errors
+    );
+
+    let get_sig = output
+        .fn_sigs
+        .get("Box::get")
+        .expect("generic inherent method must retain its signature");
+    assert_eq!(
+        get_sig.return_type,
+        Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        },
+        "the body must resolve the primary return hole"
+    );
+
+    let with_sig = output
+        .fn_sigs
+        .get("Box::with")
+        .expect("generic trait impl method must retain its signature");
+    assert!(
+        with_sig.returns_receiver_identity,
+        "validated identity metadata must stay attached to the inferred carrier"
+    );
+    assert!(matches!(
+        &with_sig.return_type,
+        Ty::Named { name, args, .. }
+            if name == "Box"
+                && matches!(args.as_slice(), [Ty::Named { name, args, .. }]
+                    if name == "T" && args.is_empty())
+    ));
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction {
+                consumes_receiver: true,
+                returns_receiver_identity: true,
+                ..
+            }
+        )),
+        "generic trait impl dispatch must retain both conformance axes"
+    );
+}
+
+#[test]
+fn generic_receiver_identity_rejects_changed_type_arguments() {
+    let output = check_source(
+        r"
+        type Pair<T, U> { first: T, second: U }
+
+        impl<T, U> Pair<T, U> {
+            #[returns_receiver]
+            fn swap_identity(consuming self) -> Pair<U, T> {
+                Pair { first: self.second, second: self.first }
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error.message.contains("returns_receiver")
+        }),
+        "generic receiver identity must compare the complete instantiated self type: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .fn_sigs
+            .get("Pair::swap_identity")
+            .is_some_and(|sig| !sig.returns_receiver_identity),
+        "a changed generic instantiation must fail closed in dispatch metadata"
+    );
+}
+
+#[test]
 fn rejected_trait_receiver_identity_never_reaches_dispatch_metadata() {
     let output = check_source(
         r"

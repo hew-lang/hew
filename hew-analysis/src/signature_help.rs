@@ -187,6 +187,7 @@ mod tests {
     fn make_tc_with_fn_sigs(fn_sigs: HashMap<String, FnSig>) -> TypeCheckOutput {
         TypeCheckOutput {
             expr_types: HashMap::new(),
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),

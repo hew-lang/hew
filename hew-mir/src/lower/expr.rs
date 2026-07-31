@@ -3637,7 +3637,6 @@ impl Builder {
                         self.record_suspend_kind(SuspendKind::CallClosure {
                             callee: callee_place,
                             args: arg_places.clone(),
-                            fresh_string_args: Vec::new(),
                             ret_ty: ret_ty.clone(),
                             result_dest: dest,
                         });
@@ -8561,13 +8560,17 @@ impl Builder {
             } else {
                 self.owner_warrant_for_admitted_temp(arg)
             };
-            self.register_synthetic_owned_local(
+            let binding = self.register_synthetic_owned_local(
                 SYNTHETIC_TEMP_ARG_NAME,
                 arg.site,
                 local,
-                owned_ty,
+                owned_ty.clone(),
                 warrant,
             );
+            if matches!(owned_ty, ResolvedTy::TraitObject { .. }) {
+                self.dyn_trait_storage
+                    .insert(binding, crate::TraitObjectStorage::HeapBoxed);
+            }
         }
         if !proven_borrow_args.is_empty() {
             self.proven_borrow_call_args

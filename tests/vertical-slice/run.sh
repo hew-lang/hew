@@ -1444,6 +1444,19 @@ run_accept_expect_status "f01_actor_spawn_owned_vec_drop_segv" 0
 # reply is consumed correctly while the abandoned owned reply is reclaimed.
 run_accept_expect_status "ask_reply_owned_select_loser" 18
 
+# A fresh owned string produced by an await is moved into its lexical binding
+# before the later handled actor panic. The crash cleanup must drop it exactly
+# once, and the actor balance oracle must remain exact.
+run_accept_expect_status "await_owned_string_crash_cleanup" 0 HEW_ACTOR_LEAK_CHECK=1
+grep -qF -- "used=fresh-value" "${stdout_output}"
+grep -qF -- "handled-crash" "${stdout_output}"
+
+# The select winner writes an owned string directly into its binding. Prove the
+# shared winner tail arms that slot before a later handled actor panic.
+run_accept_expect_status "select_owned_string_crash_cleanup" 0 HEW_ACTOR_LEAK_CHECK=1
+grep -qF -- "selected=selected-value" "${stdout_output}"
+grep -qF -- "select-handled-crash" "${stdout_output}"
+
 # Owned-string ask reply + `after` timeout (#1739/#1735): SlowWorker's owned
 # reply always arrives after the 10 ms deadline, so the after-arm wins and the
 # late owned reply lands on the cancelled channel (the hew_reply false leg),

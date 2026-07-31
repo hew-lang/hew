@@ -519,9 +519,11 @@ impl ContextFlowState {
               Move and EnumTagLoad both surface src→dest dataflow); merging arms by \
               pattern would obscure their distinct producer semantics"
 )]
-pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
+pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>, Vec<Place>) {
     match instr {
-        Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => (vec![], vec![]),
+        Instr::EnterContext | Instr::ExitContext | Instr::CheckCancellation => {
+            (vec![], vec![], vec![])
+        }
         Instr::ContextField { dest, .. }
         | Instr::ConstI64 { dest, .. }
         | Instr::StringLit { dest, .. }
@@ -531,7 +533,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::CharLit { dest, .. }
         | Instr::UnitLit { dest }
         | Instr::DurationLit { dest, .. }
-        | Instr::ActorStateFieldLoad { dest, .. } => (vec![], vec![*dest]),
+        | Instr::ActorStateFieldLoad { dest, .. } => (vec![], vec![*dest], vec![]),
         Instr::IntAdd { dest, lhs, rhs }
         | Instr::IntSub { dest, lhs, rhs }
         | Instr::IntMul { dest, lhs, rhs }
@@ -551,8 +553,8 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         | Instr::FloatSub { dest, lhs, rhs, .. }
         | Instr::FloatMul { dest, lhs, rhs, .. }
         | Instr::FloatDiv { dest, lhs, rhs, .. }
-        | Instr::FloatRem { dest, lhs, rhs, .. } => (vec![*lhs, *rhs], vec![*dest]),
-        Instr::CancellationTokenIsCancelled { dest, token } => (vec![*token], vec![*dest]),
+        | Instr::FloatRem { dest, lhs, rhs, .. } => (vec![*lhs, *rhs], vec![*dest], vec![]),
+        Instr::CancellationTokenIsCancelled { dest, token } => (vec![*token], vec![*dest], vec![]),
         Instr::RcIntrinsic {
             dest,
             receiver,
@@ -561,50 +563,70 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         } => (
             receiver.iter().chain(value.iter()).copied().collect(),
             vec![*dest],
+            vec![],
         ),
-        Instr::GeneratorNext { dest, ctx, .. } => (vec![*ctx], vec![*dest]),
-        Instr::WireCodec { dest, operand, .. } => (vec![*operand], vec![*dest]),
-        Instr::RecordCloneInplace { dest, src, .. } => (vec![*src], vec![*dest]),
-        Instr::EnumCloneInplace { dest, src, .. } => (vec![*src], vec![*dest]),
-        Instr::ValueSnapshotClone { dest, src, .. } => (vec![*src], vec![*dest]),
+        Instr::GeneratorNext { dest, ctx, .. } => (vec![*ctx], vec![*dest], vec![]),
+        Instr::WireCodec { dest, operand, .. } => (vec![*operand], vec![*dest], vec![]),
+        Instr::RecordCloneInplace { dest, src, .. }
+        | Instr::EnumCloneInplace { dest, src, .. }
+        | Instr::ValueSnapshotClone { dest, src, .. } => (vec![*src], vec![*dest], vec![]),
         Instr::ValueSnapshotDrop { value, guard, .. } => {
             let mut reads = vec![*value];
             reads.extend(*guard);
-            (reads, vec![])
+            (reads, vec![], vec![*value])
         }
         Instr::BoolNot { dest, operand }
         | Instr::FloatNeg { dest, operand, .. }
-        | Instr::IntBitNot { dest, operand } => (vec![*operand], vec![*dest]),
+        | Instr::IntBitNot { dest, operand } => (vec![*operand], vec![*dest], vec![]),
         Instr::NumericCast { dest, src, .. }
         | Instr::SaturatingWidthCast { dest, src, .. }
-        | Instr::TryWidthCast { dest, src, .. } => (vec![*src], vec![*dest]),
+        | Instr::TryWidthCast { dest, src, .. } => (vec![*src], vec![*dest], vec![]),
         Instr::IntNegChecked {
             dest,
             operand,
             overflow_flag,
             ..
-        } => (vec![*operand], vec![*dest, *overflow_flag]),
+        } => (vec![*operand], vec![*dest, *overflow_flag], vec![]),
         Instr::IntArithChecked {
             dest,
             lhs,
             rhs,
             overflow_flag,
             ..
-        } => (vec![*lhs, *rhs], vec![*dest, *overflow_flag]),
-        Instr::Move { dest, src } => (vec![*src], vec![*dest]),
+        } => (vec![*lhs, *rhs], vec![*dest, *overflow_flag], vec![]),
+        Instr::Move { dest, src } => (vec![*src], vec![*dest], vec![]),
         // Refcount metadata only: reads the existing bytes triple and does not
         // move or overwrite the MIR place.
-        Instr::BytesRetain { value } | Instr::StringRetain { value, .. } => (vec![*value], vec![]),
+        Instr::BytesRetain { value } | Instr::StringRetain { value, .. } => {
+            (vec![*value], vec![], vec![])
+        }
         Instr::CallRuntimeAbi(call) => {
             let reads = call.args().to_vec();
             let writes = call.dest().into_iter().collect();
-            (reads, writes)
+            // `bytes` is a stack-resident owned triple, and its mutating
+            // runtime ABI receives arg[0] by address so it can release/replace
+            // the backing buffer and write the updated triple back in place.
+            // Move-state still sees a borrowed receiver, but helper crash
+            // cleanup stores a byte Snapshot and must refresh that escrow
+            // around the call. Other runtime handles mutate their pointees;
+            // their MIR slot bytes do not change.
+            let interior = match call.family() {
+                hew_types::runtime_call::RuntimeCallFamily::BytesAppend
+                | hew_types::runtime_call::RuntimeCallFamily::BytesClear
+                | hew_types::runtime_call::RuntimeCallFamily::BytesPop
+                | hew_types::runtime_call::RuntimeCallFamily::BytesPush
+                | hew_types::runtime_call::RuntimeCallFamily::BytesSet => {
+                    call.args().first().copied().into_iter().collect()
+                }
+                _ => vec![],
+            };
+            (reads, writes, interior)
         }
         Instr::AutoLockAcquire { lock } | Instr::AutoLockRelease { lock } => {
             // The lock pointer is read (its address is passed to the
             // runtime FFI). No place is written — the FFI mutates the
             // pointee, which is opaque to the MIR dataflow.
-            (vec![*lock], vec![])
+            (vec![*lock], vec![], vec![])
         }
         Instr::CallClosure {
             callee, args, dest, ..
@@ -612,28 +634,37 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             let mut reads = args.clone();
             reads.insert(0, *callee);
             let writes = dest.iter().copied().collect();
-            (reads, writes)
+            (reads, writes, vec![])
         }
         Instr::MakeClosure { env, dest, .. } | Instr::ClosureEnvFieldLoad { env, dest, .. } => {
-            (vec![*env], vec![*dest])
+            (vec![*env], vec![*dest], vec![])
         }
-        Instr::SpawnTaskDirect { task, .. } => (vec![*task], vec![]),
-        Instr::SpawnTaskClosure { task, env, .. } => (vec![*task, *env], vec![]),
-        Instr::Drop { place, .. } => (vec![*place], vec![]),
+        Instr::SpawnTaskDirect { task, .. } => (vec![*task], vec![], vec![]),
+        Instr::SpawnTaskClosure { task, env, .. } => (vec![*task, *env], vec![], vec![]),
+        Instr::Drop { place, .. } => {
+            let interior = matches!(
+                place,
+                Place::MachineVariant { .. } | Place::EnumVariant { .. }
+            )
+            .then_some(*place)
+            .into_iter()
+            .collect();
+            (vec![*place], vec![], interior)
+        }
         Instr::WitnessSizeOf { dest, .. } | Instr::WitnessAlignOf { dest, .. } => {
-            (vec![], vec![*dest])
+            (vec![], vec![*dest], vec![])
         }
-        Instr::WitnessDropGlue { place, .. } => (vec![*place], vec![]),
-        Instr::WitnessMove { dest, src, .. } => (vec![*src], vec![*dest]),
+        Instr::WitnessDropGlue { place, .. } => (vec![*place], vec![], vec![]),
+        Instr::WitnessMove { dest, src, .. } => (vec![*src], vec![*dest], vec![]),
         Instr::RecordInit { fields, dest, .. } => {
             let reads = fields.iter().map(|(_, place)| *place).collect();
-            (reads, vec![*dest])
+            (reads, vec![*dest], vec![])
         }
         Instr::ClosureEnvInit { fields, dest, .. } => {
             let reads = fields.iter().map(|field| field.src).collect();
-            (reads, vec![*dest])
+            (reads, vec![*dest], vec![])
         }
-        Instr::RecordFieldLoad { record, dest, .. } => (vec![*record], vec![*dest]),
+        Instr::RecordFieldLoad { record, dest, .. } => (vec![*record], vec![*dest], vec![]),
         Instr::RecordFieldDrop { record, .. } => {
             // RecordFieldDrop GEPs into `record` (the functional-update BASE
             // aggregate) to release the OLD value of an overridden owned field
@@ -644,7 +675,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             // NOT the record `RecordInit` builds — `RecordInit` constructs a
             // distinct new aggregate from the carried/override sources; this op
             // only neutralises the orphaned old field value on the consumed base.
-            (vec![*record], vec![])
+            (vec![*record], vec![], vec![*record])
         }
         Instr::FieldDropInPlace { base, .. } => {
             // FieldDropInPlace GEPs into `base` to release ONE owned field
@@ -653,7 +684,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             // move-state is governed by its own consume marks — and it
             // defines no place (interior field op: uses base, no dest, no
             // alias). Mirrors `RecordFieldDrop` above.
-            (vec![*base], vec![])
+            (vec![*base], vec![], vec![*base])
         }
         Instr::RecordFieldStore { record, src, .. } => {
             // Field-store reads both the aggregate (to GEP into it) and
@@ -664,20 +695,20 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             // it after the store. See `Iterator::next(var self)` in
             // `std/builtins.hew` for the load-bearing consumer (the
             // mutable-receiver substrate).
-            (vec![*record, *src], vec![])
+            (vec![*record, *src], vec![], vec![*record])
         }
-        Instr::ActorStateFieldStore { src, .. } => (vec![*src], vec![]),
+        Instr::ActorStateFieldStore { src, .. } => (vec![*src], vec![], vec![]),
         // The neutralize references the scrutinee's payload slot (keeping the
         // base local live through the null store) and defines no new SSA value.
-        Instr::NeutralizePayloadSlot { place, .. } => (vec![*place], vec![]),
-        Instr::AggregateProjectionNeutralize { root, .. } => (vec![*root], vec![]),
+        Instr::NeutralizePayloadSlot { place, .. } => (vec![*place], vec![], vec![*place]),
+        Instr::AggregateProjectionNeutralize { root, .. } => (vec![*root], vec![], vec![*root]),
         // Closure-env write-back (#1′): reads the env pointer (to GEP into it)
         // and the stored value. The env stays Live — only the field bytes are
         // overwritten through the pointer, opaque to the MIR lattice — so the
         // env is a read, not a write, exactly like `RecordFieldStore`.
-        Instr::ClosureEnvFieldStore { env, src, .. } => (vec![*env, *src], vec![]),
-        Instr::TupleFieldLoad { tuple, dest, .. } => (vec![*tuple], vec![*dest]),
-        Instr::TupleConstruct { elements, dest } => (elements.clone(), vec![*dest]),
+        Instr::ClosureEnvFieldStore { env, src, .. } => (vec![*env, *src], vec![], vec![]),
+        Instr::TupleFieldLoad { tuple, dest, .. } => (vec![*tuple], vec![*dest], vec![]),
+        Instr::TupleConstruct { elements, dest } => (elements.clone(), vec![*dest], vec![]),
         Instr::SpawnActor {
             state,
             init_args,
@@ -686,9 +717,9 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         } => {
             let mut reads: Vec<_> = state.iter().copied().collect();
             reads.extend(init_args.iter().copied());
-            (reads, vec![*dest])
+            (reads, vec![*dest], vec![])
         }
-        Instr::CoerceToDynTrait { value, dest, .. } => (vec![*value], vec![*dest]),
+        Instr::CoerceToDynTrait { value, dest, .. } => (vec![*value], vec![*dest], vec![]),
         Instr::CallTraitMethod {
             fat_pointer,
             args,
@@ -699,21 +730,45 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             reads.push(*fat_pointer);
             reads.extend(args.iter().copied());
             let writes = dest.iter().copied().collect();
-            (reads, writes)
+            (reads, writes, vec![])
         }
         Instr::MachineEmitPlaceholder { payload, .. } => {
             // The placeholder reads all payload places; no write destination
             // (emit is void — the result is dispatched to the event queue).
-            (payload.clone(), vec![])
+            (payload.clone(), vec![], vec![])
         }
-        Instr::EnumTagLoad { src, dest } => (vec![*src], vec![*dest]),
+        Instr::EnumTagLoad { src, dest } => (vec![*src], vec![*dest], vec![]),
         Instr::MachineStateName {
             src_local, dest, ..
-        } => (vec![Place::Local(*src_local)], vec![*dest]),
+        } => (vec![Place::Local(*src_local)], vec![*dest], vec![]),
         Instr::MachineEmitTake {
             event_tag, dest, ..
-        } => (vec![*event_tag], vec![*dest]),
+        } => (vec![*event_tag], vec![*dest], vec![]),
     }
+}
+
+/// The exact whole-place writes performed by `instr`.
+///
+/// This is the narrow public authority for consumers that need to bracket
+/// initialized destination writes without duplicating the exhaustive
+/// instruction classification above. Interior mutations deliberately remain
+/// reads in [`instr_reads_writes`], so they do not appear here.
+#[must_use]
+pub fn instr_write_places(instr: &Instr) -> Vec<Place> {
+    instr_reads_writes(instr).1
+}
+
+/// Roots whose initialized bytes are mutated in place without defining a new
+/// MIR value.
+///
+/// This is distinct from [`instr_write_places`]: move-state dataflow must keep
+/// these roots live, while byte snapshots used by crash cleanup must refresh
+/// after the mutation. The classification is part of the same exhaustive
+/// [`Instr`] match as reads and whole-place writes, so a new instruction cannot
+/// silently bypass either authority.
+#[must_use]
+pub fn instr_interior_write_places(instr: &Instr) -> Vec<Place> {
+    instr_reads_writes(instr).2
 }
 
 /// The backing MIR local a write `Place` addresses, or `None` for the return
@@ -721,7 +776,7 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
 /// (fail-closed): a new `Place` variant forces a decision here rather than
 /// silently escaping the write-set model. Mirrors `liveness::place_local`,
 /// kept local to avoid widening that helper's module-private visibility.
-fn write_place_local(place: Place) -> Option<u32> {
+pub(crate) fn write_place_local(place: Place) -> Option<u32> {
     match place {
         Place::Local(n)
         | Place::DuplexHandle(n)
@@ -752,7 +807,8 @@ fn write_place_local(place: Place) -> Option<u32> {
 /// ([`local_is_written_in_body`], consumed by codegen's `bytes` aliasing
 /// decision) gates coroutine functions out before consulting this, so the
 /// empty set returned for the suspend carriers is sound for that use.
-pub(crate) fn terminator_write_places(term: &Terminator) -> Vec<Place> {
+#[must_use]
+pub fn terminator_write_places(term: &Terminator) -> Vec<Place> {
     match term {
         Terminator::Return
         | Terminator::Goto { .. }
@@ -781,14 +837,75 @@ pub(crate) fn terminator_write_places(term: &Terminator) -> Vec<Place> {
         Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
             arms.iter().filter_map(|arm| arm.binding).collect()
         }
-        Terminator::Join {
-            branches, result, ..
+        // The join emitter stages raw reply buffers until every branch has
+        // succeeded, then publishes only the final result tuple. `reply_dest`
+        // remains type authority for each branch's reply ABI; it is not a MIR
+        // definition and must not mint a phantom owner.
+        Terminator::Join { result, .. } => vec![*result],
+    }
+}
+
+/// Exact result slots written by a collapsed suspension emitter when its
+/// parked operation becomes ready. This is separate from
+/// [`terminator_write_places`] because the carrier `Terminator::Suspend` stores
+/// its operation-specific destinations in [`crate::SuspendKind`].
+///
+/// Exhaustive by construction: adding a suspend kind requires deciding whether
+/// its emitter initializes a result on the ready/resume edge. `RestartWait`
+/// deliberately writes nothing here; its handle is re-fetched by a regular MIR
+/// instruction in the resume block and is covered by [`instr_write_places`].
+#[must_use]
+pub fn suspend_kind_write_places(kind: &crate::SuspendKind) -> Vec<Place> {
+    match kind {
+        crate::SuspendKind::Ask {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        }
+        | crate::SuspendKind::RemoteAsk {
+            result_dest,
+            reply_dest,
+            error_dest,
+            ..
+        } => vec![*result_dest, *reply_dest, *error_dest],
+        crate::SuspendKind::Read {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | crate::SuspendKind::Accept {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | crate::SuspendKind::StreamNext {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
+        }
+        | crate::SuspendKind::ChannelRecv {
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            ..
         } => {
-            let mut places = Vec::with_capacity(branches.len() + 1);
-            places.push(*result);
-            places.extend(branches.iter().map(|branch| branch.reply_dest));
+            let mut places = vec![*result_dest];
+            places.extend(deadline_result_dest);
+            places.extend(error_dest);
             places
         }
+        crate::SuspendKind::CallClosure { result_dest, .. }
+        | crate::SuspendKind::TaskAwait { result_dest, .. } => {
+            result_dest.iter().copied().collect()
+        }
+        crate::SuspendKind::StreamSend { .. }
+        | crate::SuspendKind::RestartWait { .. }
+        | crate::SuspendKind::Sleep { .. }
+        | crate::SuspendKind::SleepUntil { .. } => Vec::new(),
     }
 }
 
@@ -854,7 +971,7 @@ fn transfer_context_flow(
                 state.derived.insert(*dest);
             }
             _ => {
-                let (reads, writes) = instr_reads_writes(instr);
+                let (reads, writes, _) = instr_reads_writes(instr);
                 let reads_context = reads.iter().any(|place| state.derived.contains(place));
                 if state.after_exit && reads_context {
                     if let Some(place) = reads
@@ -1381,6 +1498,167 @@ pub fn compute_cooperate_sites(blocks: &[BasicBlock]) -> Vec<CooperateSite> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{
+        DropFnSpec, FieldAddr, FieldOffset, NeutralizeAuthority, PreparedCarrierBoundary,
+        RuntimeCall,
+    };
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive table keeps every snapshot-mutating Instr class and \
+                  its non-mutating controls auditable together"
+    )]
+    fn interior_write_authority_covers_every_snapshot_mutation_class() {
+        let snapshot_plan = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+            &ResolvedTy::String,
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .expect("string snapshot plan");
+        let enum_projection = Place::EnumVariant {
+            local: 6,
+            variant_idx: 0,
+            field_idx: 0,
+        };
+        let machine_projection = Place::MachineVariant {
+            local: 2,
+            variant_idx: 0,
+            field_idx: 0,
+        };
+        let cases = [
+            (
+                "prepared snapshot drop",
+                Instr::ValueSnapshotDrop {
+                    value: Place::Local(1),
+                    ty: ResolvedTy::String,
+                    plan: snapshot_plan,
+                    boundary: PreparedCarrierBoundary::LocalCall,
+                    guard: None,
+                },
+                vec![Place::Local(1)],
+            ),
+            (
+                "projected inline drop",
+                Instr::Drop {
+                    place: machine_projection,
+                    ty: ResolvedTy::String,
+                    drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
+                },
+                vec![machine_projection],
+            ),
+            (
+                "record field drop",
+                Instr::RecordFieldDrop {
+                    record: Place::Local(3),
+                    field_offset: FieldOffset(0),
+                    ty: ResolvedTy::String,
+                    drop_fn: DropFnSpec::Release("hew_string_drop"),
+                },
+                vec![Place::Local(3)],
+            ),
+            (
+                "type-directed field drop",
+                Instr::FieldDropInPlace {
+                    base: Place::Local(4),
+                    field: FieldAddr::Tuple(0),
+                    ty: ResolvedTy::String,
+                },
+                vec![Place::Local(4)],
+            ),
+            (
+                "record field store",
+                Instr::RecordFieldStore {
+                    record: Place::Local(5),
+                    field_offset: FieldOffset(0),
+                    src: Place::Local(50),
+                },
+                vec![Place::Local(5)],
+            ),
+            (
+                "variant payload neutralize",
+                Instr::NeutralizePayloadSlot {
+                    place: enum_projection,
+                    transferee: Some(Place::Local(60)),
+                    authority: NeutralizeAuthority::WholeCarrierConsume,
+                },
+                vec![enum_projection],
+            ),
+            (
+                "aggregate projection neutralize",
+                Instr::AggregateProjectionNeutralize {
+                    root: Place::Local(7),
+                    fields: vec![0, 1],
+                    transferee: Place::Local(70),
+                    scope_exit_owner: None,
+                },
+                vec![Place::Local(7)],
+            ),
+        ];
+
+        for (label, instr, expected) in cases {
+            assert_eq!(
+                instr_interior_write_places(&instr),
+                expected,
+                "{label} must refresh a helper Snapshot owner"
+            );
+            assert!(
+                instr_write_places(&instr).is_empty(),
+                "{label} remains an interior mutation for move-state dataflow"
+            );
+        }
+
+        for symbol in [
+            "hew_bytes_append",
+            "hew_bytes_clear",
+            "hew_bytes_pop",
+            "hew_bytes_push",
+            "hew_bytes_set",
+        ] {
+            let call = RuntimeCall::new(symbol, vec![Place::Local(8)], None)
+                .expect("bytes mutator is an admitted runtime family");
+            let instr = Instr::CallRuntimeAbi(call);
+            assert_eq!(
+                instr_interior_write_places(&instr),
+                vec![Place::Local(8)],
+                "{symbol} mutates the owned bytes triple through arg[0]"
+            );
+            assert!(
+                instr_write_places(&instr).is_empty(),
+                "{symbol} keeps the receiver live for move-state dataflow"
+            );
+        }
+        let bytes_len = Instr::CallRuntimeAbi(
+            RuntimeCall::new("hew_vec_len", vec![Place::Local(8)], Some(Place::Local(80)))
+                .expect("bytes/Vec len is an admitted runtime family"),
+        );
+        assert!(
+            instr_interior_write_places(&bytes_len).is_empty(),
+            "read-only runtime receivers never churn crash-cleanup snapshots"
+        );
+
+        assert!(
+            instr_interior_write_places(&Instr::Drop {
+                place: Place::Local(10),
+                ty: ResolvedTy::String,
+                drop_fn: Some(DropFnSpec::Release("hew_string_drop")),
+            })
+            .is_empty(),
+            "whole-local Drop retires its token instead of refreshing it"
+        );
+        assert!(
+            instr_interior_write_places(&Instr::ClosureEnvFieldStore {
+                env: Place::Local(9),
+                env_ty: ResolvedTy::named_user("Env", vec![]),
+                field_offset: FieldOffset(0),
+                src: Place::Local(90),
+            })
+            .is_empty(),
+            "pointee mutation leaves the closure pointer bytes unchanged"
+        );
+    }
 
     fn states() -> Vec<BindingState> {
         vec![

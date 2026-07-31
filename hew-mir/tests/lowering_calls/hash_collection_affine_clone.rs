@@ -137,6 +137,7 @@ fn constructed_affine_collection_call(
         })],
         diagnostic_source_modules: HashMap::new(),
         root_item_ids: std::collections::HashSet::new(),
+        caller_visible_param_projections: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(HashMap::new()),
         type_classes,
         monomorphisations: vec![],

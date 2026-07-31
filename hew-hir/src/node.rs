@@ -40,6 +40,14 @@ pub struct HirModule {
     /// producer missing from `diagnostic_source_modules` cannot leak a false
     /// root caret — it simply is not in this set.
     pub root_item_ids: HashSet<ItemId>,
+    /// Parameters whose resolved type has a checker-proven projection into
+    /// caller-visible storage, keyed by stable function item id and parameter
+    /// index.
+    ///
+    /// Presence is positive authority. MIR may only classify a borrowed
+    /// representation-replacing parameter when both this fact and a concrete
+    /// representation write survive lowering.
+    pub caller_visible_param_projections: HashSet<(ItemId, usize)>,
     /// Checker-authored wire layout metadata keyed by canonical type name.
     pub wire_layouts: Arc<WireLayoutTable>,
     /// Per-named-type classification table populated during HIR lowering from

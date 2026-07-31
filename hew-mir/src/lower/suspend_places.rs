@@ -1169,7 +1169,6 @@ mod f1_suspending_escape_poison {
         let kind = SuspendKind::CallClosure {
             callee,
             args: vec![arg0, arg1],
-            fresh_string_args: Vec::new(),
             ret_ty: ResolvedTy::Unit,
             result_dest: None,
         };

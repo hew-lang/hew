@@ -1311,6 +1311,7 @@ mod tests {
         fn_sigs.insert(name.to_string(), sig);
         TypeCheckOutput {
             expr_types: HashMap::new(),
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
@@ -1602,6 +1603,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types: HashMap::new(),
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
@@ -1716,6 +1718,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
@@ -1790,6 +1793,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
@@ -1918,6 +1922,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
@@ -2096,6 +2101,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),

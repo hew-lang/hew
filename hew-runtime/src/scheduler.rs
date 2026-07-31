@@ -2293,9 +2293,10 @@ unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewEx
     // stays alive. Frees the frame block WITHOUT running the `coro.destroy`
     // cleanup outline — the coroutine was RUNNING (between suspend points) when
     // it trapped, so re-running the last suspend's cleanup would double-free the
-    // registrations its resume edge already released. Reply-swap unwind above
-    // already ran the root's registered typed field drops; arena reset below
-    // reclaims the remaining arena-backed state.
+    // registrations its resume edge already released. The frame-registry drain
+    // above already ran the root's registered typed field drops while reserving
+    // this raw allocation; arena reset below reclaims the remaining
+    // arena-backed state.
     // SAFETY: the longjmp killed the resume, so no concurrent resume/destroy can
     // run; this worker owns the actor exclusively.
     let _ = unsafe { crate::coro_exec::abandon_resuming_after_crash(a) };

@@ -387,21 +387,6 @@ pub extern "C" fn hew_get_reply_channel() -> *mut c_void {
 /// on exit, otherwise the child's consumption corrupts the outer dispatch's
 /// fallback/orphan-reply routing (the scheduler reads that bit to decide whether
 /// to publish the outer ask's fallback reply).
-type ReplyChannelSwapCleanupThunk = unsafe extern "C" fn(*mut c_void);
-
-/// One typed ownership obligation rooted in a live coroutine-frame slot.
-///
-/// Registration captures the active frame rather than accepting it from
-/// codegen. `size` is retained alongside the validated range so crash recovery
-/// has a complete audit record even though the type-specific thunk needs only
-/// the slot address.
-struct ReplyChannelSwapCleanup {
-    owner_frame: *mut c_void,
-    slot: *mut c_void,
-    size: u64,
-    thunk: ReplyChannelSwapCleanupThunk,
-}
-
 struct ReplyChannelSwap {
     /// The context the swap mutated; restoration targets this exact context.
     ctx: *mut HewExecutionContext,
@@ -417,25 +402,6 @@ struct ReplyChannelSwap {
         allow(dead_code, reason = "read only by the native-only crash unwind path")
     )]
     driver_channel: *mut c_void,
-    /// Typed drops for frame-resident values whose ordinary MIR cleanup becomes
-    /// unreachable if the synchronous child advance crashes. Entries retain
-    /// their `DropPlan` registration order; nested swaps unwind in stack order.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        allow(dead_code, reason = "read only by the native-only crash unwind path")
-    )]
-    unwind_cleanups: Vec<ReplyChannelSwapCleanup>,
-    /// Caller-owned fresh strings borrowed by the synchronous child-advance
-    /// call. A normal pop discards these obligations because the parent keeps
-    /// running to its ordinary MIR drop. A trap/longjmp bypasses that drop, so
-    /// [`reply_channel_swap_unwind`] releases each value after tearing down the
-    /// driver channel. The vector is populated only by the compiler-owned
-    /// suspending-closure driver.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        allow(dead_code, reason = "read only by the native-only crash unwind path")
-    )]
-    unwind_string_args: Vec<*mut c_void>,
 }
 
 thread_local! {
@@ -492,79 +458,7 @@ pub extern "C" fn hew_context_reply_channel_swap_push(ch: *mut c_void) {
             saved_channel,
             saved_consumed,
             driver_channel: ch,
-            unwind_cleanups: Vec::new(),
-            unwind_string_args: Vec::new(),
         });
-    });
-}
-
-/// Attach one typed frame-resident ownership obligation to the innermost
-/// synchronous suspending-closure call.
-///
-/// The runtime captures the current active frame. Registration fails closed
-/// unless that frame is positively tracked, the thunk is non-null, the full
-/// `slot..slot+size` range lies within the frame payload, and no open swap
-/// already owns the same `(frame, slot)` pair.
-///
-/// A `true` result transfers crash-edge cleanup authority to the swap. Normal
-/// pop disarms the entry without invoking it; crash recovery invokes it after
-/// all reply routing and driver-channel teardown but before raw frame drain.
-#[no_mangle]
-pub extern "C" fn hew_context_reply_channel_swap_add_frame_cleanup(
-    slot: *mut c_void,
-    size: u64,
-    thunk: Option<ReplyChannelSwapCleanupThunk>,
-) -> bool {
-    let Some(thunk) = thunk else {
-        return false;
-    };
-    let Some(owner_frame) = crate::cont::active_top_frame_containing(slot, size) else {
-        return false;
-    };
-
-    REPLY_CHANNEL_SWAP_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        if stack.iter().any(|swap| {
-            swap.unwind_cleanups
-                .iter()
-                .any(|entry| entry.owner_frame == owner_frame && entry.slot == slot)
-        }) {
-            return false;
-        }
-        let Some(swap) = stack.last_mut() else {
-            return false;
-        };
-        swap.unwind_cleanups.push(ReplyChannelSwapCleanup {
-            owner_frame,
-            slot,
-            size,
-            thunk,
-        });
-        true
-    })
-}
-
-/// Attach one caller-owned fresh string to the innermost synchronous
-/// suspending-closure call.
-///
-/// The normal pop deliberately does not release it: normal completion and
-/// parked abandonment have their own mutually-exclusive MIR authorities. If
-/// the child traps before returning its coroutine handle (or during a later
-/// synchronous `hew_cont_resume`), scheduler crash recovery unwinds this frame
-/// and releases the argument because control can no longer reach either MIR
-/// edge. Ownership multiplicity is preserved: two proven shares may carry the
-/// same COW data pointer and therefore require two recorded drops.
-#[no_mangle]
-pub extern "C" fn hew_context_reply_channel_swap_add_string_cleanup(value: *mut c_void) {
-    if value.is_null() {
-        return;
-    }
-    REPLY_CHANNEL_SWAP_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        let Some(swap) = stack.last_mut() else {
-            return;
-        };
-        swap.unwind_string_args.push(value);
     });
 }
 
@@ -595,12 +489,11 @@ pub extern "C" fn hew_context_reply_channel_swap_pop() {
 ///
 /// The child never deposited (it trapped/unwound), so both the retained sender
 /// ref and the creator ref are released, matching the codegen abandon path.
-/// Reply routing and every driver channel are restored/torn down before any
-/// typed thunk runs. Typed entries then run in swap-stack order and, within one
-/// swap, their original `DropPlan` registration order. Typed field teardown is
-/// independent of raw frame-allocation ownership: resumed-root entries run
-/// here, while the scheduler separately excludes that root from raw frame drain
-/// until `abandon_resuming_after_crash` performs its sole allocation free.
+/// Reply routing and every driver channel are restored/torn down before the
+/// scheduler's subsequent frame-registry drain invokes typed cleanup in stable
+/// LIFO order before raw reclamation. Resumed-root typed entries run in that
+/// drain even though its raw allocation remains excluded until
+/// `abandon_resuming_after_crash`.
 ///
 /// No-double-free: the normal-return edge already popped its own frames via the
 /// codegen swap-pop, so the swap stack is empty there and neither sibling edge
@@ -614,9 +507,8 @@ pub extern "C" fn hew_context_reply_channel_swap_pop() {
 pub(crate) fn reply_channel_swap_unwind() {
     let swaps = REPLY_CHANNEL_SWAP_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
 
-    // Restore all routing and tear down every driver-owned channel first. A
-    // cleanup thunk may itself inspect execution context, so no driver routing
-    // may remain installed when typed destruction begins.
+    // Restore all routing and tear down every driver-owned channel. Typed
+    // destruction is owned by the tracked-frame registry and runs afterward.
     for swap in swaps.iter().rev() {
         restore_reply_channel_swap(swap);
         if !swap.driver_channel.is_null() {
@@ -624,24 +516,6 @@ pub(crate) fn reply_channel_swap_unwind() {
             // driver via `hew_reply_channel_new` and retained once; teardown
             // cancels and releases both refs, matching the abandon path.
             unsafe { teardown_driver_channel(swap.driver_channel) };
-        }
-    }
-
-    for swap in swaps.into_iter().rev() {
-        for entry in swap.unwind_cleanups {
-            debug_assert!(
-                crate::cont::active_frame_contains_range(entry.owner_frame, entry.slot, entry.size,),
-                "registered cleanup range changed before crash unwind"
-            );
-            // SAFETY: registration accepted a non-null type-specific thunk and
-            // a slot wholly contained in the positively tracked owner frame.
-            // The scheduler invokes this before raw-reclaiming that frame.
-            unsafe { (entry.thunk)(entry.slot) };
-        }
-        for value in swap.unwind_string_args {
-            // SAFETY: codegen registers only a caller-owned live Hew string
-            // argument whose normal MIR release was bypassed by this unwind.
-            unsafe { crate::string::hew_string_drop(value.cast()) };
         }
     }
 }
@@ -1088,279 +962,6 @@ mod tests {
         ));
     }
 
-    thread_local! {
-        static FRAME_CLEANUP_LOG: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
-    }
-
-    unsafe extern "C" fn record_frame_cleanup(slot: *mut c_void) {
-        // SAFETY: the focused tests register only initialized `usize` slots
-        // wholly contained in live tracked test frames.
-        let marker = unsafe { ptr::read_unaligned(slot.cast::<usize>()) };
-        FRAME_CLEANUP_LOG.with(|log| log.borrow_mut().push(marker));
-    }
-
-    fn clear_frame_cleanup_log() {
-        FRAME_CLEANUP_LOG.with(|log| log.borrow_mut().clear());
-    }
-
-    fn frame_cleanup_log() -> Vec<usize> {
-        FRAME_CLEANUP_LOG.with(|log| log.borrow().clone())
-    }
-
-    unsafe fn tracked_test_frame(markers: &[usize]) -> *mut c_void {
-        let size = markers
-            .len()
-            .checked_mul(size_of::<usize>())
-            .expect("test frame size");
-        // SAFETY: the non-empty test payload is freed exactly once by each
-        // caller through `hew_cont_frame_free`.
-        let frame = unsafe { crate::cont::hew_cont_frame_alloc_tracked(size as u64) };
-        assert!(!frame.is_null());
-        for (index, marker) in markers.iter().copied().enumerate() {
-            // SAFETY: `index` addresses one initialized word within `size`.
-            unsafe {
-                ptr::write_unaligned(frame.cast::<usize>().add(index), marker);
-            }
-        }
-        frame
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn frame_cleanup_registration_rejects_untracked_invalid_and_out_of_range_slots() {
-        let _runtime_guard = crate::runtime_test_guard();
-        let _context_guard = ContextResetGuard::new();
-        let mut ctx = HewExecutionContext::default();
-        let prev = set_current_context(&raw mut ctx);
-        hew_context_reply_channel_swap_push(ptr::null_mut());
-
-        assert!(
-            !hew_context_reply_channel_swap_add_frame_cleanup(
-                ptr::dangling_mut::<u8>().cast(),
-                1,
-                Some(record_frame_cleanup),
-            ),
-            "no active tracked frame must fail closed"
-        );
-
-        // SAFETY: the tracked frame remains live through registration checks
-        // and is released exactly once below.
-        let frame = unsafe { tracked_test_frame(&[41, 42, 43, 44]) };
-        // SAFETY: these pointers are formed for integer range validation only;
-        // rejected candidates are never dereferenced.
-        let before = (frame as usize - 1) as *mut c_void;
-        // SAFETY: this remains within the live allocation; only the requested
-        // two-byte range crosses the payload boundary.
-        let past_end = unsafe { frame.cast::<u8>().add(4 * size_of::<usize>() - 1) }.cast();
-        let overflowing = (usize::MAX - 3) as *mut c_void;
-        assert!(!hew_context_reply_channel_swap_add_frame_cleanup(
-            before,
-            1,
-            Some(record_frame_cleanup),
-        ));
-        assert!(!hew_context_reply_channel_swap_add_frame_cleanup(
-            past_end,
-            2,
-            Some(record_frame_cleanup),
-        ));
-        assert!(!hew_context_reply_channel_swap_add_frame_cleanup(
-            overflowing,
-            8,
-            Some(record_frame_cleanup),
-        ));
-        assert!(!hew_context_reply_channel_swap_add_frame_cleanup(
-            frame,
-            size_of::<usize>() as u64,
-            None,
-        ));
-        assert!(
-            hew_context_reply_channel_swap_add_frame_cleanup(
-                frame,
-                (4 * size_of::<usize>()) as u64,
-                Some(record_frame_cleanup),
-            ),
-            "the exact payload range must be accepted"
-        );
-
-        hew_context_reply_channel_swap_pop();
-        // SAFETY: normal pop disarmed the entry; this is the sole frame free.
-        unsafe { crate::cont::hew_cont_frame_free(frame) };
-        let _ = set_current_context(prev);
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn frame_cleanup_registration_rejects_duplicate_frame_slot_across_swaps() {
-        let _runtime_guard = crate::runtime_test_guard();
-        let _context_guard = ContextResetGuard::new();
-        let mut ctx = HewExecutionContext::default();
-        let prev = set_current_context(&raw mut ctx);
-        // SAFETY: released exactly once after both normal pops.
-        let frame = unsafe { tracked_test_frame(&[51, 52]) };
-
-        hew_context_reply_channel_swap_push(ptr::null_mut());
-        assert!(hew_context_reply_channel_swap_add_frame_cleanup(
-            frame,
-            size_of::<usize>() as u64,
-            Some(record_frame_cleanup),
-        ));
-        hew_context_reply_channel_swap_push(ptr::null_mut());
-        assert!(
-            !hew_context_reply_channel_swap_add_frame_cleanup(
-                frame,
-                size_of::<usize>() as u64,
-                Some(record_frame_cleanup),
-            ),
-            "one frame slot may have only one open crash-drop authority"
-        );
-        // SAFETY: the second word is a distinct in-bounds slot.
-        let sibling = unsafe { frame.cast::<usize>().add(1) }.cast();
-        assert!(hew_context_reply_channel_swap_add_frame_cleanup(
-            sibling,
-            size_of::<usize>() as u64,
-            Some(record_frame_cleanup),
-        ));
-
-        hew_context_reply_channel_swap_pop();
-        hew_context_reply_channel_swap_pop();
-        // SAFETY: both swaps disarmed normally; this is the sole frame free.
-        unsafe { crate::cont::hew_cont_frame_free(frame) };
-        let _ = set_current_context(prev);
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn crash_frame_cleanup_is_stack_lifo_plan_order_and_exactly_once() {
-        let _runtime_guard = crate::runtime_test_guard();
-        let _context_guard = ContextResetGuard::new();
-        clear_frame_cleanup_log();
-        let mut ctx = HewExecutionContext::default();
-        let prev = set_current_context(&raw mut ctx);
-        // SAFETY: both frames remain live until all cleanup thunks have run and
-        // are then freed exactly once below.
-        let outer = unsafe { tracked_test_frame(&[61, 62]) };
-        hew_context_reply_channel_swap_push(ptr::null_mut());
-        assert!(hew_context_reply_channel_swap_add_frame_cleanup(
-            outer,
-            size_of::<usize>() as u64,
-            Some(record_frame_cleanup),
-        ));
-        // SAFETY: second initialized word in the outer payload.
-        let outer_second = unsafe { outer.cast::<usize>().add(1) }.cast();
-        assert!(hew_context_reply_channel_swap_add_frame_cleanup(
-            outer_second,
-            size_of::<usize>() as u64,
-            Some(record_frame_cleanup),
-        ));
-
-        // SAFETY: the inner frame becomes the active top and is freed below.
-        let inner = unsafe { tracked_test_frame(&[63]) };
-        hew_context_reply_channel_swap_push(ptr::null_mut());
-        assert!(hew_context_reply_channel_swap_add_frame_cleanup(
-            inner,
-            size_of::<usize>() as u64,
-            Some(record_frame_cleanup),
-        ));
-
-        reply_channel_swap_unwind();
-        assert_eq!(
-            frame_cleanup_log(),
-            [63, 61, 62],
-            "inner swap first, then outer DropPlan registration order"
-        );
-        reply_channel_swap_unwind();
-        assert_eq!(
-            frame_cleanup_log(),
-            [63, 61, 62],
-            "a drained swap cannot invoke a cleanup twice"
-        );
-
-        // SAFETY: cleanup thunks do not free frames; release each exactly once.
-        unsafe {
-            crate::cont::hew_cont_frame_free(inner);
-            crate::cont::hew_cont_frame_free(outer);
-        }
-        let _ = set_current_context(prev);
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn normal_swap_pop_disarms_typed_frame_cleanup() {
-        let _runtime_guard = crate::runtime_test_guard();
-        let _context_guard = ContextResetGuard::new();
-        clear_frame_cleanup_log();
-        let mut ctx = HewExecutionContext::default();
-        let prev = set_current_context(&raw mut ctx);
-        // SAFETY: frame remains live until the sole free below.
-        let frame = unsafe { tracked_test_frame(&[71]) };
-
-        hew_context_reply_channel_swap_push(ptr::null_mut());
-        assert!(hew_context_reply_channel_swap_add_frame_cleanup(
-            frame,
-            size_of::<usize>() as u64,
-            Some(record_frame_cleanup),
-        ));
-        hew_context_reply_channel_swap_pop();
-        reply_channel_swap_unwind();
-        assert!(frame_cleanup_log().is_empty());
-
-        // SAFETY: normal pop invoked no thunk and did not free the frame.
-        unsafe { crate::cont::hew_cont_frame_free(frame) };
-        let _ = set_current_context(prev);
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn crash_frame_cleanup_drops_root_but_raw_drain_preserves_its_allocation() {
-        let _runtime_guard = crate::runtime_test_guard();
-        let _context_guard = ContextResetGuard::new();
-        clear_frame_cleanup_log();
-        let mut ctx = HewExecutionContext::default();
-        let prev = set_current_context(&raw mut ctx);
-        // SAFETY: both frames remain live through unwind and are freed below.
-        let root = unsafe { tracked_test_frame(&[81]) };
-        hew_context_reply_channel_swap_push(ptr::null_mut());
-        assert!(hew_context_reply_channel_swap_add_frame_cleanup(
-            root,
-            size_of::<usize>() as u64,
-            Some(record_frame_cleanup),
-        ));
-        // SAFETY: the child becomes the active top and remains live.
-        let child = unsafe { tracked_test_frame(&[82]) };
-        hew_context_reply_channel_swap_push(ptr::null_mut());
-        assert!(hew_context_reply_channel_swap_add_frame_cleanup(
-            child,
-            size_of::<usize>() as u64,
-            Some(record_frame_cleanup),
-        ));
-
-        reply_channel_swap_unwind();
-        assert_eq!(
-            frame_cleanup_log(),
-            [82, 81],
-            "inner and scheduler-root typed drops both run exactly once"
-        );
-
-        // SAFETY: model resumed-handler recovery: raw-drain the nested frame but
-        // reserve the scheduler root for `abandon_resuming_after_crash`.
-        let reclaimed = unsafe { crate::cont::reclaim_active_coroutine_frames_excluding(root) };
-        assert_eq!(reclaimed, 1);
-        assert!(
-            crate::cont::active_frame_contains_range(root, root, size_of::<usize>() as u64,),
-            "typed cleanup must not steal the actor slot's raw root allocation"
-        );
-        assert_eq!(
-            frame_cleanup_log(),
-            [82, 81],
-            "raw frame drain must not re-run typed cleanup"
-        );
-
-        // SAFETY: the drain freed `child`; the actor-slot authority performs the
-        // one remaining root allocation free without `coro.destroy`.
-        unsafe { crate::cont::hew_cont_frame_free(root) };
-        let _ = set_current_context(prev);
-    }
-
     /// SEC-1 regression: a scoped reply-channel swap must transfer BOTH the
     /// reply-channel pointer AND the consumed bit, so the child closure's
     /// `hew_reply` (which flips the consumed bit on the currently-installed
@@ -1442,60 +1043,6 @@ mod tests {
         let _ = set_current_context(prev);
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe fn test_string_with_refs(value: &str, refs: usize) -> *mut c_void {
-        assert!(refs > 0);
-        let string = crate::cabi::alloc_cstring_from_str(value);
-        assert!(!string.is_null());
-        for _ in 1..refs {
-            // SAFETY: `string` remains live for all requested ownership shares.
-            unsafe { crate::cabi::cstring_retain(string) };
-        }
-        string.cast()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    unsafe fn assert_unique_test_string_and_drop(value: *mut c_void) {
-        // `cstring_ensure_unique` returns the same pointer iff exactly one
-        // ownership share remains. If an unwind under-dropped, it returns a
-        // fresh copy and leaves the original at one ref; release both before
-        // failing so the negative assertion itself does not leak.
-        // SAFETY: callers pass a live test cstring with at least one share.
-        let unique = unsafe { crate::cabi::cstring_ensure_unique(value.cast()) };
-        if unique.cast::<c_void>() != value {
-            // SAFETY: ensure_unique left one live share at each pointer.
-            unsafe {
-                crate::cabi::free_cstring(value.cast());
-                crate::cabi::free_cstring(unique);
-            }
-            panic!("reply-channel swap unwind did not release the exact expected string shares");
-        }
-        // SAFETY: the equality above proves `value` is the one remaining live
-        // ownership share.
-        unsafe { crate::cabi::free_cstring(unique) };
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn normal_swap_pop_preserves_registered_string_obligation_for_mir() {
-        let _runtime_guard = crate::runtime_test_guard();
-        let _context_guard = ContextResetGuard::new();
-        let mut ctx = HewExecutionContext::default();
-        let prev = set_current_context(&raw mut ctx);
-        // SAFETY: creates one live test cstring share released below.
-        let value = unsafe { test_string_with_refs("normal-pop-owner", 1) };
-
-        hew_context_reply_channel_swap_push(0x0D0D_0D0D_usize as *mut c_void);
-        hew_context_reply_channel_swap_add_string_cleanup(value);
-        hew_context_reply_channel_swap_pop();
-
-        assert_eq!(reply_channel_swap_stack_depth(), 0);
-        // SAFETY: normal pop must leave the sole share live for the caller's
-        // ordinary MIR continuation drop.
-        unsafe { assert_unique_test_string_and_drop(value) };
-        let _ = set_current_context(prev);
-    }
-
     #[test]
     fn nested_swap_pop_restores_reply_channels_in_lifo_order() {
         let _runtime_guard = crate::runtime_test_guard();
@@ -1527,79 +1074,6 @@ mod tests {
             "popping the outer swap must restore the ambient dispatch channel"
         );
         assert_eq!(reply_channel_swap_stack_depth(), 0);
-        let _ = set_current_context(prev);
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn crash_swap_unwind_releases_one_registered_string_share() {
-        let _runtime_guard = crate::runtime_test_guard();
-        let _context_guard = ContextResetGuard::new();
-        let baseline = crate::reply_channel::active_channel_count();
-        let mut ctx = HewExecutionContext::default();
-        let prev = set_current_context(&raw mut ctx);
-        let driver = crate::reply_channel::hew_reply_channel_new();
-        assert!(!driver.is_null());
-        // SAFETY: `driver` was just created and is live.
-        unsafe { crate::reply_channel::hew_reply_channel_retain(driver) };
-        // Keep one sentinel ref so the test can inspect the post-unwind count;
-        // the second ref is the caller obligation registered on the swap.
-        // SAFETY: creates two live test cstring shares released below.
-        let value = unsafe { test_string_with_refs("crash-unwind-owner", 2) };
-
-        hew_context_reply_channel_swap_push(driver.cast());
-        hew_context_reply_channel_swap_add_string_cleanup(value);
-        reply_channel_swap_unwind();
-
-        assert_eq!(reply_channel_swap_stack_depth(), 0);
-        assert_eq!(crate::reply_channel::active_channel_count(), baseline);
-        // SAFETY: unwind must have released exactly the registered share,
-        // leaving the sentinel as the unique owner.
-        unsafe { assert_unique_test_string_and_drop(value) };
-        let _ = set_current_context(prev);
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn nested_swap_unwind_preserves_same_pointer_ownership_multiplicity() {
-        let _runtime_guard = crate::runtime_test_guard();
-        let _context_guard = ContextResetGuard::new();
-        let baseline = crate::reply_channel::active_channel_count();
-        let mut ctx = HewExecutionContext::default();
-        let prev = set_current_context(&raw mut ctx);
-        let outer_driver = crate::reply_channel::hew_reply_channel_new();
-        let inner_driver = crate::reply_channel::hew_reply_channel_new();
-        assert!(!outer_driver.is_null() && !inner_driver.is_null());
-        // SAFETY: both driver channels were just created and are live.
-        unsafe {
-            crate::reply_channel::hew_reply_channel_retain(outer_driver);
-            crate::reply_channel::hew_reply_channel_retain(inner_driver);
-        }
-        // One sentinel + two distinct ownership obligations carrying the SAME
-        // COW data pointer. Raw-pointer dedup would release only one and fail
-        // the uniqueness assertion below.
-        // SAFETY: creates three live test cstring shares released below.
-        let shared = unsafe { test_string_with_refs("two-shares-one-pointer", 3) };
-        // SAFETY: creates two live test cstring shares released below.
-        let inner = unsafe { test_string_with_refs("nested-inner-owner", 2) };
-
-        hew_context_reply_channel_swap_push(outer_driver.cast());
-        hew_context_reply_channel_swap_add_string_cleanup(shared);
-        hew_context_reply_channel_swap_add_string_cleanup(shared);
-        hew_context_reply_channel_swap_push(inner_driver.cast());
-        hew_context_reply_channel_swap_add_string_cleanup(inner);
-        assert_eq!(reply_channel_swap_stack_depth(), 2);
-
-        reply_channel_swap_unwind();
-
-        assert_eq!(reply_channel_swap_stack_depth(), 0);
-        assert_eq!(crate::reply_channel::active_channel_count(), baseline);
-        // SAFETY: two outer obligations and one inner obligation were released;
-        // each pointer retains only its explicit sentinel share.
-        unsafe {
-            assert_unique_test_string_and_drop(shared);
-            assert_unique_test_string_and_drop(inner);
-        }
         let _ = set_current_context(prev);
     }
 

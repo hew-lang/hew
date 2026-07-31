@@ -16,9 +16,9 @@ use super::{
     BasicBlock, BindingId, BlockKind, Builder, BuiltinType, CheckedMirFunction,
     ClosureEnvFieldOwnership, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock, ElabDrop,
     ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr, IntentKind,
-    LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction,
-    ResolvedRef, ResolvedTy, ResourceMarker, ScopeId, SuspendKind, Terminator, TraitObjectStorage,
-    ValueClass, ENTRY_BLOCK_ID,
+    LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, ParamCrashCleanupKind,
+    Place, RawMirFunction, ResolvedRef, ResolvedTy, ResourceMarker, ScopeId, SuspendKind,
+    Terminator, TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
 };
 
 /// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
@@ -2958,7 +2958,7 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
         // assumed-discharged suppress.
         _ => {}
     }
-    let (_, writes) = dataflow::instr_reads_writes(instr);
+    let (_, writes, _) = dataflow::instr_reads_writes(instr);
     for write in writes {
         if let Some(local) = mint_target_local(write) {
             // The defining write of a payload-alias binder is the transfer
@@ -4574,6 +4574,47 @@ pub(super) fn drop_kind_for(
         | Place::EnumVariant { .. } => DropKind::Resource,
     }
 }
+
+/// Materialize the ordinary typed drop ritual used by a crash-only parameter
+/// loan.  The descriptor is deliberately kept out of lexical drop plans:
+/// success retires the loan without releasing caller-owned storage, while the
+/// dynamic crash registry may invoke this ritual if the callee is abandoned.
+///
+/// Keeping construction here makes the drop-plan dispatcher the only
+/// authority that maps the typed loan kind to an [`ElabDrop`]; codegen never
+/// infers the ritual from a raw parameter type or runtime symbol name.
+///
+/// # Errors
+///
+/// Returns an error when the typed cleanup kind is incompatible with the
+/// parameter's resolved storage shape.
+pub fn crash_only_param_loan_drop(
+    place: Place,
+    ty: &ResolvedTy,
+    cleanup: ParamCrashCleanupKind,
+) -> Result<ElabDrop, String> {
+    match cleanup {
+        ParamCrashCleanupKind::Bytes if matches!(ty, ResolvedTy::Bytes) => {
+            let descriptor = ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: drop_kind_for(place, ty, None),
+                guard: None,
+            };
+            debug_assert_eq!(
+                descriptor.kind,
+                DropKind::CowHeap {
+                    release: crate::ownership::CowHeapRelease::Bytes,
+                }
+            );
+            Ok(descriptor)
+        }
+        ParamCrashCleanupKind::Bytes => Err(format!(
+            "bytes crash-cleanup loan at {place:?} carried incompatible type `{ty}`"
+        )),
+    }
+}
 /// RAII-1 opaque-resource close registry: `(opaque_type_name, "<Type>::<close>")`
 /// for every single-slot `#[resource] #[opaque]` handle whose close is a USER
 /// method.
@@ -4925,10 +4966,10 @@ pub(super) fn dyn_rebind_source_binding(value: &HirExpr) -> Option<BindingId> {
 /// pipeline aborts at the MIR boundary.
 ///
 /// Recognised shapes:
-/// - `HirExprKind::CoerceToDynTrait` → `FrameOwned`. The producer wraps
-///   a concrete value into a fat pointer whose `data` word aliases the
-///   concrete's frame slot; the coerced fat pointer's drop is the
-///   slot-0 `drop_in_place` only.
+/// - `HirExprKind::CoerceToDynTrait` → `HeapBoxed`. Codegen transfers the
+///   concrete value into a `hew_dyn_box_alloc` buffer, so the fat pointer
+///   remains valid across helper returns, suspension, and crash snapshots; its
+///   drop runs slot 0 and releases that buffer.
 /// - `HirExprKind::Call` / `CallTraitMethodStatic` / `CallDynMethod`
 ///   whose return type is `dyn Trait` → `HeapBoxed`. Returning a fat
 ///   pointer across a call boundary is only well-defined via the
@@ -4948,8 +4989,8 @@ pub(super) fn classify_dyn_trait_storage(
     dyn_trait_storage: &HashMap<BindingId, TraitObjectStorage>,
 ) -> Result<TraitObjectStorage, String> {
     match &value.kind {
-        HirExprKind::CoerceToDynTrait { .. } => Ok(TraitObjectStorage::FrameOwned),
-        HirExprKind::Call { .. }
+        HirExprKind::CoerceToDynTrait { .. }
+        | HirExprKind::Call { .. }
         | HirExprKind::CallTraitMethodStatic { .. }
         | HirExprKind::ResolvedImplCall { .. }
         | HirExprKind::CallDynMethod { .. } => Ok(TraitObjectStorage::HeapBoxed),

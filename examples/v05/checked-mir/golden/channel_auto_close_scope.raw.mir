@@ -29,8 +29,10 @@ fn main() -> () [conv=default]
     stmt: use BindingId(2) tx site=SiteId(8) ty=Sender<string> intent=Read
     _2 = move _1
     _3 = _2.0
+    aggregate_projection_neutralize _2 fields=[0] -> _3
     _4 = move _3
     _5 = _2.1
+    aggregate_projection_neutralize _2 fields=[1] -> _5
     _6 = move _5
     _7 = string_lit "ready"
     call hew_channel_send_layout(_4, _7) [builtin=ChannelSendLayout] -> bb2
@@ -314,6 +316,8 @@ fn channel$try_new(i64) -> Result<(Sender, Receiver), string> [conv=default]
     stmt: eval site=SiteId(98) ty=()
     stmt: use BindingId(18) tx site=SiteId(103) ty=Sender intent=Consume
     stmt: use BindingId(19) rx site=SiteId(104) ty=Receiver intent=Consume
+    stmt: agg_alias BindingId(18) tx site=SiteId(103) ty=Sender
+    stmt: agg_alias BindingId(19) rx site=SiteId(104) ty=Receiver
     stmt: return site=Some(SiteId(70)) ty=Result<(Sender, Receiver), string>
     _32 = const.i64 0
     mtag31 = move _32

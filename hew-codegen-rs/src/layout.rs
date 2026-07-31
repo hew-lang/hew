@@ -5345,10 +5345,19 @@ pub(crate) fn lower_vec_get_clone_call(
         let trap_bb = fn_ctx
             .ctx
             .append_basic_block(parent, "vec_index_clone_absent_trap");
+        let initialized_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "vec_index_clone_initialized");
         fn_ctx
             .builder
-            .build_conditional_branch(is_some, next_bb, trap_bb)
+            .build_conditional_branch(is_some, initialized_bb, trap_bb)
             .llvm_ctx("hew_vec_get_clone bare condbr")?;
+        fn_ctx.builder.position_at_end(initialized_bb);
+        emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(next_bb)
+            .llvm_ctx("hew_vec_get_clone bare initialized br")?;
         fn_ctx.builder.position_at_end(trap_bb);
         emit_trap_with_code(
             fn_ctx,
@@ -5360,6 +5369,7 @@ pub(crate) fn lower_vec_get_clone_call(
 
     let none_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_none");
     let some_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_some");
+    let initialized_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_initialized");
     fn_ctx
         .builder
         .build_conditional_branch(is_some, some_bb, none_bb)
@@ -5370,7 +5380,7 @@ pub(crate) fn lower_vec_get_clone_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_vec_get_clone none br")?;
 
     // Some = variant 0. The runtime already cloned into the payload slot.
@@ -5378,8 +5388,15 @@ pub(crate) fn lower_vec_get_clone_call(
     emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
     fn_ctx
         .builder
-        .build_unconditional_branch(next_bb)
+        .build_unconditional_branch(initialized_bb)
         .llvm_ctx("hew_vec_get_clone some br")?;
+
+    fn_ctx.builder.position_at_end(initialized_bb);
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest_place)?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_vec_get_clone initialized br")?;
     Ok(())
 }
 

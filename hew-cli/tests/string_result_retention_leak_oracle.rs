@@ -113,8 +113,7 @@ fn main() {
 }
 
 const SUSPENDING_CLOSURE_ABANDON_SOURCE: &str = r#"
-import std::net::{Listener};
-import std::observe;
+import std::channel::channel;
 
 extern "C" {
     fn hew_sched_metrics_active_workers() -> i64;
@@ -123,12 +122,13 @@ extern "C" {
 }
 
 actor Reader {
-    let addr: string;
+    let ready: channel.Sender<i64>;
 
     receive fn go(unused: i64) {
-        let conn = net.connect(addr);
+        let ready_tx = ready;
         let delayed_identity = |value: string| {
-            let _ = await conn.read_string();
+            ready_tx.send(1);
+            sleep(10s);
             value
         };
         let _ = delayed_identity("x".to_upper());
@@ -136,12 +136,11 @@ actor Reader {
 }
 
 fn main() {
-    let listener = net.listen("127.0.0.1:0");
-    let port = listener.local_port();
-    let reader = spawn Reader(addr: f"127.0.0.1:{port}");
+    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let reader = spawn Reader(ready: ready_tx);
     reader.go(0);
-    let _peer = listener.accept();
-    while observe.read("reactor.registrations_live") == 0 {}
+    let _ = ready_rx.recv();
+    ready_rx.close();
     while unsafe {
         hew_sched_metrics_active_workers()
     } != 0 {}
@@ -153,6 +152,7 @@ fn main() {
         hew_shutdown_wait()
     };
     println("shutdown");
+    exit(0);
 }
 "#;
 
@@ -305,6 +305,87 @@ fn main() {{
     )
 }
 
+fn ordinary_helper_snapshot_normal_source(frames: usize) -> String {
+    const TEMPLATE: &str = r#"
+record Bundle { text: string, data: bytes }
+#[resource] type Witness { fd: i64 }
+impl Witness { fn close(self) { println("closed"); } }
+fn make_nested(label: string) -> fn() -> i64 { || label.len() }
+fn helper_normal() -> i64 {
+    let text = "helper-string".to_upper();
+    let data = "helper-bytes".to_bytes();
+    let bundle = Bundle {
+        text: "helper-record".to_upper(),
+        data: "helper-record-bytes".to_bytes(),
+    };
+    let witness = Witness { fd: 7 };
+    let nested = make_nested("helper-nested".to_upper());
+    let table = HashMap::new<string, i64>();
+    text.len() + data.len() + bundle.text.len() + bundle.data.len()
+        + witness.fd + nested() + table.len()
+}
+actor Gate { receive fn tick() -> i64 { 1 } }
+actor Runner {
+    let gate: LocalPid<Gate>;
+    receive fn go(frames: i64) -> i64 {
+        let _ = await gate.tick();
+        for _ in 0..frames {
+            if helper_normal() < 0 { panic("impossible"); }
+            println("completed");
+        }
+        frames
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let _ = await runner.go(__FRAMES__);
+}
+"#;
+    TEMPLATE.replace("__FRAMES__", &frames.to_string())
+}
+
+fn ordinary_helper_snapshot_crash_source(frames: usize) -> String {
+    const TEMPLATE: &str = r#"
+record Bundle { text: string, data: bytes }
+#[resource] type Witness { fd: i64 }
+impl Witness { fn close(self) { println("closed"); } }
+fn make_nested(label: string) -> fn() -> i64 { || label.len() }
+fn helper_trap() -> i64 {
+    let text = "helper-string".to_upper();
+    let data = "helper-bytes".to_bytes();
+    let bundle = Bundle {
+        text: "helper-record".to_upper(),
+        data: "helper-record-bytes".to_bytes(),
+    };
+    let witness = Witness { fd: 7 };
+    let nested = make_nested("helper-nested".to_upper());
+    let table = HashMap::new<string, i64>();
+    text.len() + data.len() + bundle.text.len() + bundle.data.len()
+        + witness.fd + nested() + table["missing"]
+}
+actor Gate { receive fn tick() -> i64 { 1 } }
+actor Runner {
+    let gate: LocalPid<Gate>;
+    receive fn go() -> i64 {
+        let _ = await gate.tick();
+        helper_trap()
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    for _ in 0..__FRAMES__ {
+        let runner = spawn Runner(gate: gate);
+        match await runner.go() {
+            Ok(_) => println("unexpected"),
+            Err(_) => println("crashed"),
+        }
+    }
+}
+"#;
+    TEMPLATE.replace("__FRAMES__", &frames.to_string())
+}
+
 const SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE: &str = r#"
 import std::observe;
 
@@ -378,6 +459,186 @@ fn static_resume_crash_source() -> String {
         r#"resume_then_crash("resume-crash-owner".to_upper())"#,
         r#"resume_then_crash("resume-crash-owner")"#,
     )
+}
+
+/// The child owns every typed value before it reaches its first suspend. They
+/// are nevertheless live across the syntactically later await, so `CoroSplit`
+/// places them in the child frame. A trap on the initial ramp must therefore
+/// drain the `DIRECT_FRAME` registry before raw frame reclamation.
+fn suspending_closure_child_owner_pre_first_await_crash_source(frames: usize) -> String {
+    const TEMPLATE: &str = r#"
+record ChildBundle {
+    text: string,
+    data: bytes,
+}
+
+fn make_child_nested(label: string) -> fn() -> i64 {
+    || label.len()
+}
+
+actor Gate {
+    receive fn tick() -> i64 {
+        1
+    }
+}
+
+actor Crasher {
+    let gate: LocalPid<Gate>;
+
+    receive fn run() -> i64 {
+        let child = |child_gate: LocalPid<Gate>| {
+            let child_string = "pre-await-string-owner".to_upper();
+            let child_bytes = "pre-await-bytes-owner".to_bytes();
+            let child_record = ChildBundle {
+                text: "pre-await-record-owner".to_upper(),
+                data: "pre-await-record-bytes".to_bytes(),
+            };
+            let child_nested = make_child_nested("pre-await-nested-owner".to_upper());
+            if child_string.len()
+                + child_bytes.len()
+                + child_record.text.len()
+                + child_record.data.len()
+                + child_nested()
+                >= 0 {
+                panic("crash before first child await");
+            }
+            let _ = match await child_gate.tick() {
+                Ok(n) => n,
+                Err(_) => 0,
+            };
+            child_string.len()
+                + child_bytes.len()
+                + child_record.text.len()
+                + child_record.data.len()
+                + child_nested()
+        };
+        child(gate)
+    }
+}
+
+fn main() {
+    let gate = spawn Gate;
+    for _ in 0..__FRAMES__ {
+        let crasher = spawn Crasher(gate: gate);
+        match await crasher.run() {
+            Ok(_) => panic("pre-await child crash unexpectedly returned"),
+            Err(_) => println("restarted"),
+        }
+    }
+}
+"#;
+    TEMPLATE.replace("__FRAMES__", &frames.to_string())
+}
+
+/// Reassignment sibling for the initial-ramp crash. The first heap string must
+/// be released by the overwrite, the stable registry token must be rearmed for
+/// the second string, and the crash drain must release only that current owner.
+fn suspending_closure_child_owner_reassign_then_crash_source(frames: usize) -> String {
+    const TEMPLATE: &str = r#"
+actor Gate {
+    receive fn tick() -> i64 {
+        1
+    }
+}
+
+actor Crasher {
+    let gate: LocalPid<Gate>;
+
+    receive fn run() -> i64 {
+        let child = |child_gate: LocalPid<Gate>| {
+            var child_string = "pre-overwrite-owner".to_upper();
+            child_string = "post-overwrite-owner".to_upper();
+            if child_string.len() >= 0 {
+                panic("crash after child-owner reassignment");
+            }
+            let _ = match await child_gate.tick() {
+                Ok(n) => n,
+                Err(_) => 0,
+            };
+            child_string.len()
+        };
+        child(gate)
+    }
+}
+
+fn main() {
+    let gate = spawn Gate;
+    for _ in 0..__FRAMES__ {
+        let crasher = spawn Crasher(gate: gate);
+        match await crasher.run() {
+            Ok(_) => panic("reassigned child crash unexpectedly returned"),
+            Err(_) => println("restarted"),
+        }
+    }
+}
+"#;
+    TEMPLATE.replace("__FRAMES__", &frames.to_string())
+}
+
+/// Child-frame counterpart to the resumed-root fixture. Every owner below is
+/// allocated inside the suspending closure before its await and is read only
+/// after the child resumes. A resumed panic therefore abandons the running
+/// child frame before its ordinary return or parked-destroy drop authority can
+/// run.
+fn suspending_closure_child_owner_resume_crash_source(frames: usize) -> String {
+    const TEMPLATE: &str = r#"
+record ChildBundle {
+    text: string,
+    data: bytes,
+}
+
+fn make_child_nested(label: string) -> fn() -> i64 {
+    || label.len()
+}
+
+actor Gate {
+    receive fn tick() -> i64 {
+        1
+    }
+}
+
+actor Crasher {
+    let gate: LocalPid<Gate>;
+
+    receive fn run() -> i64 {
+        let child = |child_gate: LocalPid<Gate>| {
+            let child_string = "child-string-owner".to_upper();
+            let child_bytes = "child-bytes-owner".to_bytes();
+            let child_record = ChildBundle {
+                text: "child-record-owner".to_upper(),
+                data: "child-record-bytes".to_bytes(),
+            };
+            let child_nested = make_child_nested("child-nested-owner".to_upper());
+            let _ = match await child_gate.tick() {
+                Ok(n) => n,
+                Err(_) => 0,
+            };
+            if child_string.len()
+                + child_bytes.len()
+                + child_record.text.len()
+                + child_record.data.len()
+                + child_nested()
+                >= 0 {
+                panic("crash after child-owner resume");
+            }
+            7
+        };
+        child(gate)
+    }
+}
+
+fn main() {
+    let gate = spawn Gate;
+    for _ in 0..__FRAMES__ {
+        let crasher = spawn Crasher(gate: gate);
+        match await crasher.run() {
+            Ok(_) => panic("child-owner crash unexpectedly returned"),
+            Err(_) => println("restarted"),
+        }
+    }
+}
+"#;
+    TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
 
 /// Three nested suspending-closure ramps per actor crash, repeated through a
@@ -580,7 +841,7 @@ fn suspending_closure_parked_abandon_completes_shutdown() {
 }
 
 #[test]
-fn suspending_closure_codegen_registers_fresh_arg_for_initial_ramp_and_resume() {
+fn suspending_closure_codegen_uses_one_typed_fresh_arg_cleanup_authority() {
     require_codegen();
     let dir = tempfile::Builder::new()
         .prefix("suspending-closure-codegen-")
@@ -602,18 +863,17 @@ fn suspending_closure_codegen_registers_fresh_arg_for_initial_ramp_and_resume() 
         std::fs::read_to_string(static_bin.with_extension("ll")).expect("read static LLVM IR");
     let fresh_handler = llvm_function_body(&fresh_ir, "Reader__recv__go");
     let static_handler = llvm_function_body(&static_ir, "Reader__recv__go");
-    let registration = "call void @hew_context_reply_channel_swap_add_string_cleanup";
+    let typed_arm = "call i64 @hew_cont_crash_cleanup_arm";
 
     assert_eq!(
-        fresh_handler.matches(registration).count(),
-        2,
-        "the fresh string argument must be registered once for the initial child \
-         ramp and once for a later child resume:\n{fresh_handler}"
+        fresh_handler.matches(typed_arm).count(),
+        1,
+        "the fresh string producer must arm one typed cleanup authority:\n{fresh_handler}"
     );
     assert_eq!(
-        static_handler.matches(registration).count(),
+        static_handler.matches(typed_arm).count(),
         0,
-        "a borrowed static literal carries no crash-unwind ownership obligation:\n\
+        "a borrowed static literal carries no typed crash-unwind ownership obligation:\n\
          {static_handler}"
     );
 }
@@ -677,6 +937,58 @@ fn suspending_closure_later_resume_crash_drains_typed_root_owners_once() {
         "crash-fallback\nmain-done\n0\n",
         "string, Bytes, record, and nested-closure owners must be drained before \
          the crashed root frame is reclaimed"
+    );
+}
+
+#[test]
+fn ordinary_helper_snapshot_normal_return_drops_once() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("ordinary-helper-snapshot-normal-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        &ordinary_helper_snapshot_normal_source(3),
+        dir.path(),
+        "ordinary_helper_snapshot_normal",
+    );
+    let output = run_fixture(&bin, "run ordinary-helper snapshot normal fixture");
+    assert!(
+        output.status.success(),
+        "ordinary-helper normal fixture failed (a poisoned-header abort here is a \
+         double drop):\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "closed\ncompleted\nclosed\ncompleted\nclosed\ncompleted\n",
+        "normal lexical retirement must leave MIR as the sole typed-drop authority"
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "helper snapshot leak slope needs macOS `leaks(1)` / the Darwin poisoned allocator"
+)]
+#[test]
+fn ordinary_helper_snapshot_normal_return_has_zero_leak_slope() {
+    assert_frame_slope_below_tolerance_exact_lines(
+        "ordinary_helper_snapshot_normal",
+        ordinary_helper_snapshot_normal_source,
+        |frames| frames * 2,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "helper raw-trap leak slope needs macOS `leaks(1)` / the Darwin poisoned allocator"
+)]
+#[test]
+fn ordinary_helper_snapshot_raw_trap_has_zero_leak_slope() {
+    assert_frame_slope_below_tolerance_exact_lines(
+        "ordinary_helper_snapshot_raw_trap",
+        ordinary_helper_snapshot_crash_source,
+        |frames| frames * 2,
     );
 }
 
@@ -826,6 +1138,45 @@ fn suspending_closure_later_resume_crash_reclaims_nested_frame_only() {
         static_leaks,
         (0, 0),
         "the actor-ask resume fixture carries no unrelated typed resource floor"
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "exact child-frame crash leak slope needs macOS `leaks(1)` / the Darwin poisoned allocator"
+)]
+#[test]
+fn suspending_closure_child_owners_survive_await_without_crash_leaks() {
+    assert_frame_slope_below_tolerance_exact_lines(
+        "suspending_closure_child_owner_resume_crash",
+        suspending_closure_child_owner_resume_crash_source,
+        std::convert::identity,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "exact initial-ramp child-frame crash leak slope needs macOS `leaks(1)` / the Darwin poisoned allocator"
+)]
+#[test]
+fn suspending_closure_child_owners_crash_before_first_await_without_leaks() {
+    assert_frame_slope_below_tolerance_exact_lines(
+        "suspending_closure_child_owner_pre_first_await_crash",
+        suspending_closure_child_owner_pre_first_await_crash_source,
+        std::convert::identity,
+    );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "exact reassigned child-frame crash leak slope needs macOS `leaks(1)` / the Darwin poisoned allocator"
+)]
+#[test]
+fn suspending_closure_child_owner_reassignment_rearms_current_value_once() {
+    assert_frame_slope_below_tolerance_exact_lines(
+        "suspending_closure_child_owner_reassign_then_crash",
+        suspending_closure_child_owner_reassign_then_crash_source,
+        std::convert::identity,
     );
 }
 

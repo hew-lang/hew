@@ -60,6 +60,10 @@ impl Person {
     }
 }
 
+fn inspect_named(value: dyn Named) -> i64 {
+    value.name().len()
+}
+
 // Record with an owned-heap `Vec` field (D2 Mode A).
 type Bag {
     items: Vec<i64>;
@@ -94,6 +98,16 @@ fn test_dyn_string_field_record_drops_clean() {
     let p = Person { tag: heaped };
     let _d: dyn Named = p;
     testing.assert_true(true);
+}
+
+/// A coercion used directly as a BORROWING call argument still owns a fresh
+/// dyn box. The anonymous caller temporary must run the same HeapBoxed drop as
+/// a named dyn local after `inspect_named` returns; the callee parameter is a
+/// borrow and must not acquire a competing drop.
+#[test]
+fn test_borrowed_dyn_argument_temporary_drops_clean() {
+    let n = inspect_named(Person { tag: string.repeat("b", 64) });
+    testing.assert_eq(n, 64);
 }
 
 /// Mode A — record with a populated `Vec<i64>` field coerced to `dyn` and

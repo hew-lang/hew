@@ -3,10 +3,12 @@ use super::*;
 #[cfg(not(test))]
 use super::{
     named_type_names, project_match_ownership_mode, short_name, BindingId, Builder, BuiltinType,
-    ConsumeVerdict, HashMap, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind,
-    Instr, IntentKind, LayoutReadiness, MirDiagnostic, MirDiagnosticKind, MirStatement,
-    ParamOwnershipFacts, Place, ProjectMatchOwnershipMode, ResolvedRef, ResolvedTy, ResourceMarker,
-    ScanCtx, Strategy, ValueClass,
+    CheckedMirFunction, ConsumeVerdict, DecisionFact, ElaboratedMirFunction, FunctionCallConv,
+    HashMap, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind, Instr,
+    IntentKind, LayoutReadiness, MirDiagnostic, MirDiagnosticKind, MirStatement, ParamBoundaryFact,
+    ParamBoundaryMode, ParamCrashCleanupKind, ParamLoanStorage, ParamOwnershipFacts,
+    ParamRepresentationEffect, Place, ProjectMatchOwnershipMode, RawMirFunction, ResolvedRef,
+    ResolvedTy, ResourceMarker, ScanCtx, SiteId, Strategy, SuspendKind, Terminator, ValueClass,
 };
 
 impl Builder {
@@ -997,6 +999,7 @@ pub(super) fn compute_param_ownership(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     items: &[HirItem],
     type_classes: &hew_hir::TypeClassTable,
+    caller_visible_param_projections: &HashSet<(hew_hir::ItemId, usize)>,
 ) -> ParamOwnershipFacts {
     // Seed: every resource parameter starts at its `consume` annotation —
     // pinned CONSUME (`true`) when annotated, BORROW (`false`) otherwise.
@@ -1154,9 +1157,571 @@ pub(super) fn compute_param_ownership(
         proven_borrow_arg_sites,
         call_param_consume,
         call_param_owned_carrier,
+        caller_visible_param_projections: caller_visible_param_projections.clone(),
         machine_decl_names: collect_machine_decl_names(items),
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RepresentationEffectState {
+    None,
+    MayReplace,
+    Unproven,
+}
+
+fn boundary_decisions(decisions: &[DecisionFact]) -> Vec<ParamBoundaryFact> {
+    let mut facts = decisions
+        .iter()
+        .filter_map(|decision| match decision.strategy {
+            Strategy::ParamBoundary(fact) => Some(fact),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    facts.sort_unstable_by_key(|fact| fact.param_index);
+    facts
+}
+
+fn assert_total_boundary_facts(name: &str, param_count: usize, facts: &[ParamBoundaryFact]) {
+    assert_eq!(
+        facts.len(),
+        param_count,
+        "function `{name}` must carry exactly one boundary fact per parameter"
+    );
+    let param_count_u32 =
+        u32::try_from(param_count).expect("function parameter count exceeds u32::MAX");
+    for (expected_index, fact) in facts.iter().enumerate() {
+        assert_eq!(
+            fact.param_count, param_count_u32,
+            "function `{name}` boundary facts disagree on parameter count"
+        );
+        assert_eq!(
+            usize::try_from(fact.param_index).expect("parameter index exceeds usize"),
+            expected_index,
+            "function `{name}` boundary facts must cover every parameter exactly once"
+        );
+    }
+}
+
+fn seed_missing_boundary_facts(raw: &mut RawMirFunction) {
+    let existing = boundary_decisions(&raw.decisions);
+    if !existing.is_empty() || raw.params.is_empty() {
+        assert_total_boundary_facts(&raw.name, raw.params.len(), &existing);
+        return;
+    }
+
+    let param_count =
+        u32::try_from(raw.params.len()).expect("function parameter count exceeds u32::MAX");
+    for (param_index, ty) in raw.params.iter().cloned().enumerate() {
+        let param_index =
+            u32::try_from(param_index).expect("function parameter count exceeds u32::MAX");
+        let mode = if raw.call_conv == FunctionCallConv::ActorHandler {
+            ParamBoundaryMode::OwnedMessage
+        } else {
+            ParamBoundaryMode::BorrowReadOnly
+        };
+        raw.decisions.push(DecisionFact {
+            site: SiteId(param_index),
+            ty,
+            value_class: ValueClass::Unknown,
+            intent: IntentKind::Unknown,
+            strategy: Strategy::ParamBoundary(ParamBoundaryFact {
+                param_index,
+                param_count,
+                caller_visible_projection: false,
+                mode,
+            }),
+            why: "synthetic function parameter boundary classification".to_string(),
+        });
+    }
+    assert_total_boundary_facts(
+        &raw.name,
+        raw.params.len(),
+        &boundary_decisions(&raw.decisions),
+    );
+}
+
+fn mark_param_place(
+    place: Place,
+    param_count: usize,
+    state: RepresentationEffectState,
+    effects: &mut [RepresentationEffectState],
+) {
+    let Some(local) = crate::dataflow::write_place_local(place) else {
+        return;
+    };
+    let Ok(param_index) = usize::try_from(local) else {
+        return;
+    };
+    if param_index < param_count {
+        effects[param_index] = effects[param_index].max(state);
+    }
+}
+
+fn mark_unproven_param_place(
+    place: Place,
+    facts: &[ParamBoundaryFact],
+    effects: &mut [RepresentationEffectState],
+) {
+    let Some(local) = crate::dataflow::write_place_local(place) else {
+        return;
+    };
+    let Ok(param_index) = usize::try_from(local) else {
+        return;
+    };
+    if facts
+        .get(param_index)
+        .is_some_and(|fact| fact.caller_visible_projection)
+    {
+        effects[param_index] = RepresentationEffectState::Unproven;
+    }
+}
+
+type RepresentationEffectEdge = (usize, usize, usize, usize);
+
+fn scan_function_representation_effects(
+    function: usize,
+    raw: &RawMirFunction,
+    facts: &[ParamBoundaryFact],
+    function_index: &HashMap<String, usize>,
+    effects: &mut [Vec<RepresentationEffectState>],
+    edges: &mut Vec<RepresentationEffectEdge>,
+) {
+    let param_count = raw.params.len();
+    for block in &raw.blocks {
+        for instr in &block.instructions {
+            for place in crate::dataflow::instr_interior_write_places(instr) {
+                mark_param_place(
+                    place,
+                    param_count,
+                    RepresentationEffectState::MayReplace,
+                    &mut effects[function],
+                );
+            }
+            match instr {
+                Instr::CallClosure { args, .. } => {
+                    for &arg in args {
+                        mark_unproven_param_place(arg, facts, &mut effects[function]);
+                    }
+                }
+                Instr::CallTraitMethod {
+                    fat_pointer, args, ..
+                } => {
+                    mark_unproven_param_place(*fat_pointer, facts, &mut effects[function]);
+                    for &arg in args {
+                        mark_unproven_param_place(arg, facts, &mut effects[function]);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Terminator::Call {
+            callee,
+            builtin,
+            args,
+            ..
+        } = &block.terminator
+        {
+            if let Some(&callee_index) = function_index.get(callee) {
+                for (callee_param, &arg) in args.iter().enumerate() {
+                    let Some(local) = crate::dataflow::write_place_local(arg) else {
+                        continue;
+                    };
+                    let Ok(caller_param) = usize::try_from(local) else {
+                        continue;
+                    };
+                    if caller_param >= param_count {
+                        continue;
+                    }
+                    if callee_param < effects[callee_index].len() {
+                        edges.push((function, caller_param, callee_index, callee_param));
+                    } else if facts[caller_param].caller_visible_projection {
+                        effects[function][caller_param] = RepresentationEffectState::Unproven;
+                    }
+                }
+            } else if builtin.is_none() {
+                for &arg in args {
+                    mark_unproven_param_place(arg, facts, &mut effects[function]);
+                }
+            }
+        }
+    }
+
+    for suspend in raw.suspend_kinds.values() {
+        if let SuspendKind::CallClosure { args, .. } = suspend {
+            for &arg in args {
+                mark_unproven_param_place(arg, facts, &mut effects[function]);
+            }
+        }
+    }
+}
+
+fn collect_param_representation_effects(
+    raw_mir: &[RawMirFunction],
+) -> Vec<Vec<RepresentationEffectState>> {
+    let function_index = raw_mir
+        .iter()
+        .enumerate()
+        .map(|(index, raw)| (raw.name.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let mut effects = raw_mir
+        .iter()
+        .map(|raw| vec![RepresentationEffectState::None; raw.params.len()])
+        .collect::<Vec<_>>();
+    let mut edges = Vec::<RepresentationEffectEdge>::new();
+    for (function, raw) in raw_mir.iter().enumerate() {
+        let facts = boundary_decisions(&raw.decisions);
+        scan_function_representation_effects(
+            function,
+            raw,
+            &facts,
+            &function_index,
+            &mut effects,
+            &mut edges,
+        );
+    }
+
+    loop {
+        let mut changed = false;
+        for &(caller, caller_param, callee, callee_param) in &edges {
+            let propagated = effects[callee][callee_param];
+            if propagated > effects[caller][caller_param] {
+                effects[caller][caller_param] = propagated;
+                changed = true;
+            }
+        }
+        if !changed {
+            return effects;
+        }
+    }
+}
+
+fn refine_raw_param_boundary_modes(
+    raw_mir: &mut [RawMirFunction],
+    effects: &[Vec<RepresentationEffectState>],
+) {
+    for (function, raw) in raw_mir.iter_mut().enumerate() {
+        let coroutine = raw.coroutine_facts().is_coroutine;
+        let whole_written = (0..raw.params.len())
+            .map(|index| {
+                crate::dataflow::local_is_written_in_body(
+                    raw,
+                    u32::try_from(index).expect("function parameter count exceeds u32::MAX"),
+                )
+            })
+            .collect::<Vec<_>>();
+        for decision in &mut raw.decisions {
+            let Strategy::ParamBoundary(mut fact) = decision.strategy else {
+                continue;
+            };
+            let param_index =
+                usize::try_from(fact.param_index).expect("parameter boundary index exceeds usize");
+            if matches!(fact.mode, ParamBoundaryMode::BorrowReadOnly) {
+                fact.mode = match effects[function][param_index] {
+                    RepresentationEffectState::None => ParamBoundaryMode::BorrowReadOnly,
+                    RepresentationEffectState::MayReplace
+                        if fact.caller_visible_projection
+                            && raw.call_conv == FunctionCallConv::Default
+                            && !coroutine
+                            && !whole_written[param_index]
+                            && matches!(raw.params[param_index], ResolvedTy::Bytes) =>
+                    {
+                        ParamBoundaryMode::BorrowRepresentationLoan {
+                            storage: ParamLoanStorage::Aliasable,
+                            effect: ParamRepresentationEffect::MayReplaceRepresentation,
+                            crash_cleanup: ParamCrashCleanupKind::Bytes,
+                        }
+                    }
+                    RepresentationEffectState::MayReplace | RepresentationEffectState::Unproven => {
+                        ParamBoundaryMode::RejectUnprovenRepresentationMutation
+                    }
+                };
+                decision.strategy = Strategy::ParamBoundary(fact);
+            }
+        }
+        assert_total_boundary_facts(
+            &raw.name,
+            raw.params.len(),
+            &boundary_decisions(&raw.decisions),
+        );
+    }
+}
+
+fn sync_param_boundary_modes(
+    raw_mir: &[RawMirFunction],
+    checked_mir: &mut [CheckedMirFunction],
+    elaborated_mir: &mut [ElaboratedMirFunction],
+) {
+    let boundary_decisions_for = |name: &str| {
+        raw_mir
+            .iter()
+            .find(|raw| raw.name == name)
+            .expect("MIR function has no raw parameter-boundary authority")
+            .decisions
+            .iter()
+            .filter(|decision| matches!(decision.strategy, Strategy::ParamBoundary(_)))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for checked in checked_mir {
+        checked
+            .decisions
+            .retain(|decision| !matches!(decision.strategy, Strategy::ParamBoundary(_)));
+        checked
+            .decisions
+            .extend(boundary_decisions_for(&checked.name));
+    }
+    for elaborated in elaborated_mir {
+        elaborated
+            .decisions
+            .retain(|decision| !matches!(decision.strategy, Strategy::ParamBoundary(_)));
+        elaborated
+            .decisions
+            .extend(boundary_decisions_for(&elaborated.name));
+    }
+}
+
+/// Refine every initial parameter mode from exhaustive local MIR writers and
+/// resolved call edges. This is a monotone module-wide fixpoint, so forwarded
+/// calls and recursive SCCs converge without call-order dependence.
+pub(super) fn finalize_param_boundary_modes(
+    raw_mir: &mut [RawMirFunction],
+    checked_mir: &mut [CheckedMirFunction],
+    elaborated_mir: &mut [ElaboratedMirFunction],
+) {
+    for raw in raw_mir.iter_mut() {
+        seed_missing_boundary_facts(raw);
+    }
+    let effects = collect_param_representation_effects(raw_mir);
+    refine_raw_param_boundary_modes(raw_mir, &effects);
+    sync_param_boundary_modes(raw_mir, checked_mir, elaborated_mir);
+}
+
+#[cfg(test)]
+mod param_boundary_effect_tests {
+    use super::*;
+    use crate::model::RuntimeCall;
+
+    fn boundary_decision(mode: ParamBoundaryMode) -> DecisionFact {
+        DecisionFact {
+            site: SiteId(0),
+            ty: ResolvedTy::Bytes,
+            value_class: ValueClass::CowValue,
+            intent: IntentKind::Unknown,
+            strategy: Strategy::ParamBoundary(ParamBoundaryFact {
+                param_index: 0,
+                param_count: 1,
+                caller_visible_projection: true,
+                mode,
+            }),
+            why: "test boundary".to_string(),
+        }
+    }
+
+    fn raw_function(
+        name: &str,
+        call_conv: FunctionCallConv,
+        instructions: Vec<Instr>,
+        terminator: Terminator,
+    ) -> RawMirFunction {
+        RawMirFunction {
+            name: name.to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv,
+            params: vec![ResolvedTy::Bytes],
+            locals: vec![ResolvedTy::Bytes],
+            local_names: vec![Some("value".to_string())],
+            local_scopes: vec![None],
+            local_decl_bytes: vec![None],
+            scope_table: vec![],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions,
+                terminator,
+            }],
+            decisions: vec![boundary_decision(ParamBoundaryMode::BorrowReadOnly)],
+            intrinsic_id: None,
+            await_deadline_ns: HashMap::new(),
+            suspend_kinds: HashMap::new(),
+            lambda_actor_user_param_locals: vec![],
+            span: None,
+            instr_spans: std::collections::BTreeMap::new(),
+            source_origin: SourceOrigin::Unknown,
+        }
+    }
+
+    fn call(callee: &str) -> Terminator {
+        Terminator::Call {
+            callee: callee.to_string(),
+            builtin: None,
+            args: vec![Place::Local(0)],
+            dest: None,
+            next: 0,
+        }
+    }
+
+    fn bytes_writer() -> Instr {
+        Instr::CallRuntimeAbi(
+            RuntimeCall::new("hew_bytes_push", vec![Place::Local(0)], None)
+                .expect("bytes push is an admitted runtime call"),
+        )
+    }
+
+    fn checked(raw: &RawMirFunction) -> CheckedMirFunction {
+        CheckedMirFunction {
+            name: raw.name.clone(),
+            return_ty: raw.return_ty.clone(),
+            blocks: raw.blocks.clone(),
+            decisions: raw.decisions.clone(),
+            checks: vec![],
+            cooperate_sites: vec![],
+        }
+    }
+
+    fn elaborated(raw: &RawMirFunction) -> ElaboratedMirFunction {
+        ElaboratedMirFunction {
+            name: raw.name.clone(),
+            return_ty: raw.return_ty.clone(),
+            statements: vec![],
+            decisions: raw.decisions.clone(),
+            blocks: vec![],
+            drop_plans: vec![],
+            coroutine: None,
+            lambda_captures: vec![],
+        }
+    }
+
+    fn mode(raw: &RawMirFunction) -> ParamBoundaryMode {
+        boundary_decisions(&raw.decisions)[0].mode
+    }
+
+    fn finalize(raw: &mut [RawMirFunction]) {
+        let mut checked = raw.iter().map(checked).collect::<Vec<_>>();
+        let mut elaborated = raw.iter().map(elaborated).collect::<Vec<_>>();
+        finalize_param_boundary_modes(raw, &mut checked, &mut elaborated);
+        for ((raw, checked), elaborated) in raw.iter().zip(&checked).zip(&elaborated) {
+            assert_eq!(
+                boundary_decisions(&raw.decisions),
+                boundary_decisions(&checked.decisions)
+            );
+            assert_eq!(
+                boundary_decisions(&raw.decisions),
+                boundary_decisions(&elaborated.decisions)
+            );
+        }
+    }
+
+    #[test]
+    fn representation_effect_propagates_through_forwarders_symbols_and_recursive_sccs() {
+        let mut raw = vec![
+            raw_function(
+                "leaf",
+                FunctionCallConv::Default,
+                vec![bytes_writer()],
+                Terminator::Return,
+            ),
+            raw_function("forward", FunctionCallConv::Default, vec![], call("leaf")),
+            raw_function(
+                "<Buffer>::touch",
+                FunctionCallConv::Default,
+                vec![],
+                call("forward"),
+            ),
+            raw_function(
+                "touch$bytes",
+                FunctionCallConv::Default,
+                vec![],
+                call("<Buffer>::touch"),
+            ),
+            raw_function(
+                "recursive_a",
+                FunctionCallConv::Default,
+                vec![],
+                call("recursive_b"),
+            ),
+            raw_function(
+                "recursive_b",
+                FunctionCallConv::Default,
+                vec![bytes_writer()],
+                call("recursive_a"),
+            ),
+        ];
+        finalize(&mut raw);
+
+        for function in &raw {
+            assert_eq!(
+                mode(function),
+                ParamBoundaryMode::BorrowRepresentationLoan {
+                    storage: ParamLoanStorage::Aliasable,
+                    effect: ParamRepresentationEffect::MayReplaceRepresentation,
+                    crash_cleanup: ParamCrashCleanupKind::Bytes,
+                },
+                "{} must inherit the representation-replacement effect",
+                function.name
+            );
+        }
+    }
+
+    #[test]
+    fn unresolved_and_copied_triple_mutation_forms_reject_explicitly() {
+        let mut raw = vec![
+            raw_function(
+                "unresolved",
+                FunctionCallConv::Default,
+                vec![],
+                call("unknown_callable"),
+            ),
+            raw_function(
+                "closure_copy",
+                FunctionCallConv::ClosureInvoke,
+                vec![bytes_writer()],
+                Terminator::Return,
+            ),
+        ];
+        finalize(&mut raw);
+
+        for function in &raw {
+            assert_eq!(
+                mode(function),
+                ParamBoundaryMode::RejectUnprovenRepresentationMutation,
+                "{} must fail closed instead of becoming a read-only borrow",
+                function.name
+            );
+        }
+    }
+
+    #[test]
+    fn owned_resource_message_and_carrier_modes_remain_distinct() {
+        let expected = [
+            ParamBoundaryMode::TransferResource,
+            ParamBoundaryMode::OwnedMessage,
+            ParamBoundaryMode::OwnedCarrier,
+        ];
+        let mut raw = expected
+            .iter()
+            .enumerate()
+            .map(|(index, &mode)| {
+                let mut function = raw_function(
+                    &format!("owned_{index}"),
+                    FunctionCallConv::Default,
+                    vec![bytes_writer()],
+                    call("unknown_callable"),
+                );
+                function.decisions = vec![boundary_decision(mode)];
+                function
+            })
+            .collect::<Vec<_>>();
+        finalize(&mut raw);
+
+        assert_eq!(
+            raw.iter().map(mode).collect::<Vec<_>>(),
+            expected,
+            "the representation-effect pass refines borrowed parameters only"
+        );
+    }
+}
+
 /// Declared `machine` names plus their synthesised `<Name>Event` companions —
 /// the machines-ONLY dual of the classification-wide `machine_layout_names`.
 fn collect_machine_decl_names(items: &[HirItem]) -> HashSet<String> {
@@ -3595,6 +4160,7 @@ mod enum_layout_tests {
             items,
             diagnostic_source_modules: HashMap::default(),
             root_item_ids: std::collections::HashSet::new(),
+            caller_visible_param_projections: std::collections::HashSet::new(),
             wire_layouts: std::sync::Arc::new(HashMap::default()),
             type_classes: hew_hir::TypeClassTable::default(),
             monomorphisations: vec![],

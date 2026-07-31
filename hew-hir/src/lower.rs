@@ -4400,6 +4400,7 @@ pub fn lower_program_with_mono_cap(
             items,
             diagnostic_source_modules,
             root_item_ids: ctx.root_item_ids,
+            caller_visible_param_projections: ctx.caller_visible_param_projections,
             wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
             type_classes: ctx.type_classes,
             monomorphisations,
@@ -5862,6 +5863,11 @@ struct LowerCtx {
     /// rendered against the root source ONLY for a proven-root function. A
     /// positive record — never inferred by absence-from-a-foreign-set.
     root_item_ids: HashSet<ItemId>,
+    /// Checker-proven caller-visible parameter projections translated from
+    /// declaration spans to stable `(ItemId, parameter index)` identities.
+    caller_visible_param_projections: HashSet<(ItemId, usize)>,
+    /// Declaration-span authority consumed while lowering each function.
+    caller_visible_param_spans: HashSet<SpanKey>,
     /// True while lowering items that are INJECTED at root `current_module_idx`
     /// but do NOT index the user's root source — currently the `std/builtins.hew`
     /// receiver impls (and the Vec iterator harness), which are lowered
@@ -5932,7 +5938,7 @@ fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
 impl LowerCtx {
     #[allow(
         clippy::too_many_lines,
-        reason = "the lowering context is initialized atomically so new ownership facts cannot be omitted from a partial constructor"
+        reason = "initializes the complete checker-to-HIR ownership fact carrier atomically"
     )]
     fn new(tc_output: &TypeCheckOutput, mono_cap: usize, target_arch: TargetArch) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
@@ -6038,6 +6044,8 @@ impl LowerCtx {
             canonical_std_source_type_identities: HashSet::new(),
             current_module_idx: 0,
             root_item_ids: HashSet::new(),
+            caller_visible_param_projections: HashSet::new(),
+            caller_visible_param_spans: tc_output.caller_visible_param_projections.clone(),
             lowering_injected_items: false,
             current_module_name: None,
             import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
@@ -10043,7 +10051,14 @@ impl LowerCtx {
                 .collect(),
         );
         let mut params = Vec::new();
-        for param in &func.params {
+        for (param_index, param) in func.params.iter().enumerate() {
+            if self
+                .caller_visible_param_spans
+                .contains(&self.mk_key(&param.ty.1))
+            {
+                self.caller_visible_param_projections
+                    .insert((id, param_index));
+            }
             let binding = self.bind_param(param);
             params.push(binding);
         }
@@ -16142,6 +16157,31 @@ impl LowerCtx {
             let dyn_ty = ResolvedTy::TraitObject {
                 traits: resolved_bounds,
             };
+            // The checker side table is keyed by source span and may preserve
+            // the original concrete provenance when an already-erased value is
+            // passed to the same `dyn Trait` type. Re-wrapping that value would
+            // make MIR box the two-word fat pointer as though it were the
+            // concrete payload, while the vtable still describes the original
+            // concrete allocation. Identical dyn-to-dyn adaptation is a no-op;
+            // a genuine trait-object upcast needs an explicit vtable-adjusting
+            // ABI and remains fail-closed.
+            if matches!(inner.ty, ResolvedTy::TraitObject { .. }) {
+                if inner.ty == dyn_ty {
+                    return inner;
+                }
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "dyn-trait coercion".to_string(),
+                        reason: format!(
+                            "unsupported dyn-to-dyn adaptation from `{:?}` to `{:?}`",
+                            inner.ty, dyn_ty
+                        ),
+                    },
+                    span.clone(),
+                    "dyn-to-dyn trait adaptation requires an explicit vtable upcast",
+                ));
+                return self.unsupported_expr(span, "dyn-to-dyn trait adaptation");
+            }
             let concrete_resolved = match ResolvedTy::from_ty(&coercion.concrete_type) {
                 Ok(r) => r,
                 Err(err) => {
@@ -32879,6 +32919,49 @@ mod tests {
                  or an unresolved bare name"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod caller_visible_param_projection_tests {
+    use super::{lower_program, HirItem, ResolutionCtx, TargetArch};
+    use hew_types::module_registry::ModuleRegistry;
+    use hew_types::Checker;
+
+    #[test]
+    fn checker_parameter_projection_facts_translate_to_stable_item_indices() {
+        let parsed = hew_parser::parse(
+            "fn inspect(data: bytes, text: string, values: Vec<i64>, count: i64) {}\n",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let type_output = checker.check_program(&parsed.program);
+        assert!(type_output.errors.is_empty(), "{:?}", type_output.errors);
+
+        let lowered = lower_program(
+            &parsed.program,
+            &type_output,
+            &ResolutionCtx,
+            TargetArch::host(),
+        );
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let function = lowered
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Function(function) if function.name == "inspect" => Some(function),
+                _ => None,
+            })
+            .expect("inspect function");
+
+        assert_eq!(
+            lowered.module.caller_visible_param_projections,
+            [(function.id, 0), (function.id, 1), (function.id, 2)]
+                .into_iter()
+                .collect(),
+            "bytes, string, and Vec facts survive; scalar index 3 must be absent"
+        );
     }
 }
 

@@ -34,12 +34,14 @@ use crate::model::{
     ActorHandlerLayout, ActorLayout, ActorStateLoadMode, AggregateOwner, BasicBlock, BlockKind,
     CheckedMirFunction, ClosureEnvAllocation, ClosureEnvFieldInit, ClosureEnvFieldOwnership,
     CmpPred, CoalesceKeyEntry, CoalesceKeyKind, CoalesceKeyPlan, DecisionFact, DropKind, DropPlan,
-    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth, Instr,
-    IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaCapture, MirCheck, MirConst,
-    MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, PointerWidth,
-    ProjectedPayloadRejectReason, RawMirFunction, RecordLayout, SelectArm, SelectArmKind,
-    SendAliasMode, SourceOrigin, SpawnEnvFieldOwnership, StableActorRole, Strategy,
-    StringRetainCondition, SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
+    ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, FieldOffset, FloatWidth,
+    FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaCapture,
+    MirCheck, MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement,
+    ParamBoundaryFact, ParamBoundaryMode, ParamCrashCleanupKind, ParamLoanStorage,
+    ParamRepresentationEffect, Place, PointerWidth, ProjectedPayloadRejectReason, RawMirFunction,
+    RecordLayout, SelectArm, SelectArmKind, SendAliasMode, SourceOrigin, SpawnEnvFieldOwnership,
+    StableActorRole, Strategy, StringRetainCondition, SuspendKind, Terminator, ThirFunction,
+    TraitObjectStorage, TrapKind,
 };
 use crate::ownership::FailClosedReason;
 use crate::ownership::LayoutClass;
@@ -119,7 +121,6 @@ use self::consts::{
     unary_op_label, unresolved_fn_sig_reason,
 };
 pub use self::consts::{build_const_descriptors, is_string_const_ty};
-pub use self::drop_plan::drop_kind_for_test_only;
 #[cfg(not(test))]
 use self::drop_plan::{
     affine_release_needs_drop_flag, binder_read_is_borrow_safe_instr,
@@ -136,6 +137,7 @@ use self::drop_plan::{
     validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
     vec_iter_yield_abandonment_diagnostics,
 };
+pub use self::drop_plan::{crash_only_param_loan_drop, drop_kind_for_test_only};
 pub(crate) use self::facts::*;
 #[cfg(not(test))]
 use self::machine_synth::{
@@ -681,6 +683,10 @@ struct Builder {
     /// a field read refcount-bumps and a local move consumes, both empirically
     /// owner-preserving.
     pub(crate) funcupdate_param_ids: Rc<HashSet<BindingId>>,
+    /// Exactly one initial typed boundary mode per source parameter. A
+    /// module-wide MIR effect pass refines borrowed modes after every function
+    /// body and monomorphisation is available.
+    pub(crate) param_boundary_modes: Vec<ParamBoundaryMode>,
     /// MIR locals for by-value `bytes` parameters that remain caller-owned
     /// borrows. Returning or storing one mints a co-owner and therefore needs
     /// an explicit `BytesRetain`; ordinary calls continue to borrow it.
@@ -1442,11 +1448,12 @@ struct Builder {
     /// W3.031 Stage 1: per-binding `TraitObjectStorage` ledger for
     /// `dyn Trait` locals. Populated at the binding's introducing
     /// `HirStmtKind::Let` statement when the resolved type is
-    /// `ResolvedTy::TraitObject` — `FrameOwned` for coercion-site
-    /// RHS (`HirExprKind::CoerceToDynTrait`) and direct binding
-    /// rebinds, `HeapBoxed` for call-result RHS (`HirExprKind::Call`,
-    /// `CallTraitMethodStatic`, `CallDynMethod`) returning `dyn Trait`
-    /// — and consumed by `build_lifo_drops` to construct the
+    /// `ResolvedTy::TraitObject`. Current production lowering uses
+    /// `HeapBoxed` for coercion-site RHS, owned parameter bindings, and
+    /// call-result RHS (`HirExprKind::Call`, `CallTraitMethodStatic`,
+    /// `CallDynMethod`) returning `dyn Trait`. Binding rebinds inherit the
+    /// source binding's recorded storage. The ledger is consumed by
+    /// `build_lifo_drops` to construct the
     /// `DropKind::TraitObject { storage }` discriminator.
     ///
     /// Keys are the `BindingId` of the owning `let`-binding (the same
@@ -3278,6 +3285,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         &origin_fns,
         &module.items,
         &module.type_classes,
+        &module.caller_visible_param_projections,
     ));
     for item in &module.items {
         match item {
@@ -3710,6 +3718,12 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         });
     }
 
+    // OPM-1: all ordinary, generated, and monomorphised functions are now
+    // present. Refine the initial typed parameter modes through the complete
+    // module call graph before any checked-MIR consumer or backend capability
+    // snapshot observes them.
+    facts::finalize_param_boundary_modes(&mut raw_mir, &mut checked_mir, &mut elaborated_mir);
+
     // W3.031 Stage 2 — build the deduplicated `dyn Trait` vtable
     // registry from every `Instr::CoerceToDynTrait` reached by any
     // lowered function. This collapses the program's
@@ -3887,6 +3901,9 @@ pub(crate) struct ParamOwnershipFacts {
     /// structural drop. Method receiver slot zero is excluded so an `Arena`
     /// value receiver retains its established borrowed-self semantics.
     call_param_owned_carrier: HashMap<(hew_hir::ItemId, usize), bool>,
+    /// Positive checker/HIR authority that the parameter type exposes
+    /// caller-visible storage.
+    caller_visible_param_projections: HashSet<(hew_hir::ItemId, usize)>,
     /// Declared `machine` type names (each with its synthesised
     /// `<Name>Event` companion). Unlike `Builder::machine_layout_names` —
     /// which also carries every user enum and generic-enum origin for
@@ -4086,7 +4103,7 @@ fn outbound_live_out(
             // keeps the fail-closed clone path.
             let mut overwritten_later = HashSet::new();
             for instr in block.instructions.iter().rev() {
-                let (reads, writes) = dataflow::instr_reads_writes(instr);
+                let (reads, writes, _) = dataflow::instr_reads_writes(instr);
                 for place in writes {
                     if let Place::Local(local) = place {
                         live.remove(&local);
@@ -5417,6 +5434,38 @@ pub(crate) fn lower_function(
         builder.pending_owned_call_args.is_empty(),
         "checked MIR cannot retain unresolved owned call-carrier arguments"
     );
+    assert_eq!(
+        builder.param_boundary_modes.len(),
+        func.params.len(),
+        "every lowered source parameter must have exactly one typed boundary mode"
+    );
+    for (param_index, (param, mode)) in func
+        .params
+        .iter()
+        .zip(builder.param_boundary_modes.iter().copied())
+        .enumerate()
+    {
+        let param_index =
+            u32::try_from(param_index).expect("function parameter count exceeds u32::MAX");
+        let ty = builder.subst_ty(&param.ty);
+        builder.decisions.push(DecisionFact {
+            site: SiteId(param_index),
+            value_class: ValueClass::of_ty(&ty, &builder.type_classes),
+            ty,
+            intent: IntentKind::Unknown,
+            strategy: Strategy::ParamBoundary(ParamBoundaryFact {
+                param_index,
+                param_count: u32::try_from(func.params.len())
+                    .expect("function parameter count exceeds u32::MAX"),
+                caller_visible_projection: builder
+                    .param_ownership
+                    .caller_visible_param_projections
+                    .contains(&(func.id, param_index as usize)),
+                mode,
+            }),
+            why: "checker-authoritative parameter boundary classification".to_string(),
+        });
+    }
     // `CheckedMirFunction` mirrors `RawMirFunction.blocks` directly
     // (widened in Slice 2 from a single-block field to a vec). The
     // elaborator + check_function consume the block vec; legacy
@@ -6303,6 +6352,10 @@ impl Builder {
     /// `locals[0..params.len()]`; all subsequent `alloc_local` calls
     /// produce indices ≥ `params.len()`, maintaining the invariant documented
     /// on `RawMirFunction.params`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps parameter allocation, ownership registration, and typed boundary mode in one auditable pass"
+    )]
     fn lower_params(&mut self, func: &HirFn) {
         // Record the by-value parameter binding ids for the destructive-
         // funcupdate base gate: a base that embeds a WHOLE parameter is a borrow,
@@ -6355,6 +6408,17 @@ impl Builder {
             let param_is_owned_carrier =
                 self.register_owned_call_carrier_param(func.id, i, param, slot, param_is_consumed);
             let owned_ty = self.subst_ty(&param.ty);
+            if matches!(owned_ty, ResolvedTy::TraitObject { .. }) {
+                // Every dyn value that crosses the function ABI owns persistent
+                // heap-box storage: coercions transfer into a dyn box, dyn
+                // returns preserve that box, and rebinds move the fat pointer.
+                // Seed the same discriminator for a callee-owned parameter so
+                // its eventual scope-exit drop runs slot 0 plus box release.
+                // Borrowed dyn parameters never enter `owned_locals`, making
+                // this side-table entry inert for them.
+                self.dyn_trait_storage
+                    .insert(param.id, TraitObjectStorage::HeapBoxed);
+            }
             // A summary-owned param is one whose CALLERS consult the same
             // `call_param_owned_carrier` verdict and therefore move ownership
             // in (transfer, clone, or fail closed) — the callee owns it even
@@ -6432,33 +6496,14 @@ impl Builder {
             if param_is_consumed {
                 self.maybe_alloc_affine_release_flag(param.id, &owned_ty);
             }
-            // A mailbox delivery transfers every heap-owning message parameter
-            // into the actor-handler frame. Register that frame-local owner at
-            // the same parameter seam as resource/carrier ownership so the
-            // existing type-directed, path-sensitive drop elaborator selects
-            // the exact release shape and suppresses it after a consume or
-            // escape. This is deliberately structural rather than a list of
-            // message types: `binding_seeds_drop_elaboration` is the single
-            // value-class authority used for ordinary owned bindings too.
-            //
-            // Resource consumes and admitted call carriers already registered
-            // above and therefore stay mutually exclusive. Synthetic runtime ABI
-            // borrows are not mailbox deliveries: a receive-gen shell's trailing
-            // sink is pump infrastructure that the pump closes explicitly, while
-            // `__crash_message` remains owned and released by the supervisor
-            // after the hook returns.
-            let actor_message_param = !param_is_consumed
-                && !param_is_owned_carrier
-                && self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler
-                && param.id != SENTINEL_CRASH_MESSAGE_BINDING
-                && !self
-                    .stream_producer_pump
-                    .as_ref()
-                    .is_some_and(|pump| pump.sink == slot)
-                && self.binding_seeds_drop_elaboration(&owned_ty);
-            if actor_message_param {
-                self.register_owned_param(param, owned_ty.clone(), func.body.scope);
-            }
+            let actor_message_param = self.register_actor_message_param(
+                param,
+                slot,
+                &owned_ty,
+                func.body.scope,
+                param_is_consumed,
+                param_is_owned_carrier,
+            );
             // #2732 — callee-side drop for a by-value heap-owning ENUM COMPOSITE
             // param (`Result<T, string>`, `Option<string>`, a user enum with an
             // owned-payload variant) the body-summary classifies CONSUME: a
@@ -6501,7 +6546,7 @@ impl Builder {
                     &self.enum_layouts,
                 )
             {
-                self.register_owned_param(param, owned_ty, func.body.scope);
+                self.register_owned_param(param, owned_ty.clone(), func.body.scope);
                 callee_owns_param = true;
             }
             if !callee_owns_param {
@@ -6509,7 +6554,63 @@ impl Builder {
                     self.borrowed_value_param_locals.insert(local);
                 }
             }
+            let mode = if self.current_function_call_conv
+                == crate::model::FunctionCallConv::ActorHandler
+                && param.id != SENTINEL_CRASH_MESSAGE_BINDING
+                && !self
+                    .stream_producer_pump
+                    .as_ref()
+                    .is_some_and(|pump| pump.sink == slot)
+            {
+                ParamBoundaryMode::OwnedMessage
+            } else if param_is_consumed {
+                ParamBoundaryMode::TransferResource
+            } else if param_is_owned_carrier
+                || ((param_summary_owned || callee_owns_param)
+                    && self.binding_seeds_drop_elaboration(&owned_ty))
+            {
+                ParamBoundaryMode::OwnedCarrier
+            } else {
+                ParamBoundaryMode::BorrowReadOnly
+            };
+            self.param_boundary_modes.push(mode);
         }
+        debug_assert_eq!(
+            self.param_boundary_modes.len(),
+            func.params.len(),
+            "lowering must assign exactly one initial boundary mode per parameter"
+        );
+    }
+
+    /// Register a heap-owning mailbox delivery as an actor-frame owner.
+    ///
+    /// Resource consumes and admitted call carriers are already registered and
+    /// remain mutually exclusive. Synthetic runtime ABI borrows are not mailbox
+    /// deliveries: a receive-gen shell's trailing sink is pump infrastructure
+    /// that the pump closes explicitly, while `__crash_message` remains owned
+    /// and released by the supervisor after the hook returns.
+    fn register_actor_message_param(
+        &mut self,
+        param: &hew_hir::HirBinding,
+        slot: Place,
+        owned_ty: &ResolvedTy,
+        scope: hew_hir::ScopeId,
+        param_is_consumed: bool,
+        param_is_owned_carrier: bool,
+    ) -> bool {
+        let actor_message_param = !param_is_consumed
+            && !param_is_owned_carrier
+            && self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler
+            && param.id != SENTINEL_CRASH_MESSAGE_BINDING
+            && !self
+                .stream_producer_pump
+                .as_ref()
+                .is_some_and(|pump| pump.sink == slot)
+            && self.binding_seeds_drop_elaboration(owned_ty);
+        if actor_message_param {
+            self.register_owned_param(param, owned_ty.clone(), scope);
+        }
+        actor_message_param
     }
 
     /// Register a parameter this frame's callee-side rules say the callee OWNS.

@@ -4,6 +4,7 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
+use std::sync::Mutex;
 
 use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
 use hew_cabi::vec::{HewTypeOwnershipKind, HewVec, HewVecElemLayout};
@@ -22,6 +23,7 @@ static MAP_VALUE_DROPS: AtomicUsize = AtomicUsize::new(0);
 static MAP_VALUE_EXPECTED: AtomicUsize = AtomicUsize::new(usize::MAX);
 static MAP_INNER_DROPS: AtomicUsize = AtomicUsize::new(0);
 static MAP_INNER_EXPECTED: AtomicUsize = AtomicUsize::new(usize::MAX);
+static RELEASE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -142,6 +144,9 @@ fn assert_detector_rejects(counter: &AtomicUsize, expected: usize, shape: &str) 
 
 #[test]
 fn descriptor_release_exact_counts_cover_issue_2553_shapes() {
+    let _guard = RELEASE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset(&RECORD_DROPS, &RECORD_EXPECTED, 3);
     let record_layout = layout::<RecordOwningHeap>(drop_record);
     let records = [
@@ -246,6 +251,9 @@ fn descriptor_release_exact_counts_cover_issue_2553_shapes() {
 
 #[test]
 fn suppressed_release_fails_exact_count_for_each_issue_2553_shape() {
+    let _guard = RELEASE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     reset(&RECORD_DROPS, &RECORD_EXPECTED, 1);
     let record_heap = Box::into_raw(Box::new(1));
     let record = [RecordOwningHeap { heap: record_heap }];

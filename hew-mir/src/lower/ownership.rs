@@ -23,6 +23,132 @@ enum WholeParamEmbedClass {
     UnsupportedBorrowAlias,
 }
 
+#[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "the ownership helpers below are deliberately kept adjacent to their shared imports"
+)]
+mod borrowed_temp_method_result_tests {
+    use super::Builder;
+    use hew_hir::{ids::IdGen, HirExpr, HirExprKind, HirLiteral, IntentKind, ValueClass};
+    use hew_types::{ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
+
+    fn expr(ids: &mut IdGen, ty: ResolvedTy, kind: HirExprKind) -> HirExpr {
+        HirExpr {
+            node: ids.node(),
+            site: ids.site(),
+            ty,
+            value_class: ValueClass::Unknown,
+            intent: IntentKind::Read,
+            kind,
+            span: 0..0,
+        }
+    }
+
+    fn unit(ids: &mut IdGen) -> HirExpr {
+        expr(
+            ids,
+            ResolvedTy::Unit,
+            HirExprKind::Literal(HirLiteral::Unit),
+        )
+    }
+
+    fn dyn_ty() -> ResolvedTy {
+        ResolvedTy::TraitObject { traits: vec![] }
+    }
+
+    /// The source language presently refuses a `dyn Trait` function return,
+    /// but HIR/MIR must still preserve the ABI invariant for every constructible
+    /// method-result node that reaches this boundary (for generated and future
+    /// front-end producers). This is deliberately a real HIR-node test rather
+    /// than a callee-name allowlist: the heap-box authority belongs to the exact
+    /// result form and erased type, not to a spelling.
+    #[test]
+    #[allow(
+        deprecated,
+        reason = "legacy HIR form remains a supported MIR consumer"
+    )]
+    fn borrowed_temp_owner_admits_only_method_like_heap_boxed_dyn_results() {
+        let mut ids = IdGen::default();
+        let dyn_result = dyn_ty();
+        let static_receiver = unit(&mut ids);
+        let static_call = expr(
+            &mut ids,
+            dyn_result.clone(),
+            HirExprKind::CallTraitMethodStatic {
+                receiver: Box::new(static_receiver),
+                receiver_type_param: "T".to_string(),
+                bound_trait: "Factory".to_string(),
+                declaring_trait: "Factory".to_string(),
+                method_name: "unrelated_spelling".to_string(),
+                args: vec![],
+                ret_ty: dyn_result.clone(),
+            },
+        );
+        let resolved_receiver = unit(&mut ids);
+        let resolved_impl = expr(
+            &mut ids,
+            dyn_result.clone(),
+            HirExprKind::ResolvedImplCall {
+                receiver: Box::new(resolved_receiver),
+                impl_id: ImplId(7),
+                method_name: "also_not_an_authority".to_string(),
+                target_symbol: "not_a_fresh_name".to_string(),
+                target_family: MethodTargetFamily::Vec(VecMethod::Len),
+                type_args: vec![],
+                args: vec![],
+                ret_ty: dyn_result.clone(),
+            },
+        );
+        let dyn_receiver = unit(&mut ids);
+        let dyn_call = expr(
+            &mut ids,
+            dyn_result.clone(),
+            HirExprKind::CallDynMethod {
+                receiver: Box::new(dyn_receiver),
+                trait_name: "Factory".to_string(),
+                method_name: "still_not_a_name_authority".to_string(),
+                slot: 3,
+                args: vec![],
+                ret_ty: dyn_result.clone(),
+                signature: Box::default(),
+            },
+        );
+        let builder = Builder::default();
+        for method_result in [&static_call, &resolved_impl, &dyn_call] {
+            assert_eq!(
+                builder.caller_borrowed_temp_arg_owned_ty(method_result),
+                Some(dyn_result.clone()),
+                "each exact method-like dyn result owns one fresh HeapBoxed caller share"
+            );
+        }
+
+        // Same structural form with a non-erased return remains excluded: an
+        // arbitrary method result may be a receiver/interior alias, so a
+        // caller-side mint would be a double-free.
+        let non_dyn_receiver = unit(&mut ids);
+        let non_dyn_method = expr(
+            &mut ids,
+            ResolvedTy::String,
+            HirExprKind::ResolvedImplCall {
+                receiver: Box::new(non_dyn_receiver),
+                impl_id: ImplId(8),
+                method_name: "not_a_dyn_result".to_string(),
+                target_symbol: "not_a_fresh_name".to_string(),
+                target_family: MethodTargetFamily::Vec(VecMethod::Len),
+                type_args: vec![],
+                args: vec![],
+                ret_ty: ResolvedTy::String,
+            },
+        );
+        assert_eq!(
+            builder.caller_borrowed_temp_arg_owned_ty(&non_dyn_method),
+            None,
+            "method-like non-dyn result remains fail-closed without a fresh-owner proof"
+        );
+    }
+}
+
 impl WholeParamEmbedClass {
     fn merge(self, other: Self) -> Self {
         match (self, other) {
@@ -526,7 +652,9 @@ impl Builder {
     pub(crate) fn caller_borrowed_temp_arg_owned_ty(&self, arg: &HirExpr) -> Option<ResolvedTy> {
         let ty = self.subst_ty(&arg.ty);
         // Only a heap-owning value carries a drop obligation.
-        if !crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts) {
+        if !matches!(ty, ResolvedTy::TraitObject { .. })
+            && !crate::model::ty_owns_heap_mir(&ty, &self.record_field_orders, &self.enum_layouts)
+        {
             return None;
         }
         // String ownership is value-flow, not top-level syntax. Ask the shared
@@ -557,6 +685,11 @@ impl Builder {
             producer = tail;
         }
         let is_fresh_producer = match &producer.kind {
+            // Dyn coercion heap-promotes its concrete payload into a fresh
+            // `hew_dyn_box_alloc` buffer. When that anonymous fat-pointer
+            // temporary is passed to a borrowing dyn parameter, the caller is
+            // the sole owner of the box and must mint its scope-exit drop.
+            HirExprKind::CoerceToDynTrait { .. } => true,
             // A fresh CONTAINER. Its own allocation is fresh by construction,
             // but that is not the whole question: the mint is over the whole
             // TREE, because every composite release here is recursive. A
@@ -572,6 +705,21 @@ impl Builder {
             | HirExprKind::MachineVariantCtor { .. }
             | HirExprKind::RecordCloneCall { .. } => {
                 self.value_is_free_of_opaque_foreign_provenance(producer)
+            }
+            // A method-like call result of exact `dyn Trait` type crosses a
+            // heap-box ABI boundary. `classify_dyn_trait_storage` records all
+            // three HIR call forms below as `HeapBoxed`: the caller receives a
+            // fresh box and therefore owes exactly one slot-0 + box-free drop
+            // after a borrowing sink returns. This is deliberately keyed on
+            // the structural HIR form plus the exact erased result type, not a
+            // method/callee spelling: ordinary method results can still be
+            // receiver/interior aliases and remain excluded.
+            HirExprKind::CallTraitMethodStatic { .. }
+            | HirExprKind::ResolvedImplCall { .. }
+            | HirExprKind::CallDynMethod { .. }
+                if matches!(ty, ResolvedTy::TraitObject { .. }) =>
+            {
+                true
             }
             // A composite (record/tuple/enum) result: admit a PROVEN-fresh
             // producer, gated by the SAME authority every other

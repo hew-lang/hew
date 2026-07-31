@@ -49,6 +49,12 @@ pub struct ExternOwnershipContract {
     /// inherited by an unrelated user-defined resource with the same ABI word
     /// shape.
     pub resource_param_types: &'static [&'static str],
+    /// Qualified source nominal for an independently-owned opaque result.
+    ///
+    /// This is present only when the same generated contract also proves an
+    /// owned result, transferred retention, and an exact consuming release
+    /// edge for this nominal.
+    pub resource_result_type: Option<&'static str>,
     pub result: ExternResultOwnership,
     pub release_symbol: &'static str,
     pub discharge_depth: ReleaseDischargeDepth,
@@ -60,6 +66,21 @@ pub struct ExternOwnershipContract {
 pub enum ExternOwnershipFact {
     Contract(&'static ExternOwnershipContract),
     Absent,
+}
+
+/// Typed producer-side projection for a closeable opaque candidate.
+///
+/// The owner module is derived from the qualified result nominal. Callers
+/// still have to prove that a source extern declaration belongs to that exact
+/// module and has the matching resolved result type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExternOwnedResourceResult {
+    pub resource_type: &'static str,
+    pub owner_module: &'static str,
+    pub release_symbol: &'static str,
+    pub discharge_depth: ReleaseDischargeDepth,
+    pub result: ExternResultOwnership,
+    pub result_retention: ExternResultRetention,
 }
 
 impl ExternOwnershipFact {
@@ -97,6 +118,75 @@ pub fn extern_param_ownership(symbol: &str, index: usize) -> Option<ExternParamO
     extern_ownership_contract(symbol)
         .contract()
         .and_then(|contract| contract.params.get(index).copied())
+}
+
+/// Return the typed owned-resource result projected from one generated row.
+///
+/// Invalid schema combinations are rejected by the build-time parser. This
+/// helper remains defensive so a synthetic or stale in-memory row cannot mint
+/// a candidate by carrying only a type spelling.
+#[must_use]
+pub fn extern_owned_resource_result(symbol: &str) -> Option<ExternOwnedResourceResult> {
+    let contract = extern_ownership_contract(symbol).contract()?;
+    owned_resource_result_for_contract(contract)
+}
+
+pub(crate) fn owned_resource_result_for_contract(
+    contract: &ExternOwnershipContract,
+) -> Option<ExternOwnedResourceResult> {
+    let resource_type = contract.resource_result_type?;
+    let (owner_module, _) = resource_type.rsplit_once('.')?;
+    if owner_module.is_empty()
+        || !matches!(
+            contract.result,
+            ExternResultOwnership::Fresh | ExternResultOwnership::Retained
+        )
+        || contract.release_symbol.is_empty()
+        || contract.discharge_depth == ReleaseDischargeDepth::None
+        || contract.result_retention != ExternResultRetention::Transferred
+    {
+        return None;
+    }
+    Some(ExternOwnedResourceResult {
+        resource_type,
+        owner_module,
+        release_symbol: contract.release_symbol,
+        discharge_depth: contract.discharge_depth,
+        result: contract.result,
+        result_retention: contract.result_retention,
+    })
+}
+
+/// Whether a source nominal is the exact local spelling of `qualified`.
+///
+/// Exact declaring-module provenance is mandatory. Within that module Hew
+/// source may spell its own nominal as `T`, `leaf.T`, or the full
+/// `owner.path.T`; no other short-name normalization is admitted.
+#[must_use]
+pub fn source_nominal_matches_qualified(
+    qualified: &str,
+    declaring_module: Option<&str>,
+    source_type: &str,
+) -> bool {
+    let Some((expected_module, _)) = qualified.rsplit_once('.') else {
+        return false;
+    };
+    if expected_module.is_empty() || declaring_module != Some(expected_module) {
+        return false;
+    }
+    let expected_module_short = expected_module
+        .rsplit_once('.')
+        .map_or(expected_module, |(_, short)| short);
+    let actual = if source_type.contains('.') {
+        let local_prefix = format!("{expected_module_short}.");
+        source_type.strip_prefix(&local_prefix).map_or_else(
+            || source_type.to_string(),
+            |name| format!("{expected_module}.{name}"),
+        )
+    } else {
+        format!("{expected_module}.{source_type}")
+    };
+    actual == qualified
 }
 
 /// Whether a source declaration may borrow this exact resource parameter.
@@ -138,30 +228,7 @@ fn resource_param_is_audited_borrow_for_contract(
     let Some(expected) = contract.resource_param_types.get(index) else {
         return false;
     };
-    let Some((expected_module, _)) = expected.rsplit_once('.') else {
-        return false;
-    };
-    if expected.is_empty() || declaring_module != Some(expected_module) {
-        return false;
-    }
-    // HIR preserves a same-module source nominal as either a bare type
-    // (`Connection`) or its module's local short qualifier (`net.Connection`),
-    // while imported references may carry `std.net.Connection`. Normalize only
-    // those two source-local spellings through the already-proven declaration
-    // module, then require exact qualified nominal equality.
-    let expected_module_short = expected_module
-        .rsplit_once('.')
-        .map_or(expected_module, |(_, short)| short);
-    let actual = if resource_type.contains('.') {
-        let local_prefix = format!("{expected_module_short}.");
-        resource_type.strip_prefix(&local_prefix).map_or_else(
-            || resource_type.to_string(),
-            |name| format!("{expected_module}.{name}"),
-        )
-    } else {
-        format!("{expected_module}.{resource_type}")
-    };
-    actual == *expected
+    source_nominal_matches_qualified(expected, declaring_module, resource_type)
 }
 
 #[cfg(test)]
@@ -219,6 +286,7 @@ mod tests {
         let contract = ExternOwnershipContract {
             params: &[ExternParamOwnership::Borrow],
             resource_param_types: &["example.io.Socket"],
+            resource_result_type: None,
             result: ExternResultOwnership::None,
             release_symbol: "",
             discharge_depth: ReleaseDischargeDepth::None,
@@ -257,12 +325,67 @@ mod tests {
     }
 
     #[test]
+    fn owned_result_projection_is_qualified_and_provenance_bound() {
+        let contract = ExternOwnershipContract {
+            params: &[],
+            resource_param_types: &[],
+            resource_result_type: Some("example.io.Socket"),
+            result: ExternResultOwnership::Fresh,
+            release_symbol: "example_socket_close",
+            discharge_depth: ReleaseDischargeDepth::Shallow,
+            result_retention: ExternResultRetention::Transferred,
+        };
+        let result =
+            owned_resource_result_for_contract(&contract).expect("valid synthetic producer");
+        assert_eq!(result.resource_type, "example.io.Socket");
+        assert_eq!(result.owner_module, "example.io");
+        assert!(source_nominal_matches_qualified(
+            result.resource_type,
+            Some(result.owner_module),
+            "Socket"
+        ));
+        assert!(source_nominal_matches_qualified(
+            result.resource_type,
+            Some(result.owner_module),
+            "io.Socket"
+        ));
+        assert!(source_nominal_matches_qualified(
+            result.resource_type,
+            Some(result.owner_module),
+            "example.io.Socket"
+        ));
+        assert!(!source_nominal_matches_qualified(
+            result.resource_type,
+            None,
+            "Socket"
+        ));
+        assert!(!source_nominal_matches_qualified(
+            result.resource_type,
+            Some("other.io"),
+            "Socket"
+        ));
+        assert!(!source_nominal_matches_qualified(
+            result.resource_type,
+            Some(result.owner_module),
+            "Pipe"
+        ));
+    }
+
+    #[test]
     fn tcp_handle_producers_are_fresh_only_with_their_exact_close_ritual() {
-        for (symbol, release_symbol) in [
-            ("hew_tcp_accept", "hew_tcp_close"),
-            ("hew_tcp_connect", "hew_tcp_close"),
-            ("hew_tcp_connect_timeout", "hew_tcp_close"),
-            ("hew_tcp_listen", "hew_tcp_listener_close"),
+        for (symbol, resource_type, release_symbol) in [
+            ("hew_tcp_accept", "std.net.Connection", "hew_tcp_close"),
+            ("hew_tcp_connect", "std.net.Connection", "hew_tcp_close"),
+            (
+                "hew_tcp_connect_timeout",
+                "std.net.Connection",
+                "hew_tcp_close",
+            ),
+            (
+                "hew_tcp_listen",
+                "std.net.Listener",
+                "hew_tcp_listener_close",
+            ),
         ] {
             let Some(contract) = extern_ownership_contract(symbol).contract() else {
                 panic!("{symbol} must carry an ownership contract");
@@ -279,6 +402,11 @@ mod tests {
                 ExternResultRetention::Transferred,
                 "{symbol} must prove it transfers the returned TCP owner"
             );
+            let typed = extern_owned_resource_result(symbol)
+                .unwrap_or_else(|| panic!("{symbol} must carry a typed resource result"));
+            assert_eq!(typed.resource_type, resource_type, "{symbol}");
+            assert_eq!(typed.owner_module, "std.net", "{symbol}");
+            assert_eq!(typed.release_symbol, release_symbol, "{symbol}");
         }
 
         let stream_bridge = extern_ownership_contract("hew_tcp_stream_from_conn")

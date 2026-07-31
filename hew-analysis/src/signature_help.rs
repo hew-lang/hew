@@ -200,6 +200,7 @@ mod tests {
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
             method_call_preserves_receiver_identity: HashSet::new(),
+            opaque_resource_candidates: hew_types::check::OpaqueResourceCandidateGraph::default(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),

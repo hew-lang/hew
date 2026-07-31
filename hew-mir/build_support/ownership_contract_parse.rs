@@ -14,6 +14,10 @@ struct ContractRow {
     /// deliberately optional for the existing non-resource ABI surface; an
     /// absent typed fact is never interpreted as a resource borrow.
     resource_param_types: Vec<String>,
+    /// Fully-qualified source nominal for an independently-owned opaque
+    /// result. Absence means this row does not mint a source resource
+    /// lifecycle candidate.
+    resource_result_type: Option<String>,
     release_symbol: String,
     discharge_depth: String,
     /// The RETENTION answer for an owned result: `"transferred"` when the
@@ -92,6 +96,16 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
             }
         }
     }
+    if let Some(resource_type) = &row.resource_result_type {
+        assert!(
+            !resource_type.is_empty() && resource_type.contains('.'),
+            "resource result type for {symbol} must be a qualified nominal: {resource_type}"
+        );
+        assert!(
+            matches!(row.result.as_str(), "fresh" | "retained"),
+            "resource result type for {symbol} requires an owned result"
+        );
+    }
     assert!(
         ["shallow", "deep", "none"].contains(&row.discharge_depth.as_str()),
         "unknown discharge depth for {symbol}: {}",
@@ -120,6 +134,49 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         row.result_retention.is_empty() || matches!(row.result.as_str(), "fresh" | "retained"),
         "result-retention for {symbol} is meaningless without an owned result"
     );
+    assert!(
+        row.resource_result_type.is_none() || row.result_retention == "transferred",
+        "resource result type for {symbol} requires transferred result retention"
+    );
+}
+
+/// Validate the cross-row disposer edge for every typed resource result.
+///
+/// This is deliberately a graph check over the same contract table rather
+/// than a second disposer registry: the producer's `release-symbol` must name
+/// a row that consumes exactly one position of the same qualified nominal and
+/// produces no owner.
+fn validate_contract_graph(contracts: &std::collections::BTreeMap<String, ContractRow>) {
+    for (symbol, row) in contracts {
+        let Some(resource_type) = row.resource_result_type.as_deref() else {
+            continue;
+        };
+        let release = contracts.get(&row.release_symbol).unwrap_or_else(|| {
+            panic!(
+                "resource result type for {symbol} names missing release contract {}",
+                row.release_symbol
+            )
+        });
+        assert_eq!(
+            release.result, "none",
+            "release contract {} for {symbol} must produce no owned result",
+            row.release_symbol
+        );
+        let matching_positions = release
+            .resource_param_types
+            .iter()
+            .enumerate()
+            .filter(|(index, candidate)| {
+                candidate.as_str() == resource_type
+                    && release.params.get(*index).is_some_and(|mode| mode == "consume")
+            })
+            .count();
+        assert_eq!(
+            matching_positions, 1,
+            "release contract {} for {symbol} must consume exactly one {resource_type}",
+            row.release_symbol
+        );
+    }
 }
 
 /// Parse the full `[[ownership.contracts]]` table from TOML source. Every
@@ -162,6 +219,7 @@ fn parse_ownership_contracts(
                     result: String::new(),
                     params: Vec::new(),
                     resource_param_types: Vec::new(),
+                    resource_result_type: None,
                     release_symbol: String::new(),
                     discharge_depth: String::new(),
                     result_retention: String::new(),
@@ -214,6 +272,12 @@ fn parse_ownership_contracts(
                 body.push_str(continuation.trim());
             }
             row.resource_param_types = quoted_list(&body);
+        } else if line.starts_with("resource-result-type =") {
+            row.resource_result_type = Some(
+                quoted_value(line)
+                    .expect("contract resource-result-type must be quoted")
+                    .to_owned(),
+            );
         } else if line.starts_with("release-symbol =") {
             quoted_value(line)
                 .expect("contract release-symbol must be quoted")
@@ -233,5 +297,6 @@ fn parse_ownership_contracts(
         !contracts.is_empty(),
         "classification TOML must declare ownership contracts"
     );
+    validate_contract_graph(&contracts);
     contracts
 }

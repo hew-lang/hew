@@ -52,7 +52,8 @@ use self::types::{
     DeferredChannelMethodRewrite, DeferredHashMapAdmission, DeferredHashSetAdmission,
     DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
     ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingLoweringFact,
-    TraitAssociatedTypeInfo, TraitInfo, TypeParamScope, WasmUnsupportedFeature,
+    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
+    WasmUnsupportedFeature,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
@@ -61,8 +62,10 @@ pub use self::types::{
     DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig,
     MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
     NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
-    OptionResultMethod, PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField,
-    PlanSub, PoolAccessor, PoolAccessorKind, RcIntrinsicOp, SpanKey, StackHint, TryConversionKind,
+    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, OptionResultMethod,
+    PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField, PlanSub,
+    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, SpanKey, StackHint, TryConversionKind,
     TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
     VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
     WireLayoutEntry, WireLayoutTable, WireTextFormat,
@@ -546,6 +549,8 @@ impl Checker {
             &mut resolved_call_type_args,
             &mut resolved_record_init_type_args,
         );
+        let opaque_resource_candidates =
+            self.derive_opaque_resource_candidate_graph(&resolved_fn_sigs);
         for cycle in crate::cycle::detect_recursive_value_type_cycles(&resolved_type_defs) {
             let span = self
                 .type_def_spans
@@ -728,6 +733,7 @@ impl Checker {
             method_call_preserves_receiver_identity: std::mem::take(
                 &mut self.method_call_preserves_receiver_identity,
             ),
+            opaque_resource_candidates,
             actor_handler_state_guards: std::mem::take(&mut self.actor_handler_state_guards),
             actor_max_heap: std::mem::take(&mut self.actor_max_heap),
             supervisor_child_slots: std::mem::take(&mut self.supervisor_child_slots),

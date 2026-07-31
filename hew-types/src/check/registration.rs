@@ -217,6 +217,302 @@ fn is_intrinsic_floor_module(module: Option<&str>) -> bool {
     module.is_some_and(|m| INTRINSIC_FLOOR_MODULES.contains(&m))
 }
 
+fn exact_source_nominal_matches(ty: &Ty, qualified: &str, declaring_module: Option<&str>) -> bool {
+    matches!(
+        ty,
+        Ty::Named { name, args, .. }
+            if args.is_empty()
+                && crate::ffi_contracts::source_nominal_matches_qualified(
+                    qualified,
+                    declaring_module,
+                    name,
+                )
+    )
+}
+
+fn lifecycle_description(candidate: &OpaqueResourceLifecycleCandidate) -> String {
+    format!(
+        "release={}, depth={:?}, result={:?}, retention={:?}",
+        candidate.release_symbol,
+        candidate.discharge_depth,
+        candidate.result_ownership,
+        candidate.result_retention
+    )
+}
+
+fn lifecycle_matches(
+    established: &OpaqueResourceLifecycleCandidate,
+    candidate: &OpaqueResourceLifecycleCandidate,
+) -> bool {
+    established.release_symbol == candidate.release_symbol
+        && established.discharge_depth == candidate.discharge_depth
+        && established.result_ownership == candidate.result_ownership
+        && established.result_retention == candidate.result_retention
+}
+
+fn release_signature_mismatch(
+    declaration: &SourceExternDeclaration,
+    signature: &FnSig,
+    release_contract: &crate::ffi_contracts::ExternOwnershipContract,
+    owner_module: &str,
+    resource_type: &str,
+) -> Option<String> {
+    use crate::ffi_contracts::{ExternParamOwnership, ExternResultOwnership};
+
+    if release_contract.result != ExternResultOwnership::None {
+        return Some("release contract produces an owned result".to_string());
+    }
+    if release_contract.params.len() != release_contract.resource_param_types.len() {
+        return Some("release contract resource parameter arity is incomplete".to_string());
+    }
+    if signature.params.len() != release_contract.params.len()
+        || declaration.consuming_params.len() != release_contract.params.len()
+    {
+        return Some(format!(
+            "source release arity {} does not match contract arity {}",
+            signature.params.len(),
+            release_contract.params.len()
+        ));
+    }
+
+    let matching_positions = release_contract
+        .params
+        .iter()
+        .zip(release_contract.resource_param_types)
+        .filter(|(mode, nominal)| {
+            **mode == ExternParamOwnership::Consume && **nominal == resource_type
+        })
+        .count();
+    if matching_positions != 1 {
+        return Some(format!(
+            "release contract must consume exactly one {resource_type}, found {matching_positions}"
+        ));
+    }
+
+    for (index, ((mode, nominal), source_ty)) in release_contract
+        .params
+        .iter()
+        .zip(release_contract.resource_param_types)
+        .zip(&signature.params)
+        .enumerate()
+    {
+        let source_consumes = declaration.consuming_params[index];
+        if source_consumes != (*mode == ExternParamOwnership::Consume) {
+            return Some(format!(
+                "source consume disposition differs from contract at parameter {index}"
+            ));
+        }
+        if !nominal.is_empty()
+            && !exact_source_nominal_matches(source_ty, nominal, Some(owner_module))
+        {
+            return Some(format!(
+                "source resource nominal differs from contract at parameter {index}"
+            ));
+        }
+    }
+    None
+}
+
+enum SourceCandidateOutcome {
+    Irrelevant,
+    Candidate(OpaqueResourceLifecycleCandidate),
+    Conflict {
+        resource_type: String,
+        release_symbol: String,
+        kind: OpaqueResourceLifecycleConflictKind,
+    },
+}
+
+fn derive_source_resource_candidate(
+    producer_declaration: &SourceExternDeclaration,
+    source_declarations: &[SourceExternDeclaration],
+    fn_sigs: &HashMap<String, FnSig>,
+    contracts_by_symbol: &std::collections::BTreeMap<
+        &str,
+        &crate::ffi_contracts::ExternOwnershipContract,
+    >,
+) -> SourceCandidateOutcome {
+    let Some(producer_contract) = contracts_by_symbol.get(producer_declaration.symbol.as_str())
+    else {
+        return SourceCandidateOutcome::Irrelevant;
+    };
+    let Some(typed_result) =
+        crate::ffi_contracts::owned_resource_result_for_contract(producer_contract)
+    else {
+        return SourceCandidateOutcome::Irrelevant;
+    };
+    if producer_declaration.declaring_module.as_deref() != Some(typed_result.owner_module) {
+        // Symbol collisions outside the qualified nominal's owner are not
+        // candidate failures; they simply have no lifecycle authority.
+        return SourceCandidateOutcome::Irrelevant;
+    }
+    let failure = |kind| SourceCandidateOutcome::Conflict {
+        resource_type: typed_result.resource_type.to_string(),
+        release_symbol: typed_result.release_symbol.to_string(),
+        kind,
+    };
+
+    let Some(producer_signature) = fn_sigs.get(&producer_declaration.signature_key) else {
+        return failure(
+            OpaqueResourceLifecycleConflictKind::ProducerResultMismatch {
+                actual: "<missing source signature>".to_string(),
+            },
+        );
+    };
+    if !exact_source_nominal_matches(
+        &producer_signature.return_type,
+        typed_result.resource_type,
+        producer_declaration.declaring_module.as_deref(),
+    ) {
+        return failure(
+            OpaqueResourceLifecycleConflictKind::ProducerResultMismatch {
+                actual: format!("{:?}", producer_signature.return_type),
+            },
+        );
+    }
+
+    let Some(release_contract) = contracts_by_symbol.get(typed_result.release_symbol) else {
+        return failure(
+            OpaqueResourceLifecycleConflictKind::ReleaseSignatureMismatch {
+                detail: "release symbol has no ownership contract".to_string(),
+            },
+        );
+    };
+    let matching_release_declarations: Vec<_> = source_declarations
+        .iter()
+        .filter(|declaration| {
+            declaration.declaring_module.as_deref() == Some(typed_result.owner_module)
+                && declaration.symbol == typed_result.release_symbol
+        })
+        .collect();
+    let Some(release_declaration) = matching_release_declarations.first() else {
+        return failure(OpaqueResourceLifecycleConflictKind::ReleaseDeclarationMissing);
+    };
+    if matching_release_declarations.len() != 1 {
+        return failure(
+            OpaqueResourceLifecycleConflictKind::ReleaseSignatureMismatch {
+                detail: format!(
+                    "expected one source release declaration, found {}",
+                    matching_release_declarations.len()
+                ),
+            },
+        );
+    }
+    let Some(release_signature) = fn_sigs.get(&release_declaration.signature_key) else {
+        return failure(
+            OpaqueResourceLifecycleConflictKind::ReleaseSignatureMismatch {
+                detail: "source release signature is missing".to_string(),
+            },
+        );
+    };
+    if let Some(detail) = release_signature_mismatch(
+        release_declaration,
+        release_signature,
+        release_contract,
+        typed_result.owner_module,
+        typed_result.resource_type,
+    ) {
+        return failure(OpaqueResourceLifecycleConflictKind::ReleaseSignatureMismatch { detail });
+    }
+
+    SourceCandidateOutcome::Candidate(OpaqueResourceLifecycleCandidate {
+        resource_type: typed_result.resource_type.to_string(),
+        owner_module: typed_result.owner_module.to_string(),
+        release_symbol: typed_result.release_symbol.to_string(),
+        discharge_depth: typed_result.discharge_depth,
+        result_ownership: typed_result.result,
+        result_retention: typed_result.result_retention,
+        producer_symbols: [producer_declaration.symbol.clone()].into_iter().collect(),
+    })
+}
+
+fn derive_opaque_resource_candidate_graph(
+    source_declarations: &[SourceExternDeclaration],
+    fn_sigs: &HashMap<String, FnSig>,
+    contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
+) -> OpaqueResourceCandidateGraph {
+    let contracts_by_symbol: std::collections::BTreeMap<
+        &str,
+        &crate::ffi_contracts::ExternOwnershipContract,
+    > = contracts
+        .iter()
+        .map(|(symbol, contract)| (*symbol, contract))
+        .collect();
+    let mut graph = OpaqueResourceCandidateGraph::default();
+    let mut conflicted_types = std::collections::BTreeSet::new();
+
+    for producer_declaration in source_declarations {
+        let candidate = match derive_source_resource_candidate(
+            producer_declaration,
+            source_declarations,
+            fn_sigs,
+            &contracts_by_symbol,
+        ) {
+            SourceCandidateOutcome::Irrelevant => continue,
+            SourceCandidateOutcome::Conflict {
+                resource_type,
+                release_symbol,
+                kind,
+            } => {
+                conflicted_types.insert(resource_type.clone());
+                graph.conflicts.push(OpaqueResourceLifecycleConflict {
+                    resource_type,
+                    producer_symbol: producer_declaration.symbol.clone(),
+                    release_symbol,
+                    kind,
+                });
+                continue;
+            }
+            SourceCandidateOutcome::Candidate(candidate) => candidate,
+        };
+        let resource_type = candidate.resource_type.clone();
+        match graph.candidates.entry(resource_type.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(candidate);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry)
+                if lifecycle_matches(entry.get(), &candidate) =>
+            {
+                entry
+                    .get_mut()
+                    .producer_symbols
+                    .insert(producer_declaration.symbol.clone());
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                let established = lifecycle_description(entry.get());
+                let conflicting = lifecycle_description(&candidate);
+                graph.conflicts.push(OpaqueResourceLifecycleConflict {
+                    resource_type: resource_type.clone(),
+                    producer_symbol: producer_declaration.symbol.clone(),
+                    release_symbol: candidate.release_symbol.clone(),
+                    kind: OpaqueResourceLifecycleConflictKind::MultipleProducerLifecycle {
+                        established,
+                        conflicting,
+                    },
+                });
+                conflicted_types.insert(resource_type);
+            }
+        }
+    }
+
+    for resource_type in conflicted_types {
+        graph.candidates.remove(&resource_type);
+    }
+    graph.conflicts.sort_by(|left, right| {
+        (
+            &left.resource_type,
+            &left.producer_symbol,
+            &left.release_symbol,
+        )
+            .cmp(&(
+                &right.resource_type,
+                &right.producer_symbol,
+                &right.release_symbol,
+            ))
+    });
+    graph
+}
+
 impl Checker {
     fn mark_import_module_used_for_owner(&self, owner: Option<String>, imported_module: &str) {
         self.used_modules
@@ -7969,6 +8265,13 @@ impl Checker {
                 .unwrap_or_else(|| f.name.clone());
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.fn_sigs.insert(key.clone(), sig);
+            self.source_extern_declarations
+                .push(SourceExternDeclaration {
+                    symbol: f.name.clone(),
+                    signature_key: key.clone(),
+                    declaring_module: self.current_module.clone(),
+                    consuming_params: f.params.iter().map(|param| param.is_consume).collect(),
+                });
             self.unsafe_functions.insert(key);
             self.record_root_value_binding(&f.name);
         }
@@ -7978,6 +8281,33 @@ impl Checker {
         // Without these entries standalone `hew check` on channel.hew
         // reports "undefined function" for recv/try_recv calls.
         self.register_channel_recv_builtins();
+    }
+
+    /// Join generated owned-result contracts to exact source extern
+    /// declarations and their consuming release declaration.
+    ///
+    /// The generated table is the only ownership authority. Source names
+    /// participate only after the contract's qualified nominal proves the
+    /// declaring module, so a root or foreign-module symbol collision cannot
+    /// inherit a lifecycle.
+    pub(super) fn derive_opaque_resource_candidate_graph(
+        &self,
+        fn_sigs: &HashMap<String, FnSig>,
+    ) -> OpaqueResourceCandidateGraph {
+        derive_opaque_resource_candidate_graph(
+            &self.source_extern_declarations,
+            fn_sigs,
+            crate::ffi_contracts::FFI_OWNERSHIP_CONTRACTS,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn derive_opaque_resource_candidate_graph_for_contracts(
+        &self,
+        fn_sigs: &HashMap<String, FnSig>,
+        contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
+    ) -> OpaqueResourceCandidateGraph {
+        derive_opaque_resource_candidate_graph(&self.source_extern_declarations, fn_sigs, contracts)
     }
 
     /// Registers synthetic `fn_sigs` entries for the channel layout-witness

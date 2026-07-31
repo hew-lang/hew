@@ -9,7 +9,7 @@ use hew_parser::ast::{
     Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
 };
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Uniquely identifies an import declaration within the checker.
 ///
@@ -82,6 +82,62 @@ pub(super) struct ActorInitParamInfo {
     pub(super) span: Span,
 }
 
+/// One checker-derived lifecycle for a qualified closeable opaque nominal.
+///
+/// The fact is derived exclusively by joining generated producer contracts to
+/// exact source extern declarations and their consuming release declaration.
+/// Downstream stages may consume it; they must not rebuild it from names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpaqueResourceLifecycleCandidate {
+    pub resource_type: String,
+    pub owner_module: String,
+    pub release_symbol: String,
+    pub discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth,
+    pub result_ownership: crate::ffi_contracts::ExternResultOwnership,
+    pub result_retention: crate::ffi_contracts::ExternResultRetention,
+    pub producer_symbols: BTreeSet<String>,
+}
+
+/// Why an otherwise provenance-matched producer failed lifecycle admission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpaqueResourceLifecycleConflictKind {
+    ProducerResultMismatch {
+        actual: String,
+    },
+    ReleaseDeclarationMissing,
+    ReleaseSignatureMismatch {
+        detail: String,
+    },
+    MultipleProducerLifecycle {
+        established: String,
+        conflicting: String,
+    },
+}
+
+/// Structured conflict retained for source diagnostics in the next stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpaqueResourceLifecycleConflict {
+    pub resource_type: String,
+    pub producer_symbol: String,
+    pub release_symbol: String,
+    pub kind: OpaqueResourceLifecycleConflictKind,
+}
+
+/// Checker-authoritative candidate graph for closeable opaque lifecycles.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpaqueResourceCandidateGraph {
+    pub candidates: BTreeMap<String, OpaqueResourceLifecycleCandidate>,
+    pub conflicts: Vec<OpaqueResourceLifecycleConflict>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct SourceExternDeclaration {
+    pub(super) symbol: String,
+    pub(super) signature_key: String,
+    pub(super) declaring_module: Option<String>,
+    pub(super) consuming_params: Vec<bool>,
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
@@ -131,6 +187,9 @@ pub struct TypeCheckOutput {
     /// method chain. HIR lowers these receivers as reads, returning the sole
     /// ownership obligation to the original binding.
     pub method_call_preserves_receiver_identity: HashSet<SpanKey>,
+    /// Qualified closeable opaque lifecycles derived from the single generated
+    /// FFI ownership contract and exact source extern provenance.
+    pub opaque_resource_candidates: OpaqueResourceCandidateGraph,
     /// Checker-owned lowering metadata keyed by the lowering site's source span.
     ///
     /// Populated for erased runtime types whose lowering must not guess from
@@ -1087,6 +1146,7 @@ impl Default for TypeCheckOutput {
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),
             method_call_preserves_receiver_identity: HashSet::default(),
+            opaque_resource_candidates: OpaqueResourceCandidateGraph::default(),
             lowering_facts: HashMap::new(),
             actor_handler_state_guards: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -2417,6 +2477,9 @@ pub struct Checker {
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     pub(super) method_call_consumes_receiver: HashSet<SpanKey>,
     pub(super) method_call_preserves_receiver_identity: HashSet<SpanKey>,
+    /// Source extern declarations retained until the output boundary, where
+    /// they are joined to the generated FFI ownership graph.
+    pub(super) source_extern_declarations: Vec<SourceExternDeclaration>,
     /// Receive-handler actor-state guard policy produced by checker.
     /// Mirrors [`TypeCheckOutput::actor_handler_state_guards`].
     pub(super) actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
@@ -3308,6 +3371,7 @@ impl Checker {
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
             method_call_preserves_receiver_identity: HashSet::new(),
+            source_extern_declarations: Vec::new(),
             actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             consume_receiver_methods: HashSet::new(),

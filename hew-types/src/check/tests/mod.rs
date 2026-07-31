@@ -32,6 +32,7 @@ mod intrinsics;
 mod lints;
 mod modules;
 mod mut_receiver;
+mod opaque_resources;
 mod option_none;
 mod output;
 mod patterns;

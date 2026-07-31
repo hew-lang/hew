@@ -89,6 +89,10 @@ fn generate_ffi_ownership_table(contracts: &BTreeMap<String, ContractRow>, out_d
             .map(|resource_type| format!("\"{resource_type}\""))
             .collect::<Vec<_>>()
             .join(", ");
+        let resource_result_type = row
+            .resource_result_type
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |ty| format!("Some(\"{ty}\")"));
         let result = match row.result.as_str() {
             "fresh" => "ExternResultOwnership::Fresh",
             "retained" => "ExternResultOwnership::Retained",
@@ -110,7 +114,7 @@ fn generate_ffi_ownership_table(contracts: &BTreeMap<String, ContractRow>, out_d
         writeln!(
             generated,
             "    (\"{symbol}\", ExternOwnershipContract {{ params: &[{params}], resource_param_types: &[{resource_param_types}], \
-             result: {result}, release_symbol: \"{}\", discharge_depth: {depth}, \
+             resource_result_type: {resource_result_type}, result: {result}, release_symbol: \"{}\", discharge_depth: {depth}, \
              result_retention: {retention} }}),",
             row.release_symbol
         )

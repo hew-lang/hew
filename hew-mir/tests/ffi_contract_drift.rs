@@ -35,6 +35,8 @@ struct Contract {
     params: Vec<String>,
     #[serde(rename = "resource-param-types", default)]
     resource_param_types: Vec<String>,
+    #[serde(rename = "resource-result-type", default)]
+    resource_result_type: Option<String>,
     #[serde(rename = "release-symbol")]
     release_symbol: String,
     #[serde(rename = "discharge-depth")]
@@ -113,6 +115,11 @@ fn compiler_table_matches_toml_one_to_one() {
         assert_eq!(
             compiled.resource_param_types, expected.resource_param_types,
             "{symbol}: resource-param-types drift"
+        );
+        assert_eq!(
+            compiled.resource_result_type,
+            expected.resource_result_type.as_deref(),
+            "{symbol}: resource-result-type drift"
         );
         assert_eq!(
             result_spelling(compiled.result),

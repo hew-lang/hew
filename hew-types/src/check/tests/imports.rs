@@ -1707,6 +1707,8 @@ fn import_trait_from_module_glob() {
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
+            attributes: vec![],
+            consumes_self: false,
             name: "display".to_string(),
             type_params: None,
             params: vec![],
@@ -1749,6 +1751,8 @@ fn import_private_trait_not_registered() {
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
+            attributes: vec![],
+            consumes_self: false,
             name: "internal_op".to_string(),
             type_params: None,
             params: vec![],

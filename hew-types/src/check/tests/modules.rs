@@ -1579,6 +1579,8 @@ mod warning_source_attribution {
             type_params: None,
             super_traits: None,
             items: vec![TraitItem::Method(TraitMethod {
+                attributes: vec![],
+                consumes_self: false,
                 name: "fake".to_string(),
                 type_params: None,
                 params: vec![Param {

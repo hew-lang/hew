@@ -38,6 +38,27 @@ pub(super) struct PrimarySigScope {
     pushed_frame: bool,
 }
 
+#[derive(Default)]
+struct ExplicitReturnFinder {
+    saw_return: bool,
+}
+
+impl super::lints::NodeVisitor for ExplicitReturnFinder {
+    fn visit_stmt(&mut self, stmt: &Stmt, _span: &Span) {
+        self.saw_return |= matches!(stmt, Stmt::Return(_));
+    }
+
+    fn visit_expr(&mut self, expr: &Expr, _span: &Span) {
+        self.saw_return |= matches!(expr, Expr::Return(_));
+    }
+}
+
+fn block_has_explicit_return(block: &hew_parser::ast::Block) -> bool {
+    let mut finder = ExplicitReturnFinder::default();
+    super::lints::walk_block(block, &mut finder);
+    finder.saw_return
+}
+
 impl StdlibBarePublication<'_> {
     /// The bare binding name to publish for `name`, or `None` if this
     /// registration does not publish it unqualified. `Prelude` always
@@ -5158,6 +5179,9 @@ impl Checker {
                                     m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
                                 self.register_trait_method_sig(&tb.name, &m, span);
                                 let trait_method_key = format!("{}::{}", tb.name, m.name);
+                                let consumes_receiver = m.consumes_self;
+                                let returns_receiver_identity =
+                                    Self::trait_receiver_identity_is_structurally_valid(&m);
                                 let concrete_self = Ty::Named {
                                     builtin: None,
                                     name: type_name.clone(),
@@ -5207,6 +5231,8 @@ impl Checker {
                                     param_names: param_names.clone(),
                                     params: params.clone(),
                                     return_type: return_type.clone(),
+                                    consumes_receiver,
+                                    returns_receiver_identity,
                                     ..FnSig::default()
                                 };
                                 self.fn_sigs.insert(method_key, sig);
@@ -5217,6 +5243,8 @@ impl Checker {
                                             param_names,
                                             params,
                                             return_type,
+                                            consumes_receiver,
+                                            returns_receiver_identity,
                                             ..FnSig::default()
                                         },
                                     );
@@ -5458,8 +5486,14 @@ impl Checker {
         // owner-qualified registrations. `Self::Bar` projection is active while
         // the signature resolves so `Self::Item` becomes a deferred
         // `Ty::AssocType` carrier instead of an opaque named type.
+        let receiver_identity_is_valid =
+            self.validate_trait_receiver_identity_method(trait_name, method);
+        let mut attributes = method.attributes.clone();
+        if !receiver_identity_is_valid {
+            attributes.retain(|attribute| attribute.name != "returns_receiver");
+        }
         let decl = FnDecl {
-            attributes: vec![],
+            attributes,
             is_async: false,
             is_generator: false,
             visibility: hew_parser::ast::Visibility::Private,
@@ -5476,7 +5510,7 @@ impl Checker {
             decl_span: span.clone(),
             fn_span: 0..0,
             intrinsic: None,
-            consumes_self: false,
+            consumes_self: method.consumes_self,
         };
 
         let prev_trait_self = self
@@ -5495,6 +5529,68 @@ impl Checker {
             self.register_fn_sig_with_name(&method_key, &decl);
         }
         self.current_trait_for_self_projection = prev_trait_self;
+    }
+
+    pub(super) fn trait_receiver_identity_is_structurally_valid(
+        method: &hew_parser::ast::TraitMethod,
+    ) -> bool {
+        let identity_attributes: Vec<_> = method
+            .attributes
+            .iter()
+            .filter(|attribute| attribute.name == "returns_receiver")
+            .collect();
+        if identity_attributes.is_empty() {
+            return false;
+        }
+
+        let returns_self_type = method.return_type.as_ref().is_some_and(|(ty, _)| {
+            matches!(
+                ty,
+                TypeExpr::Named { name, type_args }
+                    if name == "Self" && type_args.as_ref().is_none_or(Vec::is_empty)
+            )
+        });
+        let body_is_exact = method.body.as_ref().is_none_or(|body| {
+            let direct_self_tail = body
+                .trailing_expr
+                .as_deref()
+                .is_some_and(|(expr, _)| matches!(expr, Expr::Identifier(name) if name == "self"));
+            direct_self_tail && !block_has_explicit_return(body)
+        });
+        identity_attributes.len() == 1
+            && identity_attributes[0].args.is_empty()
+            && method.consumes_self
+            && returns_self_type
+            && body_is_exact
+    }
+
+    fn validate_trait_receiver_identity_method(
+        &mut self,
+        trait_name: &str,
+        method: &hew_parser::ast::TraitMethod,
+    ) -> bool {
+        let declares_identity = method
+            .attributes
+            .iter()
+            .any(|attribute| attribute.name == "returns_receiver");
+        if !declares_identity {
+            return false;
+        }
+        let valid = Self::trait_receiver_identity_is_structurally_valid(method);
+        if !valid {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &method.span,
+                format!(
+                    "`#[returns_receiver]` on trait method `{trait_name}::{}` requires \
+                     one zero-argument attribute, a `consuming self` receiver, the exact \
+                     `Self` return type, and any default body to have one direct trailing \
+                     `self` with no alternate `return` path",
+                    method.name
+                ),
+            );
+        }
+        valid
     }
 
     /// Collect the full resolver scope for declared type params: trait-bound
@@ -5877,6 +5973,11 @@ impl Checker {
                     .params
                     .first()
                     .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable),
+            consumes_receiver: fd.consumes_self,
+            returns_receiver_identity: fd
+                .attributes
+                .iter()
+                .any(|attribute| attribute.name == "returns_receiver"),
             ..FnSig::default()
         };
 
@@ -6007,6 +6108,54 @@ impl Checker {
         });
         // Deliberately do NOT record the intrinsic mapping: a rejected
         // declaration must not become a live intrinsic dispatch target.
+    }
+
+    fn validate_receiver_identity_method(
+        &mut self,
+        type_name: &str,
+        method: &FnDecl,
+        return_type: &Ty,
+    ) -> bool {
+        let identity_attributes: Vec<_> = method
+            .attributes
+            .iter()
+            .filter(|attribute| attribute.name == "returns_receiver")
+            .collect();
+        if identity_attributes.is_empty() {
+            return false;
+        }
+
+        let direct_self_tail = method
+            .body
+            .trailing_expr
+            .as_deref()
+            .is_some_and(|(expr, _)| matches!(expr, Expr::Identifier(name) if name == "self"));
+        let returns_self_type = matches!(
+            return_type,
+            Ty::Named { name, args, .. }
+                if args.is_empty()
+                    && (name == "Self" || Ty::names_match_qualified(name, type_name))
+        );
+        let valid = identity_attributes.len() == 1
+            && identity_attributes[0].args.is_empty()
+            && method.consumes_self
+            && direct_self_tail
+            && returns_self_type
+            && !block_has_explicit_return(&method.body);
+        if !valid {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &method.decl_span,
+                format!(
+                    "`#[returns_receiver]` on `{type_name}::{}` requires a zero-argument \
+                     attribute appearing exactly once, a `consuming self` receiver, the same \
+                     receiver return type, one direct trailing `self`, and no alternate \
+                     `return` path",
+                    method.name
+                ),
+            );
+        }
+        valid
     }
 
     /// Register an impl method on a type's method table and `fn_sigs`.
@@ -6180,7 +6329,7 @@ impl Checker {
             self.fn_sigs.get(&key).and_then(|s| s.extern_symbol.clone())
         };
 
-        let sig = FnSig {
+        let mut sig = FnSig {
             type_params: all_type_params,
             type_param_bounds,
             param_names,
@@ -6201,6 +6350,11 @@ impl Checker {
             consumes_receiver: method.consumes_self,
             ..FnSig::default()
         };
+        sig.returns_receiver_identity =
+            self.validate_receiver_identity_method(type_name, method, &sig.return_type);
+        let registered_key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
+            .unwrap_or_else(|| method_key.clone());
+        self.fn_sigs.insert(registered_key, sig.clone());
         if let Some(td) = self.lookup_type_def_mut(type_name) {
             td.methods.insert(method.name.clone(), sig.clone());
         }
@@ -7224,6 +7378,45 @@ impl Checker {
             // method span so the message still anchors to a real source range.
             trait_method.span.clone()
         };
+
+        if trait_sig.consumes_receiver != impl_sig.consumes_receiver {
+            self.report_error_with_note(
+                TypeErrorKind::TraitImplSignatureMismatch {
+                    trait_name: trait_name.clone(),
+                    method_name: method.name.clone(),
+                    detail: "receiver ownership",
+                },
+                &report_span,
+                format!(
+                    "impl method `{type_name}::{}` has a different receiver ownership \
+                     contract than trait `{trait_name}`; `consuming self` must match exactly",
+                    method.name
+                ),
+                &trait_method.span,
+                format!("trait method `{trait_name}::{}` declared here", method.name),
+            );
+            return;
+        }
+
+        if trait_sig.returns_receiver_identity != impl_sig.returns_receiver_identity {
+            self.report_error_with_note(
+                TypeErrorKind::TraitImplSignatureMismatch {
+                    trait_name: trait_name.clone(),
+                    method_name: method.name.clone(),
+                    detail: "receiver identity",
+                },
+                &report_span,
+                format!(
+                    "impl method `{type_name}::{}` has a different `#[returns_receiver]` \
+                     contract than trait `{trait_name}`; exact receiver/result ownership \
+                     identity must match",
+                    method.name
+                ),
+                &trait_method.span,
+                format!("trait method `{trait_name}::{}` declared here", method.name),
+            );
+            return;
+        }
 
         if expected_params.len() != impl_sig.params.len() {
             // Arity mismatch — also fires when the impl wrote a different

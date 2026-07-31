@@ -1903,78 +1903,6 @@ release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
-# hew-std/src/json.rs:379-384 reconstructs and drops `val`.
-[[ownership.contracts]]
-symbol = "hew_json_free"
-result = "none"
-params = ["consume"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-std/src/json.rs:635-652 moves `val` into the object.
-[[ownership.contracts]]
-symbol = "hew_json_object_set"
-result = "none"
-params = ["borrow", "borrow", "consume"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-std/src/json.rs:777-785 moves `val` into the array.
-[[ownership.contracts]]
-symbol = "hew_json_array_push"
-result = "none"
-params = ["borrow", "consume"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-std/src/toml.rs:610-615 reconstructs and drops `val`.
-[[ownership.contracts]]
-symbol = "hew_toml_free"
-result = "none"
-params = ["consume"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-std/src/toml.rs:420-437 moves `val` into the table.
-[[ownership.contracts]]
-symbol = "hew_toml_table_set"
-result = "none"
-params = ["borrow", "borrow", "consume"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-std/src/toml.rs:539-547 moves `val` into the array.
-[[ownership.contracts]]
-symbol = "hew_toml_array_push"
-result = "none"
-params = ["borrow", "consume"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-std/src/yaml.rs:476-481 reconstructs and drops `val`.
-[[ownership.contracts]]
-symbol = "hew_yaml_free"
-result = "none"
-params = ["consume"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-std/src/yaml.rs:711-728 moves `val` into the mapping.
-[[ownership.contracts]]
-symbol = "hew_yaml_object_set"
-result = "none"
-params = ["borrow", "borrow", "consume"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-std/src/yaml.rs:875-883 moves `val` into the sequence.
-[[ownership.contracts]]
-symbol = "hew_yaml_array_push"
-result = "none"
-params = ["borrow", "consume"]
-release-symbol = ""
-discharge-depth = "none"
-
 # hew-runtime/src/bytes.rs:818-852 allocates a fresh header-aware string on both
 # the empty and non-empty paths (`alloc_cstring_from_str`); result reaches
 # `hew_string_drop`. The caller owes exactly one balancing drop.
@@ -2015,41 +1943,6 @@ discharge-depth = "deep"
 symbol = "hew_proto_msg_get_string"
 result = "fresh"
 params = ["borrow", "borrow"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_toml_last_serialize_error"
-result = "fresh"
-params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-# hew-std/src/toml.rs:73-81 allocates the actor-local error string.
-[[ownership.contracts]]
-symbol = "hew_toml_last_error"
-result = "fresh"
-params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-# hew-std/src/toml.rs:109-123 allocates a string value copy.
-[[ownership.contracts]]
-symbol = "hew_toml_get_string"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-# hew-std/src/toml.rs:264-282 allocates serialized TOML text.
-[[ownership.contracts]]
-symbol = "hew_toml_stringify"
-result = "fresh"
-params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4793,13 +4686,16 @@ discharge-depth = "none"
 symbol = "hew_json_array_get"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.json.Value", ""]
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_array_len"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4809,11 +4705,21 @@ result = "fresh"
 params = []
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_json_array_push"
+result = "none"
+params = ["borrow", "consume"]
+resource-param-types = ["std.encoding.json.Value", "std.encoding.json.Value"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_json_array_push_bool"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.json.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4821,6 +4727,7 @@ discharge-depth = "none"
 symbol = "hew_json_array_push_float"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.json.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4828,6 +4735,7 @@ discharge-depth = "none"
 symbol = "hew_json_array_push_int"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.json.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4835,6 +4743,7 @@ discharge-depth = "none"
 symbol = "hew_json_array_push_null"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4842,6 +4751,15 @@ discharge-depth = "none"
 symbol = "hew_json_array_push_string"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.json.Value", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_json_free"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4851,6 +4769,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_float"
@@ -4858,6 +4777,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_int"
@@ -4865,6 +4785,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_null"
@@ -4872,6 +4793,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_from_string"
@@ -4879,11 +4801,13 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_get_bool"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4891,13 +4815,16 @@ discharge-depth = "none"
 symbol = "hew_json_get_field"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.json.Value", ""]
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_get_float"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4905,6 +4832,7 @@ discharge-depth = "none"
 symbol = "hew_json_int_status"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4912,6 +4840,7 @@ discharge-depth = "none"
 symbol = "hew_json_unrepresentable_int_count"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4919,6 +4848,7 @@ discharge-depth = "none"
 symbol = "hew_json_get_int"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4926,6 +4856,7 @@ discharge-depth = "none"
 symbol = "hew_json_get_string"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4942,8 +4873,10 @@ result-retention = "transferred"
 symbol = "hew_json_object_keys"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_object_new"
@@ -4951,11 +4884,25 @@ result = "fresh"
 params = []
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_json_object_set"
+result = "none"
+params = ["borrow", "borrow", "consume"]
+resource-param-types = [
+  "std.encoding.json.Value",
+  "",
+  "std.encoding.json.Value",
+]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_json_object_set_bool"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.json.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4963,6 +4910,7 @@ discharge-depth = "none"
 symbol = "hew_json_object_set_float"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.json.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4970,6 +4918,7 @@ discharge-depth = "none"
 symbol = "hew_json_object_set_int"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.json.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4977,6 +4926,7 @@ discharge-depth = "none"
 symbol = "hew_json_object_set_null"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.json.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4984,6 +4934,7 @@ discharge-depth = "none"
 symbol = "hew_json_object_set_string"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.json.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4993,11 +4944,13 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_json_stringify"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -5006,24 +4959,29 @@ result-retention = "transferred"
 symbol = "hew_json_type"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.json.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
 # TOML values — hew-std/src/toml.rs. Same shape as the JSON family: value
 # producers (parse, from_*, table_new/array_new, get_field/array_get clone-
 # out) return Box'd HewTomlValue handles released by hew_toml_free (deep);
-# setters/pushes borrow and copy.
+# setters/pushes borrow the target, copy scalar/string operands, and consume
+# transferred Value children.
 [[ownership.contracts]]
 symbol = "hew_toml_array_get"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.toml.Value", ""]
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_array_len"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5033,11 +4991,21 @@ result = "fresh"
 params = []
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_toml_array_push"
+result = "none"
+params = ["borrow", "consume"]
+resource-param-types = ["std.encoding.toml.Value", "std.encoding.toml.Value"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_toml_array_push_bool"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.toml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5045,6 +5013,7 @@ discharge-depth = "none"
 symbol = "hew_toml_array_push_float"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.toml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5052,6 +5021,7 @@ discharge-depth = "none"
 symbol = "hew_toml_array_push_int"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.toml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5059,6 +5029,15 @@ discharge-depth = "none"
 symbol = "hew_toml_array_push_string"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.toml.Value", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_free"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5068,6 +5047,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_from_float"
@@ -5075,6 +5055,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_from_int"
@@ -5082,6 +5063,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_from_string"
@@ -5089,11 +5071,13 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_get_bool"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5101,13 +5085,16 @@ discharge-depth = "none"
 symbol = "hew_toml_get_field"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.toml.Value", ""]
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_get_float"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5115,8 +5102,34 @@ discharge-depth = "none"
 symbol = "hew_toml_get_int"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_get_string"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = ["std.encoding.toml.Value"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_toml_last_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_toml_last_serialize_error"
+result = "fresh"
+params = []
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_parse"
@@ -5124,6 +5137,16 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_toml_stringify"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = ["std.encoding.toml.Value"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_table_new"
@@ -5131,11 +5154,25 @@ result = "fresh"
 params = []
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_toml_table_set"
+result = "none"
+params = ["borrow", "borrow", "consume"]
+resource-param-types = [
+  "std.encoding.toml.Value",
+  "",
+  "std.encoding.toml.Value",
+]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_toml_table_set_bool"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.toml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5143,6 +5180,7 @@ discharge-depth = "none"
 symbol = "hew_toml_table_set_float"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.toml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5150,6 +5188,7 @@ discharge-depth = "none"
 symbol = "hew_toml_table_set_int"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.toml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5157,6 +5196,7 @@ discharge-depth = "none"
 symbol = "hew_toml_table_set_string"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.toml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5164,24 +5204,28 @@ discharge-depth = "none"
 symbol = "hew_toml_type"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
 # YAML values — hew-std/src/yaml.rs. Same shape as the JSON family: value
 # producers return Box'd HewYamlValue handles released by hew_yaml_free
-# (deep); setters/pushes borrow and copy; get_string/stringify return fresh
-# strings.
+# (deep); setters/pushes borrow the target, copy scalar/string operands, and
+# consume transferred Value children; get_string/stringify return fresh strings.
 [[ownership.contracts]]
 symbol = "hew_yaml_array_get"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.yaml.Value", ""]
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_array_len"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5191,11 +5235,21 @@ result = "fresh"
 params = []
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_array_push"
+result = "none"
+params = ["borrow", "consume"]
+resource-param-types = ["std.encoding.yaml.Value", "std.encoding.yaml.Value"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_array_push_bool"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.yaml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5203,6 +5257,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_push_float"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.yaml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5210,6 +5265,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_push_int"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.yaml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5217,6 +5273,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_push_null"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5224,6 +5281,15 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_push_string"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.yaml.Value", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_free"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5233,6 +5299,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_float"
@@ -5240,6 +5307,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_int"
@@ -5247,6 +5315,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_null"
@@ -5254,6 +5323,7 @@ result = "fresh"
 params = []
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_from_string"
@@ -5261,11 +5331,13 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_get_bool"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5273,13 +5345,16 @@ discharge-depth = "none"
 symbol = "hew_yaml_get_field"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.yaml.Value", ""]
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_get_float"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5287,6 +5362,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_int_status"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5294,6 +5370,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_unrepresentable_int_count"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5301,6 +5378,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_get_int"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5308,6 +5386,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_get_string"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -5326,11 +5405,25 @@ result = "fresh"
 params = []
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_yaml_object_set"
+result = "none"
+params = ["borrow", "borrow", "consume"]
+resource-param-types = [
+  "std.encoding.yaml.Value",
+  "",
+  "std.encoding.yaml.Value",
+]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_object_set_bool"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.yaml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5338,6 +5431,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_object_set_float"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.yaml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5345,6 +5439,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_object_set_int"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.yaml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5352,6 +5447,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_object_set_null"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.encoding.yaml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5359,6 +5455,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_object_set_string"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.encoding.yaml.Value", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5368,11 +5465,13 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_yaml_stringify"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -5381,6 +5480,7 @@ result-retention = "transferred"
 symbol = "hew_yaml_type"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.encoding.yaml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 

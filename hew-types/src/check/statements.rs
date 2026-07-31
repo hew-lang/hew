@@ -7,6 +7,82 @@ use crate::builtin_names::BuiltinNamedType;
 use crate::BuiltinType;
 
 impl Checker {
+    fn method_chain_root_binding(expr: &Expr) -> Option<&str> {
+        match expr {
+            Expr::Identifier(name) => Some(name),
+            Expr::MethodCall { receiver, .. } => Self::method_chain_root_binding(&receiver.0),
+            _ => None,
+        }
+    }
+
+    /// A validated `#[returns_receiver]` call transfers the receiver owner to
+    /// its result. When that exact result is discarded in statement position,
+    /// the transfer is a no-op: the original binding remains the sole owner.
+    /// Record that fact per call site for HIR and restore the checker binding
+    /// only when it was live before this statement.
+    fn preserve_discarded_receiver_identity_chain(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+    ) -> Option<String> {
+        let Expr::MethodCall { receiver, .. } = expr else {
+            return None;
+        };
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let rewrite_identity = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(
+                MethodCallRewrite::RewriteToFunction {
+                    returns_receiver_identity: true,
+                    ..
+                } | MethodCallRewrite::StaticTraitDispatch {
+                    returns_receiver_identity: true,
+                    ..
+                }
+            )
+        );
+        let dyn_signature = self
+            .dyn_trait_method_calls
+            .get(&key)
+            .map(|call| &call.signature);
+        let is_identity = rewrite_identity
+            || dyn_signature.is_some_and(|signature| signature.returns_receiver_identity);
+        let consumes = self.method_call_consumes_receiver.contains(&key)
+            || dyn_signature.is_some_and(|signature| signature.consumes_receiver);
+        if consumes && !is_identity {
+            return None;
+        }
+
+        let (root, nested_identity) = match &receiver.0 {
+            Expr::Identifier(name) => (name.clone(), false),
+            Expr::MethodCall { .. } => {
+                let root =
+                    self.preserve_discarded_receiver_identity_chain(&receiver.0, &receiver.1)?;
+                (root, true)
+            }
+            _ => return None,
+        };
+        if is_identity {
+            self.method_call_preserves_receiver_identity.insert(key);
+        }
+        (is_identity || nested_identity).then_some(root)
+    }
+
+    fn synthesize_discarded_expression(&mut self, expr: &Expr, span: &Span) -> Ty {
+        let root = Self::method_chain_root_binding(expr).map(str::to_string);
+        let root_was_moved = root
+            .as_deref()
+            .and_then(|name| self.env.lookup(name))
+            .is_some_and(|binding| binding.is_moved);
+        let ty = self.synthesize(expr, span);
+        if !root_was_moved {
+            if let Some(root) = self.preserve_discarded_receiver_identity_chain(expr, span) {
+                self.env.unmark_moved(&root);
+            }
+        }
+        ty
+    }
+
     fn iterator_trait_item_ty(&mut self, iter_ty: &Ty, span: &Span) -> Option<Ty> {
         let resolved = self.subst.resolve(iter_ty);
         if let Ty::TraitObject { traits } = &resolved {
@@ -178,7 +254,7 @@ impl Checker {
             | Stmt::Break { .. }
             | Stmt::Continue { .. } => self.check_stmt_as_expr(stmt, span, expected),
             Stmt::Expression((expr, es)) => {
-                let expr_ty = self.synthesize(expr, es);
+                let expr_ty = self.synthesize_discarded_expression(expr, es);
                 if matches!(expr_ty, Ty::Never) {
                     Ty::Never
                 } else {
@@ -421,7 +497,7 @@ impl Checker {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
                 self.check_match_expr(&scr_ty, arms, span, expected)
             }
-            Stmt::Expression((expr, es)) => self.synthesize(expr, es),
+            Stmt::Expression((expr, es)) => self.synthesize_discarded_expression(expr, es),
             Stmt::Return(value) => {
                 self.check_return_operand(value.as_ref(), span);
                 Ty::Never
@@ -1167,7 +1243,7 @@ impl Checker {
                         }
                     }
                 }
-                self.synthesize(expr, es);
+                self.synthesize_discarded_expression(expr, es);
             }
             Stmt::If {
                 condition,

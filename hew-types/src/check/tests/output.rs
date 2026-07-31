@@ -179,6 +179,7 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
             descriptor: None,
             elem_ty: None,
             consumes_receiver: false,
+            returns_receiver_identity: false,
         },
     );
 

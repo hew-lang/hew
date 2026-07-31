@@ -1572,6 +1572,7 @@ impl Checker {
                 .params
                 .first()
                 .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+            let returns_receiver_identity = Self::trait_receiver_identity_is_structurally_valid(&m);
             return Some(FnSig {
                 type_params,
                 type_param_bounds,
@@ -1579,6 +1580,8 @@ impl Checker {
                 params,
                 return_type,
                 requires_mutable_receiver,
+                consumes_receiver: m.consumes_self,
+                returns_receiver_identity,
                 ..FnSig::default()
             });
         }
@@ -1704,6 +1707,7 @@ impl Checker {
                 .params
                 .first()
                 .is_some_and(|p| self.is_receiver_param(p) && p.is_mutable);
+            let returns_receiver_identity = Self::trait_receiver_identity_is_structurally_valid(&m);
             return Some((
                 trait_name.to_string(),
                 FnSig {
@@ -1713,6 +1717,8 @@ impl Checker {
                     params,
                     return_type,
                     requires_mutable_receiver,
+                    consumes_receiver: m.consumes_self,
+                    returns_receiver_identity,
                     ..FnSig::default()
                 },
             ));

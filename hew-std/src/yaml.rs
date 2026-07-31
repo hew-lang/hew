@@ -35,9 +35,34 @@ pub struct HewYamlValue {
     inner: serde_yaml::Value,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Test-only oracle for live outer `HewYamlValue` boxes. Nested serde
+    /// values move into their parent tree and carry no second wrapper.
+    static LIVE_YAML_VALUE_BOXES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Wrap a [`serde_yaml::Value`] into a heap-allocated [`HewYamlValue`].
 fn boxed_value(v: serde_yaml::Value) -> *mut HewYamlValue {
+    #[cfg(test)]
+    LIVE_YAML_VALUE_BOXES.with(|live| live.set(live.get() + 1));
     Box::into_raw(Box::new(HewYamlValue { inner: v }))
+}
+
+#[cfg(test)]
+fn live_value_boxes() -> usize {
+    LIVE_YAML_VALUE_BOXES.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn record_value_box_consumed() {
+    LIVE_YAML_VALUE_BOXES.with(|live| {
+        live.set(
+            live.get()
+                .checked_sub(1)
+                .expect("YAML value box counter underflow"),
+        );
+    });
 }
 
 fn set_parse_last_error(msg: impl Into<String>) {
@@ -546,6 +571,8 @@ pub unsafe extern "C" fn hew_yaml_free(val: *mut HewYamlValue) {
     }
     // SAFETY: val was allocated with Box::into_raw and has not been freed.
     drop(unsafe { Box::from_raw(val) });
+    #[cfg(test)]
+    record_value_box_consumed();
 }
 
 /// Free a C string previously returned by [`hew_yaml_stringify`] or
@@ -766,21 +793,30 @@ pub unsafe extern "C" fn hew_yaml_get_duration(val: *const HewYamlValue) -> i64 
 
 /// Set a [`HewYamlValue`] child on a YAML mapping, taking ownership.
 ///
-/// The `val` pointer is consumed and must not be freed by the caller.
-/// Does nothing if `obj` is null, not a mapping, or `key` is null.
+/// The `val` pointer is consumed and must not be freed by the caller. A
+/// non-null `val` is consumed on every return path, including when `obj` is
+/// null or not a mapping, or `key` is null. A null `val` is a no-op.
 ///
 /// # Safety
 ///
-/// `obj` must be a valid non-null [`HewYamlValue`] pointer. `key` must be a
-/// valid NUL-terminated C string. `val` must be a valid non-null
-/// [`HewYamlValue`] pointer that the caller relinquishes ownership of.
+/// `obj` must be a valid [`HewYamlValue`] pointer or null. `key` must be a
+/// valid NUL-terminated C string or null. `val` must be a valid
+/// [`HewYamlValue`] pointer that the caller relinquishes ownership of, or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_object_set(
     obj: *mut HewYamlValue,
     key: *const c_char,
     val: *mut HewYamlValue,
 ) {
-    if obj.is_null() || key.is_null() || val.is_null() {
+    if val.is_null() {
+        return;
+    }
+    // SAFETY: val was allocated with Box::into_raw and caller transfers
+    // ownership at the ABI boundary, even if insertion is rejected.
+    let child = unsafe { Box::from_raw(val) };
+    #[cfg(test)]
+    record_value_box_consumed();
+    if obj.is_null() || key.is_null() {
         return;
     }
     // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
@@ -788,8 +824,6 @@ pub unsafe extern "C" fn hew_yaml_object_set(
         .to_str()
         .unwrap_or("")
         .to_owned();
-    // SAFETY: val was allocated with Box::into_raw and caller transfers ownership.
-    let child = unsafe { Box::from_raw(val) };
     // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(serde_yaml::Value::String(key_str), child.inner);
@@ -930,21 +964,28 @@ pub unsafe extern "C" fn hew_yaml_array_push_null(arr: *mut HewYamlValue) {
 
 /// Push a [`HewYamlValue`] child onto a YAML sequence, taking ownership.
 ///
-/// The `val` pointer is consumed and must not be freed by the caller.
-/// Does nothing if `arr` is null, not a sequence, or `val` is null.
+/// The `val` pointer is consumed and must not be freed by the caller. A
+/// non-null `val` is consumed on every return path, including when `arr` is
+/// null or not a sequence. A null `val` is a no-op.
 ///
 /// # Safety
 ///
-/// `arr` must be a valid non-null [`HewYamlValue`] pointer. `val` must be a
-/// valid non-null [`HewYamlValue`] pointer that the caller relinquishes
-/// ownership of.
+/// `arr` must be a valid [`HewYamlValue`] pointer or null. `val` must be a
+/// valid [`HewYamlValue`] pointer that the caller relinquishes ownership of, or
+/// null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_yaml_array_push(arr: *mut HewYamlValue, val: *mut HewYamlValue) {
-    if arr.is_null() || val.is_null() {
+    if val.is_null() {
         return;
     }
-    // SAFETY: val was allocated with Box::into_raw and caller transfers ownership.
+    // SAFETY: val was allocated with Box::into_raw and caller transfers
+    // ownership at the ABI boundary, even if insertion is rejected.
     let child = unsafe { Box::from_raw(val) };
+    #[cfg(test)]
+    record_value_box_consumed();
+    if arr.is_null() {
+        return;
+    }
     // SAFETY: arr is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Sequence(seq) = &mut unsafe { &mut *arr }.inner {
         seq.push(child.inner);
@@ -1051,6 +1092,57 @@ mod tests {
         // SAFETY: ptr was allocated by the runtime allocator.
         unsafe { hew_cabi::vec::hew_vec_free(ptr) };
         bytes
+    }
+
+    #[test]
+    fn child_transfer_is_unconditional_and_deep_clone_is_independent() {
+        let baseline = live_value_boxes();
+        let key = CString::new("child").unwrap();
+
+        // Null/invalid parents and invalid keys still consume a non-null child.
+        // SAFETY: every non-null handle below is freshly allocated and freed or
+        // transferred exactly once; null pointers exercise the documented no-op path.
+        unsafe {
+            hew_yaml_object_set(std::ptr::null_mut(), key.as_ptr(), hew_yaml_from_int(1));
+            assert_eq!(live_value_boxes(), baseline);
+
+            let scalar_parent = hew_yaml_from_int(2);
+            hew_yaml_object_set(scalar_parent, std::ptr::null(), hew_yaml_from_int(3));
+            assert_eq!(live_value_boxes(), baseline + 1);
+            hew_yaml_object_set(scalar_parent, key.as_ptr(), hew_yaml_from_int(4));
+            assert_eq!(live_value_boxes(), baseline + 1);
+            hew_yaml_free(scalar_parent);
+
+            hew_yaml_array_push(std::ptr::null_mut(), hew_yaml_from_int(5));
+            assert_eq!(live_value_boxes(), baseline);
+            let object_parent = hew_yaml_object_new();
+            hew_yaml_array_push(object_parent, hew_yaml_from_int(6));
+            assert_eq!(live_value_boxes(), baseline + 1);
+            hew_yaml_free(object_parent);
+        }
+
+        // A high nested tree has one outer wrapper after every successful
+        // transfer. A cloned getter is a separate deep owner and remains valid
+        // after the original root is released.
+        let mut root = hew_yaml_array_new();
+        for _ in 0..128 {
+            let parent = hew_yaml_array_new();
+            // SAFETY: parent and root are distinct live handles; ownership of root transfers.
+            unsafe { hew_yaml_array_push(parent, root) };
+            root = parent;
+            assert_eq!(live_value_boxes(), baseline + 1);
+        }
+        // SAFETY: root is a live nested array and index zero exists.
+        let clone = unsafe { hew_yaml_array_get(root, 0) };
+        assert!(!clone.is_null());
+        assert_eq!(live_value_boxes(), baseline + 2);
+        // SAFETY: root remains live and has not otherwise been released.
+        unsafe { hew_yaml_free(root) };
+        // SAFETY: clone is an independently allocated live value.
+        assert_eq!(unsafe { hew_yaml_type(clone) }, 5);
+        // SAFETY: clone remains live and has not otherwise been released.
+        unsafe { hew_yaml_free(clone) };
+        assert_eq!(live_value_boxes(), baseline);
     }
 
     #[test]

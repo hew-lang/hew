@@ -1,0 +1,25 @@
+import std::encoding::json;
+
+import std::encoding::toml;
+
+import std::encoding::yaml;
+
+fn use_json() {
+    let value = json.from_int(1);
+    value.close();
+    let _ = value.get_int();
+}
+
+fn use_toml() {
+    let value = toml.from_int(1);
+    value.free();
+    let _ = value.get_int();
+}
+
+fn use_yaml() {
+    let value = yaml.from_int(1);
+    value.close();
+    let _ = value.get_int();
+}
+
+fn main() {}

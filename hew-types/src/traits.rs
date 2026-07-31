@@ -795,6 +795,13 @@ impl TraitRegistry {
                 args,
                 builtin,
             } => {
+                // Affine declarations are never bitwise-copyable, even when
+                // their representation is a single pointer/integer or all of
+                // their visible fields are Copy. Their declaration carries one
+                // close/consume obligation that must move, not duplicate.
+                if marker == MarkerTrait::Copy && (self.is_resource(name) || self.is_linear(name)) {
+                    return false;
+                }
                 // Check negative impls first
                 if let Some(negatives) = self.negative_impls.get(name) {
                     if negatives.contains(&marker) {
@@ -1157,6 +1164,33 @@ mod tests {
         };
         assert!(registry.is_send(&point));
         assert!(registry.implements_marker(&point, MarkerTrait::Copy));
+    }
+
+    #[test]
+    fn affine_declarations_are_not_copy_even_with_copy_fields() {
+        let mut registry = TraitRegistry::new();
+        for name in ["ResourceHandle", "LinearHandle"] {
+            registry.register_type(name.to_string(), vec![Ty::I64]);
+        }
+        registry.register_resource_type("ResourceHandle".to_string());
+        registry.register_linear_type("LinearHandle".to_string());
+
+        for name in [
+            "ResourceHandle",
+            "module.ResourceHandle",
+            "LinearHandle",
+            "module.LinearHandle",
+        ] {
+            let ty = Ty::Named {
+                builtin: None,
+                name: name.to_string(),
+                args: vec![],
+            };
+            assert!(
+                !registry.implements_marker(&ty, MarkerTrait::Copy),
+                "affine declaration `{name}` must move despite its scalar representation"
+            );
+        }
     }
 
     #[test]

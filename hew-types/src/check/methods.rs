@@ -1141,6 +1141,7 @@ impl Checker {
                         descriptor,
                         elem_ty: None,
                         consumes_receiver,
+                        returns_receiver_identity: false,
                     },
                 );
             } else {
@@ -1224,26 +1225,6 @@ impl Checker {
         // module-qualified receiver's unqualified suffix (`mod.Conn` → `Conn`)
         // for imported handle types.
         self.registry.is_resource(type_name)
-    }
-
-    /// Apply the consume-receiver marker for a trait-dispatched method call:
-    /// record the per-call-site flag for codegen and mark the receiver
-    /// expression moved so subsequent uses surface `UseAfterMove`. No-op
-    /// when the resolved method does not declare `consumes_receiver`.
-    fn apply_consume_receiver_if_flagged(
-        &mut self,
-        qualified_method: &str,
-        receiver: &Spanned<Expr>,
-        receiver_ty: &Ty,
-        span: &Span,
-    ) {
-        if !self.is_consume_receiver_method(qualified_method) {
-            return;
-        }
-        self.method_call_consumes_receiver
-            .insert(SpanKey::in_module(span, self.current_module_idx));
-        let resolved_ty = self.subst.resolve(receiver_ty);
-        self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_ty);
     }
 
     fn record_method_call_rewrite(&mut self, span: &Span, rewrite: MethodCallRewrite) {
@@ -1435,6 +1416,7 @@ impl Checker {
                 descriptor,
                 elem_ty: None,
                 consumes_receiver,
+                returns_receiver_identity: false,
             },
         );
     }
@@ -1471,6 +1453,7 @@ impl Checker {
                 descriptor: None,
                 elem_ty: None,
                 consumes_receiver,
+                returns_receiver_identity: false,
             },
         );
     }
@@ -6237,7 +6220,8 @@ impl Checker {
                     elem_ty: None,
                     // Primitive trait-impl dispatch is a user-fn call; it never
                     // consumes the receiver as a handle release.
-                    consumes_receiver: false,
+                    consumes_receiver: sig.consumes_receiver,
+                    returns_receiver_identity: sig.returns_receiver_identity,
                 },
             );
         }
@@ -7619,6 +7603,7 @@ impl Checker {
                                     // Fire-and-forget send; borrows the pid
                                     // handle, does not release it.
                                     consumes_receiver: false,
+                                    returns_receiver_identity: false,
                                 },
                             );
                         }
@@ -8629,6 +8614,7 @@ impl Checker {
                                     // this type); other inherent/trait methods
                                     // are not consuming releases.
                                     consumes_receiver,
+                                    returns_receiver_identity: sig.returns_receiver_identity,
                                 },
                             );
                         }
@@ -8763,13 +8749,16 @@ impl Checker {
                                 type_name: name.clone(),
                             },
                         );
-                        let qualified = format!("{declaring_trait}::{method}");
-                        self.apply_consume_receiver_if_flagged(
-                            &qualified,
-                            receiver,
-                            &receiver_ty,
-                            span,
-                        );
+                        if trait_sig.consumes_receiver {
+                            self.method_call_consumes_receiver
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                            let resolved_ty = self.subst.resolve(&receiver_ty);
+                            self.mark_expr_moved_if_non_copy(
+                                &receiver.0,
+                                &receiver.1,
+                                &resolved_ty,
+                            );
+                        }
                         // Record the StaticTraitDispatch rewrite for HIR consumption.
                         self.record_method_call_rewrite(
                             span,
@@ -8779,6 +8768,8 @@ impl Checker {
                                 declaring_trait,
                                 method_name: method.to_string(),
                                 requires_mutable_receiver: trait_sig.requires_mutable_receiver,
+                                consumes_receiver: trait_sig.consumes_receiver,
+                                returns_receiver_identity: trait_sig.returns_receiver_identity,
                             },
                         );
                         return self.project_assoc_types(&applied_sig.return_type);
@@ -9030,13 +9021,16 @@ impl Checker {
                                 );
                             }
                         }
-                        let qualified = format!("{}::{method}", bound.trait_name);
-                        self.apply_consume_receiver_if_flagged(
-                            &qualified,
-                            receiver,
-                            &receiver_ty,
-                            span,
-                        );
+                        if sig.consumes_receiver {
+                            self.method_call_consumes_receiver
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                            let resolved_ty = self.subst.resolve(&receiver_ty);
+                            self.mark_expr_moved_if_non_copy(
+                                &receiver.0,
+                                &receiver.1,
+                                &resolved_ty,
+                            );
+                        }
                     }
                     let applied_sig = self.apply_instantiated_call_signature(
                         &sig,

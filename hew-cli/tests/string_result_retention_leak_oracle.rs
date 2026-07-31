@@ -14,8 +14,11 @@ use std::process::Command;
 
 use support::leak_slope::{
     assert_frame_slope_below_tolerance_exact_lines, compile_to_native, measure_leaks_exact,
+    run_probe_witness, HIGH_FRAMES, LOW_FRAMES,
 };
 use support::{describe_output, require_codegen, run_bounded_command};
+
+type CrashSource = fn(usize) -> String;
 
 fn markdown_wrapper_source(frames: usize) -> String {
     format!(
@@ -114,7 +117,6 @@ import std::net::{Listener};
 import std::observe;
 
 extern "C" {
-    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
     fn hew_sched_metrics_active_workers() -> i64;
     fn hew_shutdown_initiate(drain_timeout_ms: i64);
     fn hew_shutdown_wait() -> i32;
@@ -135,9 +137,7 @@ actor Reader {
 
 fn main() {
     let listener = net.listen("127.0.0.1:0");
-    let port = unsafe {
-        hew_tcp_listener_local_port(listener)
-    };
+    let port = listener.local_port();
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
     reader.go(0);
     let _peer = listener.accept();
@@ -160,10 +160,6 @@ const SUSPENDING_CLOSURE_FRESH_CRASH_SOURCE: &str = r#"
 import std::net::{Listener};
 import std::observe;
 
-extern "C" {
-    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
-}
-
 actor Reader {
     let addr: string;
 
@@ -177,19 +173,20 @@ actor Reader {
             value
         };
         let _ = read_once("crash-owner".to_upper());
-        7
+        0
     }
 }
 
 fn main() {
     let frame_baseline = observe.read("coroutines.frame_bytes_live");
     let listener = net.listen("127.0.0.1:0");
-    let port = unsafe {
-        hew_tcp_listener_local_port(listener)
-    };
+    let port = listener.local_port();
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
-    let r = await reader.go(0);
-    match r {
+    let result = await reader.go(0);
+    let peer = listener.accept();
+    peer.close();
+    listener.close();
+    match result {
         Ok(_) => println("unexpected-ok"),
         Err(_) => println("crash-fallback"),
     }
@@ -202,6 +199,109 @@ fn static_crash_source() -> String {
     SUSPENDING_CLOSURE_FRESH_CRASH_SOURCE.replace(
         r#"read_once("crash-owner".to_upper())"#,
         r#"read_once("crash-owner")"#,
+    )
+}
+
+/// A bounded low/high-frame crash probe for the TCP resource pair.  Each frame
+/// creates one listener, connects one reader-owned connection, accepts the
+/// peer, then crashes the reader before its closure can suspend.  The main
+/// frame waits for that crash before closing the accepted connection and the
+/// listener, so this is an ownership test rather than a shutdown-race test.
+fn tcp_resource_crash_source(frames: usize, fresh_argument: bool) -> String {
+    let argument = if fresh_argument {
+        r#""tcp-crash-owner".to_upper()"#
+    } else {
+        r#""tcp-crash-owner""#
+    };
+
+    format!(
+        r#"
+import std::net::{{Listener}};
+
+actor Reader {{
+    let addr: string;
+
+    receive fn go(trigger: i64) -> i64 {{
+        let conn = net.connect(addr);
+        let read_once = |value: string| {{
+            if trigger >= 0 {{
+                panic("crash before child suspend");
+            }}
+            let _ = await conn.read_string();
+            value
+        }};
+        let _ = read_once({argument});
+        0
+    }}
+}}
+
+fn main() {{
+    for _ in 0..{frames} {{
+        // Keep the endpoint static: formatting the ephemeral port allocates a
+        // String per frame, which would test string concatenation rather than
+        // the Listener/Connection lifecycle this oracle owns.
+        let listener = net.listen("127.0.0.1:39467");
+        let reader = spawn Reader(addr: "127.0.0.1:39467");
+        let result = await reader.go(0);
+        let peer = listener.accept();
+        peer.close();
+        listener.close();
+        match result {{
+            Ok(_) => panic("reader unexpectedly returned"),
+            Err(_) => println("crash-fallback"),
+        }}
+    }}
+}}
+"#
+    )
+}
+
+fn tcp_fresh_crash_source(frames: usize) -> String {
+    tcp_resource_crash_source(frames, true)
+}
+
+fn tcp_static_crash_source(frames: usize) -> String {
+    tcp_resource_crash_source(frames, false)
+}
+
+/// Static, no-resource baseline for the same synchronous closure-crash path.
+/// It proves the exact-zero result below is not an accidental TCP-independent
+/// allocator floor while retaining the scheduler/crash shape of the probes.
+fn no_resource_static_crash_source(frames: usize) -> String {
+    format!(
+        r#"
+actor Gate {{
+    receive fn tick() -> i64 {{ 1 }}
+}}
+
+actor Crasher {{
+    let gate: LocalPid<Gate>;
+
+    receive fn go(trigger: i64) -> i64 {{
+        let gate_pid = gate;
+        let read_once = |value: string| {{
+            if trigger >= 0 {{
+                panic("crash before child suspend");
+            }}
+            let _ = await gate_pid.tick();
+            value
+        }};
+        let _ = read_once("static-crash-owner");
+        0
+    }}
+}}
+
+fn main() {{
+    let gate = spawn Gate;
+    for _ in 0..{frames} {{
+        let crasher = spawn Crasher(gate: gate);
+        match await crasher.go(0) {{
+            Ok(_) => panic("crasher unexpectedly returned"),
+            Err(_) => println("crash-fallback"),
+        }}
+    }}
+}}
+"#
     )
 }
 
@@ -519,6 +619,41 @@ fn suspending_closure_codegen_registers_fresh_arg_for_initial_ramp_and_resume() 
 }
 
 #[test]
+fn suspending_closure_sync_crash_explicitly_closes_tcp_controls() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("suspending-closure-crash-tcp-controls-")
+        .tempdir()
+        .expect("tempdir");
+    let fresh_bin = compile_to_native(
+        SUSPENDING_CLOSURE_FRESH_CRASH_SOURCE,
+        dir.path(),
+        "suspending_closure_fresh_crash_tcp_controls",
+    );
+    let static_bin = compile_to_native(
+        &static_crash_source(),
+        dir.path(),
+        "suspending_closure_static_crash_tcp_controls",
+    );
+
+    for (label, bin) in [("fresh", &fresh_bin), ("static", &static_bin)] {
+        let output = run_fixture(bin, &format!("run {label} crash TCP-control fixture"));
+        assert!(
+            output.status.success(),
+            "{label} crash TCP-control fixture failed:\n{}",
+            describe_output(&output)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "crash-fallback\nmain-done\n0\n",
+            "{label} must await the crashing reader after explicitly closing \
+             both the listener and accepted peer; only the reader connection \
+             remains for typed crash cleanup"
+        );
+    }
+}
+
+#[test]
 fn suspending_closure_later_resume_crash_drains_typed_root_owners_once() {
     require_codegen();
     let dir = tempfile::Builder::new()
@@ -577,8 +712,8 @@ fn suspending_closure_sync_crash_releases_only_the_fresh_argument_delta() {
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
             "crash-fallback\nmain-done\n0\n",
-            "{label} fixture must exercise the actor crash fallback and return \
-             control to main with no additional live coroutine-frame bytes"
+            "{label} fixture must close the listener and accepted peer explicitly, \
+             then await the crash teardown before reporting live coroutine-frame bytes"
         );
     }
 
@@ -592,11 +727,54 @@ fn suspending_closure_sync_crash_releases_only_the_fresh_argument_delta() {
     );
     assert_eq!(
         static_leaks,
-        (1, 48),
-        "the only admitted residual is the shared Connection handle constructed \
-         before the trap; raw running-frame reclamation must not claim its typed \
-         close authority or retain either 96-byte coroutine frame"
+        (0, 0),
+        "explicit listener and accepted-peer closes leave no TCP baseline: the \
+         reader connection and both coroutine frames must be reclaimed by their \
+         typed crash cleanup"
     );
+}
+
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "exact TCP crash leak evidence needs macOS `leaks(1)` / the Darwin poisoned allocator"
+)]
+#[test]
+fn tcp_crash_resource_lifecycles_are_exact_zero_at_low_and_high_frames() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("tcp-crash-resource-lifecycle-")
+        .tempdir()
+        .expect("tempdir");
+
+    // The low/high pair detects a per-frame owner leak.  The static TCP
+    // variant controls fresh-string ownership, while the no-resource variant
+    // controls the same actor/closure crash path without either resource.
+    let sources: [(&str, CrashSource); 3] = [
+        ("tcp_fresh", tcp_fresh_crash_source),
+        ("tcp_static", tcp_static_crash_source),
+        ("no_resource_static", no_resource_static_crash_source),
+    ];
+    for (label, source) in sources {
+        for frames in [LOW_FRAMES, HIGH_FRAMES] {
+            let bin = compile_to_native(
+                &source(frames),
+                dir.path(),
+                &format!("{label}_{frames}_frames"),
+            );
+            let lines = run_probe_witness(&bin, &[]);
+            assert_eq!(
+                lines, frames,
+                "{label} must complete all {frames} crash/cleanup frames before its leak \
+                 measurement is trusted"
+            );
+            let leaks = measure_leaks_exact(&bin);
+            assert_eq!(
+                leaks,
+                (0, 0),
+                "{label} must release every owner at {frames} frames; leaks={leaks:?}"
+            );
+        }
+    }
 }
 
 #[cfg_attr(

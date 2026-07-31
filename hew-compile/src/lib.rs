@@ -682,7 +682,12 @@ fn canonical_direct_stdlib_module_for_source(
     for dotted in hew_types::check::intrinsic_floor_modules()
         .iter()
         .copied()
-        .chain(std::iter::once("std.stream"))
+        // These modules carry compiler-checked ownership ABI declarations
+        // even though they are not intrinsic floors. Canonical-path matching
+        // (not a filename/module spelling) is what permits direct `hew check
+        // std/net/net.hew` to retain its std.net provenance without granting
+        // that authority to a user's net.hew.
+        .chain(["std.stream", "std.net"])
     {
         let segments = dotted.split('.').collect::<Vec<_>>();
         if hew_types::module_registry::is_canonical_stdlib_module_source(source_file, dotted) {
@@ -2124,6 +2129,75 @@ mod tests {
         assert!(
             super::canonical_direct_stdlib_module_for_source(Path::new(&user_stream)).is_none(),
             "a same-named user file must not acquire compiler-owned std.stream provenance"
+        );
+
+        let shipped_net = repo_root.join("std/net/net.hew");
+        assert_eq!(
+            super::canonical_direct_stdlib_module_for_source(&shipped_net)
+                .map(|module| module.path),
+            Some(vec!["std".to_string(), "net".to_string()]),
+            "direct compilation of the shipped TCP module must retain std.net identity"
+        );
+        let user_net = write_source(dir.path(), "net.hew", "fn main() {}\n");
+        assert!(
+            super::canonical_direct_stdlib_module_for_source(Path::new(&user_net)).is_none(),
+            "a same-named user file must not acquire compiler-owned std.net provenance"
+        );
+
+        let std_net_state = run_file_frontend_to_typecheck(
+            shipped_net.to_str().expect("std/net path is UTF-8"),
+            &FrontendOptions::default(),
+        )
+        .expect("the shipped std.net source should type-check directly");
+        let std_net_tco = std_net_state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("successful std.net check has type output");
+        let std_net_hir = hew_hir::lower_program(
+            &std_net_state.program,
+            std_net_tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            std_net_hir.diagnostics.is_empty(),
+            "the canonical direct std.net graph must retain the typed TCP borrow authority: {:#?}",
+            std_net_hir.diagnostics
+        );
+
+        let spoof = write_source(
+            dir.path(),
+            "spoof.hew",
+            r#"
+#[resource]
+#[opaque]
+type Foo {}
+impl Foo { fn close(foo: Foo) {} }
+extern "C" { fn hew_tcp_read(foo: Foo); }
+"#,
+        );
+        let spoof_state = run_file_frontend_to_typecheck(&spoof, &FrontendOptions::default())
+            .expect("the spoof is syntactically/type valid before HIR boundary enforcement");
+        let spoof_tco = spoof_state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("successful spoof type check has type output");
+        let spoof_hir = hew_hir::lower_program(
+            &spoof_state.program,
+            spoof_tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            spoof_hir.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                hew_hir::HirDiagnosticKind::ResourceBoundaryParamMustConsume { ref func, .. }
+                    if func == "hew_tcp_read"
+            )),
+            "a user Foo must not inherit std.net.Connection's borrow row: {:#?}",
+            spoof_hir.diagnostics
         );
     }
 

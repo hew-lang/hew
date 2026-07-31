@@ -374,6 +374,39 @@ def validate_ownership_contracts(
                     f"declaration has {found} parameters"
                 )
 
+        # Resource-typed ABI positions are scalar for TCP, so the ordinary
+        # `(symbol, index)` contract is not enough authority to grant a
+        # source-level borrow. When present, this parallel row must be exact:
+        # short, non-string, unqualified, or Retain entries all fail the
+        # verifier rather than silently weakening the generated table.
+        resource_param_types = contract.get("resource-param-types")
+        if resource_param_types is not None:
+            if not isinstance(resource_param_types, list) or any(
+                not isinstance(resource_type, str)
+                for resource_type in resource_param_types
+            ):
+                errors.append(
+                    f"{location} resource-param-types must be an array of strings"
+                )
+            elif not isinstance(params, list) or len(resource_param_types) != len(
+                params
+            ):
+                errors.append(
+                    f"{location} resource-param-types must have one entry per params position"
+                )
+            else:
+                for param_index, resource_type in enumerate(resource_param_types):
+                    if not resource_type:
+                        continue
+                    if "." not in resource_type:
+                        errors.append(
+                            f"{location} resource-param-types[{param_index}] must be a qualified nominal"
+                        )
+                    if params[param_index] not in {"borrow", "consume"}:
+                        errors.append(
+                            f"{location} typed resource param {param_index} must be borrow or consume"
+                        )
+
         release_symbol = contract.get("release-symbol")
         discharge_depth = contract.get("discharge-depth")
         if not isinstance(release_symbol, str):

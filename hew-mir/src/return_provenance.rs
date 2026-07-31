@@ -1766,7 +1766,7 @@ impl ExternContractTable {
 /// permissive fallback.
 ///
 /// The rows come from [`crate::ffi_contracts::extern_ownership_contract`],
-/// which `hew-mir/build.rs` projects from the `[[ownership.contracts]]` table
+/// which `hew-types/build.rs` projects from the `[[ownership.contracts]]` table
 /// of `scripts/jit-symbol-classification.toml` — the single authority for
 /// per-parameter consume/borrow facts, validated out of band by
 /// `scripts/verify-ffi-symbols.py`. `ExternParamOwnership::Borrow` is defined
@@ -1945,10 +1945,11 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
             //
             // The third disjunct is the only one that mints for a value that
             // DOES carry a pointer, and it mints solely on a measured retention
-            // answer — see `extern_result_is_measured_transfer`.
+            // answer plus the exact release that the declared type will run —
+            // see `extern_result_is_measured_transfer`.
             if ty_is_scalar_non_heap(&ef.return_ty)
                 || pointer_free_records.ty_is_pointer_free(&ef.return_ty)
-                || extern_result_is_measured_transfer(&ef.name, ef, &type_decls)
+                || extern_result_is_measured_transfer(&ef.name, ef, &type_decls, module)
             {
                 rows.insert(ef.id, AliasBits::EMPTY);
                 fresh_return_names.insert(ef.name.clone());
@@ -2033,20 +2034,117 @@ fn extern_result_is_measured_transfer(
     symbol: &str,
     decl: &hew_hir::HirExternFn,
     decls: &HashMap<&str, &hew_hir::HirTypeDecl>,
+    module: &hew_hir::HirModule,
 ) -> bool {
-    let ReturnRelease::One(planned) = declared_return_release(&decl.return_ty, decls, 0) else {
-        return false;
-    };
     if !extern_result_is_audited_owned_transfer(symbol, decl.param_tys.len()) {
         return false;
     }
     crate::ffi_contracts::extern_ownership_contract(symbol)
         .contract()
         .is_some_and(|contract| {
-            contract.result_retention == crate::ffi_contracts::ExternResultRetention::Transferred
-                && contract.release_symbol == planned
-                && contract.discharge_depth == crate::ffi_contracts::ReleaseDischargeDepth::Shallow
+            if contract.result_retention != crate::ffi_contracts::ExternResultRetention::Transferred
+                || contract.discharge_depth != crate::ffi_contracts::ReleaseDischargeDepth::Shallow
+            {
+                return false;
+            }
+            match declared_return_release(&decl.return_ty, decls, 0) {
+                // Heap values whose compiler-derived release is a direct C ABI
+                // symbol (string, bytes, and a structurally homogeneous
+                // record) keep the existing exact-symbol proof.
+                ReturnRelease::One(planned) => contract.release_symbol == planned,
+                // An opaque `#[resource]` discharges through its inherent
+                // `<Type>::close` function rather than a raw C symbol.  It is
+                // still an exactly-one release, but only when that particular
+                // close body directly invokes the exact C close named by the
+                // producer row.  This is the resource analogue of `One`: a
+                // fresh `Connection` cannot be minted merely because a source
+                // marker says resource, nor can a similarly-spelled producer
+                // select an unrelated close ritual.
+                ReturnRelease::Unresolved => resource_opaque_return_releases_through(
+                    &decl.return_ty,
+                    module,
+                    contract.release_symbol,
+                ),
+                ReturnRelease::Nothing => false,
+            }
         })
+}
+
+/// Whether an opaque resource return is discharged by exactly `release_symbol`.
+///
+/// The resource drop plan emits the close method recorded in
+/// `module.type_classes`; this admission reads that same entry, then insists
+/// that its body has a direct call to the producer row's close symbol.  We do
+/// not follow wrappers here: a transitive analysis could be sound, but a missed
+/// edge in it would turn an ownership proof into a guess.  Refusing the wrapper
+/// is the safe (leak) direction until it has its own complete proof.
+fn resource_opaque_return_releases_through(
+    ty: &ResolvedTy,
+    module: &hew_hir::HirModule,
+    release_symbol: &str,
+) -> bool {
+    let ResolvedTy::Named {
+        name,
+        args,
+        is_opaque,
+        ..
+    } = ty
+    else {
+        return false;
+    };
+    if !*is_opaque || !args.is_empty() {
+        return false;
+    }
+    let short = hew_types::short_name(name);
+    let Some((class_name, (marker, Some(close_method)))) = module
+        .type_classes
+        .get_key_value(name.as_str())
+        .or_else(|| module.type_classes.get_key_value(short))
+    else {
+        return false;
+    };
+    if *marker != hew_hir::ResourceMarker::Resource {
+        return false;
+    }
+
+    let qualified_close = format!("{class_name}::{close_method}");
+    let short_close = format!("{short}::{close_method}");
+    module.items.iter().any(|item| {
+        let hew_hir::HirItem::Function(function) = item else {
+            return false;
+        };
+        (function.name == qualified_close || function.name == short_close)
+            && block_directly_calls_symbol(&function.body, release_symbol)
+    })
+}
+
+/// The intentionally tiny authority walk used by
+/// [`resource_opaque_return_releases_through`]. `unsafe { ... }` becomes a HIR
+/// block, so a direct FFI close is either a statement or a tail below one or
+/// more such blocks. Any other expression form is not a proof.
+fn block_directly_calls_symbol(block: &HirBlock, symbol: &str) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            HirStmtKind::Expr(expr) => expr_directly_calls_symbol(expr, symbol),
+            _ => false,
+        })
+        || block
+            .tail
+            .as_deref()
+            .is_some_and(|tail| expr_directly_calls_symbol(tail, symbol))
+}
+
+fn expr_directly_calls_symbol(expr: &HirExpr, symbol: &str) -> bool {
+    match &expr.kind {
+        HirExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            HirExprKind::BindingRef { name, .. } if name == symbol
+        ),
+        HirExprKind::Block(block) => block_directly_calls_symbol(block, symbol),
+        _ => false,
+    }
 }
 
 /// What the compiler's type-directed drop plan will emit for a declared type.
@@ -6635,6 +6733,58 @@ fn main() {}
             "the runtime copies its thread-local message into a fresh \
              header-aware allocation and keeps no pointer into it, so the \
              caller holds the sole owner and owes exactly one release"
+        );
+    }
+
+    #[test]
+    fn tcp_resource_producer_mints_only_through_its_exact_inherent_close() {
+        const MATCHING_CLOSE: &str = r#"
+#[resource]
+#[opaque]
+type Connection {}
+impl Connection {
+    fn close(conn: Connection) {
+        unsafe { hew_tcp_close(conn) };
+    }
+}
+extern "C" {
+    fn hew_tcp_close(consume conn: Connection);
+    fn hew_tcp_connect(addr: string) -> Connection;
+    fn hew_tcp_unclassified(addr: string) -> Connection;
+}
+fn main() {}
+"#;
+        const WRONG_CLOSE: &str = r#"
+#[resource]
+#[opaque]
+type Connection {}
+impl Connection {
+    fn close(conn: Connection) {
+        unsafe { hew_tcp_listener_close(conn) };
+    }
+}
+extern "C" {
+    fn hew_tcp_listener_close(consume conn: Connection);
+    fn hew_tcp_connect(addr: string) -> Connection;
+}
+fn main() {}
+"#;
+
+        let matching = table_for(MATCHING_CLOSE);
+        assert!(
+            matching.extern_return_is_audited_fresh_owner("hew_tcp_connect"),
+            "the row's transferred result and `Connection::close -> hew_tcp_close` \
+             must jointly mint the TCP producer"
+        );
+        assert!(
+            !matching.extern_return_is_audited_fresh_owner("hew_tcp_unclassified"),
+            "an unclassified producer has no positive row and must remain opaque"
+        );
+
+        assert!(
+            !table_for(WRONG_CLOSE).extern_return_is_audited_fresh_owner("hew_tcp_connect"),
+            "a resource marker alone is not authority: the emitted close must \
+             be the exact release symbol audited for this producer"
         );
     }
 

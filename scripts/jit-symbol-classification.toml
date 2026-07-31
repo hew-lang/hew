@@ -1284,6 +1284,7 @@ codegen-stable = [
   "hew_cont_poll",
   "hew_cont_resume",
   "hew_context_install",
+  "hew_context_reply_channel_swap_add_frame_cleanup",
   "hew_context_reply_channel_swap_add_string_cleanup",
   "hew_context_reply_channel_swap_pop",
   "hew_context_reply_channel_swap_push",
@@ -2746,9 +2747,11 @@ discharge-depth = "none"
 [[ownership.contracts]]
 symbol = "hew_tcp_stream_from_conn"
 result = "fresh"
-params = ["borrow"]
+params = ["consume"]
+resource-param-types = ["std.net.Connection"]
 release-symbol = "hew_stream_pair_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 # channels — hew-runtime/src/channel.rs (native) / channel_wasm.rs (wasm; same
 # ownership shape). hew_channel_new returns a Box'd pair whose free drops
@@ -3267,14 +3270,17 @@ params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
-# TCP transport — hew-runtime/src/transport.rs. Connections/listeners are
-# scalar c_int table handles (no pointer ownership axis). hew_tcp_read returns
-# a fresh BytesTriple; hew_tcp_write / hew_tcp_broadcast_except take the bytes
-# triple by-pointer WITHOUT transferring ownership (borrow).
+# TCP transport — hew-runtime/src/transport.rs. `Listener` and `Connection`
+# are affine table-entry owners even though their C ABI is a scalar c_int. The
+# read/write/accept/timeout/validity operations borrow the handle; close and
+# the stream bridge consume it and remove the table entry. The latter facts are
+# the authority that lets the Hew `#[resource] #[opaque]` wrappers retain or
+# disarm their lexical/crash cleanup exactly once.
 [[ownership.contracts]]
 symbol = "hew_connection_is_valid"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.Connection"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -3282,13 +3288,32 @@ discharge-depth = "none"
 symbol = "hew_listener_is_valid"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.Listener"]
 release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_accept"
-result = "none"
+result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.Listener"]
+release-symbol = "hew_tcp_close"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_attach"
+result = "none"
+params = ["consume", "borrow", "borrow", "borrow"]
+resource-param-types = ["std.net.Connection", "", "", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_attach_local"
+result = "none"
+params = ["consume", "borrow", "borrow", "borrow"]
+resource-param-types = ["std.net.Connection", "", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -3296,41 +3321,55 @@ discharge-depth = "none"
 symbol = "hew_tcp_broadcast_except"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.Connection", ""]
 release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_close"
 result = "none"
+params = ["consume"]
+resource-param-types = ["std.net.Connection"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_tcp_detach"
+result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.Connection"]
 release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_connect"
-result = "none"
+result = "fresh"
 params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
+release-symbol = "hew_tcp_close"
+discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_connect_timeout"
-result = "none"
+result = "fresh"
 params = ["borrow", "borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
+release-symbol = "hew_tcp_close"
+discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_listen"
-result = "none"
+result = "fresh"
 params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
+release-symbol = "hew_tcp_listener_close"
+discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_listener_close"
 result = "none"
-params = ["borrow"]
+params = ["consume"]
+resource-param-types = ["std.net.Listener"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -3338,6 +3377,7 @@ discharge-depth = "none"
 symbol = "hew_tcp_listener_local_port"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.Listener"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -3345,6 +3385,7 @@ discharge-depth = "none"
 symbol = "hew_tcp_read"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.Connection"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
 
@@ -3352,6 +3393,7 @@ discharge-depth = "shallow"
 symbol = "hew_tcp_set_read_timeout"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.Connection", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -3359,6 +3401,7 @@ discharge-depth = "none"
 symbol = "hew_tcp_set_write_timeout"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.Connection", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -3366,6 +3409,7 @@ discharge-depth = "none"
 symbol = "hew_tcp_write"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.Connection", ""]
 release-symbol = ""
 discharge-depth = "none"
 

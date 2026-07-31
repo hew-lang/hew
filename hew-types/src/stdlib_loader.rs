@@ -1201,17 +1201,17 @@ fn extract_handle_methods(
     let wrapper_simple_name = crate::short_name(&type_name);
 
     for method in &impl_decl.methods {
-        // A fieldless `#[resource]` handle (e.g. process.Child) IS a handle
-        // type, so its inherent `close` stays out of the handle-method table —
-        // registering it would trip the `is_handle_type`-gated rewrite. A
-        // fielded wrapper's `close` is rewrite-safe and must register so the
-        // importer's impl-less registry path can resolve `x.close()`.
-        if method.name == "close"
+        // A fieldless `#[resource]` handle's inherent `close` must be visible
+        // for imported signature resolution. It deliberately dispatches
+        // through that authored impl below rather than rewriting straight to
+        // the extracted C symbol: the inherent body is the one exact close
+        // ritual HIR/MIR registers for scope, crash, cancel and suspend drops.
+        // Sending it through the raw handle rewrite would lose the resource
+        // consume intent and create a second, disconnected close authority.
+        let inherent_resource_close = method.name == "close"
             && resource_type_names.contains(&type_name)
             && !is_resource_wrapper
-        {
-            continue;
-        }
+            && impl_decl.trait_bound.is_none();
         // A trivial C shim forwards `self` directly (`hew_foo(self, ...)`). A
         // `#[resource] T { handle: H }` wrapper cannot: a borrowing method may
         // not pass the resource itself across the FFI boundary
@@ -1295,7 +1295,7 @@ fn extract_handle_methods(
                 c_symbol,
                 params,
                 return_type,
-                dispatch_through_impl,
+                dispatch_through_impl: dispatch_through_impl || inherent_resource_close,
             });
         }
     }
@@ -1618,6 +1618,22 @@ mod tests {
         assert_eq!(close.c_symbol, "hew_tcp_listener_close");
         assert_eq!(close.params, Vec::<Ty>::new());
         assert_eq!(close.return_type, Ty::Unit);
+        assert!(
+            close.dispatch_through_impl,
+            "net.Listener.close must retain its authored inherent resource ritual; \
+             importing its signature must not create a second raw-release path"
+        );
+
+        let connection_close = net_info
+            .handle_methods
+            .iter()
+            .find(|m| m.type_name == "net.Connection" && m.method_name == "close")
+            .expect("net.Connection.close should be extracted");
+        assert_eq!(connection_close.c_symbol, "hew_tcp_close");
+        assert!(
+            connection_close.dispatch_through_impl,
+            "net.Connection.close must dispatch through the sole inherent close ritual"
+        );
 
         let http_info =
             load_module("std::net::http", &test_root()).expect("should load http module");

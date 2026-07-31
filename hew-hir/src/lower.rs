@@ -5288,6 +5288,11 @@ struct LowerCtx {
     scopes: Vec<ScopeMap>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,
+    /// Source-declared `extern` symbols. A resource argument crosses one of
+    /// these bodyless ABI boundaries by borrow only when the generated
+    /// per-symbol/per-parameter ownership contract says so; ordinary Hew
+    /// functions that merely share a spelling never inherit that privilege.
+    extern_fn_names: HashSet<String>,
     /// Same-module bare-call rewrites active while lowering an imported module
     /// free-function body. Keys are source-visible bare identifiers; values are
     /// the qualified, native-symbol-safe `fn_registry` keys emitted for that
@@ -5921,6 +5926,10 @@ fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
 }
 
 impl LowerCtx {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the lowering context is initialized atomically so new ownership facts cannot be omitted from a partial constructor"
+    )]
     fn new(tc_output: &TypeCheckOutput, mono_cap: usize, target_arch: TargetArch) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
         // Seed compiler-known M2 substrate types before source-order TypeDecls.
@@ -5931,6 +5940,7 @@ impl LowerCtx {
             ids: IdGen::default(),
             scopes: Vec::new(),
             fn_registry: HashMap::new(),
+            extern_fn_names: HashSet::new(),
             imported_fn_rewrites: None,
             imported_module_consts: None,
             type_classes,
@@ -6153,18 +6163,37 @@ impl LowerCtx {
     /// Resolves through `ResolvedTy::from_ty` so the decision rides the typed
     /// value-class, never a name string. Absent or unconvertible entries answer
     /// `false` — the conservative no-ownership-transfer default.
-    fn checked_span_is_user_resource(&self, span: &Span) -> bool {
+    fn checked_span_user_resource_type(&self, span: &Span) -> Option<String> {
         self.expr_types
             .get(&self.mk_key(span))
             .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-            .is_some_and(|resolved| {
+            .and_then(|resolved| {
                 // Builtin runtime handles (`builtin: Some(_)`) and the
                 // non-`Named` affine variants (`CancellationToken`) are
                 // excluded: they reach borrowing FFI intrinsics by value.
-                matches!(resolved, ResolvedTy::Named { builtin: None, .. })
-                    && crate::value_class::ValueClass::of_ty(&resolved, &self.type_classes)
-                        == ValueClass::AffineResource
+                let ResolvedTy::Named {
+                    name,
+                    builtin: None,
+                    ..
+                } = resolved
+                else {
+                    return None;
+                };
+                (crate::value_class::ValueClass::of_ty(
+                    &ResolvedTy::Named {
+                        name: name.clone(),
+                        args: vec![],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    &self.type_classes,
+                ) == ValueClass::AffineResource)
+                    .then_some(name)
             })
+    }
+
+    fn checked_span_is_user_resource(&self, span: &Span) -> bool {
+        self.checked_span_user_resource_type(span).is_some()
     }
 
     /// Intent for an ordinary (non-receiver) call argument at `span`: `Consume`
@@ -6179,6 +6208,33 @@ impl LowerCtx {
         }
     }
 
+    /// Intent for an argument crossing a direct, source-declared C-ABI call.
+    ///
+    /// A plain resource parameter would normally be an ownership move. The
+    /// only exception is an exact generated ownership row proving that THIS
+    /// declared extern borrows THIS parameter. Missing, short, consume and
+    /// retain rows deliberately fall back to the ordinary consuming intent.
+    fn call_arg_move_intent(&self, symbol: Option<&str>, index: usize, span: &Span) -> IntentKind {
+        let borrows_resource = symbol.is_some_and(|symbol| {
+            self.extern_fn_names.contains(symbol)
+                && self
+                    .checked_span_user_resource_type(span)
+                    .is_some_and(|resource_type| {
+                        hew_types::ffi_contracts::extern_resource_param_is_audited_borrow(
+                            symbol,
+                            index,
+                            self.current_module_name.as_deref(),
+                            &resource_type,
+                        )
+                    })
+        });
+        if borrows_resource && self.checked_span_is_user_resource(span) {
+            IntentKind::Read
+        } else {
+            self.arg_move_intent(span)
+        }
+    }
+
     /// Lower a call's ordinary (non-receiver) arguments, choosing each
     /// argument's move-vs-borrow intent through `arg_move_intent`. A by-value
     /// user-`#[resource]` argument is lowered `Consume` (an ownership move into
@@ -6187,9 +6243,21 @@ impl LowerCtx {
     /// single funnel every free-call and method-call argument list flows
     /// through so the value-move consume decision lives in exactly one place.
     fn lower_call_args(&mut self, args: &[CallArg]) -> Vec<HirExpr> {
+        self.lower_call_args_for_callee(args, None)
+    }
+
+    /// Lower call arguments after the caller has identified an optional direct
+    /// C-ABI symbol. All other call shapes use the normal by-value ownership
+    /// intent; only a declared extern can consult the FFI contract table.
+    fn lower_call_args_for_callee(
+        &mut self,
+        args: &[CallArg],
+        symbol: Option<&str>,
+    ) -> Vec<HirExpr> {
         args.iter()
-            .map(|arg| {
-                let intent = self.arg_move_intent(&arg.expr().1);
+            .enumerate()
+            .map(|(index, arg)| {
+                let intent = self.call_arg_move_intent(symbol, index, &arg.expr().1);
                 self.lower_expr(arg.expr(), intent)
             })
             .collect()
@@ -7818,6 +7886,9 @@ impl LowerCtx {
     }
 
     fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {
+        // A later ordinary function registration must not inherit a stale
+        // extern privilege merely by reusing its symbol spelling.
+        self.extern_fn_names.remove(name);
         let id = self.ids.item();
         let return_ty = func
             .return_type
@@ -7903,6 +7974,7 @@ impl LowerCtx {
                 builtin_family: None,
             },
         );
+        self.extern_fn_names.insert(decl.name.clone());
     }
 
     fn is_var_self_method_for_type(method: &FnDecl, self_type_name: &str) -> bool {
@@ -10132,8 +10204,9 @@ impl LowerCtx {
     ) {
         let offenders: Vec<(String, String)> = params
             .iter()
-            .filter(|p| !p.is_consume)
-            .filter_map(|p| match &p.ty.0 {
+            .enumerate()
+            .filter(|(_, p)| !p.is_consume)
+            .filter_map(|(index, p)| match &p.ty.0 {
                 TypeExpr::Named { name, .. } => {
                     // Builtin affine handles (LocalPid/RemotePid/LambdaPid,
                     // channel halves, CancellationToken, MonitorRef, ...) are
@@ -10154,7 +10227,27 @@ impl LowerCtx {
                     }
                     match self.type_classes.get(name) {
                         Some((ResourceMarker::Resource | ResourceMarker::Linear, _)) => {
-                            Some((p.name.clone(), name.clone()))
+                            // A typed FFI ownership-contract row is the only
+                            // positive proof that a by-value resource handle
+                            // is merely borrowed across this invisible body.
+                            // The proof binds the exact nominal and the
+                            // trusted std.net declaration too: an arbitrary
+                            // `Foo` must not inherit `hew_tcp_read`'s scalar
+                            // ABI spelling. An absent/short row, a wrong
+                            // nominal/module, Retain, or Consume still
+                            // requires the surface `consume` marker.
+                            if boundary == "extern fn"
+                                && hew_types::ffi_contracts::extern_resource_param_is_audited_borrow(
+                                    func_name,
+                                    index,
+                                    self.current_module_name.as_deref(),
+                                    name,
+                                )
+                            {
+                                None
+                            } else {
+                                Some((p.name.clone(), name.clone()))
+                            }
                         }
                         _ => None,
                     }
@@ -14313,7 +14406,13 @@ impl LowerCtx {
                         span,
                     };
                 }
-                let mut args = self.lower_call_args(args);
+                let direct_extern_symbol = match &function.0 {
+                    Expr::Identifier(name) if self.extern_fn_names.contains(name) => {
+                        Some(name.as_str())
+                    }
+                    _ => None,
+                };
+                let mut args = self.lower_call_args_for_callee(args, direct_extern_symbol);
                 if let Expr::Identifier(name) = &function.0 {
                     // Intercept payload-bearing variant constructors written
                     // as calls (`Shape::Line(5)`, bare `Line(5)`). The bare
@@ -30823,6 +30922,59 @@ mod tests {
             builtin: None,
             is_opaque: false,
         }
+    }
+
+    #[test]
+    fn tcp_borrow_contract_rejects_spoofed_and_unclassified_resource_params() {
+        // A resource may cross an extern boundary without `consume` only when
+        // the source declaration is std.net's audited nominal. In particular,
+        // neither the familiar TCP spelling nor a scalar-compatible Foo ABI
+        // lets a root module forge Connection's borrow privilege.
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r#"
+            #[resource]
+            #[opaque]
+            type Handle {}
+
+            impl Handle {
+                fn close(handle: Handle) {}
+            }
+
+            extern "C" {
+                fn hew_tcp_read(handle: Handle);
+                fn hew_tcp_unclassified(handle: Handle);
+            }
+            "#,
+        );
+
+        let boundary_diagnostics: Vec<_> = lowered
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                matches!(
+                    diagnostic.kind,
+                    HirDiagnosticKind::ResourceBoundaryParamMustConsume { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            boundary_diagnostics.len(),
+            2,
+            "both a spoofed TCP spelling and an unclassified resource parameter must be rejected: {:#?}",
+            lowered.diagnostics
+        );
+        let rejected: Vec<_> = boundary_diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                HirDiagnosticKind::ResourceBoundaryParamMustConsume { func, .. } => Some(func),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rejected,
+            vec!["hew_tcp_read", "hew_tcp_unclassified"],
+            "the generated borrow row must not be inherited by a root `Handle`: {boundary_diagnostics:#?}"
+        );
     }
 
     #[test]

@@ -34,8 +34,9 @@ use crate::model::{
     ClosureEnvFieldOwnership, ClosureEnvMode, CmpPred, Direction, DropFnSpec, DropKind, DropPlan,
     ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, FunctionCallConv, Instr, IntArithOp,
     IntSignedness, IrPipeline, JoinBranch, LambdaEnvFieldDrop, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm, SelectArmKind,
-    SpawnEnvFieldOwnership, StringRetainCondition, SuspendKind, Terminator, TrapKind,
+    MirDiagnosticKind, MirStatement, ParamBoundaryFact, ParamBoundaryMode, ParamLoanStorage,
+    ParamRepresentationEffect, Place, RawMirFunction, SelectArm, SelectArmKind,
+    SpawnEnvFieldOwnership, Strategy, StringRetainCondition, SuspendKind, Terminator, TrapKind,
 };
 
 /// Which stage of the pipeline to render.
@@ -129,6 +130,8 @@ fn dump_raw_function(out: &mut String, func: &RawMirFunction) {
 fn dump_checked_function(out: &mut String, func: &CheckedMirFunction) {
     writeln!(out, "fn {} -> {}", func.name, func.return_ty.user_facing()).expect("write to string");
 
+    dump_param_boundaries(out, func);
+
     for block in &func.blocks {
         dump_basic_block(out, block, 2, None);
     }
@@ -148,6 +151,81 @@ fn dump_checked_function(out: &mut String, func: &CheckedMirFunction) {
         writeln!(out, "  cooperate:").expect("write to string");
         for site in &func.cooperate_sites {
             writeln!(out, "    bb{} {:?}", site.bb_id, site.kind).expect("write to string");
+        }
+    }
+}
+
+fn dump_param_boundaries(out: &mut String, func: &CheckedMirFunction) {
+    let mut facts = func
+        .decisions
+        .iter()
+        .filter_map(|decision| match decision.strategy {
+            Strategy::ParamBoundary(fact) => Some(fact),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    facts.sort_unstable_by_key(|fact| fact.param_index);
+    if facts.is_empty() {
+        writeln!(out, "  param_boundaries: none").expect("write to string");
+        return;
+    }
+
+    let expected_count = facts[0].param_count;
+    assert_eq!(
+        usize::try_from(expected_count).expect("parameter count exceeds usize"),
+        facts.len(),
+        "checked MIR function `{}` must carry exactly one boundary fact per parameter",
+        func.name
+    );
+    for (expected_index, fact) in facts.iter().enumerate() {
+        assert_eq!(
+            fact.param_count, expected_count,
+            "checked MIR function `{}` boundary facts disagree on parameter count",
+            func.name
+        );
+        assert_eq!(
+            usize::try_from(fact.param_index).expect("parameter index exceeds usize"),
+            expected_index,
+            "checked MIR function `{}` boundary facts must be total and unique",
+            func.name
+        );
+    }
+
+    writeln!(out, "  param_boundaries:").expect("write to string");
+    for fact in facts {
+        writeln!(
+            out,
+            "    param{}: {} [caller-visible-projection={}]",
+            fact.param_index,
+            render_param_boundary_mode(fact),
+            fact.caller_visible_projection
+        )
+        .expect("write to string");
+    }
+}
+
+fn render_param_boundary_mode(fact: ParamBoundaryFact) -> &'static str {
+    match fact.mode {
+        ParamBoundaryMode::BorrowReadOnly => "borrow-read-only",
+        ParamBoundaryMode::BorrowRepresentationLoan {
+            storage: ParamLoanStorage::Aliasable,
+            effect: ParamRepresentationEffect::MayReplaceRepresentation,
+            ..
+        } => "borrow-representation-loan(aliasable, may-replace-representation)",
+        ParamBoundaryMode::BorrowRepresentationLoan {
+            storage: ParamLoanStorage::OwnedFrameSnapshot,
+            effect: ParamRepresentationEffect::MayReplaceRepresentation,
+            ..
+        } => "borrow-representation-loan(owned-frame-snapshot, may-replace-representation)",
+        ParamBoundaryMode::BorrowRepresentationLoan {
+            effect: ParamRepresentationEffect::None,
+            ..
+        } => "borrow-representation-loan(no-representation-effect)",
+        ParamBoundaryMode::TransferResource => "transfer-resource",
+        ParamBoundaryMode::OwnedMessage => "owned-message",
+        ParamBoundaryMode::OwnedCarrier => "owned-carrier",
+        ParamBoundaryMode::RejectUnprovenRepresentationMutation => {
+            "reject-unproven-representation-mutation"
         }
     }
 }
@@ -2189,6 +2267,74 @@ mod tests {
             dump.contains("checks: none"),
             "expected 'checks: none' in checked dump:\n{dump}"
         );
+    }
+
+    #[test]
+    fn dump_checked_prints_explicit_rejected_parameter_boundary() {
+        let raw = minimal_raw_func("rejected");
+        let checked = CheckedMirFunction {
+            name: "rejected".to_string(),
+            return_ty: ResolvedTy::I64,
+            blocks: raw.blocks,
+            decisions: vec![crate::model::DecisionFact {
+                site: hew_hir::SiteId(0),
+                ty: ResolvedTy::Bytes,
+                value_class: hew_hir::ValueClass::CowValue,
+                intent: hew_hir::IntentKind::Unknown,
+                strategy: Strategy::ParamBoundary(ParamBoundaryFact {
+                    param_index: 0,
+                    param_count: 1,
+                    caller_visible_projection: true,
+                    mode: ParamBoundaryMode::RejectUnprovenRepresentationMutation,
+                }),
+                why: "test".to_string(),
+            }],
+            checks: vec![],
+            cooperate_sites: vec![],
+        };
+        let pipeline = IrPipeline {
+            checked_mir: vec![checked],
+            ..empty_pipeline()
+        };
+        let dump = dump_mir(&pipeline, DumpStage::Checked);
+        assert!(
+            dump.contains(
+                "param0: reject-unproven-representation-mutation \
+                 [caller-visible-projection=true]"
+            ),
+            "unresolved mutation must remain explicit in checked MIR:\n{dump}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must carry exactly one boundary fact per parameter")]
+    fn dump_checked_rejects_non_total_parameter_boundaries() {
+        let raw = minimal_raw_func("non_total");
+        let checked = CheckedMirFunction {
+            name: "non_total".to_string(),
+            return_ty: ResolvedTy::I64,
+            blocks: raw.blocks,
+            decisions: vec![crate::model::DecisionFact {
+                site: hew_hir::SiteId(0),
+                ty: ResolvedTy::Bytes,
+                value_class: hew_hir::ValueClass::CowValue,
+                intent: hew_hir::IntentKind::Unknown,
+                strategy: Strategy::ParamBoundary(ParamBoundaryFact {
+                    param_index: 0,
+                    param_count: 2,
+                    caller_visible_projection: true,
+                    mode: ParamBoundaryMode::BorrowReadOnly,
+                }),
+                why: "test".to_string(),
+            }],
+            checks: vec![],
+            cooperate_sites: vec![],
+        };
+        let pipeline = IrPipeline {
+            checked_mir: vec![checked],
+            ..empty_pipeline()
+        };
+        let _ = dump_mir(&pipeline, DumpStage::Checked);
     }
 
     /// Elab stage: a function with no drops emits `drop_plans: none`

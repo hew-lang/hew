@@ -230,6 +230,30 @@ fn vec_param_is_not_flagged() {
 }
 
 #[test]
+fn checker_carries_positive_caller_visible_parameter_projection_facts() {
+    let output =
+        check_source("fn inspect(data: bytes, text: string, values: Vec<i64>, count: i64) {}\n");
+    assert!(
+        output.errors.is_empty(),
+        "declaration should type-check: {:?}",
+        output.errors
+    );
+    assert_eq!(
+        output.caller_visible_param_projections.len(),
+        3,
+        "bytes, string, and Vec parameters carry positive storage authority; \
+         the scalar parameter must not"
+    );
+    assert!(
+        output
+            .caller_visible_param_projections
+            .iter()
+            .all(|key| key.module_idx == 0),
+        "root declarations retain root module attribution"
+    );
+}
+
+#[test]
 fn hashmap_param_is_not_flagged() {
     assert_no_ineffective_diagnostic(
         "fn put(var m: HashMap<string, i64>) { m.insert(\"k\", 9); }\n",
@@ -306,8 +330,8 @@ fn record_handle_sibling_value_projection_is_rejected() {
     ));
     assert!(
         errors.iter().any(|error| error.message
-            == "`holder` is a by-value parameter; this assignment mutates only its private copy \
-                and has no caller-visible effect"),
+            == "`var holder` on a by-value parameter of type `Holder` has no caller-visible \
+                effect"),
         "expected private-projection diagnostic, got: {errors:?}"
     );
 }
@@ -341,8 +365,8 @@ fn option_handle_root_replacement_is_rejected() {
         parse_and_check("fn replace(var items: Option<Vec<i64>>) { items = Some([1, 2]); }\n");
     assert!(
         errors.iter().any(|error| error.message
-            == "`items` is a by-value parameter; this assignment mutates only its private copy \
-                and has no caller-visible effect"),
+            == "`var items` on a by-value parameter of type `Option<Vec<i64>>` has no \
+                caller-visible effect"),
         "expected private-wrapper diagnostic, got: {errors:?}"
     );
 }
@@ -358,6 +382,13 @@ fn scalar_param_is_not_flagged() {
 fn string_param_is_not_flagged() {
     assert_no_ineffective_diagnostic(
         "fn shout(var s: string) -> string { s = s + \"!\"; return s; }\n",
+    );
+}
+
+#[test]
+fn bytes_param_root_replacement_is_not_flagged() {
+    assert_no_ineffective_diagnostic(
+        "fn replace(var data: bytes) -> bytes { data = \"x\".to_bytes(); return data; }\n",
     );
 }
 

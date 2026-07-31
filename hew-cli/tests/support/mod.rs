@@ -157,7 +157,11 @@ fn build_wasi_runtime_serialized(target_dir: &Path, build_profile: &str) -> Resu
     if !output.status.success() {
         return Err(format!(
             "failed to bootstrap WASI runner runtime with `cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features{}`\n{}",
-            if build_profile == "release" { " --release" } else { "" },
+            if build_profile == "release" {
+                " --release"
+            } else {
+                ""
+            },
             describe_output(&output)
         ));
     }

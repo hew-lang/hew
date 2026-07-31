@@ -2422,6 +2422,10 @@ impl Checker {
         is_receiver: bool,
     ) {
         let resolved_param_ty = self.subst.resolve(ty);
+        if !is_receiver && self.param_ty_has_caller_visible_projection(&resolved_param_ty) {
+            self.caller_visible_param_projections
+                .insert(SpanKey::in_module(&param.ty.1, self.current_module_idx));
+        }
         if !param.is_mutable
             || is_receiver
             || !self.param_var_has_no_caller_visible_effect(&resolved_param_ty)
@@ -2511,6 +2515,11 @@ impl Checker {
         visiting_nominals: &mut std::collections::HashSet<String>,
     ) -> bool {
         match self.subst.resolve(ty) {
+            // Hew's CoW descriptor values are borrowed across an ordinary
+            // function boundary. A bytes mutator can replace the descriptor's
+            // backing representation, so the positive checker fact must
+            // survive even though String/Bytes are not `BuiltinType` handles.
+            Ty::String | Ty::Bytes => true,
             Ty::Named {
                 builtin: Some(builtin),
                 args: _,

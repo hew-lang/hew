@@ -7032,16 +7032,12 @@ fn main() {}
     }
 
     #[test]
-    fn a_fresh_result_without_a_measured_retention_is_refused() {
+    fn string_to_bytes_mints_only_after_measured_retention_transfer() {
         // `hew_string_to_bytes` is audited `result = "fresh"`, released by
-        // `hew_bytes_drop`, shallow — identical on every axis Clause A reads.
-        // It is deliberately outside the measured string-result program, so
-        // this negative remains about the default retention rule rather than
-        // an active subsystem lane that could be promoted as a family.
-        // It is refused for the one reason that matters: nobody has established
-        // that the callee keeps no pointer into what it returned. Absence is
-        // the answer "not established", and that costs a leak rather than a
-        // double free.
+        // `hew_bytes_drop`, shallow. Its dedicated runtime retention oracle
+        // proves that source and result storage are independent and balanced
+        // in both release orders, so the contract now carries the additional
+        // `transferred` axis Clause C requires.
         const SOURCE: &str = r#"extern "C" {
     fn hew_string_to_bytes(input: string) -> bytes;
 }
@@ -7057,12 +7053,51 @@ fn main() {}
         assert_eq!(contract.release_symbol, BYTES_RELEASE_SYMBOL);
         assert_eq!(
             contract.result_retention,
-            crate::ffi_contracts::ExternResultRetention::Unspecified
+            crate::ffi_contracts::ExternResultRetention::Transferred
         );
         assert!(
-            !table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_string_to_bytes"),
-            "`fresh` says the allocation is new, not that the callee stopped \
-             referring to it; only the retention axis answers that"
+            table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_string_to_bytes"),
+            "the exact fresh/transfer/release contract must mint the returned bytes; \
+             caller-side produced-value registration remains a separate authority"
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_fresh_or_retained_heap_result_is_refused() {
+        let (symbol, contract) = crate::ffi_contracts::FFI_OWNERSHIP_CONTRACTS
+            .iter()
+            .find(|(_, contract)| {
+                matches!(
+                    contract.result,
+                    crate::ffi_contracts::ExternResultOwnership::Fresh
+                        | crate::ffi_contracts::ExternResultOwnership::Retained
+                ) && contract.result_retention
+                    == crate::ffi_contracts::ExternResultRetention::Unspecified
+                    && contract.discharge_depth
+                        == crate::ffi_contracts::ReleaseDischargeDepth::Shallow
+                    && matches!(
+                        contract.release_symbol,
+                        STRING_RELEASE_SYMBOL | BYTES_RELEASE_SYMBOL
+                    )
+            })
+            .expect("the contract corpus must retain an unmeasured owned heap result");
+        let return_ty = if contract.release_symbol == STRING_RELEASE_SYMBOL {
+            "string"
+        } else {
+            "bytes"
+        };
+        let params = (0..contract.params.len())
+            .map(|index| format!("p{index}: i64"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source =
+            format!("extern \"C\" {{ fn {symbol}({params}) -> {return_ty}; }}\nfn main() {{}}\n");
+
+        assert!(
+            !table_for(&source).extern_return_is_audited_fresh_owner(symbol),
+            "`fresh`/`retained` and an exact release do not prove that the \
+             foreign callee stopped referring to its result; absent measured \
+             retention must stay fail-closed for `{symbol}`"
         );
     }
 

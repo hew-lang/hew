@@ -2637,11 +2637,6 @@ pub enum SuspendKind {
     CallClosure {
         callee: Place,
         args: Vec<Place>,
-        /// Exact caller-owned fresh-string shares whose normal release can be
-        /// bypassed by a synchronous child trap before this suspend is reached.
-        /// Codegen attaches these obligations to the scoped closure-driver
-        /// swap; normal pop discards them and native crash unwind releases them.
-        fresh_string_args: Vec<Place>,
         ret_ty: ResolvedTy,
         result_dest: Option<Place>,
     },
@@ -3960,8 +3955,10 @@ pub enum SelectArmKind {
 /// issued concurrently with its siblings. Mirrors
 /// [`SelectArmKind::ActorAsk`] (codegen reuses the same packed-payload
 /// channel-alloc + ask-issue preamble) and additionally carries the
-/// per-branch reply slot the wait-ALL loop writes into and the reply
-/// value's resolved type. The branch's position in the
+/// per-branch reply slot whose local type supplies reply ABI authority and the
+/// reply value's resolved type. Codegen stages detached reply buffers directly
+/// until all branches succeed; `reply_dest` is not published as a MIR
+/// definition. The branch's position in the
 /// [`Terminator::Join`] `branches` vector is the element index of the
 /// `result` tuple that this reply materialises.
 #[derive(Debug, Clone, PartialEq)]
@@ -3980,8 +3977,9 @@ pub struct JoinBranch {
     /// Earlier successfully submitted branches already belong to their
     /// mailboxes and are deliberately excluded from this plan.
     pub cleanup_plan: Option<crate::state_clone::ValueSnapshotPlan>,
-    /// Reply slot — codegen writes `hew_reply_wait`'s result here, then
-    /// composes it into the `result` tuple at this branch's index.
+    /// Reply ABI slot — its local type is the fail-closed authority for the
+    /// value returned by `hew_reply_wait`. The wait-all emitter stages the raw
+    /// buffer until every branch succeeds, then publishes the final `result`.
     pub reply_dest: Place,
     /// The reply value's resolved type — sizes the reply slot and the
     /// tuple element it feeds.
@@ -6545,11 +6543,11 @@ pub enum DropKind {
     /// The vtable static itself has program lifetime and is never freed.
     ///
     /// The `storage` discriminator is populated by the MIR producer at
-    /// each `dyn Trait` binding's introducing statement (W3.031 Stage 1):
-    /// — coercion sites (`HirExprKind::CoerceToDynTrait`) and direct
-    /// parameter bindings flow through `FrameOwned`; call results that
-    /// return `dyn Trait` (the heap-box ABI from W3.031 Stage 0) flow
-    /// through `HeapBoxed`. Reaching codegen with a `TraitObject` drop
+    /// each `dyn Trait` binding's introducing statement (W3.031 Stage 1).
+    /// Current production lowering uses `HeapBoxed` for coercion sites,
+    /// owned parameter bindings, and call results returning `dyn Trait`;
+    /// `FrameOwned` remains an explicit ABI/storage variant for validated
+    /// MIR inputs. Reaching codegen with a `TraitObject` drop
     /// whose storage was never set is a structural fail-closed event —
     /// the MIR builder emits a `TraitObjectStorageUndetermined` diagnostic
     /// instead, so codegen never sees a malformed drop kind.
@@ -7380,6 +7378,67 @@ pub struct DecisionFact {
     pub why: String,
 }
 
+/// Interprocedural representation effect of one function parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamRepresentationEffect {
+    /// No representation-replacing write reaches this parameter.
+    None,
+    /// A local write or a resolved callee may replace the parameter's backing
+    /// representation.
+    MayReplaceRepresentation,
+}
+
+/// Storage relationship available to a representation loan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamLoanStorage {
+    /// The MIR parameter local aliases caller-visible storage.
+    Aliasable,
+    /// The parameter is copied into callee-owned frame storage.
+    OwnedFrameSnapshot,
+}
+
+/// Typed cleanup ritual used only while a caller-visible representation is
+/// loaned across a potentially crashing call boundary.
+///
+/// This is intentionally not an ordinary ownership/drop disposition: normal
+/// return retires the loan without dropping.  The carried kind only tells the
+/// crash-cleanup registry how to dispose the current representation if the
+/// callee is abandoned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamCrashCleanupKind {
+    /// Release the buffer owned by an inline `{ptr, len, cap}` bytes value.
+    Bytes,
+}
+
+/// Total ABI-boundary disposition for one function parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamBoundaryMode {
+    BorrowReadOnly,
+    BorrowRepresentationLoan {
+        storage: ParamLoanStorage,
+        effect: ParamRepresentationEffect,
+        crash_cleanup: ParamCrashCleanupKind,
+    },
+    TransferResource,
+    OwnedMessage,
+    OwnedCarrier,
+    /// A representation mutation reached a boundary whose alias/callee
+    /// authority is not proven. Checked MIR keeps this refusal explicit.
+    RejectUnprovenRepresentationMutation,
+}
+
+/// Typed parameter-boundary fact carried through raw, checked, and elaborated
+/// MIR in the decision stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParamBoundaryFact {
+    pub param_index: u32,
+    pub param_count: u32,
+    /// Positive checker/HIR authority that this parameter exposes
+    /// caller-visible storage.
+    pub caller_visible_projection: bool,
+    pub mode: ParamBoundaryMode,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
     BorrowRead,
@@ -7390,6 +7449,7 @@ pub enum Strategy {
     ConsumeCall,
     Freeze,
     UnknownBlocked,
+    ParamBoundary(ParamBoundaryFact),
 }
 
 #[cfg(test)]

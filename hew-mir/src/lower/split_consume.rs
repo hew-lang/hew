@@ -1117,7 +1117,7 @@ pub(super) fn attribute_field_binder_provenance(
             if defining_write {
                 continue;
             }
-            let (_, writes) = crate::dataflow::instr_reads_writes(instr);
+            let (_, writes, _) = crate::dataflow::instr_reads_writes(instr);
             for w in writes {
                 if let Some(wl) = base_local(w) {
                     if field_binders.contains(&wl) {

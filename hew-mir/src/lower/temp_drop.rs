@@ -307,7 +307,7 @@ pub(super) fn corroborated_retained_string_move_sites(
     let mut write_counts: HashMap<u32, usize> = HashMap::new();
     for block in blocks {
         for instr in &block.instructions {
-            let (_, writes) = dataflow::instr_reads_writes(instr);
+            let (_, writes, _) = dataflow::instr_reads_writes(instr);
             for place in writes {
                 if let Some(local) = base_local(place) {
                     *write_counts.entry(local).or_default() += 1;
@@ -488,7 +488,7 @@ fn actor_state_record_trace_instr(
     instr: &Instr,
     leaf_value: Place,
 ) -> Option<ActorStateRecordTraceStep> {
-    let (reads, writes) = crate::dataflow::instr_reads_writes(instr);
+    let (reads, writes, _) = crate::dataflow::instr_reads_writes(instr);
     if reads.iter().any(|place| state.retired.contains(place)) {
         return None;
     }
@@ -580,7 +580,7 @@ fn actor_state_record_lineage_is_reused(
             return true;
         };
         for instr in &block.instructions[instr_index..] {
-            let (reads, writes) = crate::dataflow::instr_reads_writes(instr);
+            let (reads, writes, _) = crate::dataflow::instr_reads_writes(instr);
             if reads.iter().any(|place| live.contains(place)) {
                 return true;
             }
@@ -3548,7 +3548,7 @@ fn collect_nested_temp_instruction_writers(
     let mut instr_writers: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
     for block in blocks {
         for (idx, instr) in block.instructions.iter().enumerate() {
-            let (_, writes) = crate::dataflow::instr_reads_writes(instr);
+            let (_, writes, _) = crate::dataflow::instr_reads_writes(instr);
             for place in writes {
                 if let Some(local) = base_local(place) {
                     instr_writers
@@ -3574,7 +3574,7 @@ fn collect_nested_temp_source_uses(
     for block in blocks {
         for (idx, instr) in block.instructions.iter().enumerate() {
             let mut used_locals = HashSet::new();
-            let (reads, _) = crate::dataflow::instr_reads_writes(instr);
+            let (reads, _, _) = crate::dataflow::instr_reads_writes(instr);
             for place in reads {
                 if let Some(local) = base_local(place) {
                     used_locals.insert(local);
@@ -4043,18 +4043,6 @@ pub(super) fn apply_nested_fresh_string_temp_drops(
                     },
                     guard: None,
                 });
-            if let Some(SuspendKind::CallClosure {
-                fresh_string_args, ..
-            }) = suspend_kinds.get_mut(&suspend_block)
-            {
-                // One entry per MIR ownership obligation, not per raw pointer:
-                // two distinct retained locals may alias the same COW buffer
-                // and still require two unwind drops. Repeated appearances of
-                // the SAME temp in one borrowing arg list remain one owner.
-                if !fresh_string_args.contains(&place) {
-                    fresh_string_args.push(place);
-                }
-            }
         }
         by_block.entry(bid).or_default().push((idx, place, ty));
     }
@@ -4268,7 +4256,6 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: vec![Place::Local(2)],
-                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::Unit,
                 result_dest: None,
             },
@@ -4306,7 +4293,6 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: vec![Place::Local(2)],
-                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::Unit,
                 result_dest: None,
             },
@@ -4347,10 +4333,7 @@ mod nested_fresh_string_temp_drop_admission {
         );
         assert!(matches!(
             suspend_kinds.get(&1),
-            Some(SuspendKind::CallClosure {
-                fresh_string_args,
-                ..
-            }) if fresh_string_args == &[Place::Local(2)]
+            Some(SuspendKind::CallClosure { .. })
         ));
     }
 
@@ -4389,7 +4372,6 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: vec![Place::Local(2)],
-                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::String,
                 result_dest: Some(Place::Local(3)),
             },
@@ -4435,7 +4417,6 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: vec![Place::Local(2)],
-                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::String,
                 result_dest: Some(Place::Local(3)),
             },
@@ -4477,7 +4458,6 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: vec![Place::Local(2)],
-                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::Unit,
                 result_dest: None,
             },
@@ -4521,7 +4501,6 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: Vec::new(),
-                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::String,
                 result_dest: Some(Place::Local(2)),
             },
@@ -4561,7 +4540,6 @@ mod nested_fresh_string_temp_drop_admission {
             SuspendKind::CallClosure {
                 callee: Place::Local(0),
                 args: Vec::new(),
-                fresh_string_args: Vec::new(),
                 ret_ty: ResolvedTy::String,
                 result_dest: Some(Place::Local(2)),
             },
@@ -4598,7 +4576,6 @@ mod nested_fresh_string_temp_drop_admission {
                     SuspendKind::CallClosure {
                         callee: Place::Local(0),
                         args: Vec::new(),
-                        fresh_string_args: Vec::new(),
                         ret_ty: ResolvedTy::String,
                         result_dest: None,
                     },
@@ -4611,7 +4588,6 @@ mod nested_fresh_string_temp_drop_admission {
                     SuspendKind::CallClosure {
                         callee: Place::Local(0),
                         args: Vec::new(),
-                        fresh_string_args: Vec::new(),
                         ret_ty: ResolvedTy::Bytes,
                         result_dest: Some(Place::Local(2)),
                     },
@@ -5101,7 +5077,7 @@ fn collect_nested_fresh_bytes_temp_drops(
     let mut instr_writers: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
     for block in blocks {
         for (idx, instr) in block.instructions.iter().enumerate() {
-            let (_, writes) = crate::dataflow::instr_reads_writes(instr);
+            let (_, writes, _) = crate::dataflow::instr_reads_writes(instr);
             for w in writes {
                 if let Some(l) = base_local(w) {
                     instr_writers.entry(l).or_default().push((block.id, idx));
@@ -5133,7 +5109,7 @@ fn collect_nested_fresh_bytes_temp_drops(
     for block in blocks {
         for (idx, instr) in block.instructions.iter().enumerate() {
             let mut here: HashSet<u32> = HashSet::new();
-            let (reads, _) = crate::dataflow::instr_reads_writes(instr);
+            let (reads, _, _) = crate::dataflow::instr_reads_writes(instr);
             for p in reads {
                 if let Some(l) = base_local(p) {
                     here.insert(l);

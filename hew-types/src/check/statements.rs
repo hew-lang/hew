@@ -146,11 +146,24 @@ impl Checker {
     /// private `Holder` copy, even though the field being replaced happens to
     /// contain a handle. Recursing through the target also covers projections
     /// such as `holders[0].count`, whose write starts inside shared Vec storage.
+    /// A root `string`, `bytes`, or registered shared-handle binding is itself
+    /// the caller-visible storage boundary; admitting it uses the same exact
+    /// checker type facts as parameter classification.
     /// The builtin boundary test shares the declaration-time authority in
     /// `BuiltinType::is_caller_visible_shared_handle`, so nested actor, channel,
     /// stream, and reference handles cannot drift from aggregate admission.
     fn mutation_projection_reaches_caller_visible_storage(&self, target: &Expr) -> bool {
         match target {
+            Expr::Identifier(name) => self.env.lookup_ref(name).is_some_and(|binding| {
+                match self.subst.resolve(&binding.ty) {
+                    Ty::String | Ty::Bytes => true,
+                    Ty::Named {
+                        builtin: Some(builtin),
+                        ..
+                    } => builtin.is_caller_visible_shared_handle(),
+                    _ => false,
+                }
+            }),
             Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
                 let object_ty = self
                     .expr_types
@@ -1207,9 +1220,9 @@ impl Checker {
                                     TypeErrorKind::MutabilityError,
                                     span,
                                     format!(
-                                        "`{name}` is a by-value parameter; this assignment \
-                                         mutates only its private copy and has no caller-visible \
-                                         effect"
+                                        "`var {name}` on a by-value parameter of type `{}` \
+                                         has no caller-visible effect",
+                                        binding_ty.user_facing()
                                     ),
                                     vec![
                                         "return the modified value to the caller".to_string(),

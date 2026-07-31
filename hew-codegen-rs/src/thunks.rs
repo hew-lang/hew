@@ -817,6 +817,8 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbol: &str,
     total_size: u64,
+    env_offset: u64,
+    box_align: u64,
     env_struct: StructType<'ctx>,
     field_kinds: &[StateFieldCloneKind],
 ) -> CodegenResult<FunctionValue<'ctx>> {
@@ -827,16 +829,9 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
     let ctx = fn_ctx.ctx;
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
+    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
     let void_ty = ctx.void_type();
-    let box_free_fn = fn_ctx
-        .llvm_mod
-        .get_function("hew_dyn_box_free")
-        .unwrap_or_else(|| {
-            let ty = void_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
-            fn_ctx
-                .llvm_mod
-                .add_function("hew_dyn_box_free", ty, Some(Linkage::External))
-        });
+    let box_free_fn = get_or_declare_dyn_box_free(fn_ctx)?;
     let thunk = fn_ctx.llvm_mod.add_function(
         &symbol,
         void_ty.fn_type(&[ptr_ty.into()], false),
@@ -884,7 +879,7 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
 
     // Act 2: free the box. box = env - HEADER (in-bounds: the header is part
     // of the allocation).
-    let neg_header = i64_ty.const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
+    let neg_header = i64_ty.const_int(env_offset.wrapping_neg(), true);
     let box_ptr =
         unsafe { builder.build_in_bounds_gep(ctx.i8_type(), env, &[neg_header], "env_box_base") }
             .llvm_ctx_with(|| format!("closure env free thunk `{symbol}`: box base gep"))?;
@@ -893,8 +888,8 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
             box_free_fn,
             &[
                 box_ptr.into(),
-                i64_ty.const_int(total_size, false).into(),
-                i64_ty.const_int(CLOSURE_ENV_BOX_ALIGN, false).into(),
+                usize_ty.const_int(total_size, false).into(),
+                usize_ty.const_int(box_align, false).into(),
             ],
             "env_box_free",
         )

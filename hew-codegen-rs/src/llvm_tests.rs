@@ -1046,9 +1046,9 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
         "default-callconv CallClosure must pass a non-null fallback context:\n{ir}"
     );
     assert!(
-            !ir.contains("hew_require_execution_context"),
-            "default-callconv CallClosure must not ask runtime TLS for a context that main does not install:\n{ir}"
-        );
+        !ir.contains("hew_require_execution_context"),
+        "default-callconv CallClosure must not ask runtime TLS for a context that main does not install:\n{ir}"
+    );
 }
 
 fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
@@ -1171,16 +1171,16 @@ fn hashmap_layout_descriptors_use_target_usize_width() {
 
     let native_value = descriptor_line(&native, "@__hew_map_value_layout_rec_PtrPayload_8_8_owned");
     assert!(
-            native_value.contains("{ i64, i64, i8, ptr, ptr }")
-                && native_value.contains("{ i64 8, i64 8, i8 2,"),
-            "native owned pointer-field value descriptor must use host pointer ABI and 8-byte usize fields:\n{native_value}\n\nfull IR:\n{native}"
-        );
+        native_value.contains("{ i64, i64, i8, ptr, ptr }")
+            && native_value.contains("{ i64 8, i64 8, i8 2,"),
+        "native owned pointer-field value descriptor must use host pointer ABI and 8-byte usize fields:\n{native_value}\n\nfull IR:\n{native}"
+    );
     let wasm_value = descriptor_line(&wasm, "@__hew_map_value_layout_rec_PtrPayload_4_4_owned");
     assert!(
-            wasm_value.contains("{ i32, i32, i8, ptr, ptr }")
-                && wasm_value.contains("{ i32 4, i32 4, i8 2,"),
-            "wasm32 owned pointer-field value descriptor must use wasm pointer ABI and 4-byte usize fields:\n{wasm_value}\n\nfull IR:\n{wasm}"
-        );
+        wasm_value.contains("{ i32, i32, i8, ptr, ptr }")
+            && wasm_value.contains("{ i32 4, i32 4, i8 2,"),
+        "wasm32 owned pointer-field value descriptor must use wasm pointer ABI and 4-byte usize fields:\n{wasm_value}\n\nfull IR:\n{wasm}"
+    );
     assert!(
         !wasm.contains("@__hew_map_value_layout_rec_PtrPayload_8_8_owned"),
         "wasm32 descriptor synthesis must not reuse the native 8-byte pointer layout:\n{wasm}"
@@ -2140,10 +2140,10 @@ fn select_stream_next_arm_emits_readiness_proxy() {
         "stream callback must reply with the loaded item value, not the item pointer; ir:\n{ir}"
     );
     assert_eq!(
-            ir.matches("call void @free(ptr %1)").count(),
-            1,
-            "stream callback must free the malloc'd stream buffer once via the shared free block; ir:\n{ir}"
-        );
+        ir.matches("call void @free(ptr %1)").count(),
+        1,
+        "stream callback must free the malloc'd stream buffer once via the shared free block; ir:\n{ir}"
+    );
     assert!(ir.contains("call void @hew_stream_cancel_pending_read("));
     assert!(ir.contains("call i32 @hew_select_first("));
 }
@@ -2497,6 +2497,97 @@ fn join_null_reply_edge_diagnoses_then_traps_with_code() {
     assert!(
         null_region.contains("call void @hew_trap_with_code(i32 211)"),
         "the null edge must trap with HEW_TRAP_JOIN_BRANCH_FAILED (211); ir:\n{ir}"
+    );
+}
+
+#[test]
+fn join_owned_replies_stage_until_atomic_result_publication() {
+    let branches = (0..2)
+        .map(|index| hew_mir::JoinBranch {
+            actor: Place::DuplexHandle(0),
+            stable_role: None,
+            method: format!("owned_{index}"),
+            args: Vec::new(),
+            msg_type: 7 + index,
+            value: Place::Local(3),
+            cleanup_plan: None,
+            reply_dest: Place::Local(1 + index as u32),
+            reply_ty: ResolvedTy::String,
+        })
+        .collect();
+    let result_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::String]);
+    let locals = vec![
+        duplex_ty(),
+        ResolvedTy::String,
+        ResolvedTy::String,
+        ResolvedTy::Unit,
+        result_ty.clone(),
+    ];
+    let mut pipeline = pipeline_with_join_branches(branches, locals, Place::Local(4), 99);
+    pipeline.elaborated_mir = vec![hew_mir::ElaboratedMirFunction {
+        name: "main".to_string(),
+        return_ty: ResolvedTy::I64,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![(
+            hew_mir::ExitPath::Return { block: 99 },
+            hew_mir::DropPlan {
+                drops: vec![hew_mir::ElabDrop {
+                    place: Place::Local(4),
+                    ty: result_ty,
+                    drop_fn: None,
+                    kind: hew_mir::DropKind::TupleInPlace,
+                    guard: None,
+                }],
+            },
+        )],
+        coroutine: None,
+        lambda_captures: vec![],
+    }];
+
+    let ctx = Context::create();
+    let module = build_module(&ctx, &pipeline, "join_owned_staging")
+        .expect("owned join staging module must build");
+    module.verify().expect("owned join staging module verify");
+    let main = module
+        .get_function("main")
+        .expect("main")
+        .print_to_string()
+        .to_string();
+
+    let first_stage = main
+        .find("%join_reply_wait_0 = call ptr @hew_reply_wait")
+        .expect("first successful wait must stage its raw reply buffer");
+    let second_stage = main
+        .find("%join_reply_wait_1 = call ptr @hew_reply_wait")
+        .expect("second successful wait must stage its raw reply buffer");
+    let publish = main
+        .find("%join_reply_value_0 = load ptr")
+        .expect("final tuple publication");
+    let arm = main
+        .find("call i64 @hew_cont_crash_cleanup_arm")
+        .expect("fully initialized join result must arm typed cleanup");
+    assert!(
+        first_stage < second_stage && second_stage < publish && publish < arm,
+        "no final result field may be published before every reply is staged, \
+         and cleanup may arm only after publication:\n{main}"
+    );
+    assert_eq!(
+        main.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
+        1,
+        "the final tuple is the join's only published crash-cleanup owner"
+    );
+
+    let second_failure = main
+        .find("join_reply_null_1:")
+        .map(|start| &main[start..])
+        .expect("second-branch failure block");
+    assert!(
+        second_failure.contains("call void @__hew_reply_drop_string(")
+            && second_failure.contains("call void @free(ptr %join_err_prior_reply_load_1_0)"),
+        "a later branch failure must destroy and free every earlier staged \
+         owned reply before trapping:\n{second_failure}"
     );
 }
 
@@ -5203,7 +5294,10 @@ struct CompositeHelperHarness<'ctx> {
     record_layouts: RecordLayoutMap<'ctx>,
     machine_layouts: MachineLayoutMap<'ctx>,
     fn_symbols: FnSymbolMap<'ctx>,
+    frame_cleanup_thunks: RefCell<FrameCleanupThunkCache<'ctx>>,
     machine_step_symbols: HashSet<String>,
+    representation_loan_params: HashMap<String, Vec<u32>>,
+    param_boundary_modes: HashMap<String, Vec<Option<ParamBoundaryMode>>>,
     actor_layouts: Vec<ActorLayout>,
     /// Empty for these fixtures — no struct hash thunks are exercised by
     /// the composite-helper unit tests, so no bool-field defence path is
@@ -5378,7 +5472,15 @@ fn build_harness<'ctx>(
     record_fixtures: &[MirRecordLayout],
     enum_fixtures: &[MirEnumLayout],
 ) -> CompositeHelperHarness<'ctx> {
-    let target_data = host_target_data();
+    build_harness_with_target_data(ctx, record_fixtures, enum_fixtures, host_target_data())
+}
+
+fn build_harness_with_target_data<'ctx>(
+    ctx: &'ctx Context,
+    record_fixtures: &[MirRecordLayout],
+    enum_fixtures: &[MirEnumLayout],
+    target_data: TargetData,
+) -> CompositeHelperHarness<'ctx> {
     let mut record_layouts: RecordLayoutMap<'ctx> =
         crate::layout::predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[], &[])
             .expect("named-layout predeclaration must succeed");
@@ -5405,7 +5507,10 @@ fn build_harness<'ctx>(
         record_layouts,
         machine_layouts,
         fn_symbols: HashMap::new(),
+        frame_cleanup_thunks: RefCell::new(FrameCleanupThunkCache::default()),
         machine_step_symbols: HashSet::new(),
+        representation_loan_params: HashMap::new(),
+        param_boundary_modes: HashMap::new(),
         actor_layouts: Vec::new(),
         record_field_resolved_tys: HashMap::new(),
         const_globals: HashMap::new(),
@@ -5446,6 +5551,8 @@ fn make_test_fn_ctx<'a, 'ctx>(
         emit_lambda_drain_epilogue: false,
         target_data: &harness.target_data,
         builder,
+        representation_loan_params: &harness.representation_loan_params,
+        param_boundary_modes: &harness.param_boundary_modes,
         return_slot,
         return_ty: i32_ty.into(),
         return_resolved_ty: ResolvedTy::I32,
@@ -5461,6 +5568,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         runtime_decls: RefCell::new(HashMap::new()),
         record_layouts: &harness.record_layouts,
         fn_symbols: &harness.fn_symbols,
+        frame_cleanup_thunks: &harness.frame_cleanup_thunks,
         machine_step_symbols: &harness.machine_step_symbols,
         resource_record_close: &[],
         resource_opaque_close: &[],
@@ -5489,6 +5597,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         // Composite-helper unit tests inline `Instr::Drop`; no elaborated
         // drop plans and no suspend carrier to key an abandon plan off.
         drop_plans: &[],
+        helper_crash_cleanup_owners: HashMap::new(),
         suspend_abandon_block: std::cell::Cell::new(0),
         elab_drop_slot_override: std::cell::Cell::new(None),
     }
@@ -5856,6 +5965,51 @@ fn borrow_gated_drop_emits_copy_only_conditional_region() {
         ir.matches("call void @hew_string_drop(").count(),
         1,
         "the borrow-gated drop body must appear exactly once; got:\n{ir}"
+    );
+}
+
+#[test]
+fn borrow_tainted_crash_cleanup_arms_only_in_copy_mode() {
+    let ctx = Context::create();
+    let module = ctx.create_module("borrow_gated_crash_cleanup_arm");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    let borrow_mode_slot = fn_ctx
+        .builder
+        .build_alloca(ctx.i32_type(), "borrow_mode")
+        .expect("borrow-mode slot");
+    fn_ctx
+        .builder
+        .build_store(borrow_mode_slot, ctx.i32_type().const_zero())
+        .expect("borrow-mode init");
+    fn_ctx.borrow_mode = Some(
+        fn_ctx
+            .builder
+            .build_load(ctx.i32_type(), borrow_mode_slot, "borrow_mode_value")
+            .expect("borrow-mode load")
+            .into_int_value(),
+    );
+    fn_ctx.borrow_drop_tainted.insert(0);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![frame_cleanup_string_descriptor(Place::Local(0)).into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("borrow-tainted cleanup owner");
+
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(0))
+        .expect("borrow-gated cleanup arm");
+    finish_test_fn(&fn_ctx);
+    module.verify().expect("borrow-gated arm module verify");
+    let ir = module.print_to_string().to_string();
+    assert!(
+        ir.contains("helper_crash_cleanup_borrow_is_copy")
+            && ir.contains("helper_crash_cleanup_guard_live")
+            && ir.contains("call i64 @hew_cont_crash_cleanup_arm"),
+        "borrow-tainted storage must reach the arm only through the \
+         borrow_mode == 0 lifecycle gate:\n{ir}"
     );
 }
 
@@ -8505,6 +8659,13 @@ fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
         ll.contains(&format!("@{drop_symbol}")),
         "vtable initializer must reference the drop-in-place fn `@{drop_symbol}`; got:\n{ll}"
     );
+    assert!(
+        ll.contains("call ptr @hew_dyn_box_alloc(")
+            && ll.contains("call void @llvm.memcpy")
+            && ll.contains("%dyn_data = insertvalue %hew.dyn.fat_ptr undef, ptr %dyn_box, 0"),
+        "coercion must transfer the concrete value into persistent HeapBoxed \
+         storage before constructing the fat pointer; got:\n{ll}"
+    );
     // Two insertvalue steps assemble the fat pointer in `main`.
     let insert_count = ll.matches("insertvalue %hew.dyn.fat_ptr").count();
     assert!(
@@ -8520,8 +8681,306 @@ fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
     drop(tmp);
 }
 
+#[test]
+fn dyn_box_alloc_free_abi_is_shared_by_escaping_closure_and_dyn_coercion() {
+    let source = r#"
+trait Named {
+    fn name(val: Self) -> string;
+}
+type Person { tag: string }
+impl Person {
+    fn name(val: Person) -> string { val.tag }
+}
+fn make_nested(label: string) -> fn() -> i64 {
+    || label.len()
+}
+fn main() {
+    let nested = make_nested("closure-owner".to_upper());
+    let funcs: Vec<fn() -> i64> = Vec::new();
+    funcs.push(nested);
+    let recovered = funcs.pop();
+    let person = Person { tag: "dyn-owner".to_upper() };
+    let _erased: dyn Named = person;
+    println(recovered());
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "combined dyn/closure parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "combined dyn/closure pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    for (triple, usize_ir) in [
+        (native_emission_triple(), "i64"),
+        ("wasm32-wasi".to_string(), "i32"),
+    ] {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "dyn_closure_shared_box_abi",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: combined module build: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: combined module verify: {error}"));
+        let ir = module.print_to_string().to_string();
+        let alloc_decl = format!("declare ptr @hew_dyn_box_alloc({usize_ir}, {usize_ir})");
+        let free_decl = format!("declare void @hew_dyn_box_free(ptr, {usize_ir}, {usize_ir})");
+        assert!(
+            ir.contains(&alloc_decl) && ir.contains(&free_decl),
+            "{triple}: every dyn-box consumer must share the target-usize ABI:\n{ir}"
+        );
+        assert!(
+            ir.matches("call ptr @hew_dyn_box_alloc(").count() >= 2,
+            "{triple}: fixture must exercise both closure-env and dyn coercion boxes:\n{ir}"
+        );
+        let (pointer_size, pair_size) = if usize_ir == "i32" { (4, 8) } else { (8, 16) };
+        assert!(
+            ir.contains(&format!(
+                "%closure_env_box = call ptr @hew_dyn_box_alloc({usize_ir} {}, {usize_ir} {pointer_size})",
+                pointer_size * 2
+            )) && ir.contains(&format!(
+                "%closure_env_data = getelementptr inbounds i8, ptr %closure_env_box, i64 {pointer_size}"
+            )) && ir.contains(&format!(
+                "call void @llvm.memcpy.p0.p0.i64(ptr align {pointer_size} %closure_env_data, ptr align {pointer_size} %local_1, i64 {pointer_size}, i1 false)"
+            )),
+            "{triple}: closure env header, payload offset, and copy width must use \
+             the target pointer layout:\n{ir}"
+        );
+        assert!(
+            ir.contains(&format!(
+                "%closure_pair_box = call ptr @hew_dyn_box_alloc({usize_ir} {pair_size}, {usize_ir} {pointer_size})"
+            )) && ir.contains(&format!(
+                "call void @llvm.memcpy.p0.p0.i64(ptr align {pointer_size} %closure_pair_box, ptr align {pointer_size}"
+            )) && ir.contains(&format!(
+                "call void @hew_dyn_box_free(ptr %vec_pop_pair, {usize_ir} {pair_size}, {usize_ir} {pointer_size})"
+            )),
+            "{triple}: closure-pair Vec boxing, copy, and pop free must use the \
+             target two-pointer layout:\n{ir}"
+        );
+    }
+}
+
+#[test]
+fn borrowed_dyn_coercion_temp_drops_in_caller_native_and_wasm32() {
+    let source = r#"
+trait Value {
+    fn value(val: Self) -> i64;
+}
+type Number { n: i64 }
+impl Number {
+    fn value(val: Number) -> i64 { val.n }
+}
+fn inspect(value: dyn Value) {
+    value.value();
+}
+fn main() {
+    inspect(Number { n: 42 });
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "borrowed dyn temp parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "borrowed dyn temp pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+
+    for (triple, usize_ir, fat_size, fat_align) in [
+        (native_emission_triple(), "i64", 16, 8),
+        ("wasm32-wasi".to_string(), "i32", 8, 4),
+    ] {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module =
+            build_module_for_target(&ctx, &pipeline, "borrowed_dyn_temp", Some(&machine), None)
+                .unwrap_or_else(|error| {
+                    panic!("{triple}: borrowed dyn temp module build: {error:?}")
+                });
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: borrowed dyn temp verify: {error}"));
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains(&format!(
+                "%dyn_box = call ptr @hew_dyn_box_alloc({usize_ir} 8, {usize_ir} 8)"
+            )),
+            "{triple}: direct call argument must heap-promote its concrete payload:\n{ir}"
+        );
+        assert!(
+            ir.contains("call i64 @hew_cont_crash_cleanup_arm(i64")
+                && ir.contains(&format!(
+                    ", i64 {fat_size}, i64 {fat_align}, ptr @__hew_frame_cleanup_"
+                )),
+            "{triple}: the caller-owned fat-pointer temporary must arm typed crash cleanup \
+             with the target layout:\n{ir}"
+        );
+        assert!(
+            ir.contains("call void @hew_dyn_box_free(ptr %dyn_drop_data_ptr"),
+            "{triple}: caller scope exit must release the borrowed coercion's dyn box:\n{ir}"
+        );
+
+        let inspect_start = ir
+            .find("define internal i8 @inspect(")
+            .expect("inspect function definition");
+        let inspect_tail = &ir[inspect_start..];
+        let inspect_end = inspect_tail
+            .find("\n}\n")
+            .expect("inspect function closing brace");
+        let inspect_ir = &inspect_tail[..inspect_end];
+        assert!(
+            !inspect_ir.contains("dyn_drop_")
+                && !inspect_ir.contains("@hew_dyn_box_free")
+                && !inspect_ir.contains("@hew_cont_crash_cleanup_arm"),
+            "{triple}: borrowing callee must not acquire or release the caller's dyn box:\n\
+             {inspect_ir}"
+        );
+    }
+}
+
 /// Fail-closed boundary on the registry side of `Instr::CoerceToDynTrait`.
 ///
+#[test]
+fn coerce_to_dyn_trait_fails_closed_when_source_slot_disagrees_with_concrete_type() {
+    use hew_mir::{BasicBlock, DynVtableInstance, FunctionCallConv, Terminator};
+    use hew_types::ResolvedTraitBound;
+
+    let trait_obj = ResolvedTy::TraitObject {
+        traits: vec![ResolvedTraitBound {
+            trait_name: "Display".to_string(),
+            args: vec![],
+            assoc_bindings: vec![],
+        }],
+    };
+    let main = RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: "main".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![trait_obj.clone(), trait_obj],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::CoerceToDynTrait {
+                value: Place::Local(0),
+                dest: Place::Local(1),
+                trait_name: "Display".to_string(),
+                concrete_type: ResolvedTy::I64,
+                method_table: vec![],
+                vtable_entries: vec![],
+            }],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::BTreeMap::new(),
+    };
+    let pipeline = IrPipeline {
+        thir: vec![],
+        raw_mir: vec![main],
+        checked_mir: vec![],
+        elaborated_mir: vec![],
+        capabilities: hew_mir::ModuleCapabilities::EMPTY,
+        diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
+        opaque_handle_names: vec![],
+        record_layouts: vec![],
+        actor_layouts: vec![],
+        supervisor_layouts: vec![],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
+        user_consts: Vec::new(),
+        extern_decls: vec![],
+        dyn_vtable_registry: vec![DynVtableInstance {
+            vtable_id: 0,
+            symbol: hew_mir::mangle_dyn_vtable_symbol(0, "Display", &ResolvedTy::I64),
+            trait_name: "Display".to_string(),
+            concrete_type: ResolvedTy::I64,
+            method_table: vec![],
+            vtable_entries: vec![],
+        }],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
+        polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
+        resource_record_close: vec![],
+        resource_opaque_close: vec![],
+    };
+    let tmp = tempfile::Builder::new()
+        .prefix("hew-dyn-coerce-slot-mismatch-")
+        .tempdir()
+        .expect("create out_dir");
+    let options = EmitOptions {
+        module_name: "coerce_dyn_trait_slot_mismatch",
+        out_dir: tmp.path(),
+        native: false,
+        wasm: false,
+        target_triple: None,
+        debug: false,
+        opt_level: OptLevel::O0,
+        source_path: None,
+    };
+
+    let err = emit_module(&pipeline, &options)
+        .expect_err("mismatched source and concrete layouts must fail closed");
+    match err {
+        CodegenError::FailClosed(msg) => assert!(
+            msg.contains("LLVM slot type") && msg.contains("mismatched drop layout"),
+            "diagnostic must identify the slot/vtable layout mismatch; got: {msg}"
+        ),
+        other => panic!("expected FailClosed for a dyn coercion layout mismatch; got {other:?}"),
+    }
+}
+
 /// This test pins the surviving fail-closed gate from the
 /// fat-pointer type substrate: an `Instr::CoerceToDynTrait` whose
 /// `(trait_name, concrete_type, vtable_entries)` triple has no
@@ -8634,6 +9093,410 @@ fn coerce_to_dyn_trait_arm_fails_closed_when_vtable_registry_missing_entry() {
              the originating trait; got: {msg}"
     );
     drop(tmp);
+}
+
+fn frame_cleanup_string_descriptor(place: Place) -> ElabDrop {
+    ElabDrop {
+        place,
+        ty: ResolvedTy::String,
+        drop_fn: None,
+        kind: hew_mir::DropKind::CowHeap {
+            release: hew_mir::CowHeapRelease::String,
+        },
+        guard: None,
+    }
+}
+
+#[test]
+fn frame_cleanup_thunk_cache_reuses_only_an_exact_descriptor_and_slot_type() {
+    let ctx = Context::create();
+    let module = ctx.create_module("frame_cleanup_exact_reuse");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    alloc_local(&mut fn_ctx, 1, ResolvedTy::String);
+
+    let first = frame_cleanup_string_descriptor(Place::Local(0));
+    let (_, first_slot_ty) = place_pointer(&fn_ctx, first.place).expect("first string slot");
+    let thunk = get_or_emit_frame_cleanup_thunk(&fn_ctx, &first, first_slot_ty)
+        .expect("first exact descriptor must create a thunk");
+
+    // Place and guard are caller-frame facts, so a second string owner with
+    // the same ritual and the same LLVM slot type must reuse the exact cache
+    // entry rather than manufacture a duplicate function.
+    let second = frame_cleanup_string_descriptor(Place::Local(1));
+    let (_, second_slot_ty) = place_pointer(&fn_ctx, second.place).expect("second string slot");
+    let reused = get_or_emit_frame_cleanup_thunk(&fn_ctx, &second, second_slot_ty)
+        .expect("equal descriptor and slot type must reuse the thunk");
+    assert_eq!(
+        thunk, reused,
+        "equal cleanup descriptor + LLVM slot type must reuse exactly one thunk"
+    );
+    assert_eq!(harness.frame_cleanup_thunks.borrow().entries.len(), 1);
+
+    finish_test_fn(&fn_ctx);
+    module.verify().expect("exact-reuse module must verify");
+    let ir = module.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("define internal void @__hew_frame_cleanup_")
+            .count(),
+        1,
+        "the exact cache must synthesize one internal cleanup thunk:\n{ir}"
+    );
+}
+
+#[test]
+fn frame_cleanup_thunk_cache_rejects_descriptor_slot_type_drift() {
+    let ctx = Context::create();
+    let module = ctx.create_module("frame_cleanup_slot_drift");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    let descriptor = frame_cleanup_string_descriptor(Place::Local(0));
+    let (_, slot_ty) = place_pointer(&fn_ctx, descriptor.place).expect("string slot");
+    get_or_emit_frame_cleanup_thunk(&fn_ctx, &descriptor, slot_ty)
+        .expect("initial descriptor registration");
+
+    let err = get_or_emit_frame_cleanup_thunk(&fn_ctx, &descriptor, ctx.i64_type().into())
+        .expect_err("a descriptor must not be rebound to an i64 storage slot");
+    assert!(
+        matches!(err, CodegenError::FailClosed(ref message) if message.contains("slot-type drift")
+            && message.contains("ptr") && message.contains("i64")),
+        "slot drift must fail closed with both LLVM storage types: {err:?}"
+    );
+    assert_eq!(harness.frame_cleanup_thunks.borrow().entries.len(), 1);
+}
+
+#[test]
+fn frame_cleanup_thunk_cache_rejects_unregistered_generated_name_collision() {
+    let ctx = Context::create();
+    let module = ctx.create_module("frame_cleanup_name_collision");
+    let harness = build_harness(&ctx, &[], &[]);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    module.add_function(
+        "__hew_frame_cleanup_0",
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+
+    let descriptor = frame_cleanup_string_descriptor(Place::Local(0));
+    let (_, slot_ty) = place_pointer(&fn_ctx, descriptor.place).expect("string slot");
+    let err = get_or_emit_frame_cleanup_thunk(&fn_ctx, &descriptor, slot_ty)
+        .expect_err("an unregistered generated symbol must not be reused");
+    assert!(
+        matches!(err, CodegenError::FailClosed(ref message)
+            if message.contains("__hew_frame_cleanup_0") && message.contains("not registered")),
+        "generated-name collision must fail closed rather than borrowing a foreign function: {err:?}"
+    );
+    assert!(harness.frame_cleanup_thunks.borrow().entries.is_empty());
+}
+
+#[test]
+fn helper_crash_cleanup_write_set_admits_grounded_string_literal_owner() {
+    use hew_mir::{DropPlan, ElaboratedMirFunction, ExitPath, FunctionCallConv};
+
+    // `StringLit` is intentionally not named by codegen. MIR's exhaustive
+    // instruction write-set classifies its whole-slot destination, and the
+    // generic before/after lowering hooks must therefore admit it without a
+    // producer-specific whitelist entry.
+    let raw = RawMirFunction {
+        source_origin: SourceOrigin::Unknown,
+        name: "unsupported_string_literal_owner".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![ResolvedTy::String],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::StringLit {
+                bytes: b"owner".to_vec(),
+                dest: Place::Local(0),
+            }],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: vec![],
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    };
+    let elab = ElaboratedMirFunction {
+        name: raw.name.clone(),
+        return_ty: ResolvedTy::Unit,
+        statements: vec![],
+        decisions: vec![],
+        blocks: vec![],
+        drop_plans: vec![(
+            ExitPath::Return { block: 0 },
+            DropPlan {
+                drops: vec![frame_cleanup_string_descriptor(Place::Local(0))],
+            },
+        )],
+        coroutine: None,
+        lambda_captures: vec![],
+    };
+    let descriptors = collect_helper_crash_cleanup_descriptors(
+        &raw,
+        Some(&elab),
+        false,
+        &HashMap::new(),
+        &[],
+        &HashMap::new(),
+    )
+    .expect("the exhaustive instruction write-set must admit StringLit");
+    assert_eq!(
+        descriptors
+            .into_iter()
+            .map(|entry| entry.descriptor)
+            .collect::<Vec<_>>(),
+        [frame_cleanup_string_descriptor(Place::Local(0))]
+    );
+}
+
+#[test]
+fn helper_crash_cleanup_projection_owner_arms_only_after_exact_neutralize() {
+    use hew_mir::model::NeutralizeAuthority;
+
+    let owner = Place::Local(1);
+    let projected = Place::EnumVariant {
+        local: 0,
+        variant_idx: 0,
+        field_idx: 0,
+    };
+    let block = BasicBlock {
+        id: 0,
+        statements: vec![],
+        instructions: vec![
+            Instr::Move {
+                dest: owner,
+                src: projected,
+            },
+            Instr::ConstI64 {
+                dest: Place::Local(2),
+                value: 0,
+            },
+            Instr::NeutralizePayloadSlot {
+                place: projected,
+                transferee: Some(owner),
+                authority: NeutralizeAuthority::WholeCarrierConsume,
+            },
+        ],
+        terminator: Terminator::Return,
+    };
+
+    assert!(
+        helper_owner_arm_waits_for_projection_transfer(&block, 0, owner),
+        "the projected byte copy is still an alias"
+    );
+    assert!(
+        helper_owner_arm_waits_for_projection_transfer(&block, 1, owner),
+        "unrelated guard/publication writes cannot mint the alias"
+    );
+    assert!(
+        !helper_owner_arm_waits_for_projection_transfer(&block, 2, owner),
+        "the exact source neutralize transfers cleanup authority"
+    );
+
+    let mut borrowed_only = block.clone();
+    borrowed_only.instructions.pop();
+    assert!(
+        helper_owner_arm_waits_for_projection_transfer(&borrowed_only, 1, owner),
+        "an unneutralized match binder remains owned by its source carrier"
+    );
+}
+
+#[test]
+fn helper_crash_cleanup_terminator_admission_matches_hooked_lowering_tails() {
+    use hew_mir::{
+        DropPlan, ElaboratedMirFunction, ExitPath, FunctionCallConv, SelectArm, SelectArmKind,
+    };
+
+    let ctx = Context::create();
+    let module = ctx.create_module("crash_cleanup_terminator_admission");
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let real_value = module.add_function("real_owner", ptr_ty.fn_type(&[], false), None);
+    let symbols = HashMap::from([(
+        "real_owner".to_string(),
+        FnSymbol::Real {
+            value: real_value,
+            return_ty: ptr_ty.into(),
+            returns_unit: false,
+            extern_record_ret: None,
+            extern_malloc_string_ret: false,
+        },
+    )]);
+    let cases = [
+        (
+            "generic real-call common tail",
+            Terminator::Call {
+                callee: "real_owner".to_string(),
+                builtin: None,
+                args: vec![],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "Vec clone initialized tail",
+            Terminator::Call {
+                callee: "hew_vec_get_clone".to_string(),
+                builtin: None,
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "shared select winner tail",
+            Terminator::Select {
+                arms: vec![SelectArm {
+                    kind: SelectArmKind::TaskAwait {
+                        task: Place::Local(1),
+                    },
+                    body_block: 1,
+                    binding: Some(Place::Local(0)),
+                }],
+                next: 2,
+            },
+            None,
+            true,
+        ),
+        (
+            "join wait-all final publication",
+            Terminator::Join {
+                branches: vec![],
+                result: Place::Local(0),
+                next: 1,
+            },
+            None,
+            true,
+        ),
+        (
+            "collapsed TaskAwait ready destination",
+            Terminator::Suspend {
+                resume: 1,
+                cleanup: 2,
+                is_final: false,
+            },
+            Some(hew_mir::SuspendKind::TaskAwait {
+                scope: Place::Local(1),
+                task: Place::Local(2),
+                result_dest: Some(Place::Local(0)),
+            }),
+            true,
+        ),
+        (
+            "specialized call without a post-write hook",
+            Terminator::Call {
+                callee: "hew_bytes_get".to_string(),
+                builtin: None,
+                args: vec![Place::Local(1), Place::Local(2)],
+                dest: Some(Place::Local(0)),
+                next: 1,
+            },
+            None,
+            false,
+        ),
+        (
+            "generator construction without a lifecycle hook",
+            Terminator::MakeGenerator {
+                dest: Place::Local(0),
+                body_fn: "__test_generator".to_string(),
+                next: 1,
+                env: None,
+            },
+            None,
+            false,
+        ),
+    ];
+
+    for (label, terminator, suspend_kind, admitted) in cases {
+        let raw = RawMirFunction {
+            source_origin: SourceOrigin::Unknown,
+            name: format!("terminator_{label}"),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ResolvedTy::String],
+            local_names: vec![],
+            local_scopes: vec![],
+            local_decl_bytes: vec![],
+            scope_table: vec![],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator,
+            }],
+            decisions: vec![],
+            intrinsic_id: None,
+            await_deadline_ns: HashMap::new(),
+            suspend_kinds: suspend_kind
+                .map(|kind| HashMap::from([(0, kind)]))
+                .unwrap_or_default(),
+            lambda_actor_user_param_locals: vec![],
+            span: None,
+            instr_spans: std::collections::BTreeMap::new(),
+        };
+        let descriptor = frame_cleanup_string_descriptor(Place::Local(0));
+        let elab = ElaboratedMirFunction {
+            name: raw.name.clone(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: vec![],
+            drop_plans: vec![(
+                ExitPath::Return { block: 0 },
+                DropPlan {
+                    drops: vec![descriptor.clone()],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let result = collect_helper_crash_cleanup_descriptors(
+            &raw,
+            Some(&elab),
+            false,
+            &HashMap::new(),
+            &[],
+            &symbols,
+        );
+        if admitted {
+            assert_eq!(
+                result
+                    .unwrap_or_else(|error| panic!("{label} must be admitted: {error:?}"))
+                    .into_iter()
+                    .map(|entry| entry.descriptor)
+                    .collect::<Vec<_>>(),
+                [descriptor],
+                "{label}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(CodegenError::FailClosed(ref message))
+                        if message.contains("has no lifecycle hook")
+                ),
+                "{label} must remain fail-closed until its real initialized edge \
+                 gains matching deactivate/arm hooks: {result:?}"
+            );
+        }
+    }
 }
 
 // -----------------------------------------------------------------
@@ -9566,9 +10429,9 @@ fn actor_using_main_emits_drain_epilogue() {
         "actor-using main must emit the shared native runtime cleanup tail:\n{ir}"
     );
     assert!(
-            !ir.contains("call void @hew_sched_shutdown"),
-            "ordinary actor main must rely on graceful shutdown, not the immediate supervisor path:\n{ir}"
-        );
+        !ir.contains("call void @hew_sched_shutdown"),
+        "ordinary actor main must rely on graceful shutdown, not the immediate supervisor path:\n{ir}"
+    );
 }
 
 /// For a wasm32 actor-using program, the `main` function's IR must contain
@@ -9684,10 +10547,9 @@ fn connection_actor_state_clone_returns_null() {
         .unwrap_or_else(|e| panic!("Connection actor-state clone module failed verify: {e}"));
     let ir = module.print_to_string().to_string();
     assert!(
-            ir.contains("define ptr @__hew_state_clone_ConnActor(ptr")
-                && ir.contains("ret ptr null"),
-            "Connection actor state clone body must reset the restart template by returning null:\n{ir}"
-        );
+        ir.contains("define ptr @__hew_state_clone_ConnActor(ptr") && ir.contains("ret ptr null"),
+        "Connection actor state clone body must reset the restart template by returning null:\n{ir}"
+    );
 }
 
 fn crash_state_probe_fn(source_origin: SourceOrigin) -> RawMirFunction {
@@ -10511,7 +11373,7 @@ fn suspending_call_closure_drops(pipeline: &IrPipeline) -> Vec<&hew_mir::ElabDro
 }
 
 #[test]
-fn resumed_root_owners_register_typed_slots_and_never_enter_fresh_ledger() {
+fn resumed_root_owners_register_typed_slots() {
     let pipeline = pipeline_from_resumed_root_owner_source();
     let drops = suspending_call_closure_drops(&pipeline);
     assert_eq!(
@@ -10526,37 +11388,14 @@ fn resumed_root_owners_register_typed_slots_and_never_enter_fresh_ledger() {
         ],
         "the handler/root Suspend plan must carry both unrelated owners in LIFO order"
     );
-    let fresh_count = pipeline
-        .raw_mir
-        .iter()
-        .flat_map(|raw| raw.suspend_kinds.values())
-        .filter_map(|kind| match kind {
-            hew_mir::SuspendKind::CallClosure {
-                fresh_string_args, ..
-            } => Some(fresh_string_args.len()),
-            _ => None,
-        })
-        .sum::<usize>();
-    assert_eq!(
-        fresh_count, 0,
-        "unrelated root owners must not be misclassified as child arguments"
-    );
-
     let ctx = Context::create();
     let module =
         build_module(&ctx, &pipeline, "resumed_root_owner_cleanup").expect("root owner module");
     let ir = module.print_to_string().to_string();
     assert_eq!(
-        ir.matches("call i1 @hew_context_reply_channel_swap_add_frame_cleanup")
-            .count(),
-        4,
-        "two root owners must register for both initial ramp and later resume"
-    );
-    assert_eq!(
-        ir.matches("call void @hew_context_reply_channel_swap_add_string_cleanup")
-            .count(),
-        0,
-        "root string is slot-owned, not a fresh-argument value-ledger entry"
+        ir.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
+        2,
+        "two root owners must each acquire one lifecycle token"
     );
     assert_eq!(
         ir.matches("define internal void @__hew_frame_cleanup_")
@@ -10625,10 +11464,9 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
             .unwrap_or_else(|error| panic!("{label}: module build failed: {error:?}"));
         let ir = module.print_to_string().to_string();
         assert_eq!(
-            ir.matches("call i1 @hew_context_reply_channel_swap_add_frame_cleanup")
-                .count(),
-            expected_kinds.len() * 2,
-            "{label}: every owner must register around initial ramp and resume:\n{ir}"
+            ir.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
+            expected_kinds.len(),
+            "{label}: every owner must acquire one lifecycle token:\n{ir}"
         );
         assert_eq!(
             ir.matches("define internal void @__hew_frame_cleanup_")
@@ -10661,8 +11499,7 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
 #[test]
 fn suspending_closure_fresh_string_has_exactly_one_crash_cleanup_authority() {
     let pipeline = pipeline_from_fresh_string_suspending_closure_source();
-    let mut fresh_count = 0;
-    let mut exact_suspend_plan_overlap = 0;
+    let mut exact_suspend_string_drops = 0;
     for raw in &pipeline.raw_mir {
         let Some(elab) = pipeline
             .elaborated_mir
@@ -10672,13 +11509,12 @@ fn suspending_closure_fresh_string_has_exactly_one_crash_cleanup_authority() {
             continue;
         };
         for block in &raw.blocks {
-            let Some(hew_mir::SuspendKind::CallClosure {
-                fresh_string_args, ..
-            }) = raw.suspend_kinds.get(&block.id)
-            else {
+            if !matches!(
+                raw.suspend_kinds.get(&block.id),
+                Some(hew_mir::SuspendKind::CallClosure { .. })
+            ) {
                 continue;
-            };
-            fresh_count += fresh_string_args.len();
+            }
             let plan = elab.drop_plans.iter().find_map(|(exit, plan)| {
                 matches!(
                     exit,
@@ -10690,23 +11526,26 @@ fn suspending_closure_fresh_string_has_exactly_one_crash_cleanup_authority() {
                 .then_some(plan)
             });
             if let Some(plan) = plan {
-                exact_suspend_plan_overlap += plan
+                exact_suspend_string_drops += plan
                     .drops
                     .iter()
-                    .filter(|drop| fresh_string_args.contains(&drop.place))
+                    .filter(|drop| {
+                        drop.ty == hew_types::ResolvedTy::String
+                            && matches!(
+                                drop.kind,
+                                hew_mir::DropKind::CowHeap {
+                                    release: hew_mir::CowHeapRelease::String
+                                }
+                            )
+                    })
                     .count();
             }
         }
     }
     assert_eq!(
-        fresh_count, 1,
-        "fixture must carry one fresh string argument"
-    );
-    assert_eq!(
-        exact_suspend_plan_overlap, 1,
-        "the grounded MIR currently carries the same exact Place in both the \
-         fresh-argument ledger and Suspend plan; codegen must collapse these to \
-         the value ledger's single authority"
+        exact_suspend_string_drops, 1,
+        "the grounded MIR Suspend plan must carry the fresh string's single \
+         typed cleanup obligation"
     );
 
     let ctx = Context::create();
@@ -10714,16 +11553,9 @@ fn suspending_closure_fresh_string_has_exactly_one_crash_cleanup_authority() {
         .expect("fresh-string cleanup module");
     let ir = module.print_to_string().to_string();
     assert_eq!(
-        ir.matches("call void @hew_context_reply_channel_swap_add_string_cleanup")
-            .count(),
-        2,
-        "one value-ledger registration must bracket initial ramp and resume"
-    );
-    assert_eq!(
-        ir.matches("call i1 @hew_context_reply_channel_swap_add_frame_cleanup")
-            .count(),
-        0,
-        "fresh-only argument ownership must not acquire a second typed-slot authority"
+        ir.matches("call i64 @hew_cont_crash_cleanup_arm").count(),
+        1,
+        "the fresh string's Real-call destination must acquire one typed-slot authority"
     );
 }
 
@@ -10747,12 +11579,11 @@ fn suspending_closure_frame_cleanup_uses_exact_suspend_drop_plans() {
     let captured_module =
         build_module(&ctx, &captured, "captured_frame_cleanup").expect("captured module");
     let captured_ir = captured_module.print_to_string().to_string();
-    let registration = "call i1 @hew_context_reply_channel_swap_add_frame_cleanup";
+    let arm = "call i64 @hew_cont_crash_cleanup_arm";
     assert_eq!(
-        captured_ir.matches(registration).count(),
-        6,
-        "each of three obligations must register around both initial ramp and resume:\n\
-         {captured_ir}"
+        captured_ir.matches(arm).count(),
+        3,
+        "each of three obligations must acquire one lifecycle token:\n{captured_ir}"
     );
     assert_eq!(
         captured_ir
@@ -10774,8 +11605,665 @@ fn suspending_closure_frame_cleanup_uses_exact_suspend_drop_plans() {
     let free_module =
         build_module(&ctx, &capture_free, "capture_free_frame_cleanup").expect("free module");
     let free_ir = free_module.print_to_string().to_string();
-    assert_eq!(free_ir.matches(registration).count(), 0);
+    assert_eq!(free_ir.matches(arm).count(), 0);
     assert!(!free_ir.contains("define internal void @__hew_frame_cleanup_"));
+}
+
+fn assert_helper_snapshot_cleanup_arm_for_triple(triple: &str) {
+    use hew_mir::{CowHeapRelease, DropKind};
+
+    let ctx = Context::create();
+    let machine = target_machine_for_triple(triple)
+        .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+    let target_data = machine.get_target_data();
+    let expected_size = target_data.get_store_size(&ctx.ptr_type(AddressSpace::default()));
+    let expected_align =
+        u64::from(target_data.get_abi_alignment(&ctx.ptr_type(AddressSpace::default())));
+    let module = ctx.create_module("helper_snapshot_cleanup_arm");
+    module.set_triple(&TargetTriple::create(triple));
+    module.set_data_layout(&target_data.get_data_layout());
+    let harness = build_harness_with_target_data(&ctx, &[], &[], target_data);
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "ordinary_helper");
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    let descriptor = ElabDrop {
+        place: Place::Local(0),
+        ty: ResolvedTy::String,
+        drop_fn: None,
+        kind: DropKind::CowHeap {
+            release: CowHeapRelease::String,
+        },
+        guard: None,
+    };
+    let (slot, slot_ty) = place_pointer(&fn_ctx, descriptor.place).expect("helper string slot");
+    let thunk = get_or_emit_frame_cleanup_thunk(&fn_ctx, &descriptor, slot_ty)
+        .expect("helper cleanup thunk");
+
+    let frame_interior_error = emit_crash_cleanup_arm(
+        &fn_ctx,
+        ctx.i64_type().const_zero(),
+        slot,
+        slot_ty,
+        thunk,
+        CrashCleanupStorage::Snapshot,
+        1,
+    )
+    .expect_err("a helper snapshot must reject frame-interior relocation");
+    assert!(
+        matches!(
+            frame_interior_error,
+            CodegenError::FailClosed(ref message)
+                if message.contains("frame-owned trait object")
+        ),
+        "{triple}: helper FrameOwned refusal must name the unsupported ownership: \
+         {frame_interior_error:?}"
+    );
+
+    emit_crash_cleanup_arm(
+        &fn_ctx,
+        ctx.i64_type().const_zero(),
+        slot,
+        slot_ty,
+        thunk,
+        CrashCleanupStorage::Snapshot,
+        0,
+    )
+    .expect("bitwise helper snapshot arm");
+    finish_test_fn(&fn_ctx);
+    module
+        .verify()
+        .unwrap_or_else(|error| panic!("{triple}: helper snapshot module verify: {error}"));
+    let ir = module.print_to_string().to_string();
+    let arm_lines = ir
+        .lines()
+        .filter(|line| line.contains("call i64 @hew_cont_crash_cleanup_arm"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        arm_lines.len(),
+        1,
+        "{triple}: helper must emit exactly one accepted snapshot arm:\n{ir}"
+    );
+    let arm = arm_lines[0];
+    assert!(
+        arm.contains(&format!(
+            "i64 0, ptr %local_0, i64 {expected_size}, i64 {expected_align}, ptr @__hew_frame_cleanup_"
+        )) && arm.contains(", i32 1, i32 0)"),
+        "{triple}: helper arm must use the stack alloca, target ABI size/alignment, \
+         SNAPSHOT storage, and bitwise relocation:\n{arm}"
+    );
+    assert!(
+        ir.contains(&format!("%local_0 = alloca ptr, align {expected_align}")),
+        "{triple}: helper proof must originate at an ordinary stack slot:\n{ir}"
+    );
+}
+
+#[test]
+fn helper_snapshot_cleanup_arm_is_target_correct_native_and_wasm32() {
+    assert_helper_snapshot_cleanup_arm_for_triple(&native_emission_triple());
+    assert_helper_snapshot_cleanup_arm_for_triple("wasm32-wasi");
+}
+
+fn pipeline_from_helper_snapshot_raw_trap_source() -> IrPipeline {
+    let source = r#"
+record Bundle { text: string, data: bytes }
+#[resource] type Witness { fd: i64 }
+impl Witness { fn close(self) { println("closed"); } }
+fn make_nested(label: string) -> fn() -> i64 { || label.len() }
+fn helper_trap() -> i64 {
+    let text = "helper-string".to_upper();
+    let data = "helper-bytes".to_bytes();
+    let bundle = Bundle {
+        text: "helper-record".to_upper(),
+        data: "helper-record-bytes".to_bytes(),
+    };
+    let witness = Witness { fd: 7 };
+    let nested = make_nested("helper-nested".to_upper());
+    let table = HashMap::new<string, i64>();
+    text.len() + data.len() + bundle.text.len() + bundle.data.len()
+        + witness.fd + nested() + table["missing"]
+}
+actor Gate { receive fn tick() -> i64 { 1 } }
+actor Runner {
+    let gate: LocalPid<Gate>;
+    receive fn run() -> i64 {
+        let _ = await gate.tick();
+        helper_trap()
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let _ = await runner.run();
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "helper snapshot source parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "helper snapshot pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+#[test]
+fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
+    let pipeline = pipeline_from_helper_snapshot_raw_trap_source();
+    let helper_elab = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "helper_trap")
+        .expect("helper_trap elaborated MIR");
+    let mut owner_locals = helper_elab
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .filter_map(|drop| match drop.place {
+            Place::Local(local) => Some(local),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    owner_locals.sort_unstable();
+    owner_locals.dedup();
+    assert_eq!(
+        owner_locals,
+        [2, 5, 11, 14, 17, 19, 21],
+        "grounded helper owner topology drifted"
+    );
+
+    for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "ordinary_helper_snapshot_lifecycle",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: helper lifecycle build: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: helper lifecycle verify: {error}"));
+        let helper = module
+            .get_function("helper_trap")
+            .expect("helper_trap LLVM function")
+            .print_to_string()
+            .to_string();
+        assert_eq!(
+            helper
+                .lines()
+                .filter(|line| {
+                    line.contains("%helper_crash_cleanup_token_") && line.contains(" = alloca i64")
+                })
+                .count(),
+            7,
+            "{triple}: every exact owner needs one stable token alloca:\n{helper}"
+        );
+        let arms = helper
+            .lines()
+            .filter(|line| line.contains("call i64 @hew_cont_crash_cleanup_arm"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arms.len(),
+            7,
+            "{triple}: every grounded Move/Call owner must arm once:\n{helper}"
+        );
+        assert!(
+            arms.iter().all(|line| line.contains(", i32 1, i32 0)")),
+            "{triple}: every helper owner must use SNAPSHOT+bitwise relocation:\n{arms:#?}"
+        );
+        assert_eq!(
+            helper
+                .matches("call i1 @hew_cont_crash_cleanup_deactivate")
+                .count(),
+            7,
+            "{triple}: every destination write must gate stale authority before replacement"
+        );
+        assert!(
+            helper.contains("helper_crash_cleanup_retire")
+                && helper.contains("helper_crash_cleanup_return_retire")
+                && helper.contains("helper_crash_cleanup_return_drop")
+                && !helper.contains("helper_crash_cleanup_return_active_trap"),
+            "{triple}: normal drops and the return sweep must both retire lexical tokens:\n\
+             {helper}"
+        );
+    }
+}
+
+fn pipeline_from_helper_owner_transfer_source() -> IrPipeline {
+    let source = r#"
+fn helper_transfer() -> i64 {
+    let source = "transfer-owner".to_upper();
+    if source.len() == -1 { panic("keep source live before transfer"); }
+    let destination = source;
+    destination.len()
+}
+fn main() { println(helper_transfer()); }
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "transfer pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+#[test]
+fn helper_owner_move_deactivates_source_and_retires_stale_token() {
+    let pipeline = pipeline_from_helper_owner_transfer_source();
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "helper_transfer")
+        .expect("helper_transfer raw MIR");
+    let elab = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "helper_transfer")
+        .expect("helper_transfer elaborated MIR");
+    let owner_places = elab
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .map(|drop| drop.place)
+        .collect::<HashSet<_>>();
+    let transfer = raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find_map(|instr| match instr {
+            Instr::Move { dest, src }
+                if owner_places.contains(dest) && owner_places.contains(src) =>
+            {
+                Some((*src, *dest))
+            }
+            _ => None,
+        })
+        .expect("source-owner to destination-owner Move");
+    assert_ne!(transfer.0, transfer.1);
+
+    let ctx = Context::create();
+    let module =
+        build_module(&ctx, &pipeline, "helper_owner_transfer").expect("transfer module build");
+    module.verify().expect("transfer module verify");
+    let helper = module
+        .get_function("helper_transfer")
+        .expect("helper_transfer LLVM function")
+        .print_to_string()
+        .to_string();
+    assert!(
+        helper
+            .matches("call i1 @hew_cont_crash_cleanup_deactivate")
+            .count()
+            >= 3,
+        "initial destination gates plus the owner-to-owner Move must deactivate \
+         both destination and source:\n{helper}"
+    );
+    assert_eq!(
+        helper
+            .lines()
+            .filter(|line| line.contains("call i64 @hew_cont_crash_cleanup_arm"))
+            .count(),
+        2,
+        "source and destination must each acquire their own lexical snapshot token"
+    );
+    let Place::Local(source_local) = transfer.0 else {
+        panic!("transfer source must be a local")
+    };
+    assert!(
+        helper.contains(&format!(
+            "helper_crash_cleanup_return_retire_{source_local}_call"
+        )),
+        "normal return must retire the inactive source token left by transfer:\n{helper}"
+    );
+}
+
+fn pipeline_from_helper_projection_snapshot_transfer_source() -> IrPipeline {
+    let source = r#"
+#[opaque]
+type RawWitness {}
+#[resource]
+type Witness { handle: RawWitness }
+impl Witness {
+    fn close(self) {
+        unsafe { hew_xml_free(self.handle); }
+    }
+}
+extern "C" {
+    fn hew_xml_parse(source: string) -> RawWitness;
+    fn hew_xml_free(handle: RawWitness);
+}
+enum Pair { Both(Witness, string); Nothing; }
+fn consume(p: Pair, trigger: i64) -> i64 {
+    match p {
+        Pair::Both(witness, text) => {
+            witness.close();
+            if trigger != 0 { panic("crash after explicit close"); }
+            text.len()
+        },
+        Pair::Nothing => 0,
+    }
+}
+actor Gate { receive fn tick() -> i64 { 1 } }
+actor Runner {
+    let gate: LocalPid<Gate>;
+    receive fn run(trigger: i64) -> i64 {
+        let seed = match await gate.tick() {
+            Ok(value) => value,
+            Err(_) => 0,
+        };
+        let pair = Pair::Both(
+            Witness {
+                handle: unsafe { hew_xml_parse("<x/>") },
+            },
+            "helper-projection".to_upper(),
+        );
+        consume(pair, trigger) + seed
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let _ = await runner.run(0);
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "projection snapshot source parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "projection snapshot pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+#[test]
+fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32() {
+    let pipeline = pipeline_from_helper_projection_snapshot_transfer_source();
+    let consume_raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "consume")
+        .expect("consume raw MIR");
+    assert!(
+        consume_raw
+            .blocks
+            .iter()
+            .flat_map(|block| &block.instructions)
+            .any(|instr| matches!(
+                instr,
+                Instr::NeutralizePayloadSlot { .. } | Instr::AggregateProjectionNeutralize { .. }
+            )),
+        "the source must retain a projection-neutralize ownership handoff: {consume_raw:#?}"
+    );
+    let consume_elab = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "consume")
+        .expect("consume elaborated MIR");
+    assert!(
+        consume_elab
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .any(|drop| drop.place == Place::Local(0)),
+        "the source parameter must retain a typed cleanup descriptor: {consume_elab:#?}"
+    );
+
+    for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "helper_projection_snapshot_transfer",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: projection snapshot build: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: projection snapshot verify: {error}"));
+        let helper = module
+            .get_function("consume")
+            .expect("consume LLVM function")
+            .print_to_string()
+            .to_string();
+
+        let deactivate = helper
+            .find("call i1 @hew_cont_crash_cleanup_deactivate")
+            .unwrap_or_else(|| panic!("{triple}: missing source snapshot deactivate:\n{helper}"));
+        let neutralize = helper
+            .find("store %Witness zeroinitializer")
+            .unwrap_or_else(|| panic!("{triple}: missing projected payload neutralize:\n{helper}"));
+        let refresh = helper[neutralize..]
+            .find("call i64 @hew_cont_crash_cleanup_arm")
+            .map(|offset| neutralize + offset)
+            .unwrap_or_else(|| panic!("{triple}: missing refreshed source snapshot:\n{helper}"));
+        let close = helper
+            .find("call i8 @\"Witness::close\"")
+            .unwrap_or_else(|| panic!("{triple}: missing transferred owner close:\n{helper}"));
+
+        assert!(
+            deactivate < neutralize && neutralize < refresh && refresh < close,
+            "{triple}: source authority must deactivate, neutralize, and refresh before \
+             the transferred owner can close:\n{helper}"
+        );
+        assert!(
+            helper[refresh..close].contains(", i32 1, i32 0)"),
+            "{triple}: refreshed source owner must remain a Snapshot escrow:\n{helper}"
+        );
+        assert!(
+            helper.contains("helper_crash_cleanup_return_drop")
+                && helper.contains("@hew_panic_msg")
+                && helper.contains("cancel_exit")
+                && helper.contains("helper_crash_cleanup_retire"),
+            "{triple}: the same helper must retain normal-return, crash, and \
+             cancellation cleanup paths:\n{helper}"
+        );
+    }
+}
+
+fn pipeline_from_helper_bytes_mutation_source() -> IrPipeline {
+    let source = r#"
+fn clear_then_maybe_crash(trigger: i64) -> i64 {
+    let value: bytes = "owned-bytes".to_bytes();
+    value.clear();
+    if trigger != 0 {
+        panic("crash after bytes.clear");
+    }
+    value.len()
+}
+actor Gate { receive fn tick() -> i64 { 1 } }
+actor Runner {
+    let gate: LocalPid<Gate>;
+    receive fn run(trigger: i64) -> i64 {
+        let seed = match await gate.tick() {
+            Ok(value) => value,
+            Err(_) => 0,
+        };
+        clear_then_maybe_crash(trigger) + seed
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let _ = await runner.run(0);
+}
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "bytes snapshot source parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+    let checked = checker.check_program(&parsed.program);
+    let output = hew_hir::lower_program(
+        &parsed.program,
+        &checked,
+        &hew_hir::ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let mut pipeline = hew_mir::lower_hir_module(&output.module);
+    pipeline.attach_lowering_facts(&checked);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "bytes snapshot pipeline diagnostics: {:#?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+#[test]
+fn helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32() {
+    let pipeline = pipeline_from_helper_bytes_mutation_source();
+    let helper_raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "clear_then_maybe_crash")
+        .expect("bytes helper raw MIR");
+    let clear = helper_raw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .find(|instr| {
+            matches!(
+                instr,
+                Instr::CallRuntimeAbi(call)
+                    if call.family()
+                        == hew_types::runtime_call::RuntimeCallFamily::BytesClear
+            )
+        })
+        .expect("bytes helper must call the typed clear family");
+    let Instr::CallRuntimeAbi(clear_call) = clear else {
+        unreachable!("filtered to CallRuntimeAbi above")
+    };
+    let receiver = *clear_call
+        .args()
+        .first()
+        .expect("bytes clear has one receiver");
+    assert_eq!(
+        hew_mir::dataflow::instr_interior_write_places(clear),
+        vec![receiver],
+        "the owned bytes local is the in-place runtime mutation authority"
+    );
+    let helper_elab = pipeline
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "clear_then_maybe_crash")
+        .expect("bytes helper elaborated MIR");
+    assert!(
+        helper_elab
+            .drop_plans
+            .iter()
+            .flat_map(|(_, plan)| &plan.drops)
+            .any(|drop| drop.place == receiver),
+        "the owned bytes local must retain a typed cleanup descriptor: {helper_elab:#?}"
+    );
+
+    for triple in [native_emission_triple(), "wasm32-wasi".to_string()] {
+        let ctx = Context::create();
+        let machine = target_machine_for_triple(&triple)
+            .unwrap_or_else(|error| panic!("target machine for {triple}: {error:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "helper_bytes_snapshot_mutation",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{triple}: bytes snapshot build: {error:?}"));
+        module
+            .verify()
+            .unwrap_or_else(|error| panic!("{triple}: bytes snapshot verify: {error}"));
+        let helper = module
+            .get_function("clear_then_maybe_crash")
+            .expect("bytes helper LLVM function")
+            .print_to_string()
+            .to_string();
+
+        let clear = helper
+            .find("call void @hew_bytes_clear")
+            .unwrap_or_else(|| panic!("{triple}: missing bytes clear call:\n{helper}"));
+        let deactivate = helper[..clear]
+            .rfind("call i1 @hew_cont_crash_cleanup_deactivate")
+            .unwrap_or_else(|| {
+                panic!("{triple}: missing snapshot deactivate before bytes clear:\n{helper}")
+            });
+        let refresh = helper[clear..]
+            .find("call i64 @hew_cont_crash_cleanup_arm")
+            .map(|offset| clear + offset)
+            .unwrap_or_else(|| {
+                panic!("{triple}: missing snapshot refresh after bytes clear:\n{helper}")
+            });
+        assert!(
+            deactivate < clear && clear < refresh,
+            "{triple}: bytes snapshot must deactivate before the runtime mutation \
+             and refresh afterward:\n{helper}"
+        );
+        assert!(
+            helper[refresh..].contains(", i32 1, i32 0)"),
+            "{triple}: refreshed bytes owner must remain a Snapshot escrow:\n{helper}"
+        );
+        assert!(
+            helper.contains("@hew_panic_msg")
+                && helper.contains("helper_crash_cleanup_return_drop")
+                && helper.contains("helper_crash_cleanup_retire")
+                && helper.contains("cancel_exit"),
+            "{triple}: normal return, crash, and cancellation cleanup must remain present:\n{helper}"
+        );
+    }
 }
 
 fn assert_suspending_closure_frame_cleanup_splits_for_triple(triple: &str) {
@@ -10806,12 +12294,12 @@ fn assert_suspending_closure_frame_cleanup_splits_for_triple(triple: &str) {
         .verify()
         .unwrap_or_else(|error| panic!("{triple}: post-CoroSplit verify: {error}"));
     let ir = module.print_to_string().to_string();
-    let registration = "call i1 @hew_context_reply_channel_swap_add_frame_cleanup";
+    let arm = "call i64 @hew_cont_crash_cleanup_arm";
     assert_eq!(
-        ir.matches(registration).count(),
-        12,
-        "{triple}: three callers must retain one initial-ramp registration plus \
-         CoroSplit's resume registration in each resume/destroy/cleanup outline:\n{ir}"
+        ir.matches(arm).count(),
+        3,
+        "{triple}: three callers must each retain one lifecycle arm after \
+         CoroSplit:\n{ir}"
     );
     assert_eq!(
         ir.matches("define internal void @__hew_frame_cleanup_")
@@ -10820,38 +12308,41 @@ fn assert_suspending_closure_frame_cleanup_splits_for_triple(triple: &str) {
         "{triple}: equal string drop descriptors must retain one cached typed thunk"
     );
     let expected_slot_size = u64::from(machine.get_target_data().get_pointer_byte_size(None));
+    let expected_slot_align = expected_slot_size;
     assert_eq!(
         ir.lines()
             .filter(|line| {
-                line.contains(registration)
-                    && line.contains(&format!(", i64 {expected_slot_size}, ptr "))
+                line.contains(arm)
+                    && line.contains(&format!(
+                        "i64 {expected_slot_size}, i64 {expected_slot_align}, ptr @__hew_frame_cleanup_"
+                    ))
+                    && line.contains(", i32 0, i32 0)")
             })
             .count(),
-        12,
-        "{triple}: every registration must carry the target's string-slot width \
-         widened into the runtime's target-neutral i64 ABI"
+        3,
+        "{triple}: every direct-frame arm must carry the target's string-slot \
+         width/alignment plus bitwise relocation in the target-neutral ABI:\n{ir}"
     );
-    let mut registration_functions = 0;
+    let mut arm_functions = 0;
     for function in module.get_functions() {
         let name = function.get_name().to_string_lossy();
         if function.count_basic_blocks() == 0 || name.starts_with("__hew_frame_cleanup_") {
             continue;
         }
         let body = function.print_to_string().to_string();
-        if body.contains("call i1 @hew_context_reply_channel_swap_add_frame_cleanup") {
-            registration_functions += 1;
+        if body.contains(arm) {
+            arm_functions += 1;
             assert!(
                 body.contains("getelementptr inbounds")
                     && (body.contains("Frame") || body.contains(".resume")),
-                "{triple}: registration slot must be derived from the split coroutine \
+                "{triple}: direct arm slot must be derived from the split coroutine \
                  frame, not an unrelated allocation:\n{body}"
             );
         }
     }
     assert_eq!(
-        registration_functions, 12,
-        "{triple}: initial ramp plus the three CoroSplit outlines for each of \
-         three callers must each retain a frame-derived registration:\n{ir}"
+        arm_functions, 3,
+        "{triple}: each caller must retain one frame-derived lifecycle arm:\n{ir}"
     );
 }
 
@@ -12318,9 +13809,9 @@ fn assert_suspending_ask_splits_clean_for_triple(triple: &str) {
     // the shared coro cleanup (S2 — without it `ch` leaks on abandon).
     let ir_pre = module.print_to_string().to_string();
     assert!(
-            ir_pre.contains("suspending_ask_abandon_cleanup:"),
-            "{triple}: the SuspendingAsk destroy edge must route through the abandon-cleanup block:\n{ir_pre}"
-        );
+        ir_pre.contains("suspending_ask_abandon_cleanup:"),
+        "{triple}: the SuspendingAsk destroy edge must route through the abandon-cleanup block:\n{ir_pre}"
+    );
     assert!(
         ir_pre.contains("call void @hew_reply_channel_cancel(ptr %suspending_ask_ch)")
             && ir_pre.contains("call void @hew_reply_channel_free(ptr %suspending_ask_ch)"),
@@ -12331,13 +13822,13 @@ fn assert_suspending_ask_splits_clean_for_triple(triple: &str) {
     // binds AskError::OrphanedAsk (= 11) when set, instead of the TLS
     // last-error slot — matching the blocking-ask path's error semantics.
     assert!(
-            ir_pre.contains("call i32 @hew_reply_channel_is_orphaned(ptr %suspending_ask_ch)"),
-            "{triple}: the SuspendingAsk null-reply edge must read the channel orphaned flag:\n{ir_pre}"
-        );
+        ir_pre.contains("call i32 @hew_reply_channel_is_orphaned(ptr %suspending_ask_ch)"),
+        "{triple}: the SuspendingAsk null-reply edge must read the channel orphaned flag:\n{ir_pre}"
+    );
     assert!(
-            ir_pre.contains("select i1 %suspending_ask_orphaned_flag, i32 11,"),
-            "{triple}: a null reply on an orphaned channel must bind AskError::OrphanedAsk (11):\n{ir_pre}"
-        );
+        ir_pre.contains("select i1 %suspending_ask_orphaned_flag, i32 11,"),
+        "{triple}: a null reply on an orphaned channel must bind AskError::OrphanedAsk (11):\n{ir_pre}"
+    );
 
     // Keep the awaiting ramp externally visible so CoroSplit's CGSCC walk
     // processes it (same probe-reachability handling as the sibling tests).

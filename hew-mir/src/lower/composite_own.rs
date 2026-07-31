@@ -533,7 +533,7 @@ pub(super) fn apply_escaped_record_sibling_field_drops(
                             )
                         }) => {}
                 other => {
-                    let (reads, writes) = crate::dataflow::instr_reads_writes(other);
+                    let (reads, writes, _) = crate::dataflow::instr_reads_writes(other);
                     for p in reads {
                         if aggregate_borrowed_ingress_sink_clones_source(
                             block,
@@ -946,7 +946,7 @@ fn compute_escaped_chain_sibling_drops(
                             )
                         }) => {}
                 other => {
-                    let (reads, _) = crate::dataflow::instr_reads_writes(other);
+                    let (reads, _, _) = crate::dataflow::instr_reads_writes(other);
                     for place in reads {
                         if aggregate_borrowed_ingress_sink_clones_source(
                             block,
@@ -3613,7 +3613,7 @@ fn single_dominating_local_generation(
 }
 
 fn instr_references_local(instr: &Instr, local: u32) -> bool {
-    let (reads, writes) = crate::dataflow::instr_reads_writes(instr);
+    let (reads, writes, _) = crate::dataflow::instr_reads_writes(instr);
     reads
         .into_iter()
         .chain(writes)

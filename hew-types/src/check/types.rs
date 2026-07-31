@@ -153,6 +153,14 @@ pub(super) struct SourceExternDeclaration {
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
+    /// Declaration spans of non-receiver parameters whose resolved type has
+    /// at least one checker-proven projection into storage shared with the
+    /// caller.
+    ///
+    /// This is a positive capability fact, not a method-name allowlist. MIR
+    /// combines it with an actual representation-replacing write before
+    /// granting a representation loan; absence always fails closed.
+    pub caller_visible_param_projections: HashSet<SpanKey>,
     /// W4.047 P1.1 — the **typed** checker→HIR handoff side-table.
     ///
     /// Carries the post-substitution, post-literal-defaulting [`ResolvedTy`]
@@ -1152,6 +1160,7 @@ impl Default for TypeCheckOutput {
     fn default() -> Self {
         Self {
             expr_types: HashMap::new(),
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
@@ -2483,6 +2492,9 @@ pub struct Checker {
     /// Checker-side accumulator for [`TypeCheckOutput::user_clone_record_seeds`].
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    /// Checker-side accumulator for
+    /// [`TypeCheckOutput::caller_visible_param_projections`].
+    pub(super) caller_visible_param_projections: HashSet<SpanKey>,
     pub(super) is_type_patterns: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
@@ -3380,6 +3392,7 @@ impl Checker {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
+            caller_visible_param_projections: HashSet::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),

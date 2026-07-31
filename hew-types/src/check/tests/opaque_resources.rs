@@ -39,6 +39,10 @@ fn tcp_like_owned_results_join_one_qualified_lifecycle() {
             .map(str::to_string)
             .collect()
     );
+    assert_eq!(
+        candidate.producer_modules,
+        ["std.net"].into_iter().map(str::to_string).collect()
+    );
     assert!(
         output.opaque_resource_candidates.conflicts.is_empty(),
         "{:#?}",
@@ -213,6 +217,317 @@ fn checker_with_registered_module(source: &str, module_path: &[&str]) -> Checker
     checker.type_decls_registered = true;
     checker.collect_functions(&program);
     checker
+}
+
+fn checker_with_resolved_module_graph(sources: &[(&[&str], &str)]) -> Checker {
+    let root_id = ModuleId::root();
+    let module_ids: Vec<_> = sources
+        .iter()
+        .map(|(path, _)| ModuleId::new(path.iter().map(ToString::to_string).collect()))
+        .collect();
+    let mut parsed_items = Vec::with_capacity(sources.len());
+    for (_, source) in sources {
+        let parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+        parsed_items.push(parsed.program.items);
+    }
+
+    let mut module_graph = ModuleGraph::new(root_id.clone());
+    for (index, module_id) in module_ids.iter().enumerate() {
+        let mut items = parsed_items[index].clone();
+        let mut imports = Vec::new();
+        for (item, span) in &mut items {
+            let Item::Import(declaration) = item else {
+                continue;
+            };
+            let target_index = module_ids
+                .iter()
+                .position(|candidate| candidate.path == declaration.path)
+                .expect("test import target must be present in the graph");
+            declaration.resolved_items = Some(parsed_items[target_index].clone());
+            imports.push(hew_parser::module::ModuleImport {
+                target: module_ids[target_index].clone(),
+                spec: declaration.spec.clone(),
+                span: span.clone(),
+            });
+        }
+        module_graph
+            .add_module(Module {
+                id: module_id.clone(),
+                items,
+                imports,
+                source_paths: vec![],
+                doc: None,
+            })
+            .expect("add module");
+    }
+    module_graph.topo_order = module_ids
+        .iter()
+        .cloned()
+        .chain(std::iter::once(root_id))
+        .collect();
+    let program = Program {
+        module_graph: Some(module_graph),
+        items: vec![],
+        module_doc: None,
+    };
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.register_builtins();
+    checker.collect_types(&program);
+    checker.collect_declared_type_param_names(&program);
+    checker.type_decls_registered = true;
+    checker.collect_functions(&program);
+    checker
+}
+
+fn synthetic_resource_contracts(
+    producers: &[(&'static str, &'static str)],
+) -> Vec<(&'static str, ExternOwnershipContract)> {
+    let mut contracts = vec![(
+        "example_socket_close",
+        ExternOwnershipContract {
+            params: &[ExternParamOwnership::Consume],
+            resource_param_types: &["example.owner.Socket"],
+            resource_result_type: None,
+            result: ExternResultOwnership::None,
+            release_symbol: "",
+            discharge_depth: ReleaseDischargeDepth::None,
+            result_retention: ExternResultRetention::Unspecified,
+        },
+    )];
+    contracts.extend(producers.iter().map(|(symbol, release_symbol)| {
+        (
+            *symbol,
+            ExternOwnershipContract {
+                params: &[],
+                resource_param_types: &[],
+                resource_result_type: Some("example.owner.Socket"),
+                result: ExternResultOwnership::Fresh,
+                release_symbol,
+                discharge_depth: ReleaseDischargeDepth::Shallow,
+                result_retention: ExternResultRetention::Transferred,
+            },
+        )
+    }));
+    contracts
+}
+
+const SYNTHETIC_OWNER: &str = r#"
+#[opaque]
+pub type Socket {}
+extern "C" {
+    fn example_socket_close(consume socket: Socket) -> i32;
+}
+"#;
+
+#[test]
+fn foreign_producer_joins_release_declared_only_by_nominal_owner() {
+    let checker = checker_with_resolved_module_graph(&[
+        (&["example", "owner"], SYNTHETIC_OWNER),
+        (
+            &["example", "bridge"],
+            r#"
+            import example::owner;
+            extern "C" {
+                fn example_socket_open() -> owner.Socket;
+            }
+            "#,
+        ),
+    ]);
+    let contracts =
+        synthetic_resource_contracts(&[("example_socket_open", "example_socket_close")]);
+    let graph =
+        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+    let candidate = graph
+        .candidates
+        .get("example.owner.Socket")
+        .expect("direct imported result must join the owner release");
+    assert_eq!(candidate.owner_module, "example.owner");
+    assert_eq!(
+        candidate.producer_modules,
+        ["example.bridge"].into_iter().map(str::to_string).collect()
+    );
+    assert!(graph.conflicts.is_empty(), "{:#?}", graph.conflicts);
+}
+
+#[test]
+fn module_and_named_import_aliases_preserve_imported_owner() {
+    let cases = [
+        (
+            &["example", "module_alias"][..],
+            r#"
+            import example::owner as device;
+            extern "C" {
+                fn example_socket_open() -> device.Socket;
+            }
+            "#,
+        ),
+        (
+            &["example", "named_alias"][..],
+            r#"
+            import example::owner::{ Socket as ImportedSocket };
+            extern "C" {
+                fn example_socket_open() -> ImportedSocket;
+            }
+            "#,
+        ),
+    ];
+    for (producer_path, producer_source) in cases {
+        let checker = checker_with_resolved_module_graph(&[
+            (&["example", "owner"], SYNTHETIC_OWNER),
+            (producer_path, producer_source),
+        ]);
+        let contracts =
+            synthetic_resource_contracts(&[("example_socket_open", "example_socket_close")]);
+        let graph = checker
+            .derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+        let candidate = graph
+            .candidates
+            .get("example.owner.Socket")
+            .unwrap_or_else(|| {
+                panic!(
+                    "resolved import alias must retain owner identity; producer={producer_path:?}; graph={graph:#?}"
+                )
+            });
+        assert_eq!(
+            candidate.producer_modules,
+            [producer_path.join(".")].into_iter().collect()
+        );
+        assert_eq!(candidate.producer_symbols.len(), 1);
+        assert!(graph.conflicts.is_empty(), "{:#?}", graph.conflicts);
+    }
+}
+
+#[test]
+fn unimported_and_wrong_module_lookalikes_have_no_candidate_authority() {
+    let checker = checker_with_resolved_module_graph(&[
+        (&["example", "owner"], SYNTHETIC_OWNER),
+        (
+            &["example", "other"],
+            r"
+            #[opaque]
+            pub type Socket {}
+            ",
+        ),
+        (
+            &["example", "unimported"],
+            r#"
+            extern "C" {
+                fn example_socket_open_unimported() -> owner.Socket;
+            }
+            "#,
+        ),
+        (
+            &["example", "wrong"],
+            r#"
+            import example::other;
+            extern "C" {
+                fn example_socket_open_wrong() -> other.Socket;
+            }
+            "#,
+        ),
+    ]);
+    let contracts = synthetic_resource_contracts(&[
+        ("example_socket_open_unimported", "example_socket_close"),
+        ("example_socket_open_wrong", "example_socket_close"),
+    ]);
+    let graph =
+        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+    assert!(graph.candidates.is_empty());
+    assert!(graph.conflicts.is_empty());
+}
+
+#[test]
+fn release_declared_off_owner_cannot_discharge_imported_result() {
+    let checker = checker_with_resolved_module_graph(&[
+        (
+            &["example", "owner"],
+            r"
+            #[opaque]
+            pub type Socket {}
+            ",
+        ),
+        (
+            &["example", "bridge"],
+            r#"
+            import example::owner;
+            extern "C" {
+                fn example_socket_open() -> owner.Socket;
+                fn example_socket_close(consume socket: owner.Socket) -> i32;
+            }
+            "#,
+        ),
+    ]);
+    let contracts =
+        synthetic_resource_contracts(&[("example_socket_open", "example_socket_close")]);
+    let graph =
+        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+    assert!(graph.candidates.is_empty());
+    assert!(matches!(
+        graph.conflicts.as_slice(),
+        [OpaqueResourceLifecycleConflict {
+            kind: OpaqueResourceLifecycleConflictKind::ReleaseDeclarationMissing,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn imported_producers_aggregate_only_with_matching_lifecycle() {
+    let checker = checker_with_resolved_module_graph(&[
+        (&["example", "owner"], SYNTHETIC_OWNER),
+        (
+            &["example", "left"],
+            r#"
+            import example::owner;
+            extern "C" {
+                fn example_socket_open_left() -> owner.Socket;
+            }
+            "#,
+        ),
+        (
+            &["example", "right"],
+            r#"
+            import example::owner;
+            extern "C" {
+                fn example_socket_open_right() -> owner.Socket;
+            }
+            "#,
+        ),
+    ]);
+    let mut contracts = synthetic_resource_contracts(&[
+        ("example_socket_open_left", "example_socket_close"),
+        ("example_socket_open_right", "example_socket_close"),
+    ]);
+    let matching_graph =
+        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+    let matching = matching_graph
+        .candidates
+        .get("example.owner.Socket")
+        .expect("matching imported producers must aggregate");
+    assert_eq!(matching.producer_symbols.len(), 2);
+    assert_eq!(
+        matching.producer_modules,
+        ["example.left", "example.right"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    );
+    assert!(matching_graph.conflicts.is_empty());
+
+    let right = contracts
+        .iter_mut()
+        .find(|(symbol, _)| *symbol == "example_socket_open_right")
+        .expect("right producer contract");
+    right.1.discharge_depth = ReleaseDischargeDepth::Deep;
+
+    let graph =
+        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+    assert!(!graph.candidates.contains_key("example.owner.Socket"));
+    assert!(graph.conflicts.iter().any(|conflict| matches!(
+        conflict.kind,
+        OpaqueResourceLifecycleConflictKind::MultipleProducerLifecycle { .. }
+    )));
 }
 
 #[test]

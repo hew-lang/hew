@@ -96,6 +96,11 @@ pub struct OpaqueResourceLifecycleCandidate {
     pub result_ownership: crate::ffi_contracts::ExternResultOwnership,
     pub result_retention: crate::ffi_contracts::ExternResultRetention,
     pub producer_symbols: BTreeSet<String>,
+    /// Source modules that declare compatible producer externs.
+    ///
+    /// This is provenance only: membership never authorizes a release
+    /// declaration, which remains pinned to `owner_module`.
+    pub producer_modules: BTreeSet<String>,
 }
 
 /// Why an otherwise provenance-matched producer failed lifecycle admission.
@@ -135,6 +140,12 @@ pub(super) struct SourceExternDeclaration {
     pub(super) symbol: String,
     pub(super) signature_key: String,
     pub(super) declaring_module: Option<String>,
+    /// Exact direct module-graph targets imported by the declaring module.
+    ///
+    /// These are resolved graph identities, not source spellings. They allow
+    /// result provenance to cross one acyclic import edge without treating a
+    /// qualified lookalike or transitive dependency as authority.
+    pub(super) direct_import_modules: BTreeSet<String>,
     pub(super) consuming_params: Vec<bool>,
 }
 
@@ -2480,6 +2491,9 @@ pub struct Checker {
     /// Source extern declarations retained until the output boundary, where
     /// they are joined to the generated FFI ownership graph.
     pub(super) source_extern_declarations: Vec<SourceExternDeclaration>,
+    /// Direct resolved import targets for the module whose declarations are
+    /// currently being registered. Cleared between module-graph nodes.
+    pub(super) current_module_direct_imports: BTreeSet<String>,
     /// Receive-handler actor-state guard policy produced by checker.
     /// Mirrors [`TypeCheckOutput::actor_handler_state_guards`].
     pub(super) actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
@@ -3372,6 +3386,7 @@ impl Checker {
             method_call_consumes_receiver: HashSet::new(),
             method_call_preserves_receiver_identity: HashSet::new(),
             source_extern_declarations: Vec::new(),
+            current_module_direct_imports: BTreeSet::new(),
             actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             consume_receiver_methods: HashSet::new(),

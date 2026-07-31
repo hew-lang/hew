@@ -230,6 +230,89 @@ fn exact_source_nominal_matches(ty: &Ty, qualified: &str, declaring_module: Opti
     )
 }
 
+fn imported_result_surface_matches(
+    declaration: &SourceExternDeclaration,
+    surface: &str,
+    qualified: &str,
+) -> bool {
+    if surface == qualified {
+        return true;
+    }
+    let Some((owner_module, nominal)) = qualified.rsplit_once('.') else {
+        return false;
+    };
+    let Some((surface_owner, surface_nominal)) = surface.rsplit_once('.') else {
+        return false;
+    };
+    if surface_nominal != nominal {
+        return false;
+    }
+
+    // Ordinary named imports retain the source module's short identity in
+    // resolved `Ty::Named` values. Tie that spelling back to exactly one
+    // resolved direct graph edge, so two same-short modules cannot authorize
+    // each other by last-write-wins registration.
+    let matching_targets: Vec<_> = declaration
+        .direct_import_modules
+        .iter()
+        .filter(|target| crate::short_name(target) == surface_owner)
+        .collect();
+    matches!(matching_targets.as_slice(), [target] if target.as_str() == owner_module)
+}
+
+fn imported_source_result_matches(
+    ty: &Ty,
+    qualified: &str,
+    declaration: &SourceExternDeclaration,
+    module_import_bindings: &HashMap<(Option<String>, String), String>,
+    import_type_name_aliases: &HashMap<(Option<String>, String), String>,
+) -> bool {
+    let Ty::Named { name, args, .. } = ty else {
+        return false;
+    };
+    if !args.is_empty() {
+        return false;
+    }
+    if exact_source_nominal_matches(ty, qualified, declaration.declaring_module.as_deref()) {
+        return true;
+    }
+
+    let Some(producer_module) = declaration.declaring_module.as_ref() else {
+        return false;
+    };
+    let Some((owner_module, nominal)) = qualified.rsplit_once('.') else {
+        return false;
+    };
+    if !declaration.direct_import_modules.contains(owner_module) {
+        return false;
+    }
+
+    // Whole-module bindings preserve their exact resolved target, including
+    // aliases (`import example::io as device` → `device.Socket`).
+    if let Some((binding, tail)) = name.split_once('.') {
+        if tail == nominal
+            && module_import_bindings
+                .get(&(Some(producer_module.clone()), binding.to_string()))
+                .is_some_and(|target| target == owner_module)
+        {
+            return true;
+        }
+    }
+
+    // Named imports and declaration aliases can resolve directly to the
+    // source identity. The alias table supplies the original declaration
+    // spelling; the direct graph target supplies the full owner provenance.
+    if let Some(source_identity) =
+        import_type_name_aliases.get(&(Some(producer_module.clone()), name.clone()))
+    {
+        if imported_result_surface_matches(declaration, source_identity, qualified) {
+            return true;
+        }
+    }
+
+    imported_result_surface_matches(declaration, name, qualified)
+}
+
 fn lifecycle_description(candidate: &OpaqueResourceLifecycleCandidate) -> String {
     format!(
         "release={}, depth={:?}, result={:?}, retention={:?}",
@@ -327,6 +410,8 @@ fn derive_source_resource_candidate(
     producer_declaration: &SourceExternDeclaration,
     source_declarations: &[SourceExternDeclaration],
     fn_sigs: &HashMap<String, FnSig>,
+    module_import_bindings: &HashMap<(Option<String>, String), String>,
+    import_type_name_aliases: &HashMap<(Option<String>, String), String>,
     contracts_by_symbol: &std::collections::BTreeMap<
         &str,
         &crate::ffi_contracts::ExternOwnershipContract,
@@ -341,9 +426,16 @@ fn derive_source_resource_candidate(
     else {
         return SourceCandidateOutcome::Irrelevant;
     };
-    if producer_declaration.declaring_module.as_deref() != Some(typed_result.owner_module) {
-        // Symbol collisions outside the qualified nominal's owner are not
-        // candidate failures; they simply have no lifecycle authority.
+    let producer_has_owner_provenance = producer_declaration.declaring_module.as_deref()
+        == Some(typed_result.owner_module)
+        || (producer_declaration.declaring_module.is_some()
+            && producer_declaration
+                .direct_import_modules
+                .contains(typed_result.owner_module));
+    if !producer_has_owner_provenance {
+        // A raw symbol collision outside the nominal owner has no lifecycle
+        // relevance unless its module graph carries a direct edge to that
+        // owner. Root, transitive, and unrelated-module lookalikes stay silent.
         return SourceCandidateOutcome::Irrelevant;
     }
     let failure = |kind| SourceCandidateOutcome::Conflict {
@@ -359,10 +451,12 @@ fn derive_source_resource_candidate(
             },
         );
     };
-    if !exact_source_nominal_matches(
+    if !imported_source_result_matches(
         &producer_signature.return_type,
         typed_result.resource_type,
-        producer_declaration.declaring_module.as_deref(),
+        producer_declaration,
+        module_import_bindings,
+        import_type_name_aliases,
     ) {
         return failure(
             OpaqueResourceLifecycleConflictKind::ProducerResultMismatch {
@@ -423,12 +517,19 @@ fn derive_source_resource_candidate(
         result_ownership: typed_result.result,
         result_retention: typed_result.result_retention,
         producer_symbols: [producer_declaration.symbol.clone()].into_iter().collect(),
+        producer_modules: producer_declaration
+            .declaring_module
+            .iter()
+            .cloned()
+            .collect(),
     })
 }
 
 fn derive_opaque_resource_candidate_graph(
     source_declarations: &[SourceExternDeclaration],
     fn_sigs: &HashMap<String, FnSig>,
+    module_import_bindings: &HashMap<(Option<String>, String), String>,
+    import_type_name_aliases: &HashMap<(Option<String>, String), String>,
     contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
 ) -> OpaqueResourceCandidateGraph {
     let contracts_by_symbol: std::collections::BTreeMap<
@@ -446,6 +547,8 @@ fn derive_opaque_resource_candidate_graph(
             producer_declaration,
             source_declarations,
             fn_sigs,
+            module_import_bindings,
+            import_type_name_aliases,
             &contracts_by_symbol,
         ) {
             SourceCandidateOutcome::Irrelevant => continue,
@@ -477,6 +580,10 @@ fn derive_opaque_resource_candidate_graph(
                     .get_mut()
                     .producer_symbols
                     .insert(producer_declaration.symbol.clone());
+                entry
+                    .get_mut()
+                    .producer_modules
+                    .extend(candidate.producer_modules);
             }
             std::collections::btree_map::Entry::Occupied(entry) => {
                 let established = lifecycle_description(entry.get());
@@ -5241,6 +5348,11 @@ impl Checker {
                 if let Some(module) = mg.modules.get(mod_id) {
                     let module_name = mod_id.path.join(".");
                     self.current_module = Some(module_name.clone());
+                    self.current_module_direct_imports = module
+                        .imports
+                        .iter()
+                        .map(|import| import.target.path.join("."))
+                        .collect();
                     // Temporarily scope local_type_defs to this module so
                     // that register_channel_recv_builtins (called from
                     // register_extern_block) can detect module-local types
@@ -5296,9 +5408,21 @@ impl Checker {
 
         // Process main module items.
         self.current_module = None;
+        self.current_module_direct_imports = program
+            .module_graph
+            .as_ref()
+            .and_then(|graph| graph.modules.get(&graph.root))
+            .map(|root| {
+                root.imports
+                    .iter()
+                    .map(|import| import.target.path.join("."))
+                    .collect()
+            })
+            .unwrap_or_default();
         for (item, span) in &program.items {
             self.collect_function_item(item, span);
         }
+        self.current_module_direct_imports.clear();
     }
 
     #[expect(
@@ -8263,6 +8387,7 @@ impl Checker {
                     symbol: f.name.clone(),
                     signature_key: key.clone(),
                     declaring_module: self.current_module.clone(),
+                    direct_import_modules: self.current_module_direct_imports.clone(),
                     consuming_params: f.params.iter().map(|param| param.is_consume).collect(),
                 });
             self.unsafe_functions.insert(key);
@@ -8290,6 +8415,8 @@ impl Checker {
         derive_opaque_resource_candidate_graph(
             &self.source_extern_declarations,
             fn_sigs,
+            &self.module_import_bindings,
+            &self.import_type_name_aliases,
             crate::ffi_contracts::FFI_OWNERSHIP_CONTRACTS,
         )
     }
@@ -8300,7 +8427,13 @@ impl Checker {
         fn_sigs: &HashMap<String, FnSig>,
         contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
     ) -> OpaqueResourceCandidateGraph {
-        derive_opaque_resource_candidate_graph(&self.source_extern_declarations, fn_sigs, contracts)
+        derive_opaque_resource_candidate_graph(
+            &self.source_extern_declarations,
+            fn_sigs,
+            &self.module_import_bindings,
+            &self.import_type_name_aliases,
+            contracts,
+        )
     }
 
     /// Registers synthetic `fn_sigs` entries for the channel layout-witness

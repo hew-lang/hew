@@ -6426,12 +6426,22 @@ impl Checker {
             .trailing_expr
             .as_deref()
             .is_some_and(|(expr, _)| matches!(expr, Expr::Identifier(name) if name == "self"));
-        let returns_self_type = matches!(
-            return_type,
+        let returns_self_type = match return_type {
             Ty::Named { name, args, .. }
-                if args.is_empty()
-                    && (name == "Self" || Ty::names_match_qualified(name, type_name))
-        );
+                if name == "Self" || Ty::names_match_qualified(name, type_name) =>
+            {
+                self.current_self_type
+                    .as_ref()
+                    .filter(|(self_name, _)| Ty::names_match_qualified(self_name, type_name))
+                    .is_none_or(|(_, self_args)| {
+                        args.len() == self_args.len()
+                            && args.iter().zip(self_args).all(|(actual, expected)| {
+                                self.subst.resolve(actual) == self.subst.resolve(expected)
+                            })
+                    })
+            }
+            _ => false,
+        };
         let valid = identity_attributes.len() == 1
             && identity_attributes[0].args.is_empty()
             && method.consumes_self
@@ -6545,34 +6555,12 @@ impl Checker {
             }
         }
 
-        let mut impl_scope_holes = Vec::new();
-        let impl_bounds_map = self.collect_type_param_scope_with_assoc_bindings(
-            impl_type_params,
-            impl_where_clause,
-            &mut impl_scope_holes,
-        );
-        let pushed_impl_bounds = !impl_bounds_map.bounds.is_empty();
-        if pushed_impl_bounds {
-            self.current_type_param_bounds.push(impl_bounds_map);
-        }
         let skip = usize::from(
             method
                 .params
                 .first()
                 .is_some_and(|p| self.is_receiver_param(p)),
         );
-        let params: Vec<Ty> = method
-            .params
-            .iter()
-            .skip(skip)
-            .map(|p| self.resolve_registered_annotation_ty_no_holes(&p.ty))
-            .collect();
-        let return_type = method.return_type.as_ref().map_or(Ty::Unit, |ret| {
-            self.resolve_registered_annotation_ty_no_holes(ret)
-        });
-        if pushed_impl_bounds {
-            self.current_type_param_bounds.pop();
-        }
         let param_names: Vec<String> = method
             .params
             .iter()
@@ -6612,18 +6600,20 @@ impl Checker {
                 Self::push_unique_bound(entry, &bound);
             }
         }
-        // Re-use the structured `extern_symbol` already parsed by
-        // `register_fn_sig_with_name` above. Re-parsing the attribute
-        // here would emit duplicate `InvalidExternSymbolTemplate`
-        // diagnostics for the same source span; cloning the resolved
-        // spec keeps the diagnostic surface single-shot while still
-        // propagating the field onto the `td.methods` entry consumed
-        // by Stage-3 method-call rewrites.
-        let extern_symbol = {
-            let key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
-                .unwrap_or_else(|| method_key.clone());
-            self.fn_sigs.get(&key).and_then(|s| s.extern_symbol.clone())
-        };
+        // Re-use the primary signature registered above. Besides keeping
+        // `extern_symbol` validation single-shot, this preserves the exact
+        // tracked inference variables shared with body checking. Every method
+        // table must mirror this carrier rather than re-resolving annotations
+        // into unrelated `Ty::Var`s.
+        let registered_key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
+            .unwrap_or_else(|| method_key.clone());
+        let registered = self
+            .fn_sigs
+            .get(&registered_key)
+            .expect("register_fn_sig_with_name must publish the impl method");
+        let params = registered.params.clone();
+        let return_type = registered.return_type.clone();
+        let extern_symbol = registered.extern_symbol.clone();
 
         let mut sig = FnSig {
             type_params: all_type_params,
@@ -6648,8 +6638,11 @@ impl Checker {
         };
         sig.returns_receiver_identity =
             self.validate_receiver_identity_method(type_name, method, &sig.return_type);
-        let registered_key = scoped_module_item_name(self.current_module.as_deref(), &method_key)
-            .unwrap_or_else(|| method_key.clone());
+        // Keep the primary signature's tracked inference variables. In
+        // particular, an impl return annotation `-> _` must share the same
+        // `Ty::Var` with body checking and every method-table mirror. Rebuilding
+        // and reinserting the annotation here would create an unrelated hole
+        // that can never be resolved by the method body.
         self.fn_sigs.insert(registered_key, sig.clone());
         if let Some(td) = self.lookup_type_def_mut(type_name) {
             td.methods.insert(method.name.clone(), sig.clone());

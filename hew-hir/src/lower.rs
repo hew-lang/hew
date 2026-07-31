@@ -5346,6 +5346,10 @@ struct LowerCtx {
     /// here and rewrites to `HirExprKind::Call` with the runtime symbol.
     /// A missing entry is a fail-closed diagnostic (`MethodCallNoRewrite`).
     method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Receiver-identity calls whose result is discarded in statement
+    /// position. These call sites borrow the original owner into the exact
+    /// receiver/result alias instead of moving it away.
+    method_call_preserves_receiver_identity: HashSet<SpanKey>,
     /// Checker-owned integer opt-out method lowering decisions keyed by the
     /// method-call expression span. HIR checks this before generic method-call
     /// rewrites so numeric methods lower to a dedicated node without any
@@ -5949,6 +5953,9 @@ impl LowerCtx {
             diagnostics: Vec::new(),
             fn_sigs: tc_output.fn_sigs.clone(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
+            method_call_preserves_receiver_identity: tc_output
+                .method_call_preserves_receiver_identity
+                .clone(),
             numeric_method_lowerings: tc_output.numeric_method_lowerings.clone(),
             width_cast_lowerings: tc_output.width_cast_lowerings.clone(),
             try_width_cast_lowerings: tc_output.try_width_cast_lowerings.clone(),
@@ -22198,7 +22205,14 @@ impl LowerCtx {
         // `method_call_rewrites` entry (a direct-call rewrite would
         // collapse the dispatch indirection that the vtable provides).
         if let Some(dyn_call) = self.dyn_trait_method_calls.get(&key).cloned() {
-            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            let preserves_receiver = dyn_call.signature.returns_receiver_identity
+                && self.method_call_preserves_receiver_identity.contains(&key);
+            let receiver_intent = if dyn_call.signature.consumes_receiver && !preserves_receiver {
+                IntentKind::Consume
+            } else {
+                IntentKind::Read
+            };
+            let lowered_receiver = self.lower_expr(receiver, receiver_intent);
             let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
             // Result type comes from the checker's expr_types side-table
             // (the call's full span). Fail-closed if absent or poisoned.
@@ -22471,6 +22485,7 @@ impl LowerCtx {
                 c_symbol,
                 descriptor,
                 consumes_receiver,
+                returns_receiver_identity,
                 ..
             }) => {
                 // S5: a method-call rewrite that lands on a builtin-generic
@@ -22532,7 +22547,9 @@ impl LowerCtx {
                 // underlying resource (LESSONS: raii-null-after-move,
                 // cleanup-all-exits). Borrowing methods (`send`/`recv`) keep
                 // `IntentKind::Read`.
-                let receiver_intent = if consumes_receiver {
+                let preserves_receiver = returns_receiver_identity
+                    && self.method_call_preserves_receiver_identity.contains(&key);
+                let receiver_intent = if consumes_receiver && !preserves_receiver {
                     IntentKind::Consume
                 } else {
                     IntentKind::Read
@@ -22757,6 +22774,8 @@ impl LowerCtx {
                 declaring_trait,
                 method_name,
                 requires_mutable_receiver,
+                consumes_receiver,
+                returns_receiver_identity,
             }) => {
                 let ret_ty = self
                     .expr_types
@@ -22802,7 +22821,12 @@ impl LowerCtx {
                                 // receiver type will be the concrete self type
                                 &self_ty, &span, site,
                             );
-                            let receiver_intent = if requires_mutable_receiver {
+                            let preserves_receiver = returns_receiver_identity
+                                && self.method_call_preserves_receiver_identity.contains(&key);
+                            let receiver_intent = if (requires_mutable_receiver
+                                || consumes_receiver)
+                                && !preserves_receiver
+                            {
                                 IntentKind::Consume
                             } else {
                                 IntentKind::Read
@@ -22869,7 +22893,14 @@ impl LowerCtx {
                 // Static trait dispatch: emit `CallTraitMethodStatic` carrying
                 // the structured metadata. MIR resolves the concrete callee from
                 // the monomorphization substitution map.
-                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                let preserves_receiver = returns_receiver_identity
+                    && self.method_call_preserves_receiver_identity.contains(&key);
+                let receiver_intent = if consumes_receiver && !preserves_receiver {
+                    IntentKind::Consume
+                } else {
+                    IntentKind::Read
+                };
+                let lowered_receiver = self.lower_expr(receiver, receiver_intent);
                 let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                 (
                     Self::make_static_trait_dispatch_call(
@@ -30887,6 +30918,128 @@ mod tests {
 
         let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
         (parsed.program, tco, lowered)
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the test keeps static-discard, static-capture, and dynamic dispatch evidence together"
+    )]
+    fn receiver_ownership_metadata_controls_static_and_dynamic_dispatch_intent() {
+        let (_, tco, lowered) = parse_typecheck_and_lower(
+            r"
+            #[resource]
+            type Builder { value: i64 }
+
+            impl Builder {
+                fn close(consuming self) {}
+            }
+
+            trait Fluent {
+                #[returns_receiver]
+                fn touch(consuming self) -> Self;
+            }
+
+            impl Fluent for Builder {
+                #[returns_receiver]
+                fn touch(consuming self) -> Builder { self }
+            }
+
+            trait Finish {
+                fn finish(consuming self) -> i64;
+            }
+
+            impl Finish for Builder {
+                fn finish(consuming self) -> i64 { self.value }
+            }
+
+            fn touch_twice<T: Fluent>(value: T) {
+                value.touch();
+                value.touch();
+            }
+
+            fn transfer<T: Fluent>(value: T) -> T {
+                value.touch()
+            }
+
+            fn finish_dyn(value: dyn Finish) -> i64 {
+                value.finish()
+            }
+            ",
+        );
+        assert!(
+            tco.method_call_rewrites.values().any(|rewrite| matches!(
+                rewrite,
+                MethodCallRewrite::StaticTraitDispatch {
+                    consumes_receiver: true,
+                    returns_receiver_identity: true,
+                    ..
+                }
+            )),
+            "static dispatch must carry both receiver-ownership axes"
+        );
+        assert!(
+            tco.dyn_trait_method_calls
+                .values()
+                .any(|call| call.signature.consumes_receiver),
+            "dynamic dispatch must carry consuming-receiver metadata in its FnSig"
+        );
+
+        let touch_twice = function_named(&lowered, "touch_twice");
+        for statement in &touch_twice.body.statements {
+            let HirStmtKind::Expr(call) = &statement.kind else {
+                panic!(
+                    "expected identity call statement, got {:#?}",
+                    statement.kind
+                );
+            };
+            let HirExprKind::CallTraitMethodStatic { receiver, .. } = &call.kind else {
+                panic!("expected static trait dispatch, got {:#?}", call.kind);
+            };
+            assert_eq!(
+                receiver.intent,
+                IntentKind::Read,
+                "a discarded exact receiver result preserves the original owner"
+            );
+        }
+
+        let transfer = function_named(&lowered, "transfer");
+        let transfer_call = transfer
+            .body
+            .tail
+            .as_deref()
+            .expect("transfer must have a trailing call");
+        let HirExprKind::CallTraitMethodStatic { receiver, .. } = &transfer_call.kind else {
+            panic!(
+                "expected static trait dispatch in transfer, got {:#?}",
+                transfer_call.kind
+            );
+        };
+        assert_eq!(
+            receiver.intent,
+            IntentKind::Consume,
+            "a captured exact receiver result transfers the original owner"
+        );
+
+        let finish_dyn = function_named(&lowered, "finish_dyn");
+        let finish_call = finish_dyn
+            .body
+            .tail
+            .as_deref()
+            .expect("finish_dyn must have a trailing call");
+        let HirExprKind::CallDynMethod {
+            receiver,
+            signature,
+            ..
+        } = &finish_call.kind
+        else {
+            panic!(
+                "expected dynamic trait dispatch in finish_dyn, got {:#?}",
+                finish_call.kind
+            );
+        };
+        assert!(signature.consumes_receiver);
+        assert_eq!(receiver.intent, IntentKind::Consume);
     }
 
     fn main_function_body(output: &LowerOutput) -> &HirBlock {

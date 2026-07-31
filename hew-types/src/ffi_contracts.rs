@@ -312,4 +312,393 @@ mod tests {
             "active-mode attach transfers the connection's sole close authority to the reactor"
         );
     }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the exhaustive table intentionally keeps every value-tree ABI row visible"
+    )]
+    fn value_tree_resource_parameters_are_complete_and_nominal() {
+        let families = [
+            (
+                "std.encoding.json",
+                "std.encoding.json.Value",
+                &[
+                    (
+                        "hew_json_array_get",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    ("hew_json_array_len", &[ExternParamOwnership::Borrow][..]),
+                    (
+                        "hew_json_array_push",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Consume][..],
+                    ),
+                    (
+                        "hew_json_array_push_bool",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_json_array_push_float",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_json_array_push_int",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_json_array_push_null",
+                        &[ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_json_array_push_string",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    ("hew_json_free", &[ExternParamOwnership::Consume][..]),
+                    ("hew_json_get_bool", &[ExternParamOwnership::Borrow][..]),
+                    (
+                        "hew_json_get_field",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    ("hew_json_get_float", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_json_get_int", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_json_get_string", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_json_int_status", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_json_object_keys", &[ExternParamOwnership::Borrow][..]),
+                    (
+                        "hew_json_object_set",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Consume,
+                        ][..],
+                    ),
+                    (
+                        "hew_json_object_set_bool",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    (
+                        "hew_json_object_set_float",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    (
+                        "hew_json_object_set_int",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    (
+                        "hew_json_object_set_null",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_json_object_set_string",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    ("hew_json_stringify", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_json_type", &[ExternParamOwnership::Borrow][..]),
+                    (
+                        "hew_json_unrepresentable_int_count",
+                        &[ExternParamOwnership::Borrow][..],
+                    ),
+                ][..],
+            ),
+            (
+                "std.encoding.toml",
+                "std.encoding.toml.Value",
+                &[
+                    (
+                        "hew_toml_array_get",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    ("hew_toml_array_len", &[ExternParamOwnership::Borrow][..]),
+                    (
+                        "hew_toml_array_push",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Consume][..],
+                    ),
+                    (
+                        "hew_toml_array_push_bool",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_toml_array_push_float",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_toml_array_push_int",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_toml_array_push_string",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    ("hew_toml_free", &[ExternParamOwnership::Consume][..]),
+                    ("hew_toml_get_bool", &[ExternParamOwnership::Borrow][..]),
+                    (
+                        "hew_toml_get_field",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    ("hew_toml_get_float", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_toml_get_int", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_toml_get_string", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_toml_stringify", &[ExternParamOwnership::Borrow][..]),
+                    (
+                        "hew_toml_table_set",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Consume,
+                        ][..],
+                    ),
+                    (
+                        "hew_toml_table_set_bool",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    (
+                        "hew_toml_table_set_float",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    (
+                        "hew_toml_table_set_int",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    (
+                        "hew_toml_table_set_string",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    ("hew_toml_type", &[ExternParamOwnership::Borrow][..]),
+                ][..],
+            ),
+            (
+                "std.encoding.yaml",
+                "std.encoding.yaml.Value",
+                &[
+                    (
+                        "hew_yaml_array_get",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    ("hew_yaml_array_len", &[ExternParamOwnership::Borrow][..]),
+                    (
+                        "hew_yaml_array_push",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Consume][..],
+                    ),
+                    (
+                        "hew_yaml_array_push_bool",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_yaml_array_push_float",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_yaml_array_push_int",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_yaml_array_push_null",
+                        &[ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_yaml_array_push_string",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    ("hew_yaml_free", &[ExternParamOwnership::Consume][..]),
+                    ("hew_yaml_get_bool", &[ExternParamOwnership::Borrow][..]),
+                    (
+                        "hew_yaml_get_field",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    ("hew_yaml_get_float", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_yaml_get_int", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_yaml_get_string", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_yaml_int_status", &[ExternParamOwnership::Borrow][..]),
+                    (
+                        "hew_yaml_object_set",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Consume,
+                        ][..],
+                    ),
+                    (
+                        "hew_yaml_object_set_bool",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    (
+                        "hew_yaml_object_set_float",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    (
+                        "hew_yaml_object_set_int",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    (
+                        "hew_yaml_object_set_null",
+                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
+                    ),
+                    (
+                        "hew_yaml_object_set_string",
+                        &[
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                            ExternParamOwnership::Borrow,
+                        ][..],
+                    ),
+                    ("hew_yaml_stringify", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_yaml_type", &[ExternParamOwnership::Borrow][..]),
+                    (
+                        "hew_yaml_unrepresentable_int_count",
+                        &[ExternParamOwnership::Borrow][..],
+                    ),
+                ][..],
+            ),
+        ];
+
+        for (module, nominal, rows) in families {
+            for (symbol, expected_params) in rows {
+                let contract = extern_ownership_contract(symbol)
+                    .contract()
+                    .unwrap_or_else(|| panic!("{symbol} must have a complete contract"));
+                assert_eq!(contract.params, *expected_params, "{symbol}");
+                assert_eq!(
+                    contract.resource_param_types.len(),
+                    contract.params.len(),
+                    "{symbol} must classify every parameter slot"
+                );
+                for (index, disposition) in expected_params.iter().enumerate() {
+                    let expected_nominal =
+                        match (symbol.ends_with("_set"), symbol.ends_with("_push"), index) {
+                            (true, _, 2) | (_, true, 1) | (_, _, 0) => nominal,
+                            _ => "",
+                        };
+                    assert_eq!(
+                        contract.resource_param_types[index], expected_nominal,
+                        "{symbol} parameter {index}"
+                    );
+                    if *disposition == ExternParamOwnership::Borrow && !expected_nominal.is_empty()
+                    {
+                        assert!(extern_resource_param_is_audited_borrow(
+                            symbol,
+                            index,
+                            Some(module),
+                            nominal,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn value_tree_producers_transfer_one_deep_owner() {
+        for (prefix, release, symbols) in [
+            (
+                "json",
+                "hew_json_free",
+                &[
+                    "hew_json_array_get",
+                    "hew_json_array_new",
+                    "hew_json_from_bool",
+                    "hew_json_from_float",
+                    "hew_json_from_int",
+                    "hew_json_from_null",
+                    "hew_json_from_string",
+                    "hew_json_get_field",
+                    "hew_json_object_keys",
+                    "hew_json_object_new",
+                    "hew_json_parse",
+                ][..],
+            ),
+            (
+                "toml",
+                "hew_toml_free",
+                &[
+                    "hew_toml_array_get",
+                    "hew_toml_array_new",
+                    "hew_toml_from_bool",
+                    "hew_toml_from_float",
+                    "hew_toml_from_int",
+                    "hew_toml_from_string",
+                    "hew_toml_get_field",
+                    "hew_toml_table_new",
+                    "hew_toml_parse",
+                ][..],
+            ),
+            (
+                "yaml",
+                "hew_yaml_free",
+                &[
+                    "hew_yaml_array_get",
+                    "hew_yaml_array_new",
+                    "hew_yaml_from_bool",
+                    "hew_yaml_from_float",
+                    "hew_yaml_from_int",
+                    "hew_yaml_from_null",
+                    "hew_yaml_from_string",
+                    "hew_yaml_get_field",
+                    "hew_yaml_object_new",
+                    "hew_yaml_parse",
+                ][..],
+            ),
+        ] {
+            for symbol in symbols {
+                let contract = extern_ownership_contract(symbol)
+                    .contract()
+                    .unwrap_or_else(|| panic!("{prefix} producer {symbol} is unclassified"));
+                assert_eq!(contract.result, ExternResultOwnership::Fresh, "{symbol}");
+                assert_eq!(contract.release_symbol, release, "{symbol}");
+                assert_eq!(
+                    contract.discharge_depth,
+                    ReleaseDischargeDepth::Deep,
+                    "{symbol}"
+                );
+                assert_eq!(
+                    contract.result_retention,
+                    ExternResultRetention::Transferred,
+                    "{symbol}"
+                );
+            }
+        }
+    }
 }

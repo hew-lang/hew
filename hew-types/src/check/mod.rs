@@ -725,6 +725,9 @@ impl Checker {
             is_type_patterns: std::mem::take(&mut self.is_type_patterns),
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
             method_call_consumes_receiver: std::mem::take(&mut self.method_call_consumes_receiver),
+            method_call_preserves_receiver_identity: std::mem::take(
+                &mut self.method_call_preserves_receiver_identity,
+            ),
             actor_handler_state_guards: std::mem::take(&mut self.actor_handler_state_guards),
             actor_max_heap: std::mem::take(&mut self.actor_max_heap),
             supervisor_child_slots: std::mem::take(&mut self.supervisor_child_slots),

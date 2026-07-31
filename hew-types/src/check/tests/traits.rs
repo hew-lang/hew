@@ -5,6 +5,375 @@
 pub(super) use super::*;
 
 #[test]
+fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+        }
+
+        trait Fluent {
+            #[returns_receiver]
+            fn touch(consuming self) -> Self;
+        }
+
+        impl Fluent for Builder {
+            #[returns_receiver]
+            fn touch(consuming self) -> Builder {
+                self
+            }
+        }
+
+        fn touch_twice<T: Fluent>(value: T) {
+            value.touch();
+            value.touch();
+        }
+
+        fn transfer(value: Builder) -> Builder {
+            value.touch()
+        }
+
+        fn main() {
+            let value = Builder { value: 1 };
+            value.touch();
+            let next = value.touch();
+            next.touch();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "validated identity calls must preserve a discarded owner and transfer a captured one: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::StaticTraitDispatch {
+                consumes_receiver: true,
+                returns_receiver_identity: true,
+                ..
+            }
+        )),
+        "generic trait dispatch must carry both receiver ownership facts"
+    );
+    assert!(
+        output.method_call_preserves_receiver_identity.len() >= 3,
+        "statement-position identity calls must carry an explicit preservation fact"
+    );
+}
+
+#[test]
+fn captured_receiver_identity_result_moves_original_binding() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+
+            #[returns_receiver]
+            fn touch(consuming self) -> Builder {
+                self
+            }
+        }
+
+        fn main() {
+            let value = Builder { value: 1 };
+            let next = value.touch();
+            value.touch();
+            next.touch();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "capturing the exact receiver result must transfer the original owner: errors={:#?}, \
+         consumes={:#?}, rewrites={:#?}, preserves={:#?}",
+        output.errors,
+        output.method_call_consumes_receiver,
+        output.method_call_rewrites,
+        output.method_call_preserves_receiver_identity
+    );
+}
+
+#[test]
+fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
+    let borrowed = check_source(
+        r"
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+            fn inspect(self) -> i64 { self.value }
+
+            #[returns_receiver]
+            fn touch(consuming self) -> Builder { self }
+        }
+
+        fn main() {
+            let value = Builder { value: 1 };
+            value.touch().inspect();
+            value.touch();
+        }
+        ",
+    );
+    assert!(
+        borrowed.errors.is_empty(),
+        "a borrowing terminal call may return the exact intermediate owner to its root: {:#?}",
+        borrowed.errors
+    );
+
+    let consumed = check_source(
+        r"
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+
+            #[returns_receiver]
+            fn touch(consuming self) -> Builder { self }
+        }
+
+        fn main() {
+            let value = Builder { value: 1 };
+            value.touch().close();
+            value.touch();
+        }
+        ",
+    );
+    assert!(
+        consumed
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "a terminal consuming call must not restore an inner receiver identity: {:#?}",
+        consumed.errors
+    );
+}
+
+#[test]
+fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
+    for source in [
+        r"
+        type Builder { value: i64 }
+        impl Builder {
+            #[returns_receiver]
+            fn bad(consuming self) -> Builder {
+                Builder { value: 2 }
+            }
+        }
+        ",
+        r"
+        type Builder { value: i64 }
+        impl Builder {
+            #[returns_receiver]
+            fn bad(consuming self) -> Builder {
+                if self.value == 0 {
+                    return self;
+                }
+                self
+            }
+        }
+        ",
+        r"
+        type Builder { value: i64 }
+        impl Builder {
+            #[returns_receiver]
+            #[returns_receiver]
+            fn bad(consuming self) -> Builder {
+                self
+            }
+        }
+        ",
+        r"
+        type Builder { value: i64 }
+        impl Builder {
+            #[returns_receiver]
+            fn bad(consuming self, consume other: Builder) -> Builder {
+                other
+            }
+        }
+        ",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::InvalidOperation
+                    && error.message.contains("returns_receiver")
+            }),
+            "identity authority must reject non-exact bodies: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn receiver_identity_allows_nonreceiver_arguments() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+        }
+
+        trait Fluent {
+            #[returns_receiver]
+            fn with(consuming self, value: i64) -> Self;
+        }
+
+        impl Fluent for Builder {
+            #[returns_receiver]
+            fn with(consuming self, value: i64) -> Builder {
+                self
+            }
+        }
+
+        fn twice<T: Fluent>(value: T) {
+            value.with(1);
+            value.with(2);
+        }
+
+        fn main() {
+            let value = Builder { value: 1 };
+            value.with(2);
+            value.with(3);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "non-receiver arguments do not change the exact receiver identity: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn rejected_trait_receiver_identity_never_reaches_dispatch_metadata() {
+    let output = check_source(
+        r"
+        trait Fluent {
+            #[returns_receiver]
+            fn bad(consuming self) -> Self {
+                return self;
+            }
+        }
+
+        fn call_bad<T: Fluent>(value: T) {
+            value.bad();
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("returns_receiver")),
+        "the invalid authority must be diagnosed: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .method_call_rewrites
+            .values()
+            .all(|rewrite| !matches!(
+                rewrite,
+                MethodCallRewrite::RewriteToFunction {
+                    returns_receiver_identity: true,
+                    ..
+                } | MethodCallRewrite::StaticTraitDispatch {
+                    returns_receiver_identity: true,
+                    ..
+                }
+            )),
+        "rejected receiver identity must fail closed before generic dispatch metadata: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn trait_impl_must_match_receiver_identity_and_consume_axes() {
+    for source in [
+        r"
+        type Builder { value: i64 }
+        trait Fluent {
+            #[returns_receiver]
+            fn touch(consuming self) -> Self;
+        }
+        impl Fluent for Builder {
+            fn touch(consuming self) -> Builder { self }
+        }
+        ",
+        r"
+        type Builder { value: i64 }
+        trait Fluent {
+            fn inspect(self) -> Self;
+        }
+        impl Fluent for Builder {
+            fn inspect(consuming self) -> Builder { self }
+        }
+        ",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output.errors.iter().any(|error| matches!(
+                error.kind,
+                TypeErrorKind::TraitImplSignatureMismatch { .. }
+            )),
+            "trait conformance must reject receiver ownership mismatches: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn receiver_identity_trait_method_is_not_dyn_object_safe() {
+    let output = check_source(
+        r"
+        trait Fluent {
+            #[returns_receiver]
+            fn touch(consuming self) -> Self;
+        }
+
+        #[resource]
+        type Builder { value: i64 }
+
+        impl Builder {
+            fn close(consuming self) {}
+        }
+
+        impl Fluent for Builder {
+            #[returns_receiver]
+            fn touch(consuming self) -> Builder { self }
+        }
+
+        fn use_dyn(value: dyn Fluent) {
+            value.touch();
+        }
+
+        fn main() {
+            use_dyn(Builder { value: 1 });
+        }
+        ",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "a Self-returning receiver-identity method must not silently cross dyn dispatch"
+    );
+}
+
+#[test]
 fn structural_satisfies_returns_false_for_unknown_trait() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     assert!(
@@ -2028,6 +2397,8 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 span: 0..0,
             },
             TraitItem::Method(TraitMethod {
+                attributes: vec![],
+                consumes_self: false,
                 name: "do_it".to_string(),
                 type_params: None,
                 params: vec![Param {
@@ -2069,6 +2440,8 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             assoc_type_bindings: vec![],
         }]),
         items: vec![TraitItem::Method(TraitMethod {
+            attributes: vec![],
+            consumes_self: false,
             name: "run".to_string(),
             type_params: None,
             params: vec![Param {
@@ -2120,6 +2493,8 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         type_params: None,
         super_traits: None,
         items: vec![TraitItem::Method(TraitMethod {
+            attributes: vec![],
+            consumes_self: false,
             name: "map".to_string(),
             type_params: Some(vec![TypeParam {
                 name: "U".to_string(),
@@ -2162,6 +2537,8 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             assoc_type_bindings: vec![],
         }]),
         items: vec![TraitItem::Method(TraitMethod {
+            attributes: vec![],
+            consumes_self: false,
             name: "run".to_string(),
             type_params: None,
             params: vec![Param {

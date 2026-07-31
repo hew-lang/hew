@@ -1151,6 +1151,9 @@ pub enum TraitItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitMethod {
+    /// Source attributes attached to the method declaration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<Attribute>,
     pub name: String,
     pub type_params: Option<Vec<TypeParam>>,
     pub params: Vec<Param>,
@@ -1169,6 +1172,9 @@ pub struct TraitMethod {
     /// lowering pass dispatches through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang_item: Option<String>,
+    /// Whether the declaration takes ownership of its receiver.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub consumes_self: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

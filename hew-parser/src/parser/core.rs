@@ -172,10 +172,9 @@ impl<'src> Parser<'src> {
     /// change the meaning of any previously valid program.
     pub(crate) fn peek_is_consume_param_modifier(&self) -> bool {
         matches!(self.peek(), Some(Token::Identifier(name)) if *name == "consume")
-            && matches!(
-                self.peek_at(self.pos + 1),
-                Some(Token::Var | Token::Identifier(_))
-            )
+            && self
+                .peek_at(self.pos + 1)
+                .is_some_and(|token| matches!(token, Token::Var) || Self::is_ident_token(token))
     }
 
     /// Check whether the current token starts with `>` (i.e. is `>`, `>>`, `>=`, or `>>=`).

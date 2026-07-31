@@ -1380,13 +1380,16 @@ mod tests {
             "json module should declare json.Value handle type"
         );
         assert!(
-            !info.drop_types.contains(&"json.Value".to_string()),
-            "json.Value should not be a drop type after impl Drop removal"
+            info.drop_types.contains(&"json.Value".to_string()),
+            "json.Value is a `#[resource]` handle and must be a drop type"
         );
-        assert!(
-            info.drop_funcs.iter().all(|(ty, _)| ty != "json.Value"),
-            "json.Value should not have a drop func, got: {:?}",
+        assert_eq!(
             info.drop_funcs
+                .iter()
+                .find(|(ty, _)| ty == "json.Value")
+                .map(|(_, drop_fn)| drop_fn.as_str()),
+            Some("hew_json_free"),
+            "json.Value.close must register its sole raw disposer"
         );
 
         // Should have clean name mapping for "parse"
@@ -1876,18 +1879,21 @@ mod tests {
     }
 
     #[test]
-    fn json_module_no_drop_type_without_impl_drop() {
+    fn json_module_resource_registers_close_disposer() {
         let info = load_module("std::encoding::json", &test_root()).unwrap();
 
         assert!(
-            !info.drop_types.contains(&"json.Value".to_string()),
-            "json.Value should not be a drop type, got: {:?}",
+            info.drop_types.contains(&"json.Value".to_string()),
+            "json.Value should be a drop type, got: {:?}",
             info.drop_types
         );
-        assert!(
-            info.drop_funcs.iter().all(|(ty, _)| ty != "json.Value"),
-            "json.Value should not have a drop func, got: {:?}",
+        assert_eq!(
             info.drop_funcs
+                .iter()
+                .find(|(ty, _)| ty == "json.Value")
+                .map(|(_, drop_fn)| drop_fn.as_str()),
+            Some("hew_json_free"),
+            "json.Value should register its direct close disposer"
         );
     }
 

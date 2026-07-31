@@ -127,6 +127,10 @@ pub struct TypeCheckOutput {
     /// for Hew programs — but tests can populate `consume_receiver_methods` on
     /// the [`Checker`] to exercise the path end-to-end.
     pub method_call_consumes_receiver: HashSet<SpanKey>,
+    /// Receiver-identity calls whose result is discarded through a borrowing
+    /// method chain. HIR lowers these receivers as reads, returning the sole
+    /// ownership obligation to the original binding.
+    pub method_call_preserves_receiver_identity: HashSet<SpanKey>,
     /// Checker-owned lowering metadata keyed by the lowering site's source span.
     ///
     /// Populated for erased runtime types whose lowering must not guess from
@@ -1082,6 +1086,7 @@ impl Default for TypeCheckOutput {
             is_type_patterns: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),
+            method_call_preserves_receiver_identity: HashSet::default(),
             lowering_facts: HashMap::new(),
             actor_handler_state_guards: HashMap::new(),
             method_call_rewrites: HashMap::new(),
@@ -1410,6 +1415,9 @@ pub enum MethodCallRewrite {
         descriptor: Option<crate::runtime_call::RuntimeCallDescriptor>,
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
         consumes_receiver: bool,
+        /// Exact receiver-in/result-out ownership identity, derived from the
+        /// validated method signature rather than the symbol spelling.
+        returns_receiver_identity: bool,
     },
     /// Rewrite a module-qualified stdlib call directly to a runtime function
     /// without injecting the receiver/module identifier as an argument.
@@ -1587,6 +1595,10 @@ pub enum MethodCallRewrite {
         method_name: String,
         /// Checker-owned receiver ABI bit from the declaring trait signature.
         requires_mutable_receiver: bool,
+        /// Checker-owned receiver ownership bit from the declaring trait.
+        consumes_receiver: bool,
+        /// Exact receiver-in/result-out identity from the declaring trait.
+        returns_receiver_identity: bool,
     },
 }
 
@@ -2271,6 +2283,9 @@ pub struct FnSig {
     ///
     /// Default `false` for every signature without a consuming receiver.
     pub consumes_receiver: bool,
+    /// `true` only for a validated `#[returns_receiver]` consuming-self
+    /// method. Its result is the exact receiver owner, never a fresh owner.
+    pub returns_receiver_identity: bool,
     /// `true` iff this `fn_sig` was registered for a builtin enum variant
     /// (e.g. `LookupError::NotFound`, `SendError::Timeout`).
     ///
@@ -2304,6 +2319,7 @@ impl Default for FnSig {
             extern_symbol: None,
             requires_mutable_receiver: false,
             consumes_receiver: false,
+            returns_receiver_identity: false,
             is_builtin_variant: false,
         }
     }
@@ -2400,6 +2416,7 @@ pub struct Checker {
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
     pub(super) method_call_consumes_receiver: HashSet<SpanKey>,
+    pub(super) method_call_preserves_receiver_identity: HashSet<SpanKey>,
     /// Receive-handler actor-state guard policy produced by checker.
     /// Mirrors [`TypeCheckOutput::actor_handler_state_guards`].
     pub(super) actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
@@ -3290,6 +3307,7 @@ impl Checker {
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::new(),
+            method_call_preserves_receiver_identity: HashSet::new(),
             actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             consume_receiver_methods: HashSet::new(),

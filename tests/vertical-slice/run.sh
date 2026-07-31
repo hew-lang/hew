@@ -3183,6 +3183,60 @@ grep -qF 'use of moved value `pat`' "${reject_output}"
 # `close(self)` through its wrapper impl, including the same-short-name Message
 # wrappers that must be compiled in separate importer fixtures.
 compile_accept "safe_handle_resources_close"
+run_accept_expect_stdout "json_value_resource_exactly_once"
+run_accept_expect_stdout "toml_value_resource_exactly_once"
+run_accept_expect_stdout "yaml_value_resource_exactly_once"
+
+# The value-tree fixtures also carry dormant early-return/panic probes and a
+# loop-back-edge cancellation probe. Their elaborated MIR must close exactly
+# the live independent owners on every exit: the child handed to `with` is no
+# longer a caller-owned root, while getter results are.
+assert_value_tree_exit_plans() {
+  local fixture="$1"
+  local module="$2"
+  local main_close_count="$3"
+  "${HEW}" compile --dump-mir elab \
+    "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" \
+    >"${accept_output}" 2>&1
+
+  local function_body
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="early_exit" "${accept_output}")"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq 4
+  test "$(grep -cF "return[" <<<"${function_body}")" -eq 2
+
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="_panic_exit" "${accept_output}")"
+  grep -qF "call[bb4 panic" <<<"${function_body}"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq 2
+
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="cancel_exit" "${accept_output}")"
+  grep -qF "panic[" <<<"${function_body}"
+  grep -qF "cancel[" <<<"${function_body}"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq 6
+
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="main" "${accept_output}")"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq "${main_close_count}"
+}
+
+assert_value_tree_exit_plans "json_value_resource_exactly_once" "json" 2
+assert_value_tree_exit_plans "toml_value_resource_exactly_once" "toml" 1
+assert_value_tree_exit_plans "yaml_value_resource_exactly_once" "yaml" 1
+
 compile_accept "http_client_response_resource_close"
 compile_accept "websocket_message_resource_close"
 compile_accept "protobuf_message_resource_close"
@@ -3200,6 +3254,20 @@ fi
 safe_handle_use_after_close_count="$(grep -c 'use of moved value `value`' "${reject_output}")"
 if [[ "${safe_handle_use_after_close_count}" -ne 11 ]]; then
   echo "expected 11 safe-handle use-after-close diagnostics, got ${safe_handle_use_after_close_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/value_tree_resources_use_after_close.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected value_tree_resources_use_after_close fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+value_tree_use_after_close_count="$(grep -c 'use of moved value `value`' "${reject_output}")"
+if [[ "${value_tree_use_after_close_count}" -ne 3 ]]; then
+  echo "expected 3 value-tree use-after-close diagnostics, got ${value_tree_use_after_close_count}" >&2
   cat "${reject_output}" >&2
   exit 1
 fi

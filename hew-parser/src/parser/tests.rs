@@ -2925,6 +2925,31 @@ fn capture_doc_comment_on_trait_method() {
 }
 
 #[test]
+fn trait_method_preserves_receiver_identity_and_consuming_self() {
+    let source = r"
+trait Fluent {
+    #[returns_receiver]
+    fn with(consuming self, consume child: Child) -> Self;
+}
+";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Trait(t) = &result.program.items[0].0 else {
+        panic!("expected trait");
+    };
+    let TraitItem::Method(m) = &t.items[0] else {
+        panic!("expected method");
+    };
+    assert!(m.consumes_self);
+    assert_eq!(m.attributes.len(), 1);
+    assert_eq!(m.attributes[0].name, "returns_receiver");
+    assert_eq!(m.params.len(), 2);
+    assert_eq!(m.params[0].name, "self");
+    assert_eq!(m.params[1].name, "child");
+    assert!(m.params[1].is_consume);
+}
+
+#[test]
 fn capture_doc_comment_on_enum_variant() {
     let source = "enum E {\n    /// The only variant.\n    A;\n}\n";
     let result = parse(source);

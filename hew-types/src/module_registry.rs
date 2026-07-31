@@ -658,8 +658,8 @@ mod tests {
         let mut reg = registry();
         reg.load("std::encoding::json").unwrap();
         assert!(
-            !reg.is_drop_type("json.Value"),
-            "json.Value should not be a drop type"
+            reg.is_drop_type("json.Value"),
+            "json.Value is a `#[resource]` handle, so it is a drop type"
         );
         reg.load("std::net::http").unwrap();
         assert!(
@@ -688,8 +688,8 @@ mod tests {
         reg.load("std::encoding::json").unwrap();
         assert_eq!(
             reg.drop_func_for("json.Value"),
-            None,
-            "json.Value should not have a drop func"
+            Some("hew_json_free"),
+            "json.Value.close directly forwards to its sole raw disposer"
         );
         reg.load("std::net::http").unwrap();
         assert_eq!(
@@ -734,10 +734,11 @@ mod tests {
             "regex.Pattern should not have a drop func"
         );
         let all = reg.all_drop_funcs();
-        assert!(
-            all.is_empty(),
-            "the loaded fielded resource records dispatch through their \
-             source-level close methods, not direct opaque-handle drop funcs: {all:?}"
+        assert_eq!(
+            all,
+            vec![("json.Value".to_string(), "hew_json_free".to_string())],
+            "JSON is the only loaded direct opaque-handle disposer; fielded \
+             resources dispatch through their source-level close methods"
         );
     }
 

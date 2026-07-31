@@ -199,6 +199,7 @@ mod tests {
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
+            method_call_preserves_receiver_identity: HashSet::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),

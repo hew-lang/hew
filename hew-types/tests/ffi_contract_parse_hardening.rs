@@ -30,6 +30,16 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 "#;
 
+const VALID_SYNTHETIC_BYTES: &str = r#"
+[[ownership.contracts]]
+symbol = "example_string_to_bytes"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "example_bytes_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+"#;
+
 #[test]
 fn qualified_resource_result_joins_exact_consuming_release() {
     let rows = parse_ownership_contracts(VALID_SYNTHETIC_RESOURCE);
@@ -93,4 +103,22 @@ fn resource_result_without_retention_proof_fails_closed() {
     let _ = parse_ownership_contracts(
         &VALID_SYNTHETIC_RESOURCE.replace("result-retention = \"transferred\"\n", ""),
     );
+}
+
+#[test]
+fn transferred_non_resource_result_is_preserved_by_the_build_parser() {
+    let rows = parse_ownership_contracts(VALID_SYNTHETIC_BYTES);
+    assert_eq!(
+        rows["example_string_to_bytes"].result_retention,
+        "transferred"
+    );
+}
+
+#[test]
+#[should_panic(expected = "unknown result-retention")]
+fn malformed_non_resource_retention_fails_closed() {
+    let _ = parse_ownership_contracts(&VALID_SYNTHETIC_BYTES.replace(
+        "result-retention = \"transferred\"",
+        "result-retention = \"callee-keeps-alias\"",
+    ));
 }

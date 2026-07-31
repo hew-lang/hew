@@ -442,6 +442,23 @@ mod tests {
     }
 
     #[test]
+    fn string_to_bytes_carries_the_measured_transfer_contract() {
+        let contract = extern_ownership_contract("hew_string_to_bytes")
+            .contract()
+            .expect("string-to-bytes contract");
+        assert_eq!(contract.params, &[ExternParamOwnership::Borrow]);
+        assert!(contract.resource_param_types.is_empty());
+        assert_eq!(contract.resource_result_type, None);
+        assert_eq!(contract.result, ExternResultOwnership::Fresh);
+        assert_eq!(contract.release_symbol, "hew_bytes_drop");
+        assert_eq!(contract.discharge_depth, ReleaseDischargeDepth::Shallow);
+        assert_eq!(
+            contract.result_retention,
+            ExternResultRetention::Transferred
+        );
+    }
+
+    #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "the exhaustive table intentionally keeps every value-tree ABI row visible"

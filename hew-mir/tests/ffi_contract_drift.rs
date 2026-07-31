@@ -142,3 +142,32 @@ fn compiler_table_matches_toml_one_to_one() {
         );
     }
 }
+
+#[test]
+fn string_to_bytes_transfer_row_does_not_drift() {
+    let document = classification_toml();
+    let source = document
+        .ownership
+        .contracts
+        .iter()
+        .find(|row| row.symbol == "hew_string_to_bytes")
+        .expect("TOML string-to-bytes ownership row");
+    assert_eq!(source.result, "fresh");
+    assert_eq!(source.params, ["borrow"]);
+    assert_eq!(source.release_symbol, "hew_bytes_drop");
+    assert_eq!(source.discharge_depth, "shallow");
+    assert_eq!(source.result_retention, "transferred");
+
+    let (_, compiled) = FFI_OWNERSHIP_CONTRACTS
+        .iter()
+        .find(|(symbol, _)| *symbol == "hew_string_to_bytes")
+        .expect("compiled string-to-bytes ownership row");
+    assert_eq!(compiled.result, ExternResultOwnership::Fresh);
+    assert_eq!(compiled.params, &[ExternParamOwnership::Borrow]);
+    assert_eq!(compiled.release_symbol, "hew_bytes_drop");
+    assert_eq!(compiled.discharge_depth, ReleaseDischargeDepth::Shallow);
+    assert_eq!(
+        compiled.result_retention,
+        ExternResultRetention::Transferred
+    );
+}

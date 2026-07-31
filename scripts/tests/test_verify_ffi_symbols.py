@@ -4,6 +4,7 @@ import io
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -199,6 +200,68 @@ def test_local_pid_runtime_surface_is_jit_stable() -> None:
     assert not (LOCAL_PID_NON_DECLARABLE_EXPORTS & classification["stable-stdlib"])
 
 
+def test_string_to_bytes_transfer_contract_is_exact() -> None:
+    document = verify_ffi_symbols.toml_compat.loads(
+        verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+            encoding=verify_ffi_symbols.SOURCE_ENCODING
+        )
+    )
+    rows = {row["symbol"]: row for row in document["ownership"]["contracts"]}
+    assert rows["hew_string_to_bytes"] == {
+        "symbol": "hew_string_to_bytes",
+        "result": "fresh",
+        "params": ["borrow"],
+        "release-symbol": "hew_bytes_drop",
+        "discharge-depth": "shallow",
+        "result-retention": "transferred",
+    }
+
+
+def test_malformed_string_to_bytes_retention_fails_verification() -> None:
+    source = verify_ffi_symbols.JIT_SYMBOL_CLASSIFICATION.read_text(
+        encoding=verify_ffi_symbols.SOURCE_ENCODING
+    )
+    good = (
+        'symbol = "hew_string_to_bytes"\n'
+        'result = "fresh"\n'
+        'params = ["borrow"]\n'
+        'release-symbol = "hew_bytes_drop"\n'
+        'discharge-depth = "shallow"\n'
+        'result-retention = "transferred"'
+    )
+    bad = good.replace(
+        'result-retention = "transferred"',
+        'result-retention = "callee-keeps-alias"',
+    )
+    assert source.count(good) == 1, "fixture must target exactly one contract row"
+
+    with tempfile.TemporaryDirectory() as directory:
+        malformed = Path(directory) / "jit-symbol-classification.toml"
+        malformed.write_text(source.replace(good, bad), encoding="utf-8")
+        with mock.patch.object(
+            verify_ffi_symbols,
+            "JIT_SYMBOL_CLASSIFICATION",
+            malformed,
+        ):
+            classification = verify_ffi_symbols.load_jit_symbol_classification()
+            errors = verify_ffi_symbols.validate_ownership_contracts(
+                classification,
+                verify_ffi_symbols.extract_runtime_exports()
+                | verify_ffi_symbols.extract_stdlib_exports(),
+                verify_ffi_symbols._extract_fn_param_counts(
+                    [
+                        verify_ffi_symbols.RUNTIME_SRC,
+                        verify_ffi_symbols.STDLIB_SRC,
+                    ]
+                ),
+            )
+    assert any(
+        "ownership contract for hew_string_to_bytes result-retention must be one of"
+        in error
+        for error in errors
+    ), errors
+
+
 _TESTS = [
     test_classify_stable_outputs_sorted_names_only,
     test_classify_internal_outputs_sorted_names_only,
@@ -208,6 +271,8 @@ _TESTS = [
     test_io_runtime_exports_are_jit_stable,
     test_c_unwind_machine_emit_exports_are_classified,
     test_local_pid_runtime_surface_is_jit_stable,
+    test_string_to_bytes_transfer_contract_is_exact,
+    test_malformed_string_to_bytes_retention_fails_verification,
 ]
 
 if __name__ == "__main__":

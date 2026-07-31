@@ -2440,6 +2440,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_unicode_is_alnum"

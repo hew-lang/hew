@@ -15,6 +15,7 @@ pub mod env;
 pub(crate) mod eq_eligibility;
 pub mod error;
 pub mod extern_symbol;
+pub mod ffi_contracts;
 pub(crate) mod hash_eligibility;
 pub mod jit_symbols;
 pub mod lang_items;

@@ -1,4 +1,4 @@
-// `[[ownership.contracts]]` hand parser, shared between `hew-mir/build.rs`
+// `[[ownership.contracts]]` hand parser, shared between `hew-types/build.rs`
 // (via `include!`) and the parser-hardening test in
 // `tests/ffi_contract_parse_hardening.rs` so the exact build-time code is
 // what the test exercises. Types are referred to fully-qualified (no `use`
@@ -9,6 +9,11 @@
 struct ContractRow {
     result: String,
     params: Vec<String>,
+    /// For a resource-valued ABI parameter, the one nominal handle this row
+    /// audits. Empty entries denote non-resource positions.  The field is
+    /// deliberately optional for the existing non-resource ABI surface; an
+    /// absent typed fact is never interpreted as a resource borrow.
+    resource_param_types: Vec<String>,
     release_symbol: String,
     discharge_depth: String,
     /// The RETENTION answer for an owned result: `"transferred"` when the
@@ -67,6 +72,25 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
             ["borrow", "consume", "retain"].contains(&param.as_str()),
             "unknown param ownership for {symbol}: {param}"
         );
+    }
+    if !row.resource_param_types.is_empty() {
+        assert_eq!(
+            row.resource_param_types.len(),
+            row.params.len(),
+            "resource-param-types for {symbol} must have one entry per parameter"
+        );
+        for (index, resource_type) in row.resource_param_types.iter().enumerate() {
+            if !resource_type.is_empty() {
+                assert!(
+                    ["borrow", "consume"].contains(&row.params[index].as_str()),
+                    "typed resource parameter {index} for {symbol} must be an audited borrow or consume"
+                );
+                assert!(
+                    resource_type.contains('.'),
+                    "resource parameter type for {symbol} must be a qualified nominal: {resource_type}"
+                );
+            }
+        }
     }
     assert!(
         ["shallow", "deep", "none"].contains(&row.discharge_depth.as_str()),
@@ -137,6 +161,7 @@ fn parse_ownership_contracts(
                 ContractRow {
                     result: String::new(),
                     params: Vec::new(),
+                    resource_param_types: Vec::new(),
                     release_symbol: String::new(),
                     discharge_depth: String::new(),
                     result_retention: String::new(),
@@ -176,6 +201,19 @@ fn parse_ownership_contracts(
                 body.push_str(continuation.trim());
             }
             row.params = quoted_list(&body);
+        } else if line.starts_with("resource-param-types =") {
+            // Keep this parallel to `params`: the empty-string slots pin the
+            // non-resource ABI positions, so an index can never be shifted
+            // into a neighbouring resource fact.
+            let mut body = line.to_owned();
+            while !body.trim_end().ends_with(']') {
+                let continuation = lines
+                    .next()
+                    .expect("unterminated resource-param-types array in ownership contract");
+                body.push(' ');
+                body.push_str(continuation.trim());
+            }
+            row.resource_param_types = quoted_list(&body);
         } else if line.starts_with("release-symbol =") {
             quoted_value(line)
                 .expect("contract release-symbol must be quoted")

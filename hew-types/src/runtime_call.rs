@@ -1512,7 +1512,10 @@ impl RuntimeCallFamily {
     /// in `hew-types/src/builtin_names.rs` for the 7-symbol set:
     /// `hew_stream_close`, `hew_sink_close`, `hew_channel_sender_close`,
     /// `hew_channel_receiver_close`, `hew_duplex_close`,
-    /// `hew_duplex_close_half`, `hew_lambda_actor_release`.
+    /// `hew_duplex_close_half`, `hew_lambda_actor_release`, plus the TCP
+    /// active-mode handoff. The latter is not a close call: its consume fact
+    /// comes from the generated FFI contract for `hew_tcp_attach_local`,
+    /// because the reactor becomes the connection's sole close authority.
     ///
     /// LESSONS P0 `boundary-fail-closed`: a missed consume-mark leaks
     /// the handle (drop fires once on a still-live handle) — it never
@@ -1521,6 +1524,14 @@ impl RuntimeCallFamily {
     /// listing.
     #[must_use]
     pub fn consumes_receiver(self) -> bool {
+        if self == Self::TcpAttachLocal {
+            // The TCP handoff carries a scalar connection token at ABI level,
+            // so this must not be a spelling-only ownership inference. An
+            // absent/wrong/short row is deliberately non-consuming; the
+            // generated contract is the sole positive authority.
+            return crate::ffi_contracts::extern_param_ownership(self.c_symbol(), 0)
+                == Some(crate::ffi_contracts::ExternParamOwnership::Consume);
+        }
         matches!(
             self,
             Self::StreamClose
@@ -2491,9 +2502,12 @@ mod tests {
     /// now delegates to this catalog, so asserting against that function
     /// would be circular — the literal set below is the sole external
     /// anchor: a consuming family losing its consume mark (leak) or a
-    /// non-consuming family gaining one (double-free) fails here. The set
-    /// covers the close family plus the two half-extract methods, which
-    /// move the unified `Duplex` handle out (leaving only the half live).
+    /// non-consuming family gaining one (double-free) fails here. The literal
+    /// set covers the close family plus the two half-extract methods, which
+    /// move the unified `Duplex` handle out (leaving only the half live). TCP
+    /// attach is intentionally separate: its consume fact is anchored in the
+    /// generated FFI table, and this test pins that table projection rather
+    /// than duplicating a second literal authority.
     #[test]
     fn consumes_receiver_mirrors_builtin_names() {
         use std::collections::HashSet;
@@ -2516,7 +2530,10 @@ mod tests {
         for family in all_runtime_call_families() {
             let sym = family.c_symbol();
             let consumes = family.consumes_receiver();
-            let expected_consumes = expected.contains(sym);
+            let expected_consumes = expected.contains(sym)
+                || (sym == "hew_tcp_attach_local"
+                    && crate::ffi_contracts::extern_param_ownership(sym, 0)
+                        == Some(crate::ffi_contracts::ExternParamOwnership::Consume));
             assert_eq!(
                 consumes, expected_consumes,
                 "consumes_receiver mismatch for {family:?} → {sym}: \

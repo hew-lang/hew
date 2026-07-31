@@ -629,6 +629,19 @@ fn collect_method_item_ids(
         .collect()
 }
 
+/// Symbols for source-declared extern functions. These bodyless ABI calls are
+/// the sole free-call shape whose resource `Read` intent was proved directly
+/// by HIR's generated FFI contract table.
+fn collect_extern_fn_names(items: &[HirItem]) -> HashSet<String> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::ExternFn(extern_fn) => Some(extern_fn.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn resolved_ty_matches_impl_self(ty: &ResolvedTy, self_ty: &str) -> bool {
     let rendered = ty.user_facing().to_string();
     matches!(ty, ResolvedTy::Named { name, .. } if name == self_ty)
@@ -823,6 +836,7 @@ fn receiver_is_whole_owned_operand(receiver: &HirExpr) -> bool {
 fn compute_call_param_consumption(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     methods: &HashSet<hew_hir::ItemId>,
+    extern_fn_names: &HashSet<String>,
     true_receiver_methods: &HashSet<hew_hir::ItemId>,
     receiver_methods: &HashSet<hew_hir::ItemId>,
     resource_param_consume: &HashMap<(hew_hir::ItemId, usize), bool>,
@@ -854,6 +868,7 @@ fn compute_call_param_consumption(
                     let cx = ScanCtx {
                         consume: &consume,
                         methods,
+                        extern_fn_names,
                         true_receiver_methods,
                         receiver_methods,
                         owned_projection_sinks,
@@ -889,6 +904,7 @@ fn compute_call_param_consumption(
 fn refine_call_param_verdicts(
     fns: &HashMap<hew_hir::ItemId, &HirFn>,
     methods: &HashSet<hew_hir::ItemId>,
+    extern_fn_names: &HashSet<String>,
     true_receiver_methods: &HashSet<hew_hir::ItemId>,
     receiver_methods: &HashSet<hew_hir::ItemId>,
     consume_bool: &HashMap<(hew_hir::ItemId, usize), bool>,
@@ -896,6 +912,7 @@ fn refine_call_param_verdicts(
     let proven_cx = ScanCtx {
         consume: consume_bool,
         methods,
+        extern_fn_names,
         true_receiver_methods,
         receiver_methods,
         owned_projection_sinks: false,
@@ -999,6 +1016,7 @@ pub(super) fn compute_param_ownership(
     // move intent and is never relaxed by the borrow downgrade; associated/static
     // `impl` functions are captured here too.
     let methods = collect_method_item_ids(fns, items);
+    let extern_fn_names = collect_extern_fn_names(items);
     // Only this subset owns a receiver slot. Associated/static functions are
     // method items for symbol/dispatch purposes, but parameter zero remains
     // ordinary call data and must not lose carrier ownership evidence.
@@ -1036,6 +1054,7 @@ pub(super) fn compute_param_ownership(
                     let cx = ScanCtx {
                         consume: &param_consume,
                         methods: &methods,
+                        extern_fn_names: &extern_fn_names,
                         true_receiver_methods: &true_receiver_methods,
                         receiver_methods: &receiver_methods,
                         owned_projection_sinks: false,
@@ -1056,6 +1075,7 @@ pub(super) fn compute_param_ownership(
     let call_param_consume_bool = compute_call_param_consumption(
         fns,
         &methods,
+        &extern_fn_names,
         &true_receiver_methods,
         &receiver_methods,
         &param_consume,
@@ -1064,6 +1084,7 @@ pub(super) fn compute_param_ownership(
     let mut call_param_owned_carrier = compute_call_param_consumption(
         fns,
         &methods,
+        &extern_fn_names,
         &true_receiver_methods,
         &receiver_methods,
         &param_consume,
@@ -1098,6 +1119,7 @@ pub(super) fn compute_param_ownership(
         &ScanCtx {
             consume: &param_consume,
             methods: &methods,
+            extern_fn_names: &extern_fn_names,
             true_receiver_methods: &true_receiver_methods,
             receiver_methods: &receiver_methods,
             owned_projection_sinks: false,
@@ -1109,6 +1131,7 @@ pub(super) fn compute_param_ownership(
         &ScanCtx {
             consume: &call_param_consume_bool,
             methods: &methods,
+            extern_fn_names: &extern_fn_names,
             true_receiver_methods: &true_receiver_methods,
             receiver_methods: &receiver_methods,
             owned_projection_sinks: false,
@@ -1120,6 +1143,7 @@ pub(super) fn compute_param_ownership(
     let call_param_consume = refine_call_param_verdicts(
         fns,
         &methods,
+        &extern_fn_names,
         &true_receiver_methods,
         &receiver_methods,
         &call_param_consume_bool,
@@ -1277,7 +1301,13 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         //    empty/borrowing body like `close`) yet still consume at the call
         //    site, which the `Consume` receiver intent already records.
         //  * the callee is a FREE function and slot `j`'s target parameter is
-        //    classified BORROW in `pc`.
+        //    classified BORROW in `pc`; or
+        //  * the callee resolves to a source-declared `extern` symbol AND its HIR argument
+        //    already carries `Read`. For a resource-valued direct C-ABI call
+        //    this is HIR's generated-table verdict: it is reached only after
+        //    the exact symbol/index, qualified nominal, and declaring-module
+        //    provenance have been validated. Ordinary Hew free-call resource
+        //    arguments cannot forge this borrow path.
         // Every other arg form recurses (and a bare ref to a Consume/unresolved
         // target bottoms out at the leaf rule → consume). Invoking a callable
         // parameter, including through one of its place projections, only reads
@@ -1307,6 +1337,21 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
                             && j == 0
                             && callee_item.is_some_and(|id| pc.true_receiver_methods.contains(&id)))
                             || arg.intent == IntentKind::Read
+                    } else if callee_item.is_some()
+                        && matches!(
+                            &callee.kind,
+                            HirExprKind::BindingRef { name, .. }
+                                if pc.extern_fn_names.contains(name)
+                        )
+                        && arg.intent == IntentKind::Read
+                    {
+                        // A direct C-ABI resource borrow was proved by HIR
+                        // from the sole generated FFI contract table. Preserve
+                        // that fact in the callee's resource-parameter summary,
+                        // or a stdlib wrapper such as Connection::write_string
+                        // would incorrectly acquire and close its caller's
+                        // receiver at wrapper return.
+                        true
                     } else if pc.assume_forward_borrows {
                         // Proven-only differential pass: treat every free-fn
                         // forward as a borrow so the scan reports ONLY the
@@ -3986,9 +4031,17 @@ mod call_param_verdict_tests {
 
     fn verdicts(fns: &HashMap<ItemId, &HirFn>) -> HashMap<(ItemId, usize), ConsumeVerdict> {
         let empty = HashSet::new();
-        let consume_bool =
-            compute_call_param_consumption(fns, &empty, &empty, &empty, &HashMap::new(), false);
-        refine_call_param_verdicts(fns, &empty, &empty, &empty, &consume_bool)
+        let empty_names = HashSet::new();
+        let consume_bool = compute_call_param_consumption(
+            fns,
+            &empty,
+            &empty_names,
+            &empty,
+            &empty,
+            &HashMap::new(),
+            false,
+        );
+        refine_call_param_verdicts(fns, &empty, &empty_names, &empty, &empty, &consume_bool)
     }
 
     #[test]

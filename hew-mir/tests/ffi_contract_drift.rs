@@ -1,7 +1,7 @@
 //! 1:1 drift proof between the two ownership-contract carriers.
 //!
 //! `scripts/jit-symbol-classification.toml` `[[ownership.contracts]]` is the
-//! authority; `hew-mir/build.rs` projects it into the static
+//! authority; `hew-types/build.rs` projects it into the static
 //! `FFI_OWNERSHIP_CONTRACTS` table with a hand-rolled line parser. This test
 //! re-parses the TOML with the independent `toml` crate and asserts exact
 //! row-for-row equality, so neither a build-script parser bug nor a stale
@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use hew_mir::ffi_contracts::{
-    ExternParamOwnership, ExternResultOwnership, ReleaseDischargeDepth, FFI_OWNERSHIP_CONTRACTS,
+    ExternParamOwnership, ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
+    FFI_OWNERSHIP_CONTRACTS,
 };
 
 #[derive(Debug, serde::Deserialize)]
@@ -32,10 +33,14 @@ struct Contract {
     symbol: String,
     result: String,
     params: Vec<String>,
+    #[serde(rename = "resource-param-types", default)]
+    resource_param_types: Vec<String>,
     #[serde(rename = "release-symbol")]
     release_symbol: String,
     #[serde(rename = "discharge-depth")]
     discharge_depth: String,
+    #[serde(rename = "result-retention", default)]
+    result_retention: String,
 }
 
 fn classification_toml() -> Document {
@@ -70,6 +75,13 @@ fn depth_spelling(depth: ReleaseDischargeDepth) -> &'static str {
     }
 }
 
+fn retention_spelling(retention: ExternResultRetention) -> &'static str {
+    match retention {
+        ExternResultRetention::Transferred => "transferred",
+        ExternResultRetention::Unspecified => "",
+    }
+}
+
 #[test]
 fn compiler_table_matches_toml_one_to_one() {
     let document = classification_toml();
@@ -99,6 +111,10 @@ fn compiler_table_matches_toml_one_to_one() {
             .collect();
         assert_eq!(compiled_params, expected.params, "{symbol}: params drift");
         assert_eq!(
+            compiled.resource_param_types, expected.resource_param_types,
+            "{symbol}: resource-param-types drift"
+        );
+        assert_eq!(
             result_spelling(compiled.result),
             expected.result,
             "{symbol}: result drift"
@@ -111,6 +127,11 @@ fn compiler_table_matches_toml_one_to_one() {
             depth_spelling(compiled.discharge_depth),
             expected.discharge_depth,
             "{symbol}: discharge-depth drift"
+        );
+        assert_eq!(
+            retention_spelling(compiled.result_retention),
+            expected.result_retention,
+            "{symbol}: result-retention drift"
         );
     }
 }

@@ -3905,6 +3905,10 @@ pub(crate) struct ParamOwnershipFacts {
 struct ScanCtx<'a> {
     consume: &'a HashMap<(hew_hir::ItemId, usize), bool>,
     methods: &'a HashSet<hew_hir::ItemId>,
+    /// Symbols declared by a source `extern` block. Only these bodyless ABI
+    /// boundaries may preserve HIR's generated-contract `Read` intent for an
+    /// affine resource argument; ordinary Hew calls stay fail-closed.
+    extern_fn_names: &'a HashSet<String>,
     /// The subset of `methods` whose parameter zero is a true receiver. An
     /// associated/static impl function has no receiver, so its first argument
     /// retains ordinary carrier/consume inference.

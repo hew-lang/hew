@@ -513,6 +513,65 @@ fn ownership_graph_rejects_cycle_and_cross_module_edge() {
 }
 
 #[test]
+fn empty_select_and_match_publish_no_empty_join_but_validator_rejects_one() {
+    let recovery_sources = [
+        ("fn main() { let _ = select {}; }", false),
+        ("fn main() { let _ = match missing() {}; }", true),
+    ];
+
+    for (source, expects_source_error) in recovery_sources {
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "recovery fixture must reach the checker: {:#?}",
+            parsed.errors,
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&parsed.program);
+        assert_eq!(
+            !output.errors.is_empty(),
+            expects_source_error,
+            "unexpected source diagnostics for `{source}`: {:#?}",
+            output.errors,
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .all(|error| !error.message.contains("produced-value graph is incomplete")),
+            "recovery must preserve only source diagnostics: {:#?}",
+            output.errors,
+        );
+        assert!(
+            checker
+                .produced_value_dependencies
+                .values()
+                .all(|dependency| !matches!(dependency, ProducedValueDependency::Join(children) if children.is_empty())),
+            "source recovery must never publish an empty ownership join: {:#?}",
+            checker.produced_value_dependencies,
+        );
+    }
+
+    let parent = ownership_graph_key(35, 0);
+    let expr_types = HashMap::from([(parent.clone(), Ty::Unit)]);
+    let leaves = HashMap::from([(
+        parent.clone(),
+        ProducedValueFact::result(crate::runtime_call::ProducedValueOwnership::NoOwner),
+    )]);
+    let mut malformed = Checker::new(ModuleRegistry::new(vec![]));
+    malformed
+        .produced_value_dependencies
+        .insert(parent.clone(), ProducedValueDependency::Join(Vec::new()));
+
+    let invalid = malformed.validate_produced_value_graph(&expr_types, &leaves);
+    assert!(invalid.contains(&parent));
+    assert!(malformed
+        .errors
+        .iter()
+        .any(|error| error.message.contains("join dependency has no children")));
+}
+
+#[test]
 fn ownership_graph_requires_exact_receiver_identity_and_call_shape() {
     use crate::runtime_call::{
         ProducedArgumentBoundary as Boundary, ProducedValueOwnership as Ownership,

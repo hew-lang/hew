@@ -6606,27 +6606,21 @@ impl Checker {
     ) -> Ty {
         let result = self.check_method_call_inner(receiver, method, args, span);
         let key = SpanKey::in_module(span, self.current_module_idx);
-        let rewrite_consumes_receiver = matches!(
+        let runtime_rewrite_consumes_receiver = matches!(
             self.method_call_rewrites.get(&key),
-            Some(
-                MethodCallRewrite::RewriteToFunction {
-                    consumes_receiver: true,
-                    ..
-                } | MethodCallRewrite::StaticTraitDispatch {
-                    consumes_receiver: true,
-                    ..
-                }
-            )
+            Some(MethodCallRewrite::RewriteToFunction {
+                consumes_receiver: true,
+                ..
+            })
         );
-        if rewrite_consumes_receiver {
+        if runtime_rewrite_consumes_receiver {
             self.method_call_consumes_receiver.insert(key);
-            if let Some(receiver_ty) = self
-                .expr_types
-                .get(&SpanKey::in_module(&receiver.1, self.current_module_idx))
-                .cloned()
-            {
-                let resolved_receiver = self.subst.resolve(&receiver_ty);
-                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_receiver);
+            if let Expr::Identifier(name) = &receiver.0 {
+                // The exact runtime ABI transfer overrides a surface Copy
+                // derivation. In particular, LambdaActorHandle is represented
+                // by an empty stdlib nominal, but release still consumes its
+                // sole runtime handle and any later receiver use is invalid.
+                self.env.mark_moved(name, receiver.1.clone());
             }
         }
         self.record_resolved_method_call_ownership(receiver, method, args, span, &result);

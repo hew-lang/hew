@@ -22,6 +22,7 @@
 use crate::common;
 
 use hew_types::check::{MethodCallRewrite, SpanKey};
+use hew_types::error::TypeErrorKind;
 use hew_types::runtime_call::{ProducedArgumentBoundary, RuntimeCallFamily};
 use hew_types::TypeCheckOutput;
 
@@ -79,6 +80,7 @@ fn stdlib_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
         r"
         fn main() {
             let d: duration = 5s;
+            let _: i64 = d.hours();
             let _: i64 = d.hours();
         }
         ",
@@ -232,4 +234,23 @@ fn extern_symbol_consuming_release_keeps_consume_mark_without_descriptor() {
             output.method_call_rewrites,
         ),
     }
+
+    let (_, reused_output) = parse_and_typecheck_inline(
+        r"
+        import std::concurrency::lambda_actor;
+
+        fn exercise(handle: lambda_actor.LambdaActorHandle) {
+            handle.release();
+            handle.release();
+        }
+        ",
+    );
+    assert!(
+        reused_output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "a second use of the consuming extern receiver must fail as moved: {:#?}",
+        reused_output.errors,
+    );
 }

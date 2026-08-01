@@ -1,0 +1,44 @@
+# Each nonzero match is a reviewed compatibility/canonical construction seam.
+# New source paths or changed counts fail closed.  Tests and presentation-only code are excluded
+# by scripts/structural-authority-audit.py before these expressions are evaluated.
+group	path	count	disposition
+short-name-fallback	hew-codegen-rs/src/layout.rs	2	compatibility lookup
+short-name-fallback	hew-codegen-rs/src/llvm.rs	9	compatibility lookup
+short-name-fallback	hew-codegen-rs/src/thunks.rs	1	compatibility lookup
+short-name-fallback	hew-hir/src/lower.rs	1	compatibility lookup
+short-name-fallback	hew-types/src/stdlib_loader.rs	1	compatibility lookup
+short-name-fallback	hew-types/src/traits.rs	2	compatibility lookup
+short-name-fallback	hew-types/src/module_registry.rs	1	compatibility lookup
+short-name-fallback	hew-types/src/check/expressions.rs	2	compatibility lookup
+short-name-fallback	hew-types/src/check/registration.rs	1	compatibility lookup
+short-name-fallback	hew-types/src/check/resolution.rs	1	compatibility lookup
+short-name-fallback	hew-mir/src/thunk_requirements.rs	14	compatibility lookup
+short-name-fallback	hew-mir/src/model.rs	3	compatibility lookup
+short-name-fallback	hew-mir/src/lower/pattern.rs	1	compatibility lookup
+short-name-fallback	hew-mir/src/lower/composite_own.rs	1	compatibility lookup
+short-name-fallback	hew-mir/src/lower/ownership.rs	1	compatibility lookup
+short-name-fallback	hew-mir/src/lower/task.rs	1	compatibility lookup
+short-name-fallback	hew-mir/src/lower/facts.rs	2	compatibility lookup
+short-name-fallback	hew-mir/src/lower/drop_plan.rs	3	compatibility lookup
+short-name-fallback	hew-mir/src/lower/mod.rs	1	compatibility lookup
+short-name-fallback	hew-mir/src/lower/expr.rs	10	compatibility lookup
+string-method-identity	hew-hir/src/lower.rs	11	canonical construction surface
+string-method-identity	hew-types/src/stdlib_authority.rs	1	canonical construction surface
+string-method-identity	hew-types/src/check/methods.rs	8	canonical construction surface
+string-method-identity	hew-types/src/check/registration.rs	4	canonical construction surface
+string-method-identity	hew-types/src/check/items.rs	9	canonical construction surface
+string-method-identity	hew-types/src/check/mod.rs	1	canonical construction surface
+string-method-identity	hew-analysis/src/hover.rs	5	display adapter
+string-method-identity	hew-mir/src/thunk_requirements.rs	1	canonical construction surface
+string-method-identity	hew-mir/src/lower/drop_plan.rs	2	canonical construction surface
+string-method-identity	hew-mir/src/lower/mod.rs	1	canonical construction surface
+legacy-heap-reader	hew-codegen-rs/src/llvm.rs	2	legacy reader; migration tracked
+legacy-heap-reader	hew-mir/src/ownership.rs	7	canonical authority definition
+legacy-heap-reader	hew-mir/src/model.rs	8	canonical authority definition
+legacy-heap-reader	hew-mir/src/lower/expr/binding_ty_is_plain_vec_tuple.rs	1	legacy reader; migration tracked
+checker-hir-publication	hew-types/src/check/types.rs	1	checker produced-value publication
+checker-hir-publication	hew-types/src/check/expressions.rs	1	checker produced-value publication
+checker-hir-publication	hew-types/src/check/resolution.rs	2	checker produced-value publication
+mir-ownership-sink	hew-mir/src/ownership.rs	14	canonical ownership fact sink
+mir-ownership-sink	hew-mir/src/lower/ownership.rs	3	MIR ownership fact sink
+mir-ownership-sink	hew-mir/src/lower/drop_plan.rs	1	MIR ownership fact sink

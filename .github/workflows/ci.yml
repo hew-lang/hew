@@ -214,6 +214,10 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      # Explicit acquisition is cacheable but never implicit in local lint.
+      - name: Bootstrap pinned structural lint toolchain
+        run: make structural-lint-bootstrap
+
       # >>> CI-PARITY-STEPS
       # This job is an active required status check on main. Keep the workflow
       # contract here unconditionally so nightly/release-gate drift cannot merge
@@ -229,6 +233,9 @@ jobs:
 
       - name: Verify every corpus floor has a live call site
         run: make corpus-floor-check
+
+      - name: Run structural authority lint
+        run: make structural-lint
       # <<< CI-PARITY-STEPS
 
       # Format-check std/ and examples/ .hew sources with the in-tree hew

@@ -112,6 +112,7 @@ CI_REQUIRED_CHECKS=(
     "Sanitizer gate wiring (ci.yml: make check-sanitizer-gate)	make check-sanitizer-gate"
     "Gate reachability + documented targets (ci.yml: make check-gate-reachability)	make check-gate-reachability"
     "Corpus floors have live call sites (ci.yml: make corpus-floor-check)	make corpus-floor-check"
+    "Pinned structural lint (ci.yml: make structural-lint-bootstrap)	make structural-lint"
     "UX + progressive tutorial oracle (ci.yml: make test-ux-examples)	make test-ux-examples"
     "Surface-example ledger gate (ci.yml: make test-surface-examples)	make test-surface-examples"
     "Package-install consumer oracle (ci.yml: make test-package-install)	make test-package-install"
@@ -691,6 +692,7 @@ case "$LANE" in
         add_command "make test-doc-examples"
         ;;
     scripts-config)
+        add_command "make structural-lint"
         add_command "make leak-scan"
         add_command "make test-release-workflow-contract"
         add_command "cargo fmt --all -- --check"
@@ -837,6 +839,7 @@ case "$LANE" in
         # The sequence below mirrors CI's build-and-test job exactly so a green
         # fallback preflight predicts a green merge-queue outcome.
         add_command "make ci-preflight-smoke"
+        add_command "make structural-lint"
         add_command "make lint"
         add_command "make freebsd-workflow-contract-check"
         add_command "make playground-check"

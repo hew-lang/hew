@@ -55,12 +55,17 @@ ITEM_KINDS = (
 )
 DEBUG_CONTEXT_PATTERNS = {
     "debug-struct-type-argument": (
-        "$R.create_struct_type($A0, short_name($X1), $A2, $A3, $A4, $A5, "
-        "$A6, $A7, $A8, $A9, $A10, short_name($X11))"
+        "$R.create_struct_type($A0, $D1, $A2, $A3, $A4, $A5, "
+        "$A6, $A7, $A8, $A9, $A10, $D11)",
+        ("D1", "D11"),
     ),
-    "debug-enumerator-argument": ("$R.create_enumerator(short_name($X0), $A1, $A2)"),
+    "debug-enumerator-argument": (
+        "$R.create_enumerator($D0, $A1, $A2)",
+        ("D0",),
+    ),
     "debug-member-type-argument": (
-        "$R.create_member_type($A0, short_name($X1), $A2, $A3, $A4, $A5, $A6, $A7, $A8)"
+        "$R.create_member_type($A0, $D1, $A2, $A3, $A4, $A5, $A6, $A7, $A8)",
+        ("D1",),
     ),
 }
 
@@ -192,11 +197,104 @@ def single_meta(match: dict[str, object], name: str) -> str:
     return str(meta.get("single", {}).get(name, {}).get("text", ""))  # type: ignore[union-attr]
 
 
+def single_meta_range(match: dict[str, object], name: str) -> SyntaxRange | None:
+    meta = match.get("metaVariables", {})
+    value = meta.get("single", {}).get(name)  # type: ignore[union-attr]
+    if not isinstance(value, dict) or "range" not in value:
+        return None
+    offsets = value["range"]["byteOffset"]
+    return SyntaxRange(str(match["file"]), int(offsets["start"]), int(offsets["end"]))
+
+
+class CfgPredicateParser:
+    """Balanced parser for the small cfg predicate language we rely on."""
+
+    def __init__(self, text: str):
+        self.tokens = self.tokenize(text)
+        self.position = 0
+
+    @staticmethod
+    def tokenize(text: str) -> list[str]:
+        tokens: list[str] = []
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if char.isspace():
+                index += 1
+            elif char in "(),=":
+                tokens.append(char)
+                index += 1
+            elif char == '"':
+                end = index + 1
+                while end < len(text):
+                    if text[end] == "\\":
+                        end += 2
+                    elif text[end] == '"':
+                        end += 1
+                        break
+                    else:
+                        end += 1
+                tokens.append(text[index:end])
+                index = end
+            elif char.isalnum() or char == "_":
+                end = index + 1
+                while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+                    end += 1
+                tokens.append(text[index:end])
+                index = end
+            else:
+                tokens.append(char)
+                index += 1
+        return tokens
+
+    def take(self, token: str | None = None) -> str | None:
+        if self.position == len(self.tokens):
+            return None
+        value = self.tokens[self.position]
+        if token is not None and value != token:
+            return None
+        self.position += 1
+        return value
+
+    def predicate(self) -> bool | None:
+        name = self.take()
+        if name is None or not (name[0].isalnum() or name[0] == "_"):
+            return None
+        if self.take("=") is not None:
+            return False if self.take() is not None else None
+        if self.take("(") is None:
+            return name == "test"
+        children: list[bool] = []
+        if self.take(")") is None:
+            while True:
+                child = self.predicate()
+                if child is None:
+                    return None
+                children.append(child)
+                if self.take(")") is not None:
+                    break
+                if self.take(",") is None:
+                    return None
+        if name == "all":
+            return any(children)
+        if name == "any":
+            return bool(children) and all(children)
+        # Be conservative for `not` and unknown predicate functions.
+        return False
+
+
 def is_test_attribute(text: str) -> bool:
-    compact = "".join(text.split())
-    return compact in {"#[cfg(test)]", "#[test]"} or compact.startswith(
-        "#[cfg(all(test,"
-    )
+    stripped = text.strip()
+    if not (stripped.startswith("#[") and stripped.endswith("]")):
+        return False
+    body = stripped[2:-1].strip()
+    if body == "test":
+        return True
+    parser = CfgPredicateParser(body)
+    if parser.take("cfg") is None or parser.take("(") is None:
+        return False
+    result = parser.predicate()
+    return bool(result) and parser.take(")") is not None and parser.take() is None
 
 
 def test_only_ranges(ast_grep: Path, root: Path) -> list[SyntaxRange]:
@@ -233,6 +331,17 @@ def excluded(finding: Finding, test_ranges: list[SyntaxRange]) -> bool:
     return not is_source_path(finding.path) or any(
         item.contains(finding) for item in test_ranges
     )
+
+
+def is_string_literal(text: str) -> bool:
+    if text.startswith('"'):
+        return True
+    if not text.startswith("r"):
+        return False
+    suffix = text[1:]
+    while suffix.startswith("#"):
+        suffix = suffix[1:]
+    return suffix.startswith('"')
 
 
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
@@ -285,25 +394,12 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
                 finding("checker-hir-publication", "checker-insert-call", match)
             )
 
-    for match in run_query(ast_grep, root, pattern="let $N = format!($$$ARGS);"):
-        name = single_meta(match, "N")
+    for match in run_query(ast_grep, root, pattern="format!($$$ARGS)"):
         args = match.get("metaVariables", {}).get("multi", {}).get("ARGS", [])  # type: ignore[union-attr]
         first = str(args[0].get("text", "")) if args else ""  # type: ignore[index]
-        if (
-            name
-            in {
-                "method_key",
-                "qualified_name",
-                "qualified",
-                "callee_name",
-                "symbol",
-                "key",
-            }
-            and first.startswith('"')
-            and "::" in first
-        ):
+        if is_string_literal(first) and "::" in first:
             findings.add(
-                finding("string-method-identity", "qualified-format-binding", match)
+                finding("string-method-identity", "qualified-format-macro", match)
             )
 
     return {item for item in findings if not excluded(item, test_ranges)}, test_ranges
@@ -312,18 +408,29 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
 def presentation_candidates(
     ast_grep: Path, root: Path, findings: set[Finding], test_ranges: list[SyntaxRange]
 ) -> set[tuple[str, int, int, str, str]]:
+    short_name_calls = {
+        node_range(match)
+        for match in run_query(ast_grep, root, pattern="short_name($X)")
+    }
     contexts: list[tuple[str, SyntaxRange]] = []
-    for context_form, pattern in DEBUG_CONTEXT_PATTERNS.items():
+    for context_form, (pattern, designated_names) in DEBUG_CONTEXT_PATTERNS.items():
         for match in run_query(ast_grep, root, pattern=pattern):
             receiver = single_meta(match, "R")
             if receiver.split(".")[-1] == "di_builder":
-                contexts.append((context_form, node_range(match)))
+                for name in designated_names:
+                    designated = single_meta_range(match, name)
+                    if designated is not None and designated in short_name_calls:
+                        contexts.append((context_form, designated))
     candidates = set()
     for item in findings:
         if item.form != "short-name-identifier" or excluded(item, test_ranges):
             continue
         for context_form, context in contexts:
-            if context.contains(item):
+            if (
+                item.path == context.path
+                and item.byte_start == context.byte_start
+                and item.byte_end == context.byte_start + len("short_name")
+            ):
                 candidates.add(
                     (item.path, item.line, item.column, item.form, context_form)
                 )

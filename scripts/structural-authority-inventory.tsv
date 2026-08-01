@@ -64,13 +64,41 @@ semantic-leaf-name	short-name-identifier	hew-types/src/method_resolution.rs	4	st
 semantic-leaf-name	short-name-identifier	hew-types/src/module_registry.rs	1	stage-1	module registry resolves qualified names through leaf identity
 semantic-leaf-name	short-name-identifier	hew-types/src/stdlib_loader.rs	5	stage-1	stdlib declaration matching uses leaf identity
 semantic-leaf-name	short-name-identifier	hew-types/src/traits.rs	5	stage-1	trait membership and lookup use leaf identity
-string-method-identity	qualified-format-binding	hew-analysis/src/hover.rs	5	stage-1	hover display adapter reconstructs qualified string keys
-string-method-identity	qualified-format-binding	hew-hir/src/lower.rs	15	stage-1	HIR linker target is constructed as a qualified string
-string-method-identity	qualified-format-binding	hew-mir/src/lower/drop_plan.rs	2	stage-3	lifecycle target awaits checker-authored graph authority
-string-method-identity	qualified-format-binding	hew-mir/src/lower/mod.rs	1	stage-3	lifecycle target awaits canonical graph projection
-string-method-identity	qualified-format-binding	hew-mir/src/thunk_requirements.rs	1	stage-5	thunk target awaits downstream identity cutover
-string-method-identity	qualified-format-binding	hew-types/src/check/items.rs	9	stage-1	checker method identity is constructed as a string
-string-method-identity	qualified-format-binding	hew-types/src/check/methods.rs	8	stage-1	checker method identity is constructed as a string
-string-method-identity	qualified-format-binding	hew-types/src/check/mod.rs	1	stage-1	checker method identity is constructed as a string
-string-method-identity	qualified-format-binding	hew-types/src/check/registration.rs	4	stage-1	checker registration identity is constructed as a string
-string-method-identity	qualified-format-binding	hew-types/src/stdlib_authority.rs	1	stage-1	stdlib method identity is constructed as a string
+string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	5	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	5	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-analysis/src/signature_help.rs	1	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/layout.rs	21	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm.rs	115	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/llvm/identity.rs	6	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	64	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	10	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-codegen-rs/src/thunks.rs	3	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-hir/src/dump.rs	2	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	28	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-hir/src/node.rs	1	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-mir/src/dump.rs	6	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-mir/src/lower/actor.rs	1	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-mir/src/lower/consts.rs	2	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-mir/src/lower/control_flow.rs	3	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-mir/src/lower/drop_plan.rs	3	stage-3	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-mir/src/lower/expr.rs	8	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-mir/src/lower/machine_synth.rs	9	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-mir/src/lower/mod.rs	1	stage-3	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-mir/src/lower/ownership.rs	1	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-mir/src/lower/pattern.rs	7	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-mir/src/thunk_requirements.rs	1	stage-5	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/actor_protocol.rs	1	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/check/admissibility.rs	1	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/check/calls.rs	3	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/check/coerce.rs	4	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	2	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	31	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/check/lints/mod.rs	1	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	47	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/check/mod.rs	3	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/check/registration.rs	23	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/check/resolution.rs	11	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/check/statements.rs	1	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/method_resolution.rs	6	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority.rs	5	stage-1	parsed format macro constructs a qualified string
+string-method-identity	qualified-format-macro	hew-types/src/stdlib_authority/codegen.rs	3	stage-1	parsed format macro constructs a qualified string

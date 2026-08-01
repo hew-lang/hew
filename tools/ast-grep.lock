@@ -1,0 +1,11 @@
+# Deliberately small, reviewable dependency contract for structural linting.
+# `scripts/build-ast-grep-lang.sh --bootstrap` fetches only these exact bytes.
+AST_GREP_CARGO_PACKAGE=ast-grep
+AST_GREP_VERSION=0.44.1
+# Existing tracked findings remain visible but are an explicit warning baseline;
+# every other error-severity rule remains fail-closed.
+AST_GREP_WARNING_BASELINE="ok-question-in-lowering ty-var-constructed-post-inference"
+TREE_SITTER_HEW_REPOSITORY=https://github.com/hew-lang/tree-sitter-hew
+TREE_SITTER_HEW_REV=8f714e6100a518cb0e78b38efe96fda48d0b3622
+TREE_SITTER_HEW_ARCHIVE_SHA256=234f2db0a0dc538af4ecc2d253d27a344e816a9d85e1798b2ec6eadd9014d52b
+TREE_SITTER_HEW_LANGUAGE_ABI=15

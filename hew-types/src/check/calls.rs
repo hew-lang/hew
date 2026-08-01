@@ -799,6 +799,10 @@ impl Checker {
     /// a visibility violation), and `None` when `func_name` is not a
     /// module-qualified call, the module is unknown, or no `module.fn` key
     /// exists — leaving the existing `undefined function` diagnostic to fire.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "module-qualified calls validate visibility, target support, and ownership"
+    )]
     fn try_check_namespaced_module_call(
         &mut self,
         func_name: &str,
@@ -904,7 +908,96 @@ impl Checker {
             },
             true,
         );
+        self.record_resolved_direct_call_ownership(
+            &key,
+            &sig,
+            args,
+            &applied_sig.return_type,
+            span,
+        );
         Some(applied_sig.return_type)
+    }
+
+    fn record_resolved_direct_call_ownership(
+        &mut self,
+        signature_key: &str,
+        sig: &FnSig,
+        args: &[CallArg],
+        result_ty: &Ty,
+        span: &Span,
+    ) {
+        use crate::runtime_call::{
+            ProducedArgumentBoundary as Boundary, ProducedValueOwnership as Ownership,
+        };
+
+        let formal_modes = self
+            .fn_param_ownership
+            .get(signature_key)
+            .cloned()
+            .unwrap_or_else(|| vec![Boundary::Unknown; sig.params.len()]);
+        let arguments = args
+            .iter()
+            .enumerate()
+            .map(|(source_index, arg)| {
+                let formal_index = arg
+                    .name()
+                    .and_then(|name| sig.param_names.iter().position(|formal| formal == name))
+                    .unwrap_or(source_index);
+                formal_modes
+                    .get(formal_index)
+                    .copied()
+                    .unwrap_or(Boundary::Unknown)
+            })
+            .collect();
+        let resolved_result_ty = self.subst.resolve(result_ty).materialize_literal_defaults();
+        let non_owning = resolved_result_ty.is_copy()
+            || self
+                .registry
+                .implements_marker(&resolved_result_ty, MarkerTrait::Copy);
+        let source_extern = self
+            .source_extern_declarations
+            .iter()
+            .find(|declaration| declaration.signature_key == signature_key)
+            .cloned();
+        let call_key = SpanKey::in_module(span, self.current_module_idx);
+        let exact_extern_symbol = source_extern.as_ref().and_then(|declaration| {
+            sig.extern_symbol.as_ref().map_or_else(
+                || (!declaration.symbol.is_empty()).then(|| declaration.symbol.clone()),
+                |spec| {
+                    if spec.template.is_monomorphic() {
+                        Some(spec.template.raw.clone())
+                    } else {
+                        self.call_type_args
+                            .get(&call_key)
+                            .and_then(|type_args| type_args.first())
+                            .map(|ty| self.subst.resolve(ty).materialize_literal_defaults())
+                            .and_then(|type_arg| {
+                                spec.template.expand(&type_arg, &self.type_defs).ok()
+                            })
+                    }
+                },
+            )
+        });
+        self.produced_call_arities
+            .insert(call_key.clone(), (false, args.len()));
+        self.resolved_direct_call_ownership.insert(
+            call_key,
+            PendingDirectCallOwnership {
+                fact: ProducedValueFact {
+                    ownership: if non_owning {
+                        Ownership::NoOwner
+                    } else {
+                        Ownership::Unknown
+                    },
+                    receiver_span: None,
+                    receiver_boundary: None,
+                    arguments,
+                },
+                extern_symbol: exact_extern_symbol,
+                extern_declaring_module: source_extern.and_then(|decl| decl.declaring_module),
+                resolved_result_ty,
+            },
+        );
     }
 
     #[expect(
@@ -1031,7 +1124,51 @@ impl Checker {
                 .map(|ty| self.subst.resolve(ty))
                 .collect();
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
-            return Ty::normalize_named(type_name, resolved_args);
+            let result_ty = Ty::normalize_named(type_name, resolved_args);
+            let non_owning = result_ty.is_copy()
+                || self
+                    .registry
+                    .implements_marker(&result_ty, MarkerTrait::Copy);
+            let arguments = args
+                .iter()
+                .map(|arg| {
+                    let ty = self
+                        .expr_types
+                        .get(&SpanKey::in_module(&arg.expr().1, self.current_module_idx))
+                        .map(|ty| self.subst.resolve(ty));
+                    if ty.as_ref().is_some_and(|ty| {
+                        ty.is_copy() || self.registry.implements_marker(ty, MarkerTrait::Copy)
+                    }) {
+                        crate::runtime_call::ProducedArgumentBoundary::Borrow
+                    } else {
+                        crate::runtime_call::ProducedArgumentBoundary::Transfer
+                    }
+                })
+                .collect();
+            let call_key = SpanKey::in_module(span, self.current_module_idx);
+            self.produced_call_arities
+                .insert(call_key.clone(), (false, args.len()));
+            self.resolved_direct_call_ownership.insert(
+                call_key,
+                PendingDirectCallOwnership {
+                    fact: ProducedValueFact {
+                        ownership: if non_owning {
+                            crate::runtime_call::ProducedValueOwnership::NoOwner
+                        } else {
+                            crate::runtime_call::ProducedValueOwnership::owned(
+                                crate::runtime_call::ProducedValueAcquisition::Fresh,
+                            )
+                        },
+                        receiver_span: None,
+                        receiver_boundary: None,
+                        arguments,
+                    },
+                    extern_symbol: None,
+                    extern_declaring_module: None,
+                    resolved_result_ty: result_ty.clone(),
+                },
+            );
+            return result_ty;
         }
 
         // Handle polymorphic constructors with fresh linked type vars
@@ -1432,6 +1569,13 @@ impl Checker {
                 }
             }
 
+            self.record_resolved_direct_call_ownership(
+                &resolved_fn_name,
+                &sig,
+                args,
+                &applied_sig.return_type,
+                span,
+            );
             return applied_sig.return_type;
         }
 
@@ -1637,6 +1781,10 @@ impl Checker {
         Ty::Error
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "typed calls publish both ordinary call results and ownership boundaries"
+    )]
     pub(super) fn check_call_with_type(
         &mut self,
         func_ty: &Ty,
@@ -1653,7 +1801,44 @@ impl Checker {
                         self.check_against(expr, sp, param);
                     }
                 }
-                *ret
+                let result_ty = *ret;
+                let resolved_result_ty = self
+                    .subst
+                    .resolve(&result_ty)
+                    .materialize_literal_defaults();
+                let non_owning = resolved_result_ty.is_copy()
+                    || self
+                        .registry
+                        .implements_marker(&resolved_result_ty, MarkerTrait::Copy);
+                let call_key = SpanKey::in_module(span, self.current_module_idx);
+                self.produced_call_arities
+                    .insert(call_key.clone(), (false, args.len()));
+                self.resolved_direct_call_ownership.insert(
+                    call_key,
+                    PendingDirectCallOwnership {
+                        fact: ProducedValueFact {
+                            ownership: if non_owning {
+                                crate::runtime_call::ProducedValueOwnership::NoOwner
+                            } else {
+                                crate::runtime_call::ProducedValueOwnership::Unknown
+                            },
+                            receiver_span: None,
+                            receiver_boundary: None,
+                            // Closure/function-value parameters borrow by
+                            // default. A future typed consuming-callable
+                            // signature extends this vector; expression intent
+                            // is not consulted here.
+                            arguments: vec![
+                                crate::runtime_call::ProducedArgumentBoundary::Borrow;
+                                args.len()
+                            ],
+                        },
+                        extern_symbol: None,
+                        extern_declaring_module: None,
+                        resolved_result_ty,
+                    },
+                );
+                result_ty
             }
             Ty::Unit => {
                 self.check_arity(args, 0, "this function", span);
@@ -1729,11 +1914,38 @@ impl Checker {
                 // Return type depends on reply direction:
                 //   tell-shaped (Reply = ()) → Result<(), SendError>
                 //   ask-shaped  (Reply = R)  → Result<R, AskError>
-                if matches!(reply_ty, Ty::Unit) {
+                let result_ty = if matches!(reply_ty, Ty::Unit) {
                     Ty::result(Ty::Unit, Ty::send_error())
                 } else {
                     Ty::result(reply_ty, Ty::ask_error())
-                }
+                };
+                let resolved_result_ty = self
+                    .subst
+                    .resolve(&result_ty)
+                    .materialize_literal_defaults();
+                let call_key = SpanKey::in_module(span, self.current_module_idx);
+                self.produced_call_arities
+                    .insert(call_key.clone(), (false, args.len()));
+                self.resolved_direct_call_ownership.insert(
+                    call_key,
+                    PendingDirectCallOwnership {
+                        fact: ProducedValueFact {
+                            ownership: crate::runtime_call::ProducedValueOwnership::owned(
+                                crate::runtime_call::ProducedValueAcquisition::Delivery,
+                            ),
+                            receiver_span: None,
+                            receiver_boundary: None,
+                            arguments: vec![
+                                crate::runtime_call::ProducedArgumentBoundary::Transfer;
+                                args.len()
+                            ],
+                        },
+                        extern_symbol: None,
+                        extern_declaring_module: None,
+                        resolved_result_ty,
+                    },
+                );
+                result_ty
             }
             _ => {
                 // Synthesize args even when the callee type is already an error/var so that

@@ -4,7 +4,7 @@ use crate::builtin_names::{builtin_named_type, builtin_named_types, BuiltinMetho
 use crate::error::{SupervisorErrorKind, TypeError, TypeErrorKind};
 use crate::module_registry::ModuleError;
 use crate::resolved_ty::{BoundaryError, ResolvedTy};
-use crate::traits::MarkerTrait;
+use crate::traits::{MarkerTrait, TraitRegistry};
 use crate::ty::{Ty, TypeVar};
 use crate::unify::unify;
 use hew_parser::ast::{
@@ -51,7 +51,8 @@ use self::types::{
     ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
     DeferredChannelMethodRewrite, DeferredHashMapAdmission, DeferredHashSetAdmission,
     DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
-    ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingLoweringFact,
+    ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingDirectCallOwnership,
+    PendingLoweringFact, PendingMethodCallOwnership, ProducedValueDependency,
     SourceExternDeclaration, TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
     WasmUnsupportedFeature,
 };
@@ -59,16 +60,17 @@ pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
     AssignTargetShape, CaptureModeOrigin, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
     ClosureCaptureMode, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
-    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig,
-    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
-    NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
-    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
-    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, OptionResultMethod,
-    PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField, PlanSub,
-    PoolAccessor, PoolAccessorKind, RcIntrinsicOp, SpanKey, StackHint, TryConversionKind,
-    TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch,
-    VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
-    WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader,
+    ExternMethodCallIdentity, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
+    MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
+    NumericSignedness, NumericWidth, OpaqueResourceCandidateGraph,
+    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
+    OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
+    PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
+    ProducedValueFact, RcIntrinsicOp, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering,
+    TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch, VecHigherOrderOp,
+    WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout, WireLayoutEntry,
+    WireLayoutTable, WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -84,6 +86,124 @@ static BUILTIN_FUNCTION_NAMES: OnceLock<HashSet<String>> = OnceLock::new();
 pub(super) enum TypeResolutionContext {
     Ordinary,
     ExternSignature,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "graph resolution keeps raw facts, validation, type, traversal, and memo state explicit"
+)]
+fn resolve_produced_node(
+    key: &SpanKey,
+    dependencies: &HashMap<SpanKey, ProducedValueDependency>,
+    leaves: &HashMap<SpanKey, ProducedValueFact>,
+    expr_types: &HashMap<SpanKey, Ty>,
+    registry: &TraitRegistry,
+    invalid: &HashSet<SpanKey>,
+    visiting: &mut HashSet<SpanKey>,
+    memo: &mut HashMap<SpanKey, ProducedValueFact>,
+) -> ProducedValueFact {
+    use crate::runtime_call::{
+        ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
+    };
+
+    if let Some(fact) = memo.get(key) {
+        return fact.clone();
+    }
+    if invalid.contains(key) {
+        return ProducedValueFact::result(Ownership::Unknown);
+    }
+    if !visiting.insert(key.clone()) {
+        return ProducedValueFact::result(Ownership::Unknown);
+    }
+    let mut fact = match dependencies.get(key) {
+        None => leaves
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| ProducedValueFact::result(Ownership::Unknown)),
+        Some(ProducedValueDependency::Identity(child)) => {
+            let child = resolve_produced_node(
+                child,
+                dependencies,
+                leaves,
+                expr_types,
+                registry,
+                invalid,
+                visiting,
+                memo,
+            );
+            ProducedValueFact {
+                ownership: child.ownership,
+                receiver_span: child.receiver_span,
+                receiver_boundary: matches!(child.ownership, Ownership::ReceiverIdentity)
+                    .then_some(child.receiver_boundary)
+                    .flatten(),
+                arguments: Vec::new(),
+            }
+        }
+        Some(ProducedValueDependency::Join(children)) => {
+            let mut children = children.iter().map(|child| {
+                resolve_produced_node(
+                    child,
+                    dependencies,
+                    leaves,
+                    expr_types,
+                    registry,
+                    invalid,
+                    visiting,
+                    memo,
+                )
+            });
+            let Some(first) = children.next() else {
+                visiting.remove(key);
+                return ProducedValueFact::result(Ownership::Unknown);
+            };
+            if children.all(|child| {
+                child.ownership == first.ownership && child.receiver_span == first.receiver_span
+            }) {
+                ProducedValueFact {
+                    ownership: first.ownership,
+                    receiver_span: first.receiver_span,
+                    receiver_boundary: matches!(first.ownership, Ownership::ReceiverIdentity)
+                        .then_some(first.receiver_boundary)
+                        .flatten(),
+                    arguments: Vec::new(),
+                }
+            } else {
+                ProducedValueFact::result(Ownership::Unknown)
+            }
+        }
+        Some(
+            ProducedValueDependency::MoveOut(child) | ProducedValueDependency::Projection(child),
+        ) => {
+            let child = resolve_produced_node(
+                child,
+                dependencies,
+                leaves,
+                expr_types,
+                registry,
+                invalid,
+                visiting,
+                memo,
+            );
+            ProducedValueFact::result(match child.ownership {
+                Ownership::Owned { .. } => Ownership::owned(Acquisition::MoveOut),
+                Ownership::Borrowed | Ownership::ReceiverIdentity => Ownership::Borrowed,
+                Ownership::NoOwner | Ownership::Unknown => Ownership::Unknown,
+            })
+        }
+    };
+    if expr_types
+        .get(key)
+        .is_some_and(|ty| ty.is_copy() || registry.implements_marker(ty, MarkerTrait::Copy))
+    {
+        // Copy-ness governs only the published result. Call leaves also carry
+        // receiver and source-argument boundary contracts, so retain the rest
+        // of the fact while clearing only its ownership obligation.
+        fact.ownership = Ownership::NoOwner;
+    }
+    visiting.remove(key);
+    memo.insert(key.clone(), fact.clone());
+    fact
 }
 
 #[must_use]
@@ -724,8 +844,145 @@ impl Checker {
             &resolved_type_defs,
         );
 
+        // Finalize direct-call ownership only after substitution, generated
+        // FFI lifecycle validation, and deferred dispatch rewrites have all
+        // settled. Earlier expression checking records provisional syntax
+        // facts, but only this pass may authorize a foreign owned result.
+        let mut produced_value_ownership = std::mem::take(&mut self.produced_value_ownership);
+        for (key, pending) in std::mem::take(&mut self.resolved_direct_call_ownership) {
+            if !resolved_expr_types.contains_key(&key) {
+                continue;
+            }
+            let resolved_result = self
+                .subst
+                .resolve(&pending.resolved_result_ty)
+                .materialize_literal_defaults();
+            let non_owning = resolved_result.is_copy()
+                || self
+                    .registry
+                    .implements_marker(&resolved_result, MarkerTrait::Copy);
+            let mut fact = pending.fact;
+            if non_owning {
+                fact.ownership = crate::runtime_call::ProducedValueOwnership::NoOwner;
+            } else if let Some(symbol) = pending.extern_symbol.as_deref() {
+                use crate::ffi_contracts::ExternResultOwnership;
+                use crate::runtime_call::{
+                    ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
+                };
+                let owned = match &resolved_result {
+                    Ty::Named { name, .. } => opaque_resource_candidates
+                        .candidates
+                        .get(name)
+                        .filter(|candidate| candidate.producer_symbols.contains(symbol))
+                        .filter(|candidate| {
+                            pending
+                                .extern_declaring_module
+                                .as_ref()
+                                .is_some_and(|module| candidate.producer_modules.contains(module))
+                        })
+                        .map(|candidate| match candidate.result_ownership {
+                            ExternResultOwnership::Fresh => Ownership::owned(Acquisition::Fresh),
+                            ExternResultOwnership::Retained => {
+                                Ownership::owned(Acquisition::Retained)
+                            }
+                            ExternResultOwnership::Borrowed | ExternResultOwnership::None => {
+                                Ownership::Unknown
+                            }
+                        }),
+                    _ => None,
+                };
+                fact.ownership = owned.unwrap_or(Ownership::Unknown);
+            }
+            produced_value_ownership.insert(key, fact);
+        }
+        for (key, pending) in std::mem::take(&mut self.resolved_method_call_ownership) {
+            if !resolved_expr_types.contains_key(&key) {
+                continue;
+            }
+            let resolved_result = self
+                .subst
+                .resolve(&pending.resolved_result_ty)
+                .materialize_literal_defaults();
+            let mut fact = pending.fact;
+            if resolved_result.is_copy()
+                || self
+                    .registry
+                    .implements_marker(&resolved_result, MarkerTrait::Copy)
+            {
+                fact.ownership = crate::runtime_call::ProducedValueOwnership::NoOwner;
+            } else if let Some(identity) = pending.extern_identity {
+                use crate::ffi_contracts::{
+                    ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
+                };
+                use crate::runtime_call::{
+                    ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
+                };
+                let contract =
+                    crate::ffi_contracts::extern_ownership_contract(&identity.endpoint).contract();
+                let lifecycle_authorized = contract.is_some_and(|contract| {
+                    contract.result_retention == ExternResultRetention::Transferred
+                        && contract.discharge_depth != ReleaseDischargeDepth::None
+                        && !contract.release_symbol.is_empty()
+                        && match (&resolved_result, contract.resource_result_type) {
+                            (Ty::Named { name, .. }, Some(resource_type)) => {
+                                name == resource_type
+                                    && opaque_resource_candidates.candidates.get(name).is_some_and(
+                                        |candidate| {
+                                            candidate.producer_symbols.contains(&identity.endpoint)
+                                                && identity.declaring_module.as_ref().is_some_and(
+                                                    |module| {
+                                                        candidate.producer_modules.contains(module)
+                                                    },
+                                                )
+                                        },
+                                    )
+                            }
+                            (_, Some(_)) => false,
+                            (_, None) => identity.trusted_compiled_stdlib,
+                        }
+                });
+                fact.ownership = if lifecycle_authorized {
+                    match contract.map(|contract| contract.result) {
+                        Some(ExternResultOwnership::Fresh) => Ownership::owned(Acquisition::Fresh),
+                        Some(ExternResultOwnership::Retained) => {
+                            Ownership::owned(Acquisition::Retained)
+                        }
+                        Some(ExternResultOwnership::Borrowed | ExternResultOwnership::None)
+                        | None => Ownership::Unknown,
+                    }
+                } else {
+                    Ownership::Unknown
+                };
+            }
+            produced_value_ownership.insert(key, fact);
+        }
+        produced_value_ownership.retain(|key, _| resolved_expr_types.contains_key(key));
+        self.produced_value_dependencies
+            .retain(|key, _| resolved_expr_types.contains_key(key));
+        let leaves = produced_value_ownership;
+        let invalid_produced_nodes =
+            self.validate_produced_value_graph(&resolved_expr_types, &leaves);
+        let mut memo = HashMap::with_capacity(resolved_expr_types.len());
+        let mut finalized = HashMap::with_capacity(resolved_expr_types.len());
+        for key in resolved_expr_types.keys() {
+            let mut visiting = HashSet::new();
+            let fact = resolve_produced_node(
+                key,
+                &self.produced_value_dependencies,
+                &leaves,
+                &resolved_expr_types,
+                &self.registry,
+                &invalid_produced_nodes,
+                &mut visiting,
+                &mut memo,
+            );
+            finalized.insert(key.clone(), fact);
+        }
+        let produced_value_ownership = finalized;
+
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
+            produced_value_ownership,
             caller_visible_param_projections: std::mem::take(
                 &mut self.caller_visible_param_projections,
             ),
@@ -839,6 +1096,211 @@ impl Checker {
         output.cycle_capable_actors = cycle_capable;
 
         output
+    }
+
+    /// Validate the raw checker-authored ownership graph before following any
+    /// dependency edge. Structural gaps are compiler errors, never permission
+    /// to infer an owner. The returned set is consumed by the resolver as a
+    /// fail-closed deny-list: every invalid node resolves to `Unknown`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one fail-closed pass validates every raw ownership graph invariant"
+    )]
+    fn validate_produced_value_graph(
+        &mut self,
+        expr_types: &HashMap<SpanKey, Ty>,
+        leaves: &HashMap<SpanKey, ProducedValueFact>,
+    ) -> HashSet<SpanKey> {
+        use crate::runtime_call::{
+            ProducedArgumentBoundary as Boundary, ProducedValueOwnership as Ownership,
+        };
+
+        fn children(dependency: &ProducedValueDependency) -> &[SpanKey] {
+            match dependency {
+                ProducedValueDependency::Identity(child)
+                | ProducedValueDependency::MoveOut(child)
+                | ProducedValueDependency::Projection(child) => std::slice::from_ref(child),
+                ProducedValueDependency::Join(children) => children,
+            }
+        }
+
+        fn visit(
+            key: &SpanKey,
+            expr_types: &HashMap<SpanKey, Ty>,
+            dependencies: &HashMap<SpanKey, ProducedValueDependency>,
+            states: &mut HashMap<SpanKey, u8>,
+            stack: &mut Vec<SpanKey>,
+            cycle_nodes: &mut HashSet<SpanKey>,
+        ) {
+            states.insert(key.clone(), 1);
+            stack.push(key.clone());
+            if let Some(dependency) = dependencies.get(key) {
+                for child in children(dependency) {
+                    if child.module_idx != key.module_idx || !expr_types.contains_key(child) {
+                        continue;
+                    }
+                    match states.get(child).copied().unwrap_or(0) {
+                        0 => visit(child, expr_types, dependencies, states, stack, cycle_nodes),
+                        1 => {
+                            if let Some(start) = stack.iter().position(|entry| entry == child) {
+                                cycle_nodes.extend(stack[start..].iter().cloned());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            stack.pop();
+            states.insert(key.clone(), 2);
+        }
+
+        let mut invalid = HashSet::new();
+        let mut findings: Vec<(SpanKey, String)> = Vec::new();
+        for key in expr_types.keys() {
+            if !leaves.contains_key(key) {
+                invalid.insert(key.clone());
+                findings.push((
+                    key.clone(),
+                    "source expression has no raw produced-value fact".to_string(),
+                ));
+            }
+        }
+
+        for (parent, dependency) in &self.produced_value_dependencies {
+            if !expr_types.contains_key(parent) {
+                continue;
+            }
+            if matches!(dependency, ProducedValueDependency::Join(children) if children.is_empty())
+            {
+                invalid.insert(parent.clone());
+                findings.push((
+                    parent.clone(),
+                    "join dependency has no children".to_string(),
+                ));
+            }
+            for child in children(dependency) {
+                let detail = if child.module_idx != parent.module_idx {
+                    Some(format!(
+                        "dependency crosses modules (parent module {}, child module {})",
+                        parent.module_idx, child.module_idx
+                    ))
+                } else if !expr_types.contains_key(child) {
+                    Some(format!(
+                        "dependency child {child:?} has no surviving expression"
+                    ))
+                } else if !leaves.contains_key(child) {
+                    Some(format!(
+                        "dependency child {child:?} has no raw produced-value fact"
+                    ))
+                } else {
+                    None
+                };
+                if let Some(detail) = detail {
+                    invalid.insert(parent.clone());
+                    findings.push((parent.clone(), detail));
+                }
+            }
+        }
+
+        let mut states = HashMap::new();
+        let mut stack = Vec::new();
+        let mut cycle_nodes = HashSet::new();
+        for key in expr_types.keys() {
+            if states.get(key).copied().unwrap_or(0) == 0 {
+                visit(
+                    key,
+                    expr_types,
+                    &self.produced_value_dependencies,
+                    &mut states,
+                    &mut stack,
+                    &mut cycle_nodes,
+                );
+            }
+        }
+        for key in cycle_nodes {
+            invalid.insert(key.clone());
+            findings.push((key, "produced-value dependency cycle".to_string()));
+        }
+
+        for (key, fact) in leaves {
+            if !expr_types.contains_key(key) {
+                continue;
+            }
+            if matches!(fact.ownership, Ownership::ReceiverIdentity) {
+                let valid_anchor = fact.receiver_boundary == Some(Boundary::Transfer)
+                    && fact.receiver_span.as_ref().is_some_and(|receiver| {
+                        receiver.module_idx == key.module_idx
+                            && expr_types.contains_key(receiver)
+                            && leaves.contains_key(receiver)
+                    });
+                if !valid_anchor {
+                    invalid.insert(key.clone());
+                    findings.push((
+                        key.clone(),
+                        "receiver-identity result lacks an existing same-module receiver anchor with a transfer boundary"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+
+        for (key, (has_receiver, arg_count)) in &self.produced_call_arities {
+            if !expr_types.contains_key(key) {
+                continue;
+            }
+            let Some(fact) = leaves.get(key) else {
+                // Missing raw facts were diagnosed above.
+                continue;
+            };
+            if fact.arguments.len() != *arg_count {
+                invalid.insert(key.clone());
+                findings.push((
+                    key.clone(),
+                    format!(
+                        "call boundary arity mismatch: expected {arg_count}, found {}",
+                        fact.arguments.len()
+                    ),
+                ));
+            }
+            if fact.receiver_boundary.is_some() != *has_receiver {
+                invalid.insert(key.clone());
+                findings.push((
+                    key.clone(),
+                    format!(
+                        "call receiver-boundary mismatch: receiver expected={has_receiver}, boundary present={}",
+                        fact.receiver_boundary.is_some()
+                    ),
+                ));
+            }
+        }
+
+        findings.sort_by(|(left_key, left_message), (right_key, right_message)| {
+            (
+                left_key.module_idx,
+                left_key.start,
+                left_key.end,
+                left_message,
+            )
+                .cmp(&(
+                    right_key.module_idx,
+                    right_key.start,
+                    right_key.end,
+                    right_message,
+                ))
+        });
+        findings.dedup();
+        for (key, detail) in findings {
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
+                kind: TypeErrorKind::InvalidOperation,
+                span: key.start..key.end,
+                message: format!("checker produced-value graph is incomplete: {detail}"),
+                notes: vec![],
+                suggestions: vec![],
+                source_module: self.expr_type_source_modules.get(&key).cloned().flatten(),
+            });
+        }
+        invalid
     }
 
     /// Escape classifier. Walks the program AST after type-checking,

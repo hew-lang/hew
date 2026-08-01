@@ -321,6 +321,50 @@ extern "C" {
 "#;
 
 #[test]
+fn generic_extern_template_joins_only_exact_canonical_contract_expansions() {
+    let checker = checker_with_registered_module(
+        r#"
+        #[opaque]
+        pub type Socket {}
+        extern "C" {
+            fn example_socket_close(consume socket: Socket) -> i32;
+            #[extern_symbol("example_socket_{T}")]
+            fn open_typed() -> Socket;
+        }
+        "#,
+        &["example", "owner"],
+    );
+
+    let contracts = synthetic_resource_contracts(&[("example_socket_ptr", "example_socket_close")]);
+    let graph =
+        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &contracts);
+    let candidate = graph
+        .candidates
+        .get("example.owner.Socket")
+        .expect("canonical `{T}` expansion must join the qualified lifecycle");
+    assert_eq!(
+        candidate.producer_symbols,
+        ["example_socket_ptr"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    );
+    assert_eq!(
+        candidate.producer_modules,
+        ["example.owner"].into_iter().map(str::to_string).collect()
+    );
+
+    let wrong =
+        synthetic_resource_contracts(&[("example_socket_not_a_token", "example_socket_close")]);
+    let wrong_graph =
+        checker.derive_opaque_resource_candidate_graph_for_contracts(&checker.fn_sigs, &wrong);
+    assert!(
+        wrong_graph.candidates.is_empty(),
+        "template-shaped but non-canonical endpoint must not gain lifecycle authority"
+    );
+}
+
+#[test]
 fn foreign_producer_joins_release_declared_only_by_nominal_owner() {
     let checker = checker_with_resolved_module_graph(&[
         (&["example", "owner"], SYNTHETIC_OWNER),

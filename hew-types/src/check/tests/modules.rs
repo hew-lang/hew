@@ -991,6 +991,82 @@ mod module_body_diagnostic_envelope {
         }
     }
 
+    /// A channel receive whose element type is learned from a later send takes
+    /// the deferred rewrite path.  Finalization must replace the entire
+    /// ownership leaf: the receive publishes a delivered owner, while the
+    /// later send transfers its source argument.
+    #[test]
+    fn deferred_channel_rewrite_refreshes_result_and_argument_ownership() {
+        let parsed = hew_parser::parse(
+            r#"
+                import std::channel::channel;
+
+                fn relay() {
+                    let (tx, rx) = channel.new(1);
+                    let _value = rx.recv();
+                    tx.send("hello");
+                }
+            "#,
+        );
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+        let recv_span = output
+            .method_call_rewrites
+            .iter()
+            .find_map(|(span, rewrite)| match rewrite {
+                MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                    if c_symbol == "hew_channel_recv_layout" =>
+                {
+                    Some(span)
+                }
+                _ => None,
+            })
+            .expect("deferred Receiver<string>::recv rewrite must be finalized");
+        let recv_fact = output
+            .produced_value_ownership
+            .get(recv_span)
+            .expect("finalized receive must replace its provisional ownership leaf");
+        assert_eq!(
+            recv_fact.ownership,
+            crate::runtime_call::ProducedValueOwnership::owned(
+                crate::runtime_call::ProducedValueAcquisition::Delivery,
+            )
+        );
+        assert_eq!(
+            recv_fact.receiver_boundary,
+            Some(crate::runtime_call::ProducedArgumentBoundary::Borrow)
+        );
+        assert!(recv_fact.arguments.is_empty());
+
+        let send_span = output
+            .method_call_rewrites
+            .iter()
+            .find_map(|(span, rewrite)| match rewrite {
+                MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                    if c_symbol == "hew_channel_send_layout" =>
+                {
+                    Some(span)
+                }
+                _ => None,
+            })
+            .expect("Sender<string>::send rewrite must be present");
+        let send_fact = output
+            .produced_value_ownership
+            .get(send_span)
+            .expect("resolved send must publish argument boundary facts");
+        assert_eq!(
+            send_fact.arguments,
+            vec![crate::runtime_call::ProducedArgumentBoundary::Transfer]
+        );
+        assert_eq!(
+            send_fact.receiver_boundary,
+            Some(crate::runtime_call::ProducedArgumentBoundary::Borrow)
+        );
+    }
+
     #[test]
     fn assign_target_shapes_populated_for_while_loop_with_import() {
         // Reproduces the eval_large_stderr CI failure:

@@ -1057,7 +1057,16 @@ impl Checker {
     /// * Unsupported concrete type → emit [`TypeErrorKind::InvalidOperation`];
     ///   the inline validation pass may have already emitted a diagnostic, but
     ///   deferred entries bypass that guard, so we re-check here.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "deferred channel resolution validates type, ABI, and ownership together"
+    )]
     pub(super) fn finalize_channel_rewrites(&mut self) {
+        use crate::runtime_call::{
+            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
+            ProducedValueOwnership as Ownership,
+        };
+
         let deferred = std::mem::take(&mut self.deferred_channel_rewrites);
         let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
 
@@ -1135,13 +1144,46 @@ impl Checker {
                             .expect("channel close family rejects elem; substrate invariant")
                     });
                 self.method_call_rewrites.insert(
-                    span_key,
+                    span_key.clone(),
                     MethodCallRewrite::RewriteToFunction {
                         c_symbol: c_symbol.to_string(),
                         descriptor,
+                        extern_identity: None,
                         elem_ty: None,
                         consumes_receiver,
                         returns_receiver_identity: false,
+                    },
+                );
+                let source_arg_count = self
+                    .produced_call_arities
+                    .get(&span_key)
+                    .map_or(0, |(_, count)| *count);
+                let ownership = match entry.method.as_str() {
+                    "recv" | "try_recv" => Ownership::owned(Acquisition::Delivery),
+                    "close" => Ownership::NoOwner,
+                    _ => Ownership::Unknown,
+                };
+                self.resolved_method_call_ownership.insert(
+                    span_key,
+                    PendingMethodCallOwnership {
+                        fact: ProducedValueFact {
+                            ownership,
+                            receiver_span: None,
+                            receiver_boundary: Some(if consumes_receiver {
+                                Boundary::Transfer
+                            } else {
+                                Boundary::Borrow
+                            }),
+                            arguments: match entry.method.as_str() {
+                                "send" => vec![Boundary::Transfer; source_arg_count],
+                                "recv" | "try_recv" | "close" => {
+                                    vec![Boundary::Borrow; source_arg_count]
+                                }
+                                _ => vec![Boundary::Unknown; source_arg_count],
+                            },
+                        },
+                        extern_identity: None,
+                        resolved_result_ty: resolved,
                     },
                 );
             } else {
@@ -1414,6 +1456,7 @@ impl Checker {
             MethodCallRewrite::RewriteToFunction {
                 c_symbol,
                 descriptor,
+                extern_identity: None,
                 elem_ty: None,
                 consumes_receiver,
                 returns_receiver_identity: false,
@@ -1444,13 +1487,31 @@ impl Checker {
     /// fail-closed (LESSONS: drop-allowset-from-value-flow): any symbol the
     /// allow-set does not name is borrowing, so an FFI binding that merely
     /// collides with a non-release name at worst leaks — it never double-frees.
-    fn record_extern_symbol_method_call_rewrite(&mut self, span: &Span, c_symbol: String) {
-        let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
+    fn record_extern_symbol_method_call_rewrite(
+        &mut self,
+        span: &Span,
+        c_symbol: String,
+        signature_key: String,
+    ) {
+        let consumes_receiver = crate::ffi_contracts::extern_param_ownership(&c_symbol, 0)
+            == Some(crate::ffi_contracts::ExternParamOwnership::Consume);
+        let (declaring_module, trusted_compiled_stdlib) = self
+            .extern_method_origins
+            .get(&signature_key)
+            .cloned()
+            .unwrap_or((None, false));
+        let extern_identity = ExternMethodCallIdentity {
+            endpoint: c_symbol.clone(),
+            signature_key,
+            declaring_module,
+            trusted_compiled_stdlib,
+        };
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteToFunction {
                 c_symbol,
                 descriptor: None,
+                extern_identity: Some(extern_identity),
                 elem_ty: None,
                 consumes_receiver,
                 returns_receiver_identity: false,
@@ -1461,6 +1522,7 @@ impl Checker {
     fn record_monomorphic_extern_symbol_rewrite_if_any(
         &mut self,
         sig: &FnSig,
+        signature_key: &str,
         span: &Span,
     ) -> bool {
         let Some(spec) = &sig.extern_symbol else {
@@ -1478,7 +1540,11 @@ impl Checker {
             );
             return false;
         }
-        self.record_extern_symbol_method_call_rewrite(span, spec.template.raw.clone());
+        self.record_extern_symbol_method_call_rewrite(
+            span,
+            spec.template.raw.clone(),
+            signature_key.to_string(),
+        );
         true
     }
 
@@ -1494,7 +1560,11 @@ impl Checker {
             return false;
         };
         if spec.template.is_monomorphic() {
-            self.record_extern_symbol_method_call_rewrite(span, spec.template.raw.clone());
+            self.record_extern_symbol_method_call_rewrite(
+                span,
+                spec.template.raw.clone(),
+                format!("{receiver_type_name}::{method}"),
+            );
             return true;
         }
         if !matches!(receiver_type_name, "Option" | "Result") {
@@ -1541,7 +1611,11 @@ impl Checker {
                 return false;
             }
         };
-        self.record_extern_symbol_method_call_rewrite(span, expanded);
+        self.record_extern_symbol_method_call_rewrite(
+            span,
+            expanded,
+            format!("{receiver_type_name}::{method}"),
+        );
         true
     }
 
@@ -1635,7 +1709,7 @@ impl Checker {
             },
             true,
         );
-        self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, span);
+        self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, &method_key, span);
         Some(applied_sig.return_type)
     }
 
@@ -6217,6 +6291,7 @@ impl Checker {
                     // (`i64::fmt` etc.) is open-set; the typed runtime-call
                     // catalog does not enumerate user-defined method keys.
                     descriptor: None,
+                    extern_identity: None,
                     elem_ty: None,
                     // Primitive trait-impl dispatch is a user-fn call; it never
                     // consumes the receiver as a handle release.
@@ -6523,11 +6598,294 @@ impl Checker {
         Some(self.project_assoc_types(&applied.return_type))
     }
 
+    pub(super) fn check_method_call(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let result = self.check_method_call_inner(receiver, method, args, span);
+        self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
+        result
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "method ownership joins every resolved dispatch family at one authority seam"
+    )]
+    fn record_resolved_method_call_ownership(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        _method: &str,
+        args: &[CallArg],
+        span: &Span,
+        result_ty: &Ty,
+    ) {
+        use crate::runtime_call::{
+            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
+            ProducedValueOwnership as Ownership,
+        };
+
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let resolved_result = self.subst.resolve(result_ty).materialize_literal_defaults();
+        let non_owning = resolved_result.is_copy()
+            || self
+                .registry
+                .implements_marker(&resolved_result, MarkerTrait::Copy);
+        let rewrite = self.method_call_rewrites.get(&key);
+        let dyn_call = self.dyn_trait_method_calls.get(&key);
+        let resolved_call = self.resolved_calls.get(&key);
+        let actor_call = self.actor_method_dispatch.get(&key);
+        let machine_call = self.machine_method_dispatch.get(&key);
+        let runtime_family = match rewrite {
+            Some(MethodCallRewrite::RewriteToFunction {
+                descriptor: Some(descriptor),
+                ..
+            }) => Some(descriptor.family()),
+            _ => None,
+        };
+
+        let result_ownership = if non_owning {
+            Ownership::NoOwner
+        } else if self.method_call_preserves_receiver_identity.contains(&key) {
+            Ownership::Borrowed
+        } else if matches!(
+            rewrite,
+            Some(
+                MethodCallRewrite::RewriteToFunction {
+                    returns_receiver_identity: true,
+                    ..
+                } | MethodCallRewrite::StaticTraitDispatch {
+                    returns_receiver_identity: true,
+                    ..
+                }
+            )
+        ) || dyn_call.is_some_and(|call| call.signature.returns_receiver_identity)
+        {
+            Ownership::ReceiverIdentity
+        } else if matches!(
+            actor_call,
+            Some(ActorMethodKind::Ask(..) | ActorMethodKind::StreamProducer(..))
+        ) || matches!(
+            runtime_family,
+            Some(
+                crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout
+                    | crate::runtime_call::RuntimeCallFamily::ChannelTryRecvLayout
+                    | crate::runtime_call::RuntimeCallFamily::StreamNextLayout
+                    | crate::runtime_call::RuntimeCallFamily::StreamTryNextLayout
+                    | crate::runtime_call::RuntimeCallFamily::DuplexRecv
+                    | crate::runtime_call::RuntimeCallFamily::DuplexTryRecv
+            )
+        ) {
+            Ownership::owned(Acquisition::Delivery)
+        } else if let Some(call) = resolved_call {
+            match call.target.family {
+                MethodTargetFamily::HashMap(HashMapMethod::Remove)
+                | MethodTargetFamily::Vec(VecMethod::Pop | VecMethod::Remove) => {
+                    Ownership::owned(Acquisition::MoveOut)
+                }
+                MethodTargetFamily::HashMap(
+                    HashMapMethod::Clone
+                    | HashMapMethod::Get
+                    | HashMapMethod::Keys
+                    | HashMapMethod::Values,
+                )
+                | MethodTargetFamily::HashSet(HashSetMethod::Clone | HashSetMethod::ToVec)
+                | MethodTargetFamily::Vec(VecMethod::Clone | VecMethod::Get) => {
+                    Ownership::owned(Acquisition::Clone)
+                }
+                MethodTargetFamily::HashMap(_)
+                | MethodTargetFamily::HashSet(_)
+                | MethodTargetFamily::Vec(_) => Ownership::Unknown,
+            }
+        } else {
+            match rewrite {
+                Some(
+                    MethodCallRewrite::BuiltinVecIntoIter { .. }
+                    | MethodCallRewrite::BuiltinVecIter { .. }
+                    | MethodCallRewrite::BuiltinHashMapIntoIter { .. }
+                    | MethodCallRewrite::WireCodec { .. },
+                ) => Ownership::owned(Acquisition::Fresh),
+                Some(MethodCallRewrite::RecordCloneInplace { .. }) => {
+                    Ownership::owned(Acquisition::Clone)
+                }
+                Some(
+                    MethodCallRewrite::GeneratorNext { .. } | MethodCallRewrite::RemoteActorAsk,
+                ) => Ownership::owned(Acquisition::Delivery),
+                Some(MethodCallRewrite::RcIntrinsic { .. }) => {
+                    Ownership::owned(Acquisition::Retained)
+                }
+                _ => match machine_call {
+                    Some(MachineMethodKind::StateName { .. }) => {
+                        Ownership::owned(Acquisition::Fresh)
+                    }
+                    Some(MachineMethodKind::Step { .. } | MachineMethodKind::TakeEmits { .. })
+                    | None => Ownership::Unknown,
+                },
+            }
+        };
+
+        let signature = if let Some(call) = dyn_call {
+            Some((
+                format!("{}::{}", call.trait_name, call.method_name),
+                call.signature.clone(),
+            ))
+        } else {
+            match rewrite {
+                Some(MethodCallRewrite::RewriteToFunction {
+                    extern_identity: Some(identity),
+                    ..
+                }) => self
+                    .fn_sigs
+                    .get(&identity.signature_key)
+                    .cloned()
+                    .map(|sig| (identity.signature_key.clone(), sig)),
+                Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. }) => self
+                    .fn_sigs
+                    .get(c_symbol)
+                    .cloned()
+                    .map(|sig| (c_symbol.clone(), sig)),
+                Some(MethodCallRewrite::StaticTraitDispatch {
+                    declaring_trait,
+                    method_name,
+                    ..
+                }) => {
+                    let signature_key = format!("{declaring_trait}::{method_name}");
+                    self.fn_sigs
+                        .get(&signature_key)
+                        .cloned()
+                        .map(|sig| (signature_key, sig))
+                }
+                _ => None,
+            }
+        };
+        let arguments = if let Some(family) = runtime_family {
+            args.iter()
+                .enumerate()
+                .map(|(source_index, _)| {
+                    match family.arg_consume_verdict(source_index.saturating_add(1)) {
+                        crate::runtime_call::ConsumeVerdict::ProvenBorrow => Boundary::Borrow,
+                        crate::runtime_call::ConsumeVerdict::ProvenConsume
+                        | crate::runtime_call::ConsumeVerdict::ConservativeConsume => {
+                            Boundary::Transfer
+                        }
+                    }
+                })
+                .collect()
+        } else if let Some((signature_key, signature)) = signature {
+            let modes = self
+                .fn_param_ownership
+                .get(&signature_key)
+                .cloned()
+                .unwrap_or_else(|| vec![Boundary::Unknown; signature.params.len()]);
+            args.iter()
+                .enumerate()
+                .map(|(source_index, arg)| {
+                    let formal_index = arg
+                        .name()
+                        .and_then(|name| {
+                            signature
+                                .param_names
+                                .iter()
+                                .position(|formal| formal == name)
+                        })
+                        .unwrap_or(source_index);
+                    modes
+                        .get(formal_index)
+                        .copied()
+                        .unwrap_or(Boundary::Unknown)
+                })
+                .collect()
+        } else if let Some(call) = resolved_call {
+            match call.target.family {
+                MethodTargetFamily::HashMap(HashMapMethod::Insert)
+                | MethodTargetFamily::HashSet(HashSetMethod::Insert)
+                | MethodTargetFamily::Vec(VecMethod::Push | VecMethod::Set | VecMethod::Append) => {
+                    vec![Boundary::Transfer; args.len()]
+                }
+                MethodTargetFamily::HashMap(_)
+                | MethodTargetFamily::HashSet(_)
+                | MethodTargetFamily::Vec(_) => vec![Boundary::Borrow; args.len()],
+            }
+        } else if actor_call.is_some() {
+            vec![Boundary::Transfer; args.len()]
+        } else {
+            args.iter()
+                .map(|arg| {
+                    let arg_ty = self
+                        .expr_types
+                        .get(&SpanKey::in_module(&arg.expr().1, self.current_module_idx))
+                        .map(|ty| self.subst.resolve(ty));
+                    if arg_ty.as_ref().is_some_and(|ty| {
+                        ty.is_copy() || self.registry.implements_marker(ty, MarkerTrait::Copy)
+                    }) {
+                        Boundary::Borrow
+                    } else {
+                        Boundary::Unknown
+                    }
+                })
+                .collect()
+        };
+
+        let recognized = rewrite.is_some()
+            || dyn_call.is_some()
+            || resolved_call.is_some()
+            || actor_call.is_some()
+            || machine_call.is_some();
+        let receiver_boundary = if matches!(result_ownership, Ownership::ReceiverIdentity) {
+            Some(Boundary::Transfer)
+        } else if !recognized {
+            Some(Boundary::Unknown)
+        } else if self.method_call_consumes_receiver.contains(&key)
+            || resolved_call.is_some_and(|call| call.target.consumes_receiver)
+            || dyn_call.is_some_and(|call| call.signature.consumes_receiver)
+            || matches!(
+                rewrite,
+                Some(
+                    MethodCallRewrite::RewriteToFunction {
+                        consumes_receiver: true,
+                        ..
+                    } | MethodCallRewrite::StaticTraitDispatch {
+                        consumes_receiver: true,
+                        ..
+                    }
+                )
+            )
+        {
+            Some(Boundary::Transfer)
+        } else {
+            Some(Boundary::Borrow)
+        };
+
+        self.produced_call_arities
+            .insert(key.clone(), (true, args.len()));
+        self.resolved_method_call_ownership.insert(
+            key,
+            PendingMethodCallOwnership {
+                fact: ProducedValueFact {
+                    ownership: result_ownership,
+                    receiver_span: matches!(result_ownership, Ownership::ReceiverIdentity)
+                        .then(|| SpanKey::in_module(&receiver.1, self.current_module_idx)),
+                    receiver_boundary,
+                    arguments,
+                },
+                extern_identity: rewrite.and_then(|rewrite| match rewrite {
+                    MethodCallRewrite::RewriteToFunction {
+                        extern_identity, ..
+                    } => extern_identity.clone(),
+                    _ => None,
+                }),
+                resolved_result_ty: resolved_result,
+            },
+        );
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "pattern matching type checker with many variants"
     )]
-    pub(super) fn check_method_call(
+    fn check_method_call_inner(
         &mut self,
         receiver: &Spanned<Expr>,
         method: &str,
@@ -7599,6 +7957,7 @@ impl Checker {
                                         )
                                         .expect("RemotePidSend rejects elem"),
                                     ),
+                                    extern_identity: None,
                                     elem_ty: None,
                                     // Fire-and-forget send; borrows the pid
                                     // handle, does not release it.
@@ -7615,10 +7974,7 @@ impl Checker {
                             "display" => Some("hew_remote_pid_display"),
                             _ => None,
                         } {
-                            self.record_extern_symbol_method_call_rewrite(
-                                span,
-                                c_symbol.to_string(),
-                            );
+                            self.record_runtime_method_call_rewrite(span, c_symbol);
                         }
                         return return_type;
                     }
@@ -8602,6 +8958,7 @@ impl Checker {
                                     // open-set; the typed runtime-call catalog
                                     // does not enumerate user method keys.
                                     descriptor: None,
+                                    extern_identity: None,
                                     elem_ty: None,
                                     // #1295: a `#[resource]` type's inherent
                                     // `close(self)` is a terminal handle-release

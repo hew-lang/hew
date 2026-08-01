@@ -52,10 +52,10 @@ pub use check::{
     MethodCallReceiverKind, MethodCallRewrite, MethodTarget, MethodTargetFamily,
     NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
     OptionResultMethod, PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField,
-    PlanSub, PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ResolvedCall, RuntimeAbi, SpanKey,
-    TryConversionKind, TryWidthCastLowering, TyPattern, TypeCheckOutput, VariantDef, VariantMatch,
-    VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    PlanSub, PoolAccessor, PoolAccessorKind, ProducedValueFact, RcIntrinsicOp, ResolvedCall,
+    RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering, TyPattern, TypeCheckOutput,
+    VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering,
+    WireCodecDirection, WireFieldLayout, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{
@@ -75,7 +75,8 @@ pub use lowering_facts::{
 };
 pub use resolved_ty::{BoundaryError, ResolvedTraitBound, ResolvedTy};
 pub use runtime_call::{
-    AsyncSuspendKind, DescriptorError, MathIntrinsic, RuntimeCallDescriptor, RuntimeCallFamily,
+    AsyncSuspendKind, DescriptorError, MathIntrinsic, ProducedArgumentBoundary,
+    ProducedValueAcquisition, ProducedValueOwnership, RuntimeCallDescriptor, RuntimeCallFamily,
     RuntimeDropDescriptor, StreamElementKind, VecGetElem, VecSliceElem,
 };
 pub use runtime_calling_convention::RuntimeCallingConvention;

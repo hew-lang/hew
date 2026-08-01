@@ -1,17 +1,20 @@
 # ast-grep rule set for Hew
 
-Structural lint rules run by `ast-grep scan` (wired via `sgconfig.yml` `ruleDirs`).
+Structural lint rules run through the repository-pinned ast-grep tool (wired via
+`sgconfig.yml` `ruleDirs`).
 
 ## Running
 
 ```sh
-scripts/build-ast-grep-lang.sh   # once: compile the .hew grammar (for rules/hew)
-scripts/ast-grep-lint.sh          # run every rule over the repo
-ast-grep scan --rule rules/rust/fail-closed/ok-question-in-codegen.yml   # one rule
+make structural-lint-bootstrap  # first use: acquire pinned tool + grammar, then scan
+make structural-lint            # later: cache-only pinned scan + authority ratchets
+.ast-grep/tool/bin/ast-grep scan --rule rules/rust/fail-closed/ok-question-in-lowering.yml  # one pinned rule
 ```
 
-`scripts/ast-grep-lint.sh` exits non-zero when an `error`-severity rule matches, so it can
-gate CI. `warning`/`info`/`hint` rules report without failing.
+Bootstrap is explicit so ordinary local lint never downloads dependencies. The
+complete scan reports the two tracked baseline error rules as warnings; all other
+error-severity rules and the authority inventory remain fail-closed. `warning`/
+`info`/`hint` rules report without failing.
 
 ## Layout
 
@@ -84,8 +87,7 @@ ast-grep's native `// ast-grep-ignore` (or `// ast-grep-ignore: <rule-id>`) supp
 
 ## Gating status
 
-`scripts/ast-grep-lint.sh` exits non-zero only on `error`-severity findings. The
-`ok-question-in-lowering` rule currently reports 6 — five genuine error-swallows worth fixing
-and one intentional parse helper to annotate — so adopting it in CI means triaging those first.
-The `warning`/`info`/`hint` rules report without failing the run.
-
+`make structural-lint` runs the complete pinned scan and the fail-closed authority
+inventory. The two historical error-rule baselines are reported as warnings until
+their findings are triaged; all other error findings fail the gate. The
+`warning`/`info`/`hint` rules remain advisory.

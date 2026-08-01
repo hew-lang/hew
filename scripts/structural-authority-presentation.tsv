@@ -1,0 +1,11 @@
+# Exact short_name identifier nodes proven to be arguments of parsed LLVM
+# debug-info builder calls. A location without the recorded AST context is debt.
+path	line	column	form	context_form	category	retirement_stage	reason
+hew-codegen-rs/src/llvm.rs	28916	21	short-name-identifier	debug-struct-type-argument	debug-metadata	post-stage-5	short record display name is emitted only into DWARF metadata
+hew-codegen-rs/src/llvm.rs	28926	21	short-name-identifier	debug-struct-type-argument	debug-metadata	post-stage-5	short record linkage display name is emitted only into DWARF metadata
+hew-codegen-rs/src/llvm.rs	28989	25	short-name-identifier	debug-struct-type-argument	debug-metadata	post-stage-5	short record display name is emitted only into DWARF metadata
+hew-codegen-rs/src/llvm.rs	28999	25	short-name-identifier	debug-struct-type-argument	debug-metadata	post-stage-5	short record linkage display name is emitted only into DWARF metadata
+hew-codegen-rs/src/llvm.rs	29085	17	short-name-identifier	debug-enumerator-argument	debug-metadata	post-stage-5	short enum variant name is emitted only into a DWARF enumerator
+hew-codegen-rs/src/llvm.rs	29227	17	short-name-identifier	debug-struct-type-argument	debug-metadata	post-stage-5	short enum variant display name is emitted only into DWARF metadata
+hew-codegen-rs/src/llvm.rs	29237	17	short-name-identifier	debug-struct-type-argument	debug-metadata	post-stage-5	short enum variant linkage display name is emitted only into DWARF metadata
+hew-codegen-rs/src/llvm.rs	29250	17	short-name-identifier	debug-member-type-argument	debug-metadata	post-stage-5	short enum variant name is emitted only into a DWARF union member

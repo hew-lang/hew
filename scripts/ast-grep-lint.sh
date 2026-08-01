@@ -26,7 +26,7 @@ fi
     echo "error: pinned ast-grep version mismatch; remove .ast-grep/tool and bootstrap again" >&2; exit 1;
 }
 cd "$REPO_ROOT"
-python3 scripts/structural-authority-audit.py
+python3 scripts/structural-authority-audit.py --ast-grep "$AST_GREP"
 warning_args=()
 for rule_id in $AST_GREP_WARNING_BASELINE; do
     warning_args+=("--warning=$rule_id")

@@ -1,44 +1,76 @@
-# Each nonzero match is a reviewed compatibility/canonical construction seam.
-# New source paths or changed counts fail closed.  Tests and presentation-only code are excluded
-# by scripts/structural-authority-audit.py before these expressions are evaluated.
-group	path	count	disposition
-short-name-fallback	hew-codegen-rs/src/layout.rs	2	compatibility lookup
-short-name-fallback	hew-codegen-rs/src/llvm.rs	9	compatibility lookup
-short-name-fallback	hew-codegen-rs/src/thunks.rs	1	compatibility lookup
-short-name-fallback	hew-hir/src/lower.rs	1	compatibility lookup
-short-name-fallback	hew-types/src/stdlib_loader.rs	1	compatibility lookup
-short-name-fallback	hew-types/src/traits.rs	2	compatibility lookup
-short-name-fallback	hew-types/src/module_registry.rs	1	compatibility lookup
-short-name-fallback	hew-types/src/check/expressions.rs	2	compatibility lookup
-short-name-fallback	hew-types/src/check/registration.rs	1	compatibility lookup
-short-name-fallback	hew-types/src/check/resolution.rs	1	compatibility lookup
-short-name-fallback	hew-mir/src/thunk_requirements.rs	14	compatibility lookup
-short-name-fallback	hew-mir/src/model.rs	3	compatibility lookup
-short-name-fallback	hew-mir/src/lower/pattern.rs	1	compatibility lookup
-short-name-fallback	hew-mir/src/lower/composite_own.rs	1	compatibility lookup
-short-name-fallback	hew-mir/src/lower/ownership.rs	1	compatibility lookup
-short-name-fallback	hew-mir/src/lower/task.rs	1	compatibility lookup
-short-name-fallback	hew-mir/src/lower/facts.rs	2	compatibility lookup
-short-name-fallback	hew-mir/src/lower/drop_plan.rs	3	compatibility lookup
-short-name-fallback	hew-mir/src/lower/mod.rs	1	compatibility lookup
-short-name-fallback	hew-mir/src/lower/expr.rs	10	compatibility lookup
-string-method-identity	hew-hir/src/lower.rs	11	canonical construction surface
-string-method-identity	hew-types/src/stdlib_authority.rs	1	canonical construction surface
-string-method-identity	hew-types/src/check/methods.rs	8	canonical construction surface
-string-method-identity	hew-types/src/check/registration.rs	4	canonical construction surface
-string-method-identity	hew-types/src/check/items.rs	9	canonical construction surface
-string-method-identity	hew-types/src/check/mod.rs	1	canonical construction surface
-string-method-identity	hew-analysis/src/hover.rs	5	display adapter
-string-method-identity	hew-mir/src/thunk_requirements.rs	1	canonical construction surface
-string-method-identity	hew-mir/src/lower/drop_plan.rs	2	canonical construction surface
-string-method-identity	hew-mir/src/lower/mod.rs	1	canonical construction surface
-legacy-heap-reader	hew-codegen-rs/src/llvm.rs	2	legacy reader; migration tracked
-legacy-heap-reader	hew-mir/src/ownership.rs	7	canonical authority definition
-legacy-heap-reader	hew-mir/src/model.rs	8	canonical authority definition
-legacy-heap-reader	hew-mir/src/lower/expr/binding_ty_is_plain_vec_tuple.rs	1	legacy reader; migration tracked
-checker-hir-publication	hew-types/src/check/types.rs	1	checker produced-value publication
-checker-hir-publication	hew-types/src/check/expressions.rs	1	checker produced-value publication
-checker-hir-publication	hew-types/src/check/resolution.rs	2	checker produced-value publication
-mir-ownership-sink	hew-mir/src/ownership.rs	14	canonical ownership fact sink
-mir-ownership-sink	hew-mir/src/lower/ownership.rs	3	MIR ownership fact sink
-mir-ownership-sink	hew-mir/src/lower/drop_plan.rs	1	MIR ownership fact sink
+# Exact nonzero counts keyed by parsed syntax form and source path.
+# Retirement stages are checked against canonical_stage() and cannot be edited
+# independently of the Stage 1-5 cutover dependency map.
+group	form	path	count	retirement_stage	reason
+checker-hir-publication	checker-insert-call	hew-types/src/check/expressions.rs	1	stage-2	checker publication awaits SourceOccurrence projection
+checker-hir-publication	checker-insert-call	hew-types/src/check/methods.rs	2	stage-2	checker publication awaits SourceOccurrence projection
+checker-hir-publication	checker-insert-call	hew-types/src/check/resolution.rs	2	stage-2	checker publication awaits SourceOccurrence projection
+checker-hir-publication	checker-insert-call	hew-types/src/check/types.rs	1	stage-2	checker publication awaits SourceOccurrence projection
+legacy-heap-reader	heap-reader-call	hew-codegen-rs/src/llvm.rs	2	stage-5	codegen type walk awaits carried lifecycle authority
+legacy-heap-reader	heap-reader-call	hew-mir/src/model.rs	2	stage-5	downstream layout projection awaits canonical nominal authority
+legacy-heap-reader	heap-reader-call	hew-mir/src/ownership.rs	6	stage-4	ownership type walk awaits the one MIR authority adapter
+mir-ownership-sink	ownership-classify-call	hew-mir/src/lower/ownership.rs	3	stage-4	MIR classification awaits checker-authored flow projection
+mir-ownership-sink	ownership-classify-call	hew-mir/src/ownership.rs	1	stage-4	MIR classification awaits checker-authored flow projection
+semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/hover.rs	2	stage-1	hover variant display lookup extracts a leaf spelling
+semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/inlay_hints.rs	1	stage-1	inlay display adapter extracts a leaf spelling
+semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/signature_help.rs	2	stage-1	signature display adapter extracts a leaf spelling
+semantic-leaf-name	leaf-rsplit-field	hew-hir/src/lower.rs	3	stage-1	HIR lookup extracts a Rust-symbol leaf spelling
+semantic-leaf-name	leaf-rsplit-field	hew-mir/src/lower/consts.rs	1	stage-4	constant call lowering extracts a leaf method spelling
+semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/diagnostics.rs	1	stage-1	exhaustiveness checking compares a leaf variant spelling
+semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/expressions.rs	2	stage-1	expression checking resolves a leaf spelling
+semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/patterns.rs	15	stage-1	pattern checking resolves constructors by leaf spelling
+semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/registration.rs	2	stage-1	registration resolves owner identity by leaf spelling
+semantic-leaf-name	leaf-rsplit-field	hew-types/src/stdlib_loader.rs	1	stage-1	stdlib loader extracts a module leaf spelling
+semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	1	stage-1	HIR call identity extracts a qualified leaf spelling
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/methods.rs	3	stage-1	method checking extracts qualified owner identity
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/resolution.rs	5	stage-1	checker resolution extracts qualified declaration identity
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/error.rs	1	stage-1	diagnostic identity adapter extracts a leaf spelling
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/lib.rs	1	stage-1	leaf-name helper definition remains until identity cutover
+semantic-leaf-name	short-name-field	hew-types/src/check/types.rs	2	stage-1	checker authority fields retain leaf-name payloads
+semantic-leaf-name	short-name-identifier	hew-analysis/src/hover.rs	4	stage-1	hover display and variant lookup retain leaf-name identity
+semantic-leaf-name	short-name-identifier	hew-analysis/src/signature_help.rs	1	stage-1	signature display adapter retains leaf-name identity
+semantic-leaf-name	short-name-identifier	hew-codegen-rs/src/layout.rs	12	stage-5	layout projection awaits canonical nominal identity
+semantic-leaf-name	short-name-identifier	hew-codegen-rs/src/llvm.rs	37	stage-5	codegen projection awaits carried canonical identities
+semantic-leaf-name	short-name-identifier	hew-codegen-rs/src/thunks.rs	4	stage-5	thunk projection awaits downstream identity cutover
+semantic-leaf-name	short-name-identifier	hew-codegen-rs/src/wire.rs	3	stage-5	wire layout projection awaits canonical nominal identity
+semantic-leaf-name	short-name-identifier	hew-hir/src/dispatch.rs	2	stage-1	HIR dispatch retries with leaf-name identity
+semantic-leaf-name	short-name-identifier	hew-hir/src/lower.rs	9	stage-1	HIR resolution and imports retain leaf-name identity
+semantic-leaf-name	short-name-identifier	hew-hir/src/monomorph.rs	2	stage-1	monomorph identity discards qualified spelling
+semantic-leaf-name	short-name-identifier	hew-hir/src/stdlib_catalog.rs	2	stage-1	HIR catalog infrastructure imports leaf-name identity
+semantic-leaf-name	short-name-identifier	hew-hir/src/value_class.rs	3	stage-1	value classification compares leaf-name identity
+semantic-leaf-name	short-name-identifier	hew-mir/src/lib.rs	1	stage-4	MIR adapter infrastructure imports leaf-name identity
+semantic-leaf-name	short-name-identifier	hew-mir/src/lower/composite_own.rs	5	stage-4	composite ownership lookup awaits the MIR authority adapter
+semantic-leaf-name	short-name-identifier	hew-mir/src/lower/drop_plan.rs	10	stage-3	lifecycle reconstruction awaits checker-authored graph projection
+semantic-leaf-name	short-name-identifier	hew-mir/src/lower/expr.rs	24	stage-4	expression ownership and calls await the MIR authority adapter
+semantic-leaf-name	short-name-identifier	hew-mir/src/lower/facts.rs	7	stage-4	ownership facts await checker-authored flow projection
+semantic-leaf-name	short-name-identifier	hew-mir/src/lower/mod.rs	9	stage-3	MIR lifecycle registry awaits canonical projection
+semantic-leaf-name	short-name-identifier	hew-mir/src/lower/ownership.rs	3	stage-4	ownership classification awaits the MIR authority adapter
+semantic-leaf-name	short-name-identifier	hew-mir/src/lower/pattern.rs	4	stage-4	pattern ownership lowering awaits the MIR authority adapter
+semantic-leaf-name	short-name-identifier	hew-mir/src/lower/task.rs	1	stage-4	task ownership lowering awaits checker-authored flow
+semantic-leaf-name	short-name-identifier	hew-mir/src/model.rs	11	stage-5	MIR layout projection awaits downstream identity cutover
+semantic-leaf-name	short-name-identifier	hew-mir/src/return_provenance.rs	7	stage-4	return provenance awaits the MIR authority adapter
+semantic-leaf-name	short-name-identifier	hew-mir/src/state_clone.rs	4	stage-5	state-clone layout projection awaits identity cutover
+semantic-leaf-name	short-name-identifier	hew-mir/src/thunk_requirements.rs	24	stage-5	thunk requirement projection awaits identity cutover
+semantic-leaf-name	short-name-identifier	hew-types/src/check/calls.rs	1	stage-1	checker call diagnostic retains leaf-name identity
+semantic-leaf-name	short-name-identifier	hew-types/src/check/expressions.rs	2	stage-1	expression checking resolves leaf-name identity
+semantic-leaf-name	short-name-identifier	hew-types/src/check/methods.rs	2	stage-1	method checking constructs leaf-name targets
+semantic-leaf-name	short-name-identifier	hew-types/src/check/mod.rs	1	stage-1	checker infrastructure imports leaf-name identity
+semantic-leaf-name	short-name-identifier	hew-types/src/check/patterns.rs	31	stage-1	pattern checking retains leaf-name variables and lookups
+semantic-leaf-name	short-name-identifier	hew-types/src/check/registration.rs	3	stage-1	registration resolves owner and module identity by leaf spelling
+semantic-leaf-name	short-name-identifier	hew-types/src/check/resolution.rs	6	stage-1	resolution compares canonical names through leaf spelling
+semantic-leaf-name	short-name-identifier	hew-types/src/check/types.rs	2	stage-1	checker fact schema retains leaf-name fields
+semantic-leaf-name	short-name-identifier	hew-types/src/lib.rs	1	stage-1	leaf-name helper definition remains until identity cutover
+semantic-leaf-name	short-name-identifier	hew-types/src/method_resolution.rs	4	stage-1	method resolution retries with leaf-name identity
+semantic-leaf-name	short-name-identifier	hew-types/src/module_registry.rs	1	stage-1	module registry resolves qualified names through leaf identity
+semantic-leaf-name	short-name-identifier	hew-types/src/stdlib_loader.rs	5	stage-1	stdlib declaration matching uses leaf identity
+semantic-leaf-name	short-name-identifier	hew-types/src/traits.rs	5	stage-1	trait membership and lookup use leaf identity
+string-method-identity	qualified-format-binding	hew-analysis/src/hover.rs	5	stage-1	hover display adapter reconstructs qualified string keys
+string-method-identity	qualified-format-binding	hew-hir/src/lower.rs	15	stage-1	HIR linker target is constructed as a qualified string
+string-method-identity	qualified-format-binding	hew-mir/src/lower/drop_plan.rs	2	stage-3	lifecycle target awaits checker-authored graph authority
+string-method-identity	qualified-format-binding	hew-mir/src/lower/mod.rs	1	stage-3	lifecycle target awaits canonical graph projection
+string-method-identity	qualified-format-binding	hew-mir/src/thunk_requirements.rs	1	stage-5	thunk target awaits downstream identity cutover
+string-method-identity	qualified-format-binding	hew-types/src/check/items.rs	9	stage-1	checker method identity is constructed as a string
+string-method-identity	qualified-format-binding	hew-types/src/check/methods.rs	8	stage-1	checker method identity is constructed as a string
+string-method-identity	qualified-format-binding	hew-types/src/check/mod.rs	1	stage-1	checker method identity is constructed as a string
+string-method-identity	qualified-format-binding	hew-types/src/check/registration.rs	4	stage-1	checker registration identity is constructed as a string
+string-method-identity	qualified-format-binding	hew-types/src/stdlib_authority.rs	1	stage-1	stdlib method identity is constructed as a string

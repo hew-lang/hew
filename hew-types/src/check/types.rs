@@ -138,6 +138,11 @@ pub struct OpaqueResourceCandidateGraph {
 #[derive(Debug, Clone)]
 pub(super) struct SourceExternDeclaration {
     pub(super) symbol: String,
+    /// Declarative endpoint template, when `symbol` has no call-independent
+    /// expansion. Candidate derivation matches this only against the closed
+    /// set of canonical ABI tokens; call authorization still requires the
+    /// exact resolved expansion.
+    pub(super) symbol_template: Option<crate::extern_symbol::ExternSymbolTemplate>,
     pub(super) signature_key: String,
     pub(super) declaring_module: Option<String>,
     /// Exact direct module-graph targets imported by the declaring module.
@@ -149,10 +154,34 @@ pub(super) struct SourceExternDeclaration {
     pub(super) consuming_params: Vec<bool>,
 }
 
+/// Exact source declaration and linker endpoint selected for one open-set
+/// `#[extern_symbol]` method call.
+///
+/// The endpoint is for ABI/contract lookup; the signature key is independently
+/// retained for positional/named formal ownership modes. Keeping both prevents
+/// an expanded symbol from being (incorrectly) used as a source declaration
+/// lookup key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternMethodCallIdentity {
+    pub endpoint: String,
+    pub signature_key: String,
+    pub declaring_module: Option<String>,
+    /// True only when the declaration came from compiler-embedded stdlib
+    /// source. Non-resource owned results require this origin proof; opaque
+    /// resource methods use the stricter qualified lifecycle graph instead.
+    pub trusted_compiled_stdlib: bool,
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
     pub expr_types: HashMap<SpanKey, Ty>,
+    /// Total checker-authored ownership facts for accepted expression results.
+    ///
+    /// HIR projects this span-keyed table onto stable `SiteId`s. MIR consumes
+    /// that projection and may not reconstruct ownership from callee spellings,
+    /// result types, or expression intent.
+    pub produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
     /// Declaration spans of non-receiver parameters whose resolved type has
     /// at least one checker-proven projection into storage shared with the
     /// caller.
@@ -1160,6 +1189,7 @@ impl Default for TypeCheckOutput {
     fn default() -> Self {
         Self {
             expr_types: HashMap::new(),
+            produced_value_ownership: HashMap::new(),
             caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
@@ -1368,6 +1398,57 @@ impl From<&Span> for SpanKey {
     }
 }
 
+/// Checker-authored ownership fact for one expression publication site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProducedValueFact {
+    pub ownership: crate::runtime_call::ProducedValueOwnership,
+    /// Exact receiver expression span for `ReceiverIdentity`; absent for all
+    /// other result dispositions.
+    pub receiver_span: Option<SpanKey>,
+    /// Checker-resolved ownership mode for a method receiver.
+    pub receiver_boundary: Option<crate::runtime_call::ProducedArgumentBoundary>,
+    /// One checker-owned boundary mode per source argument, in source order.
+    /// Non-call expressions carry an empty vector.
+    pub arguments: Vec<crate::runtime_call::ProducedArgumentBoundary>,
+}
+
+/// Resolved direct-call identity retained until the checked-output boundary,
+/// where the validated opaque lifecycle graph is available.
+#[derive(Debug, Clone)]
+pub(super) struct PendingDirectCallOwnership {
+    pub(super) fact: ProducedValueFact,
+    pub(super) extern_symbol: Option<String>,
+    pub(super) extern_declaring_module: Option<String>,
+    pub(super) resolved_result_ty: Ty,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingMethodCallOwnership {
+    pub(super) fact: ProducedValueFact,
+    pub(super) extern_identity: Option<ExternMethodCallIdentity>,
+    pub(super) resolved_result_ty: Ty,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum ProducedValueDependency {
+    Identity(SpanKey),
+    Join(Vec<SpanKey>),
+    MoveOut(SpanKey),
+    Projection(SpanKey),
+}
+
+impl ProducedValueFact {
+    #[must_use]
+    pub fn result(ownership: crate::runtime_call::ProducedValueOwnership) -> Self {
+        Self {
+            ownership,
+            receiver_span: None,
+            receiver_boundary: None,
+            arguments: Vec::new(),
+        }
+    }
+}
+
 impl SpanKey {
     /// Construct a key for a span in module `module_idx` (0 = root).
     #[must_use]
@@ -1493,6 +1574,9 @@ pub enum MethodCallRewrite {
     RewriteToFunction {
         c_symbol: String,
         descriptor: Option<crate::runtime_call::RuntimeCallDescriptor>,
+        /// Present only for open-set `#[extern_symbol]` methods. Carries both
+        /// declaration identity and the exact expanded endpoint.
+        extern_identity: Option<ExternMethodCallIdentity>,
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
         consumes_receiver: bool,
         /// Exact receiver-in/result-out ownership identity, derived from the
@@ -2493,6 +2577,35 @@ pub struct Checker {
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
     /// Checker-side accumulator for
+    /// [`TypeCheckOutput::produced_value_ownership`].
+    pub(super) produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
+    /// Resolved direct/indirect call ownership facts produced by call
+    /// resolution and consumed by the expression-result publisher.
+    pub(super) resolved_direct_call_ownership: HashMap<SpanKey, PendingDirectCallOwnership>,
+    /// Resolved inherent/impl/static/dyn/var-self method-site facts.
+    pub(super) resolved_method_call_ownership: HashMap<SpanKey, PendingMethodCallOwnership>,
+    /// Parent expression edges recomputed after every call leaf and deferred
+    /// dispatch fact has reached its final form.
+    pub(super) produced_value_dependencies: HashMap<SpanKey, ProducedValueDependency>,
+    /// Source expression occurrences that have passed the central public
+    /// completion hook. `record_type` may seed a conservative raw fact for a
+    /// checker-synthetic span; this set lets the real expression publisher
+    /// replace that seed exactly once without double-running side effects when
+    /// `check_against` delegates through `synthesize`.
+    pub(super) published_value_occurrences: HashSet<SpanKey>,
+    /// Expected `(has_receiver, source_argument_count)` for every resolved
+    /// call publication site.
+    pub(super) produced_call_arities: HashMap<SpanKey, (bool, usize)>,
+    /// Per-formal ownership disposition keyed by canonical function identity.
+    pub(super) fn_param_ownership:
+        HashMap<String, Vec<crate::runtime_call::ProducedArgumentBoundary>>,
+    /// Declaring provenance for attributed methods, keyed by canonical
+    /// `Type::method` signature identity.
+    pub(super) extern_method_origins: HashMap<String, (Option<String>, bool)>,
+    /// Origin override used only while registering compiler-embedded stdlib
+    /// source; unlike `current_module`, it never changes lookup keys.
+    pub(super) registration_origin_module: Option<String>,
+    /// Checker-side accumulator for
     /// [`TypeCheckOutput::caller_visible_param_projections`].
     pub(super) caller_visible_param_projections: HashSet<SpanKey>,
     pub(super) is_type_patterns: HashMap<SpanKey, Ty>,
@@ -3392,6 +3505,15 @@ impl Checker {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
+            produced_value_ownership: HashMap::new(),
+            resolved_direct_call_ownership: HashMap::new(),
+            resolved_method_call_ownership: HashMap::new(),
+            produced_value_dependencies: HashMap::new(),
+            published_value_occurrences: HashSet::new(),
+            produced_call_arities: HashMap::new(),
+            fn_param_ownership: HashMap::new(),
+            extern_method_origins: HashMap::new(),
+            registration_origin_module: None,
             caller_visible_param_projections: HashSet::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),

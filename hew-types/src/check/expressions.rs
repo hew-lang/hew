@@ -117,7 +117,7 @@ impl Checker {
             self.synthesize_inner(expr, span)
         });
         self.tail_ok_armed = prev_tail_ok_armed;
-        result
+        self.publish_checked_expression(expr, span, result)
     }
 
     pub(super) fn reject_if_wasm_incompatible_expr(&mut self, expr: &Expr, span: &Span) {
@@ -2419,7 +2419,7 @@ impl Checker {
         match expr {
             Expr::Block(block) => {
                 let actual = self.check_block(block, Some(expected));
-                if matches!(actual, Ty::Never | Ty::Error) {
+                let result = if matches!(actual, Ty::Never | Ty::Error) {
                     actual
                 } else {
                     let n = self.errors.len();
@@ -2429,18 +2429,24 @@ impl Checker {
                     } else {
                         actual
                     }
-                }
+                };
+                self.publish_checked_expression(expr, span, result)
             }
             _ => self.check_against(expr, span, expected),
         }
     }
 
     /// Check: verify expression against expected type (top-down).
+    pub(super) fn check_against(&mut self, expr: &Expr, span: &Span, expected: &Ty) -> Ty {
+        let result = self.check_against_inner(expr, span, expected);
+        self.publish_checked_expression(expr, span, result)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "literal coercion requires many match arms with range checks"
     )]
-    pub(super) fn check_against(&mut self, expr: &Expr, span: &Span, expected: &Ty) -> Ty {
+    fn check_against_inner(&mut self, expr: &Expr, span: &Span, expected: &Ty) -> Ty {
         // Resolve type variables so that Ty::Var(v) unified with e.g. Ty::I32
         // is seen as Ty::I32 by the coercion arms below.
         let resolved = self.subst.resolve(expected);
@@ -5360,6 +5366,26 @@ impl Checker {
         if let Expr::Identifier(name) = &object.0 {
             if name == "self" {
                 if let Some(ty) = self.check_machine_transition_self_field_access(field, span) {
+                    let self_ty = self.current_machine_transition.as_ref().map_or(
+                        Ty::Error,
+                        |(machine_name, _, _)| Ty::Named {
+                            builtin: None,
+                            name: machine_name.clone(),
+                            args: self
+                                .lookup_type_def(machine_name)
+                                .map_or_else(Vec::new, |def| {
+                                    def.type_params
+                                        .iter()
+                                        .map(|param| Ty::Named {
+                                            builtin: None,
+                                            name: param.clone(),
+                                            args: vec![],
+                                        })
+                                        .collect()
+                                }),
+                        },
+                    );
+                    self.publish_checked_expression(&object.0, &object.1, self_ty);
                     return ty;
                 }
             }
@@ -7123,6 +7149,406 @@ impl Checker {
         );
     }
 
+    fn produced_fact_at(&self, span: &Span) -> Option<ProducedValueFact> {
+        self.produced_value_ownership
+            .get(&SpanKey::in_module(span, self.current_module_idx))
+            .cloned()
+    }
+
+    fn join_produced_facts(&self, spans: impl IntoIterator<Item = Span>) -> ProducedValueFact {
+        let mut facts = spans
+            .into_iter()
+            .filter_map(|span| self.produced_fact_at(&span));
+        let Some(first) = facts.next() else {
+            return ProducedValueFact::result(crate::runtime_call::ProducedValueOwnership::Unknown);
+        };
+        if facts.all(|fact| {
+            fact.ownership == first.ownership && fact.receiver_span == first.receiver_span
+        }) {
+            ProducedValueFact {
+                arguments: Vec::new(),
+                ..first
+            }
+        } else {
+            ProducedValueFact::result(crate::runtime_call::ProducedValueOwnership::Unknown)
+        }
+    }
+
+    fn argument_is_proven_non_owning(&self, span: &Span) -> bool {
+        let Some(ty) = self
+            .expr_types
+            .get(&SpanKey::in_module(span, self.current_module_idx))
+            .map(|ty| self.subst.resolve(ty))
+        else {
+            return false;
+        };
+        ty.is_copy() || self.registry.implements_marker(&ty, MarkerTrait::Copy)
+    }
+
+    fn provisional_argument_boundaries(
+        &self,
+        args: &[CallArg],
+    ) -> Vec<crate::runtime_call::ProducedArgumentBoundary> {
+        use crate::runtime_call::ProducedArgumentBoundary as Boundary;
+
+        args.iter()
+            .map(|arg| {
+                if self.argument_is_proven_non_owning(&arg.expr().1) {
+                    Boundary::Borrow
+                } else {
+                    Boundary::Unknown
+                }
+            })
+            .collect()
+    }
+
+    /// Complete one public expression-checking entry point.
+    ///
+    /// Some checking paths record a more precise source-expression type before
+    /// returning their contextual result. In particular, tail-`Ok` coercion
+    /// returns the surrounding `Result` while the source span must retain its
+    /// payload type for lowering. Therefore completion fills an absent type but
+    /// never overwrites an existing one, and derives ownership from that
+    /// authoritative recorded type. A nested `synthesize` reached from
+    /// `check_against` may complete the same source occurrence first, so the
+    /// ownership/dependency publication is likewise deliberately single-shot.
+    fn publish_checked_expression(&mut self, expr: &Expr, span: &Span, result: Ty) -> Ty {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        self.expr_type_source_modules
+            .entry(key.clone())
+            .or_insert_with(|| self.current_module.clone());
+        let published_ty = self
+            .expr_types
+            .entry(key.clone())
+            .or_insert_with(|| result.clone())
+            .clone();
+        if self.published_value_occurrences.insert(key) {
+            self.record_produced_value_fact(expr, span, &published_ty);
+        }
+        result
+    }
+
+    /// Publish the single checker-side ownership/result-boundary fact.
+    ///
+    /// This runs after expression checking has completed, so all structured
+    /// dispatch side tables and child facts are available. It is the last
+    /// phase allowed to consult source call spellings or generated FFI rows.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ownership publication exhaustively classifies every expression form"
+    )]
+    fn record_produced_value_fact(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
+        use crate::runtime_call::{
+            ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
+        };
+
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let resolved = self.subst.resolve(ty);
+        let no_owner = resolved.is_copy()
+            || self
+                .registry
+                .implements_marker(&resolved, MarkerTrait::Copy);
+        let mut fact = match expr {
+            Expr::Identifier(_) | Expr::This => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                Ownership::Borrowed
+            }),
+            Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
+                if no_owner {
+                    ProducedValueFact::result(Ownership::NoOwner)
+                } else {
+                    let ownership =
+                        self.produced_fact_at(&object.1)
+                            .map_or(Ownership::Unknown, |base| match base.ownership {
+                                Ownership::Owned { .. } => Ownership::owned(Acquisition::MoveOut),
+                                Ownership::Borrowed | Ownership::ReceiverIdentity => {
+                                    Ownership::Borrowed
+                                }
+                                Ownership::NoOwner | Ownership::Unknown => Ownership::Unknown,
+                            });
+                    ProducedValueFact::result(ownership)
+                }
+            }
+            Expr::Literal(Literal::String(_)) => ProducedValueFact::result(Ownership::Borrowed),
+            Expr::Binary {
+                op: BinaryOp::Add, ..
+            } if matches!(resolved, Ty::String) => {
+                ProducedValueFact::result(Ownership::owned(Acquisition::Fresh))
+            }
+            Expr::Literal(_)
+            | Expr::Unary { .. }
+            | Expr::Cast { .. }
+            | Expr::Range { .. }
+            | Expr::Is { .. }
+            | Expr::MachineEmit { .. }
+            | Expr::Return(_)
+            | Expr::Binary { .. }
+            | Expr::AwaitRestart(_) => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                Ownership::Unknown
+            }),
+            Expr::Clone(_) => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                Ownership::owned(Acquisition::Clone)
+            }),
+            Expr::Tuple(_)
+            | Expr::Array(_)
+            | Expr::ArrayRepeat { .. }
+            | Expr::MapLiteral { .. }
+            | Expr::StructInit { .. }
+            | Expr::Lambda { .. }
+            | Expr::Spawn { .. }
+            | Expr::SpawnLambdaActor { .. }
+            | Expr::ForkChild { .. }
+            | Expr::ForkBlock { .. }
+            | Expr::GenBlock { .. }
+            | Expr::RegexLiteral(_)
+            | Expr::ByteStringLiteral(_)
+            | Expr::ByteArrayLiteral(_)
+            | Expr::InterpolatedString(_) => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                Ownership::owned(Acquisition::Fresh)
+            }),
+            Expr::Block(block) => block
+                .trailing_expr
+                .as_deref()
+                .map_or(ProducedValueFact::result(Ownership::NoOwner), |tail| {
+                    self.join_produced_facts([tail.1.clone()])
+                }),
+            Expr::UnsafeBlock(block) => block
+                .trailing_expr
+                .as_deref()
+                .map_or(ProducedValueFact::result(Ownership::NoOwner), |tail| {
+                    self.join_produced_facts([tail.1.clone()])
+                }),
+            Expr::If {
+                then_block,
+                else_block,
+                ..
+            } => {
+                let mut tails = vec![then_block.1.clone()];
+                if let Some(else_block) = else_block {
+                    tails.push(else_block.1.clone());
+                }
+                self.join_produced_facts(tails)
+            }
+            Expr::IfLet {
+                body, else_body, ..
+            } => {
+                let mut tails = Vec::new();
+                if let Some(tail) = body.trailing_expr.as_deref() {
+                    tails.push(tail.1.clone());
+                }
+                if let Some(tail) = else_body
+                    .as_ref()
+                    .and_then(|block| block.trailing_expr.as_deref())
+                {
+                    tails.push(tail.1.clone());
+                }
+                self.join_produced_facts(tails)
+            }
+            Expr::Match { arms, .. } => {
+                self.join_produced_facts(arms.iter().map(|arm| arm.body.1.clone()))
+            }
+            Expr::PostfixTry(inner) => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                self.produced_fact_at(&inner.1)
+                    .map_or(Ownership::Unknown, |fact| match fact.ownership {
+                        Ownership::Owned { .. } => Ownership::owned(Acquisition::MoveOut),
+                        Ownership::Borrowed | Ownership::ReceiverIdentity => Ownership::Borrowed,
+                        Ownership::NoOwner | Ownership::Unknown => Ownership::Unknown,
+                    })
+            }),
+            Expr::Await(inner) => {
+                let inner_ty = self
+                    .expr_types
+                    .get(&SpanKey::in_module(&inner.1, self.current_module_idx))
+                    .map(|ty| self.subst.resolve(ty));
+                if no_owner {
+                    ProducedValueFact::result(Ownership::NoOwner)
+                } else if inner_ty.as_ref().is_some_and(|ty| {
+                    matches!(
+                        ty,
+                        Ty::Named {
+                            builtin: Some(BuiltinType::Task),
+                            ..
+                        }
+                    )
+                }) {
+                    ProducedValueFact::result(Ownership::owned(Acquisition::Delivery))
+                } else {
+                    self.join_produced_facts([inner.1.clone()])
+                }
+            }
+            Expr::Select { arms, timeout } => {
+                let mut bodies: Vec<Span> = arms.iter().map(|arm| arm.body.1.clone()).collect();
+                if let Some(timeout) = timeout {
+                    bodies.push(timeout.body.1.clone());
+                }
+                self.join_produced_facts(bodies)
+            }
+            Expr::Join(_) => ProducedValueFact::result(if no_owner {
+                Ownership::NoOwner
+            } else {
+                Ownership::owned(Acquisition::Delivery)
+            }),
+            Expr::Timeout { expr, .. } => self.join_produced_facts([expr.1.clone()]),
+            Expr::Scope { body } | Expr::ScopeDeadline { body, .. } => body
+                .trailing_expr
+                .as_deref()
+                .map_or(ProducedValueFact::result(Ownership::NoOwner), |tail| {
+                    self.join_produced_facts([tail.1.clone()])
+                }),
+            Expr::Yield(_) => ProducedValueFact::result(Ownership::NoOwner),
+            Expr::Call { args, .. } => self.resolved_direct_call_ownership.get(&key).map_or_else(
+                || ProducedValueFact {
+                    ownership: if no_owner {
+                        Ownership::NoOwner
+                    } else {
+                        Ownership::Unknown
+                    },
+                    receiver_span: None,
+                    receiver_boundary: None,
+                    arguments: self.provisional_argument_boundaries(args),
+                },
+                |pending| pending.fact.clone(),
+            ),
+            Expr::MethodCall { receiver, args, .. } => {
+                self.resolved_method_call_ownership.get(&key).map_or_else(
+                    || {
+                        let ownership = if no_owner {
+                            Ownership::NoOwner
+                        } else {
+                            Ownership::Unknown
+                        };
+                        ProducedValueFact {
+                            ownership,
+                            receiver_span: matches!(ownership, Ownership::ReceiverIdentity)
+                                .then(|| SpanKey::in_module(&receiver.1, self.current_module_idx)),
+                            receiver_boundary: Some(
+                                crate::runtime_call::ProducedArgumentBoundary::Unknown,
+                            ),
+                            arguments: self.provisional_argument_boundaries(args),
+                        }
+                    },
+                    |pending| pending.fact.clone(),
+                )
+            }
+        };
+        if !no_owner && self.dyn_trait_coercions.contains_key(&key) {
+            fact.ownership = Ownership::owned(Acquisition::Fresh);
+            fact.receiver_span = None;
+            self.produced_value_dependencies.remove(&key);
+        } else if no_owner {
+            fact.ownership = Ownership::NoOwner;
+            fact.receiver_span = None;
+        }
+        let dependency = match expr {
+            Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => {
+                let child = SpanKey::in_module(&object.1, self.current_module_idx);
+                self.expr_types
+                    .contains_key(&child)
+                    .then_some(ProducedValueDependency::Projection(child))
+            }
+            Expr::PostfixTry(inner) => Some(ProducedValueDependency::MoveOut(SpanKey::in_module(
+                &inner.1,
+                self.current_module_idx,
+            ))),
+            Expr::Block(block) => block.trailing_expr.as_deref().map(|tail| {
+                ProducedValueDependency::Identity(SpanKey::in_module(
+                    &tail.1,
+                    self.current_module_idx,
+                ))
+            }),
+            Expr::UnsafeBlock(block) => block.trailing_expr.as_deref().map(|tail| {
+                ProducedValueDependency::Identity(SpanKey::in_module(
+                    &tail.1,
+                    self.current_module_idx,
+                ))
+            }),
+            Expr::If {
+                then_block,
+                else_block: Some(else_block),
+                ..
+            } => Some(ProducedValueDependency::Join(vec![
+                SpanKey::in_module(&then_block.1, self.current_module_idx),
+                SpanKey::in_module(&else_block.1, self.current_module_idx),
+            ])),
+            Expr::IfLet {
+                body,
+                else_body: Some(else_body),
+                ..
+            } => {
+                let children = body
+                    .trailing_expr
+                    .iter()
+                    .chain(else_body.trailing_expr.iter())
+                    .map(|child| SpanKey::in_module(&child.1, self.current_module_idx))
+                    .collect();
+                Some(ProducedValueDependency::Join(children))
+            }
+            Expr::Match { arms, .. } => Some(ProducedValueDependency::Join(
+                arms.iter()
+                    .map(|arm| SpanKey::in_module(&arm.body.1, self.current_module_idx))
+                    .collect(),
+            )),
+            Expr::Await(inner)
+                if !self
+                    .expr_types
+                    .get(&SpanKey::in_module(&inner.1, self.current_module_idx))
+                    .map(|ty| self.subst.resolve(ty))
+                    .is_some_and(|ty| {
+                        matches!(
+                            ty,
+                            Ty::Named {
+                                builtin: Some(BuiltinType::Task),
+                                ..
+                            }
+                        )
+                    }) =>
+            {
+                Some(ProducedValueDependency::Identity(SpanKey::in_module(
+                    &inner.1,
+                    self.current_module_idx,
+                )))
+            }
+            Expr::Timeout { expr: inner, .. } => Some(ProducedValueDependency::Identity(
+                SpanKey::in_module(&inner.1, self.current_module_idx),
+            )),
+            Expr::Select { arms, timeout } => {
+                let mut children: Vec<SpanKey> = arms
+                    .iter()
+                    .map(|arm| SpanKey::in_module(&arm.body.1, self.current_module_idx))
+                    .collect();
+                if let Some(timeout) = timeout {
+                    children.push(SpanKey::in_module(&timeout.body.1, self.current_module_idx));
+                }
+                Some(ProducedValueDependency::Join(children))
+            }
+            Expr::Scope { body } | Expr::ScopeDeadline { body, .. } => {
+                body.trailing_expr.as_deref().map(|tail| {
+                    ProducedValueDependency::Identity(SpanKey::in_module(
+                        &tail.1,
+                        self.current_module_idx,
+                    ))
+                })
+            }
+            _ => None,
+        };
+        if !self.dyn_trait_coercions.contains_key(&key) {
+            if let Some(dependency) = dependency {
+                self.produced_value_dependencies
+                    .insert(key.clone(), dependency);
+            }
+        }
+        self.produced_value_ownership.insert(key, fact);
+    }
+
     /// Record a generic actor spawn instantiation.
     ///
     /// Inserts `(actor_name, type_args)` into the `actor_spawn_type_args`
@@ -7147,7 +7573,14 @@ impl Checker {
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.expr_type_source_modules
             .insert(key.clone(), self.current_module.clone());
-        self.expr_types.insert(key, ty.clone());
+        self.expr_types.insert(key.clone(), ty.clone());
+        self.produced_value_ownership.entry(key).or_insert_with(|| {
+            ProducedValueFact::result(if ty.is_copy() {
+                crate::runtime_call::ProducedValueOwnership::NoOwner
+            } else {
+                crate::runtime_call::ProducedValueOwnership::Unknown
+            })
+        });
     }
 
     pub(super) fn record_integer_literal_type(&mut self, expr: &Expr, span: &Span, ty: &Ty) {

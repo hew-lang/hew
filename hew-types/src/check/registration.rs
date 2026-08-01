@@ -406,8 +406,14 @@ enum SourceCandidateOutcome {
     },
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "resource candidates join declaration, contract, import, and signature authorities"
+)]
 fn derive_source_resource_candidate(
     producer_declaration: &SourceExternDeclaration,
+    producer_symbol: &str,
+    producer_contract: &crate::ffi_contracts::ExternOwnershipContract,
     source_declarations: &[SourceExternDeclaration],
     fn_sigs: &HashMap<String, FnSig>,
     module_import_bindings: &HashMap<(Option<String>, String), String>,
@@ -417,10 +423,6 @@ fn derive_source_resource_candidate(
         &crate::ffi_contracts::ExternOwnershipContract,
     >,
 ) -> SourceCandidateOutcome {
-    let Some(producer_contract) = contracts_by_symbol.get(producer_declaration.symbol.as_str())
-    else {
-        return SourceCandidateOutcome::Irrelevant;
-    };
     let Some(typed_result) =
         crate::ffi_contracts::owned_resource_result_for_contract(producer_contract)
     else {
@@ -516,13 +518,24 @@ fn derive_source_resource_candidate(
         discharge_depth: typed_result.discharge_depth,
         result_ownership: typed_result.result,
         result_retention: typed_result.result_retention,
-        producer_symbols: [producer_declaration.symbol.clone()].into_iter().collect(),
+        producer_symbols: [producer_symbol.to_string()].into_iter().collect(),
         producer_modules: producer_declaration
             .declaring_module
             .iter()
             .cloned()
             .collect(),
     })
+}
+
+fn source_declaration_matches_endpoint(
+    declaration: &SourceExternDeclaration,
+    endpoint: &str,
+) -> bool {
+    declaration.symbol == endpoint
+        || declaration
+            .symbol_template
+            .as_ref()
+            .is_some_and(|template| template.matches_canonical_expansion(endpoint))
 }
 
 fn derive_opaque_resource_candidate_graph(
@@ -543,61 +556,68 @@ fn derive_opaque_resource_candidate_graph(
     let mut conflicted_types = std::collections::BTreeSet::new();
 
     for producer_declaration in source_declarations {
-        let candidate = match derive_source_resource_candidate(
-            producer_declaration,
-            source_declarations,
-            fn_sigs,
-            module_import_bindings,
-            import_type_name_aliases,
-            &contracts_by_symbol,
-        ) {
-            SourceCandidateOutcome::Irrelevant => continue,
-            SourceCandidateOutcome::Conflict {
-                resource_type,
-                release_symbol,
-                kind,
-            } => {
-                conflicted_types.insert(resource_type.clone());
-                graph.conflicts.push(OpaqueResourceLifecycleConflict {
-                    resource_type,
-                    producer_symbol: producer_declaration.symbol.clone(),
-                    release_symbol,
-                    kind,
-                });
+        for (producer_symbol, producer_contract) in &contracts_by_symbol {
+            if !source_declaration_matches_endpoint(producer_declaration, producer_symbol) {
                 continue;
             }
-            SourceCandidateOutcome::Candidate(candidate) => candidate,
-        };
-        let resource_type = candidate.resource_type.clone();
-        match graph.candidates.entry(resource_type.clone()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(candidate);
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry)
-                if lifecycle_matches(entry.get(), &candidate) =>
-            {
-                entry
-                    .get_mut()
-                    .producer_symbols
-                    .insert(producer_declaration.symbol.clone());
-                entry
-                    .get_mut()
-                    .producer_modules
-                    .extend(candidate.producer_modules);
-            }
-            std::collections::btree_map::Entry::Occupied(entry) => {
-                let established = lifecycle_description(entry.get());
-                let conflicting = lifecycle_description(&candidate);
-                graph.conflicts.push(OpaqueResourceLifecycleConflict {
-                    resource_type: resource_type.clone(),
-                    producer_symbol: producer_declaration.symbol.clone(),
-                    release_symbol: candidate.release_symbol.clone(),
-                    kind: OpaqueResourceLifecycleConflictKind::MultipleProducerLifecycle {
-                        established,
-                        conflicting,
-                    },
-                });
-                conflicted_types.insert(resource_type);
+            let candidate = match derive_source_resource_candidate(
+                producer_declaration,
+                producer_symbol,
+                producer_contract,
+                source_declarations,
+                fn_sigs,
+                module_import_bindings,
+                import_type_name_aliases,
+                &contracts_by_symbol,
+            ) {
+                SourceCandidateOutcome::Irrelevant => continue,
+                SourceCandidateOutcome::Conflict {
+                    resource_type,
+                    release_symbol,
+                    kind,
+                } => {
+                    conflicted_types.insert(resource_type.clone());
+                    graph.conflicts.push(OpaqueResourceLifecycleConflict {
+                        resource_type,
+                        producer_symbol: (*producer_symbol).to_string(),
+                        release_symbol,
+                        kind,
+                    });
+                    continue;
+                }
+                SourceCandidateOutcome::Candidate(candidate) => candidate,
+            };
+            let resource_type = candidate.resource_type.clone();
+            match graph.candidates.entry(resource_type.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(candidate);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry)
+                    if lifecycle_matches(entry.get(), &candidate) =>
+                {
+                    entry
+                        .get_mut()
+                        .producer_symbols
+                        .insert((*producer_symbol).to_string());
+                    entry
+                        .get_mut()
+                        .producer_modules
+                        .extend(candidate.producer_modules);
+                }
+                std::collections::btree_map::Entry::Occupied(entry) => {
+                    let established = lifecycle_description(entry.get());
+                    let conflicting = lifecycle_description(&candidate);
+                    graph.conflicts.push(OpaqueResourceLifecycleConflict {
+                        resource_type: resource_type.clone(),
+                        producer_symbol: (*producer_symbol).to_string(),
+                        release_symbol: candidate.release_symbol.clone(),
+                        kind: OpaqueResourceLifecycleConflictKind::MultipleProducerLifecycle {
+                            established,
+                            conflicting,
+                        },
+                    });
+                    conflicted_types.insert(resource_type);
+                }
             }
         }
     }
@@ -6292,6 +6312,10 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "signature registration resolves annotations, generics, bounds, and ownership"
+    )]
     pub(super) fn register_fn_sig_with_name(&mut self, name: &str, fd: &FnDecl) {
         // Only filter out the receiver for methods (Type::method), not free
         // functions that happen to have a parameter named `self`.
@@ -6403,6 +6427,30 @@ impl Checker {
 
         let key = scoped_module_item_name(self.current_module.as_deref(), name)
             .unwrap_or_else(|| name.to_string());
+        let param_ownership = fd
+            .params
+            .iter()
+            .skip(skip)
+            .zip(sig.params.iter())
+            .map(|(param, ty)| {
+                if param.is_consume {
+                    crate::runtime_call::ProducedArgumentBoundary::Transfer
+                } else {
+                    let resolved = self.subst.resolve(ty);
+                    let resource = matches!(
+                        &resolved,
+                        Ty::Named { name, .. }
+                            if self.registry.is_resource(name) || self.registry.is_linear(name)
+                    );
+                    if resource {
+                        crate::runtime_call::ProducedArgumentBoundary::Unknown
+                    } else {
+                        crate::runtime_call::ProducedArgumentBoundary::Borrow
+                    }
+                }
+            })
+            .collect();
+        self.fn_param_ownership.insert(key.clone(), param_ownership);
         self.fn_sigs.insert(key.clone(), sig);
         self.fn_type_param_assoc_bindings
             .insert(key.clone(), fn_assoc_bindings);
@@ -6767,7 +6815,18 @@ impl Checker {
         // `Ty::Var` with body checking and every method-table mirror. Rebuilding
         // and reinserting the annotation here would create an unrelated hole
         // that can never be resolved by the method body.
-        self.fn_sigs.insert(registered_key, sig.clone());
+        self.fn_sigs.insert(registered_key.clone(), sig.clone());
+        if sig.extern_symbol.is_some() {
+            let trusted_compiled_stdlib = self.registration_origin_module.is_some();
+            let declaring_module = self
+                .registration_origin_module
+                .clone()
+                .or_else(|| self.current_module.clone());
+            let origin = (declaring_module, trusted_compiled_stdlib);
+            self.extern_method_origins
+                .insert(method_key.clone(), origin.clone());
+            self.extern_method_origins.insert(registered_key, origin);
+        }
         if let Some(td) = self.lookup_type_def_mut(type_name) {
             td.methods.insert(method.name.clone(), sig.clone());
         }
@@ -8296,6 +8355,10 @@ impl Checker {
         self.fn_sigs.insert(method_name, sig);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "extern registration validates ABI authority and records lifecycle provenance"
+    )]
     pub(super) fn register_extern_block(&mut self, eb: &ExternBlock) {
         // `extern "rt"` is the Hew-side declaration surface for JIT-visible
         // runtime functions. Validate each declared symbol against the `stable`
@@ -8378,18 +8441,47 @@ impl Checker {
                 extern_symbol: self.ingest_extern_symbol_attrs(&f.attributes),
                 ..FnSig::default()
             };
+            let source_symbol = sig.extern_symbol.as_ref().map_or_else(
+                || f.name.clone(),
+                |spec| {
+                    if spec.template.is_monomorphic() {
+                        spec.template.raw.clone()
+                    } else {
+                        String::new()
+                    }
+                },
+            );
+            let source_symbol_template = sig
+                .extern_symbol
+                .as_ref()
+                .filter(|spec| !spec.template.is_monomorphic())
+                .map(|spec| spec.template.clone());
             let key = scoped_module_item_name(self.current_module.as_deref(), &f.name)
                 .unwrap_or_else(|| f.name.clone());
             self.record_fn_sig_inference_holes(&key, hole_vars);
             self.fn_sigs.insert(key.clone(), sig);
             self.source_extern_declarations
                 .push(SourceExternDeclaration {
-                    symbol: f.name.clone(),
+                    symbol: source_symbol,
+                    symbol_template: source_symbol_template,
                     signature_key: key.clone(),
                     declaring_module: self.current_module.clone(),
                     direct_import_modules: self.current_module_direct_imports.clone(),
                     consuming_params: f.params.iter().map(|param| param.is_consume).collect(),
                 });
+            self.fn_param_ownership.insert(
+                key.clone(),
+                f.params
+                    .iter()
+                    .map(|param| {
+                        if param.is_consume {
+                            crate::runtime_call::ProducedArgumentBoundary::Transfer
+                        } else {
+                            crate::runtime_call::ProducedArgumentBoundary::Borrow
+                        }
+                    })
+                    .collect(),
+            );
             self.unsafe_functions.insert(key);
             self.record_root_value_binding(&f.name);
         }
@@ -8902,6 +8994,9 @@ impl Checker {
         items: &[Spanned<Item>],
         import_spec: StdlibBarePublication<'_>,
     ) {
+        let saved_registration_origin = self
+            .registration_origin_module
+            .replace(module_full_path.to_string());
         for (item, _span) in items {
             let Item::Import(decl) = item else {
                 continue;
@@ -9309,6 +9404,7 @@ impl Checker {
         }
         self.local_type_defs = saved_local_type_defs;
         self.source_type_defs = saved_source_type_defs;
+        self.registration_origin_module = saved_registration_origin;
     }
 
     /// Republish the public type names from an already-registered stdlib Hew

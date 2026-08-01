@@ -131,24 +131,45 @@ with tempfile.TemporaryDirectory() as temp:
     assert run(work).returncode != 0, "hew-analysis leaf-name seams must be audited"
     analysis.unlink()
 
-    target.write_text(
-        "fn forbidden() { let _: HashMap<SpanKey, SiteId> = HashMap::new(); }\n"
+    scalar_values = (
+        "SiteId",
+        "&SiteId",
+        "&'static SiteId",
+        "&'a mut SiteId",
+        "*const SiteId",
+        "*mut SiteId",
+        "Option<SiteId>",
+        "Box<SiteId>",
+        "Rc<SiteId>",
+        "Arc<SiteId>",
+        "Cell<SiteId>",
+        "RefCell<SiteId>",
+        "Option<Box<&'a SiteId>>",
     )
-    result = run(work)
-    assert result.returncode != 0, "a scalar SpanKey-to-SiteId map must fail"
-    assert "forbidden scalar SpanKey -> SiteId authority" in result.stderr
-    target.write_text(
-        "fn forbidden() { let _: BTreeMap<SpanKey, Option<SiteId>> = BTreeMap::new(); }\n"
-    )
-    assert run(work).returncode != 0, "an optional scalar site map must fail"
+    for scalar_value in scalar_values:
+        target.write_text(
+            "fn forbidden<'a>() { let _: HashMap<SpanKey, "
+            f"{scalar_value}> = HashMap::new(); }}\n"
+        )
+        result = run(work)
+        assert result.returncode != 0, f"scalar wrapper {scalar_value} must fail"
+        assert "forbidden scalar SpanKey -> SiteId authority" in result.stderr
     target.write_text(
         "fn forbidden() { let _: HashSet<(SpanKey, SiteId)> = HashSet::new(); }\n"
     )
     assert run(work).returncode != 0, "a span/site pair set must fail"
-    target.write_text(
-        "fn allowed() { let _: HashMap<SpanKey, Vec<SiteId>> = HashMap::new(); }\n"
-    )
-    assert run(work).returncode == 0, "a source-to-sites multimap must remain allowed"
+    for collection_value in (
+        "Vec<SiteId>",
+        "SmallVec<[SiteId; 4]>",
+        "BTreeSet<SiteId>",
+    ):
+        target.write_text(
+            "fn allowed() { let _: HashMap<SpanKey, "
+            f"{collection_value}> = HashMap::new(); }}\n"
+        )
+        assert run(work).returncode == 0, (
+            f"source-to-sites collection {collection_value} must remain allowed"
+        )
 
     # Presentation is exempt only under the exact parsed debug-builder call
     # context. A same-location substitution of an authority call is debt.
@@ -242,11 +263,29 @@ with tempfile.TemporaryDirectory() as temp:
             'fn f() { method_key = format!(r#"{}::{}"#, owner, method); }\n',
             "raw-literal assignment",
         ),
+        (
+            'fn f() { method_key = std::format!("{}::{}", owner, method); }\n',
+            "module-qualified macro",
+        ),
+        (
+            'fn f() { method_key = std::format!["{}::{}", owner, method]; }\n',
+            "module-qualified bracket macro",
+        ),
+        (
+            'fn f() { method_key = ::std::format!{"{}::{}", owner, method}; }\n',
+            "absolute macro path",
+        ),
     ):
         target.write_text(source_text)
         set_inventory(work)
         result = run(work)
         assert result.returncode != 0, f"a new {description} string identity must fail"
         assert "qualified-format-macro" in result.stderr
+
+    target.write_text(
+        'fn f() { method_key = qualified::other!("{}::{}", owner, method); }\n'
+    )
+    set_inventory(work)
+    assert run(work).returncode == 0, "non-format macro paths must remain controls"
 
 print("structural authority audit counterfactuals: PASS")

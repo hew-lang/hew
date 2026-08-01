@@ -9,6 +9,7 @@ or hide authority findings.
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import json
 import subprocess
@@ -333,17 +334,6 @@ def excluded(finding: Finding, test_ranges: list[SyntaxRange]) -> bool:
     )
 
 
-def is_string_literal(text: str) -> bool:
-    if text.startswith('"'):
-        return True
-    if not text.startswith("r"):
-        return False
-    suffix = text[1:]
-    while suffix.startswith("#"):
-        suffix = suffix[1:]
-    return suffix.startswith('"')
-
-
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
     test_ranges = test_only_ranges(ast_grep, root)
     findings: set[Finding] = set()
@@ -394,10 +384,26 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
                 finding("checker-hir-publication", "checker-insert-call", match)
             )
 
-    for match in run_query(ast_grep, root, pattern="format!($$$ARGS)"):
-        args = match.get("metaVariables", {}).get("multi", {}).get("ARGS", [])  # type: ignore[union-attr]
-        first = str(args[0].get("text", "")) if args else ""  # type: ignore[index]
-        if is_string_literal(first) and "::" in first:
+    literals_by_path: defaultdict[str, list[tuple[int, int, str]]] = defaultdict(list)
+    for kind in ("string_literal", "raw_string_literal"):
+        for literal in run_query(ast_grep, root, kind=kind):
+            literal_range = node_range(literal)
+            literals_by_path[literal_range.path].append(
+                (literal_range.byte_start, literal_range.byte_end, str(literal["text"]))
+            )
+    literal_indexes: dict[str, tuple[list[int], list[tuple[int, int, str]]]] = {}
+    for path, literals in literals_by_path.items():
+        literals.sort()
+        literal_indexes[path] = ([start for start, _, _ in literals], literals)
+
+    for match in run_query(ast_grep, root, pattern="$M!"):
+        if single_meta(match, "M").split("::")[-1] != "format":
+            continue
+        macro_range = node_range(match)
+        starts, literals = literal_indexes.get(macro_range.path, ([], []))
+        literal_index = bisect.bisect_left(starts, macro_range.byte_start)
+        first = literals[literal_index] if literal_index < len(literals) else None
+        if first is not None and first[1] <= macro_range.byte_end and "::" in first[2]:
             findings.add(
                 finding("string-method-identity", "qualified-format-macro", match)
             )
@@ -455,27 +461,54 @@ def split_top_level(text: str) -> list[str]:
 
 
 def generic_parts(text: str) -> tuple[str, list[str]] | None:
-    compact = "".join(text.split())
+    stripped = text.strip()
     try:
-        opening = compact.index("<")
+        opening = stripped.index("<")
     except ValueError:
         return None
-    if not compact.endswith(">"):
+    if not stripped.endswith(">"):
         return None
-    return compact[:opening].split("::")[-1], split_top_level(compact[opening + 1 : -1])
+    outer = "".join(stripped[:opening].split()).split("::")[-1]
+    return outer, split_top_level(stripped[opening + 1 : -1])
+
+
+def strip_type_indirection(text: str) -> str:
+    """Remove parsed reference/raw-pointer prefixes without eating type names."""
+    value = text.strip()
+    while True:
+        if value.startswith("&"):
+            value = value[1:].lstrip()
+            if value.startswith("'"):
+                end = 1
+                while end < len(value) and (value[end].isalnum() or value[end] == "_"):
+                    end += 1
+                value = value[end:].lstrip()
+            if value == "mut" or value.startswith("mut "):
+                value = value[3:].lstrip()
+            continue
+        pointer = next(
+            (
+                prefix
+                for prefix in ("*const", "*mut")
+                if value == prefix or value.startswith(prefix + " ")
+            ),
+            None,
+        )
+        if pointer is None:
+            return value
+        value = value[len(pointer) :].lstrip()
 
 
 def base_type(text: str) -> str:
-    compact = "".join(text.split()).lstrip("&")
-    if compact.startswith("mut"):
-        compact = compact[3:]
+    compact = "".join(strip_type_indirection(text).split())
     return compact.split("::")[-1]
 
 
 def scalar_site_value(text: str) -> bool:
-    if base_type(text) == "SiteId":
+    normalized = strip_type_indirection(text)
+    if base_type(normalized) == "SiteId":
         return True
-    parts = generic_parts(text)
+    parts = generic_parts(normalized)
     return bool(
         parts
         and parts[0] in {"Option", "Box", "Rc", "Arc", "Cell", "RefCell"}

@@ -799,6 +799,7 @@ _TESTS = [
     test_dot_cargo_config_routes_to_scripts_config_profile,
     test_rust_toolchain_routes_to_scripts_config_profile,
     test_ci_required_names_freebsd_authoritative_job,
+    test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps,
     # Slice 1 instrumentation tests
     test_dry_run_shows_budget_annotation_narrow_lane,
     test_dry_run_shows_budget_annotation_fallback_lane,

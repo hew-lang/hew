@@ -17,9 +17,43 @@ if [[ "${1:-}" == "--bootstrap" ]]; then BOOTSTRAP=1; shift; fi
 # shellcheck disable=SC1090
 source "$LOCK"
 
+sha256_file() {
+    local backend="${HEW_AST_GREP_SHA256_BACKEND:-auto}"
+    if [[ "$backend" == "auto" ]]; then
+        if command -v sha256sum >/dev/null 2>&1; then
+            backend=sha256sum
+        elif command -v shasum >/dev/null 2>&1; then
+            backend=shasum
+        else
+            echo "error: sha256sum or shasum is required to verify the grammar archive" >&2
+            return 1
+        fi
+    fi
+    case "$backend" in
+        sha256sum)
+            command -v sha256sum >/dev/null 2>&1 || {
+                echo "error: requested sha256sum backend is unavailable" >&2
+                return 1
+            }
+            sha256sum "$1" | awk '{print $1}'
+            ;;
+        shasum)
+            command -v shasum >/dev/null 2>&1 || {
+                echo "error: requested shasum backend is unavailable" >&2
+                return 1
+            }
+            shasum -a 256 "$1" | awk '{print $1}'
+            ;;
+        *)
+            echo "error: unsupported SHA-256 backend: $backend" >&2
+            return 1
+            ;;
+    esac
+}
+
 need() {
     [[ -f "$GRAMMAR_ARCHIVE" ]] || return 1
-    [[ "$(shasum -a 256 "$GRAMMAR_ARCHIVE" | awk '{print $1}')" == "$TREE_SITTER_HEW_ARCHIVE_SHA256" ]] || {
+    [[ "$(sha256_file "$GRAMMAR_ARCHIVE")" == "$TREE_SITTER_HEW_ARCHIVE_SHA256" ]] || {
         echo "error: cached grammar archive checksum does not match tools/ast-grep.lock" >&2; return 1;
     }
 }
@@ -33,7 +67,7 @@ if ! need; then
     tmp="$GRAMMAR_ARCHIVE.tmp"
     curl --fail --location --silent --show-error \
         "$TREE_SITTER_HEW_REPOSITORY/archive/$TREE_SITTER_HEW_REV.tar.gz" -o "$tmp"
-    actual="$(shasum -a 256 "$tmp" | awk '{print $1}')"
+    actual="$(sha256_file "$tmp")"
     [[ "$actual" == "$TREE_SITTER_HEW_ARCHIVE_SHA256" ]] || {
         rm -f "$tmp"
         echo "error: grammar archive checksum mismatch: expected $TREE_SITTER_HEW_ARCHIVE_SHA256, got $actual" >&2

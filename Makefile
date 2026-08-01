@@ -69,7 +69,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint structural-lint structural-lint-bootstrap test-structural-authority-audit test-ast-grep-contract runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
+.PHONY: test test-rust test-parser test-types test-cli test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1105,15 +1105,23 @@ lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-
 structural-lint: test-structural-authority-audit
 	scripts/ast-grep-lint.sh
 
-structural-lint-bootstrap: test-structural-authority-audit
+# Keep this graph serialized: the declared edges make every bootstrap contract
+# visible to the reachability proof, while the first prerequisite installs the
+# pinned parser before any parser-backed counterfactual executes.
+.NOTPARALLEL: structural-lint-bootstrap
+structural-lint-bootstrap: structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap
+
+structural-lint-bootstrap-install:
 	scripts/ast-grep-lint.sh --bootstrap
-	$(MAKE) test-ast-grep-contract
 
 test-structural-authority-audit:
 	python3 scripts/tests/test_structural_authority_audit.py
 
 test-ast-grep-contract:
 	bash scripts/tests/test_ast_grep_contract.sh
+
+test-structural-lint-bootstrap:
+	python3 scripts/tests/test_structural_lint_bootstrap.py
 # Keep the corpus-floor registry honest: every declared floor is well formed
 # and still has a live call site, the registry's own row count is floored, and
 # both helper implementations agree on every row's verdict. A gate that

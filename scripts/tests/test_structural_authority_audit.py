@@ -64,12 +64,12 @@ with tempfile.TemporaryDirectory() as temp:
     assert result.returncode != 0, "a non-parser executable must fail closed"
     assert "sentinel failed closed" in result.stderr
 
-    # Neither comment tokens nor literal nodes are executable syntax findings,
-    # including identifier-shaped text inside a macro string token.
+    # Neither comment tokens nor literal nodes create leaf-name findings,
+    # including identifier-shaped text inside an ordinary macro string token.
     target.write_text(
         '// short_name(name); name.rsplit("::"); HashMap<SpanKey, SiteId>\n'
         'const DECOY: &str = "short_name(name); name.rsplit(\\"::\\")";\n'
-        'fn macro_decoy() { format!("short_name(name) name.rsplit(\\"::\\")"); }\n'
+        'fn macro_decoy() { format!("short_name(name) name.rsplit"); }\n'
     )
     assert run(work).returncode == 0, "comments and strings must not create findings"
 
@@ -105,6 +105,23 @@ with tempfile.TemporaryDirectory() as temp:
         "fn production() {}\n"
     )
     assert run(work).returncode == 0, "parsed test-only module/items must be excluded"
+
+    target.write_text(
+        "#[cfg(all(test))]\n"
+        "fn all_single() { let _ = short_name(name); }\n"
+        '#[cfg(all(feature = "x", test))]\n'
+        "fn all_reordered() { let _ = short_name(name); }\n"
+    )
+    assert run(work).returncode == 0, "all(...) test guards must be order-independent"
+    target.write_text(
+        '#[cfg(any(test, feature = "x"))]\n'
+        "fn any_guard() { let _ = short_name(name); }\n"
+    )
+    assert run(work).returncode != 0, "cfg(any(test, feature)) is production-capable"
+    target.write_text(
+        "#[cfg(not(test))]\nfn non_test_guard() { let _ = short_name(name); }\n"
+    )
+    assert run(work).returncode != 0, "cfg(not(test)) is production authority"
 
     # hew-analysis is an audited production root, not a display-shaped escape.
     target.write_text("fn production() {}\n")
@@ -162,6 +179,17 @@ with tempfile.TemporaryDirectory() as temp:
     assert result.returncode != 0, "same-line presentation must not exempt semantic use"
     assert "expected 0, found 1" in result.stderr
 
+    # The exemption binds the exact designated debug argument expression. A
+    # nested semantic sibling elsewhere in that same debug call remains debt.
+    target.write_text(
+        "fn f() { dctx.di_builder.create_enumerator(short_name(name), semantic(short_name(key)), false); }\n"
+    )
+    result = run(work)
+    assert result.returncode != 0, (
+        "a nested sibling in one debug call must remain semantic"
+    )
+    assert "expected 0, found 1" in result.stderr
+
     # Restore an empty presentation baseline and prove syntax-form drift,
     # corpus shrink, count drift, and arbitrary retirement-stage edits fail.
     (work / "scripts/structural-authority-presentation.tsv").write_text(
@@ -195,12 +223,30 @@ with tempfile.TemporaryDirectory() as temp:
     assert result.returncode != 0, "non-canonical retirement stages must fail"
     assert "requires stage-4" in result.stderr
 
-    # Preserve the qualified-string identity ratchet under parsed let/macro
-    # syntax rather than raw-source substring searches.
-    target.write_text(
-        'fn authority() { let method_key = format!("{}::{}", owner, method); }\n'
-    )
-    set_inventory(work)
-    assert run(work).returncode != 0, "a new string method identity must fail"
+    # Preserve qualified-string identity under every binding/assignment form;
+    # the authority is the parsed format macro, not a particular let shape.
+    for source_text, description in (
+        (
+            'fn f() { let method_key: String = format!("{}::{}", owner, method); }\n',
+            "typed let",
+        ),
+        (
+            'fn f() { let mut method_key = format!("{}::{}", owner, method); }\n',
+            "mutable let",
+        ),
+        (
+            'fn f() { method_key = format!("{}::{}", owner, method); }\n',
+            "assignment",
+        ),
+        (
+            'fn f() { method_key = format!(r#"{}::{}"#, owner, method); }\n',
+            "raw-literal assignment",
+        ),
+    ):
+        target.write_text(source_text)
+        set_inventory(work)
+        result = run(work)
+        assert result.returncode != 0, f"a new {description} string identity must fail"
+        assert "qualified-format-macro" in result.stderr
 
 print("structural authority audit counterfactuals: PASS")

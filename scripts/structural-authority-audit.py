@@ -397,7 +397,8 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
         literal_indexes[path] = ([start for start, _, _ in literals], literals)
 
     for match in run_query(ast_grep, root, pattern="$M!"):
-        if single_meta(match, "M").split("::")[-1] != "format":
+        macro_path = "".join(single_meta(match, "M").split())
+        if macro_path.split("::")[-1] != "format":
             continue
         macro_range = node_range(match)
         starts, literals = literal_indexes.get(macro_range.path, ([], []))

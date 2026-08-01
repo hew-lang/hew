@@ -275,6 +275,18 @@ with tempfile.TemporaryDirectory() as temp:
             'fn f() { method_key = ::std::format!{"{}::{}", owner, method}; }\n',
             "absolute macro path",
         ),
+        (
+            'fn f() { method_key = std :: format ! ("{}::{}", owner, method); }\n',
+            "whitespace-qualified macro",
+        ),
+        (
+            'fn f() { method_key = :: std :: format ! ["{}::{}", owner, method]; }\n',
+            "whitespace-qualified absolute macro",
+        ),
+        (
+            'fn f() { method_key = foo :: format ! {"{}::{}", owner, method}; }\n',
+            "whitespace-qualified brace macro",
+        ),
     ):
         target.write_text(source_text)
         set_inventory(work)
@@ -287,5 +299,12 @@ with tempfile.TemporaryDirectory() as temp:
     )
     set_inventory(work)
     assert run(work).returncode == 0, "non-format macro paths must remain controls"
+    target.write_text(
+        'fn f() { method_key = std :: other ! ("{}::{}", owner, method); }\n'
+    )
+    set_inventory(work)
+    assert run(work).returncode == 0, (
+        "whitespace-qualified non-format macro paths must remain controls"
+    )
 
 print("structural authority audit counterfactuals: PASS")

@@ -7174,6 +7174,13 @@ impl Checker {
         }
     }
 
+    fn non_empty_produced_join(
+        children: impl IntoIterator<Item = SpanKey>,
+    ) -> Option<ProducedValueDependency> {
+        let children: Vec<_> = children.into_iter().collect();
+        (!children.is_empty()).then_some(ProducedValueDependency::Join(children))
+    }
+
     fn argument_is_proven_non_owning(&self, span: &Span) -> bool {
         let Some(ty) = self
             .expr_types
@@ -7475,28 +7482,28 @@ impl Checker {
                 then_block,
                 else_block: Some(else_block),
                 ..
-            } => Some(ProducedValueDependency::Join(vec![
+            } => Self::non_empty_produced_join([
                 SpanKey::in_module(&then_block.1, self.current_module_idx),
                 SpanKey::in_module(&else_block.1, self.current_module_idx),
-            ])),
+            ]),
             Expr::IfLet {
                 body,
                 else_body: Some(else_body),
                 ..
             } => {
-                let children = body
+                let children: Vec<_> = body
                     .trailing_expr
                     .iter()
                     .chain(else_body.trailing_expr.iter())
                     .map(|child| SpanKey::in_module(&child.1, self.current_module_idx))
                     .collect();
-                Some(ProducedValueDependency::Join(children))
+                Self::non_empty_produced_join(children)
             }
-            Expr::Match { arms, .. } => Some(ProducedValueDependency::Join(
+            Expr::Match { arms, .. } => Self::non_empty_produced_join(
                 arms.iter()
                     .map(|arm| SpanKey::in_module(&arm.body.1, self.current_module_idx))
-                    .collect(),
-            )),
+                    .collect::<Vec<_>>(),
+            ),
             Expr::Await(inner)
                 if !self
                     .expr_types
@@ -7528,7 +7535,7 @@ impl Checker {
                 if let Some(timeout) = timeout {
                     children.push(SpanKey::in_module(&timeout.body.1, self.current_module_idx));
                 }
-                Some(ProducedValueDependency::Join(children))
+                Self::non_empty_produced_join(children)
             }
             Expr::Scope { body } | Expr::ScopeDeadline { body, .. } => {
                 body.trailing_expr.as_deref().map(|tail| {

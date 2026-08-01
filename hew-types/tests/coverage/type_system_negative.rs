@@ -1298,6 +1298,47 @@ fn iflet_over_error_scrutinee_no_bound_var_error() {
         "if-let binding must not cascade into undefined-variable errors: {:?}",
         output.errors
     );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| !e.message.contains("produced-value graph is incomplete")),
+        "if-let recovery must not fabricate an invalid ownership join: {:?}",
+        output.errors,
+    );
+}
+
+#[test]
+fn if_over_error_condition_preserves_original_diagnostic_only() {
+    let output = typecheck(
+        r"
+        fn main() {
+            if missing() {} else {}
+        }
+    ",
+    );
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "expected only the original condition error, got: {:?}",
+        output.errors,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
+        "expected undefined function error for condition, got: {:?}",
+        output.errors,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| !e.message.contains("produced-value graph is incomplete")),
+        "if recovery must not fabricate an invalid ownership join: {:?}",
+        output.errors,
+    );
 }
 
 #[test]
@@ -1326,6 +1367,14 @@ fn or_pattern_error_scrutinee_single_error() {
             .any(|e| e.kind == TypeErrorKind::UndefinedFunction && e.message.contains("missing")),
         "expected undefined function error for scrutinee, got: {:?}",
         output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|e| !e.message.contains("produced-value graph is incomplete")),
+        "match convergence recovery must not fabricate an invalid ownership join: {:?}",
+        output.errors,
     );
 }
 

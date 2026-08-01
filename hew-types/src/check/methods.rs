@@ -1493,8 +1493,7 @@ impl Checker {
         c_symbol: String,
         signature_key: String,
     ) {
-        let consumes_receiver = crate::ffi_contracts::extern_param_ownership(&c_symbol, 0)
-            == Some(crate::ffi_contracts::ExternParamOwnership::Consume);
+        let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
         let (declaring_module, trusted_compiled_stdlib) = self
             .extern_method_origins
             .get(&signature_key)
@@ -6606,6 +6605,30 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let result = self.check_method_call_inner(receiver, method, args, span);
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let rewrite_consumes_receiver = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(
+                MethodCallRewrite::RewriteToFunction {
+                    consumes_receiver: true,
+                    ..
+                } | MethodCallRewrite::StaticTraitDispatch {
+                    consumes_receiver: true,
+                    ..
+                }
+            )
+        );
+        if rewrite_consumes_receiver {
+            self.method_call_consumes_receiver.insert(key);
+            if let Some(receiver_ty) = self
+                .expr_types
+                .get(&SpanKey::in_module(&receiver.1, self.current_module_idx))
+                .cloned()
+            {
+                let resolved_receiver = self.subst.resolve(&receiver_ty);
+                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_receiver);
+            }
+        }
         self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
         result
     }

@@ -2122,6 +2122,22 @@ pub fn lower_program_host_target(
     lower_program(program, type_check_output, ctx, TargetArch::host())
 }
 
+/// Construct the sole legacy surface key for a tagged-union constructor.
+///
+/// `machine_ctor_registry` is keyed by exact source-owner paths for imported
+/// declarations. This spelling is only the compatibility alias for a unique
+/// source form such as `Toggle::On`; it never selects an owner by itself. The
+/// checker-provided type at the use site and the pre-pass uniqueness count
+/// remain the authority for admitting that alias.
+fn tagged_union_surface_ctor_key(owner: &str, variant: &str) -> String {
+    format!("{owner}::{variant}")
+}
+
+/// The user-facing companion type for a machine's events.
+fn machine_event_surface_type(machine: &str) -> String {
+    format!("{machine}Event")
+}
+
 /// Variant of [`lower_program`] with an explicit monomorphisation-registry
 /// cap. Intended for tests that exercise the
 /// `MonomorphisationCapExceeded` diagnostic with a small fixture; the
@@ -2765,7 +2781,7 @@ pub fn lower_program_with_mono_cap(
                     for state in &md.states {
                         *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
                         *surface_ctor_counts
-                            .entry(format!("{}::{}", md.name, state.name))
+                            .entry(tagged_union_surface_ctor_key(&md.name, &state.name))
                             .or_insert(0) += 1;
                         // Machine states shadow same-named builtins (local-shadows-global).
                         user_declared_variant_names.insert(state.name.clone());
@@ -2773,7 +2789,10 @@ pub fn lower_program_with_mono_cap(
                     for event in &md.events {
                         *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
                         *surface_ctor_counts
-                            .entry(format!("{}Event::{}", md.name, event.name))
+                            .entry(tagged_union_surface_ctor_key(
+                                &machine_event_surface_type(&md.name),
+                                &event.name,
+                            ))
                             .or_insert(0) += 1;
                         // Machine events shadow same-named builtins (local-shadows-global).
                         user_declared_variant_names.insert(event.name.clone());
@@ -2788,7 +2807,7 @@ pub fn lower_program_with_mono_cap(
                         if let TypeBodyItem::Variant(v) = body_item {
                             *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
                             *surface_ctor_counts
-                                .entry(format!("{}::{}", td.name, v.name))
+                                .entry(tagged_union_surface_ctor_key(&td.name, &v.name))
                                 .or_insert(0) += 1;
                             // Track root-program user variants for the
                             // local-shadows-global builtin registration guard.
@@ -2836,7 +2855,7 @@ pub fn lower_program_with_mono_cap(
                                 for state in &md.states {
                                     *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
                                     *surface_ctor_counts
-                                        .entry(format!("{}::{}", md.name, state.name))
+                                        .entry(tagged_union_surface_ctor_key(&md.name, &state.name))
                                         .or_insert(0) += 1;
                                     // Machine states (pub or private) shadow same-named
                                     // builtins across the flat global registry, matching
@@ -2846,7 +2865,10 @@ pub fn lower_program_with_mono_cap(
                                 for event in &md.events {
                                     *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
                                     *surface_ctor_counts
-                                        .entry(format!("{}Event::{}", md.name, event.name))
+                                        .entry(tagged_union_surface_ctor_key(
+                                            &machine_event_surface_type(&md.name),
+                                            &event.name,
+                                        ))
                                         .or_insert(0) += 1;
                                     // Machine events shadow same-named builtins.
                                     user_declared_variant_names.insert(event.name.clone());
@@ -2862,7 +2884,7 @@ pub fn lower_program_with_mono_cap(
                                     if let TypeBodyItem::Variant(v) = body_item {
                                         *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
                                         *surface_ctor_counts
-                                            .entry(format!("{}::{}", td.name, v.name))
+                                            .entry(tagged_union_surface_ctor_key(&td.name, &v.name))
                                             .or_insert(0) += 1;
                                         user_declared_variant_names.insert(v.name.clone());
                                     }
@@ -2990,7 +3012,8 @@ pub fn lower_program_with_mono_cap(
                                         format!("{source_module}.{}::{}", md.name, state.name);
                                     ctx.machine_ctor_registry
                                         .insert(module_qualified, (source_state_type.clone(), idx));
-                                    let surface = format!("{}::{}", md.name, state.name);
+                                    let surface =
+                                        tagged_union_surface_ctor_key(&md.name, &state.name);
                                     if surface_ctor_counts.get(&surface).copied() == Some(1) {
                                         ctx.machine_ctor_registry
                                             .entry(surface)
@@ -3009,7 +3032,10 @@ pub fn lower_program_with_mono_cap(
                                     );
                                     ctx.machine_ctor_registry
                                         .insert(module_qualified, (source_event_type.clone(), idx));
-                                    let surface = format!("{event_type_name}::{}", event.name);
+                                    let surface = tagged_union_surface_ctor_key(
+                                        &event_type_name,
+                                        &event.name,
+                                    );
                                     if surface_ctor_counts.get(&surface).copied() == Some(1) {
                                         ctx.machine_ctor_registry
                                             .entry(surface)
@@ -3033,7 +3059,8 @@ pub fn lower_program_with_mono_cap(
                                             module_qualified,
                                             (source_enum_name.clone(), variant_idx),
                                         );
-                                        let surface = format!("{}::{}", td.name, v.name);
+                                        let surface =
+                                            tagged_union_surface_ctor_key(&td.name, &v.name);
                                         if surface_ctor_counts.get(&surface).copied() == Some(1) {
                                             ctx.machine_ctor_registry
                                                 .entry(surface)
@@ -20806,7 +20833,7 @@ impl LowerCtx {
                         || (!name.contains('.')
                             && self
                                 .machine_ctor_registry
-                                .get(&format!("{name}::{variant_name}"))
+                                .get(&tagged_union_surface_ctor_key(name, variant_name))
                                 .is_some_and(|(owner, _)| owner == &tagged_union_name))
                 }
                 Some(_) => false,

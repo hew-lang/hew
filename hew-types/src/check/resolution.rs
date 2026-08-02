@@ -318,12 +318,23 @@ impl Checker {
         // module owner at cross-module handoff.  Bodies are checked with the
         // declaration available under its bare source spelling, while HIR/MIR
         // layout registries key the same declaration as `owner.Name`.
-        if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
+        if self.local_type_defs.contains(name) {
+            let module = self.current_module.as_deref()?;
+            let qualified = format!("{module}.{name}");
+            if self.type_defs.contains_key(&qualified) || self.known_types.contains(&qualified) {
+                return Some(qualified);
+            }
+            // Lexical declaration authority blocks every foreign owner, but
+            // it does not manufacture a qualified registry identity. Leave
+            // the spelling bare until the local declaration's exact entry
+            // exists; critically, do not fall through to a unique imported
+            // same-leaf owner.
+            return None;
+        }
+        if self.source_type_defs.contains(name) {
             if let Some(module) = self.current_module.as_deref() {
                 let qualified = format!("{module}.{name}");
-                if self.type_defs.contains_key(&qualified)
-                    || self.known_types.contains(&qualified)
-                    || self.modules.contains(module)
+                if self.type_defs.contains_key(&qualified) || self.known_types.contains(&qualified)
                 {
                     return Some(qualified);
                 }

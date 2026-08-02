@@ -4152,6 +4152,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_string_to_lowercase",
         "hew_string_to_uppercase",
         "hew_string_trim",
+        "hew_vec_join_str",
         "hew_vec_push_str",
         "hew_vec_set_str",
     ];
@@ -4178,6 +4179,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_u64_to_string",
         "hew_uint_to_string",
         "hew_vec_get_str",
+        "hew_vec_join_str",
         "hew_vec_pop_str",
         "hew_vec_remove_at_str",
         "to_string_bool",
@@ -4224,8 +4226,8 @@ mod runtime_callee_ownership_contract_parity {
         assert_eq!(vec_receiver.len(), 92);
         assert_eq!(collection_receiver.len(), 19);
         assert_eq!(bytes_receiver.len(), 11);
-        assert_eq!(string_use.len(), 28);
-        assert_eq!(fresh_string.len(), 30);
+        assert_eq!(string_use.len(), 29);
+        assert_eq!(fresh_string.len(), 31);
 
         for symbol in parity_symbols() {
             let contract = callee_ownership_contract(symbol);
@@ -4442,17 +4444,13 @@ mod enum_layout_tests {
             "no diagnostics expected for monomorphic mixed enum; got: {:?}",
             pipeline.diagnostics
         );
-        let user_layouts: Vec<_> = pipeline
+        let shape_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| {
-                !hew_types::builtin_enums::monomorphic_builtin_enums()
-                    .iter()
-                    .any(|fact| fact.canonical_name == l.name)
-            })
+            .filter(|layout| layout.name == "Shape")
             .collect();
-        assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
-        let layout = user_layouts[0];
+        assert_eq!(shape_layouts.len(), 1, "expected one EnumLayout for Shape");
+        let layout = shape_layouts[0];
         assert_eq!(layout.name, "Shape");
         assert_eq!(layout.variants.len(), 3);
         // Declaration order is load-bearing: Point=0, Line=1, Box=2. MIR's
@@ -4499,18 +4497,17 @@ mod enum_layout_tests {
             "no diagnostics expected for all-unit enum; got: {:?}",
             pipeline.diagnostics
         );
-        let user_layouts: Vec<_> = pipeline
+        let colour_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| {
-                !hew_types::builtin_enums::monomorphic_builtin_enums()
-                    .iter()
-                    .any(|fact| fact.canonical_name == l.name)
-            })
+            .filter(|layout| layout.name == "Colour")
             .collect();
-        assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
-        assert_eq!(user_layouts[0].name, "Colour");
-        assert_eq!(user_layouts[0].variants.len(), 3);
+        assert_eq!(
+            colour_layouts.len(),
+            1,
+            "expected one EnumLayout for Colour"
+        );
+        assert_eq!(colour_layouts[0].variants.len(), 3);
     }
 
     #[test]
@@ -4703,27 +4700,20 @@ mod enum_layout_tests {
         );
         // The MIR pipeline emits the layout under the mangled name (not "Option").
         // Codegen finds it via the mangled key in machine_layout_map.
-        // Builtin enum layouts are always registered out-of-band; filter them
-        // out so this test asserts on the user-declared layouts only.
-        let user_layouts: Vec<_> = pipeline
+        // The pipeline may also register bundled source enums. Select the
+        // declaration under test by its exact monomorphised layout key rather
+        // than inferring user ownership from the absence of a builtin row.
+        let option_layouts: Vec<_> = pipeline
             .enum_layouts
             .iter()
-            .filter(|l| {
-                !hew_types::builtin_enums::monomorphic_builtin_enums()
-                    .iter()
-                    .any(|fact| fact.canonical_name == l.name)
-            })
+            .filter(|layout| layout.name == "Option$$i64")
             .collect();
         assert_eq!(
-            user_layouts.len(),
+            option_layouts.len(),
             1,
-            "expected one MIR EnumLayout for Option$$i64; got: {user_layouts:?}"
+            "expected one MIR EnumLayout for Option$$i64; got: {option_layouts:?}"
         );
-        let layout = user_layouts[0];
-        assert_eq!(
-            layout.name, "Option$$i64",
-            "layout must be emitted under mangled name"
-        );
+        let layout = option_layouts[0];
         assert_eq!(layout.variants.len(), 2);
         assert_eq!(layout.variants[0].name, "Some");
         assert_eq!(layout.variants[0].field_tys, vec![ResolvedTy::I64]);

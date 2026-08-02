@@ -5838,7 +5838,6 @@ pub(crate) mod tests {
             VecMethod::Clear,
             VecMethod::Clone,
             VecMethod::Append,
-            VecMethod::Join,
         ] {
             assert_eq!(
                 placeholder_method_return_provenance(
@@ -5850,6 +5849,15 @@ pub(crate) mod tests {
                  element must leave it fail-closed"
             );
         }
+        assert_eq!(
+            placeholder_method_return_provenance(
+                "hew_vec_x_FAMILY",
+                MethodTargetFamily::Vec(VecMethod::Join),
+            ),
+            Some(AliasBits::EMPTY),
+            "join always resolves to the same copying string ABI, so its generic \
+             placeholder has an element-class-independent fresh-owner answer"
+        );
     }
 
     /// `HashMap::get` is the degenerate quantification: lowering always emits the

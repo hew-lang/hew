@@ -993,6 +993,9 @@ pub enum HirShutdownDirective {
 pub struct HirTypeDecl {
     pub id: ItemId,
     pub node: HirNodeId,
+    /// Checker-owned canonical declaration identity. This is the semantic key
+    /// for lifecycle and dispatch tables; `name` is presentation/layout text.
+    pub declaration: DefId,
     pub name: String,
     /// Defining-module identity of this type declaration.
     ///
@@ -1067,10 +1070,7 @@ impl HirTypeDecl {
     /// — so qualifying is a no-op for single-module programs by construction.
     #[must_use]
     pub fn qualified_name(&self) -> String {
-        match &self.defining_module {
-            Some(module_short) => format!("{module_short}.{}", self.name),
-            None => self.name.clone(),
-        }
+        self.declaration.full_path().to_string()
     }
 }
 

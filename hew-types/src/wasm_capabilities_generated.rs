@@ -35,8 +35,10 @@ pub enum WasmUnsupportedFeature {
     Timers,
     PeriodicTimers,
     Streams,
+    FilesystemStreams,
     HttpClient,
     Smtp,
+    WebSocket,
     HttpServer,
     TcpNetworking,
     ProcessExecution,
@@ -63,8 +65,10 @@ impl WasmUnsupportedFeature {
         Self::Timers,
         Self::PeriodicTimers,
         Self::Streams,
+        Self::FilesystemStreams,
         Self::HttpClient,
         Self::Smtp,
+        Self::WebSocket,
         Self::HttpServer,
         Self::TcpNetworking,
         Self::ProcessExecution,
@@ -91,8 +95,10 @@ impl WasmUnsupportedFeature {
             Self::Timers => WasmCapabilityId("timers-sleep"),
             Self::PeriodicTimers => WasmCapabilityId("timers-every"),
             Self::Streams => WasmCapabilityId("streams"),
+            Self::FilesystemStreams => WasmCapabilityId("filesystem-streams"),
             Self::HttpClient => WasmCapabilityId("http-client"),
             Self::Smtp => WasmCapabilityId("smtp"),
+            Self::WebSocket => WasmCapabilityId("websocket"),
             Self::HttpServer => WasmCapabilityId("http-server"),
             Self::TcpNetworking => WasmCapabilityId("tcp-networking"),
             Self::ProcessExecution => WasmCapabilityId("process-execution"),
@@ -120,8 +126,10 @@ impl WasmUnsupportedFeature {
             Self::Timers => WasmFeatureDisposition::Warn,
             Self::PeriodicTimers => WasmFeatureDisposition::Warn,
             Self::Streams => WasmFeatureDisposition::Reject,
+            Self::FilesystemStreams => WasmFeatureDisposition::Reject,
             Self::HttpClient => WasmFeatureDisposition::Reject,
             Self::Smtp => WasmFeatureDisposition::Reject,
+            Self::WebSocket => WasmFeatureDisposition::Reject,
             Self::HttpServer => WasmFeatureDisposition::Reject,
             Self::TcpNetworking => WasmFeatureDisposition::Reject,
             Self::ProcessExecution => WasmFeatureDisposition::Reject,
@@ -149,8 +157,10 @@ impl WasmUnsupportedFeature {
             Self::Timers => "Timer operations",
             Self::PeriodicTimers => "Timer operations",
             Self::Streams => "Stream operations",
+            Self::FilesystemStreams => "File-backed stream operations",
             Self::HttpClient => "std::net::http::http_client operations",
             Self::Smtp => "std::net::smtp operations",
+            Self::WebSocket => "std::net::websocket operations",
             Self::HttpServer => "HTTP server operations",
             Self::TcpNetworking => "TCP networking operations",
             Self::ProcessExecution => "Process execution operations",
@@ -178,8 +188,10 @@ impl WasmUnsupportedFeature {
             Self::Timers => "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue",
             Self::PeriodicTimers => "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue",
             Self::Streams => "I/O streams require the OS threading and networking stack; the stream runtime module is not compiled for wasm32",
+            Self::FilesystemStreams => "the FileReadStream runtime and stream collector are not compiled for wasm32; reject before code generation rather than leaving unresolved native symbols",
             Self::HttpClient => "the std::net::http::http_client wrappers are still native-only; no wasm32 networking bridge exists yet",
             Self::Smtp => "the std::net::smtp transport is still native-only; no wasm32 SMTP bridge exists yet",
+            Self::WebSocket => "the std::net::websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet",
             Self::HttpServer => "the std::net::http server is backed by native sockets and tiny_http; no cooperative wasm32 server implementation exists yet",
             Self::TcpNetworking => "hew_tcp_listen / hew_tcp_connect require the native OS socket layer; the transport runtime module is not compiled for wasm32",
             Self::ProcessExecution => "hew_process_run / hew_process_spawn require the native OS process model; the process runtime module is not compiled for wasm32",
@@ -198,6 +210,7 @@ impl WasmUnsupportedFeature {
 /// Typed constants for every reject/warn feature and backlog identity.
 pub mod wasm_capability_ids {
     use super::WasmCapabilityId;
+    pub const ACTOR_CRASH_CONTAINMENT: WasmCapabilityId = WasmCapabilityId("actor-crash-containment");
     pub const ACTOR_DRAIN: WasmCapabilityId = WasmCapabilityId("actor-drain");
     pub const ACTOR_HEAP_LIMITS: WasmCapabilityId = WasmCapabilityId("actor-heap-limits");
     pub const ALIAS_MESSAGING: WasmCapabilityId = WasmCapabilityId("alias-messaging");
@@ -214,6 +227,7 @@ pub mod wasm_capability_ids {
     pub const DNS: WasmCapabilityId = WasmCapabilityId("dns");
     pub const DUPLEX: WasmCapabilityId = WasmCapabilityId("duplex");
     pub const DYN_TRAIT_RETURNS: WasmCapabilityId = WasmCapabilityId("dyn-trait-returns");
+    pub const FILESYSTEM_STREAMS: WasmCapabilityId = WasmCapabilityId("filesystem-streams");
     pub const HTTP_CLIENT: WasmCapabilityId = WasmCapabilityId("http-client");
     pub const HTTP_SERVER: WasmCapabilityId = WasmCapabilityId("http-server");
     pub const LAMBDA_ACTORS: WasmCapabilityId = WasmCapabilityId("lambda-actors");
@@ -254,11 +268,20 @@ pub struct WasmModuleRejection {
     pub feature: WasmUnsupportedFeature,
 }
 
+/// A native-only stdlib function in an otherwise supported module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WasmFunctionRejection {
+    pub module: &'static str,
+    pub function: &'static str,
+    pub feature: WasmUnsupportedFeature,
+}
+
 /// Generated module rejection classification.
 pub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[
     WasmModuleRejection { module: "stream", feature: WasmUnsupportedFeature::Streams },
     WasmModuleRejection { module: "http_client", feature: WasmUnsupportedFeature::HttpClient },
     WasmModuleRejection { module: "smtp", feature: WasmUnsupportedFeature::Smtp },
+    WasmModuleRejection { module: "websocket", feature: WasmUnsupportedFeature::WebSocket },
     WasmModuleRejection { module: "http", feature: WasmUnsupportedFeature::HttpServer },
     WasmModuleRejection { module: "net", feature: WasmUnsupportedFeature::TcpNetworking },
     WasmModuleRejection { module: "process", feature: WasmUnsupportedFeature::ProcessExecution },
@@ -270,11 +293,17 @@ pub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[
     WasmModuleRejection { module: "sign", feature: WasmUnsupportedFeature::CryptoSign },
 ];
 
+/// Generated exact-function rejection classification.
+pub const NATIVE_ONLY_WASM_FUNCTION_REJECTIONS: &[WasmFunctionRejection] = &[
+    WasmFunctionRejection { module: "std.fs", function: "try_read", feature: WasmUnsupportedFeature::FilesystemStreams },
+];
+
 /// Generated native-only module short-names for sandbox and checker consumers.
 pub const NATIVE_ONLY_WASM_MODULES: &[&str] = &[
     "stream",
     "http_client",
     "smtp",
+    "websocket",
     "http",
     "net",
     "process",

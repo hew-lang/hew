@@ -71,6 +71,10 @@ impl IrPipeline {
     /// `emit_state_clone_drop_synthesis` in registry order, so reordering
     /// collectors reorders synthesised bodies in the module.
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the ordered collector list is the auditable synthesis manifest"
+    )]
     pub fn thunk_synthesis_requirements(&self) -> ThunkSynthesisRequirements {
         // Machines are enums at the value-classification layer: the seed
         // scans resolve machine names against the enum view. The pipeline's
@@ -126,6 +130,7 @@ impl IrPipeline {
             &self.dyn_vtable_registry,
             &self.record_layouts,
             &synthesis_enum_layouts,
+            &self.lifecycle_registry,
         );
         merge_seeds(&mut enum_seeds, dyn_concrete_enum_seeds);
         merge_seeds(&mut record_seeds, dyn_concrete_record_seeds);
@@ -139,7 +144,7 @@ impl IrPipeline {
                 &self.raw_mir,
                 &self.record_layouts,
                 &synthesis_enum_layouts,
-                &self.resource_record_close,
+                &self.lifecycle_registry,
             );
         merge_seeds(&mut record_seeds, field_store_record_seeds);
         merge_seeds(&mut enum_seeds, field_store_enum_seeds);
@@ -157,13 +162,19 @@ impl IrPipeline {
         merge_seeds(&mut enum_seeds, inline_inplace_enum_seeds);
         merge_seeds(
             &mut record_seeds,
-            collect_supervisor_config_drop_seeds(&self.supervisor_layouts, &self.record_layouts),
+            collect_supervisor_config_drop_seeds(
+                &self.supervisor_layouts,
+                &self.record_layouts,
+                &self.enum_layouts,
+                &self.lifecycle_registry,
+            ),
         );
         let (closure_capture_record_seeds, closure_capture_enum_seeds) =
             collect_closure_capture_drop_seeds(
                 &self.raw_mir,
                 &self.record_layouts,
                 &self.enum_layouts,
+                &self.lifecycle_registry,
             );
         merge_seeds(&mut record_seeds, closure_capture_record_seeds);
         merge_seeds(&mut enum_seeds, closure_capture_enum_seeds);
@@ -396,6 +407,8 @@ fn collect_tuple_member_inplace_drop_seeds(
 fn collect_supervisor_config_drop_seeds(
     supervisor_layouts: &[SupervisorLayout],
     record_layouts: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> Vec<String> {
     let mut seeds: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -417,8 +430,15 @@ fn collect_supervisor_config_drop_seeds(
         // no config_drop_fn.
         let has_owned = record.field_tys.iter().any(|ty| {
             let mut visited = std::collections::HashSet::new();
-            crate::classify_state_field(ty, record_layouts, &mut visited)
-                .is_ok_and(|kind| !matches!(kind, StateFieldCloneKind::BitCopy { .. }))
+            crate::classify_state_field_with_lifecycle_registry(
+                ty,
+                record_layouts,
+                enum_layouts,
+                &[],
+                lifecycle_registry,
+                &mut visited,
+            )
+            .is_ok_and(|kind| !matches!(kind, StateFieldCloneKind::BitCopy { .. }))
         });
         if has_owned {
             seeds.push(config_param.config_ty_name.clone());
@@ -517,7 +537,7 @@ fn collect_record_field_store_overwrite_seeds(
     raw_mir: &[RawMirFunction],
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
-    resource_record_close: &[(String, String)],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> (Vec<String>, Vec<String>) {
     let mut record_seeds = Vec::new();
     let mut record_seen = HashSet::new();
@@ -554,9 +574,9 @@ fn collect_record_field_store_overwrite_seeds(
                 };
                 if let Some(layout) = record_layout_for_ty(field_ty, record_layouts) {
                     let key = layout.name.clone();
-                    if !resource_record_close
-                        .iter()
-                        .any(|(resource, _)| resource == &key)
+                    if lifecycle_registry
+                        .resource_record(&hew_types::DefId::new(&key))
+                        .is_none()
                         && record_seen.insert(key.clone())
                     {
                         record_seeds.push(key);
@@ -658,6 +678,7 @@ fn collect_closure_capture_drop_seeds(
     raw_mir: &[RawMirFunction],
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> (Vec<String>, Vec<String>) {
     let mut record_seeds: Vec<String> = Vec::new();
     let mut enum_seeds: Vec<String> = Vec::new();
@@ -729,10 +750,12 @@ fn collect_closure_capture_drop_seeds(
                 for field_ty in &env_layout.field_tys {
                     let mut visited: std::collections::HashSet<String> =
                         std::collections::HashSet::new();
-                    let Ok(kind) = crate::classify_state_field_with_enum_layouts(
+                    let Ok(kind) = crate::classify_state_field_with_lifecycle_registry(
                         field_ty,
                         record_layouts,
                         enum_layouts,
+                        &[],
+                        lifecycle_registry,
                         &mut visited,
                     ) else {
                         continue;
@@ -913,6 +936,7 @@ fn collect_dyn_concrete_drop_seeds(
     registry: &[crate::DynVtableInstance],
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> (Vec<String>, Vec<String>) {
     let mut record_seeds: Vec<String> = Vec::new();
     let mut enum_seeds: Vec<String> = Vec::new();
@@ -920,10 +944,12 @@ fn collect_dyn_concrete_drop_seeds(
     let mut seen_enum: std::collections::HashSet<String> = std::collections::HashSet::new();
     for inst in registry {
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let Ok(kind) = crate::classify_state_field_with_enum_layouts(
+        let Ok(kind) = crate::classify_state_field_with_lifecycle_registry(
             &inst.concrete_type,
             record_layouts,
             enum_layouts,
+            &[],
+            lifecycle_registry,
             &mut visited,
         ) else {
             continue;
@@ -1392,8 +1418,12 @@ mod record_field_store_overwrite_tests {
             vec_iter_string,
         )];
 
-        let (record_seeds, enum_seeds) =
-            collect_record_field_store_overwrite_seeds(&funcs, &layouts, &[], &[]);
+        let (record_seeds, enum_seeds) = collect_record_field_store_overwrite_seeds(
+            &funcs,
+            &layouts,
+            &[],
+            &hew_hir::LifecycleRegistry::default(),
+        );
         assert_eq!(record_seeds, [key]);
         assert!(enum_seeds.is_empty());
     }
@@ -1431,8 +1461,12 @@ mod record_field_store_overwrite_tests {
             cursor,
         )];
 
-        let (record_seeds, enum_seeds) =
-            collect_record_field_store_overwrite_seeds(&funcs, &layouts, &[], &[]);
+        let (record_seeds, enum_seeds) = collect_record_field_store_overwrite_seeds(
+            &funcs,
+            &layouts,
+            &[],
+            &hew_hir::LifecycleRegistry::default(),
+        );
         assert_eq!(record_seeds, [key]);
         assert!(enum_seeds.is_empty());
     }
@@ -1461,8 +1495,12 @@ mod record_field_store_overwrite_tests {
             ResolvedTy::named_user("Maybe", vec![ResolvedTy::String]),
         )];
 
-        let (record_seeds, enum_seeds) =
-            collect_record_field_store_overwrite_seeds(&funcs, &records, &enums, &[]);
+        let (record_seeds, enum_seeds) = collect_record_field_store_overwrite_seeds(
+            &funcs,
+            &records,
+            &enums,
+            &hew_hir::LifecycleRegistry::default(),
+        );
         assert!(record_seeds.is_empty());
         assert_eq!(enum_seeds, [key]);
     }
@@ -1498,14 +1536,19 @@ mod record_field_store_overwrite_tests {
                 ResolvedTy::named_user("ResourceRecord", vec![]),
             ),
         ];
+        let mut type_classes = hew_hir::TypeClassTable::default();
+        type_classes
+            .admit_resource_record_lifecycle(hew_hir::ResourceRecordLifecycle {
+                resource_declaration: hew_types::DefId::new("ResourceRecord"),
+                close_declaration: hew_types::DefId::new("ResourceRecord::close"),
+                close_symbol: "ResourceRecord::close".to_string(),
+            })
+            .unwrap();
         let (record_seeds, enum_seeds) = collect_record_field_store_overwrite_seeds(
             &funcs,
             &layouts,
             &[],
-            &[(
-                "ResourceRecord".to_string(),
-                "ResourceRecord::close".to_string(),
-            )],
+            type_classes.lifecycle_registry(),
         );
         assert!(record_seeds.is_empty());
         assert!(enum_seeds.is_empty());

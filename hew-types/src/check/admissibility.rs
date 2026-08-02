@@ -1042,13 +1042,10 @@ impl Checker {
         }
     }
 
-    /// Opaque declarations are recorded under their declaration-local bare
-    /// name, while imported resolved uses may carry `module.Type`.
+    /// Opaque declarations are nominal. Imported uses must carry the exact
+    /// owner, so a same-leaf foreign type cannot inherit opacity.
     fn is_user_opaque_type_name(&self, name: &str) -> bool {
         self.user_opaque_type_names.contains(name)
-            || self
-                .user_opaque_type_names
-                .contains(crate::short_name(name))
     }
 
     /// Tuple-record payloads deliberately leave `TypeDef::fields` empty
@@ -1062,18 +1059,16 @@ impl Checker {
         if type_def.kind != TypeDefKind::Record || !type_def.fields.is_empty() {
             return Vec::new();
         }
-        [name, type_def.name.as_str(), crate::short_name(name)]
-            .into_iter()
-            .find_map(|candidate| {
-                let sig = self.fn_sigs.get(candidate)?;
+        self.fn_sigs
+            .get(name)
+            .and_then(|sig| {
                 let Ty::Named {
                     name: return_name, ..
                 } = &sig.return_type
                 else {
                     return None;
                 };
-                (crate::short_name(return_name) == crate::short_name(&type_def.name))
-                    .then(|| sig.params.clone())
+                (return_name == name).then(|| sig.params.clone())
             })
             .unwrap_or_default()
     }
@@ -4438,6 +4433,52 @@ mod tests {
         assert_eq!(
             err.span.start, 10,
             "checker error must carry the source span start; err: {err:?}"
+        );
+    }
+
+    #[test]
+    fn tuple_record_constructor_signature_uses_exact_owner() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let pair = TypeDef {
+            kind: TypeDefKind::Record,
+            name: "Pair".to_string(),
+            type_params: Vec::new(),
+            bounds: HashMap::new(),
+            fields: HashMap::new(),
+            field_order: Vec::new(),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        };
+        checker.fn_sigs.insert(
+            "left.Pair".to_string(),
+            FnSig {
+                params: vec![Ty::I64],
+                return_type: Ty::named("left.Pair", Vec::new()),
+                ..FnSig::default()
+            },
+        );
+        // A legacy bare constructor entry is present too. Before exact
+        // matching, `right.Pair` could reach it through the short-name path.
+        checker.fn_sigs.insert(
+            "Pair".to_string(),
+            FnSig {
+                params: vec![Ty::Bool],
+                return_type: Ty::named("left.Pair", Vec::new()),
+                ..FnSig::default()
+            },
+        );
+        assert_eq!(
+            checker.tuple_record_constructor_fields("left.Pair", &pair),
+            vec![Ty::I64],
+            "the owning package's tuple constructor remains discoverable"
+        );
+        assert!(
+            checker
+                .tuple_record_constructor_fields("right.Pair", &pair)
+                .is_empty(),
+            "a same-leaf foreign constructor cannot supply left.Pair's layout"
         );
     }
 }

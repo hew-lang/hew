@@ -22,6 +22,7 @@
 
 use std::collections::VecDeque;
 use std::ffi::{c_int, c_void};
+#[cfg(not(target_arch = "wasm32"))]
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
@@ -148,6 +149,8 @@ pub struct HewActor {
     // The SYSTEM dispatch entry point; mirrors the canonical tail so the
     // layout parity this module asserts holds.
     pub sys_dispatch: Option<crate::internal::types::HewSysDispatchFn>,
+    // One-shot typed state-drop authority; see the canonical actor field.
+    pub state_drop_consumed: AtomicBool,
 }
 
 /// The dispatch entry point selected for one dequeued message — the WASM twin
@@ -226,6 +229,7 @@ const _: () = {
     assert!(offset_of!(W, local_pid_id) == offset_of!(N, local_pid_id));
     assert!(offset_of!(W, spawn_serial) == offset_of!(N, spawn_serial));
     assert!(offset_of!(W, sys_dispatch) == offset_of!(N, sys_dispatch));
+    assert!(offset_of!(W, state_drop_consumed) == offset_of!(N, state_drop_consumed));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -1989,7 +1993,32 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 // substrate is dormant), or the `coro.begin` handle when a
                 // handler suspended. The handle is captured here; the production
                 // wasm park edge (commit 4) consumes a non-null handle.
-                let dispatch_result = catch_unwind(AssertUnwindSafe(|| match dispatch {
+                // SAFETY: this cooperative activation exclusively owns the
+                // actor state until the matching finish/recovery call.
+                let crash_state_drop = match (a.state_clone_fn, a.state_drop_fn) {
+                    (Some(_), Some(drop)) => Some(drop),
+                    (None, None) => None,
+                    _ => panic!("actor state has half-registered clone/drop classifier proof"),
+                };
+                // SAFETY: this cooperative activation exclusively owns the
+                // actor state until the matching finish/recovery call.
+                if !unsafe {
+                    crate::cont::begin_dispatch_crash_cleanup(
+                        a.state,
+                        a.state_size,
+                        // Paired clone/drop registration is the MIR
+                        // classifier's proof that the wrapper is safe to
+                        // relocate into the crash escrow.
+                        crash_state_drop,
+                    )
+                } {
+                    panic!("could not establish WASM actor dispatch crash cleanup");
+                }
+                #[allow(
+                    unused_mut,
+                    reason = "wasm32 invokes this FnMut directly; host catch_unwind consumes it"
+                )]
+                let mut invoke_dispatch = || match dispatch {
                     DispatchTarget::User(user_dispatch) =>
                     // SAFETY: `user_dispatch` is the actor's registered
                     // application trampoline; message fields come from a
@@ -2022,7 +2051,19 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                         }
                         std::ptr::null_mut()
                     }
-                }));
+                };
+                // Host-side parity tests unwind so they can inspect the
+                // scheduler's recovery bookkeeping. The production
+                // wasm32-wasip1 sysroot is panic=abort: invoke directly so
+                // this source does not imply an actor-containment boundary
+                // that the artifact cannot provide.
+                // WASM-TODO(actor-crash-containment): provide a target/runtime
+                // unwind or explicit status ABI before treating handler panic
+                // as a recoverable actor failure on Tier 2.
+                #[cfg(not(target_arch = "wasm32"))]
+                let dispatch_result = catch_unwind(AssertUnwindSafe(invoke_dispatch));
+                #[cfg(target_arch = "wasm32")]
+                let dispatch_result: Result<*mut c_void, ()> = Ok(invoke_dispatch());
                 // D-A.2: the suspend handle the trampoline returned (null on the
                 // run-to-completion path — every handler today). A non-null
                 // handle is parked after the loop + global restore (below).
@@ -2039,6 +2080,18 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     )
                 };
                 if release_result != crate::actor::HEW_ACTOR_STATE_LOCK_OK {
+                    // SAFETY: dispatch returned and this activation owns the
+                    // still-open cleanup scope.
+                    let outcome =
+                        unsafe { crate::cont::recover_dispatch_crash_cleanup_with_outcome(true) };
+                    if outcome.state_authority_consumed {
+                        // SAFETY: cooperative activation exclusively owns actor.
+                        unsafe {
+                            crate::actor::record_dispatch_state_drop_consumed(
+                                actor.cast::<crate::actor::HewActor>(),
+                            );
+                        }
+                    }
                     a.actor_state
                         .store(HewActorState::Crashed as i32, Ordering::Release);
                     execution_context.reply_channel = std::ptr::null_mut();
@@ -2053,6 +2106,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     break;
                 }
 
+                #[cfg(not(target_arch = "wasm32"))]
                 if dispatch_result.is_err() {
                     crate::set_last_error("actor dispatch panicked");
                     // Tagged-crash surfacing: if the dispatch (or anything
@@ -2064,10 +2118,32 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     // the WASM counterpart of the native longjmp seam,
                     // which jumps directly out of dispatch with the code
                     // already installed.
-                    if a.error_code.load(Ordering::Acquire) != 0 {
+                    let cooperative_crash = a.error_code.load(Ordering::Acquire) != 0;
+                    // SAFETY: catch_unwind proves the dispatch stack is
+                    // abandoned and transfers its cleanup scope here.
+                    let outcome = unsafe {
+                        crate::cont::recover_dispatch_crash_cleanup_with_outcome(cooperative_crash)
+                    };
+                    if outcome.state_authority_consumed {
+                        // SAFETY: cooperative activation exclusively owns actor.
+                        unsafe {
+                            crate::actor::record_dispatch_state_drop_consumed(
+                                actor.cast::<crate::actor::HewActor>(),
+                            );
+                        }
+                    }
+                    if cooperative_crash {
                         a.actor_state
                             .store(HewActorState::Crashed as i32, Ordering::Release);
                     }
+                // SAFETY: normal dispatch return matches the scope opened
+                // immediately before handler entry.
+                } else if !unsafe { crate::cont::finish_dispatch_crash_cleanup() } {
+                    panic!("WASM actor dispatch returned with live crash-cleanup owners");
+                }
+                #[cfg(target_arch = "wasm32")]
+                if !unsafe { crate::cont::finish_dispatch_crash_cleanup() } {
+                    panic!("WASM actor dispatch returned with live crash-cleanup owners");
                 }
 
                 let reply_consumed = (execution_context.flags
@@ -2641,6 +2717,7 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 1,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
         }
     }
 
@@ -7554,6 +7631,7 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 99,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────
@@ -9138,4 +9216,12 @@ mod tests {
         hew_sched_shutdown();
         hew_runtime_cleanup();
     }
+}
+#[cfg(target_arch = "wasm32")]
+#[test]
+fn production_wasi_actor_panics_are_module_fatal() {
+    assert!(
+        cfg!(panic = "abort"),
+        "Tier 2 crash policy assumes the shipped wasm32-wasip1 sysroot is panic=abort"
+    );
 }

@@ -645,6 +645,9 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         }
         K::ResourceCloseMustReturnUnit { .. } => "ResourceCloseMustReturnUnit",
         K::ResourceBoundaryParamMustConsume { .. } => "ResourceBoundaryParamMustConsume",
+        K::CloseableOpaqueMustBeResource { .. } => "CloseableOpaqueMustBeResource",
+        K::OpaqueResourceCloseMismatch { .. } => "OpaqueResourceCloseMismatch",
+        K::OpaqueResourceLifecycleConflict { .. } => "OpaqueResourceLifecycleConflict",
         K::AwaitOutOfPosition => "AwaitOutOfPosition",
         K::AwaitNonTask { .. } => "AwaitNonTask",
         K::ForkChildNotACall => "ForkChildNotACall",

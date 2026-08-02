@@ -94,7 +94,7 @@ use hew_types::ResolvedTy;
 /// generated from the container's LAYOUT, so there is no drop plan that frees
 /// the container's spine while sparing a field.* For a `#[resource]` record that
 /// premise is false. Its drop plan is
-/// [`IrPipeline::resource_record_close`](crate::model::IrPipeline::resource_record_close):
+/// [`IrPipeline::lifecycle_registry`](crate::model::IrPipeline::lifecycle_registry):
 /// codegen's `__hew_record_drop_inplace_<R>` thunk calls the user's
 /// `<R>::close(self)` as the FIRST step, and only then tears the fields down
 /// field-wise. The declared destructor IS the per-value drop plan the rule
@@ -107,7 +107,7 @@ use hew_types::ResolvedTy;
 /// 1. it carries `ResourceMarker::Resource` in the module's
 ///    [`TypeClassTable`](hew_hir::TypeClassTable);
 /// 2. that same table entry names its close method — the identical
-///    `(marker, close)` entry `resource_record_close` reads to seed the thunk,
+///    `(marker, close)` entry lowering admits into the typed lifecycle registry,
 ///    so this authority and codegen cannot disagree about which types have a
 ///    declared release;
 /// 3. **every declared field is one the post-close field-wise teardown cannot
@@ -130,8 +130,8 @@ use hew_types::ResolvedTy;
 /// pre-existing two-class behaviour.
 #[derive(Debug, Clone, Default)]
 pub struct DeclaredReleaseTypes {
-    /// Admitted type names, stored under both the declaration's spelling and
-    /// its short name so a qualified construction site resolves.
+    /// Admitted declaration identities. A semantic adoption proof is nominal:
+    /// a same-leaf declaration from another owner must never inherit it.
     names: HashSet<String>,
 }
 
@@ -144,7 +144,9 @@ impl DeclaredReleaseTypes {
             .items
             .iter()
             .filter_map(|item| match item {
-                hew_hir::HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.name.as_str()),
+                hew_hir::HirItem::TypeDecl(decl) if decl.is_opaque => {
+                    Some(decl.declaration.full_path())
+                }
                 _ => None,
             })
             .collect();
@@ -157,8 +159,7 @@ impl DeclaredReleaseTypes {
             // read from the one table codegen's thunk synthesis reads.
             let declares_close = module
                 .type_classes
-                .get(decl.name.as_str())
-                .or_else(|| module.type_classes.get(hew_types::short_name(&decl.name)))
+                .get(decl.declaration.full_path())
                 .is_some_and(|(marker, close)| {
                     matches!(marker, hew_hir::ResourceMarker::Resource) && close.is_some()
                 });
@@ -171,8 +172,7 @@ impl DeclaredReleaseTypes {
             }) {
                 continue;
             }
-            names.insert(decl.name.clone());
-            names.insert(hew_types::short_name(&decl.name).to_string());
+            names.insert(decl.declaration.full_path().to_string());
         }
         Self { names }
     }
@@ -181,7 +181,7 @@ impl DeclaredReleaseTypes {
     /// value's whole release is the type's declared close.
     #[must_use]
     pub fn release_is_declared(&self, name: &str) -> bool {
-        self.names.contains(name) || self.names.contains(hew_types::short_name(name))
+        self.names.contains(name)
     }
 
     /// True when this authority admits no type at all — the state every
@@ -223,9 +223,7 @@ fn field_is_released_only_by_the_declared_close(
     if !args.is_empty() {
         return false;
     }
-    *is_opaque
-        || opaque_handles.contains(name.as_str())
-        || opaque_handles.contains(hew_types::short_name(name))
+    *is_opaque || opaque_handles.contains(name.as_str())
 }
 
 // ---------------------------------------------------------------------------
@@ -1909,7 +1907,7 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
         .items
         .iter()
         .filter_map(|item| match item {
-            hew_hir::HirItem::TypeDecl(decl) => Some((decl.name.as_str(), decl)),
+            hew_hir::HirItem::TypeDecl(decl) => Some((decl.declaration.full_path(), decl)),
             _ => None,
         })
         .collect();
@@ -2043,7 +2041,6 @@ fn extern_result_is_measured_transfer(
         .contract()
         .is_some_and(|contract| {
             if contract.result_retention != crate::ffi_contracts::ExternResultRetention::Transferred
-                || contract.discharge_depth != crate::ffi_contracts::ReleaseDischargeDepth::Shallow
             {
                 return false;
             }
@@ -2051,7 +2048,10 @@ fn extern_result_is_measured_transfer(
                 // Heap values whose compiler-derived release is a direct C ABI
                 // symbol (string, bytes, and a structurally homogeneous
                 // record) keep the existing exact-symbol proof.
-                ReturnRelease::One(planned) => contract.release_symbol == planned,
+                ReturnRelease::One(planned) => {
+                    contract.discharge_depth == crate::ffi_contracts::ReleaseDischargeDepth::Shallow
+                        && contract.release_symbol == planned
+                }
                 // An opaque `#[resource]` discharges through its inherent
                 // `<Type>::close` function rather than a raw C symbol.  It is
                 // still an exactly-one release, but only when that particular
@@ -2064,6 +2064,7 @@ fn extern_result_is_measured_transfer(
                     &decl.return_ty,
                     module,
                     contract.release_symbol,
+                    contract.discharge_depth,
                 ),
                 ReturnRelease::Nothing => false,
             }
@@ -2072,16 +2073,15 @@ fn extern_result_is_measured_transfer(
 
 /// Whether an opaque resource return is discharged by exactly `release_symbol`.
 ///
-/// The resource drop plan emits the close method recorded in
-/// `module.type_classes`; this admission reads that same entry, then insists
-/// that its body has a direct call to the producer row's close symbol.  We do
-/// not follow wrappers here: a transitive analysis could be sound, but a missed
-/// edge in it would turn an ownership proof into a guess.  Refusing the wrapper
-/// is the safe (leak) direction until it has its own complete proof.
+/// The resource drop plan and this mint admission read the same checker-admitted
+/// lifecycle. Exact release and discharge depth must both agree; `deep` is
+/// valid for a single opaque close whose runtime disposer recursively releases
+/// its owned tree.
 fn resource_opaque_return_releases_through(
     ty: &ResolvedTy,
     module: &hew_hir::HirModule,
     release_symbol: &str,
+    discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth,
 ) -> bool {
     let ResolvedTy::Named {
         name,
@@ -2095,56 +2095,14 @@ fn resource_opaque_return_releases_through(
     if !*is_opaque || !args.is_empty() {
         return false;
     }
-    let short = hew_types::short_name(name);
-    let Some((class_name, (marker, Some(close_method)))) = module
+    module
         .type_classes
-        .get_key_value(name.as_str())
-        .or_else(|| module.type_classes.get_key_value(short))
-    else {
-        return false;
-    };
-    if *marker != hew_hir::ResourceMarker::Resource {
-        return false;
-    }
-
-    let qualified_close = format!("{class_name}::{close_method}");
-    let short_close = format!("{short}::{close_method}");
-    module.items.iter().any(|item| {
-        let hew_hir::HirItem::Function(function) = item else {
-            return false;
-        };
-        (function.name == qualified_close || function.name == short_close)
-            && block_directly_calls_symbol(&function.body, release_symbol)
-    })
-}
-
-/// The intentionally tiny authority walk used by
-/// [`resource_opaque_return_releases_through`]. `unsafe { ... }` becomes a HIR
-/// block, so a direct FFI close is either a statement or a tail below one or
-/// more such blocks. Any other expression form is not a proof.
-fn block_directly_calls_symbol(block: &HirBlock, symbol: &str) -> bool {
-    block
-        .statements
-        .iter()
-        .any(|statement| match &statement.kind {
-            HirStmtKind::Expr(expr) => expr_directly_calls_symbol(expr, symbol),
-            _ => false,
+        .opaque_resource_lifecycle_for_type_name(name)
+        .is_some_and(|lifecycle| {
+            discharge_depth != crate::ffi_contracts::ReleaseDischargeDepth::None
+                && lifecycle.release_symbol == release_symbol
+                && lifecycle.discharge_depth == discharge_depth
         })
-        || block
-            .tail
-            .as_deref()
-            .is_some_and(|tail| expr_directly_calls_symbol(tail, symbol))
-}
-
-fn expr_directly_calls_symbol(expr: &HirExpr, symbol: &str) -> bool {
-    match &expr.kind {
-        HirExprKind::Call { callee, .. } => matches!(
-            &callee.kind,
-            HirExprKind::BindingRef { name, .. } if name == symbol
-        ),
-        HirExprKind::Block(block) => block_directly_calls_symbol(block, symbol),
-        _ => false,
-    }
 }
 
 /// What the compiler's type-directed drop plan will emit for a declared type.
@@ -2199,10 +2157,7 @@ fn declared_return_release(
             if *is_opaque || !args.is_empty() || depth >= MAX_RECORD_DEPTH {
                 return ReturnRelease::Unresolved;
             }
-            let Some(decl) = decls
-                .get(name.as_str())
-                .or_else(|| decls.get(hew_types::short_name(name)))
-            else {
+            let Some(decl) = decls.get(name.as_str()) else {
                 return ReturnRelease::Unresolved;
             };
             if decl.is_opaque || decl.fields.is_empty() {
@@ -2251,7 +2206,7 @@ impl PointerFreeRecords {
             .items
             .iter()
             .filter_map(|item| match item {
-                hew_hir::HirItem::TypeDecl(decl) => Some((decl.name.as_str(), decl)),
+                hew_hir::HirItem::TypeDecl(decl) => Some((decl.declaration.full_path(), decl)),
                 _ => None,
             })
             .collect();
@@ -2262,8 +2217,8 @@ impl PointerFreeRecords {
         // (which cannot be pointer-free anyway) is never admitted.
         loop {
             let mut changed = false;
-            for (name, decl) in &decls {
-                if names.contains(*name) || decl.is_opaque || decl.fields.is_empty() {
+            for (identity, decl) in &decls {
+                if names.contains(*identity) || decl.is_opaque || decl.fields.is_empty() {
                     continue;
                 }
                 if decl
@@ -2271,8 +2226,7 @@ impl PointerFreeRecords {
                     .iter()
                     .all(|field| field_ty_is_pointer_free(&field.ty, &names))
                 {
-                    names.insert((*name).to_string());
-                    names.insert(hew_types::short_name(name).to_string());
+                    names.insert((*identity).to_string());
                     changed = true;
                 }
             }
@@ -2310,7 +2264,7 @@ fn field_ty_is_pointer_free(ty: &ResolvedTy, pointer_free: &HashSet<String>) -> 
     if *is_opaque || !args.is_empty() {
         return false;
     }
-    pointer_free.contains(name.as_str()) || pointer_free.contains(hew_types::short_name(name))
+    pointer_free.contains(name.as_str())
 }
 
 /// The ARGUMENT-axis admission — see [`build_extern_contract_table`] for why
@@ -4749,6 +4703,7 @@ pub fn is_builtin_fresh_ctor(name: &str) -> bool {
 /// fail-closed answer.
 #[must_use]
 pub fn stdlib_shim_emitted_symbol(name: &str, id: hew_hir::ItemId) -> Option<&'static str> {
+    // JUSTIFIED: unsupported sub-32-bit targets cannot decode this id; None is fail-closed.
     let index = usize::try_from(u32::MAX - id.0).ok()?;
     let entry = hew_hir::stdlib_catalog::entries().get(index)?;
     let symbol = entry.linkage.runtime_symbol()?;
@@ -6725,6 +6680,27 @@ mod measured_extern_result_transfer {
         build_extern_contract_table(&tests::lower_source(source))
     }
 
+    fn table_for_tcp_lifecycle(source: &str, release_symbol: &str) -> ExternContractTable {
+        let mut module = tests::lower_source(source);
+        module
+            .type_classes
+            .admit_opaque_resource_lifecycle(hew_hir::OpaqueResourceLifecycle {
+                resource_declaration: hew_types::DefId::new("Connection"),
+                close_declaration: hew_types::DefId::new("Connection::close"),
+                release_declaration: hew_types::DefId::new("hew_tcp_connection_close"),
+                close_symbol: "Connection::close".to_string(),
+                release_symbol: release_symbol.to_string(),
+                discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Shallow,
+                producer_declarations: [hew_types::DefId::new("hew_tcp_connect")]
+                    .into_iter()
+                    .collect(),
+                producer_symbols: ["hew_tcp_connect".to_string()].into_iter().collect(),
+                producer_modules: ["std.net".to_string()].into_iter().collect(),
+            })
+            .expect("test lifecycle must be unique");
+        build_extern_contract_table(&module)
+    }
+
     #[test]
     fn a_measured_transfer_is_minted() {
         const SOURCE: &str = r#"extern "C" {
@@ -6775,7 +6751,7 @@ extern "C" {
 fn main() {}
 "#;
 
-        let matching = table_for(MATCHING_CLOSE);
+        let matching = table_for_tcp_lifecycle(MATCHING_CLOSE, "hew_tcp_close");
         assert!(
             matching.extern_return_is_audited_fresh_owner("hew_tcp_connect"),
             "the row's transferred result and `Connection::close -> hew_tcp_close` \
@@ -6787,9 +6763,49 @@ fn main() {}
         );
 
         assert!(
-            !table_for(WRONG_CLOSE).extern_return_is_audited_fresh_owner("hew_tcp_connect"),
-            "a resource marker alone is not authority: the emitted close must \
-             be the exact release symbol audited for this producer"
+            !table_for_tcp_lifecycle(WRONG_CLOSE, "hew_tcp_listener_close")
+                .extern_return_is_audited_fresh_owner("hew_tcp_connect"),
+            "a resource marker alone is not authority: the carried lifecycle must \
+             select the exact release symbol audited for this producer"
+        );
+    }
+
+    #[test]
+    fn deep_opaque_value_tree_mints_through_the_same_typed_lifecycle() {
+        const SOURCE: &str = r#"
+#[resource]
+#[opaque]
+type Value {}
+impl Value {
+    fn close(consuming self) { unsafe { hew_json_free(self) }; }
+}
+extern "C" {
+    fn hew_json_array_new() -> Value;
+    fn hew_json_free(consume value: Value);
+}
+fn main() {}
+"#;
+        let mut module = tests::lower_source(SOURCE);
+        module
+            .type_classes
+            .admit_opaque_resource_lifecycle(hew_hir::OpaqueResourceLifecycle {
+                resource_declaration: hew_types::DefId::new("Value"),
+                close_declaration: hew_types::DefId::new("Value::close"),
+                release_declaration: hew_types::DefId::new("hew_json_free"),
+                close_symbol: "Value::close".to_string(),
+                release_symbol: "hew_json_free".to_string(),
+                discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Deep,
+                producer_declarations: [hew_types::DefId::new("hew_json_array_new")]
+                    .into_iter()
+                    .collect(),
+                producer_symbols: ["hew_json_array_new".to_string()].into_iter().collect(),
+                producer_modules: ["std.encoding.json".to_string()].into_iter().collect(),
+            })
+            .expect("test lifecycle must be unique");
+        let table = build_extern_contract_table(&module);
+        assert!(
+            table.extern_return_is_audited_fresh_owner("hew_json_array_new"),
+            "deep runtime teardown is still one typed opaque close obligation"
         );
     }
 
@@ -7210,7 +7226,7 @@ fn main() {}
             .items
             .iter()
             .filter_map(|item| match item {
-                hew_hir::HirItem::TypeDecl(decl) => Some((decl.name.as_str(), decl)),
+                hew_hir::HirItem::TypeDecl(decl) => Some((decl.declaration.full_path(), decl)),
                 _ => None,
             })
             .collect();
@@ -7259,5 +7275,47 @@ fn main() {}
             declared_return_release(&named("NotDeclaredHere"), &decls, 0),
             ReturnRelease::Unresolved
         );
+    }
+
+    #[test]
+    fn nominal_release_and_pointer_free_proofs_do_not_cross_same_leaf_owners() {
+        let declared = DeclaredReleaseTypes {
+            names: HashSet::from(["left.Handle".to_string(), "Handle".to_string()]),
+        };
+        assert!(declared.release_is_declared("left.Handle"));
+        assert!(
+            !declared.release_is_declared("right.Handle"),
+            "a declared close is an exact nominal authority"
+        );
+
+        let pointer_free = HashSet::from(["left.Pod".to_string(), "Pod".to_string()]);
+        let named = |name: &str| ResolvedTy::Named {
+            name: name.to_string(),
+            args: Vec::new(),
+            builtin: None,
+            is_opaque: false,
+        };
+        assert!(field_ty_is_pointer_free(&named("left.Pod"), &pointer_free));
+        assert!(
+            !field_ty_is_pointer_free(&named("right.Pod"), &pointer_free),
+            "a same-leaf foreign record cannot inherit pointer-free proof"
+        );
+    }
+
+    #[test]
+    fn semantic_nominal_sinks_have_no_short_name_fallbacks() {
+        let source = include_str!("return_provenance.rs");
+        for prefix in [
+            "names.insert(hew_types::",
+            "contains(hew_types::",
+            ".or_else(|| decls.get(hew_types::",
+            "opaque_handles.contains(hew_types::",
+        ] {
+            let forbidden = format!("{prefix}short_name");
+            assert!(
+                !source.contains(&forbidden),
+                "semantic ownership authority must remain exact-owner keyed: {forbidden}"
+            );
+        }
     }
 }

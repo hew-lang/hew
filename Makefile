@@ -76,7 +76,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
+.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -784,7 +784,7 @@ test-cabi:
 # (libhew_runtime.a for wasm32-wasip1) is needed by wasm32-wasi eval tests
 # even when they are expected to fail before codegen (the linker search runs
 # before the fast typecheck path reports its diagnostic).
-test-compiler-pipeline: wasm-runtime $(LIBHEW_READY)
+test-compiler-pipeline: wasm-runtime hew-native $(LIBHEW_READY)
 	cargo nextest run --profile ci \
 		-p hew-lexer \
 		-p hew-parser \
@@ -794,6 +794,15 @@ test-compiler-pipeline: wasm-runtime $(LIBHEW_READY)
 		-p hew-codegen-rs \
 		-p hew-cli \
 		-p adze-cli
+	$(MAKE) test-opaque-resource-lifecycle-matrix
+
+test-opaque-resource-lifecycle-matrix: wasm-runtime hew-native
+	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_facts.py
+	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_matrix.py
+
+test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
+	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_facts.py
+	HEW_BIN="$(DEBUG_DIR)/hew" python3 scripts/tests/test_opaque_resource_lifecycle_matrix.py --runtime-profile external-network
 
 # End-to-end Hew compiler oracle: real .hew fixtures through check/compile/run.
 # Build libhew first and verify freshness so native fixture links do not test
@@ -1085,7 +1094,7 @@ asan:
 # clone leak were only caught by the macOS `leaks` oracle before this gate).
 #
 # Passes LLVM_VERSION through to the script if set (e.g. LLVM_VERSION=22).
-asan-fixtures:
+asan-fixtures: test-asan-fixture-selftest
 ifeq ($(shell uname -s),Darwin)
 	@echo "asan-fixtures: skipped on macOS — use the leaks oracle in hew-cli/tests/*_leak_oracle.rs"
 else
@@ -1093,6 +1102,12 @@ else
 	SANITIZER_RUST_TARGET=$(SANITIZER_RUST_TARGET) \
 	scripts/asan-fixture-check.sh
 endif
+
+# Platform-independent counterfactuals for the ASan/LSan sentinel: a genuine
+# sanitizer diagnostic must be accepted, while a bare non-zero probe exit must
+# stay red instead of certifying instrumentation that never reported a leak.
+test-asan-fixture-selftest:
+	scripts/asan-fixture-check.sh --selftest
 
 # Nightly rust-runtime TSan command (Linux/nightly toolchain required).
 #
@@ -1151,7 +1166,7 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate verify-ffi verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check corpus-floor-check
+lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check corpus-floor-check
 	cargo clippy --workspace --tests -- -D warnings
 
 # Pinned, cache-only by default: local lint never downloads a grammar/tool as a
@@ -1254,6 +1269,10 @@ hew-check-all: hew
 .PHONY: codegen-carried-identity-gate
 codegen-carried-identity-gate:
 	bash scripts/codegen-carried-identity-gate.sh
+
+.PHONY: codegen-trap-inventory-check
+codegen-trap-inventory-check:
+	python3 scripts/check-codegen-trap-inventory.py
 
 # Smoke-test the release binary with `hew run` to catch process-exit aborts
 # (e.g. libc++ ABI mismatch at locale destructor — issue #1606).

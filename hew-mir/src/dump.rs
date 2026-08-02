@@ -1028,9 +1028,13 @@ fn render_instr(instr: &Instr) -> String {
                 render_actor_state_load_mode_suffix(*mode)
             )
         }
-        Instr::ActorStateFieldStore { field_offset, src } => {
+        Instr::ActorStateFieldStore {
+            field_offset,
+            src,
+            handoff,
+        } => {
             format!(
-                "actor_state_store field[{}] = {}",
+                "actor_state_store field[{}] = {} handoff={handoff:?}",
                 field_offset.0,
                 render_place(src)
             )
@@ -2194,8 +2198,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
-            resource_record_close: vec![],
-            resource_opaque_close: vec![],
+            lifecycle_registry: hew_hir::LifecycleRegistry::default(),
             wire_layouts: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }

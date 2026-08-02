@@ -286,14 +286,12 @@ pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
     use crate::value_class::ValueClass;
 
     #[test]
     fn duplex_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("Duplex"),
@@ -303,7 +301,7 @@ mod tests {
 
     #[test]
     fn sink_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("Sink"),
@@ -313,7 +311,7 @@ mod tests {
 
     #[test]
     fn stream_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("Stream"),
@@ -323,7 +321,7 @@ mod tests {
 
     #[test]
     fn channel_endpoints_use_typed_registration_not_bare_seed_rows() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         for endpoint in ["Sender", "Receiver"] {
             assert!(
@@ -335,7 +333,7 @@ mod tests {
 
     #[test]
     fn channel_endpoint_named_tys_resolve_to_affine_resources() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         for (name, builtin) in [
             ("channel.Sender", BuiltinType::Sender),
@@ -352,7 +350,7 @@ mod tests {
 
     #[test]
     fn channel_endpoint_names_without_builtin_identity_are_not_resources() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
 
         for name in ["Sender", "Receiver", "channel.Sender", "channel.Receiver"] {
@@ -367,7 +365,7 @@ mod tests {
 
     #[test]
     fn lambda_actor_handle_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("LambdaActorHandle"),
@@ -377,7 +375,7 @@ mod tests {
 
     #[test]
     fn lambda_pid_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("LambdaPid"),
@@ -387,7 +385,7 @@ mod tests {
 
     #[test]
     fn send_half_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("SendHalf"),
@@ -397,7 +395,7 @@ mod tests {
 
     #[test]
     fn recv_half_is_seeded_as_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("RecvHalf"),
@@ -407,7 +405,7 @@ mod tests {
 
     #[test]
     fn duplex_named_ty_resolves_to_affine_resource() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         let ty = ResolvedTy::named_builtin(
             "Duplex",
@@ -423,7 +421,7 @@ mod tests {
         // marker-`BitCopy`. The `None` marker routes it through the
         // owned-aggregate record clone/drop synthesis; the `CrashInfo` ROLE (not
         // the marker) is now the crash-hook-payload discriminant.
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             crate::lookup_type_marker("CrashInfo", &table),
@@ -439,7 +437,7 @@ mod tests {
         // leak the message string. A `None`-marker builtin record resolves to
         // `Unknown` at the bare `ValueClass::of_ty` level (the owned-aggregate
         // record machinery in MIR is what admits it as `CowValue` for drop).
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         let ty = ResolvedTy::named_user("CrashInfo", vec![]);
         assert_ne!(
@@ -472,7 +470,7 @@ mod tests {
 
     #[test]
     fn crash_action_is_seeded_as_none_marker() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("CrashAction"),
@@ -483,7 +481,7 @@ mod tests {
 
     #[test]
     fn crash_info_named_ty_is_known_to_type_classes() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert!(
             table.contains_key("CrashInfo"),
@@ -493,7 +491,7 @@ mod tests {
 
     #[test]
     fn crash_action_named_ty_is_known_to_type_classes() {
-        let mut table: TypeClassTable = HashMap::default();
+        let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert!(
             table.contains_key("CrashAction"),

@@ -58,7 +58,8 @@ pub use node::{
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,
-    named_type_names, NamedTypeComponent, ResourceMarker, TypeClassTable, ValueClass,
+    named_type_names, LifecycleRegistry, NamedTypeComponent, OpaqueResourceLifecycle,
+    ResourceMarker, ResourceRecordLifecycle, TypeClassTable, ValueClass,
 };
 pub use verify::{collect_site_spans, verify_hir, HirSiteSource};
 

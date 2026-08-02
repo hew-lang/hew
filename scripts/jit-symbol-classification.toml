@@ -280,6 +280,9 @@ stable = [
   "hew_file_exists",
   "hew_file_read",
   "hew_file_read_bytes",
+  "hew_file_read_stream_close",
+  "hew_file_read_stream_is_valid",
+  "hew_file_read_stream_open",
   "hew_file_size",
   "hew_file_write",
   "hew_file_write_bytes",
@@ -1295,6 +1298,11 @@ codegen-stable = [
   "hew_observe_probe_suspend",
   "hew_observe_probe_turn",
   "hew_dealloc",
+  "hew_dispatch_state_cleanup_abort_invariant",
+  "hew_dispatch_state_cleanup_begin_replace",
+  "hew_dispatch_state_cleanup_clear",
+  "hew_dispatch_state_cleanup_prepare",
+  "hew_dispatch_state_cleanup_prepare_transfer",
   "hew_dyn_box_alloc",
   "hew_dyn_box_free",
   "hew_gen_coro_destroy",
@@ -2559,13 +2567,23 @@ discharge-depth = "none"
 symbol = "hew_stream_channel"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.stream.StreamPair"
 release-symbol = "hew_stream_pair_free"
 discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_stream_close"
+result = "none"
+params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_stream_collect_string"
 result = "fresh"
 params = ["consume"]
+resource-param-types = ["std.fs.FileReadStream"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -2576,6 +2594,7 @@ result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_stream_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_stream_from_file_write"
@@ -2592,9 +2611,35 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_file_read_stream_close"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.fs.FileReadStream"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_read_stream_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.fs.FileReadStream"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_file_read_stream_open"
+result = "fresh"
+params = ["borrow"]
+resource-result-type = "std.fs.FileReadStream"
+release-symbol = "hew_file_read_stream_close"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
 symbol = "hew_stream_pair_free"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.stream.StreamPair"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -2602,6 +2647,7 @@ discharge-depth = "none"
 symbol = "hew_stream_pair_is_valid"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.stream.StreamPair"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -2609,6 +2655,7 @@ discharge-depth = "none"
 symbol = "hew_stream_pair_sink"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_sink_close"
 discharge-depth = "shallow"
 
@@ -2616,6 +2663,7 @@ discharge-depth = "shallow"
 symbol = "hew_stream_pair_sink_bytes"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_sink_close"
 discharge-depth = "shallow"
 
@@ -2623,6 +2671,7 @@ discharge-depth = "shallow"
 symbol = "hew_stream_pair_stream"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_stream_close"
 discharge-depth = "shallow"
 
@@ -2630,6 +2679,7 @@ discharge-depth = "shallow"
 symbol = "hew_stream_pair_stream_bytes"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.stream.StreamPair"]
 release-symbol = "hew_stream_close"
 discharge-depth = "shallow"
 
@@ -2645,6 +2695,7 @@ symbol = "hew_tcp_stream_from_conn"
 result = "fresh"
 params = ["consume"]
 resource-param-types = ["std.net.Connection"]
+resource-result-type = "std.stream.StreamPair"
 release-symbol = "hew_stream_pair_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -2658,13 +2709,16 @@ result-retention = "transferred"
 symbol = "hew_channel_new"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.channel.ChannelPair"
 release-symbol = "hew_channel_pair_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_channel_pair_free"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.channel.ChannelPair"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -2672,6 +2726,7 @@ discharge-depth = "none"
 symbol = "hew_channel_pair_is_valid"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.channel.ChannelPair"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -2679,6 +2734,7 @@ discharge-depth = "none"
 symbol = "hew_channel_pair_receiver"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.channel.ChannelPair"]
 release-symbol = "hew_channel_receiver_close"
 discharge-depth = "shallow"
 
@@ -2686,6 +2742,7 @@ discharge-depth = "shallow"
 symbol = "hew_channel_pair_sender"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.channel.ChannelPair"]
 release-symbol = "hew_channel_sender_close"
 discharge-depth = "shallow"
 
@@ -2917,6 +2974,7 @@ result-retention = "transferred"
 symbol = "hew_process_result_exit_code"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.process.ProcessResultHandle"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -2924,6 +2982,7 @@ discharge-depth = "none"
 symbol = "hew_process_result_free"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.process.ProcessResultHandle"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -2931,6 +2990,7 @@ discharge-depth = "none"
 symbol = "hew_process_result_is_valid"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.process.ProcessResultHandle"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -2938,6 +2998,7 @@ discharge-depth = "none"
 symbol = "hew_process_result_stderr"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.process.ProcessResultHandle"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -2946,6 +3007,7 @@ result-retention = "transferred"
 symbol = "hew_process_result_stdout"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.process.ProcessResultHandle"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -2954,15 +3016,19 @@ result-retention = "transferred"
 symbol = "hew_process_run"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.process.ProcessResultHandle"
 release-symbol = "hew_process_result_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_process_run_argv"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-result-type = "std.process.ProcessResultHandle"
 release-symbol = "hew_process_result_free"
 discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_process_spawn"
@@ -3126,6 +3192,44 @@ result-retention = "transferred"
 symbol = "hew_glob_free"
 result = "none"
 params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# Generated actor-state crash-escrow bookkeeping. These functions mutate only
+# runtime-owned metadata/snapshot bytes and never consume or return a Hew heap
+# owner; source/field pointers remain borrowed from the live dispatch frame.
+[[ownership.contracts]]
+symbol = "hew_dispatch_state_cleanup_clear"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dispatch_state_cleanup_begin_replace"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dispatch_state_cleanup_prepare"
+result = "none"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dispatch_state_cleanup_prepare_transfer"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dispatch_state_cleanup_abort_invariant"
+result = "none"
+params = []
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4054,6 +4158,7 @@ discharge-depth = "none"
 symbol = "hew_http_server_close"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.net.http.Server"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4061,13 +4166,16 @@ discharge-depth = "none"
 symbol = "hew_http_server_new"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.net.http.Server"
 release-symbol = "hew_http_server_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_http_server_recv"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.http.Server"]
 release-symbol = "hew_http_request_free"
 discharge-depth = "shallow"
 
@@ -4075,6 +4183,7 @@ discharge-depth = "shallow"
 symbol = "hew_http_server_set_request_timeout_ms"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.http.Server", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4158,6 +4267,7 @@ discharge-depth = "none"
 symbol = "hew_ws_attach"
 result = "none"
 params = ["borrow", "borrow", "borrow", "borrow"]
+resource-param-types = ["std.net.websocket.Conn", "", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4165,6 +4275,7 @@ discharge-depth = "none"
 symbol = "hew_ws_close"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.net.websocket.Conn"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4172,8 +4283,10 @@ discharge-depth = "none"
 symbol = "hew_ws_connect"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.net.websocket.Conn"
 release-symbol = "hew_ws_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ws_message_free"
@@ -4208,6 +4321,7 @@ discharge-depth = "none"
 symbol = "hew_ws_recv"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.websocket.Conn"]
 release-symbol = "hew_ws_message_free"
 discharge-depth = "shallow"
 
@@ -4222,6 +4336,7 @@ discharge-depth = "none"
 symbol = "hew_ws_recv_timeout"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.websocket.Conn", ""]
 release-symbol = "hew_ws_message_free"
 discharge-depth = "shallow"
 
@@ -4229,6 +4344,7 @@ discharge-depth = "shallow"
 symbol = "hew_ws_send_text"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.websocket.Conn", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4236,13 +4352,17 @@ discharge-depth = "none"
 symbol = "hew_ws_server_accept"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.net.websocket.Conn"
+resource-param-types = ["std.net.websocket.Server"]
 release-symbol = "hew_ws_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ws_server_close"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.net.websocket.Server"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4250,13 +4370,16 @@ discharge-depth = "none"
 symbol = "hew_ws_server_new"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.net.websocket.Server"
 release-symbol = "hew_ws_server_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_ws_server_port"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.websocket.Server"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4269,6 +4392,7 @@ discharge-depth = "none"
 symbol = "hew_tls_attach"
 result = "none"
 params = ["borrow", "borrow", "borrow", "borrow"]
+resource-param-types = ["std.net.tls.TlsStream", "", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4276,6 +4400,7 @@ discharge-depth = "none"
 symbol = "hew_tls_close"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.net.tls.TlsStream"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4283,8 +4408,10 @@ discharge-depth = "none"
 symbol = "hew_tls_connect"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-result-type = "std.net.tls.TlsStream"
 release-symbol = "hew_tls_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_tls_last_error"
@@ -4303,6 +4430,7 @@ result-retention = "transferred"
 symbol = "hew_tls_read_result"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.tls.TlsStream", ""]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4311,6 +4439,7 @@ result-retention = "transferred"
 symbol = "hew_tls_write_result"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.tls.TlsStream", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4320,6 +4449,7 @@ discharge-depth = "none"
 symbol = "hew_smtp_close"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.net.smtp.Conn"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4327,15 +4457,19 @@ discharge-depth = "none"
 symbol = "hew_smtp_connect"
 result = "fresh"
 params = ["borrow", "borrow", "borrow", "borrow"]
+resource-result-type = "std.net.smtp.Conn"
 release-symbol = "hew_smtp_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_smtp_connect_tls"
 result = "fresh"
 params = ["borrow", "borrow", "borrow", "borrow"]
+resource-result-type = "std.net.smtp.Conn"
 release-symbol = "hew_smtp_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_smtp_last_error"
@@ -4349,6 +4483,7 @@ result-retention = "transferred"
 symbol = "hew_smtp_send"
 result = "none"
 params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+resource-param-types = ["std.net.smtp.Conn", "", "", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4356,6 +4491,7 @@ discharge-depth = "none"
 symbol = "hew_smtp_send_html"
 result = "none"
 params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+resource-param-types = ["std.net.smtp.Conn", "", "", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4401,13 +4537,17 @@ discharge-depth = "none"
 symbol = "hew_quic_conn_accept_stream"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.net.quic.QUICStream"
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = "hew_quic_stream_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_conn_accepted_streams"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4415,6 +4555,7 @@ discharge-depth = "none"
 symbol = "hew_quic_conn_bytes_received"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4422,6 +4563,7 @@ discharge-depth = "none"
 symbol = "hew_quic_conn_bytes_sent"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4429,6 +4571,7 @@ discharge-depth = "none"
 symbol = "hew_quic_conn_disconnect"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4436,6 +4579,7 @@ discharge-depth = "none"
 symbol = "hew_quic_conn_is_closed"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4443,6 +4587,7 @@ discharge-depth = "none"
 symbol = "hew_quic_conn_last_error"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4451,6 +4596,7 @@ result-retention = "transferred"
 symbol = "hew_quic_conn_local_addr"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4459,6 +4605,7 @@ result-retention = "transferred"
 symbol = "hew_quic_conn_on_event"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = "hew_quic_event_free"
 discharge-depth = "shallow"
 
@@ -4466,13 +4613,17 @@ discharge-depth = "shallow"
 symbol = "hew_quic_conn_open_stream"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.net.quic.QUICStream"
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = "hew_quic_stream_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_conn_opened_streams"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4480,6 +4631,7 @@ discharge-depth = "none"
 symbol = "hew_quic_conn_peer_addr"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4488,6 +4640,7 @@ result-retention = "transferred"
 symbol = "hew_quic_conn_rtt_ms"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4495,13 +4648,17 @@ discharge-depth = "none"
 symbol = "hew_quic_endpoint_accept"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.net.quic.QUICConnection"
+resource-param-types = ["std.net.quic.QUICEndpoint"]
 release-symbol = "hew_quic_conn_disconnect"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_endpoint_accepted_connections"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICEndpoint"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4509,6 +4666,7 @@ discharge-depth = "none"
 symbol = "hew_quic_endpoint_close"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.net.quic.QUICEndpoint"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4516,13 +4674,17 @@ discharge-depth = "none"
 symbol = "hew_quic_endpoint_connect"
 result = "fresh"
 params = ["borrow", "borrow", "borrow"]
+resource-result-type = "std.net.quic.QUICConnection"
+resource-param-types = ["std.net.quic.QUICEndpoint", "", ""]
 release-symbol = "hew_quic_conn_disconnect"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_endpoint_last_error"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICEndpoint"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4531,6 +4693,7 @@ result-retention = "transferred"
 symbol = "hew_quic_endpoint_local_addr"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICEndpoint"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4539,6 +4702,7 @@ result-retention = "transferred"
 symbol = "hew_quic_endpoint_on_event"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICEndpoint"]
 release-symbol = "hew_quic_event_free"
 discharge-depth = "shallow"
 
@@ -4568,34 +4732,43 @@ result-retention = "transferred"
 symbol = "hew_quic_new_client"
 result = "fresh"
 params = []
+resource-result-type = "std.net.quic.QUICEndpoint"
 release-symbol = "hew_quic_endpoint_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_new_client_with_ca"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.net.quic.QUICEndpoint"
 release-symbol = "hew_quic_endpoint_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_new_server"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.net.quic.QUICEndpoint"
 release-symbol = "hew_quic_endpoint_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_new_server_with_tls"
 result = "fresh"
 params = ["borrow", "borrow", "borrow"]
+resource-result-type = "std.net.quic.QUICEndpoint"
 release-symbol = "hew_quic_endpoint_close"
 discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_quic_stream_bytes_received"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICStream"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4603,6 +4776,7 @@ discharge-depth = "none"
 symbol = "hew_quic_stream_bytes_sent"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICStream"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4610,6 +4784,7 @@ discharge-depth = "none"
 symbol = "hew_quic_stream_close"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.net.quic.QUICStream"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4617,6 +4792,7 @@ discharge-depth = "none"
 symbol = "hew_quic_stream_finish"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICStream"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4624,6 +4800,7 @@ discharge-depth = "none"
 symbol = "hew_quic_stream_last_error"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICStream"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4639,6 +4816,7 @@ discharge-depth = "none"
 symbol = "hew_quic_stream_recv"
 result = "fresh"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICStream"]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
 
@@ -4646,6 +4824,7 @@ discharge-depth = "shallow"
 symbol = "hew_quic_stream_recv_closed"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICStream"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4653,6 +4832,7 @@ discharge-depth = "none"
 symbol = "hew_quic_stream_recv_timeout_hew"
 result = "fresh"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.quic.QUICStream", ""]
 release-symbol = "hew_bytes_drop"
 discharge-depth = "shallow"
 
@@ -4660,6 +4840,7 @@ discharge-depth = "shallow"
 symbol = "hew_quic_stream_send"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.quic.QUICStream", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4667,6 +4848,7 @@ discharge-depth = "none"
 symbol = "hew_quic_stream_send_closed"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICStream"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4674,6 +4856,7 @@ discharge-depth = "none"
 symbol = "hew_quic_stream_send_timeout_hew"
 result = "none"
 params = ["borrow", "borrow", "borrow"]
+resource-param-types = ["std.net.quic.QUICStream", "", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4681,6 +4864,7 @@ discharge-depth = "none"
 symbol = "hew_quic_stream_stop"
 result = "none"
 params = ["borrow", "borrow"]
+resource-param-types = ["std.net.quic.QUICStream", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -4694,6 +4878,7 @@ symbol = "hew_json_array_get"
 result = "fresh"
 params = ["borrow", "borrow"]
 resource-param-types = ["std.encoding.json.Value", ""]
+resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4710,6 +4895,7 @@ discharge-depth = "none"
 symbol = "hew_json_array_new"
 result = "fresh"
 params = []
+resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4774,6 +4960,7 @@ discharge-depth = "none"
 symbol = "hew_json_from_bool"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4782,6 +4969,7 @@ result-retention = "transferred"
 symbol = "hew_json_from_float"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4790,6 +4978,7 @@ result-retention = "transferred"
 symbol = "hew_json_from_int"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4798,6 +4987,7 @@ result-retention = "transferred"
 symbol = "hew_json_from_null"
 result = "fresh"
 params = []
+resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4806,6 +4996,7 @@ result-retention = "transferred"
 symbol = "hew_json_from_string"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4823,6 +5014,7 @@ symbol = "hew_json_get_field"
 result = "fresh"
 params = ["borrow", "borrow"]
 resource-param-types = ["std.encoding.json.Value", ""]
+resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4881,6 +5073,7 @@ symbol = "hew_json_object_keys"
 result = "fresh"
 params = ["borrow"]
 resource-param-types = ["std.encoding.json.Value"]
+resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4889,6 +5082,7 @@ result-retention = "transferred"
 symbol = "hew_json_object_new"
 result = "fresh"
 params = []
+resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4949,6 +5143,7 @@ discharge-depth = "none"
 symbol = "hew_json_parse"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.json.Value"
 release-symbol = "hew_json_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4980,6 +5175,7 @@ symbol = "hew_toml_array_get"
 result = "fresh"
 params = ["borrow", "borrow"]
 resource-param-types = ["std.encoding.toml.Value", ""]
+resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -4996,6 +5192,7 @@ discharge-depth = "none"
 symbol = "hew_toml_array_new"
 result = "fresh"
 params = []
+resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5052,6 +5249,7 @@ discharge-depth = "none"
 symbol = "hew_toml_from_bool"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5060,6 +5258,7 @@ result-retention = "transferred"
 symbol = "hew_toml_from_float"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5068,6 +5267,7 @@ result-retention = "transferred"
 symbol = "hew_toml_from_int"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5076,6 +5276,7 @@ result-retention = "transferred"
 symbol = "hew_toml_from_string"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5093,6 +5294,7 @@ symbol = "hew_toml_get_field"
 result = "fresh"
 params = ["borrow", "borrow"]
 resource-param-types = ["std.encoding.toml.Value", ""]
+resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5142,6 +5344,7 @@ result-retention = "transferred"
 symbol = "hew_toml_parse"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5159,6 +5362,7 @@ result-retention = "transferred"
 symbol = "hew_toml_table_new"
 result = "fresh"
 params = []
+resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5224,6 +5428,7 @@ symbol = "hew_yaml_array_get"
 result = "fresh"
 params = ["borrow", "borrow"]
 resource-param-types = ["std.encoding.yaml.Value", ""]
+resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5240,6 +5445,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_array_new"
 result = "fresh"
 params = []
+resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5304,6 +5510,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_from_bool"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5312,6 +5519,7 @@ result-retention = "transferred"
 symbol = "hew_yaml_from_float"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5320,6 +5528,7 @@ result-retention = "transferred"
 symbol = "hew_yaml_from_int"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5328,6 +5537,7 @@ result-retention = "transferred"
 symbol = "hew_yaml_from_null"
 result = "fresh"
 params = []
+resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5336,6 +5546,7 @@ result-retention = "transferred"
 symbol = "hew_yaml_from_string"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5353,6 +5564,7 @@ symbol = "hew_yaml_get_field"
 result = "fresh"
 params = ["borrow", "borrow"]
 resource-param-types = ["std.encoding.yaml.Value", ""]
+resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5410,6 +5622,7 @@ result-retention = "transferred"
 symbol = "hew_yaml_object_new"
 result = "fresh"
 params = []
+resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5470,6 +5683,7 @@ discharge-depth = "none"
 symbol = "hew_yaml_parse"
 result = "fresh"
 params = ["borrow"]
+resource-result-type = "std.encoding.yaml.Value"
 release-symbol = "hew_yaml_free"
 discharge-depth = "deep"
 result-retention = "transferred"
@@ -5801,6 +6015,7 @@ discharge-depth = "none"
 symbol = "hew_http_server_is_valid"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.http.Server"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5808,6 +6023,7 @@ discharge-depth = "none"
 symbol = "hew_http_server_port"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.http.Server"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5830,6 +6046,7 @@ discharge-depth = "none"
 symbol = "hew_ws_conn_is_valid"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.websocket.Conn"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5837,6 +6054,7 @@ discharge-depth = "none"
 symbol = "hew_ws_server_is_valid"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.websocket.Server"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5844,5 +6062,6 @@ discharge-depth = "none"
 symbol = "hew_smtp_conn_is_valid"
 result = "none"
 params = ["borrow"]
+resource-param-types = ["std.net.smtp.Conn"]
 release-symbol = ""
 discharge-depth = "none"

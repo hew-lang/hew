@@ -1260,6 +1260,16 @@ impl Checker {
             ty
         } else if self.fn_sigs.contains_key(name) {
             // Function name used as a value (e.g., variant constructor)
+            if let Some(source_identity) = self
+                .import_fn_name_aliases
+                .get(&(self.current_module.clone(), name.to_string()))
+                .cloned()
+            {
+                self.reject_wasm_native_only_function_identity(&source_identity, span);
+                if let Some((source_owner, _)) = source_identity.rsplit_once('.') {
+                    self.mark_module_owner_bindings_used(source_owner);
+                }
+            }
             if let Some(caller) = &self.current_function {
                 self.call_graph
                     .entry(caller.clone())
@@ -5587,23 +5597,20 @@ impl Checker {
                                 // the call-form guard in methods.rs.
                                 // The manifest-generated rejection slice is the
                                 // single source; both guards iterate it.
-                                if self.wasm_target && !self.user_modules.contains(name.as_str()) {
-                                    for rejection in crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
-                                        if name.as_str() == rejection.module {
-                                            self.reject_wasm_feature(span, rejection.feature);
-                                        }
-                                    }
-                                    // crypto.random_bytes and its fallible twin depend on a
-                                    // native-only secure entropy source absent from the wasm32
-                                    // link set.
-                                    if name.as_str() == "crypto"
-                                        && matches!(field, "random_bytes" | "try_random_bytes")
-                                    {
-                                        self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::CryptoRandom,
-                                        );
-                                    }
+                                if let Some(feature) = self.wasm_native_only_module_feature(name) {
+                                    self.reject_wasm_feature(span, feature);
+                                }
+                                self.reject_wasm_native_only_module_function(name, field, span);
+                                // crypto.random_bytes and its fallible twin depend on a
+                                // native-only secure entropy source absent from the wasm32
+                                // link set.
+                                if self.is_shipped_crypto_module(name)
+                                    && matches!(field, "random_bytes" | "try_random_bytes")
+                                {
+                                    self.reject_wasm_feature(
+                                        span,
+                                        WasmUnsupportedFeature::CryptoRandom,
+                                    );
                                 }
                                 return ty;
                             }
@@ -6447,8 +6454,11 @@ impl Checker {
             .type_defs
             .iter()
             .filter_map(|(type_name, td)| {
+                let canonical_type_name = self
+                    .canonical_nominal_name(type_name)
+                    .unwrap_or_else(|| type_name.clone());
                 let expected = Ty::Named {
-                    name: type_name.clone(),
+                    name: canonical_type_name.clone(),
                     args: vec![],
                     builtin: None,
                 };
@@ -6461,7 +6471,7 @@ impl Checker {
                     .or_else(|| td.variants.get(surface_name))
                 {
                     Some(VariantDef::Struct(fields)) => {
-                        Some((type_name.clone(), fields.clone(), td.type_params.clone()))
+                        Some((canonical_type_name, fields.clone(), td.type_params.clone()))
                     }
                     _ => None,
                 }
@@ -6519,6 +6529,7 @@ impl Checker {
         // qualified-name layout into the diagnostic and gives the user no
         // actionable signal.  Success cases (both type and variant exist) fall
         // through to the existing struct/enum-variant init logic.
+        let mut resolved_module_variant_name = None;
         if let Some(dot) = name.find('.') {
             let module_short = &name[..dot];
             if self.modules.contains(module_short) {
@@ -6563,10 +6574,18 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    // Both type and variant exist — fall through.
+                    // Both type and variant exist. Carry the exact declaration
+                    // owner into the shared struct-variant path; retaining the
+                    // lexical module alias here would leave both its surface
+                    // alias and the full declaration as candidates.
+                    resolved_module_variant_name = Some(format!(
+                        "{}.{type_name}::{variant_name}",
+                        self.canonical_module_import_owner(module_short)
+                    ));
                 }
             }
         }
+        let name = resolved_module_variant_name.as_deref().unwrap_or(name);
         // Fail closed under qualified-by-default before binding a bare record
         // constructor: a bare name published by more than one module is
         // ambiguous, and one exported but published by none is not in scope.
@@ -6611,13 +6630,12 @@ impl Checker {
         //
         // `name` at this point may be qualified (`module.Handle`) after
         // `published_bare_type_qualified` resolves a bare import reference.
-        // `user_opaque_type_names` stores only unqualified names (from `td.name`),
-        // so we must also check the unqualified component of the qualified name.
+        // `user_opaque_type_names` stores exact declaration identities. A
+        // same-leaf type from another module must not acquire opacity.
         let unqualified = name.split_once('.').map_or(name, |(_, unqual)| unqual);
         let is_declaring_module = self.local_type_defs.contains(unqualified);
         let is_opaque_handle = !is_declaring_module
             && (self.user_opaque_type_names.contains(name)
-                || self.user_opaque_type_names.contains(unqualified)
                 || self.canonical_owned_handle_type_name(name).is_some());
         if is_opaque_handle {
             self.report_error(

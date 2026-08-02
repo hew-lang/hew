@@ -22,16 +22,14 @@
 //! - Reverse-order LIFO drop discipline in the drop fn (CLAUDE.md custom #1).
 //! - Per-field-alloc-fail rollback chain has the correct cardinality
 //!   (one rollback BB per non-trivial field index).
-//! - Connection-bearing actor's clone fn returns null up front (plan §4.5 B
-//!   defence-in-depth — Stage 2 codegen-time gate is the primary surface).
 //!
 //! LESSONS: boundary-fail-closed (P0) — every synthesised body is a
 //! fail-closed seam against the runtime restart-with-state contract.
 
 use hew_codegen_rs::{emit_module, CodegenError, EmitOptions};
 use hew_mir::{
-    ActorLayout, BasicBlock, FunctionCallConv, IoHandleKind, IrPipeline, RawMirFunction,
-    RecordLayout, StateFieldCloneKind, Terminator,
+    ActorLayout, BasicBlock, FunctionCallConv, IrPipeline, RawMirFunction, RecordLayout,
+    StateFieldCloneKind, Terminator,
 };
 use hew_types::{BuiltinType, ResolvedTy};
 
@@ -134,8 +132,7 @@ fn pipeline_with(actors: Vec<ActorLayout>, records: Vec<RecordLayout>) -> IrPipe
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -492,80 +489,6 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
     let entry_body = &ir[entry_clone_start..entry_clone_end];
     assert!(entry_body.contains("@hew_string_clone"));
     assert!(entry_body.contains("@hew_vec_clone_owned"));
-}
-
-/// Connection-bearing actor: clone fn must short-circuit to `ret ptr
-/// null` up front (plan §4.5 B defence-in-depth; Stage 2 codegen-time
-/// gate at supervisor-restart is the primary fail-closed surface).
-///
-/// Note: `ResolvedTy::Named { name: "Connection", .. }` is not yet
-/// supported by `resolve_ty` (D10 gate). For Stage 3 body-synthesis
-/// coverage we substitute `LocalPid` as a ptr-typed storage stand-in;
-/// the synthesis code only inspects the `StateFieldCloneKind` for
-/// helper selection, not the storage `ResolvedTy`. Once D10 lifts
-/// `Connection`, the substitution can be removed.
-#[test]
-fn state_clone_connection_actor_returns_null_up_front() {
-    let storage_ty = ResolvedTy::named_builtin(
-        "renamed.LocalPidPresentation",
-        BuiltinType::LocalPid,
-        vec![],
-    );
-    let conn_actor = classified_actor(
-        "NetReader",
-        vec!["conn"],
-        vec![storage_ty.clone()],
-        vec![StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        }],
-    );
-    let record = RecordLayout {
-        name: "NetReader".into(),
-        field_tys: vec![storage_ty],
-        field_names: vec![],
-    };
-    let ir = emit_to_string(
-        &pipeline_with(vec![conn_actor], vec![record]),
-        "netreader-connection",
-    );
-
-    let clone_start = ir
-        .find("define ptr @__hew_state_clone_NetReader(")
-        .expect("clone fn must exist");
-    let clone_end = ir[clone_start..]
-        .find("\n}")
-        .map(|p| clone_start + p)
-        .unwrap_or(ir.len());
-    let body = &ir[clone_start..clone_end];
-    // Body must NOT contain malloc / memcpy / per-field helpers. It must
-    // return null directly from entry.
-    assert!(
-        !body.contains("@malloc"),
-        "Connection actor clone must NOT allocate; body:\n{body}"
-    );
-    assert!(
-        !body.contains("llvm.memcpy"),
-        "Connection actor clone must NOT memcpy; body:\n{body}"
-    );
-    assert!(
-        body.contains("ret ptr null"),
-        "Connection actor clone must return null up front; body:\n{body}"
-    );
-    // Drop body for Connection actor: Connection field is a no-op at drop,
-    // and under the fields-only contract the wrapper is freed by the runtime
-    // consumers — so the whole drop body is a guarded no-op.
-    let drop_start = ir
-        .find("define void @__hew_state_drop_NetReader(")
-        .expect("drop fn must exist");
-    let drop_end = ir[drop_start..]
-        .find("\n}")
-        .map(|p| drop_start + p)
-        .unwrap_or(ir.len());
-    let drop_body = &ir[drop_start..drop_end];
-    assert!(
-        !drop_body.contains("@free"),
-        "Connection actor drop must NOT free the wrapper (runtime owns it); body:\n{drop_body}"
-    );
 }
 
 /// Per-field-alloc-fail cardinality check: an actor with N=4 non-trivial

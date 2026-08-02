@@ -53,8 +53,10 @@ pub use check::{
     ImplDef, ImplId, ImplRegistry, LintId, LintLevel, LintLevels, LintSources, LookupError,
     MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, MethodTarget,
     MethodTargetFamily, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
-    NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PatternPlan, PayloadBinding,
-    PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
+    NumericSignedness, NumericWidth, OpaqueResourceCandidateGraph,
+    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
+    OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
+    PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
     ProducedValueDependency, ProducedValueFact, RcIntrinsicOp, ResolvedCall, RuntimeAbi, SpanKey,
     TryConversionKind, TryWidthCastLowering, TyPattern, TypeCheckOutput, VariantDef, VariantMatch,
     VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
@@ -94,8 +96,9 @@ pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;
 pub use vec_authority::VecElementToken;
 pub use wasm_capabilities_generated::{
-    wasm_capability_ids, WasmCapabilityId, WasmFeatureDisposition, WasmModuleRejection,
-    WasmUnsupportedFeature, NATIVE_ONLY_WASM_MODULES, NATIVE_ONLY_WASM_MODULE_REJECTIONS,
+    wasm_capability_ids, WasmCapabilityId, WasmFeatureDisposition, WasmFunctionRejection,
+    WasmModuleRejection, WasmUnsupportedFeature, NATIVE_ONLY_WASM_FUNCTION_REJECTIONS,
+    NATIVE_ONLY_WASM_MODULES, NATIVE_ONLY_WASM_MODULE_REJECTIONS,
 };
 
 /// Canonical identity of one declared definition.
@@ -106,8 +109,15 @@ pub use wasm_capabilities_generated::{
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
+#[serde(transparent)]
 pub struct DefId {
     full_path: String,
+}
+
+impl std::borrow::Borrow<str> for DefId {
+    fn borrow(&self) -> &str {
+        &self.full_path
+    }
 }
 
 impl DefId {

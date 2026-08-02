@@ -1412,6 +1412,20 @@ run_accept_expect_status "actor_ctor_init_coexist" 110
 # Exit code 42 proves the actor ran its full lifecycle (spawn → start → messages → stop).
 run_accept_expect_status "actor_on_stop" 42
 
+# Regression: owned actor-state writes in default initialization, explicit
+# init, on(start), an ordinary receive handler, and on(stop). Lifecycle phases
+# have no same-state scheduler transaction, while receive still validates one.
+# Malloc scribbling makes an extra/missed ownership handoff or double release
+# deterministic on the native teardown path.
+run_accept_expect_status "actor_lifecycle_state_writes" 3 \
+  MallocScribble=1 MallocPreScribble=1
+
+# Lifecycle phase permission is not panic-containment permission. Direct
+# on(start) runs synchronously in the spawning main context: its state write is
+# valid, then its panic keeps the established module-fatal exit-101 policy.
+run_accept_expect_panic "actor_start_panic_module_fatal" \
+  "intentional on(start) panic"
+
 # Multiple #[on(stop)] hooks on the same actor must compile and run without
 # ActorHandlerSymbolCollision. Previously the second hook would collide with
 # the first at MIR lowering. Exit 0 = Sequencer(start: 0).value() = 0.
@@ -1670,6 +1684,12 @@ run_accept_expect_status "supervisor_fungible_dead_child_select" 46
 # which the sibling supervised_actor_init_block (empty init, reads the template)
 # cannot. (No WASM check: supervisor fixtures are HIR-gated off wasm32.)
 run_accept_expect_status "supervisor_lifecycle_fires" 220
+
+# The lifecycle phase discriminator must also hold on the supervisor wrapper
+# used for both the initial incarnation and restart. The child writes in init,
+# on(start), a normal receive handler, and on(stop); 22 = 11 + 11 across the
+# restart, with stop executing during supervisor teardown.
+run_accept_expect_status "supervisor_lifecycle_phase_writes" 22
 
 # Discarded link()/monitor() calls lower to hew_actor_link / hew_actor_monitor
 # with dest=None and reach codegen.

@@ -1549,7 +1549,7 @@ mod tests {
         HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule,
         HirVarSelfMethodTarget,
     };
-    use crate::{IntentKind, ValueClass};
+    use crate::{IntentKind, TypeClassTable, ValueClass};
     use hew_types::{CallTarget, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
 
     fn unit_expr(ids: &mut IdGen) -> HirExpr {
@@ -1607,7 +1607,7 @@ mod tests {
             root_item_ids: HashSet::default(),
             caller_visible_param_projections: HashSet::default(),
             wire_layouts: Arc::new(HashMap::new()),
-            type_classes: HashMap::new(),
+            type_classes: TypeClassTable::default(),
             monomorphisations: Vec::new(),
             call_site_type_args: HashMap::new(),
             vec_generic_element_abi: HashMap::new(),

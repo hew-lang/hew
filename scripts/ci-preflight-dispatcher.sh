@@ -35,6 +35,7 @@ command_timeout_floor() {
         # headroom and matches the compiler-pipeline lane tier, so that lane's
         # effective budget is unchanged.
         "make test-compiler-pipeline") echo 600 ;;
+        "make test-opaque-resource-lifecycle-matrix-external") echo 600 ;;
         "make test-vertical-slice") echo 240 ;;
         "make test-pkg-import") echo 60 ;;
         "make fuzz-oracle") echo 210 ;;
@@ -93,6 +94,8 @@ CI_REQUIRED_CHECKS=(
     "runtime-poison-safe-lint (ci.yml: make runtime-poison-safe-lint)	make lint"
     "FreeBSD workflow contract (ci.yml required Clippy & format job)	make freebsd-workflow-contract-check"
     "nextest workspace ci (release-gate.yml: nextest run --workspace --profile ci)	make test"
+    "Compiler pipeline + local opaque lifecycle matrix (ci.yml: make test-compiler-pipeline)	make test-compiler-pipeline"
+    "External opaque lifecycle matrix (ci.yml: make test-opaque-resource-lifecycle-matrix-external)	make test-opaque-resource-lifecycle-matrix-external"
     "playground-check (release-gate.yml: make playground-check)	make playground-check"
     "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"
     "O2 differential-exec parity gate (ci.yml: make test-o2-differential)	make test-o2-differential"

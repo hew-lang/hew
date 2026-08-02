@@ -162,15 +162,6 @@ const MONITOR_REF_HEW: &str = include_str!(concat!(env!("OUT_DIR"), "/monitor_re
 ///
 const FAILURE_HEW: &str = include_str!("../../../std/failure.hew");
 
-/// Embedded source for the built-in `LookupError` enum used as the `Err`
-/// variant of `Node::lookup<T>(name) -> Result<RemotePid<T>, LookupError>`.
-///
-/// Inline tests do not flow through the import resolver, so this stdlib
-/// surface is registered directly into the checker via
-/// `register_stdlib_hew_items` the same way `LinkError` / `CrashAction`
-/// are bootstrapped from `MONITOR_REF_HEW` / `FAILURE_HEW`.
-const LOOKUP_ERROR_HEW: &str = include_str!("../../../std/builtins.hew");
-
 /// Stdlib-floor modules permitted to DECLARE `#[intrinsic("…")]` functions.
 ///
 /// A605 (ratified): the `#[intrinsic]` surface is compiler-internal-only — no
@@ -312,8 +303,12 @@ fn imported_source_result_matches(
 
 fn lifecycle_description(candidate: &OpaqueResourceLifecycleCandidate) -> String {
     format!(
-        "release={}, depth={:?}, result={:?}, retention={:?}",
+        "resource={}, close={}, release={}({})@{}, depth={:?}, result={:?}, retention={:?}",
+        candidate.resource_declaration.full_path(),
+        candidate.close_declaration.full_path(),
         candidate.release_symbol,
+        candidate.release_declaration.full_path(),
+        candidate.release_param_index,
         candidate.discharge_depth,
         candidate.result_ownership,
         candidate.result_retention
@@ -324,7 +319,11 @@ fn lifecycle_matches(
     established: &OpaqueResourceLifecycleCandidate,
     candidate: &OpaqueResourceLifecycleCandidate,
 ) -> bool {
-    established.release_symbol == candidate.release_symbol
+    established.resource_declaration == candidate.resource_declaration
+        && established.close_declaration == candidate.close_declaration
+        && established.release_declaration == candidate.release_declaration
+        && established.release_symbol == candidate.release_symbol
+        && established.release_param_index == candidate.release_param_index
         && established.discharge_depth == candidate.discharge_depth
         && established.result_ownership == candidate.result_ownership
         && established.result_retention == candidate.result_retention
@@ -355,17 +354,20 @@ fn release_signature_mismatch(
         ));
     }
 
-    let matching_positions = release_contract
+    let matching_positions: Vec<_> = release_contract
         .params
         .iter()
         .zip(release_contract.resource_param_types)
-        .filter(|(mode, nominal)| {
+        .enumerate()
+        .filter(|(_, (mode, nominal))| {
             **mode == ExternParamOwnership::Consume && **nominal == resource_type
         })
-        .count();
-    if matching_positions != 1 {
+        .map(|(index, _)| index)
+        .collect();
+    if matching_positions.len() != 1 {
         return Some(format!(
-            "release contract must consume exactly one {resource_type}, found {matching_positions}"
+            "release contract must consume exactly one {resource_type}, found {}",
+            matching_positions.len()
         ));
     }
 
@@ -403,8 +405,48 @@ enum SourceCandidateOutcome {
     },
 }
 
+fn validated_resource_candidate(
+    typed_result: crate::ffi_contracts::ExternOwnedResourceResult,
+    release_contract: &crate::ffi_contracts::ExternOwnershipContract,
+    producer_declaration: &SourceExternDeclaration,
+    release_declaration: &SourceExternDeclaration,
+    close_declaration: crate::DefId,
+    producer_symbol: &str,
+) -> OpaqueResourceLifecycleCandidate {
+    OpaqueResourceLifecycleCandidate {
+        resource_declaration: crate::DefId::new(typed_result.resource_type),
+        resource_type: typed_result.resource_type.to_string(),
+        owner_module: typed_result.owner_module.to_string(),
+        close_declaration,
+        release_declaration: release_declaration.declaration.clone(),
+        release_symbol: typed_result.release_symbol.to_string(),
+        release_param_index: release_contract
+            .params
+            .iter()
+            .zip(release_contract.resource_param_types)
+            .position(|(mode, nominal)| {
+                *mode == crate::ffi_contracts::ExternParamOwnership::Consume
+                    && *nominal == typed_result.resource_type
+            })
+            .expect("validated release contract has one consuming resource position"),
+        discharge_depth: typed_result.discharge_depth,
+        result_ownership: typed_result.result,
+        result_retention: typed_result.result_retention,
+        producer_symbols: [producer_symbol.to_string()].into_iter().collect(),
+        producer_declarations: [producer_declaration.declaration.clone()]
+            .into_iter()
+            .collect(),
+        producer_modules: producer_declaration
+            .declaring_module
+            .iter()
+            .cloned()
+            .collect(),
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "resource candidates join declaration, contract, import, and signature authorities"
 )]
 fn derive_source_resource_candidate(
@@ -415,6 +457,7 @@ fn derive_source_resource_candidate(
     fn_sigs: &HashMap<String, FnSig>,
     module_import_bindings: &HashMap<(Option<String>, String), String>,
     import_type_name_aliases: &HashMap<(Option<String>, String), String>,
+    impl_method_declaration_ids: &HashMap<String, crate::DefId>,
     contracts_by_symbol: &std::collections::BTreeMap<
         &str,
         &crate::ffi_contracts::ExternOwnershipContract,
@@ -444,6 +487,9 @@ fn derive_source_resource_candidate(
     };
 
     let Some(producer_signature) = fn_sigs.get(&producer_declaration.signature_key) else {
+        if producer_declaration.declaring_module.as_deref() != Some(typed_result.owner_module) {
+            return SourceCandidateOutcome::Irrelevant;
+        }
         return failure(
             OpaqueResourceLifecycleConflictKind::ProducerResultMismatch {
                 actual: "<missing source signature>".to_string(),
@@ -457,6 +503,13 @@ fn derive_source_resource_candidate(
         module_import_bindings,
         import_type_name_aliases,
     ) {
+        if producer_declaration.declaring_module.as_deref() != Some(typed_result.owner_module) {
+            // A direct importer may reuse the C endpoint spelling for an
+            // unrelated declaration. Until its result resolves to the exact
+            // owner nominal it has no standing to conflict-kill that owner's
+            // lifecycle.
+            return SourceCandidateOutcome::Irrelevant;
+        }
         return failure(
             OpaqueResourceLifecycleConflictKind::ProducerResultMismatch {
                 actual: format!("{:?}", producer_signature.return_type),
@@ -508,20 +561,22 @@ fn derive_source_resource_candidate(
         return failure(OpaqueResourceLifecycleConflictKind::ReleaseSignatureMismatch { detail });
     }
 
-    SourceCandidateOutcome::Candidate(OpaqueResourceLifecycleCandidate {
-        resource_type: typed_result.resource_type.to_string(),
-        owner_module: typed_result.owner_module.to_string(),
-        release_symbol: typed_result.release_symbol.to_string(),
-        discharge_depth: typed_result.discharge_depth,
-        result_ownership: typed_result.result,
-        result_retention: typed_result.result_retention,
-        producer_symbols: [producer_symbol.to_string()].into_iter().collect(),
-        producer_modules: producer_declaration
-            .declaring_module
-            .iter()
-            .cloned()
-            .collect(),
-    })
+    let close_dispatch_key = format!("{}::close", typed_result.resource_type);
+    let Some(close_declaration) = impl_method_declaration_ids
+        .get(&close_dispatch_key)
+        .cloned()
+    else {
+        return failure(OpaqueResourceLifecycleConflictKind::CloseDeclarationMissing);
+    };
+
+    SourceCandidateOutcome::Candidate(validated_resource_candidate(
+        typed_result,
+        release_contract,
+        producer_declaration,
+        release_declaration,
+        close_declaration,
+        producer_symbol,
+    ))
 }
 
 fn source_declaration_matches_endpoint(
@@ -540,6 +595,7 @@ fn derive_opaque_resource_candidate_graph(
     fn_sigs: &HashMap<String, FnSig>,
     module_import_bindings: &HashMap<(Option<String>, String), String>,
     import_type_name_aliases: &HashMap<(Option<String>, String), String>,
+    impl_method_declaration_ids: &HashMap<String, crate::DefId>,
     contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
 ) -> OpaqueResourceCandidateGraph {
     let contracts_by_symbol: std::collections::BTreeMap<
@@ -565,6 +621,7 @@ fn derive_opaque_resource_candidate_graph(
                 fn_sigs,
                 module_import_bindings,
                 import_type_name_aliases,
+                impl_method_declaration_ids,
                 &contracts_by_symbol,
             ) {
                 SourceCandidateOutcome::Irrelevant => continue,
@@ -573,7 +630,7 @@ fn derive_opaque_resource_candidate_graph(
                     release_symbol,
                     kind,
                 } => {
-                    conflicted_types.insert(resource_type.clone());
+                    conflicted_types.insert(crate::DefId::new(resource_type.clone()));
                     graph.conflicts.push(OpaqueResourceLifecycleConflict {
                         resource_type,
                         producer_symbol: (*producer_symbol).to_string(),
@@ -584,8 +641,8 @@ fn derive_opaque_resource_candidate_graph(
                 }
                 SourceCandidateOutcome::Candidate(candidate) => candidate,
             };
-            let resource_type = candidate.resource_type.clone();
-            match graph.candidates.entry(resource_type.clone()) {
+            let resource_declaration = candidate.resource_declaration.clone();
+            match graph.candidates.entry(resource_declaration.clone()) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
                     entry.insert(candidate);
                 }
@@ -598,6 +655,10 @@ fn derive_opaque_resource_candidate_graph(
                         .insert((*producer_symbol).to_string());
                     entry
                         .get_mut()
+                        .producer_declarations
+                        .insert(producer_declaration.declaration.clone());
+                    entry
+                        .get_mut()
                         .producer_modules
                         .extend(candidate.producer_modules);
                 }
@@ -605,7 +666,7 @@ fn derive_opaque_resource_candidate_graph(
                     let established = lifecycle_description(entry.get());
                     let conflicting = lifecycle_description(&candidate);
                     graph.conflicts.push(OpaqueResourceLifecycleConflict {
-                        resource_type: resource_type.clone(),
+                        resource_type: candidate.resource_type.clone(),
                         producer_symbol: (*producer_symbol).to_string(),
                         release_symbol: candidate.release_symbol.clone(),
                         kind: OpaqueResourceLifecycleConflictKind::MultipleProducerLifecycle {
@@ -613,14 +674,14 @@ fn derive_opaque_resource_candidate_graph(
                             conflicting,
                         },
                     });
-                    conflicted_types.insert(resource_type);
+                    conflicted_types.insert(resource_declaration);
                 }
             }
         }
     }
 
-    for resource_type in conflicted_types {
-        graph.candidates.remove(&resource_type);
+    for resource_declaration in conflicted_types {
+        graph.candidates.remove(&resource_declaration);
     }
     graph.conflicts.sort_by(|left, right| {
         (
@@ -842,18 +903,8 @@ impl Checker {
     }
 
     pub(super) fn canonical_owned_handle_type_name(&self, type_name: &str) -> Option<String> {
-        if self.module_registry.drop_func_for(type_name).is_some()
-            || self.module_registry.is_drop_type(type_name)
-            || self.module_registry.is_handle_type(type_name)
-        {
-            return Some(type_name.to_string());
-        }
-
-        let qualified = self.module_registry.qualify_handle_type(type_name)?;
-        (self.module_registry.drop_func_for(&qualified).is_some()
-            || self.module_registry.is_drop_type(&qualified)
-            || self.module_registry.is_handle_type(&qualified))
-        .then_some(qualified)
+        self.module_registry
+            .canonical_owned_type_identity(type_name)
     }
 
     pub(super) fn registered_type_def_name(&self, name: &str) -> Option<String> {
@@ -1208,11 +1259,8 @@ impl Checker {
                     name: "T".to_string(),
                     args: vec![],
                 }),
-                Ty::Named {
-                    builtin: None,
-                    name: "LookupError".to_string(),
-                    args: vec![],
-                },
+                crate::builtin_enums::monomorphic_builtin_enum_ty("LookupError")
+                    .expect("generated builtin enum catalog must contain LookupError"),
             ),
         );
 
@@ -1325,11 +1373,11 @@ impl Checker {
         // from `std/builtins.hew`, plus declarative string/bytes FFI receiver
         // methods from `std/string.hew` and `std/io.hew`.
         self.register_builtins_hew_impls();
+        self.register_builtin_error_prelude_bindings();
         if !self.module_registry.has_search_paths() {
             self.register_builtin_closable_surface();
             self.register_builtin_failure_surface();
             self.register_builtin_monitor_ref_surface();
-            self.register_builtin_lookup_error_surface();
         }
     }
 
@@ -1446,10 +1494,10 @@ impl Checker {
                     // Compiler-carrier builtins (`LocalPid`, `NodeId`, ...)
                     // retain the catalog's canonical identity; this source file
                     // supplies their declarative surface but does not turn them
-                    // into `std.builtins.*` user nominals. `LookupError` is also
-                    // reused by the dedicated `std.lookup_error` bootstrap,
-                    // which alone owns its prelude publication.
-                    if td.name != "LookupError" && crate::lookup_builtin_type(&td.name).is_none() {
+                    // into `std.builtins.*` user nominals. Builtin error enums
+                    // that need an explicit bare prelude binding are published
+                    // separately after every declaration has its true owner.
+                    if crate::lookup_builtin_type(&td.name).is_none() {
                         self.record_published_bare_type(
                             &td.name,
                             &format!("std.builtins.{}", td.name),
@@ -1592,7 +1640,19 @@ impl Checker {
             parsed.errors
         );
         if parsed.errors.is_empty() {
-            let items: Vec<_> = parsed.program.items.into_iter().collect();
+            // The generated projection carries LinkError's declaration so its
+            // ABI surface is source-derived, but that declaration is owned by
+            // std/builtins.hew and was already registered by
+            // register_builtins_hew_impls. Never re-register it under the
+            // std.link_monitor owner used by the rest of this projection.
+            let items: Vec<_> = parsed
+                .program
+                .items
+                .into_iter()
+                .filter(
+                    |(item, _)| !matches!(item, Item::TypeDecl(decl) if decl.name == "LinkError"),
+                )
+                .collect();
             self.register_stdlib_hew_items(
                 "link_monitor",
                 "std.link_monitor",
@@ -1644,39 +1704,22 @@ impl Checker {
         }
     }
 
-    /// Register the built-in `LookupError` enum so `Node::lookup<T>` callers
-    /// can pattern-match `Err(LookupError::NotFound)` without an explicit
-    /// import (inline-test parity with `LinkError` / `CrashAction`).
-    fn register_builtin_lookup_error_surface(&mut self) {
-        let identity = "module:std::lookup_error";
-        if self.registered_stdlib_hew_sources.contains(identity) {
-            return;
-        }
-        self.registered_stdlib_hew_sources
-            .insert(identity.to_string());
-        let parsed = hew_parser::parse(LOOKUP_ERROR_HEW);
-        debug_assert!(
-            parsed.errors.is_empty(),
-            "std/builtins.hew::LookupError failed to parse: {:?}",
-            parsed.errors
-        );
-        if parsed.errors.is_empty() {
-            let items: Vec<_> = parsed
-                .program
-                .items
-                .into_iter()
-                .filter(|(item, _)| {
-                    matches!(
-                        item,
-                        hew_parser::ast::Item::TypeDecl(decl) if decl.name == "LookupError"
-                    )
-                })
-                .collect();
-            self.register_stdlib_hew_items(
-                "lookup_error",
-                "std.lookup_error",
-                &items,
-                StdlibBarePublication::Prelude,
+    /// Publish the import-free spellings of std.builtins-owned error enums.
+    /// Their declarations were already registered by
+    /// `register_builtins_hew_impls`; this adds only lexical prelude bindings
+    /// and must never mint a second synthetic source owner.
+    fn register_builtin_error_prelude_bindings(&mut self) {
+        for name in ["LinkError", "LookupError"] {
+            let canonical = format!("std.builtins.{name}");
+            debug_assert!(
+                self.type_defs.contains_key(&canonical),
+                "builtins prelude binding requires its source declaration: {canonical}"
+            );
+            self.known_types.insert(name.to_string());
+            self.record_published_bare_type(name, &canonical);
+            self.unqualified_to_module.insert(
+                (self.current_module.clone(), name.to_string()),
+                "std.builtins".to_string(),
             );
         }
     }
@@ -2310,7 +2353,12 @@ impl Checker {
                                 s.name.clone()
                             })
                             .collect();
-                        self.trait_super.insert(td.name.clone(), super_names);
+                        self.trait_super
+                            .insert(td.name.clone(), super_names.clone());
+                        if let Some(module) = self.current_module.as_deref() {
+                            self.trait_super
+                                .insert(format!("{module}.{}", td.name), super_names);
+                        }
                     }
                     // Harvest `#[lang_item("…")]` attributes into the
                     // lang-item registry so downstream passes (HIR f-string
@@ -3163,7 +3211,14 @@ impl Checker {
         // carries opaque types imported via `use module::*`; user-declared
         // opaques in the same file are NOT registered there.
         if td.is_opaque {
+            let canonical_name = self
+                .current_module_identity()
+                .map_or_else(|| td.name.clone(), |module| format!("{module}.{}", td.name));
+            // Keep the defining module's lexical spelling as its own identity
+            // too. Lookups remain exact, so this cannot authorize a foreign
+            // qualified same-leaf declaration.
             self.user_opaque_type_names.insert(td.name.clone());
+            self.user_opaque_type_names.insert(canonical_name);
         }
 
         let kind = match td.kind {
@@ -3388,9 +3443,12 @@ impl Checker {
                 args: vec![],
             })
             .collect();
+        let declaration_name = self
+            .current_module_identity()
+            .map_or_else(|| rd.name.clone(), |module| format!("{module}.{}", rd.name));
         let return_type = Ty::Named {
             builtin: None,
-            name: rd.name.clone(),
+            name: declaration_name.clone(),
             args: enum_return_args,
         };
 
@@ -3424,16 +3482,20 @@ impl Checker {
                 // Register a constructor function so `R(1, 2)` resolves via
                 // `check_call`.  The `fields` map intentionally stays empty —
                 // `.0`/`.1` access is not permitted on tuple records (A-D2).
-                self.fn_sigs.insert(
-                    rd.name.clone(),
-                    FnSig {
-                        type_params: type_param_names.clone(),
-                        type_param_bounds: type_param_bounds.clone(),
-                        params: param_tys,
-                        return_type: return_type.clone(),
-                        ..FnSig::default()
-                    },
-                );
+                let signature = FnSig {
+                    type_params: type_param_names.clone(),
+                    type_param_bounds: type_param_bounds.clone(),
+                    params: param_tys,
+                    return_type: return_type.clone(),
+                    ..FnSig::default()
+                };
+                // The bare key remains the lexical constructor spelling for
+                // the defining module. The exact declaration key is the
+                // semantic signature authority for imported/collision paths.
+                self.fn_sigs.insert(rd.name.clone(), signature.clone());
+                if declaration_name != rd.name {
+                    self.fn_sigs.insert(declaration_name, signature);
+                }
             }
         }
 
@@ -6740,6 +6802,29 @@ impl Checker {
         // declaration must not become a live intrinsic dispatch target.
     }
 
+    fn register_registry_source_intrinsic_declarations(
+        &mut self,
+        module_owner: &str,
+        items: &[Spanned<Item>],
+    ) {
+        for (item, _) in items {
+            let Item::Function(function) = item else {
+                continue;
+            };
+            let Some(intrinsic_key) = &function.intrinsic else {
+                continue;
+            };
+            let saved_importer_module = self.current_module.replace(module_owner.to_string());
+            self.register_intrinsic_declaration(
+                format!("{module_owner}.{}", function.name),
+                intrinsic_key,
+                &function.name,
+                function,
+            );
+            self.current_module = saved_importer_module;
+        }
+    }
+
     fn validate_receiver_identity_method(
         &mut self,
         type_name: &str,
@@ -7575,12 +7660,23 @@ impl Checker {
             return;
         };
         for super_name in supers.clone() {
-            if let Some(super_info) = self.trait_defs.get(&super_name) {
+            let resolved_super = if self.trait_defs.contains_key(&super_name) {
+                super_name
+            } else if let Some((declaring_module, _)) = trait_key.rsplit_once('.') {
+                // Early module registration can retain a super edge's source
+                // spelling before the import binding is published. Resolve it
+                // in the declaring trait's exact module now; never consult the
+                // final importer's bare namespace or a suffix/leaf retry.
+                self.resolve_super_trait_edge(declaring_module, &super_name)
+            } else {
+                super_name
+            };
+            if let Some(super_info) = self.trait_defs.get(&resolved_super) {
                 for m in &super_info.methods {
                     known.insert(m.name.clone());
                 }
             }
-            self.collect_super_trait_method_names(&super_name, known, visited);
+            self.collect_super_trait_method_names(&resolved_super, known, visited);
         }
     }
 
@@ -7710,7 +7806,27 @@ impl Checker {
             return;
         };
 
-        let provided: HashSet<&str> = impl_methods.iter().map(|m| m.name.as_str()).collect();
+        let type_identity = self
+            .canonical_primitive_or_builtin_key_for_impl_name(type_name)
+            .unwrap_or_else(|| {
+                self.current_module
+                    .as_ref()
+                    .filter(|_| !type_name.contains('.'))
+                    .map_or_else(
+                        || type_name.to_string(),
+                        |module| format!("{module}.{type_name}"),
+                    )
+            });
+        let mut provided: HashSet<String> = impl_methods.iter().map(|m| m.name.clone()).collect();
+        // Split trait surfaces are cumulative on one exact nominal identity.
+        // This is how a subtrait that redeclares inherited methods is satisfied
+        // by the already-registered supertrait impl for the same type. Never
+        // aggregate by the type leaf: sibling modules may both define `Value`.
+        for ((implemented_type, _), methods) in &self.trait_impl_method_names {
+            if implemented_type == &type_identity {
+                provided.extend(methods.iter().cloned());
+            }
+        }
 
         // INHERITED method names: every method declared by a (transitively
         // reachable) SUPERTRAIT of this trait. A sub-trait may REDECLARE its
@@ -7734,7 +7850,7 @@ impl Checker {
         // block carries that obligation).
         let mut missing: Vec<String> = required
             .iter()
-            .filter(|name| !provided.contains(name.as_str()))
+            .filter(|name| !provided.contains(*name))
             .filter(|name| !inherited.contains(name.as_str()))
             .cloned()
             .collect();
@@ -8045,16 +8161,28 @@ impl Checker {
         };
 
         // The trait's defining module anchors how a bare type name written in
-        // the trait declaration is canonicalized. A local/root trait has no
-        // owner module (`None`), so its bare sibling-type names stay bare. For an
+        // the trait declaration is canonicalized. Imported traits carry that
+        // owner explicitly. A trait local to a non-root module deliberately
+        // resolves as `is_local`, but its sibling type names still belong to
+        // the exact current module; only a root-local trait has no owner. For an
         // inline supermethod this is the SUPERTRAIT's owner (its declaration's
         // bare sibling types belong to its module), not the sub-trait's.
-        let trait_owner_module = identity.owner.as_ref().map(|owner| {
-            self.module_import_bindings
-                .get(&(self.current_module.clone(), owner.clone()))
-                .cloned()
-                .unwrap_or_else(|| owner.clone())
-        });
+        let trait_owner_module = identity.owner.as_ref().map_or_else(
+            || {
+                identity
+                    .is_local
+                    .then(|| self.current_module.clone())
+                    .flatten()
+            },
+            |owner| {
+                Some(
+                    self.module_import_bindings
+                        .get(&(self.current_module.clone(), owner.clone()))
+                        .cloned()
+                        .unwrap_or_else(|| owner.clone()),
+                )
+            },
+        );
 
         // The DECLARING trait's canonical key drives `Self::Assoc` projection
         // and associated-type-binding lookup. For an inline supermethod this is
@@ -8474,7 +8602,10 @@ impl Checker {
             if builtin.is_collection()
                 || matches!(
                     builtin,
-                    BuiltinType::Generator | BuiltinType::AsyncGenerator
+                    BuiltinType::Generator
+                        | BuiltinType::AsyncGenerator
+                        | BuiltinType::LocalPid
+                        | BuiltinType::RemotePid
                 )
             {
                 return Some(builtin.canonical_name().to_string());
@@ -8491,12 +8622,21 @@ impl Checker {
         Self::canonical_primitive_or_builtin_key_from_name(name).or_else(|| {
             self.resolved_builtin_type(name)
                 .filter(|builtin| {
-                    matches!(builtin, BuiltinType::VecIter | BuiltinType::HashMapIter)
+                    matches!(
+                        builtin,
+                        BuiltinType::VecIter
+                            | BuiltinType::HashMapIter
+                            | BuiltinType::LocalPid
+                            | BuiltinType::RemotePid
+                    )
                 })
                 .map(|builtin| match builtin {
                     BuiltinType::VecIter => "std.builtins.VecIter".to_string(),
                     BuiltinType::HashMapIter => "std.builtins.HashMapIter".to_string(),
-                    _ => unreachable!("cursor filter admits only synthetic cursors"),
+                    BuiltinType::LocalPid | BuiltinType::RemotePid => {
+                        builtin.canonical_name().to_string()
+                    }
+                    _ => unreachable!("filter admits only compiler carrier builtins"),
                 })
         })
     }
@@ -8874,6 +9014,7 @@ impl Checker {
             self.fn_sigs.insert(key.clone(), sig);
             self.source_extern_declarations
                 .push(SourceExternDeclaration {
+                    declaration: crate::DefId::new(key.clone()),
                     symbol: source_symbol,
                     symbol_template: source_symbol_template,
                     signature_key: key.clone(),
@@ -8921,6 +9062,7 @@ impl Checker {
             fn_sigs,
             &self.module_import_bindings,
             &self.import_type_name_aliases,
+            &self.impl_method_declaration_ids,
             crate::ffi_contracts::FFI_OWNERSHIP_CONTRACTS,
         )
     }
@@ -8936,6 +9078,7 @@ impl Checker {
             fn_sigs,
             &self.module_import_bindings,
             &self.import_type_name_aliases,
+            &self.impl_method_declaration_ids,
             contracts,
         )
     }
@@ -8964,18 +9107,20 @@ impl Checker {
 
         // These codegen-intercepted signatures are part of the standard
         // channel source implementation, not a name-based ambient builtin.
-        // A user module may define `channel.Receiver` or even use the full
-        // `std.channel.channel` path; grant the builtin discriminator only
-        // when the module graph proved this exact owner came from the shipped
-        // stdlib source. The body annotations then share the same nominal
-        // identity as these synthetic signatures.
-        let canonical_channel_source = self.current_module.as_deref()
-            == Some("std.channel.channel")
-            && self
-                .canonical_std_module_sources
-                .contains("std.channel.channel");
+        // A user module may define `channel.Receiver`; grant the builtin
+        // discriminator only when the module graph proved the canonical
+        // `std.channel` owner came from the shipped stdlib source. The body
+        // annotations then share the same nominal identity as these synthetic
+        // signatures.
+        let canonical_channel_source = self.current_module.as_deref().is_some_and(|module| {
+            module == "std.channel" && self.canonical_std_module_sources.contains(module)
+        });
         let receiver_ty = if canonical_channel_source {
-            Ty::builtin_named(BuiltinType::Receiver, Vec::new())
+            Ty::Named {
+                builtin: Some(BuiltinType::Receiver),
+                name: "std.channel.Receiver".to_string(),
+                args: Vec::new(),
+            }
         } else {
             Ty::Named {
                 builtin: None,
@@ -8984,7 +9129,11 @@ impl Checker {
             }
         };
         let sender_ty = if canonical_channel_source {
-            Ty::builtin_named(BuiltinType::Sender, Vec::new())
+            Ty::Named {
+                builtin: Some(BuiltinType::Sender),
+                name: "std.channel.Sender".to_string(),
+                args: Vec::new(),
+            }
         } else {
             Ty::Named {
                 builtin: None,
@@ -9065,12 +9214,21 @@ impl Checker {
                     let resolved_source_path = info.source_path.clone();
                     let registry_source_items = info.source_items.clone();
 
-                    let canonical_short = module_path
-                        .rsplit("::")
+                    let requested_owner = module_path.replace("::", ".");
+                    let canonical_owner = resolved_source_path.as_ref().map_or_else(
+                        || requested_owner.clone(),
+                        |source_path| {
+                            crate::module_registry::canonical_source_module_identity(
+                                &requested_owner,
+                                std::slice::from_ref(source_path),
+                            )
+                        },
+                    );
+                    let canonical_short = canonical_owner
+                        .rsplit('.')
                         .next()
-                        .unwrap_or(&module_path)
+                        .unwrap_or(&canonical_owner)
                         .to_string();
-                    let canonical_owner = module_path.replace("::", ".");
                     if let Some(source_path) = resolved_source_path {
                         self.record_canonical_std_module_source(
                             &canonical_owner,
@@ -9095,8 +9253,18 @@ impl Checker {
                         let accepts_kwargs = module_path == "std::misc::log"
                             && Self::LOG_KWARGS_FUNCTIONS.contains(&func.name.as_str());
                         let sig = FnSig {
-                            params: func.params,
-                            return_type: func.return_type,
+                            params: func
+                                .params
+                                .iter()
+                                .map(|ty| {
+                                    self.module_registry
+                                        .canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                })
+                                .collect(),
+                            return_type: self.module_registry.canonicalize_registry_signature_ty(
+                                &func.return_type,
+                                &canonical_owner,
+                            ),
                             accepts_kwargs,
                             ..FnSig::default()
                         };
@@ -9111,12 +9279,28 @@ impl Checker {
                         let sig = FnSig {
                             type_params: wfn.type_params,
                             type_param_bounds: wfn.type_param_bounds,
-                            params: wfn.params,
-                            return_type: wfn.return_type,
+                            params: wfn
+                                .params
+                                .iter()
+                                .map(|ty| {
+                                    self.module_registry
+                                        .canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                })
+                                .collect(),
+                            return_type: self.module_registry.canonicalize_registry_signature_ty(
+                                &wfn.return_type,
+                                &canonical_owner,
+                            ),
                             accepts_kwargs,
                             ..FnSig::default()
                         };
-                        self.fn_sigs.insert(wfn.name, sig);
+                        // Wrapper functions belong to the imported module;
+                        // publishing them under a bare leaf here would make
+                        // `import m::{ f as alias }` accidentally retain an
+                        // ambient `f` binding. Selected bare bindings are
+                        // published later from the resolved source surface.
+                        self.fn_sigs
+                            .insert(format!("{canonical_owner}.{}", wfn.name), sig);
                     }
 
                     // Register module and clean names
@@ -9138,7 +9322,7 @@ impl Checker {
                         // not 1 param (the extern `hew_log_set_level(level)` sig).
                         let key = format!("{canonical_owner}.{method}");
                         let source_sig_exists = self.fn_sigs.contains_key(&key);
-                        let wrapper_sig = self.fn_sigs.get(method.as_str()).cloned();
+                        let wrapper_sig = self.fn_sigs.get(&key).cloned();
                         let sig = wrapper_sig
                             .clone()
                             .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
@@ -9177,19 +9361,21 @@ impl Checker {
                     }
                     for resource in &resource_wrapper_types {
                         self.registry.register_resource_type(resource.clone());
+                        if let Some((_, leaf)) = resource.rsplit_once('.') {
+                            self.registry
+                                .register_resource_type(format!("{canonical_owner}.{leaf}"));
+                        }
                     }
 
-                    // Process resolved Hew source items from stdlib modules that ship
-                    // alongside their C/Rust bindings so trait methods stay visible.
-                    // Registry loading normally retains only ABI summaries.
-                    // The intrinsic floor is the intentional exception: its
-                    // source declarations carry compiler metadata that the
-                    // summary cannot represent. Keep all other registry
-                    // modules on their established publication path.
+                    // A selected named/glob import needs the Hew declaration,
+                    // not just the registry ABI summary: it is the authority
+                    // for the bare binding's original source identity. Plain
+                    // module imports retain the established registry path so
+                    // their module-level capability classification cannot be
+                    // perturbed by unrelated internal source declarations.
                     let resolved_items = decl.resolved_items.as_ref().or_else(|| {
-                        (is_intrinsic_floor_module(Some(&canonical_owner))
-                            && self.canonical_std_module_sources.contains(&canonical_owner))
-                        .then_some(&registry_source_items)
+                        (decl.spec.is_some() && !registry_source_items.is_empty())
+                            .then_some(&registry_source_items)
                     });
                     if let Some(resolved_items) = resolved_items.filter(|items| !items.is_empty()) {
                         let module_full_path = canonical_owner.clone();
@@ -9200,6 +9386,19 @@ impl Checker {
                             &module_full_path,
                             resolved_items,
                             StdlibBarePublication::Import(&decl.spec),
+                        );
+                    } else if decl.spec.is_none() && !registry_source_items.is_empty() {
+                        // A plain module import intentionally does not publish
+                        // the module's full source declaration surface, but
+                        // compiler intrinsic metadata is attached to those
+                        // exact parsed declarations and cannot be reconstructed
+                        // from the ABI wrapper summary. Publish only that
+                        // metadata under the already-proven canonical source
+                        // owner; ordinary functions/types remain on the
+                        // established registry path.
+                        self.register_registry_source_intrinsic_declarations(
+                            &canonical_owner,
+                            &registry_source_items,
                         );
                     }
 
@@ -9310,7 +9509,11 @@ impl Checker {
                     .module_alias
                     .clone()
                     .unwrap_or_else(|| decl.path.last().expect("import path is non-empty").clone());
-                let full_dot_path = decl.path.join(".");
+                let requested_owner = decl.path.join(".");
+                let full_dot_path = crate::module_registry::canonical_source_module_identity(
+                    &requested_owner,
+                    &decl.resolved_source_paths,
+                );
                 // `resolved_items` can be supplied directly by a module
                 // loader without a separately traversed graph node. Preserve
                 // the same source-derived authority before publishing its
@@ -9329,7 +9532,7 @@ impl Checker {
                 // owner; it never grants a short-name fallback.
                 self.module_import_bindings.insert(
                     (self.current_module.clone(), short.clone()),
-                    decl.path.join("."),
+                    full_dot_path.clone(),
                 );
                 if let Some(span) = import_span {
                     self.import_spans.insert(
@@ -9345,7 +9548,18 @@ impl Checker {
                 // definition errors.  The `registered_stdlib_hew_sources` set tracks
                 // by canonical `module_path` so all `import std::fs` ImportDecls
                 // collapse to the same key.
-                if !self.stdlib_hew_source_already_registered(decl, &module_path) {
+                if self.stdlib_hew_source_already_registered(decl, &module_path) {
+                    // Global declaration registration is deliberately deduped,
+                    // but each importing scope still needs its own selected
+                    // bare bindings. This path is reached when a transitive
+                    // import registered the source before a root named import.
+                    self.publish_imported_hew_bindings(
+                        &short,
+                        &full_dot_path,
+                        resolved_items,
+                        StdlibBarePublication::Import(&decl.spec),
+                    );
+                } else {
                     // The full dot-path (e.g. "subpkg.helper") is the declaring-module
                     // identity used in access-check side tables.
                     self.register_user_module(&short, &full_dot_path, resolved_items, &decl.spec);
@@ -9397,12 +9611,7 @@ impl Checker {
         publication: StdlibBarePublication<'_>,
     ) {
         if self.stdlib_hew_source_already_registered(decl, module_path) {
-            self.publish_stdlib_hew_type_bindings(
-                module_short,
-                module_full_path,
-                items,
-                publication,
-            );
+            self.publish_imported_hew_bindings(module_short, module_full_path, items, publication);
         } else {
             self.register_stdlib_hew_items(module_short, module_full_path, items, publication);
         }
@@ -9734,6 +9943,17 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     let (mut sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                     self.current_module = saved_importer_module;
+                    sig.params = sig
+                        .params
+                        .iter()
+                        .map(|ty| {
+                            self.module_registry
+                                .canonicalize_registry_signature_ty(ty, module_full_path)
+                        })
+                        .collect();
+                    sig.return_type = self
+                        .module_registry
+                        .canonicalize_registry_signature_ty(&sig.return_type, module_full_path);
                     // `accepts_kwargs` is transport metadata supplied by the
                     // registry for the log wrapper; it does not carry a type
                     // identity, so retain it while replacing every semantic
@@ -9745,6 +9965,19 @@ impl Checker {
                     self.fn_type_param_assoc_bindings
                         .insert(qualified.clone(), assoc_bindings);
                     self.fn_sigs.insert(qualified.clone(), sig);
+                    // Mirror user-module named/glob import publication. The
+                    // parser has already selected `fd.name`; an alias only
+                    // changes the importing binding, never the declaration
+                    // identity retained in `import_fn_name_aliases`.
+                    if fd.visibility.is_pub() {
+                        if let Some(binding) = import_spec.bare_binding(&fd.name) {
+                            self.publish_stdlib_hew_function_binding(
+                                binding,
+                                &format!("{module_full_path}.{}", fd.name),
+                                import_spec,
+                            );
+                        }
+                    }
                     if let Some(intrinsic_key) = &fd.intrinsic {
                         let saved_importer_module =
                             self.current_module.replace(module_full_path.to_string());
@@ -9934,10 +10167,10 @@ impl Checker {
         self.registration_origin_module = saved_registration_origin;
     }
 
-    /// Republish the public type names from an already-registered stdlib Hew
-    /// source into the current importer's scope. This deliberately performs no
-    /// declaration registration and therefore cannot create duplicate defs.
-    fn publish_stdlib_hew_type_bindings(
+    /// Republish selected public names from an already-registered Hew source
+    /// into one importing scope. This deliberately performs no declaration
+    /// registration and therefore cannot create duplicate defs.
+    fn publish_imported_hew_bindings(
         &mut self,
         module_short: &str,
         module_full_path: &str,
@@ -9946,6 +10179,15 @@ impl Checker {
     ) {
         for (item, _) in items {
             match item {
+                Item::Function(fd) if fd.visibility.is_pub() => {
+                    if let Some(binding) = publication.bare_binding(&fd.name) {
+                        self.publish_stdlib_hew_function_binding(
+                            binding,
+                            &format!("{module_full_path}.{}", fd.name),
+                            publication,
+                        );
+                    }
+                }
                 Item::TypeDecl(td) if td.visibility.is_pub() => {
                     if let Some(binding) = publication.bare_binding(&td.name) {
                         self.publish_stdlib_hew_type_binding(
@@ -9972,6 +10214,47 @@ impl Checker {
                 _ => {}
             }
         }
+    }
+
+    /// Publish a selected stdlib free function into one importer's bare scope.
+    ///
+    /// Declarations remain globally registered under their canonical full
+    /// owner; this copies the already-resolved signature only into the opted-in
+    /// surface binding and preserves the declaration identity for HIR,
+    /// intrinsic, and target-policy consumers.
+    fn publish_stdlib_hew_function_binding(
+        &mut self,
+        binding: String,
+        source_identity: &str,
+        publication: StdlibBarePublication<'_>,
+    ) {
+        let Some(sig) = self.fn_sigs.get(source_identity).cloned() else {
+            // A declaration source that cannot supply its canonical signature
+            // must not manufacture an ambient bare function binding.
+            return;
+        };
+        if let Some(assoc_bindings) = self
+            .fn_type_param_assoc_bindings
+            .get(source_identity)
+            .cloned()
+        {
+            self.fn_type_param_assoc_bindings
+                .insert(binding.clone(), assoc_bindings);
+        }
+        self.fn_sigs.insert(binding.clone(), sig);
+        if publication.records_import_identity() {
+            self.import_fn_name_aliases.insert(
+                (self.current_module.clone(), binding.clone()),
+                source_identity.to_string(),
+            );
+        }
+        self.record_published_bare_function(&binding, source_identity);
+        let source_owner = source_identity
+            .rsplit_once('.')
+            .map(|(owner, _)| owner.to_string())
+            .expect("stdlib Hew function binding has an owner-qualified identity");
+        self.unqualified_to_module
+            .insert((self.current_module.clone(), binding), source_owner);
     }
 
     fn publish_stdlib_hew_type_binding(
@@ -11546,18 +11829,17 @@ mod channel_recv_builtin_provenance_tests {
 
     fn checker_with_channel_surface(canonical_source: bool) -> Checker {
         let mut checker = Checker {
-            current_module: Some("std.channel.channel".to_string()),
+            current_module: Some("std.channel".to_string()),
             ..Checker::default()
         };
         checker.local_type_defs.insert("Receiver".to_string());
-        checker.fn_sigs.insert(
-            "std.channel.channel.hew_channel_new".to_string(),
-            FnSig::default(),
-        );
+        checker
+            .fn_sigs
+            .insert("std.channel.hew_channel_new".to_string(), FnSig::default());
         if canonical_source {
             checker
                 .canonical_std_module_sources
-                .insert("std.channel.channel".to_string());
+                .insert("std.channel".to_string());
         }
         checker
     }
@@ -11567,7 +11849,7 @@ mod channel_recv_builtin_provenance_tests {
         let mut canonical = checker_with_channel_surface(true);
         canonical.register_channel_recv_builtins();
         assert!(matches!(
-            canonical.fn_sigs["std.channel.channel.hew_channel_recv_layout"]
+            canonical.fn_sigs["std.channel.hew_channel_recv_layout"]
                 .params
                 .as_slice(),
             [Ty::Named {
@@ -11582,7 +11864,7 @@ mod channel_recv_builtin_provenance_tests {
         let mut user_channel = checker_with_channel_surface(false);
         user_channel.register_channel_recv_builtins();
         assert!(matches!(
-            user_channel.fn_sigs["std.channel.channel.hew_channel_recv_layout"].params.as_slice(),
+            user_channel.fn_sigs["std.channel.hew_channel_recv_layout"].params.as_slice(),
             [Ty::Named {
                 builtin: None,
                 name,

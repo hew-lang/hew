@@ -4192,12 +4192,8 @@ mod layout_key_shortening_guard {
             "layout keys must retain the full nominal owner, never `short_name(..)`"
         );
         assert!(
-            prod.matches("mangle_layout_key(name, args)").count() >= 2,
-            "field-store and field-read must both pass their resolved outer name"
-        );
-        assert!(
-            prod.contains("mangle_layout_key(tname, args)"),
-            "StructInit must pass its resolved outer name to the layout key helper"
+            prod.matches("mangle_layout_key(name, args)").count() >= 3,
+            "field-store, field-read, and StructInit must pass their resolved outer name"
         );
     }
 }
@@ -4266,6 +4262,7 @@ mod enum_layout_tests {
         HirTypeDecl {
             id: ItemId(0),
             node: HirNodeId(0),
+            declaration: hew_types::DefId::new("Shape"),
             name: "Shape".to_string(),
             defining_module: None,
             marker: ResourceMarker::None,
@@ -4301,14 +4298,9 @@ mod enum_layout_tests {
             .enum_layouts
             .iter()
             .filter(|l| {
-                l.name != "LookupError"
-                    && l.name != "SendError"
-                    && l.name != "AskError"
-                    && l.name != "TimeoutError"
-                    && l.name != "LinkError"
-                    && l.name != "CrashAction"
-                    && l.name != "CrashKind"
-                    && l.name != "MonitorError"
+                !hew_types::builtin_enums::monomorphic_builtin_enums()
+                    .iter()
+                    .any(|fact| fact.canonical_name == l.name)
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
@@ -4335,6 +4327,7 @@ mod enum_layout_tests {
         let decl = HirTypeDecl {
             id: ItemId(1),
             node: HirNodeId(1),
+            declaration: hew_types::DefId::new("Colour"),
             name: "Colour".to_string(),
             defining_module: None,
             marker: ResourceMarker::None,
@@ -4362,14 +4355,9 @@ mod enum_layout_tests {
             .enum_layouts
             .iter()
             .filter(|l| {
-                l.name != "LookupError"
-                    && l.name != "SendError"
-                    && l.name != "AskError"
-                    && l.name != "TimeoutError"
-                    && l.name != "LinkError"
-                    && l.name != "CrashAction"
-                    && l.name != "CrashKind"
-                    && l.name != "MonitorError"
+                !hew_types::builtin_enums::monomorphic_builtin_enums()
+                    .iter()
+                    .any(|fact| fact.canonical_name == l.name)
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
@@ -4521,6 +4509,7 @@ mod enum_layout_tests {
         let decl = HirTypeDecl {
             id: option_item_id,
             node: HirNodeId(10),
+            declaration: hew_types::DefId::new("Option"),
             name: "Option".to_string(),
             defining_module: None,
             marker: ResourceMarker::None,
@@ -4572,14 +4561,9 @@ mod enum_layout_tests {
             .enum_layouts
             .iter()
             .filter(|l| {
-                l.name != "LookupError"
-                    && l.name != "SendError"
-                    && l.name != "AskError"
-                    && l.name != "TimeoutError"
-                    && l.name != "LinkError"
-                    && l.name != "CrashAction"
-                    && l.name != "CrashKind"
-                    && l.name != "MonitorError"
+                !hew_types::builtin_enums::monomorphic_builtin_enums()
+                    .iter()
+                    .any(|fact| fact.canonical_name == l.name)
             })
             .collect();
         assert_eq!(

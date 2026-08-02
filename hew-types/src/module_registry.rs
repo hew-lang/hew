@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use hew_parser::ast::Item;
 use hew_parser::module::ModuleId;
 
 use crate::stdlib_loader::{load_module_checked, ModuleInfo};
@@ -236,6 +237,29 @@ pub fn is_canonical_stdlib_module_source(
         })
 }
 
+/// Return the declaration owner selected by an import's resolved source.
+///
+/// `std::channel::channel` is the legacy filesystem spelling for
+/// `std/channel/channel.hew`; the repeated basename does not introduce a
+/// second source module. Collapse it only when the resolved path is the exact
+/// shipped channel source, so an identically-spelled user package retains its
+/// own nominal owner.
+#[must_use]
+pub fn canonical_source_module_identity(
+    requested_dotted: &str,
+    source_paths: &[PathBuf],
+) -> String {
+    if requested_dotted == "std.channel.channel"
+        && source_paths
+            .iter()
+            .any(|source| is_canonical_stdlib_module_source(source, "std.channel"))
+    {
+        "std.channel".to_string()
+    } else {
+        requested_dotted.to_string()
+    }
+}
+
 #[derive(Debug)]
 pub enum ModuleError {
     NotFound {
@@ -284,6 +308,104 @@ impl std::fmt::Display for ModuleError {
 }
 
 impl ModuleRegistry {
+    fn module_info_declares_nominal(info: &ModuleInfo, leaf: &str) -> bool {
+        info.source_items.iter().any(|(item, _)| match item {
+            Item::TypeDecl(decl) => decl.name == leaf,
+            Item::Record(decl) => decl.name == leaf,
+            _ => false,
+        })
+    }
+
+    /// Resolve the canonical owner of a type declared by an exact imported
+    /// source without relying on dependency load order. Signature
+    /// normalization may run before the importer's own dependencies have
+    /// entered the module cache. Returning the owner (rather than a boolean)
+    /// is essential for physical-path aliases such as
+    /// `std.channel.channel`: declaration proof and the identity it publishes
+    /// must come from the same selected source.
+    fn exact_module_source_type_owner(&self, owner: &str, leaf: &str) -> Option<String> {
+        if let Some(info) = self.modules.get(&module_id_from_identity(owner)) {
+            if !Self::module_info_declares_nominal(info, leaf) {
+                return None;
+            }
+            let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
+            return Some(canonical_source_module_identity(owner, &source_paths));
+        }
+        let loader_path = module_id_from_identity(owner).path.join("::");
+        self.search_paths.iter().find_map(|search_path| {
+            let info = load_module_checked(&loader_path, search_path)
+                .ok()
+                .flatten()?;
+            if !Self::module_info_declares_nominal(&info, leaf) {
+                return None;
+            }
+            let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
+            Some(canonical_source_module_identity(owner, &source_paths))
+        })
+    }
+
+    fn receiver_spellings(info: &ModuleInfo, method_receiver: bool) -> Vec<&str> {
+        let mut spellings = info
+            .handle_types
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if method_receiver {
+            spellings.extend(info.resource_wrapper_types.iter().map(String::as_str));
+            spellings.extend(
+                info.handle_methods
+                    .iter()
+                    .map(|method| method.type_name.as_str()),
+            );
+        }
+        spellings.sort_unstable();
+        spellings.dedup();
+        spellings
+    }
+
+    /// Resolve one receiver spelling to the exact loaded declaration that
+    /// owns it. A full source owner selects only that module. A legacy
+    /// extracted spelling is admitted only when exactly one loaded module
+    /// declares it.
+    fn registry_receiver_declaration(
+        &self,
+        name: &str,
+        method_receiver: bool,
+    ) -> Option<(&ModuleId, &ModuleInfo, String)> {
+        let (owner, leaf) = name.rsplit_once('.')?;
+        if owner.contains('.') {
+            let module_id = module_id_from_identity(owner);
+            let (stored_id, info) = self.modules.get_key_value(&module_id)?;
+            let mut matches = Self::receiver_spellings(info, method_receiver)
+                .into_iter()
+                .filter(|spelling| crate::short_name(spelling) == leaf)
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            matches.sort_unstable();
+            matches.dedup();
+            return match matches.as_slice() {
+                [only] => Some((stored_id, info, only.clone())),
+                _ => None,
+            };
+        }
+
+        let mut matches = self
+            .modules
+            .iter()
+            .filter(|(_, info)| {
+                Self::receiver_spellings(info, method_receiver)
+                    .into_iter()
+                    .any(|spelling| spelling == name)
+            })
+            .map(|(module_id, info)| (module_id, info, name.to_string()))
+            .collect::<Vec<_>>();
+        matches.sort_unstable_by(|left, right| left.0.path.cmp(&right.0.path));
+        match matches.as_slice() {
+            [only] => Some((only.0, only.1, only.2.clone())),
+            _ => None,
+        }
+    }
+
     /// Resolve a source-canonical handle identity to the registry's extracted
     /// spelling. The loader's extracted surfaces retain their historical
     /// short module owner (`net.Listener`), while Hew source declarations use
@@ -295,17 +417,8 @@ impl ModuleRegistry {
     /// between two representations of one loaded declaration, not a
     /// same-leaf fallback across modules.
     fn registry_handle_spelling(&self, name: &str) -> Option<String> {
-        if self.handle_types.contains(name) {
-            return Some(name.to_string());
-        }
-        let (owner, leaf) = name.rsplit_once('.')?;
-        self.modules.iter().find_map(|(module_id, info)| {
-            (module_id.path.join(".") == owner).then(|| {
-                info.handle_types.iter().find_map(|registered| {
-                    (crate::short_name(registered) == leaf).then(|| registered.clone())
-                })
-            })?
-        })
+        self.registry_receiver_declaration(name, false)
+            .map(|(_, _, spelling)| spelling)
     }
 
     /// Resolve an exact source-owned receiver type to the registry spelling
@@ -313,30 +426,8 @@ impl ModuleRegistry {
     /// this also covers fielded resource wrappers: they may publish method
     /// signatures, but must never be classified as fieldless opaque handles.
     fn registry_method_receiver_spelling(&self, name: &str) -> Option<String> {
-        self.registry_handle_spelling(name)
-            .or_else(|| {
-                // The extracted registry spelling itself is an exact declaration
-                // key (`process.Child`, `http.Request`), so keep supporting it
-                // directly for registry consumers. This is not a short-name
-                // recovery: the complete extracted owner must match.
-                self.modules.values().find_map(|info| {
-                    info.handle_methods
-                        .iter()
-                        .find(|method| method.type_name == name)
-                        .map(|method| method.type_name.clone())
-                })
-            })
-            .or_else(|| {
-                let (owner, leaf) = name.rsplit_once('.')?;
-                self.modules.iter().find_map(|(module_id, info)| {
-                    (module_id.path.join(".") == owner).then(|| {
-                        info.handle_methods.iter().find_map(|method| {
-                            (crate::short_name(&method.type_name) == leaf)
-                                .then(|| method.type_name.clone())
-                        })
-                    })?
-                })
-            })
+        self.registry_receiver_declaration(name, true)
+            .map(|(_, _, spelling)| spelling)
     }
 
     /// Create a new registry with the given search paths.
@@ -387,7 +478,6 @@ impl ModuleRegistry {
         if self.modules.contains_key(&id) {
             return Ok(&self.modules[&id]);
         }
-
         // Try each search path in order.
         for search_path in &self.search_paths {
             if let Some(info) = load_module_checked(&loader_path, search_path)? {
@@ -428,8 +518,12 @@ impl ModuleRegistry {
                     );
                 }
 
-                self.modules.insert(id.clone(), info);
-                return Ok(&self.modules[&id]);
+                let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
+                let canonical_owner =
+                    canonical_source_module_identity(&id.path.join("."), &source_paths);
+                let canonical_id = module_id_from_identity(&canonical_owner);
+                self.modules.insert(canonical_id.clone(), info);
+                return Ok(&self.modules[&canonical_id]);
             }
         }
 
@@ -450,6 +544,132 @@ impl ModuleRegistry {
     #[must_use]
     pub fn is_handle_type(&self, name: &str) -> bool {
         self.registry_handle_spelling(name).is_some()
+    }
+
+    /// Resolve an opaque handle spelling to its exact loaded source identity.
+    #[must_use]
+    pub fn canonical_handle_type_identity(&self, name: &str) -> Option<String> {
+        let (module_id, _, spelling) = self.registry_receiver_declaration(name, false)?;
+        Some(format!(
+            "{}.{}",
+            module_id.path.join("."),
+            crate::short_name(&spelling)
+        ))
+    }
+
+    /// Whether `name` is an exact source receiver represented by a loaded
+    /// registry module. This includes fielded resource wrappers as well as
+    /// fieldless opaque handles.
+    #[must_use]
+    pub fn is_method_receiver_type(&self, name: &str) -> bool {
+        self.registry_method_receiver_spelling(name).is_some()
+    }
+
+    /// Resolve a registry receiver spelling to its exact loaded source owner.
+    /// Returns `None` when more than one loaded module could own the extracted
+    /// spelling, preserving fail-closed nominal identity.
+    #[must_use]
+    pub fn canonical_method_receiver_identity(&self, name: &str) -> Option<String> {
+        let (module_id, _, spelling) = self.registry_receiver_declaration(name, true)?;
+        let leaf = crate::short_name(&spelling);
+        Some(format!("{}.{leaf}", module_id.path.join(".")))
+    }
+
+    /// Resolve an owned registry receiver to its exact loaded source identity.
+    ///
+    /// Ownership metadata is extracted under the registry spelling
+    /// (`regex.Pattern`), while source annotations carry the complete owner
+    /// (`std.text.regex.Pattern`). This joins only those two representations of
+    /// the same loaded declaration; it never recovers an owner from a leaf.
+    #[must_use]
+    pub fn canonical_owned_type_identity(&self, name: &str) -> Option<String> {
+        let (module_id, info, spelling) = self.registry_receiver_declaration(name, true)?;
+        (info.handle_types.contains(&spelling)
+            || info.resource_wrapper_types.contains(&spelling)
+            || info.drop_types.contains(&spelling)
+            || info.drop_funcs.iter().any(|(ty, _)| ty == &spelling))
+        .then(|| {
+            format!(
+                "{}.{}",
+                module_id.path.join("."),
+                crate::short_name(&spelling)
+            )
+        })
+    }
+
+    /// Project a legacy registry signature type into its exact source owner.
+    ///
+    /// Extracted ABI signatures historically use the loaded module's final
+    /// path segment (`regex.Pattern`). The projection is authorized only when
+    /// that same loaded source declares the requested type leaf. A foreign
+    /// `regex.Other` spelling therefore cannot acquire `std.text.regex` as an
+    /// owner merely because its prefix has the same text.
+    #[must_use]
+    pub fn canonical_registry_signature_type_identity(
+        &self,
+        name: &str,
+        canonical_owner: &str,
+    ) -> Option<String> {
+        let info = self
+            .modules
+            .get(&module_id_from_identity(canonical_owner))?;
+        let extracted_owner = canonical_owner
+            .rsplit_once('.')
+            .map_or(canonical_owner, |(_, leaf)| leaf);
+        if let Some(leaf) = name.strip_prefix(&format!("{extracted_owner}.")) {
+            if !leaf.contains('.') && Self::module_info_declares_nominal(info, leaf) {
+                return Some(format!("{canonical_owner}.{leaf}"));
+            }
+        }
+
+        let (binding, leaf) = name.split_once('.')?;
+        if leaf.contains('.') {
+            return None;
+        }
+        info.source_items.iter().find_map(|(item, _)| {
+            let Item::Import(import) = item else {
+                return None;
+            };
+            let import_binding = import
+                .module_alias
+                .as_deref()
+                .or_else(|| import.path.last().map(String::as_str))?;
+            if import_binding != binding {
+                return None;
+            }
+            let imported_owner = import.path.join(".");
+            self.exact_module_source_type_owner(&imported_owner, leaf)
+                .map(|canonical_owner| format!("{canonical_owner}.{leaf}"))
+        })
+    }
+
+    /// Recursively project every declaration-proven registry signature type
+    /// into the exact source owner of the loaded module.
+    #[must_use]
+    pub fn canonicalize_registry_signature_ty(
+        &self,
+        ty: &crate::ty::Ty,
+        canonical_owner: &str,
+    ) -> crate::ty::Ty {
+        let mapped = ty.map_children_pub(&|child| {
+            self.canonicalize_registry_signature_ty(child, canonical_owner)
+        });
+        let crate::ty::Ty::Named {
+            name,
+            args,
+            builtin,
+        } = mapped
+        else {
+            return mapped;
+        };
+        let name = self
+            .canonical_registry_signature_type_identity(&name, canonical_owner)
+            .unwrap_or(name);
+        crate::ty::Ty::Named {
+            name,
+            args,
+            builtin,
+        }
     }
 
     /// Check if a fully-qualified name is a drop type across all loaded modules.
@@ -481,8 +701,7 @@ impl ModuleRegistry {
     /// A leaf spelling has no authority to select a module declaration.
     #[must_use]
     pub fn qualify_handle_type(&self, name: &str) -> Option<String> {
-        self.registry_handle_spelling(name)
-            .map(|_| name.to_string())
+        self.canonical_handle_type_identity(name)
     }
 
     /// Return all handle types from all loaded modules.
@@ -519,49 +738,46 @@ impl ModuleRegistry {
     #[must_use]
     pub fn resolve_handle_method(&self, handle_type: &str, method: &str) -> Option<String> {
         self.resolve_handle_method_sig(handle_type, method)
-            .map(|(c_sym, _, _)| c_sym)
+            .map(|(c_sym, _, _, _)| c_sym)
     }
 
     /// Whether a registry-visible handle method must dispatch through its Hew
     /// impl instead of rewriting directly to the extracted C symbol.
     #[must_use]
     pub fn handle_method_dispatches_through_impl(&self, handle_type: &str, method: &str) -> bool {
-        let Some(handle_type) = self.registry_method_receiver_spelling(handle_type) else {
+        let Some((_, info, spelling)) = self.registry_receiver_declaration(handle_type, true)
+        else {
             return false;
         };
-        for info in self.modules.values() {
-            for hm in &info.handle_methods {
-                if hm.type_name == handle_type && hm.method_name == method {
-                    return hm.dispatch_through_impl;
-                }
-            }
-        }
-        false
+        info.handle_methods.iter().any(|hm| {
+            hm.type_name == spelling && hm.method_name == method && hm.dispatch_through_impl
+        })
     }
 
     /// Resolve a handle method to its C symbol and extracted signature.
     ///
-    /// Returns `(c_symbol, param_types, return_type)` for trivial extracted
-    /// handle methods.
+    /// Returns `(c_symbol, param_types, return_type, canonical_owner)` for a
+    /// trivial extracted handle method selected from one exact loaded module.
     #[must_use]
     pub fn resolve_handle_method_sig(
         &self,
         handle_type: &str,
         method: &str,
-    ) -> Option<(String, Vec<crate::ty::Ty>, crate::ty::Ty)> {
-        let handle_type = self.registry_method_receiver_spelling(handle_type)?;
-        for info in self.modules.values() {
-            for hm in &info.handle_methods {
-                if hm.type_name == handle_type && hm.method_name == method {
-                    return Some((
-                        hm.c_symbol.clone(),
-                        hm.params.clone(),
-                        hm.return_type.clone(),
-                    ));
-                }
-            }
-        }
-        None
+    ) -> Option<(String, Vec<crate::ty::Ty>, crate::ty::Ty, String)> {
+        let (module_id, info, spelling) = self.registry_receiver_declaration(handle_type, true)?;
+        let canonical_owner = module_id.path.join(".");
+        let hm = info
+            .handle_methods
+            .iter()
+            .find(|hm| hm.type_name == spelling && hm.method_name == method)?;
+        let params = hm
+            .params
+            .iter()
+            .map(|ty| self.canonicalize_registry_signature_ty(ty, &canonical_owner))
+            .collect();
+        let return_type =
+            self.canonicalize_registry_signature_ty(&hm.return_type, &canonical_owner);
+        Some((hm.c_symbol.clone(), params, return_type, canonical_owner))
     }
 
     /// Seed a fully-qualified handle type name for unit tests.
@@ -570,7 +786,35 @@ impl ModuleRegistry {
     /// requiring real `.hew` module files on disk.
     #[cfg(test)]
     pub(crate) fn insert_handle_type_for_test(&mut self, qualified_name: String) {
-        self.handle_types.insert(qualified_name);
+        self.handle_types.insert(qualified_name.clone());
+        let owner = qualified_name
+            .rsplit_once('.')
+            .map_or("test_handles", |(owner, _)| owner);
+        let info = self
+            .modules
+            .entry(module_id_from_identity(owner))
+            .or_insert_with(|| ModuleInfo {
+                source_path: None,
+                source_items: Vec::new(),
+                functions: Vec::new(),
+                clean_names: Vec::new(),
+                handle_types: Vec::new(),
+                handle_methods: Vec::new(),
+                wrapper_fns: Vec::new(),
+                drop_types: Vec::new(),
+                resource_wrapper_types: Vec::new(),
+                drop_funcs: Vec::new(),
+                unsupported_type_signatures: Vec::new(),
+            });
+        if !info.handle_types.contains(&qualified_name) {
+            info.handle_types.push(qualified_name);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_module_info_for_test(&mut self, canonical_owner: &str, info: ModuleInfo) {
+        self.modules
+            .insert(module_id_from_identity(canonical_owner), info);
     }
 }
 
@@ -579,6 +823,71 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn channel_repeated_basename_maps_only_exact_shipped_source_to_canonical_owner() {
+        let shipped = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("std/channel/channel.hew");
+        assert_eq!(
+            canonical_source_module_identity("std.channel.channel", &[shipped]),
+            "std.channel"
+        );
+
+        let user_lookalike = std::env::temp_dir().join("user/std/channel/channel.hew");
+        assert_eq!(
+            canonical_source_module_identity("std.channel.channel", &[user_lookalike]),
+            "std.channel.channel",
+            "a same-spelled user module must retain its own nominal owner"
+        );
+        assert_eq!(
+            canonical_source_module_identity("std.channel", &[]),
+            "std.channel",
+            "the canonical owner is already stable"
+        );
+    }
+
+    #[test]
+    fn channel_legacy_request_resolves_source_before_consulting_canonical_cache() {
+        let mut reg = registry();
+        reg.load("std::channel")
+            .expect("prime the canonical shipped channel owner");
+        let shipped = reg
+            .get("std::channel")
+            .and_then(|info| info.source_path.clone())
+            .expect("canonical cache entry has a source path");
+
+        let user_dir = TestDir::new("module-registry-user-channel-lookalike");
+        let user_channel_dir = user_dir.root.join("std/channel");
+        fs::create_dir_all(&user_channel_dir).expect("create user channel module directory");
+        let user_source = user_channel_dir.join("channel.hew");
+        fs::write(
+            &user_source,
+            "pub type Sender { marker: i64; }\npub type Receiver { marker: i64; }\n",
+        )
+        .expect("write user channel lookalike");
+
+        // Model a new importer resolution context while preserving the cache.
+        // The legacy request must resolve this source before deciding whether
+        // its repeated basename denotes the canonical shipped owner.
+        reg.search_paths = vec![user_dir.root.clone()];
+        let loaded = reg
+            .load("std::channel::channel")
+            .expect("load the user lookalike through the legacy spelling");
+        assert_eq!(loaded.source_path.as_deref(), Some(user_source.as_path()));
+        assert_eq!(
+            reg.get("std::channel::channel")
+                .and_then(|info| info.source_path.as_deref()),
+            Some(user_source.as_path()),
+            "the user source keeps the nested nominal owner"
+        );
+        assert_eq!(
+            reg.get("std::channel")
+                .and_then(|info| info.source_path.as_deref()),
+            Some(shipped.as_path()),
+            "resolving a lookalike must not replace the proven shipped owner"
+        );
+    }
 
     fn test_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -738,8 +1047,8 @@ mod tests {
             "process.Child should be a drop type"
         );
         assert!(
-            !reg.is_drop_type("http.Server"),
-            "http.Server should not be a drop type"
+            reg.is_drop_type("http.Server"),
+            "http.Server is now a closeable opaque resource"
         );
         reg.load("std::text::regex").unwrap();
         assert!(
@@ -790,8 +1099,8 @@ mod tests {
         );
         assert_eq!(
             reg.drop_func_for("http.Server"),
-            None,
-            "http.Server should not have a drop func"
+            Some("hew_http_server_close"),
+            "http.Server must use its sole raw disposer"
         );
         reg.load("std::text::regex").unwrap();
         assert_eq!(
@@ -800,11 +1109,155 @@ mod tests {
             "regex.Pattern should not have a drop func"
         );
         let all = reg.all_drop_funcs();
+        for expected in [
+            ("json.Value".to_string(), "hew_json_free".to_string()),
+            (
+                "http.Server".to_string(),
+                "hew_http_server_close".to_string(),
+            ),
+            (
+                "process.ProcessResultHandle".to_string(),
+                "hew_process_result_free".to_string(),
+            ),
+        ] {
+            assert!(
+                all.contains(&expected),
+                "missing direct disposer {expected:?}: {all:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_signature_owner_projection_requires_exact_source_declaration() {
+        let mut reg = registry();
+        reg.load("std::text::regex").unwrap();
+
         assert_eq!(
-            all,
-            vec![("json.Value".to_string(), "hew_json_free".to_string())],
-            "JSON is the only loaded direct opaque-handle disposer; fielded \
-             resources dispatch through their source-level close methods"
+            reg.canonical_registry_signature_type_identity("regex.Pattern", "std.text.regex"),
+            Some("std.text.regex.Pattern".to_string()),
+            "the loaded Pattern declaration authorizes its legacy registry spelling"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("regex.Foreign", "std.text.regex"),
+            None,
+            "a foreign regex.X spelling must not inherit the loaded module owner"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("regex.Pattern", "vendor.regex"),
+            None,
+            "a declaration loaded for one exact owner cannot authorize another"
+        );
+    }
+
+    #[test]
+    fn imported_registry_signature_uses_source_resolved_physical_alias_owner() {
+        let fixture = TestDir::new("registry-signature-channel-physical-alias");
+        fs::write(
+            fixture.root.join("signature_importer.hew"),
+            "import std::channel::channel as ch;\n",
+        )
+        .expect("write signature importer");
+
+        let mut search_paths = vec![fixture.root.clone()];
+        search_paths.push(test_root());
+        let mut reg = ModuleRegistry::new(search_paths);
+        reg.load("signature_importer")
+            .expect("load physical-alias importer");
+
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("ch.Sender", "signature_importer",),
+            Some("std.channel.Sender".to_string()),
+            "the selected shipped source collapses its repeated physical basename"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("ch.Foreign", "signature_importer",),
+            None,
+            "an imported qualifier cannot authorize a type absent from that exact source"
+        );
+    }
+
+    #[test]
+    fn imported_registry_signature_user_lookalike_is_order_independent() {
+        let mut reg = registry();
+        reg.load("std::channel")
+            .expect("prime canonical shipped channel cache");
+
+        let fixture = TestDir::new("registry-signature-channel-user-lookalike");
+        let channel_dir = fixture.root.join("std/channel");
+        fs::create_dir_all(&channel_dir).expect("create user channel path");
+        fs::write(
+            channel_dir.join("channel.hew"),
+            "pub type Sender { marker: i64; }\n",
+        )
+        .expect("write user channel lookalike");
+        fs::write(
+            fixture.root.join("signature_importer.hew"),
+            "import std::channel::channel as ch;\n",
+        )
+        .expect("write user signature importer");
+
+        // Model a later importer with a different exact resolution context.
+        // The already-cached shipped canonical owner must not grant authority
+        // to this same-spelled user source or rewrite it back to std.channel.
+        reg.search_paths = vec![fixture.root.clone()];
+        reg.load("signature_importer")
+            .expect("load user-lookalike importer");
+
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("ch.Sender", "signature_importer",),
+            Some("std.channel.channel.Sender".to_string()),
+            "the user source retains its nested nominal owner despite shipped-cache order"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("ch.Receiver", "signature_importer",),
+            None,
+            "the shipped Receiver declaration must not leak through the canonical cache"
+        );
+    }
+
+    #[test]
+    fn registry_signature_owner_projection_accepts_exact_record_declarations_only() {
+        let fixture = TestDir::new("registry-signature-record-owner");
+        fs::write(
+            fixture.root.join("record_owner.hew"),
+            "pub record Packet { value: i64 }\n",
+        )
+        .expect("write record owner");
+        fs::write(
+            fixture.root.join("record_importer.hew"),
+            "import record_owner as packets;\n",
+        )
+        .expect("write record importer");
+        fs::write(
+            fixture.root.join("lookalike.hew"),
+            "pub record Packet { other: string }\n",
+        )
+        .expect("write record lookalike");
+
+        let mut reg = ModuleRegistry::new(vec![fixture.root.clone()]);
+        reg.load("record_owner").expect("load record owner");
+        reg.load("lookalike").expect("load record lookalike");
+        reg.load("record_importer").expect("load record importer");
+
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("record_owner.Packet", "record_owner"),
+            Some("record_owner.Packet".to_string()),
+            "an exact same-module record declaration authorizes its owner"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("packets.Packet", "record_importer"),
+            Some("record_owner.Packet".to_string()),
+            "an imported record signature uses the exact resolved declaration owner"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("packets.Missing", "record_importer"),
+            None,
+            "an absent nominal cannot borrow the imported record owner"
+        );
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("lookalike.Packet", "record_importer"),
+            None,
+            "a loaded same-leaf lookalike has no authority without an exact import binding"
         );
     }
 
@@ -916,6 +1369,96 @@ mod tests {
     }
 
     #[test]
+    fn same_legacy_receiver_spelling_never_cross_wires_loaded_modules() {
+        fn shared_info(c_symbol: &str, dispatch_through_impl: bool) -> ModuleInfo {
+            let parsed = hew_parser::parse("pub type Pattern { value: i32; }\n");
+            assert!(parsed.errors.is_empty());
+            ModuleInfo {
+                source_path: None,
+                source_items: parsed.program.items,
+                functions: Vec::new(),
+                clean_names: Vec::new(),
+                handle_types: vec!["regex.Pattern".to_string()],
+                handle_methods: vec![crate::stdlib_loader::HandleMethod {
+                    type_name: "regex.Pattern".to_string(),
+                    method_name: "clone_for_test".to_string(),
+                    c_symbol: c_symbol.to_string(),
+                    params: vec![
+                        crate::ty::Ty::option(crate::ty::Ty::named("regex.Pattern", vec![])),
+                        crate::ty::Ty::named("regex.Foreign", vec![]),
+                    ],
+                    return_type: crate::ty::Ty::option(crate::ty::Ty::named(
+                        "regex.Pattern",
+                        vec![],
+                    )),
+                    dispatch_through_impl,
+                }],
+                wrapper_fns: Vec::new(),
+                drop_types: vec!["regex.Pattern".to_string()],
+                resource_wrapper_types: Vec::new(),
+                drop_funcs: Vec::new(),
+                unsupported_type_signatures: Vec::new(),
+            }
+        }
+
+        let mut reg = ModuleRegistry::new(Vec::new());
+        reg.modules.insert(
+            module_id_from_identity("vendor_a.text.regex"),
+            shared_info("vendor_a_clone", true),
+        );
+        reg.modules.insert(
+            module_id_from_identity("vendor_b.text.regex"),
+            shared_info("vendor_b_clone", false),
+        );
+
+        let a = reg
+            .resolve_handle_method_sig("vendor_a.text.regex.Pattern", "clone_for_test")
+            .expect("exact vendor_a receiver should resolve");
+        assert_eq!(a.0, "vendor_a_clone");
+        assert_eq!(a.3, "vendor_a.text.regex");
+        assert_eq!(
+            a.1[0],
+            crate::ty::Ty::option(crate::ty::Ty::named("vendor_a.text.regex.Pattern", vec![])),
+            "nested signature positions must retain the selected source owner"
+        );
+        assert_eq!(
+            a.1[1],
+            crate::ty::Ty::named("regex.Foreign", vec![]),
+            "an undeclared foreign regex.X type must not inherit the owner"
+        );
+        assert_eq!(
+            a.2,
+            crate::ty::Ty::option(crate::ty::Ty::named("vendor_a.text.regex.Pattern", vec![]))
+        );
+
+        let b = reg
+            .resolve_handle_method_sig("vendor_b.text.regex.Pattern", "clone_for_test")
+            .expect("exact vendor_b receiver should resolve");
+        assert_eq!(b.0, "vendor_b_clone");
+        assert_eq!(b.3, "vendor_b.text.regex");
+        assert!(reg.handle_method_dispatches_through_impl(
+            "vendor_a.text.regex.Pattern",
+            "clone_for_test"
+        ));
+        assert!(!reg.handle_method_dispatches_through_impl(
+            "vendor_b.text.regex.Pattern",
+            "clone_for_test"
+        ));
+
+        assert_eq!(
+            reg.resolve_handle_method_sig("regex.Pattern", "clone_for_test"),
+            None,
+            "an ambiguous legacy receiver must fail closed"
+        );
+        assert_eq!(
+            reg.canonical_owned_type_identity("regex.Pattern"),
+            None,
+            "ambiguous ownership metadata must fail closed too"
+        );
+        assert!(!reg.handle_method_dispatches_through_impl("regex.Pattern", "clone_for_test"));
+    }
+
+    #[test]
     fn fielded_process_child_does_not_publish_a_short_handle_alias() {
         let mut reg = registry();
         reg.load("std::process").unwrap();
@@ -956,6 +1499,12 @@ mod tests {
         assert_eq!(request_close.0, "hew_http_request_free");
         assert_eq!(request_close.1, Vec::<crate::ty::Ty>::new());
         assert_eq!(request_close.2, crate::ty::Ty::Unit);
+
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("net.NetError", "std.net.http"),
+            Some("std.net.NetError".to_string()),
+            "a source-qualified imported type must use the import's exact declaration owner"
+        );
     }
 
     #[test]
@@ -969,8 +1518,8 @@ mod tests {
         );
         assert_eq!(
             reg.qualify_handle_type("json.Value"),
-            Some("json.Value".to_string()),
-            "an exact canonical handle declaration remains admitted"
+            Some("std.encoding.json.Value".to_string()),
+            "a unique legacy registry spelling projects to its source identity"
         );
         assert_eq!(
             reg.qualify_handle_type("NonExistent"),

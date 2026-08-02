@@ -107,12 +107,12 @@ impl Builder {
             return;
         };
         let record_layouts = outbound_record_layouts(self);
-        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             field_ty,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         ) else {
             return;
         };
@@ -174,12 +174,12 @@ impl Builder {
             return;
         }
         let record_layouts = outbound_record_layouts(self);
-        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             binding_ty,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         ) else {
             // Unreachable for a registered carrier: the parameter registration
             // requires a clone-total plan over the whole enum, which
@@ -275,12 +275,12 @@ impl Builder {
         }
 
         let record_layouts = outbound_record_layouts(self);
-        match crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             &owned_ty,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         ) {
             // Callee half of the admission predicate (see
             // `snapshot_root_outside_carrier_protocol` for the full
@@ -296,7 +296,7 @@ impl Builder {
                             &record_layouts,
                             &self.enum_layouts,
                             &self.opaque_handle_names,
-                            &self.resource_opaque_close,
+                            &self.lifecycle_registry,
                         )
                         .unwrap_or(false) =>
             {
@@ -800,12 +800,12 @@ impl Builder {
                     }
                     let record_layouts = outbound_record_layouts(self);
                     let stays_on_borrow_spine =
-                        crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                        crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                             &self.subst_ty(&arg.ty),
                             &record_layouts,
                             &self.enum_layouts,
                             &self.opaque_handle_names,
-                            &self.resource_opaque_close,
+                            &self.lifecycle_registry,
                         )
                         .is_ok_and(|plan| {
                             super::snapshot_root_outside_carrier_protocol(plan.root())

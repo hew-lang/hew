@@ -107,6 +107,10 @@ pub struct Feature {
     pub note: Option<String>,
     #[serde(default)]
     pub native_only_modules: Vec<String>,
+    /// Exact `module.function` entries whose runtime substrate is absent on
+    /// wasm32 even though their containing module is otherwise supported.
+    #[serde(default)]
+    pub native_only_functions: Vec<String>,
 }
 
 /// Source-marker policy for a backlog row.
@@ -198,6 +202,7 @@ impl Manifest {
 
         let mut variants = BTreeSet::new();
         let mut modules = BTreeSet::new();
+        let mut functions = BTreeSet::new();
         for feature in &self.features {
             validate_kebab_id(&feature.id, "feature id")?;
             match feature.checker {
@@ -237,11 +242,12 @@ impl Manifest {
                     }
                 }
             }
-            if !feature.native_only_modules.is_empty()
+            if (!feature.native_only_modules.is_empty()
+                || !feature.native_only_functions.is_empty())
                 && feature.checker != CheckerDisposition::Reject
             {
                 return Err(format!(
-                    "feature `{}` declares native_only_modules but is not reject",
+                    "feature `{}` declares native-only source identities but is not reject",
                     feature.id
                 ));
             }
@@ -258,6 +264,34 @@ impl Manifest {
                 }
                 if !modules.insert(module) {
                     return Err(format!("duplicate native-only module `{module}`"));
+                }
+            }
+            for function in &feature.native_only_functions {
+                let Some((module, method)) = function.rsplit_once('.') else {
+                    return Err(format!(
+                        "feature `{}` has invalid native-only function `{function}`",
+                        feature.id
+                    ));
+                };
+                if module.is_empty()
+                    || method.is_empty()
+                    || !module.split('.').all(|segment| {
+                        !segment.is_empty()
+                            && segment
+                                .chars()
+                                .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+                    })
+                    || !method
+                        .chars()
+                        .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+                {
+                    return Err(format!(
+                        "feature `{}` has invalid native-only function `{function}`",
+                        feature.id
+                    ));
+                }
+                if !functions.insert(function) {
+                    return Err(format!("duplicate native-only function `{function}`"));
                 }
             }
         }
@@ -494,12 +528,32 @@ impl Manifest {
             )
             .expect("String write");
         }
-        out.push_str("}\n\n/// A native-only stdlib module and its manifest feature identity.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct WasmModuleRejection {\n    pub module: &'static str,\n    pub feature: WasmUnsupportedFeature,\n}\n\n/// Generated module rejection classification.\npub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[\n");
+        out.push_str("}\n\n/// A native-only stdlib module and its manifest feature identity.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct WasmModuleRejection {\n    pub module: &'static str,\n    pub feature: WasmUnsupportedFeature,\n}\n\n/// A native-only stdlib function in an otherwise supported module.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct WasmFunctionRejection {\n    pub module: &'static str,\n    pub function: &'static str,\n    pub feature: WasmUnsupportedFeature,\n}\n\n/// Generated module rejection classification.\npub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[\n");
         for feature in &checker_features {
             for module in &feature.native_only_modules {
                 writeln!(
                     out,
                     "    WasmModuleRejection {{ module: {module:?}, feature: WasmUnsupportedFeature::{} }},",
+                    feature.enum_variant.as_deref().expect("validated variant")
+                )
+                .expect("String write");
+            }
+        }
+        out.push_str(
+            "];
+
+/// Generated exact-function rejection classification.
+pub const NATIVE_ONLY_WASM_FUNCTION_REJECTIONS: &[WasmFunctionRejection] = &[
+",
+        );
+        for feature in &checker_features {
+            for function in &feature.native_only_functions {
+                let (module, method) = function
+                    .rsplit_once('.')
+                    .expect("validated native-only function identity");
+                writeln!(
+                    out,
+                    "    WasmFunctionRejection {{ module: {module:?}, function: {method:?}, feature: WasmUnsupportedFeature::{} }},",
                     feature.enum_variant.as_deref().expect("validated variant")
                 )
                 .expect("String write");

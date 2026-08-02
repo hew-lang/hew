@@ -31,19 +31,19 @@ impl Builder {
             return captures.is_empty();
         }
         let record_layouts = self.record_layouts_for_classification();
-        crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             ty,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         )
         .and_then(|plan| {
             plan.is_clone_total(
                 &record_layouts,
                 &self.enum_layouts,
                 &self.opaque_handle_names,
-                &self.resource_opaque_close,
+                &self.lifecycle_registry,
             )
         })
         .unwrap_or(false)
@@ -56,12 +56,12 @@ impl Builder {
             return Some(GeneratorEnvFieldPlan::TrivialCopy);
         }
         let record_layouts = self.record_layouts_for_classification();
-        let plan = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        let plan = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             ty,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         )
         .ok()?;
         if matches!(
@@ -492,7 +492,7 @@ impl Builder {
             // inside a closure shim / lambda-actor / gen body classifies the
             // handle as `Resource` (runs its close), not the empty-registry
             // `OpaqueHandle` no-op that would leak it.
-            resource_opaque_close: self.resource_opaque_close.clone(),
+            lifecycle_registry: self.lifecycle_registry.clone(),
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
@@ -1708,12 +1708,10 @@ impl Builder {
                 pointee: Box::new(ResolvedTy::Unit),
             });
             let reply_len_slot = self.alloc_local(ResolvedTy::I64);
-            let error_dest = self.alloc_local(ResolvedTy::Named {
-                name: "AskError".to_string(),
-                args: Vec::new(),
-                builtin: Some(BuiltinType::AskError),
-                is_opaque: false,
-            });
+            let error_dest = self.alloc_local(
+                hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("AskError")
+                    .expect("generated builtin enum catalog must contain AskError"),
+            );
             crate::model::RuntimeCall::new(
                 "hew_lambda_actor_ask",
                 vec![

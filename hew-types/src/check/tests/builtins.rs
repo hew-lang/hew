@@ -512,11 +512,14 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
 fn test_qualified_builtin_type_names_retain_presentation_and_builtin_identity() {
     let source = concat!(
         "import std::stream;\n",
-        "import std::channel::channel;\n",
+        "import std::channel::channel as channel_api;\n",
         "\n",
         "fn stream_id(s: stream.Stream<i64>) -> stream.Stream<i64> { s }\n",
-        "fn close_sender(tx: channel.Sender) {\n",
+        "fn close_sender(tx: channel_api.Sender) {\n",
         "    tx.close();\n",
+        "}\n",
+        "fn close_receiver(rx: channel_api.Receiver) {\n",
+        "    rx.close();\n",
         "}\n",
     );
     let result = hew_parser::parse(source);
@@ -545,9 +548,17 @@ fn test_qualified_builtin_type_names_retain_presentation_and_builtin_identity() 
     assert!(matches!(
         &output.fn_sigs["close_sender"].params[0],
         Ty::Named {
+            name,
             builtin: Some(crate::BuiltinType::Sender),
             args,
-            ..
-        } if args.len() == 1
+        } if name == "std.channel.Sender" && args.len() == 1
+    ));
+    assert!(matches!(
+        &output.fn_sigs["close_receiver"].params[0],
+        Ty::Named {
+            name,
+            builtin: Some(crate::BuiltinType::Receiver),
+            args,
+        } if name == "std.channel.Receiver" && args.len() == 1
     ));
 }

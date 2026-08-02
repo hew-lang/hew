@@ -3,6 +3,38 @@ use hew_mir::{BasicBlock, DecisionFact, IrPipeline};
 use inkwell::values::AnyValue;
 
 #[test]
+fn actor_state_transaction_classifier_is_explicit_for_every_handler_phase() {
+    for kind in [
+        ActorHandlerKind::Receive,
+        ActorHandlerKind::Exit,
+        ActorHandlerKind::Down,
+    ] {
+        assert_eq!(
+            actor_state_store_transaction_for_kind(Some(kind)),
+            ActorStateStoreTransaction::Required,
+            "{kind:?} must retain scheduler-domain validation"
+        );
+    }
+    for kind in [
+        ActorHandlerKind::Init,
+        ActorHandlerKind::Start,
+        ActorHandlerKind::Stop,
+        ActorHandlerKind::Crash,
+    ] {
+        assert_eq!(
+            actor_state_store_transaction_for_kind(Some(kind)),
+            ActorStateStoreTransaction::LifecycleOutsideDispatch,
+            "{kind:?} must not address an absent or foreign scheduler state domain"
+        );
+    }
+    assert_eq!(
+        actor_state_store_transaction_for_kind(None),
+        ActorStateStoreTransaction::Required,
+        "unknown/hand-built MIR must fail closed rather than inherit lifecycle permission"
+    );
+}
+
+#[test]
 fn owned_config_field_collections_are_fail_closed_backstop() {
     // #2238 item 1: collection kinds must take the same typed error path
     // used by the init thunk, rather than reaching clone_helper_for_kind's
@@ -401,9 +433,33 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
+}
+
+#[test]
+fn wasm_wasi_main_adapter_normalizes_source_integer_width() {
+    let ctx = Context::create();
+    let pipeline = empty_pipeline_with_const_42();
+    let machine =
+        target_machine_for_triple("wasm32-unknown-unknown").expect("wasm32 target machine");
+    let module =
+        build_module_for_target(&ctx, &pipeline, "wasi_main_adapter", Some(&machine), None)
+            .expect("WASI main adapter module must build");
+    let ir = module.print_to_string().to_string();
+
+    assert!(
+        ir.contains("define i32 @__hew_wasi_main()"),
+        "WASI runtime entry adapter must have the canonical () -> i32 ABI:\n{ir}"
+    );
+    assert!(
+        ir.contains("call i64 @__original_main()"),
+        "adapter must call the source-shaped i64 main implementation:\n{ir}"
+    );
+    assert!(
+        ir.contains("trunc i64") && ir.contains("to i32"),
+        "adapter must normalize the source exit value to the WASI status width:\n{ir}"
+    );
 }
 
 /// Build `empty_pipeline_with_const_42` for `triple` with a `-g` debug input
@@ -1031,8 +1087,7 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
     let ctx = Context::create();
@@ -1126,8 +1181,7 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -1258,8 +1312,7 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -1373,8 +1426,7 @@ fn pipeline_with_user_const_load(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -1505,8 +1557,7 @@ fn pipeline_with_float_return() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -1642,8 +1693,7 @@ fn actor_handler_signature_leads_with_execution_context_pointer() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m =
@@ -1731,8 +1781,7 @@ fn context_field_actor_offset_emits_gep_and_load() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -1814,8 +1863,7 @@ fn string_literal_return_builds_and_verifies() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "string_lit_test").expect("StringLit module must build");
@@ -2099,8 +2147,7 @@ fn pipeline_with_select_terminator(arm_kind: hew_mir::SelectArmKind) -> IrPipeli
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -2317,8 +2364,7 @@ fn pipeline_with_select_arms(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -3413,8 +3459,7 @@ fn generic_enum_local_resolves_by_mangled_key() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
     let ctx = Context::create();
@@ -3504,8 +3549,7 @@ fn yield_terminator_lowers_to_coro_suspend_and_publishes_out_pointer() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
@@ -3669,8 +3713,7 @@ fn make_generator_terminator_constructs_coro_companion_and_module_verifies() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "make_generator_codegen_test")
@@ -3743,12 +3786,12 @@ fn generator_env_clone_emits_ordered_clones_rollback_and_payload_drop() {
     let fields = field_tys
         .iter()
         .map(|ty| {
-            hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+            hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                 ty,
                 &record_layouts,
                 &[],
                 &[],
-                &[],
+                fn_ctx.lifecycle_registry,
             )
             .map(hew_mir::GeneratorEnvFieldPlan::Owned)
             .expect("owned generator field must classify")
@@ -3844,12 +3887,12 @@ fn generator_env_move_skips_clone_but_keeps_drop_and_rollback() {
         .build_alloca(ctx.i8_type().array_type(64), "companion")
         .expect("companion storage");
     let record_layouts = codegen_record_layouts(&fn_ctx);
-    let string_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+    let string_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
         &ResolvedTy::String,
         &record_layouts,
         &[],
         &[],
-        &[],
+        fn_ctx.lifecycle_registry,
     )
     .expect("string generator field must classify");
     let plan = hew_mir::GeneratorEnvPlan {
@@ -3941,12 +3984,12 @@ fn generator_env_pointer_backed_indirect_enum_clone_fails_closed() {
         .build_memcpy(dst, 1, src, 1, env_struct.size_of().expect("env size"))
         .expect("shallow seed memcpy");
     let record_layouts = codegen_record_layouts(&fn_ctx);
-    let tree_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+    let tree_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
         &ResolvedTy::named_user("Node", vec![]),
         &record_layouts,
         std::slice::from_ref(&enum_layout),
         &[],
-        &[],
+        fn_ctx.lifecycle_registry,
     )
     .expect("indirect enum must classify as an owned snapshot");
     let plan = hew_mir::GeneratorEnvPlan {
@@ -4154,8 +4197,7 @@ fn cancellation_token_is_cancelled_emits_runtime_observation_call() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
     let m = build_module(&ctx, &pipeline, "cancel_token_is_cancelled_codegen_test")
@@ -4432,8 +4474,7 @@ fn verify_drop_dispatch_resolves_rejects_unresolved_drop_fn() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let syms = empty_fn_symbols();
     let err = verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -4505,8 +4546,7 @@ fn verify_drop_dispatch_resolves_accepts_runtime_symbol_drop() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let syms = empty_fn_symbols();
     verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -4564,8 +4604,7 @@ fn wasm_exclusion_scan_flags_runtime_duplex_close_in_elab_drop() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let found = uses_wasm_excluded_symbol(&pipeline)
         .expect("Duplex::close ElabDrop must be flagged as WASM-excluded");
@@ -4606,8 +4645,7 @@ fn raw_mir_only_pipeline(body: RawMirFunction) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -5278,8 +5316,7 @@ fn wasm_exclusion_scan_ignores_user_fn_close_in_elab_drop() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     assert!(
         uses_wasm_excluded_symbol(&pipeline).is_none(),
@@ -5355,6 +5392,7 @@ struct CompositeHelperHarness<'ctx> {
     /// taken. Carried so the FnCtx field stays populated.
     record_field_resolved_tys: HashMap<String, Vec<ResolvedTy>>,
     const_globals: ConstGlobalMap<'ctx>,
+    lifecycle_registry: hew_hir::LifecycleRegistry,
 }
 
 /// Build a `Result<(), SendError>` `EnumLayout` matching the
@@ -5565,6 +5603,7 @@ fn build_harness_with_target_data<'ctx>(
         actor_layouts: Vec::new(),
         record_field_resolved_tys: HashMap::new(),
         const_globals: HashMap::new(),
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -5613,6 +5652,11 @@ fn make_test_fn_ctx<'a, 'ctx>(
         execution_context_is_actor_handler: false,
         actor_state_ty: None,
         actor_state_field_kinds: None,
+        // Hand-built helper MIR carries no proven lifecycle identity, so it
+        // keeps the fail-closed scheduler-domain requirement.
+        actor_state_store_transaction: ActorStateStoreTransaction::Required,
+        actor_state_replacement_slots: RefCell::new(HashMap::new()),
+        alloca_prologue: entry,
         locals: HashMap::new(),
         local_tys: HashMap::new(),
         blocks: HashMap::new(),
@@ -5621,8 +5665,7 @@ fn make_test_fn_ctx<'a, 'ctx>(
         fn_symbols: &harness.fn_symbols,
         frame_cleanup_thunks: &harness.frame_cleanup_thunks,
         machine_step_symbols: &harness.machine_step_symbols,
-        resource_record_close: &[],
-        resource_opaque_close: &[],
+        lifecycle_registry: &harness.lifecycle_registry,
         actor_layouts: &harness.actor_layouts,
         machine_layouts: &harness.machine_layouts,
         enum_layouts: &[],
@@ -5692,12 +5735,12 @@ fn failed_actor_sender_transfer_closes_the_prepared_owner() {
         .expect("Sender carrier slot");
     fn_ctx.locals.insert(0, (slot, ptr_ty.into()));
     fn_ctx.local_tys.insert(0, sender_ty.clone());
-    let plan = hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+    let plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
         &sender_ty,
         &[],
         &[],
         &[],
-        &[],
+        fn_ctx.lifecycle_registry,
     )
     .expect("Sender must have the canonical prepared-carrier plan");
 
@@ -6551,14 +6594,26 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
         ResolvedTy::Duration,
     ] {
         assert_eq!(
-            cbor_vec_elem_kind(&s, &no_recs, &no_enums, &no_machines),
+            cbor_vec_elem_kind(
+                &s,
+                &no_recs,
+                &no_enums,
+                &no_machines,
+                &hew_hir::LifecycleRegistry::default()
+            ),
             CborVecElemKind::Plain,
             "{s:?} must be a Plain element"
         );
     }
     // `string` → Str.
     assert_eq!(
-        cbor_vec_elem_kind(&ResolvedTy::String, &no_recs, &no_enums, &no_machines),
+        cbor_vec_elem_kind(
+            &ResolvedTy::String,
+            &no_recs,
+            &no_enums,
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default()
+        ),
         CborVecElemKind::Str
     );
 
@@ -6573,7 +6628,8 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
             &ResolvedTy::named_user("Inner", vec![]),
             &[inner],
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::LayoutBitCopy,
         "a heap-free record element is the layout-aware BitCopy vec `Vec::new` builds"
@@ -6591,7 +6647,8 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
             &ResolvedTy::named_user("Owns", vec![]),
             std::slice::from_ref(&owns),
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Owned,
         "a string-bearing record element rides the owned Vec ABI (thunk key resolves)"
@@ -6604,7 +6661,8 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
             &ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![ResolvedTy::I64]),
             &no_recs,
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::LayoutBitCopy
     );
@@ -6613,7 +6671,8 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
             &ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![ResolvedTy::String]),
             &no_recs,
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Defer
     );
@@ -6628,7 +6687,8 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
             &ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::I64]),
             &no_recs,
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Defer,
         "a nested Vec element fails closed until the base owned nested-Vec ABI lands"
@@ -6648,7 +6708,13 @@ fn cbor_vec_elem_kind_pins_reachable_classification() {
         ),
     ] {
         assert_eq!(
-            cbor_vec_elem_kind(&b, &no_recs, &no_enums, &no_machines),
+            cbor_vec_elem_kind(
+                &b,
+                &no_recs,
+                &no_enums,
+                &no_machines,
+                &hew_hir::LifecycleRegistry::default()
+            ),
             CborVecElemKind::Defer,
             "{b:?} must fail closed (no CBOR value arm / no owned-vec support)"
         );
@@ -6676,7 +6742,8 @@ fn cbor_owning_record_element_rides_owned_abi_never_bitcopy_leak() {
             &ResolvedTy::named_user("WithTok", vec![]),
             std::slice::from_ref(&rec),
             &no_enums,
-            &no_machines
+            &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Owned,
         "a CancellationToken-bearing record rides the owned ABI (real drop_fn, no \
@@ -6728,6 +6795,7 @@ fn cbor_vec_elem_kind_fails_closed_for_indirect_enum_element() {
             &no_recs,
             std::slice::from_ref(&indirect),
             &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Defer,
         "an indirect-enum element is a heap-owned pointer — must fail closed, not BitCopy"
@@ -6745,6 +6813,7 @@ fn cbor_vec_elem_kind_fails_closed_for_indirect_enum_element() {
             std::slice::from_ref(&wrapper),
             std::slice::from_ref(&indirect),
             &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::Defer,
         "a record transitively containing an indirect enum must fail closed"
@@ -6777,6 +6846,7 @@ fn cbor_vec_elem_kind_fails_closed_for_indirect_enum_element() {
             &no_recs,
             std::slice::from_ref(&direct),
             &no_machines,
+            &hew_hir::LifecycleRegistry::default(),
         ),
         CborVecElemKind::LayoutBitCopy,
         "a heap-free direct enum must stay BitCopy — the fix must not over-defer"
@@ -6836,6 +6906,111 @@ fn owned_vec_element_walker_treats_tokens_and_generators_as_heap_owning() {
     assert!(
         !resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &plain_tuple),
         "an all-BitCopy tuple must not be classified heap-owning"
+    );
+}
+
+#[test]
+fn owned_vec_resource_descriptor_is_drop_only_and_uses_exact_close() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("resource_vec_descriptor");
+    let mut harness = build_harness(&ctx, &[], &[]);
+    let resource_ty = ResolvedTy::named_opaque("std.net.Connection", vec![]);
+    let lifecycle = hew_hir::OpaqueResourceLifecycle {
+        resource_declaration: hew_types::DefId::new("std.net.Connection"),
+        close_declaration: hew_types::DefId::new("std.net.Connection::close"),
+        release_declaration: hew_types::DefId::new("std.net.hew_tcp_close"),
+        close_symbol: "std__net__Connection::close".to_string(),
+        release_symbol: "hew_tcp_close".to_string(),
+        discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+        producer_declarations: std::collections::BTreeSet::new(),
+        producer_symbols: std::collections::BTreeSet::new(),
+        producer_modules: std::collections::BTreeSet::new(),
+    };
+    harness
+        .lifecycle_registry
+        .admit_opaque_resource(lifecycle.clone())
+        .unwrap();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &lifecycle.close_symbol,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "resource_vec_probe");
+
+    assert!(resolved_ty_element_owns_heap_for_owned_vec(
+        &fn_ctx,
+        &resource_ty
+    ));
+    crate::layout::owned_elem_layout_descriptor_ptr(
+        &ctx,
+        &llvm_mod,
+        fn_ctx.target_data,
+        fn_ctx.owned_elem_registries(),
+        &resource_ty,
+        ptr_ty.into(),
+        "resource_vec",
+    )
+    .expect("exact resource lifecycle must produce a drop-only Vec descriptor");
+
+    let ir = llvm_mod.print_to_string().to_string();
+    assert!(
+        ir.contains("__hew_vec_elem_layout_resource_std$net$Connection_drop_only")
+            && ir.contains("ptr null"),
+        "resource Vec descriptor must carry no clone callback:\n{ir}"
+    );
+    let drop_start = ir
+        .find("define internal void @\"__hew_vec_resource_std$net$Connection_drop_inplace\"")
+        .expect("resource Vec drop wrapper");
+    let drop_body = &ir[drop_start..];
+    assert!(
+        drop_body.contains("call void @\"std__net__Connection::close\"")
+            && drop_body.contains("store ptr null"),
+        "resource Vec drop wrapper must call the exact close once and neutralise its slot:\n{drop_body}"
+    );
+}
+
+#[test]
+fn owned_vec_resource_descriptor_rejects_non_unit_close_abi() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("resource_vec_wrong_close_abi");
+    let mut harness = build_harness(&ctx, &[], &[]);
+    let resource_ty = ResolvedTy::named_opaque("std.net.Connection", vec![]);
+    let lifecycle = hew_hir::OpaqueResourceLifecycle {
+        resource_declaration: hew_types::DefId::new("std.net.Connection"),
+        close_declaration: hew_types::DefId::new("std.net.Connection::close"),
+        release_declaration: hew_types::DefId::new("std.net.hew_tcp_close"),
+        close_symbol: "std__net__Connection::close".to_string(),
+        release_symbol: "hew_tcp_close".to_string(),
+        discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+        producer_declarations: std::collections::BTreeSet::new(),
+        producer_symbols: std::collections::BTreeSet::new(),
+        producer_modules: std::collections::BTreeSet::new(),
+    };
+    harness
+        .lifecycle_registry
+        .admit_opaque_resource(lifecycle.clone())
+        .unwrap();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &lifecycle.close_symbol,
+        ctx.i64_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "wrong_close_abi_probe");
+    let error = crate::layout::owned_elem_layout_descriptor_ptr(
+        &ctx,
+        &llvm_mod,
+        fn_ctx.target_data,
+        fn_ctx.owned_elem_registries(),
+        &resource_ty,
+        ptr_ty.into(),
+        "resource_vec",
+    )
+    .expect_err("non-Unit close return must fail closed");
+    assert!(
+        error.to_string().contains("Hew Unit i8(ptr)"),
+        "unexpected wrong-close-ABI diagnostic: {error}"
     );
 }
 
@@ -8767,8 +8942,7 @@ fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = tempfile::Builder::new()
         .prefix("hew-dyn-coerce-ok-")
@@ -9111,8 +9285,7 @@ fn coerce_to_dyn_trait_fails_closed_when_source_slot_disagrees_with_concrete_typ
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = tempfile::Builder::new()
         .prefix("hew-dyn-coerce-slot-mismatch-")
@@ -9226,8 +9399,7 @@ fn coerce_to_dyn_trait_arm_fails_closed_when_vtable_registry_missing_entry() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = tempfile::Builder::new()
         .prefix("hew-dyn-coerce-miss-")
@@ -10031,8 +10203,7 @@ fn frame_owned_trait_object_drop_with_drop_fn_fails_closed() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = tempfile::Builder::new()
         .prefix("hew-frame-owned-drop-fail-")
@@ -10169,8 +10340,7 @@ fn single_resource_drop_pipeline(name: &str, resource_ty: ResolvedTy) -> IrPipel
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -10554,8 +10724,7 @@ fn minimal_pipeline_with_unit_main(with_actor: bool) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -10660,57 +10829,6 @@ fn non_actor_main_omits_drain_epilogue() {
     );
 }
 
-#[test]
-fn connection_actor_state_clone_returns_null() {
-    let conn_ty = ResolvedTy::named_opaque("Connection", vec![]);
-    let actor = ActorLayout {
-        name: "ConnActor".to_string(),
-        defining_module: None,
-        state_field_names: vec!["conn".to_string()],
-        state_field_tys: vec![conn_ty.clone()],
-        state_field_defaults: vec![None],
-        init_param_names: vec![],
-        init_param_tys: vec![],
-        init_symbol: None,
-        on_start_symbol: None,
-        on_stop_symbols: vec![],
-        on_crash_symbol: None,
-        on_exit_symbol: None,
-        on_down_symbol: None,
-        max_heap_bytes: None,
-        cycle_capable: false,
-        mailbox_capacity: None,
-        overflow_policy: None,
-        coalesce_key_plan: None,
-        handlers: vec![],
-        state_clone_fn_symbol: Some("__hew_state_clone_ConnActor".to_string()),
-        state_drop_fn_symbol: Some("__hew_state_drop_ConnActor".to_string()),
-        state_field_clone_kinds: Some(vec![StateFieldCloneKind::IoHandle {
-            kind: hew_mir::IoHandleKind::Connection,
-        }]),
-    };
-    let mut pipeline = minimal_pipeline_with_unit_main(false);
-    pipeline.opaque_handle_names = vec!["Connection".to_string()];
-    pipeline.record_layouts = vec![RecordLayout {
-        name: "ConnActor".to_string(),
-        field_tys: vec![conn_ty],
-        field_names: vec![],
-    }];
-    pipeline.actor_layouts = vec![actor];
-
-    let ctx = Context::create();
-    let module = build_module(&ctx, &pipeline, "connection_state_clone")
-        .expect("Connection actor-state clone module must build");
-    module
-        .verify()
-        .unwrap_or_else(|e| panic!("Connection actor-state clone module failed verify: {e}"));
-    let ir = module.print_to_string().to_string();
-    assert!(
-        ir.contains("define ptr @__hew_state_clone_ConnActor(ptr") && ir.contains("ret ptr null"),
-        "Connection actor state clone body must reset the restart template by returning null:\n{ir}"
-    );
-}
-
 fn crash_state_probe_fn(source_origin: SourceOrigin) -> RawMirFunction {
     RawMirFunction {
         source_origin,
@@ -10734,6 +10852,11 @@ fn crash_state_probe_fn(source_origin: SourceOrigin) -> RawMirFunction {
                     field_offset: FieldOffset(0),
                     dest: Place::Local(2),
                     mode: ActorStateLoadMode::Borrowed,
+                },
+                Instr::ActorStateFieldStore {
+                    field_offset: FieldOffset(0),
+                    src: Place::Local(2),
+                    handoff: hew_mir::ActorStateStoreHandoff::ConsumeSource,
                 },
                 Instr::Move {
                     dest: Place::ReturnSlot,
@@ -10822,6 +10945,10 @@ fn on_crash_definition_consumes_trailing_actor_state_pointer() {
     assert!(
         !body.contains("ctx_actor_ptr_slot") && !body.contains("actor_state_slot"),
         "crash hook must not recover the supervisor actor's state through ctx:\n{body}"
+    );
+    assert!(
+        !body.contains("hew_dispatch_state_cleanup_"),
+        "crash-hook stores target a child restart template outside the supervisor's active dispatch transaction:\n{body}"
     );
 }
 
@@ -10958,8 +11085,7 @@ fn pipeline_with_coro_probe() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -11105,8 +11231,7 @@ fn pipeline_with_string_stream_send_pump() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -11760,6 +11885,13 @@ fn suspending_closure_frame_cleanup_uses_exact_suspend_drop_plans() {
         thunk.contains("call void @hew_string_drop("),
         "the cached thunk must reuse the typed string-drop ritual:\n{thunk}"
     );
+    assert!(
+        !thunk.contains("invoke ")
+            && !thunk.contains("landingpad")
+            && !thunk.contains("personality"),
+        "generated cleanup thunks use a plain direct-call policy, not an LLVM unwind quarantine; \
+         a Rust panic in the plain-C runtime callee is process-fatal:\n{thunk}"
+    );
 
     let free_module =
         build_module(&ctx, &capture_free, "capture_free_frame_cleanup").expect("free module");
@@ -11922,6 +12054,17 @@ fn main() {
 #[test]
 fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
     let pipeline = pipeline_from_helper_snapshot_raw_trap_source();
+    let helper_raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "helper_trap")
+        .expect("helper_trap raw MIR");
+    assert!(
+        matches!(helper_raw.locals.get(9), Some(ResolvedTy::Bytes))
+            && helper_raw.local_names.get(9).and_then(Option::as_deref)
+                == Some("__hew_produced_value"),
+        "local 9 is the produced bytes owner transferred into Bundle.data"
+    );
     let helper_elab = pipeline
         .elaborated_mir
         .iter()
@@ -11940,7 +12083,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
     owner_locals.dedup();
     assert_eq!(
         owner_locals,
-        [2, 5, 11, 14, 17, 19, 21],
+        [2, 5, 9, 11, 14, 17, 19, 21],
         "grounded helper owner topology drifted"
     );
 
@@ -11971,7 +12114,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
                     line.contains("%helper_crash_cleanup_token_") && line.contains(" = alloca i64")
                 })
                 .count(),
-            7,
+            8,
             "{triple}: every exact owner needs one stable token alloca:\n{helper}"
         );
         let arms = helper
@@ -11980,7 +12123,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
             .collect::<Vec<_>>();
         assert_eq!(
             arms.len(),
-            7,
+            8,
             "{triple}: every grounded Move/Call owner must arm once:\n{helper}"
         );
         assert!(
@@ -11991,7 +12134,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
             helper
                 .matches("call i1 @hew_cont_crash_cleanup_deactivate")
                 .count(),
-            7,
+            8,
             "{triple}: every destination write must gate stale authority before replacement"
         );
         assert!(
@@ -12614,8 +12757,7 @@ fn pipeline_with_two_suspends() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -12810,8 +12952,7 @@ fn non_ptr_logical_return_coro_fn_compiles_as_ptr_ramp() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
     let ctx = Context::create();
@@ -12906,6 +13047,116 @@ fn suspendable_handler_fn(symbol: &str) -> RawMirFunction {
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
+    }
+}
+
+fn suspendable_state_store_handler_fn(symbol: &str) -> RawMirFunction {
+    let ptr_ty = ResolvedTy::Pointer {
+        is_mutable: true,
+        pointee: Box::new(ResolvedTy::Unit),
+    };
+    RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: symbol.to_string(),
+        return_ty: ptr_ty,
+        call_conv: FunctionCallConv::ActorHandler,
+        params: vec![ResolvedTy::I64],
+        locals: vec![ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::EnterContext,
+                    Instr::ActorStateFieldStore {
+                        field_offset: FieldOffset(0),
+                        src: Place::Local(0),
+                        handoff: hew_mir::ActorStateStoreHandoff::ConsumeSource,
+                    },
+                ],
+                terminator: Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 2,
+                    is_final: true,
+                },
+            },
+            BasicBlock {
+                id: 2,
+                statements: Vec::new(),
+                instructions: vec![Instr::ExitContext],
+                terminator: Terminator::Return,
+            },
+        ],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    }
+}
+
+fn owned_string_state_store_handler_fn(symbol: &str) -> RawMirFunction {
+    RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: symbol.to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::ActorHandler,
+        params: vec![ResolvedTy::String],
+        locals: vec![ResolvedTy::String],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::EnterContext,
+                    Instr::ActorStateFieldStore {
+                        field_offset: FieldOffset(0),
+                        src: Place::Local(0),
+                        handoff: hew_mir::ActorStateStoreHandoff::ConsumeSource,
+                    },
+                    Instr::ExitContext,
+                ],
+                terminator: Terminator::Return,
+            },
+            // This disconnected trap block supplies the crash-only drop-plan
+            // authority for the incoming owner without adding a normal-return
+            // source drop after the state-store consumes it.
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![Instr::ExitContext],
+                terminator: Terminator::Trap {
+                    kind: hew_mir::TrapKind::IntegerOverflow,
+                },
+            },
+        ],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
     }
 }
 
@@ -13032,8 +13283,7 @@ fn pipeline_with_actor_handlers(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -13114,6 +13364,163 @@ fn dispatch_trampoline_drives_suspendable_handler() {
     module
         .verify()
         .unwrap_or_else(|e| panic!("suspend dispatch module failed verify: {e}"));
+}
+
+#[test]
+fn coroutine_state_replacement_scratch_stays_in_alloca_prologue() {
+    let ctx = Context::create();
+    let symbol = "SuspendStateActor__recv__work";
+    let mut layout = unit_suspendable_layout(symbol, 17);
+    layout.param_tys = vec![ResolvedTy::I64];
+    let mut pipeline = pipeline_with_actor_handlers(
+        "SuspendStateActor",
+        vec![(layout, suspendable_state_store_handler_fn(symbol))],
+    );
+    pipeline.actor_layouts[0].state_field_names = vec!["value".to_string()];
+    pipeline.actor_layouts[0].state_field_tys = vec![ResolvedTy::I64];
+    pipeline.actor_layouts[0].state_field_defaults = vec![None];
+    pipeline.actor_layouts[0].state_field_clone_kinds =
+        Some(vec![StateFieldCloneKind::BitCopy { size_bytes: 8 }]);
+    pipeline.actor_layouts[0].state_clone_fn_symbol =
+        Some("__hew_state_clone_SuspendStateActor".to_string());
+    pipeline.actor_layouts[0].state_drop_fn_symbol =
+        Some("__hew_state_drop_SuspendStateActor".to_string());
+    pipeline.record_layouts.push(RecordLayout {
+        name: "SuspendStateActor".to_string(),
+        field_tys: vec![ResolvedTy::I64],
+        field_names: vec!["value".to_string()],
+    });
+
+    let module = build_module(&ctx, &pipeline, "suspend_state_scratch")
+        .expect("suspendable state-store handler must build");
+    let ir = module.print_to_string().to_string();
+    let body = llvm_defined_function_body(&ir, symbol);
+    let prologue_start = body
+        .find("\nalloca.prologue:")
+        .unwrap_or_else(|| panic!("coroutine must carry an alloca.prologue:\n{body}"));
+    let coro_id = body
+        .find("@llvm.coro.id")
+        .unwrap_or_else(|| panic!("coroutine must initialize its coroutine id:\n{body}"));
+    let coro_begin = body
+        .find("@llvm.coro.begin")
+        .unwrap_or_else(|| panic!("coroutine must begin before its alloca prologue:\n{body}"));
+    assert!(
+        coro_id < coro_begin && coro_begin < prologue_start,
+        "coro.id and coro.begin must remain ordered in the real entry block before alloca.prologue:\n{body}"
+    );
+    let entry = &body[..prologue_start];
+    assert!(
+        entry.contains("@llvm.coro.id") && entry.contains("@llvm.coro.begin"),
+        "coro.id/coro.begin must remain in the real entry block:\n{body}"
+    );
+    assert!(
+        !entry.contains("state_f0_replacement"),
+        "replacement scratch must not precede coro.begin:\n{body}"
+    );
+    let prologue_tail = &body[prologue_start..];
+    let prologue_end = prologue_tail
+        .find("\nbb0:")
+        .unwrap_or_else(|| panic!("missing first MIR block after alloca prologue:\n{body}"));
+    let prologue = &prologue_tail[..prologue_end];
+    assert_eq!(
+        prologue
+            .matches("%state_f0_replacement = alloca i64")
+            .count(),
+        1,
+        "coroutine replacement scratch must be allocated once in alloca.prologue:\n{body}"
+    );
+    module
+        .verify()
+        .unwrap_or_else(|e| panic!("suspend state scratch module failed verify: {e}"));
+}
+
+#[test]
+fn owned_state_source_transfer_rejection_is_process_fatal_before_live_store() {
+    let ctx = Context::create();
+    let symbol = "OwnedStateActor__recv__replace";
+    let mut layout = unit_suspendable_layout(symbol, 23);
+    layout.param_tys = vec![ResolvedTy::String];
+    let mut pipeline = pipeline_with_actor_handlers(
+        "OwnedStateActor",
+        vec![(layout, owned_string_state_store_handler_fn(symbol))],
+    );
+    pipeline.actor_layouts[0].state_field_names = vec!["value".to_string()];
+    pipeline.actor_layouts[0].state_field_tys = vec![ResolvedTy::String];
+    pipeline.actor_layouts[0].state_field_defaults = vec![None];
+    pipeline.actor_layouts[0].state_field_clone_kinds = Some(vec![StateFieldCloneKind::String]);
+    pipeline.actor_layouts[0].state_clone_fn_symbol =
+        Some("__hew_state_clone_OwnedStateActor".to_string());
+    pipeline.actor_layouts[0].state_drop_fn_symbol =
+        Some("__hew_state_drop_OwnedStateActor".to_string());
+    pipeline.record_layouts.push(RecordLayout {
+        name: "OwnedStateActor".to_string(),
+        field_tys: vec![ResolvedTy::String],
+        field_names: vec!["value".to_string()],
+    });
+    pipeline
+        .elaborated_mir
+        .push(hew_mir::ElaboratedMirFunction {
+            name: symbol.to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: Vec::new(),
+            decisions: Vec::new(),
+            blocks: Vec::new(),
+            drop_plans: vec![(
+                hew_mir::ExitPath::Panic { block: 1 },
+                hew_mir::DropPlan {
+                    drops: vec![frame_cleanup_string_descriptor(Place::Local(0))],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: Vec::new(),
+        });
+
+    let module = build_module(&ctx, &pipeline, "owned_state_transfer")
+        .expect("owned state transfer module must build");
+    let ir = module.print_to_string().to_string();
+    let body = llvm_defined_function_body(&ir, symbol);
+    let begin = body
+        .find("@hew_dispatch_state_cleanup_begin_replace")
+        .expect("fatal begin-replace call");
+    let materialize_line = body
+        .lines()
+        .find(|line| line.contains("store ptr") && line.contains("ptr %state_f0_replacement"))
+        .unwrap_or_else(|| panic!("missing exact replacement materialization:\n{body}"));
+    let materialize = body
+        .find(materialize_line)
+        .expect("materialization line belongs to function body");
+    let old_release = body
+        .find("call void @hew_string_drop")
+        .expect("old state owner release");
+    let transfer = body
+        .find("@hew_dispatch_state_cleanup_prepare_transfer")
+        .expect("source-token replacement preparation");
+    let live_store_line = body
+        .lines()
+        .find(|line| line.contains("store ptr") && line.contains("%actor_state_field_0_ptr"))
+        .unwrap_or_else(|| panic!("missing live actor-state store:\n{body}"));
+    let live_store = body
+        .find(live_store_line)
+        .expect("live store line belongs to function body");
+    assert!(
+        begin < materialize
+            && materialize < old_release
+            && old_release < transfer
+            && transfer < live_store,
+        "token path must order begin < materialize < old release < prepare-transfer < live store:\n{body}"
+    );
+    let rejected = body
+        .find("state_f0_crash_prepare_transfer_rejected:")
+        .expect("explicit rejected-transfer block");
+    let rejected_tail = &body[rejected..];
+    assert!(
+        rejected_tail.contains("call void @hew_dispatch_state_cleanup_abort_invariant()")
+            && rejected_tail.contains("unreachable"),
+        "prepare-transfer false must terminate the process, never resume actor recovery:\n{body}"
+    );
+    module
+        .verify()
+        .unwrap_or_else(|e| panic!("owned state transfer module failed verify: {e}"));
 }
 
 /// A run-to-completion handler's trampoline arm is byte-identical to the
@@ -14403,14 +14810,30 @@ fn empty_drop_witnesses<'a, 'ctx>(
     machine_layouts: &'a MachineLayoutMap<'ctx>,
     record_structs: &'a RecordLayoutMap<'ctx>,
 ) -> DropSynthWitnesses<'a, 'ctx> {
+    static EMPTY_LIFECYCLES: std::sync::LazyLock<hew_hir::LifecycleRegistry> =
+        std::sync::LazyLock::new(hew_hir::LifecycleRegistry::default);
     DropSynthWitnesses {
         enum_layouts: &[],
         machine_layouts,
         target_data,
         record_layouts: &[],
         record_structs,
-        resource_record_close: &[],
+        lifecycle_registry: &EMPTY_LIFECYCLES,
     }
+}
+
+fn test_user_close(name: &str, symbol: &str) -> ResourceCloseAuthority {
+    ResourceCloseAuthority::User(Box::new(hew_hir::OpaqueResourceLifecycle {
+        resource_declaration: hew_types::DefId::new(name),
+        close_declaration: hew_types::DefId::new(symbol),
+        release_declaration: hew_types::DefId::new(symbol),
+        close_symbol: symbol.to_string(),
+        release_symbol: symbol.to_string(),
+        discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+        producer_declarations: std::collections::BTreeSet::new(),
+        producer_symbols: std::collections::BTreeSet::new(),
+        producer_modules: std::collections::BTreeSet::new(),
+    }))
 }
 
 /// Happy path: parent struct field 0 IS the `{ ptr, i32, i32 }` Bytes-
@@ -14708,7 +15131,7 @@ fn user_resource_field_drop_uses_generated_hew_function() {
         0,
         &StateFieldCloneKind::Resource {
             name: "Pattern".to_string(),
-            close: ResourceCloseAuthority::User("Pattern::free".to_string()),
+            close: test_user_close("Pattern", "Pattern::free"),
         },
         &w,
     )
@@ -14785,19 +15208,6 @@ fn builtin_handle_field_overwrite_fails_closed_before_store() {
             other => panic!("expected FailClosed for {kind:?}, got {other:?}"),
         }
     }
-    emit_field_overwrite_release(
-        &fn_ctx,
-        field_ptr,
-        ptr_ty.into(),
-        src_ptr,
-        src_val,
-        &StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        },
-        "state_connection_f0",
-        false,
-    )
-    .expect("Connection carries no per-field close obligation");
     let receiver_err = emit_field_overwrite_release(
         &fn_ctx,
         field_ptr,
@@ -14831,7 +15241,7 @@ fn builtin_handle_field_overwrite_fails_closed_before_store() {
         src_val,
         &StateFieldCloneKind::Resource {
             name: "Receiver".to_string(),
-            close: ResourceCloseAuthority::User("user$Receiver$close".to_string()),
+            close: test_user_close("user.Receiver", "user$Receiver$close"),
         },
         "user_receiver_f0",
         false,

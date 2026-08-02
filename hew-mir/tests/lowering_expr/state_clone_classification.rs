@@ -11,7 +11,7 @@
 //!   `UserRecord` recursion + visited-set machinery end-to-end through
 //!   `parser → checker → HIR → MIR`.
 //! - Representative samples of the audit's 110 classified actors (Counter,
-//!   `ChatRoom`-shape, `mqtt_broker` `Router`, Connection-bearing actor)
+//!   `ChatRoom`-shape, `mqtt_broker` `Router`, resource-bearing actor)
 //!   produce the expected classifications.
 
 use std::collections::HashSet;
@@ -19,11 +19,59 @@ use std::collections::HashSet;
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::model::RecordLayout;
 use hew_mir::{
-    classify_actor_state_fields, classify_state_field_with_enum_layouts, lower_hir_module,
-    ty_contains_unclonable_opaque, ClassificationError, IoHandleKind, ResourceCloseAuthority,
-    StateFieldCloneKind,
+    lower_hir_module, ty_contains_unclonable_opaque, ClassificationError, StateFieldCloneKind,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
+
+fn empty_lifecycles() -> &'static hew_hir::LifecycleRegistry {
+    static REGISTRY: std::sync::LazyLock<hew_hir::LifecycleRegistry> =
+        std::sync::LazyLock::new(hew_hir::LifecycleRegistry::default);
+    &REGISTRY
+}
+
+fn classify_for_test(
+    ty: &ResolvedTy,
+    records: &[RecordLayout],
+    visited: &mut HashSet<String>,
+) -> Result<StateFieldCloneKind, ClassificationError> {
+    hew_mir::classify_state_field_with_lifecycle_registry(
+        ty,
+        records,
+        &[],
+        &[],
+        empty_lifecycles(),
+        visited,
+    )
+}
+
+fn classify_for_test_with_enums(
+    ty: &ResolvedTy,
+    records: &[RecordLayout],
+    enums: &[hew_mir::EnumLayout],
+    visited: &mut HashSet<String>,
+) -> Result<StateFieldCloneKind, ClassificationError> {
+    hew_mir::classify_state_field_with_lifecycle_registry(
+        ty,
+        records,
+        enums,
+        &[],
+        empty_lifecycles(),
+        visited,
+    )
+}
+
+fn classify_actor_for_test(
+    tys: &[ResolvedTy],
+    records: &[RecordLayout],
+) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
+    hew_mir::classify_actor_state_fields_with_lifecycle_registry(
+        tys,
+        records,
+        &[],
+        &[],
+        empty_lifecycles(),
+    )
+}
 
 /// Pipe a `.hew` source through parser → checker → HIR → MIR, returning
 /// the produced `IrPipeline`. Asserts no parser or HIR diagnostics;
@@ -104,7 +152,7 @@ fn trivial_state_actor_gets_paired_clone_and_drop_symbols() {
 }
 
 #[test]
-fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped() {
+fn unproven_opaque_resource_actor_field_stays_opaque_directly_and_when_wrapped() {
     let src = r"
         #[resource]
         #[opaque]
@@ -133,15 +181,14 @@ fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped(
         pipeline.diagnostics
     );
 
-    let resource_kind = StateFieldCloneKind::Resource {
+    let resource_kind = StateFieldCloneKind::OpaqueHandle {
         name: "Dq".to_string(),
-        close: ResourceCloseAuthority::User("Dq::close".to_string()),
     };
     let direct = find_actor(&pipeline, "Direct");
     assert_eq!(
         direct.state_field_clone_kinds.as_deref(),
         Some(std::slice::from_ref(&resource_kind)),
-        "a direct `#[resource] #[opaque]` actor field must not fall through to OpaqueHandle",
+        "a source marker without an exact admitted release body must not mint lifecycle authority",
     );
 
     let wrapped = find_actor(&pipeline, "Wrapped");
@@ -155,9 +202,11 @@ fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped(
         "the already-supported record-wrapped resource path must remain unchanged",
     );
     assert_eq!(
-        pipeline.resource_opaque_close,
-        vec![("Dq".to_string(), "Dq::close".to_string())],
-        "the shared resource registry must remain available to nested-record codegen",
+        pipeline
+            .lifecycle_registry
+            .opaque_resource(&hew_types::DefId::new("Dq")),
+        None,
+        "the immutable HIR registry must not admit a marker-only opaque lifecycle",
     );
 }
 
@@ -214,18 +263,18 @@ fn main() {{}}
         assert_eq!(
             keeper.state_field_clone_kinds.as_deref(),
             Some(
-                &[StateFieldCloneKind::Resource {
+                &[StateFieldCloneKind::OpaqueHandle {
                     name: name.to_string(),
-                    close: ResourceCloseAuthority::User(format!("{name}::{method}")),
                 }][..]
             ),
-            "root opaque user `{name}` must retain user-close authority"
+            "root opaque user `{name}` must not inherit a builtin lifecycle by leaf name"
         );
         assert!(
             pipeline
-                .resource_opaque_close
-                .contains(&(name.to_string(), format!("{name}::{method}"))),
-            "root opaque user `{name}` must be present in the resource registry"
+                .lifecycle_registry
+                .opaque_resource(&hew_types::DefId::new(name))
+                .is_none(),
+            "root opaque user `{name}` must remain absent from the exact lifecycle registry"
         );
     }
 }
@@ -391,14 +440,14 @@ fn user_type_named_connection_classifies_as_user_record_not_iohandle() {
 }
 
 #[test]
-fn qualified_net_connection_without_record_layout_classifies_as_iohandle() {
+fn qualified_net_connection_without_lifecycle_registry_fails_closed_as_opaque() {
     // Direct-classifier test (no parser involvement) pinning both sides of the
     // identity contract. The runtime handle is the exact stdlib source identity
     // `std.net.Connection`; a foreign same-short-name type must not acquire its
     // close/clone semantics merely because it has no record layout in this
     // synthetic classifier call.
     let mut visited = HashSet::new();
-    let result = hew_mir::classify_state_field(
+    let result = classify_for_test(
         &ResolvedTy::Named {
             name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
             args: vec![],
@@ -411,14 +460,14 @@ fn qualified_net_connection_without_record_layout_classifies_as_iohandle() {
     .expect("classified");
     assert_eq!(
         result,
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
+        StateFieldCloneKind::OpaqueHandle {
+            name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
         },
     );
 
     let mut visited = HashSet::new();
     assert_eq!(
-        hew_mir::classify_state_field(
+        classify_for_test(
             &ResolvedTy::Named {
                 name: "foo.Connection".to_string(),
                 args: vec![],
@@ -448,7 +497,7 @@ fn user_type_named_vec_does_not_route_to_container_arm() {
         field_tys: vec![ResolvedTy::I64],
         field_names: vec![],
     }];
-    let result = hew_mir::classify_state_field(
+    let result = classify_for_test(
         &ResolvedTy::Named {
             name: "Vec".to_string(),
             args: vec![], // no args — a user record-named "Vec"
@@ -481,7 +530,7 @@ fn user_type_named_local_pid_does_not_route_to_bitcopy_arm() {
         field_tys: vec![ResolvedTy::String],
         field_names: vec![],
     }];
-    let result = hew_mir::classify_state_field(
+    let result = classify_for_test(
         &ResolvedTy::Named {
             name: "LocalPid".to_string(),
             args: vec![],
@@ -505,7 +554,7 @@ fn router_shape_vec_of_user_connection_carries_user_record_through() {
     // Updated post-review: in the real corpus, `Connection` is a
     // user-declared `type Connection { ... }` in `std/net/net.hew`,
     // so `Vec<Connection>` classifies as `Vec<UserRecord("Connection")>`
-    // — NOT `Vec<IoHandle{Connection}>`. Stage 2's supervisor gate
+    // — NOT a Connection-specific IoHandle. Stage 2's supervisor gate
     // must pattern-match on the user record's owned-heap fields (or
     // detect by another channel — see W4.011), not on the IoHandle
     // arm. This test pins the post-fix behaviour so Stage 2's gate
@@ -619,7 +668,7 @@ fn workspace_visited_set_terminates_classifier_directly() {
         ],
         field_names: vec![],
     }];
-    let result = classify_actor_state_fields(
+    let result = classify_actor_for_test(
         &[ResolvedTy::Named {
             name: "Cyclic".to_string(),
             args: vec![],
@@ -645,7 +694,7 @@ fn missing_record_layout_surfaces_diagnostic_not_silent_none() {
     // types upstream), so we drive the classifier directly to pin the
     // surface contract.
     let mut visited = HashSet::new();
-    let result = hew_mir::classify_state_field(
+    let result = classify_for_test(
         &ResolvedTy::Named {
             name: "DoesNotExist".to_string(),
             args: vec![],
@@ -742,6 +791,44 @@ fn vec_of_opaque_handle_actor_state_fails_closed_end_to_end() {
         )),
         "expected ActorStateCloneClassificationFailed on Holder.v; got: {:#?}",
         pipeline.diagnostics
+    );
+}
+
+/// Crash-state escrow eligibility uses the same paired clone/drop classifier:
+/// a non-relocatable owned graph is rejected at MIR construction, while POD
+/// state receives the paired (no-op drop) thunks that prove byte relocation.
+#[test]
+fn crash_escrow_rejects_nonrelocatable_owned_state_and_accepts_pod() {
+    let src = r"
+        #[opaque]
+        type Widget {}
+
+        actor Bad {
+            let values: Vec<Widget>;
+            receive fn ping() {}
+        }
+
+        actor Pod {
+            let count: i64;
+            receive fn ping() {}
+        }
+    ";
+    let pipeline = lower_source(src);
+    let bad = find_actor(&pipeline, "Bad");
+    assert!(
+        bad.state_clone_fn_symbol.is_none() && bad.state_drop_fn_symbol.is_none(),
+        "non-relocatable owned state must not receive crash-escrow thunks"
+    );
+    assert!(pipeline.diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { actor, .. }
+            if actor == "Bad"
+    )));
+
+    let pod = find_actor(&pipeline, "Pod");
+    assert!(
+        pod.state_clone_fn_symbol.is_some() && pod.state_drop_fn_symbol.is_some(),
+        "POD state must receive paired relocation proof and no-op drop thunks"
     );
 }
 
@@ -862,9 +949,9 @@ fn machine_actor_state_field_classifies_as_enum() {
     assert!(
         matches!(
             kinds.as_slice(),
-            [StateFieldCloneKind::Enum { name }] if name == "Light"
+            [StateFieldCloneKind::Enum { name }] if name == "mc$$Light$$"
         ),
-        "machine field must classify as Enum {{ name: \"Light\" }}; got {kinds:?}",
+        "machine field must retain the exact synthesized layout identity; got {kinds:?}",
     );
 }
 
@@ -917,9 +1004,9 @@ fn heap_payload_machine_state_field_classifies_as_enum() {
     assert!(
         matches!(
             kinds.as_slice(),
-            [StateFieldCloneKind::Enum { name }] if name == "Conn"
+            [StateFieldCloneKind::Enum { name }] if name == "mc$$Conn$$"
         ),
-        "heap-payload machine field must classify as Enum {{ name: \"Conn\" }}; got {kinds:?}",
+        "heap-payload machine field must retain the exact synthesized layout identity; got {kinds:?}",
     );
 }
 
@@ -1194,7 +1281,7 @@ fn user_generic_shadowing_handle_name_with_opaque_arg_fails_closed() {
         field_tys: vec![socket_ty.clone()],
         field_names: vec!["held".to_string()],
     }];
-    let result = classify_state_field_with_enum_layouts(
+    let result = classify_for_test_with_enums(
         &ResolvedTy::Named {
             name: "Vec".to_string(),
             args: vec![user_localpid_socket],

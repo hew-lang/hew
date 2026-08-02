@@ -41,9 +41,7 @@ impl Checker {
             .module_import_bindings
             .get(&(self.current_module.clone(), surface_owner.to_string()))
             .map_or(surface_owner, String::as_str);
-        let canonical_source = self.canonical_std_module_sources.contains(canonical_owner)
-            || (canonical_owner == "std.channel.channel"
-                && self.canonical_std_module_sources.contains("std.channel"));
+        let canonical_source = self.canonical_std_module_sources.contains(canonical_owner);
         let lifecycle_authorized =
             crate::lookup_source_owned_lifecycle_type(name).is_some()
                 && self.canonical_lifecycle_import_authority.iter().any(
@@ -244,8 +242,30 @@ impl Checker {
     /// tell them apart; mapping both compared names to this identity before an
     /// EXACT compare accepts the former and rejects the latter.
     pub(super) fn canonical_nominal_name(&self, name: &str) -> Option<String> {
-        // An explicit module-qualified spelling is already an identity.
-        if name.contains('.') {
+        // A qualified spelling may still use a lexical module binding or the
+        // declaring module's short self-qualifier.  Resolve that surface once
+        // to its full source owner before treating it as an identity.  This is
+        // what makes `channel.Sender` inside `std.channel` and `net.NetError`
+        // inside a module importing `std.net` equal to the corresponding full
+        // identities without ever collapsing unrelated same-leaf types.
+        if let Some((surface_owner, short)) = name.rsplit_once('.') {
+            if let Some(canonical_owner) = self
+                .module_import_bindings
+                .get(&(self.current_module.clone(), surface_owner.to_string()))
+            {
+                let canonical = format!("{canonical_owner}.{short}");
+                if self.type_defs.contains_key(&canonical)
+                    || self.known_types.contains(&canonical)
+                    || self.canonical_std_module_sources.contains(canonical_owner)
+                {
+                    return Some(canonical);
+                }
+            }
+            if let Some(canonical) = self.canonical_current_module_qualified_type_name(name) {
+                return Some(canonical);
+            }
+            // A fully-qualified spelling with no proven lexical alias is
+            // already an exact nominal identity.
             return None;
         }
         // A root-local / current-module declaration keeps its bare identity: it
@@ -282,7 +302,9 @@ impl Checker {
         owners.sort_unstable();
         owners.dedup();
         match owners.as_slice() {
-            [only] => Some((*only).clone()),
+            [only] => self
+                .canonical_nominal_name(only)
+                .or_else(|| Some((*only).clone())),
             _ => None,
         }
     }
@@ -304,6 +326,10 @@ impl Checker {
             return dotted;
         }
 
+        if let Some(canonical) = self.canonical_nominal_name(&dotted) {
+            return canonical;
+        }
+
         if !dotted.contains('.') {
             if let Some(expected) = expected_ty.type_name() {
                 if let Some(owner) = self.current_module_identity() {
@@ -315,9 +341,6 @@ impl Checker {
                         return local;
                     }
                 }
-            }
-            if let Some(canonical) = self.canonical_nominal_name(&dotted) {
-                return canonical;
             }
         }
 

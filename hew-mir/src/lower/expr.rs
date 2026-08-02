@@ -20,6 +20,7 @@ use super::{
 };
 #[cfg(test)]
 use super::{FieldLoadClass, PlaceProvenance, Projection, ValueProvenance};
+use crate::model::ActorStateStoreHandoff;
 
 pub(super) fn binding_seeds_drop_elaboration(
     ty: &ResolvedTy,
@@ -316,6 +317,13 @@ impl Builder {
     ///     set (the same set the W3.029 value-class allow-list and the codegen
     ///     descriptor derive from — `dedup-semantic-boundary`).
     pub(super) fn is_owned_vec_element(&self, elem_ty: &ResolvedTy) -> bool {
+        if self
+            .lifecycle_registry
+            .opaque_resource_for_ty(elem_ty)
+            .is_some()
+        {
+            return true;
+        }
         match elem_ty {
             // A tuple element is owned when any field transitively owns heap.
             // Use `named_elem_owns_heap` (which consults
@@ -1070,19 +1078,19 @@ impl Builder {
                 field_names: fields.iter().map(|(field, _)| field.clone()).collect(),
             })
             .collect();
-        let plan = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        let plan = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             &concrete,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         )
         .map_err(|error| error.to_string())?;
         match plan.is_clone_total(
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         ) {
             Ok(true) => Ok(()),
             Ok(false) => Err(format!(
@@ -2194,8 +2202,11 @@ impl Builder {
             }
         }
         if let Some((field_offset, _)) = self.actor_state_field_for_target(target) {
-            self.instructions
-                .push(Instr::ActorStateFieldStore { field_offset, src });
+            self.instructions.push(Instr::ActorStateFieldStore {
+                field_offset,
+                src,
+                handoff: ActorStateStoreHandoff::ConsumeSource,
+            });
             return;
         }
         match &target.kind {
@@ -6337,6 +6348,7 @@ impl Builder {
                     self.push_instr(Instr::ActorStateFieldStore {
                         field_offset,
                         src: ret_local,
+                        handoff: ActorStateStoreHandoff::ConsumeSource,
                     });
                 }
                 // `m.step(ev)` is typed Unit at the call site (HIR

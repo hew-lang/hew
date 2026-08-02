@@ -116,8 +116,7 @@ fn base_pipeline(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 
@@ -720,8 +719,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ll = emit_ll(pipeline, "contains_thunk_dedup");
 

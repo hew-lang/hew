@@ -1510,14 +1510,15 @@ mod tests {
                   its non-mutating controls auditable together"
     )]
     fn interior_write_authority_covers_every_snapshot_mutation_class() {
-        let snapshot_plan = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
-            &ResolvedTy::String,
-            &[],
-            &[],
-            &[],
-            &[],
-        )
-        .expect("string snapshot plan");
+        let snapshot_plan =
+            crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+                &ResolvedTy::String,
+                &[],
+                &[],
+                &[],
+                &hew_hir::LifecycleRegistry::default(),
+            )
+            .expect("string snapshot plan");
         let enum_projection = Place::EnumVariant {
             local: 6,
             variant_idx: 0,

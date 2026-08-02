@@ -671,6 +671,80 @@ fn main() -> i64 {
             || ll.contains("declare ptr @hew_string_clone(ptr)"),
         "missing extern declaration of hew_string_clone; IR:\n{ll}"
     );
+
+    let begin = body
+        .find("call i1 @hew_dispatch_state_cleanup_begin_replace")
+        .unwrap_or_else(|| panic!("state replacement must enter its fatal phase; Body:\n{body}"));
+    let clone = body
+        .find("call ptr @hew_string_clone")
+        .expect("borrow-gated replacement clone");
+    let materialize = body
+        .find("store ptr %field_store_owner, ptr %state_f0_replacement")
+        .expect("actual replacement materialization");
+    let old_release = body
+        .find("call void @hew_string_drop")
+        .expect("old actor-state String release");
+    let no_source_prepare = body
+        .find("call void @hew_dispatch_state_cleanup_prepare")
+        .expect("no-source preparation branch");
+    let live_store = body
+        .lines()
+        .find(|line| line.contains("store ptr %field_store_owner, ptr %actor_state_field_0_ptr"))
+        .and_then(|line| body.find(line))
+        .unwrap_or_else(|| panic!("missing final live state store; Body:\n{body}"));
+    assert!(
+        begin < clone
+            && clone < materialize
+            && materialize < old_release
+            && old_release < no_source_prepare
+            && no_source_prepare < live_store,
+        "state replacement ordering must be begin < clone/materialize < old release < no-source prepare < live store; Body:\n{body}"
+    );
+}
+
+#[test]
+fn looped_state_store_reuses_one_entry_replacement_scratch() {
+    let source = r#"
+actor LoopWriter {
+    var value: i64;
+
+    init() {
+        value = 0;
+    }
+
+    receive fn write(n: i64) {
+        var i: i64 = 0;
+        while i < 2 {
+            value = n;
+            i += 1;
+        }
+    }
+}
+
+fn main() -> i64 {
+    0
+}
+"#;
+    let ll = emit_ll_text(
+        &pipeline_from_source(source),
+        "loop_state_replacement_scratch",
+    );
+    let body = define_body(&ll, "LoopWriter__recv__write").join("\n");
+    assert_eq!(
+        body.matches("%state_f0_replacement = alloca i64").count(),
+        1,
+        "a looped state assignment must reuse one scratch alloca; Body:\n{body}"
+    );
+    let alloca = body
+        .find("%state_f0_replacement = alloca i64")
+        .expect("replacement scratch alloca");
+    let first_loop_block = body
+        .find("\nbb0:")
+        .unwrap_or_else(|| panic!("loop control flow must be present; Body:\n{body}"));
+    assert!(
+        alloca < first_loop_block,
+        "replacement scratch must live in the entry/alloca prologue, never the loop body; Body:\n{body}"
+    );
 }
 
 /// GATE 2a (A625) — return-position escape retains under a borrow_mode gate.
@@ -1031,8 +1105,7 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
-        resource_opaque_close: vec![],
+        lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
 

@@ -91,9 +91,9 @@ use hew_types::{
 // `emit_trap_with_code` takes `u64`, so each use site casts `as u64`.
 use hew_runtime::internal::types::{
     HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
-    HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
-    HEW_TRAP_MODULE_INIT_REGEX_FAILED, HEW_TRAP_SHIFT_OUT_OF_RANGE,
-    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_WIRE_DECODE_FAILED,
+    HEW_TRAP_HEAP_EXCEEDED, HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW,
+    HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE, HEW_TRAP_MODULE_INIT_REGEX_FAILED,
+    HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_WIRE_DECODE_FAILED,
 };
 
 use inkwell::builder::Builder;
@@ -1695,6 +1695,7 @@ pub(crate) struct OwnedElemRegistries<'a, 'ctx> {
     pub(crate) enum_layouts: &'a [EnumLayout],
     pub(crate) machine_layouts: &'a MachineLayoutMap<'ctx>,
     pub(crate) record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
+    pub(crate) lifecycle_registry: &'a hew_hir::LifecycleRegistry,
 }
 
 /// The place/guard-independent identity of one typed frame-cleanup ritual.
@@ -1787,6 +1788,17 @@ impl FrameCleanupThunkKey {
 pub(crate) struct FrameCleanupThunkCache<'ctx> {
     entries: HashMap<FrameCleanupThunkKey, FunctionValue<'ctx>>,
     next_internal_name: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActorStateStoreTransaction {
+    /// The scheduler has opened a crash-cleanup domain for this handler's
+    /// actor state. Every begin/prepare/transfer must validate against it.
+    Required,
+    /// The function is a lifecycle/template phase whose state is not the
+    /// active scheduler dispatch domain. Old-value release and source-owner
+    /// handoff still run; only state escrow mutation is suppressed.
+    LifecycleOutsideDispatch,
 }
 
 pub(crate) struct FnCtx<'a, 'ctx> {
@@ -1882,6 +1894,25 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// `{ ptr, i32, i32 }` layout could alias (LESSONS:
     /// boundary-fail-closed, checker-authority).
     pub(crate) actor_state_field_kinds: Option<&'a [StateFieldCloneKind]>,
+    /// Whether an `ActorStateFieldStore` in this function executes inside the
+    /// scheduler-owned crash transaction for the SAME actor state.
+    ///
+    /// Receive and system handlers are entered by the scheduler after it has
+    /// escrowed their fully initialized state, including every resumed
+    /// activation. Lifecycle hooks are different: init/start run synchronously
+    /// at spawn (and may be nested beneath a different actor's dispatch), stop
+    /// runs from the teardown trampoline, and crash mutates the child's restart
+    /// template while the supervisor's dispatch domain is active. Those phases
+    /// must retain ordinary overwrite release/ownership handoff without asking
+    /// the active registry to mutate escrow bytes from the wrong domain.
+    actor_state_store_transaction: ActorStateStoreTransaction,
+    /// Per-field replacement scratch slots for transactional actor-state
+    /// stores. Allocated once in the dominating alloca prologue and reused by
+    /// looped or repeated stores, never dynamically per iteration.
+    actor_state_replacement_slots: RefCell<HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>>,
+    /// Dominating allocation block: ordinary `entry` for synchronous functions
+    /// and post-`coro.begin` `alloca.prologue` for coroutines.
+    alloca_prologue: inkwell::basic_block::BasicBlock<'ctx>,
     /// Local-register id → (stack slot, slot's LLVM type). Keyed by the
     /// `Place::Local(N)` index — an MIR identity, not a checker derivative.
     pub(crate) locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
@@ -1917,24 +1948,9 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// Symbols of functions carrying typed machine-step provenance in raw MIR.
     /// Call lowering consults this set instead of interpreting the callee name.
     pub(crate) machine_step_symbols: &'a HashSet<String>,
-    /// Field-bearing `#[resource]` record → `<Type>::close` symbol registry
-    /// (`IrPipeline::resource_record_close`). Consulted by the on-demand
-    /// record-drop thunk synthesis in `emit_aggregate_recursive_drop` so a
-    /// `#[resource]` record reached as a tuple/array element gets the SAME
-    /// close-then-teardown thunk the up-front synthesis pass emits — the two
-    /// synthesis points cannot diverge on whether close fires (spec §3.7.3).
-    pub(crate) resource_record_close: &'a [(String, String)],
-    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
-    /// for single-slot `#[resource] #[opaque]` handles
-    /// (`IrPipeline::resource_opaque_close`). The COMPLEMENT of
-    /// `resource_record_close`. Consulted by the on-demand record-drop thunk
-    /// synthesis in `emit_aggregate_recursive_drop` (via
-    /// `classify_record_drop_fields_for_key`) so a record holding a resource
-    /// handle, reached as a tuple/array element, gets the SAME
-    /// `Resource`-classified close-then-teardown body the up-front synthesis
-    /// pass emits — the two synthesis points cannot diverge on whether the
-    /// handle's `close(self)` fires.
-    pub(crate) resource_opaque_close: &'a [(String, String)],
+    /// Exact declaration-identity lifecycle authority for both opaque and
+    /// field-bearing resources. Linkage symbols are payload, never lookup keys.
+    pub(crate) lifecycle_registry: &'a hew_hir::LifecycleRegistry,
     /// Module-wide actor layouts keyed by `ActorLayout.name` at use sites.
     /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
     /// producer before calling into the runtime spawn ABI.
@@ -4958,21 +4974,29 @@ pub(crate) fn emit_owned_config_field_clone<'ctx>(
     child: &SupervisorChildLayout,
     field_ty: &ResolvedTy,
     mir_record_layouts: &[RecordLayout],
+    mir_enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     cfg_field_ptr: PointerValue<'ctx>,
     dst_field_ptr: PointerValue<'ctx>,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let mut visited = std::collections::HashSet::new();
-    let kind = hew_mir::classify_state_field(field_ty, mir_record_layouts, &mut visited).map_err(
-        |err| {
-            CodegenError::FailClosed(format!(
-                "init thunk owned config field for child `{}`: field type {field_ty:?} could not \
+    let kind = hew_mir::classify_state_field_with_lifecycle_registry(
+        field_ty,
+        mir_record_layouts,
+        mir_enum_layouts,
+        &[],
+        lifecycle_registry,
+        &mut visited,
+    )
+    .map_err(|err| {
+        CodegenError::FailClosed(format!(
+            "init thunk owned config field for child `{}`: field type {field_ty:?} could not \
                  be classified for cloning ({err:?}) — owned config init supports only \
                  clone-able types",
-                child.name
-            ))
-        },
-    )?;
+            child.name
+        ))
+    })?;
     // #2238 item 1: intercept owned collection kinds before the panic arm in
     // `clone_helper_for_kind` and fail closed coherently (see the helper doc).
     owned_config_field_clone_support(&kind, &child.name, field_ty)?;
@@ -5086,11 +5110,9 @@ pub(crate) fn emit_owned_config_field_clone<'ctx>(
 //   contexts (the runtime path uses sync-return only today).
 //
 // Fail-closed posture (CLAUDE.md custom #2, A249):
-// - Connection-bearing state actors: clone fn returns null immediately
-//   (defence-in-depth — Stage 2's supervisor-site codegen-gate is the
-//   primary surface, see plan §4.5 B). Drop is a no-op for the Connection
-//   field itself (the underlying fd is closed by actor teardown, not by
-//   `state_drop_fn`).
+// - Resource-bearing state actors: clone fn returns null immediately because
+//   an affine lifecycle has no implicit dup authority. Drop remains independent
+//   and invokes the exact registry-carried close.
 // - Half-populated symbol pairs (clone Some / drop None or vice versa)
 //   are rejected up front as a Stage 1 invariant violation by
 //   `resolve_state_clone_drop_symbols` (defined in Stage 2's section).
@@ -5212,9 +5234,7 @@ pub(crate) fn get_or_declare_drop_helper<'ctx>(
 ///   memcpy.
 /// - `Ok(None)` — BitCopy; the wholesale memcpy is sufficient and there
 ///   is no per-field work.
-/// - `Err(_)` — Connection (fail-closed at the actor-clone level — the
-///   actor body returns null immediately rather than entering the
-///   per-field loop) OR an unsupported composite (HashMap/HashSet of
+/// - `Err(_)` — an unsupported composite (HashMap/HashSet of
 ///   owned-heap elements where the runtime helper does not deep-clone
 ///   the element bytes itself).
 ///
@@ -5262,16 +5282,9 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
              consults the witness before reaching this helper, so this per-type \
              arm is retired and must never be reached for Vec/HashMap/HashSet"
         ),
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => Err(CodegenError::FailClosed(
-            "Connection field reached per-field clone helper; the actor-level \
-             body must intercept this arm and return null up front per plan §4.5 B"
-                .into(),
-        )),
         // W5.021 — Stream<T> / Sink<T> have no dup runtime helper, so the
         // clone direction (supervisor-restart / aggregate clone) fails closed,
-        // matching the Connection posture. The owned-tuple drop spine only
+        // matching the affine-resource posture. The owned-tuple drop spine only
         // exercises the DROP direction (handles are moved, never cloned), so
         // this arm is unreachable on that path; it stays fail-closed so a
         // future clone caller cannot silently alias a handle pointer.
@@ -5373,15 +5386,6 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
              consults the witness before reaching this helper, so this per-type \
              arm is retired and must never be reached for Vec/HashMap/HashSet"
         ),
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => {
-            // Connection drop is a no-op at the state level — the underlying
-            // fd is closed by the runtime's actor-teardown path (after
-            // `terminate_fn` runs), not by `state_drop_fn`. See plan §4.5 B
-            // + `hew-runtime/src/actor.rs:766` C1 fix block.
-            Ok(None)
-        }
         // W5.021 — Stream<T> / Sink<T> handle drop routes to the same C-ABI
         // close symbol the single-handle `.close()` and standalone-binding drop
         // use (`runtime_drop_symbol`: "Stream::close" -> hew_stream_close).
@@ -5449,7 +5453,7 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
         // without `@resource` — the type system treats it as BitCopy. The
         // user is responsible for calling `.free()` explicitly; actor state
         // drop does not auto-free opaque handles (consistent with BitCopy
-        // ownership semantics). No-op here matches the Connection posture.
+        // ownership semantics).
         StateFieldCloneKind::OpaqueHandle { .. } => Ok(None),
         // ClosurePair drop is the env free-thunk dispatch (load env slot,
         // call the planted thunk, null-store), emitted by the dedicated arm
@@ -5684,8 +5688,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
     target_data: Option<&TargetData>,
     enum_inplace_drop_seeds: &[String],
     vec_owned_record_seeds: &[String],
-    resource_record_close: &[(String, String)],
-    resource_opaque_close: &[(String, String)],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<()> {
     // Per-record AND per-enum helpers must exist before the per-actor body
     // that calls them is emitted. Collect-then-emit two passes. The
@@ -5702,16 +5705,8 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         opaque_handle_names,
         enum_inplace_drop_seeds,
         vec_owned_record_seeds,
-        resource_opaque_close,
+        lifecycle_registry,
     )?;
-    // Resource-record close-symbol lookup (spec §3.7.3). A `#[resource]`
-    // record's recursive drop thunk must run the user `close(self)` FIRST,
-    // before the field-wise teardown — so a `#[resource]` field at any depth
-    // gets its RAII close through the same thunk that frees its heap leaves.
-    let resource_close_by_record: HashMap<&str, &str> = resource_record_close
-        .iter()
-        .map(|(record, symbol)| (record.as_str(), symbol.as_str()))
-        .collect();
     // Concrete target-data for any indirect-enum child free thunk this pass
     // synthesises (F4). Falls back to the host layout when no target machine is
     // bound — the same policy `struct_abi_size` / `build_tagged_union_layout` use,
@@ -5737,7 +5732,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         target_data: resolved_td,
         record_layouts: pipeline_records,
         record_structs: record_struct_map,
-        resource_record_close,
+        lifecycle_registry,
     };
     for (record_name, kinds) in &record_classifications {
         let record_struct = record_struct_map.get(record_name).copied().ok_or_else(|| {
@@ -5769,7 +5764,9 @@ fn emit_state_clone_drop_synthesis<'ctx>(
                 record_name,
                 record_struct,
                 kinds,
-                resource_close_by_record.get(record_name.as_str()).copied(),
+                lifecycle_registry
+                    .resource_record(&hew_types::DefId::new(record_name))
+                    .map(|lifecycle| lifecycle.close_symbol.as_str()),
                 &drop_witnesses,
             )?;
         }
@@ -5929,7 +5926,8 @@ fn emit_state_clone_drop_synthesis<'ctx>(
 /// ```
 ///
 /// For actors holding a non-clonable pointer-backed IoHandle in state (any
-/// field is `IoHandle{Connection | Stream | Sink | Generator | CancellationToken}`),
+/// field is a registry-backed `Resource` or a non-clonable pointer-backed
+/// `IoHandle{Stream | Sink | Generator | CancellationToken}`),
 /// the body is short-circuited to `ret ptr null` — see plan §4.5 B. These
 /// handles have no dup runtime symbol; direct spawn is move-only and the null
 /// clone fn blocks supervisor restart fail-closed.
@@ -5978,14 +5976,14 @@ fn emit_actor_state_clone_body<'ctx>(
         .into_pointer_value();
 
     // ── Non-clonable IoHandle fail-closed short-circuit §4.5 B) ────────────
-    // Connection, Stream, Sink, Generator, and CancellationToken are
-    // pointer-backed handles with no dup runtime symbol. An actor holding any
+    // Stream, Sink, Generator, and CancellationToken are pointer-backed
+    // handles with no dup runtime symbol. An actor holding any
     // of them in state is move-only: direct spawn byte-copies the handle in and
     // the runtime never invokes the clone fn, so returning null up front is
     // correct for the spawn path and blocks supervisor restart fail-closed (the
     // runtime cannot deep-copy a handle it cannot dup). The DROP direction is
     // fully wired — `state_drop_fn` closes the handle exactly once.
-    if has_nonclonable_io_handle_field(kinds) {
+    if has_nonclonable_handle_field(kinds) {
         // Defence-in-depth: Stage 2's supervisor codegen-time gate is
         // the primary fail-closed surface. The synthesised body here is
         // only reachable from the direct-spawn path (where the handle
@@ -6423,16 +6421,6 @@ fn emit_field_clone_step<'ctx>(
                 .llvm_ctx_with(|| format!("record clone next branch f{field_idx}"))?;
             return Ok(());
         }
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => {
-            // Should have been intercepted by has_connection_field at the
-            // actor-body level. Defensive fail-closed.
-            return Err(CodegenError::FailClosed(format!(
-                "field_clone_step reached Connection arm at f{field_idx}; actor \
-                 body must short-circuit to null up front per plan §4.5 B"
-            )));
-        }
         StateFieldCloneKind::Enum { name } => {
             // In-place tag-dispatched clone: helper deep-clones the active
             // variant's owned payload fields into dst.<field_idx> (the
@@ -6637,9 +6625,8 @@ fn emit_field_clone_step<'ctx>(
 /// Emit one field's drop step (used by both per-actor and per-record drop
 /// bodies, AND by per-actor clone's rollback chain). Reads
 /// `state.<field_idx>` and invokes the matching runtime drop helper or
-/// the synthesised in-place record-drop helper. BitCopy / Connection
-/// fields are no-ops (caller filters them out, but this helper is
-/// defensive).
+/// the synthesised in-place record-drop helper. BitCopy fields are no-ops
+/// (caller filters them out, but this helper is defensive).
 #[allow(
     clippy::too_many_arguments,
     reason = "GEP witnesses (struct type, base pointer, field index) plus the \
@@ -6671,9 +6658,6 @@ pub(crate) fn emit_field_drop_step<'ctx>(
     })?;
     match kind {
         StateFieldCloneKind::BitCopy { .. } => Ok(()),
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => Ok(()),
         // OpaqueHandle (e.g. json.Value, cron.Expr) is BitCopy-class: the user
         // owns the call to `.free()`. Actor state drop does not auto-free opaque
         // handles — consistent with `drop_helper_for_kind` returning `Ok(None)`.
@@ -7031,7 +7015,8 @@ pub(crate) fn emit_field_drop_step<'ctx>(
                         symbol,
                     )
                 }
-                ResourceCloseAuthority::User(symbol) => {
+                ResourceCloseAuthority::User(lifecycle) => {
+                    let symbol = lifecycle.close_symbol.as_str();
                     let close_fn = llvm_mod.get_function(symbol).ok_or_else(|| {
                         CodegenError::FailClosed(format!(
                             "resource `{name}` field drop: no LLVM function for close symbol \
@@ -7043,7 +7028,7 @@ pub(crate) fn emit_field_drop_step<'ctx>(
                              lifecycle-symmetry)."
                         ))
                     })?;
-                    (close_fn, symbol.as_str())
+                    (close_fn, symbol)
                 }
             };
             if close_fn.count_params() != 1 {
@@ -7334,15 +7319,6 @@ fn emit_actor_state_drop_body<'ctx>(
         if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
             continue;
         }
-        // Connection arm is no-op at drop (see plan §4.5 B + actor.rs:766).
-        if matches!(
-            kind,
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection
-            }
-        ) {
-            continue;
-        }
         emit_field_drop_step(
             ctx,
             llvm_mod,
@@ -7551,7 +7527,7 @@ pub(crate) fn emit_aggregate_drop_inplace_body<'ctx>(
 /// close runs, then fields drop in reverse declaration order).
 ///
 /// `resource_close_symbol` is `Some("<Type>::close")` ONLY for a field-bearing
-/// `#[resource]` record (seeded from `IrPipeline::resource_record_close`); the
+/// `#[resource]` record (seeded from `IrPipeline::lifecycle_registry`); the
 /// symbol must already be declared (every user `impl` method reaches
 /// `declare_function` before drop-thunk synthesis). The close receives the
 /// loaded aggregate `self` by value, exactly like a normal user call and like
@@ -7634,14 +7610,6 @@ fn emit_aggregate_drop_inplace_body_with_close<'ctx>(
     }
     for (idx, kind) in kinds.iter().enumerate().rev() {
         if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
-            continue;
-        }
-        if matches!(
-            kind,
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection
-            }
-        ) {
             continue;
         }
         emit_field_drop_step(
@@ -7772,7 +7740,7 @@ fn collect_reachable_clone_targets(
     opaque_handle_names: &[String],
     extra_enum_seeds: &[String],
     extra_record_seeds: &[String],
-    resource_opaque_close: &[(String, String)],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<(
     Vec<(String, Vec<StateFieldCloneKind>)>,
     Vec<(String, EnumVariantKinds)>,
@@ -7823,6 +7791,7 @@ fn collect_reachable_clone_targets(
             &record.field_tys,
             pipeline_records,
             enum_layouts,
+            lifecycle_registry,
         )
         .ok()
         .flatten()
@@ -7854,12 +7823,12 @@ fn collect_reachable_clone_targets(
                      have rejected this with MissingRecordLayout"
                     ))
                 })?;
-            let kinds = hew_mir::classify_actor_state_fields_with_resource_handles(
+            let kinds = hew_mir::classify_actor_state_fields_with_lifecycle_registry(
                 &record.field_tys,
                 pipeline_records,
                 enum_layouts,
                 opaque_handle_names,
-                resource_opaque_close,
+                lifecycle_registry,
             )
             .map_err(|e| {
                 CodegenError::FailClosed(format!(
@@ -7897,12 +7866,12 @@ fn collect_reachable_clone_targets(
                 for field_ty in &variant.field_tys {
                     let mut visited: std::collections::HashSet<String> =
                         std::collections::HashSet::new();
-                    let kind = hew_mir::classify_state_field_with_resource_handles(
+                    let kind = hew_mir::classify_state_field_with_lifecycle_registry(
                         field_ty,
                         pipeline_records,
                         enum_layouts,
                         opaque_handle_names,
-                        resource_opaque_close,
+                        lifecycle_registry,
                         &mut visited,
                     )
                     .map_err(|e| {
@@ -8036,8 +8005,8 @@ fn emit_enum_clone_inplace_body<'ctx>(
         )));
     }
     // Fail closed: if any variant carries an OpaqueHandle field — or an
-    // IoHandle field (Connection / Stream / Sink / Generator /
-    // CancellationToken, none of which has a dup runtime symbol) — emit a
+    // non-clonable IoHandle field (Stream / Sink / Generator /
+    // CancellationToken) — emit a
     // trap body rather than a shallow-copy clone. Silently treating such a
     // handle as BitCopy (pointer bit-copy via the outer memcpy) would
     // produce two owners of the same resource — a double-free on drop.
@@ -8260,9 +8229,8 @@ pub(crate) struct DropSynthWitnesses<'a, 'ctx> {
     /// Codegen record struct types — the LLVM struct authority for synthesising
     /// a record's in-place drop body on demand.
     pub(crate) record_structs: &'a RecordLayoutMap<'ctx>,
-    /// `#[resource]` record → user `close(self)` symbol, so an on-demand record
-    /// drop body runs the RAII close before its field teardown (spec §3.7.3).
-    pub(crate) resource_record_close: &'a [(String, String)],
+    /// Exact resource lifecycle authority, including record close payloads.
+    pub(crate) lifecycle_registry: &'a hew_hir::LifecycleRegistry,
 }
 
 /// Build a `DropSynthWitnesses` from a live `FnCtx`. `record_layouts` is the
@@ -8278,7 +8246,7 @@ pub(crate) fn fn_ctx_drop_witnesses<'a, 'ctx>(
         target_data: fn_ctx.target_data,
         record_layouts,
         record_structs: fn_ctx.record_layouts,
-        resource_record_close: fn_ctx.resource_record_close,
+        lifecycle_registry: fn_ctx.lifecycle_registry,
     }
 }
 
@@ -8290,6 +8258,7 @@ fn classify_enum_drop_variants_raw(
     enum_key: &str,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<EnumVariantKinds> {
     let layout = enum_layouts
         .iter()
@@ -8308,10 +8277,12 @@ fn classify_enum_drop_variants_raw(
                 .iter()
                 .map(|field_ty| {
                     let mut visited = HashSet::new();
-                    hew_mir::classify_state_field_with_enum_layouts(
+                    hew_mir::classify_state_field_with_lifecycle_registry(
                         field_ty,
                         record_layouts,
                         enum_layouts,
+                        &[],
+                        lifecycle_registry,
                         &mut visited,
                     )
                     .map_err(|e| {
@@ -8332,6 +8303,7 @@ fn classify_record_drop_fields_raw(
     record_key: &str,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<Vec<StateFieldCloneKind>> {
     let record = record_layouts
         .iter()
@@ -8346,10 +8318,12 @@ fn classify_record_drop_fields_raw(
         .iter()
         .map(|field_ty| {
             let mut visited = HashSet::new();
-            hew_mir::classify_state_field_with_enum_layouts(
+            hew_mir::classify_state_field_with_lifecycle_registry(
                 field_ty,
                 record_layouts,
                 enum_layouts,
+                &[],
+                lifecycle_registry,
                 &mut visited,
             )
             .map_err(|e| {
@@ -8397,8 +8371,12 @@ fn ensure_enum_drop_body<'ctx>(
                  tagged-union layout"
         ))
     })?;
-    let variant_kinds =
-        classify_enum_drop_variants_raw(enum_key, w.record_layouts, w.enum_layouts)?;
+    let variant_kinds = classify_enum_drop_variants_raw(
+        enum_key,
+        w.record_layouts,
+        w.enum_layouts,
+        w.lifecycle_registry,
+    )?;
     emit_enum_drop_inplace_body(ctx, llvm_mod, enum_key, layout, &variant_kinds, w)
 }
 
@@ -8416,13 +8394,16 @@ fn ensure_record_drop_body<'ctx>(
         return Ok(());
     }
     let record_struct = record_struct_raw(record_key, w.record_structs)?;
-    let field_kinds =
-        classify_record_drop_fields_raw(record_key, w.record_layouts, w.enum_layouts)?;
+    let field_kinds = classify_record_drop_fields_raw(
+        record_key,
+        w.record_layouts,
+        w.enum_layouts,
+        w.lifecycle_registry,
+    )?;
     let resource_close = w
-        .resource_record_close
-        .iter()
-        .find(|(record, _)| record == record_key)
-        .map(|(_, symbol)| symbol.as_str());
+        .lifecycle_registry
+        .resource_record(&hew_types::DefId::new(record_key))
+        .map(|lifecycle| lifecycle.close_symbol.as_str());
     emit_record_drop_inplace_body(
         ctx,
         llvm_mod,
@@ -8470,15 +8451,8 @@ fn emit_owned_payload_field_drop<'ctx>(
     kind: &StateFieldCloneKind,
     w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
-    // BitCopy and borrowed connection handles own no heap — nothing to release.
-    if matches!(kind, StateFieldCloneKind::BitCopy { .. })
-        || matches!(
-            kind,
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection
-            }
-        )
-    {
+    // BitCopy payloads own no heap — nothing to release.
+    if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
         return Ok(());
     }
     // Bounds-guard against classifier/layout drift before any GEP.
@@ -8901,7 +8875,12 @@ pub(crate) fn emit_indirect_enum_free_body_raw<'ctx>(
     // below releases EVERY owned field — not just direct indirect-enum children.
     // Variant order mirrors `EnumLayout.variants`, registered in lockstep with
     // `layout.variant_struct_tys`; guard against drift before zipping them.
-    let variant_kinds = classify_enum_drop_variants_raw(enum_name, w.record_layouts, enum_layouts)?;
+    let variant_kinds = classify_enum_drop_variants_raw(
+        enum_name,
+        w.record_layouts,
+        enum_layouts,
+        w.lifecycle_registry,
+    )?;
     if variant_kinds.len() != layout.variant_struct_tys.len() {
         return Err(CodegenError::FailClosed(format!(
             "indirect-enum free synthesis: `{enum_name}` has {} classified variants but {} \
@@ -9853,12 +9832,6 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
                     )?;
                 }
             }
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection,
-            } => {
-                // Connection drop is a no-op at the state level; nothing to
-                // neutralise.
-            }
             StateFieldCloneKind::IoHandle { .. } => {
                 // Close-on-reassign is a behavioural decision deliberately
                 // NOT taken by the overwrite release: null the handle slot
@@ -9963,11 +9936,7 @@ fn emit_overwrite_neutralize_enum<'ctx>(
     let needs_walk = variants.iter().flatten().any(|k| {
         !matches!(
             k,
-            StateFieldCloneKind::BitCopy { .. }
-                | StateFieldCloneKind::OpaqueHandle { .. }
-                | StateFieldCloneKind::IoHandle {
-                    kind: IoHandleKind::Connection
-                }
+            StateFieldCloneKind::BitCopy { .. } | StateFieldCloneKind::OpaqueHandle { .. }
         )
     });
     if !needs_walk {
@@ -10172,10 +10141,8 @@ fn emit_overwrite_slot_allocas<'ctx>(
     Ok(slots)
 }
 
-/// True if any field in `kinds` is `IoHandle { Connection }`. Drives the
-/// actor-clone short-circuit (return null up front).
-/// True when any state field is a pointer-backed IoHandle with NO dup runtime
-/// symbol — `Connection`, `Stream`, `Sink`, `Generator`, or `CancellationToken`.
+/// True when any state field is an affine resource or a pointer-backed
+/// IoHandle with no dup runtime symbol.
 /// The actor-state clone body short-circuits to `ret ptr null` for these
 /// actors: the handle is move-only (byte-copied into the actor on direct spawn,
 /// never cloned), and a null clone fn blocks supervisor restart fail-closed —
@@ -10183,17 +10150,17 @@ fn emit_overwrite_slot_allocas<'ctx>(
 /// is wired (the actor's `state_drop_fn` closes the handle exactly once); the
 /// per-field clone loop is never entered for these actors, so the per-kind
 /// `clone_helper_for_kind` arms for these handles stay defensively unreachable.
-fn has_nonclonable_io_handle_field(kinds: &[StateFieldCloneKind]) -> bool {
+fn has_nonclonable_handle_field(kinds: &[StateFieldCloneKind]) -> bool {
     kinds.iter().any(|k| {
         matches!(
             k,
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection
-                    | IoHandleKind::Stream
-                    | IoHandleKind::Sink
-                    | IoHandleKind::Generator
-                    | IoHandleKind::CancellationToken
-            }
+            StateFieldCloneKind::Resource { .. }
+                | StateFieldCloneKind::IoHandle {
+                    kind: IoHandleKind::Stream
+                        | IoHandleKind::Sink
+                        | IoHandleKind::Generator
+                        | IoHandleKind::CancellationToken
+                }
         )
     })
 }
@@ -11047,15 +11014,13 @@ fn emit_lifecycle_lock_call<'ctx>(
         .build_conditional_branch(ok, ok_bb, trap_bb)
         .llvm_ctx_with(|| format!("{symbol} branch"))?;
     builder.position_at_end(trap_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap, &[], &format!("{symbol}_trap"))
-        .llvm_ctx_with(|| format!("{symbol} trap"))?;
-    builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("{symbol} unreachable"))?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        builder,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        &format!("{symbol}_trap"),
+    )?;
     builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -11227,17 +11192,11 @@ fn emit_actor_state_lock_call(
         .build_conditional_branch(ok, ok_bb, trap_bb)
         .llvm_ctx_with(|| format!("{symbol} branch"))?;
     fn_ctx.builder.position_at_end(trap_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    fn_ctx
-        .builder
-        .build_call(trap, &[], &format!("{symbol}_trap"))
-        .llvm_ctx_with(|| format!("{symbol} trap"))?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("{symbol} unreachable"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        &format!("{symbol}_trap"),
+    )?;
     fn_ctx.builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -14329,8 +14288,12 @@ fn lower_instruction_with_cancel_drops(
             lower_actor_state_field_load(fn_ctx, *field_offset, *dest, *mode)?;
             let _ = ctx;
         }
-        Instr::ActorStateFieldStore { field_offset, src } => {
-            lower_actor_state_field_store(fn_ctx, *field_offset, *src)?;
+        Instr::ActorStateFieldStore {
+            field_offset,
+            src,
+            handoff,
+        } => {
+            lower_actor_state_field_store(fn_ctx, *field_offset, *src, *handoff)?;
             let _ = ctx;
         }
         Instr::NeutralizePayloadSlot { place, .. } => {
@@ -16033,12 +15996,12 @@ fn borrowed_aggregate_retain_kind(
 ) -> CodegenResult<StateFieldCloneKind> {
     let record_layouts = codegen_record_layouts(fn_ctx);
     let mut visited = HashSet::new();
-    hew_mir::classify_state_field_with_resource_handles(
+    hew_mir::classify_state_field_with_lifecycle_registry(
         ty,
         &record_layouts,
         fn_ctx.enum_layouts,
         &[],
-        fn_ctx.resource_opaque_close,
+        fn_ctx.lifecycle_registry,
         &mut visited,
     )
     .map_err(|error| {
@@ -17288,16 +17251,11 @@ fn emit_actor_state_field_clone_inplace_trap<'ctx>(
         .build_conditional_branch(failed, trap_bb, ok_bb)
         .llvm_ctx_with(|| format!("{label} clone_inplace branch"))?;
     builder.position_at_end(trap_bb);
-    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap_fn, &[], &format!("{label}_trap"))
-        .llvm_ctx_with(|| format!("{label} trap"))?;
-    builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("{label} unreachable"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_HEAP_EXCEEDED as u64,
+        &format!("{label}_trap"),
+    )?;
     builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -17425,9 +17383,9 @@ fn emit_field_overwrite_release(
         StateFieldCloneKind::UserRecord { name } => {
             if !release_resource_records
                 && fn_ctx
-                    .resource_record_close
-                    .iter()
-                    .any(|(record, _)| record == name)
+                    .lifecycle_registry
+                    .resource_record(&hew_types::DefId::new(name))
+                    .is_some()
             {
                 return Ok(());
             }
@@ -17470,12 +17428,6 @@ fn emit_field_overwrite_release(
              {kind:?}; MIR must reject the store until it carries source-slot \
              neutralisation"
         ))),
-        // Connection state teardown is actor-owned; this field kind carries no
-        // per-slot close, so replacing its pointer abandons no independent
-        // close obligation. Keep the established actor-state posture.
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => Ok(()),
         StateFieldCloneKind::Resource {
             name,
             close: ResourceCloseAuthority::Runtime(descriptor),
@@ -17491,10 +17443,48 @@ fn emit_field_overwrite_release(
     }
 }
 
+fn actor_state_replacement_slot<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    field: u32,
+    field_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    if let Some(&(slot, prior_ty)) = fn_ctx.actor_state_replacement_slots.borrow().get(&field) {
+        if prior_ty != field_ty {
+            return Err(CodegenError::FailClosed(format!(
+                "actor-state replacement scratch type drift for field {field}: \
+                 prior={prior_ty:?}, current={field_ty:?}"
+            )));
+        }
+        return Ok(slot);
+    }
+
+    let current = fn_ctx.builder.get_insert_block().ok_or_else(|| {
+        CodegenError::Llvm("actor-state replacement scratch has no insertion block".into())
+    })?;
+    if let Some(terminator) = fn_ctx.alloca_prologue.get_terminator() {
+        fn_ctx.builder.position_before(&terminator);
+    } else {
+        fn_ctx.builder.position_at_end(fn_ctx.alloca_prologue);
+    }
+    let slot = fn_ctx
+        .builder
+        .build_alloca(field_ty, &format!("state_f{field}_replacement"))
+        .llvm_ctx("ActorStateFieldStore replacement entry alloca")?;
+    // Lowering always appends to the current unterminated MIR block. Restore
+    // that exact append position after inserting the prologue scratch.
+    fn_ctx.builder.position_at_end(current);
+    fn_ctx
+        .actor_state_replacement_slots
+        .borrow_mut()
+        .insert(field, (slot, field_ty));
+    Ok(slot)
+}
+
 fn lower_actor_state_field_store(
     fn_ctx: &FnCtx<'_, '_>,
     field_offset: FieldOffset,
     src: Place,
+    handoff: hew_mir::ActorStateStoreHandoff,
 ) -> CodegenResult<()> {
     let state_ty = fn_ctx.actor_state_ty.ok_or_else(|| {
         CodegenError::FailClosed("ActorStateFieldStore has no registered actor state type".into())
@@ -17523,6 +17513,19 @@ fn lower_actor_state_field_store(
             &format!("actor_state_field_{idx}_ptr"),
         )
         .llvm_ctx("ActorStateFieldStore gep")?;
+    // Enter the process-fatal replacement phase before an allocating
+    // borrow-gated clone can produce an otherwise untracked owner. The runtime
+    // validates the field range first, then atomically publishes the signal
+    // guard before neutralizing this field in the old state escrow.
+    if fn_ctx.actor_state_store_transaction == ActorStateStoreTransaction::Required {
+        emit_checked_dispatch_state_cleanup_call(
+            fn_ctx,
+            "hew_dispatch_state_cleanup_begin_replace",
+            field_ptr,
+            field_ty,
+            &format!("state_f{idx}_crash_begin_replace"),
+        )?;
+    }
     let src_val = fn_ctx
         .builder
         .build_load(field_ty, src_ptr, &format!("actor_state_field_{idx}_src"))
@@ -17535,16 +17538,27 @@ fn lower_actor_state_field_store(
     // under `borrow_mode == 0` (copy mode) the field byte-copies the handler's
     // private handle exactly as before (the handler no longer drops it — it was
     // read here as a source operand — so the field is its sole owner).
-    let src_val =
-        if let (Some(borrow_mode), Some(base)) = (fn_ctx.borrow_mode, place_base_local(&src)) {
-            if fn_ctx.borrow_tainted.contains(&base) {
-                emit_borrow_gated_string_clone(fn_ctx, borrow_mode, src_val, "field_store")?
-            } else {
-                src_val
-            }
+    let replacement_differs_from_source = place_base_local(&src)
+        .is_some_and(|base| fn_ctx.borrow_tainted.contains(&base))
+        && fn_ctx.borrow_mode.is_some();
+    let src_val = if replacement_differs_from_source {
+        if let Some(borrow_mode) = fn_ctx.borrow_mode {
+            emit_borrow_gated_string_clone(fn_ctx, borrow_mode, src_val, "field_store")?
         } else {
-            src_val
-        };
+            unreachable!("replacement difference requires borrow_mode")
+        }
+    } else {
+        src_val
+    };
+    // Materialize the exact value that will become state-owned. In particular,
+    // a borrow-gated String clone is not byte-identical to `src_ptr`; both the
+    // pre-store escrow and aggregate alias guards must consume the selected SSA
+    // value rather than reloading the unretained ingress view.
+    let replacement_ptr = actor_state_replacement_slot(fn_ctx, idx, field_ty)?;
+    fn_ctx
+        .builder
+        .build_store(replacement_ptr, src_val)
+        .llvm_ctx("ActorStateFieldStore replacement materialization")?;
     // Old-value release before overwrite (bytes / string state fields). The
     // store below blindly replaces the field's previous value; without a
     // preceding release its heap allocation leaks permanently on every
@@ -17576,6 +17590,21 @@ fn lower_actor_state_field_store(
     //     deliberately untouched.
     //   - `BitCopy` / `OpaqueHandle`: no owned heap / user-managed; nothing
     //     to release.
+    // Enter a process-fatal state-finalizer phase and neutralize the old escrow
+    // before old-value release. A signal cannot actor-longjmp out of a partially
+    // executed non-idempotent finalizer. Intentional Hew panic/trap is fatal in
+    // the same interval; neither failure class may raw-abandon indeterminate old
+    // authority. After release, prepare the replacement in escrow and leave it
+    // before the live store. Thus pre-store and post-store crash windows both
+    // drop the new owner from escrow, while normal finish raw-discards escrow
+    // and leaves live state as sole owner.
+    //
+    // Lifecycle/template functions deliberately have no state transaction for
+    // THIS pointer. They may execute with no scheduler registry at all (direct
+    // init/start/stop), or nested beneath a different actor's registry (spawn
+    // from a handler and supervisor on(crash)). Never snapshot or clear that
+    // unrelated domain, and never fabricate a whole-state escrow for init:
+    // lifecycle lowering does not carry per-field initialization validity.
     if let Some(kinds) = fn_ctx.actor_state_field_kinds {
         let kind = kinds.get(idx as usize).ok_or_else(|| {
             CodegenError::FailClosed(format!(
@@ -17589,17 +17618,40 @@ fn lower_actor_state_field_store(
             fn_ctx,
             field_ptr,
             field_ty,
-            src_ptr,
+            replacement_ptr,
             src_val,
             kind,
             &format!("state_f{idx}"),
             true,
         )?;
     }
+    if fn_ctx.actor_state_store_transaction == ActorStateStoreTransaction::Required {
+        emit_actor_state_cleanup_prepare(
+            fn_ctx,
+            src,
+            src_ptr,
+            replacement_ptr,
+            field_ptr,
+            field_ty,
+            &format!("state_f{idx}_crash_prepare"),
+        )?;
+    }
     fn_ctx
         .builder
         .build_store(field_ptr, src_val)
         .llvm_ctx("ActorStateFieldStore store")?;
+    // Outside a dispatch state transaction the stored value still consumes its
+    // lexical source owner. Retire that dynamic authority after the live write
+    // without addressing whichever unrelated/no registry happens to be current.
+    match handoff {
+        hew_mir::ActorStateStoreHandoff::ConsumeSource => {
+            if fn_ctx.actor_state_store_transaction
+                == ActorStateStoreTransaction::LifecycleOutsideDispatch
+            {
+                emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, src)?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -18385,18 +18437,11 @@ fn trap_on_null_snapshot_clone<'ctx>(
         .build_conditional_branch(is_null, trap_bb, ok_bb)
         .llvm_ctx_with(|| format!("{label} null branch"))?;
     fn_ctx.builder.position_at_end(trap_bb);
-    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
-    fn_ctx
-        .builder
-        .build_call(trap_fn, &[], "trap")
-        .llvm_ctx_with(|| format!("{label} trap"))?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("{label} unreachable"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_HEAP_EXCEEDED as u64,
+        &format!("{label}_trap"),
+    )?;
     fn_ctx.builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -18549,18 +18594,11 @@ fn lower_value_snapshot_clone_instr<'ctx>(
                 .build_conditional_branch(failed, trap_bb, ok_bb)
                 .llvm_ctx("snapshot tuple branch")?;
             fn_ctx.builder.position_at_end(trap_bb);
-            let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-                .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
-                .get_declaration(fn_ctx.llvm_mod, &[])
-                .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
-            fn_ctx
-                .builder
-                .build_call(trap_fn, &[], "trap")
-                .llvm_ctx("snapshot tuple trap")?;
-            fn_ctx
-                .builder
-                .build_unreachable()
-                .llvm_ctx("snapshot tuple unreachable")?;
+            emit_trap_with_code(
+                fn_ctx,
+                HEW_TRAP_HEAP_EXCEEDED as u64,
+                "snapshot_tuple_clone_trap",
+            )?;
             fn_ctx.builder.position_at_end(ok_bb);
             Ok(())
         }
@@ -18755,7 +18793,8 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
                     &mut fn_ctx.runtime_decls.borrow_mut(),
                     descriptor.c_symbol(),
                 )?,
-                ResourceCloseAuthority::User(symbol) => {
+                ResourceCloseAuthority::User(lifecycle) => {
+                    let symbol = lifecycle.close_symbol.as_str();
                     fn_ctx.llvm_mod.get_function(symbol).ok_or_else(|| {
                         CodegenError::FailClosed(format!(
                             "prepared user resource close `{symbol}` is not declared"
@@ -18971,16 +19010,11 @@ fn lower_record_clone_inplace_instr<'ctx>(
         .build_conditional_branch(failed, trap_bb, ok_bb)
         .llvm_ctx_with(|| format!("record_clone_inplace branch {record_name}"))?;
     builder.position_at_end(trap_bb);
-    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap_fn, &[], "trap")
-        .llvm_ctx_with(|| format!("record_clone_inplace trap {record_name}"))?;
-    builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("record_clone_inplace unreachable {record_name}"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_HEAP_EXCEEDED as u64,
+        "record_clone_inplace_trap",
+    )?;
     builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -19073,16 +19107,11 @@ fn lower_enum_clone_inplace_instr<'ctx>(
         .build_conditional_branch(failed, trap_bb, ok_bb)
         .llvm_ctx_with(|| format!("enum_clone_inplace branch {enum_name}"))?;
     builder.position_at_end(trap_bb);
-    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap_fn, &[], "trap")
-        .llvm_ctx_with(|| format!("enum_clone_inplace trap {enum_name}"))?;
-    builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("enum_clone_inplace unreachable {enum_name}"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_HEAP_EXCEEDED as u64,
+        "enum_clone_inplace_trap",
+    )?;
     builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -19199,10 +19228,12 @@ pub(crate) fn env_field_drop_kinds(
     let mut kinds = Vec::with_capacity(field_tys.len());
     for (idx, field_ty) in field_tys.iter().enumerate() {
         let mut visited = std::collections::HashSet::new();
-        let kind = hew_mir::classify_state_field_with_enum_layouts(
+        let kind = hew_mir::classify_state_field_with_lifecycle_registry(
             field_ty,
             &record_layouts,
             fn_ctx.enum_layouts,
+            &[],
+            fn_ctx.lifecycle_registry,
             &mut visited,
         )
         .map_err(|e| {
@@ -20318,12 +20349,15 @@ fn tuple_field_clone_kind(
     elem_ty: &ResolvedTy,
     record_layouts: &[hew_mir::RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<hew_mir::StateFieldCloneKind> {
     let mut visited = HashSet::new();
-    hew_mir::classify_state_field_with_enum_layouts(
+    hew_mir::classify_state_field_with_lifecycle_registry(
         elem_ty,
         record_layouts,
         enum_layouts,
+        &[],
+        lifecycle_registry,
         &mut visited,
     )
     .map_err(|e| {
@@ -20367,6 +20401,7 @@ pub(crate) fn tuple_inplace_field_kinds<'ctx>(
             elem,
             &record_layouts,
             regs.enum_layouts,
+            regs.lifecycle_registry,
         )?);
     }
     Ok((tuple_struct, kinds))
@@ -21062,6 +21097,36 @@ fn is_receive_handler(func: &RawMirFunction) -> bool {
 
 fn is_crash_handler(func: &RawMirFunction) -> bool {
     actor_handler_identity(func).is_some_and(|(kind, _)| kind == ActorHandlerKind::Crash)
+}
+
+/// Classify the actor-state transaction expected by one generated function.
+///
+/// This consumes the carried MIR identity rather than symbol spelling. The
+/// match is intentionally exhaustive over `ActorHandlerKind`: adding a new
+/// hook/handler phase must decide whether its state pointer is the scheduler's
+/// active dispatch domain before codegen will compile.
+fn actor_state_store_transaction(func: &RawMirFunction) -> ActorStateStoreTransaction {
+    actor_state_store_transaction_for_kind(actor_handler_identity(func).map(|(kind, _)| kind))
+}
+
+fn actor_state_store_transaction_for_kind(
+    kind: Option<ActorHandlerKind>,
+) -> ActorStateStoreTransaction {
+    match kind {
+        Some(ActorHandlerKind::Receive | ActorHandlerKind::Exit | ActorHandlerKind::Down) => {
+            ActorStateStoreTransaction::Required
+        }
+        Some(
+            ActorHandlerKind::Init
+            | ActorHandlerKind::Start
+            | ActorHandlerKind::Stop
+            | ActorHandlerKind::Crash,
+        ) => ActorStateStoreTransaction::LifecycleOutsideDispatch,
+        // A hand-built/unknown function gets no permission to bypass runtime
+        // validation. In a real pipeline it also lacks actor_state_ty and an
+        // ActorStateFieldStore therefore fails closed earlier.
+        None => ActorStateStoreTransaction::Required,
+    }
 }
 
 fn compute_borrow_taint(func: &RawMirFunction) -> HashSet<u32> {
@@ -21956,9 +22021,10 @@ fn collect_helper_crash_cleanup_descriptors(
     enum_layouts: &[EnumLayout],
     fn_symbols: &FnSymbolMap<'_>,
 ) -> CodegenResult<Vec<HelperCrashCleanupDescriptor>> {
-    if !has_suspend && func.call_conv != FunctionCallConv::Default {
-        return Ok(Vec::new());
-    }
+    // Every generated calling convention may execute beneath an actor
+    // dispatch. Non-suspending functions use dispatch-scoped snapshots when no
+    // tracked coroutine is active; outside a cooperative dispatch the runtime
+    // deliberately returns token zero and these hooks remain benign.
     // Instruction producers are admitted through MIR's exhaustive write-set
     // authority. This keeps registration congruent with every whole-slot
     // producer while deliberately excluding interior field mutations.
@@ -22346,17 +22412,11 @@ fn emit_crash_cleanup_arm<'ctx>(
         .build_conditional_branch(hard_failure, rejected_bb, accepted_bb)
         .llvm_ctx("frame-cleanup arm result branch")?;
     fn_ctx.builder.position_at_end(rejected_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    fn_ctx
-        .builder
-        .build_call(trap, &[], "frame_cleanup_registration_trap")
-        .llvm_ctx("frame-cleanup registration trap")?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .llvm_ctx("frame-cleanup registration unreachable")?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        "frame_cleanup_registration_trap",
+    )?;
     fn_ctx.builder.position_at_end(accepted_bb);
     Ok(token)
 }
@@ -22397,18 +22457,245 @@ fn emit_checked_crash_cleanup_token_call(
         .build_conditional_branch(accepted, accepted_bb, rejected_bb)
         .llvm_ctx_with(|| format!("{label} result branch"))?;
     fn_ctx.builder.position_at_end(rejected_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        &format!("{label}_trap"),
+    )?;
+    fn_ctx.builder.position_at_end(accepted_bb);
+    Ok(())
+}
+
+fn emit_checked_dispatch_state_cleanup_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    symbol: &str,
+    field: PointerValue<'_>,
+    field_ty: BasicTypeEnum<'_>,
+    label: &str,
+) -> CodegenResult<()> {
+    let (size, _) = abi_size_align(field_ty, Some(fn_ctx.target_data))?;
+    let callee = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        symbol,
+    )?;
+    let accepted = fn_ctx
+        .builder
+        .build_call(
+            callee,
+            &[
+                field.into(),
+                fn_ctx.ctx.i64_type().const_int(size, false).into(),
+            ],
+            &format!("{label}_call"),
+        )
+        .llvm_ctx_with(|| format!("{symbol} call"))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?
+        .into_int_value();
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::Llvm(format!("{label} has no parent function")))?;
+    let accepted_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_accepted"));
+    let rejected_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_rejected"));
     fn_ctx
         .builder
-        .build_call(trap, &[], &format!("{label}_trap"))
-        .llvm_ctx_with(|| format!("{label} trap"))?;
+        .build_conditional_branch(accepted, accepted_bb, rejected_bb)
+        .llvm_ctx_with(|| format!("{label} result branch"))?;
+    fn_ctx.builder.position_at_end(rejected_bb);
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        &format!("{label}_trap"),
+    )?;
+    fn_ctx.builder.position_at_end(accepted_bb);
+    Ok(())
+}
+
+fn emit_dispatch_state_cleanup_prepare_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    replacement: PointerValue<'_>,
+    field: PointerValue<'_>,
+    field_ty: BasicTypeEnum<'_>,
+    label: &str,
+) -> CodegenResult<()> {
+    let (size, _) = abi_size_align(field_ty, Some(fn_ctx.target_data))?;
+    let callee = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_dispatch_state_cleanup_prepare",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            callee,
+            &[
+                replacement.into(),
+                field.into(),
+                fn_ctx.ctx.i64_type().const_int(size, false).into(),
+            ],
+            &format!("{label}_call"),
+        )
+        .llvm_ctx("hew_dispatch_state_cleanup_prepare call")?;
+    Ok(())
+}
+
+fn emit_dispatch_state_cleanup_abort_invariant(
+    fn_ctx: &FnCtx<'_, '_>,
+    label: &str,
+) -> CodegenResult<()> {
+    let callee = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_dispatch_state_cleanup_abort_invariant",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(callee, &[], &format!("{label}_call"))
+        .llvm_ctx("hew_dispatch_state_cleanup_abort_invariant call")?;
     fn_ctx
         .builder
         .build_unreachable()
-        .llvm_ctx_with(|| format!("{label} unreachable"))?;
+        .llvm_ctx("actor-state cleanup invariant unreachable")?;
+    Ok(())
+}
+
+fn emit_actor_state_cleanup_prepare(
+    fn_ctx: &FnCtx<'_, '_>,
+    src: Place,
+    owner_source: PointerValue<'_>,
+    replacement: PointerValue<'_>,
+    field: PointerValue<'_>,
+    field_ty: BasicTypeEnum<'_>,
+    label: &str,
+) -> CodegenResult<()> {
+    let Some(owner) = fn_ctx.helper_crash_cleanup_owners.get(&src).cloned() else {
+        return emit_dispatch_state_cleanup_prepare_call(
+            fn_ctx,
+            replacement,
+            field,
+            field_ty,
+            label,
+        );
+    };
+    let active = fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.bool_type(),
+            owner.active_slot,
+            &format!("{label}_source_active"),
+        )
+        .llvm_ctx("actor-state handoff active load")?
+        .into_int_value();
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("actor-state handoff has no parent".into()))?;
+    let transfer_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_transfer"));
+    let publish_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_no_source"));
+    let merge_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_merge"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(active, transfer_bb, publish_bb)
+        .llvm_ctx("actor-state handoff authority branch")?;
+
+    fn_ctx.builder.position_at_end(transfer_bb);
+    let token = fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.i64_type(),
+            owner.token_slot,
+            &format!("{label}_source_token"),
+        )
+        .llvm_ctx("actor-state handoff token load")?
+        .into_int_value();
+    let (size, _) = abi_size_align(field_ty, Some(fn_ctx.target_data))?;
+    let transfer = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_dispatch_state_cleanup_prepare_transfer",
+    )?;
+    let accepted = fn_ctx
+        .builder
+        .build_call(
+            transfer,
+            &[
+                token.into(),
+                owner_source.into(),
+                replacement.into(),
+                field.into(),
+                fn_ctx.ctx.i64_type().const_int(size, false).into(),
+            ],
+            &format!("{label}_transfer_call"),
+        )
+        .llvm_ctx("hew_dispatch_state_cleanup_prepare_transfer call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(
+                "hew_dispatch_state_cleanup_prepare_transfer returned void".into(),
+            )
+        })?
+        .into_int_value();
+    let accepted_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_transfer_accepted"));
+    let rejected_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_transfer_rejected"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(accepted, accepted_bb, rejected_bb)
+        .llvm_ctx("actor-state handoff result branch")?;
+    fn_ctx.builder.position_at_end(rejected_bb);
+    // `false` spans missing/inactive/mismatched runtime authority; generated
+    // local guards cannot prove an exact active token survived. No rejection is
+    // an expected program outcome, so actor recovery would be unsound.
+    emit_dispatch_state_cleanup_abort_invariant(
+        fn_ctx,
+        &format!("{label}_transfer_rejected_abort"),
+    )?;
     fn_ctx.builder.position_at_end(accepted_bb);
+    fn_ctx
+        .builder
+        .build_store(owner.active_slot, fn_ctx.ctx.bool_type().const_zero())
+        .llvm_ctx("actor-state transferred source inactive")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("actor-state transfer merge branch")?;
+
+    fn_ctx.builder.position_at_end(publish_bb);
+    emit_dispatch_state_cleanup_prepare_call(
+        fn_ctx,
+        replacement,
+        field,
+        field_ty,
+        &format!("{label}_publish"),
+    )?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("actor-state publish merge branch")?;
+    fn_ctx.builder.position_at_end(merge_bb);
     Ok(())
 }
 
@@ -23766,6 +24053,13 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
     fn_ctx: &FnCtx<'_, '_>,
     elem: &ResolvedTy,
 ) -> bool {
+    if fn_ctx
+        .lifecycle_registry
+        .opaque_resource_for_ty(elem)
+        .is_some()
+    {
+        return true;
+    }
     match elem {
         // Bare scalar/string/bytes elements take the non-owned paths.
         ResolvedTy::String | ResolvedTy::Bytes => false,
@@ -24085,12 +24379,12 @@ fn classify_record_drop_fields_for_key(
         .iter()
         .map(|field_ty| {
             let mut visited = HashSet::new();
-            hew_mir::classify_state_field_with_resource_handles(
+            hew_mir::classify_state_field_with_lifecycle_registry(
                 field_ty,
                 &record_layouts,
                 fn_ctx.enum_layouts,
                 &[],
-                fn_ctx.resource_opaque_close,
+                fn_ctx.lifecycle_registry,
                 &mut visited,
             )
             .map_err(|e| {
@@ -24126,10 +24420,12 @@ fn classify_enum_drop_variants_for_key(
                 .iter()
                 .map(|field_ty| {
                     let mut visited = HashSet::new();
-                    hew_mir::classify_state_field_with_enum_layouts(
+                    hew_mir::classify_state_field_with_lifecycle_registry(
                         field_ty,
                         &record_layouts,
                         fn_ctx.enum_layouts,
+                        &[],
+                        fn_ctx.lifecycle_registry,
                         &mut visited,
                     )
                     .map_err(|e| {
@@ -24367,10 +24663,12 @@ fn emit_heap_slot_drop<'ctx>(
     if matches!(ty, ResolvedTy::Named { .. }) {
         let record_layouts = codegen_record_layouts(fn_ctx);
         let mut visited = HashSet::new();
-        let kind = hew_mir::classify_state_field_with_enum_layouts(
+        let kind = hew_mir::classify_state_field_with_lifecycle_registry(
             ty,
             &record_layouts,
             fn_ctx.enum_layouts,
+            &[],
+            fn_ctx.lifecycle_registry,
             &mut visited,
         )
         .map_err(|e| {
@@ -24395,10 +24693,9 @@ fn emit_heap_slot_drop<'ctx>(
                     // the two synthesis points cannot diverge on whether the
                     // user `close(self)` fires (spec §3.7.3).
                     let resource_close = fn_ctx
-                        .resource_record_close
-                        .iter()
-                        .find(|(record, _)| record == &name)
-                        .map(|(_, symbol)| symbol.as_str());
+                        .lifecycle_registry
+                        .resource_record(&hew_types::DefId::new(&name))
+                        .map(|lifecycle| lifecycle.close_symbol.as_str());
                     emit_record_drop_inplace_body(
                         fn_ctx.ctx,
                         fn_ctx.llvm_mod,
@@ -27461,12 +27758,12 @@ fn validate_generator_env_plan<'ctx>(
             None
         } else {
             Some(
-                hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                     field_ty,
                     &record_layouts,
                     fn_ctx.enum_layouts,
                     &[],
-                    fn_ctx.resource_opaque_close,
+                    fn_ctx.lifecycle_registry,
                 )
                 .map_err(|error| {
                     CodegenError::FailClosed(format!(
@@ -27507,7 +27804,7 @@ fn validate_generator_env_plan<'ctx>(
                         &record_layouts,
                         fn_ctx.enum_layouts,
                         &[],
-                        fn_ctx.resource_opaque_close,
+                        fn_ctx.lifecycle_registry,
                     )
                     .map_err(|error| {
                         CodegenError::FailClosed(format!(
@@ -27661,10 +27958,6 @@ fn emit_generator_env_owned_fields<'ctx>(
                 Some(Linkage::External),
             )
         });
-    let trap = Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic missing".into()))?
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
     for (step_idx, rollback_bb) in rollback_bbs.iter().enumerate() {
         fn_ctx.builder.position_at_end(*rollback_bb);
         // The shallow memcpy made every moved field an owner before clone
@@ -27706,14 +27999,7 @@ fn emit_generator_env_owned_fields<'ctx>(
                 "gen_companion_rollback_free",
             )
             .llvm_ctx("generator companion rollback free")?;
-        fn_ctx
-            .builder
-            .build_call(trap, &[], "gen_env_clone_trap")
-            .llvm_ctx("generator env clone trap")?;
-        fn_ctx
-            .builder
-            .build_unreachable()
-            .llvm_ctx("generator env clone unreachable")?;
+        emit_trap_with_code(fn_ctx, HEW_TRAP_HEAP_EXCEEDED as u64, "gen_env_clone_trap")?;
     }
     fn_ctx.builder.position_at_end(success_bb);
     let thunk = crate::thunks::get_or_emit_generator_env_drop_thunk(
@@ -30985,7 +31271,7 @@ fn emit_wasm_main_export_wrapper<'ctx>(
     let Some(symbol) = fn_symbols.get("main").copied() else {
         return Ok(());
     };
-    let (original, _return_ty, _returns_unit) =
+    let (original, _return_ty, returns_unit) =
         symbol.real("main", "emit_wasm_main_export_wrapper")?;
     let fn_ty = original.get_type();
     let params = fn_ty.get_param_types();
@@ -31015,6 +31301,50 @@ fn emit_wasm_main_export_wrapper<'ctx>(
             .build_return(None)
             .llvm_ctx("WASM main wrapper return void")?;
     }
+
+    // The WASI runtime owns `_start` and therefore needs one stable C ABI
+    // regardless of the Hew source-level `main` return width. Keep the
+    // freestanding `main` export above source-shaped, but publish a dedicated
+    // `() -> i32` adapter for `_start`: unit maps to success and integer exit
+    // values use the platform status width. This prevents wasm-ld from
+    // synthesizing a signature-mismatch trap for the common `main() -> i64`
+    // spelling.
+    let wasi_ty = ctx.i32_type().fn_type(&[], false);
+    let wasi_entry = llvm_mod.add_function("__hew_wasi_main", wasi_ty, Some(Linkage::External));
+    let wasi_block = ctx.append_basic_block(wasi_entry, "entry");
+    let wasi_builder = ctx.create_builder();
+    wasi_builder.position_at_end(wasi_block);
+    let wasi_call = wasi_builder
+        .build_call(original, &[], "hew_source_main_call")
+        .llvm_ctx("WASI source main adapter call")?;
+    let exit_code = if returns_unit {
+        ctx.i32_type().const_zero()
+    } else {
+        let value = wasi_call
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("WASI source main returned no value".into()))?;
+        let integer = match value {
+            BasicValueEnum::IntValue(integer) => integer,
+            _ => {
+                return Err(CodegenError::FailClosed(
+                    "WASI source main must return unit or an integer exit status".into(),
+                ));
+            }
+        };
+        match integer.get_type().get_bit_width().cmp(&32) {
+            std::cmp::Ordering::Greater => wasi_builder
+                .build_int_truncate(integer, ctx.i32_type(), "wasi_exit_trunc")
+                .llvm_ctx("truncate WASI exit status")?,
+            std::cmp::Ordering::Less => wasi_builder
+                .build_int_s_extend(integer, ctx.i32_type(), "wasi_exit_extend")
+                .llvm_ctx("extend WASI exit status")?,
+            std::cmp::Ordering::Equal => integer,
+        }
+    };
+    wasi_builder
+        .build_return(Some(&exit_code))
+        .llvm_ctx("WASI source main adapter return")?;
 
     Ok(())
 }
@@ -32042,8 +32372,7 @@ fn lower_function<'ctx>(
     dyn_vtable_registry: &[DynVtableInstance],
     const_globals: &ConstGlobalMap<'ctx>,
     frame_cleanup_thunks: &RefCell<FrameCleanupThunkCache<'ctx>>,
-    resource_record_close: &[(String, String)],
-    resource_opaque_close: &[(String, String)],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     emit_wasm_entry_alias: bool,
     has_supervisors: bool,
     module_uses_runtime: bool,
@@ -32948,6 +33277,9 @@ fn lower_function<'ctx>(
         execution_context_is_actor_handler: func.call_conv == FunctionCallConv::ActorHandler,
         actor_state_ty,
         actor_state_field_kinds,
+        actor_state_store_transaction: actor_state_store_transaction(func),
+        actor_state_replacement_slots: RefCell::new(HashMap::new()),
+        alloca_prologue: prologue_bb,
         locals,
         local_tys,
         blocks: blocks.clone(),
@@ -32956,8 +33288,7 @@ fn lower_function<'ctx>(
         fn_symbols,
         frame_cleanup_thunks,
         machine_step_symbols,
-        resource_record_close,
-        resource_opaque_close,
+        lifecycle_registry,
         actor_layouts,
         machine_layouts,
         enum_layouts,
@@ -33105,6 +33436,10 @@ fn lower_function<'ctx>(
             .builder
             .build_conditional_branch(is_live, trap_bb, cont_bb)
             .llvm_ctx("borrow-escape trap branch")?;
+        // TRAP-DISPOSITION: actor-cooperative(hew_panic). This generated edge
+        // calls the plain-C runtime symbol directly: an installed actor
+        // recovery frame catches it; otherwise the process exits. It cannot
+        // Rust-unwind.
         fn_ctx.builder.position_at_end(trap_bb);
         let panic_fn = llvm_mod.get_function("hew_panic").unwrap_or_else(|| {
             let panic_ty = ctx.void_type().fn_type(&[], false);
@@ -34028,7 +34363,7 @@ fn build_module_for_target<'ctx>(
             target_data: &target_data,
             record_layouts: &pipeline.record_layouts,
             record_structs: &record_layouts,
-            resource_record_close: &pipeline.resource_record_close,
+            lifecycle_registry: &pipeline.lifecycle_registry,
         };
         crate::thunks::emit_actor_message_drop_fn(
             ctx,
@@ -34088,8 +34423,7 @@ fn build_module_for_target<'ctx>(
         Some(&target_data),
         &thunk_requirements.enum_seeds,
         &thunk_requirements.record_seeds,
-        &pipeline.resource_record_close,
-        &pipeline.resource_opaque_close,
+        &pipeline.lifecycle_registry,
     )?;
     // Supervisor bootstraps replace the MIR-side synthesised body wholesale
     // with the canonical `hew_supervisor_new` → `add_child_spec` × N →
@@ -34140,6 +34474,8 @@ fn build_module_for_target<'ctx>(
             &pipeline.actor_layouts,
             &record_layouts,
             &pipeline.record_layouts,
+            &pipeline.enum_layouts,
+            &pipeline.lifecycle_registry,
         )?;
     }
     for func in &pipeline.raw_mir {
@@ -34191,8 +34527,7 @@ fn build_module_for_target<'ctx>(
             &pipeline.dyn_vtable_registry,
             &const_globals,
             &frame_cleanup_thunks,
-            &pipeline.resource_record_close,
-            &pipeline.resource_opaque_close,
+            &pipeline.lifecycle_registry,
             emit_wasm_entry_alias,
             !pipeline.supervisor_layouts.is_empty(),
             module_uses_runtime,
@@ -34225,6 +34560,7 @@ fn build_module_for_target<'ctx>(
         &machine_layouts,
         &pipeline.record_layouts,
         &pipeline.enum_layouts,
+        &pipeline.lifecycle_registry,
         &target_data,
     )? {
         module_init_ctors.push(f);
@@ -34305,6 +34641,7 @@ fn build_module_for_target<'ctx>(
         &pipeline.dyn_vtable_registry,
         &pipeline.record_layouts,
         &synthesis_enum_layouts,
+        &pipeline.lifecycle_registry,
     )?;
     // Finalise the `%hew.dyn.vtable.N` opaque struct and the
     // `@__hew_vtable__{trait}__{concrete}__{vtable_id} = private constant`
@@ -34911,6 +35248,7 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
     registry: &[hew_mir::DynVtableInstance],
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<()> {
     if registry.is_empty() {
         return Ok(());
@@ -34933,10 +35271,12 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
         // `get_or_declare_{record,enum}_drop_inplace` mangle into the
         // helper symbol, so classification + dispatch can never drift.
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let kind = hew_mir::classify_state_field_with_enum_layouts(
+        let kind = hew_mir::classify_state_field_with_lifecycle_registry(
             &inst.concrete_type,
             pipeline_records,
             enum_layouts,
+            &[],
+            lifecycle_registry,
             &mut visited,
         )
         .map_err(|e| {
@@ -35469,6 +35809,7 @@ fn emit_wire_codec_call_thunks<'ctx>(
                             machine_layouts,
                             pipeline_records,
                             enum_layouts,
+                            &pipeline.lifecycle_registry,
                             target_data,
                         )?;
                     }
@@ -35586,6 +35927,7 @@ fn emit_actor_codec_module_init<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<Option<FunctionValue<'ctx>>> {
     // Collect (dispatch global, msg_type, msg_ty, reply_ty) for every handler.
@@ -35689,6 +36031,7 @@ fn emit_actor_codec_module_init<'ctx>(
             machine_layouts,
             pipeline_records,
             enum_layouts,
+            lifecycle_registry,
             target_data,
         )?;
         if !matches!(reply_ty, ResolvedTy::Unit | ResolvedTy::Never) {
@@ -35701,6 +36044,7 @@ fn emit_actor_codec_module_init<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                lifecycle_registry,
                 target_data,
             )?;
         }

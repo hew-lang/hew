@@ -534,11 +534,11 @@ fn actor_state_record_trace_instr(
             }
             ActorStateRecordTraceStep::Continue
         }
-        Instr::ActorStateFieldStore { field_offset, src } if *src == state.current => {
-            ActorStateRecordTraceStep::Sink {
-                state_field: *field_offset,
-            }
-        }
+        Instr::ActorStateFieldStore {
+            field_offset, src, ..
+        } if *src == state.current => ActorStateRecordTraceStep::Sink {
+            state_field: *field_offset,
+        },
         Instr::ActorStateFieldStore { field_offset, .. } => {
             if !state.state_writes_since_retain.contains(field_offset) {
                 state.state_writes_since_retain.push(*field_offset);

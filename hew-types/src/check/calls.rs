@@ -32,15 +32,21 @@ impl Checker {
             // the bare lexical prefix (`Parcel::Filled`), but the declaration
             // is keyed under its full owner (`left.render.Parcel`). Resolve
             // that owner before consulting the compatibility bare entry.
+            let canonical_owner_key = self.canonical_nominal_name(type_prefix);
             let local_owner_key = (!type_prefix.contains('.'))
                 .then(|| {
                     self.current_module_identity()
                         .map(|owner| format!("{owner}.{type_prefix}"))
                 })
                 .flatten();
-            let direct_key = local_owner_key
+            let direct_key = canonical_owner_key
                 .as_deref()
                 .filter(|key| self.type_defs.contains_key(*key))
+                .or_else(|| {
+                    local_owner_key
+                        .as_deref()
+                        .filter(|key| self.type_defs.contains_key(*key))
+                })
                 .unwrap_or(type_prefix);
             let direct = self.type_defs.get(direct_key).and_then(|td| {
                 if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
@@ -923,15 +929,12 @@ impl Checker {
             }
         }
         self.require_unsafe(&key, span);
-        if !self.user_modules.contains(module_name) {
-            for rejection in crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
-                if module_name == rejection.module {
-                    self.reject_wasm_feature(span, rejection.feature);
-                }
-            }
-            if module_name == "crypto" && method == "random_bytes" {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
-            }
+        if let Some(feature) = self.wasm_native_only_module_feature(module_name) {
+            self.reject_wasm_feature(span, feature);
+        }
+        self.reject_wasm_native_only_module_function(module_name, method, span);
+        if self.is_shipped_crypto_module(module_name) && method == "random_bytes" {
+            self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
         }
         let sig = self.fn_sigs.get(&key).cloned()?;
         if let Some(caller) = &self.current_function {
@@ -1181,13 +1184,10 @@ impl Checker {
         // the runtime catalogue is keyed by the ABI symbol alone. Bridge that
         // representation boundary only after the module graph has proved the
         // exact stdlib source owner; a user package named `channel` (or a
-        // spoofed `std.channel.channel` module) must not acquire a runtime
+        // spoofed `std.channel` module) must not acquire a runtime
         // call target merely by sharing these leaves.
-        if self
-            .canonical_std_module_sources
-            .contains("std.channel.channel")
-        {
-            if let Some(c_symbol) = signature_key.strip_prefix("std.channel.channel.") {
+        if self.canonical_std_module_sources.contains("std.channel") {
+            if let Some(c_symbol) = signature_key.strip_prefix("std.channel.") {
                 if let Some(family) =
                     crate::runtime_call::RuntimeCallFamily::from_c_symbol(c_symbol)
                 {
@@ -1338,6 +1338,13 @@ impl Checker {
 
         self.require_unsafe(&func_name, span);
         self.reject_if_wasm_incompatible_call(&func_name, span);
+        if let Some(source_identity) = self
+            .import_fn_name_aliases
+            .get(&(self.current_module.clone(), func_name.clone()))
+            .cloned()
+        {
+            self.reject_wasm_native_only_function_identity(&source_identity, span);
+        }
 
         // Check if name is a user-defined enum variant constructor first.
         // Separate lookup (immutable borrow) from processing (mutable borrow)
@@ -1797,9 +1804,7 @@ impl Checker {
                 .get(&(self.current_module.clone(), func_name.clone()))
                 .cloned()
             {
-                self.used_modules
-                    .borrow_mut()
-                    .insert(ImportKey::new(self.current_module.clone(), module));
+                self.mark_module_owner_bindings_used(&module);
             }
             let assoc_bindings = self
                 .fn_type_param_assoc_bindings
@@ -2436,12 +2441,12 @@ mod channel_layout_target_tests {
 
     #[test]
     fn channel_layout_runtime_target_requires_canonical_source_provenance() {
-        let signature = "std.channel.channel.hew_channel_recv_layout";
+        let signature = "std.channel.hew_channel_recv_layout";
 
         let mut canonical = Checker::default();
         canonical
             .canonical_std_module_sources
-            .insert("std.channel.channel".to_string());
+            .insert("std.channel".to_string());
         assert_eq!(
             canonical.call_target_for_signature(signature),
             CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout)

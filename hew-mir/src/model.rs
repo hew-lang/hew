@@ -297,38 +297,10 @@ pub struct IrPipeline {
     /// `<Type>::close` symbol the user `impl` declares.
     ///
     /// Codegen's record-drop thunk synthesis consumes this so a `#[resource]`
-    /// record's user `close(self)` runs as the FIRST step of its scope-exit /
-    /// nested-field drop (spec §3.7.3 / §10(d)): the resource's own close fires
-    /// before the field-wise teardown, and a nested `#[resource]` field's close
-    /// fires through the same recursive thunk. Without this seed the field-wise
-    /// `RecordInPlace` drop would free heap leaves but silently skip the RAII
-    /// `close()` contract.
-    ///
-    /// Populated by `lower_hir_module` from `HirModule::type_classes` for every
-    /// `#[resource]`-marked type that ALSO has a record layout. A single-handle
-    /// `#[resource]` (no owned/aggregate field) is NOT listed: it routes to the
-    /// `AffineResource` close path and never reaches the record-drop thunk.
-    ///
-    /// WHY here and not in codegen directly: `IrPipeline` is the checker→codegen
-    /// boundary; codegen consumes pipeline fields, never the HIR `type_classes`
-    /// table. Mirrors `opaque_handle_names` / `user_clone_record_seeds`.
-    pub resource_record_close: Vec<(String, String)>,
-    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
-    /// for every single-slot `#[resource] #[opaque]` handle (see
-    /// `resource_opaque_close_registry`). The COMPLEMENT of
-    /// `resource_record_close`: a single-handle opaque `#[resource]` has no
-    /// record layout, so it is excluded from `resource_record_close` — that
-    /// exclusion is exactly the W3.029 leak this closes.
-    ///
-    /// Codegen's record-drop thunk synthesis (`collect_reachable_clone_targets`
-    /// and the on-demand `emit_aggregate_recursive_drop` named-leaf) consumes
-    /// this so a resource handle embedded in an owned record classifies as
-    /// `StateFieldCloneKind::Resource` and the owning record's drop spine runs
-    /// the handle's `close(self)` exactly once on every exit path. It MUST match
-    /// the registry the MIR admission gate used (both built by
-    /// `resource_opaque_close_registry` from the same inputs) or admission and
-    /// drop-body synthesis would disagree.
-    pub resource_opaque_close: Vec<(String, String)>,
+    /// Canonical, declaration-identity resource lifecycle authority.
+    /// Every ownership/drop classifier receives this structured registry;
+    /// generated containment paths may not reconstruct teardown from names.
+    pub lifecycle_registry: hew_hir::LifecycleRegistry,
 }
 
 /// Compact set of module-level runtime authorities reached during MIR lowering.
@@ -4896,6 +4868,8 @@ pub enum Instr {
     ActorStateFieldStore {
         field_offset: FieldOffset,
         src: Place,
+        /// Explicit MIR ownership authority for publication into state.
+        handoff: ActorStateStoreHandoff,
     },
     SpawnActor {
         actor_name: String,
@@ -5807,6 +5781,16 @@ pub enum ActorStateLoadMode {
     /// receiver borrow, and `dest` never escapes as a whole value. Codegen
     /// emits the bare load/store byte-copy alias — no retain, no clone.
     Borrowed,
+}
+
+/// Ownership handoff performed by [`Instr::ActorStateFieldStore`].
+///
+/// Actor-state stores are consuming MIR sinks. In copy mode the source owner
+/// transfers into state; borrowed ingress first clones an independent owner,
+/// and its source cleanup token is consequently never armed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActorStateStoreHandoff {
+    ConsumeSource,
 }
 
 /// Field-address selector for [`Instr::FieldDropInPlace`]: one op covers both

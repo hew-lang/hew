@@ -44,6 +44,7 @@ ALL_GROUPS = {
     "lifecycle-identity-authority",
     "suspend-authority",
     "owner-retirement-path",
+    "monomorphic-enum-leaf-synthesis",
 }
 SEMANTIC_KEY_BUILDERS = {
     "scoped_module_item_name",
@@ -118,6 +119,38 @@ DEBUG_CONTEXT_PATTERNS = {
 }
 
 
+def generated_builtin_enum_leaves(root: Path) -> set[str]:
+    """Derive audited enum leaves from the checked-in ABI authority table."""
+    authority = root / "hew-types/src/stdlib_authority/codegen.rs"
+    try:
+        source = authority.read_text()
+    except OSError as error:
+        raise SystemExit(
+            f"generated builtin enum ABI authority is unreadable: {error}"
+        ) from error
+    table = re.search(
+        r"const\s+BUILTIN_ENUM_ABI\s*:\s*&\[BuiltinEnumAbi\]\s*=\s*&\[(.*?)\n\];",
+        source,
+        re.DOTALL,
+    )
+    if table is None:
+        raise SystemExit(
+            "generated builtin enum ABI authority table is absent or malformed"
+        )
+    body = table.group(1)
+    entry_count = len(re.findall(r"\bBuiltinEnumAbi\s*\{", body))
+    leaves = re.findall(r'\bname\s*:\s*"([A-Za-z_][A-Za-z0-9_]*)"', body)
+    if entry_count == 0 or len(leaves) != entry_count:
+        raise SystemExit(
+            "generated builtin enum ABI authority has missing or malformed name fields"
+        )
+    if len(set(leaves)) != len(leaves):
+        raise SystemExit(
+            "generated builtin enum ABI authority has duplicate leaf names"
+        )
+    return set(leaves)
+
+
 @dataclass(frozen=True, order=True)
 class Finding:
     group: str
@@ -151,9 +184,17 @@ def is_source_path(path: str) -> bool:
 
 
 def query_command(
-    ast_grep: Path, *, pattern: str | None, kind: str | None
+    ast_grep: Path,
+    *,
+    pattern: str | None,
+    kind: str | None,
+    lang: str = "rust",
+    config: Path | None = None,
 ) -> list[str]:
-    command = [str(ast_grep), "run", "--lang", "rust", "--json=stream"]
+    command = [str(ast_grep), "run"]
+    if config is not None:
+        command.extend(("--config", str(config)))
+    command.extend(("--lang", lang, "--json=stream"))
     if pattern is not None:
         command.extend(("--pattern", pattern))
     elif kind is not None:
@@ -192,6 +233,44 @@ def parser_sentinel(ast_grep: Path) -> None:
         raise SystemExit("pinned ast-grep parser/query sentinel failed closed")
 
 
+def hew_parser_sentinel(ast_grep: Path, root: Path) -> None:
+    """Prove the pinned custom Hew grammar is live, not just installed."""
+    config = root / "sgconfig.yml"
+    if not config.is_file():
+        raise SystemExit("pinned ast-grep Hew config is absent")
+    command = query_command(
+        ast_grep,
+        pattern="fn $F($$$ARGS) { $$$BODY }",
+        kind=None,
+        lang="hew",
+        config=config,
+    )
+    command.append("--stdin")
+    result = subprocess.run(
+        command,
+        cwd=root,
+        input="fn opaque_resource_sentinel(value: i64) { value; }\n",
+        text=True,
+        capture_output=True,
+    )
+    try:
+        rows = [json.loads(line) for line in result.stdout.splitlines() if line]
+    except json.JSONDecodeError as error:
+        raise SystemExit(
+            f"pinned ast-grep Hew sentinel returned invalid JSON: {error}"
+        ) from error
+    valid = (
+        result.returncode == 0
+        and len(rows) == 1
+        and rows[0].get("metaVariables", {}).get("single", {}).get("F", {}).get("text")
+        == "opaque_resource_sentinel"
+    )
+    if not valid:
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="")
+        raise SystemExit("pinned ast-grep Hew parser/query sentinel failed closed")
+
+
 def run_query(
     ast_grep: Path,
     root: Path,
@@ -214,6 +293,33 @@ def run_query(
         return [json.loads(line) for line in result.stdout.splitlines() if line]
     except json.JSONDecodeError as error:
         raise SystemExit(f"pinned ast-grep returned invalid JSON: {error}") from error
+
+
+def run_hew_query(
+    ast_grep: Path, root: Path, *, pattern: str | None = None, kind: str | None = None
+) -> list[dict[str, object]]:
+    """Run a Hew query through the pinned grammar, scoped to shipped stdlib."""
+    std = root / "std"
+    if not std.is_dir():
+        return []
+    command = query_command(
+        ast_grep,
+        pattern=pattern,
+        kind=kind,
+        lang="hew",
+        config=root / "sgconfig.yml",
+    )
+    command.append("std")
+    result = subprocess.run(command, cwd=root, text=True, capture_output=True)
+    if result.returncode not in (0, 1) or (result.returncode == 1 and result.stderr):
+        print(result.stderr, file=sys.stderr, end="")
+        raise SystemExit("pinned ast-grep Hew query failed")
+    try:
+        return [json.loads(line) for line in result.stdout.splitlines() if line]
+    except json.JSONDecodeError as error:
+        raise SystemExit(
+            f"pinned ast-grep Hew query returned invalid JSON: {error}"
+        ) from error
 
 
 def node_range(match: dict[str, object]) -> SyntaxRange:
@@ -929,6 +1035,7 @@ def rc1_structural_authority_findings(
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
     test_ranges = test_only_ranges(ast_grep, root)
     findings: set[Finding] = set()
+    generated_enum_leaves = generated_builtin_enum_leaves(root)
 
     # Identifier nodes remain parsed inside Rust macro token trees. This closes
     # the call-expression blind spot without treating comments or string tokens
@@ -975,6 +1082,22 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
             findings.add(
                 finding("checker-hir-publication", "checker-insert-call", match)
             )
+
+    for pattern in (
+        "Ty::Named { name: $NAME, $$$FIELDS }",
+        "ResolvedTy::Named { name: $NAME, $$$FIELDS }",
+        "hew_types::ResolvedTy::Named { name: $NAME, $$$FIELDS }",
+    ):
+        for match in run_query(ast_grep, root, pattern=pattern):
+            literal = re.search(r'"([^"\\]+)"', single_meta(match, "NAME"))
+            if literal is not None and literal.group(1) in generated_enum_leaves:
+                findings.add(
+                    finding(
+                        "monomorphic-enum-leaf-synthesis",
+                        "leaf-named-semantic-struct-literal",
+                        match,
+                    )
+                )
 
     literals_by_path: defaultdict[str, list[tuple[int, int, str]]] = defaultdict(list)
     for kind in ("string_literal", "raw_string_literal"):
@@ -1172,6 +1295,8 @@ def canonical_stage(group: str, form: str, path: str) -> str:
         return "stage-2"
     if group in {"suspend-authority", "owner-retirement-path"}:
         return "stage-3"
+    if group == "monomorphic-enum-leaf-synthesis":
+        return "stage-3" if path.startswith("hew-mir/") else "stage-2"
     if group == "mir-ownership-sink":
         return "stage-4"
     if group == "legacy-heap-reader":
@@ -1279,6 +1404,225 @@ def load_inventory(path: Path) -> dict[tuple[str, str, str], int]:
     return expected
 
 
+@dataclass(frozen=True, order=True)
+class OpaqueResourceFact:
+    """AST-derived, qualified lifecycle fact for one shipped empty handle.
+
+    `carrier_key` is a qualified display key for joining source facts to test
+    evidence. Compiler authority remains the foundation's DefId carriers; this
+    audit neither constructs nor authorizes compiler identity from the display.
+    """
+
+    carrier_key: str
+    module: str
+    resource: str
+    source_path: str
+    close_body_range: tuple[int, int]
+    release_symbol: str
+    producer_symbols: tuple[str, ...]
+
+
+def _match_path(match: dict[str, object]) -> str:
+    return str(match["file"])
+
+
+def _match_offsets(match: dict[str, object]) -> tuple[int, int]:
+    offsets = match["range"]["byteOffset"]  # type: ignore[index]
+    return int(offsets["start"]), int(offsets["end"])
+
+
+def _contained(outer: dict[str, object], inner: dict[str, object]) -> bool:
+    if _match_path(outer) != _match_path(inner):
+        return False
+    outer_start, outer_end = _match_offsets(outer)
+    inner_start, inner_end = _match_offsets(inner)
+    return outer_start <= inner_start and inner_end <= outer_end
+
+
+def _module_for_std_path(path: str) -> str:
+    relative = Path(path).relative_to("std")
+    parts = ["std", *relative.parent.parts]
+    stem = relative.stem
+    if parts[-1] != stem:
+        parts.append(stem)
+    return ".".join(parts)
+
+
+def _meta_many(match: dict[str, object], name: str) -> list[str]:
+    meta = match.get("metaVariables", {})
+    values = meta.get("multi", {}).get(name, [])  # type: ignore[union-attr]
+    return [str(value.get("text", "")) for value in values if isinstance(value, dict)]
+
+
+def discover_opaque_resource_facts(
+    ast_grep: Path, root: Path
+) -> list[OpaqueResourceFact]:
+    """Join Hew AST siblings/ranges into source lifecycle facts.
+
+    There is deliberately no resource-name table here.  Declarations, their
+    adjacent marker siblings, inherent consuming close bodies, direct release
+    calls, and source extern producer/release signatures are independently
+    parsed before being joined by source range and nominal identity.
+    """
+    declarations = run_hew_query(ast_grep, root, pattern="type $NAME { }")
+    attributes = run_hew_query(ast_grep, root, kind="attribute")
+    impls = run_hew_query(ast_grep, root, pattern="impl $TYPE { $$$BODY }")
+    closes = run_hew_query(
+        ast_grep, root, pattern="fn close(consuming self) { $$$BODY }"
+    )
+    calls = run_hew_query(ast_grep, root, pattern="$F($$$ARGS)")
+    extern_blocks = run_hew_query(ast_grep, root, pattern='extern "C" { $$$BODY }')
+    parser_error_nodes = run_hew_query(ast_grep, root, kind="ERROR")
+    if parser_error_nodes:
+        paths = sorted({_match_path(node) for node in parser_error_nodes})
+        raise SystemExit(
+            "pinned Hew grammar must parse the shipped std corpus without ERROR nodes: "
+            + ", ".join(paths)
+        )
+    extern_functions = run_hew_query(
+        ast_grep, root, pattern="fn $NAME($$$ARGS) -> $RET;"
+    )
+    consuming_extern_functions = run_hew_query(
+        ast_grep, root, pattern="fn $NAME(consume $PARAM: $TYPE) -> $RET;"
+    )
+    consuming_extern_functions.extend(
+        run_hew_query(ast_grep, root, pattern="fn $NAME(consume $PARAM: $TYPE);")
+    )
+    facts: list[OpaqueResourceFact] = []
+    for declaration in declarations:
+        path = _match_path(declaration)
+        start, _ = _match_offsets(declaration)
+        # Attribute nodes are siblings of the declaration in the program item;
+        # constrain their adjacency with byte ranges so a distant marker cannot
+        # authorize a different type.
+        sibling_attrs = [
+            attr
+            for attr in attributes
+            if _match_path(attr) == path
+            and start - _match_offsets(attr)[1] < 96
+            and _match_offsets(attr)[1] <= start
+        ]
+        marker_texts = {str(attr["text"]).strip() for attr in sibling_attrs}
+        if marker_texts.isdisjoint({"#[resource]"}) or marker_texts.isdisjoint(
+            {"#[opaque]"}
+        ):
+            continue
+        resource = single_meta(declaration, "NAME")
+        if not resource:
+            raise SystemExit(f"opaque resource declaration has no AST name at {path}")
+        module = _module_for_std_path(path)
+        inherent_impls = [
+            implementation
+            for implementation in impls
+            if _match_path(implementation) == path
+            and single_meta(implementation, "TYPE") == resource
+        ]
+        close_matches = [
+            close
+            for close in closes
+            if any(
+                _contained(implementation, close) for implementation in inherent_impls
+            )
+        ]
+        if len(close_matches) != 1:
+            raise SystemExit(
+                f"{module}.{resource}: expected exactly one inherent consuming close body, found {len(close_matches)}"
+            )
+        close = close_matches[0]
+        close_calls = [call for call in calls if _contained(close, call)]
+        release_calls = [
+            call
+            for call in close_calls
+            if "self" in _meta_many(call, "ARGS") and single_meta(call, "F")
+        ]
+        if len(release_calls) != 1:
+            raise SystemExit(
+                f"{module}.{resource}: consuming close must have exactly one direct self release call, found {len(release_calls)}"
+            )
+        release_symbol = single_meta(release_calls[0], "F")
+        module_externs = [
+            block for block in extern_blocks if _match_path(block) == path
+        ]
+        release_declarations = [
+            function
+            for function in consuming_extern_functions
+            if any(_contained(block, function) for block in module_externs)
+            and single_meta(function, "NAME") == release_symbol
+            and single_meta(function, "TYPE") == resource
+        ]
+        if len(release_declarations) != 1:
+            raise SystemExit(
+                f"{module}.{resource}: close release {release_symbol!r} lacks one consuming extern declaration"
+            )
+        producers = sorted(
+            {
+                single_meta(function, "NAME")
+                for function in extern_functions
+                if any(_contained(block, function) for block in module_externs)
+                and single_meta(function, "RET") == resource
+                and single_meta(function, "NAME") != release_symbol
+            }
+        )
+        if not producers:
+            raise SystemExit(
+                f"{module}.{resource}: no source extern producer returns the handle"
+            )
+        facts.append(
+            OpaqueResourceFact(
+                carrier_key=f"{module}.{resource}",
+                module=module,
+                resource=resource,
+                source_path=path,
+                close_body_range=_match_offsets(close),
+                release_symbol=release_symbol,
+                producer_symbols=tuple(producers),
+            )
+        )
+    keys = [fact.carrier_key for fact in facts]
+    if not keys:
+        raise SystemExit("opaque resource source discovery corpus is empty")
+    if len(keys) != len(set(keys)):
+        raise SystemExit(
+            "opaque resource source discovery found duplicate qualified candidates"
+        )
+    return sorted(facts)
+
+
+def opaque_fact_json(facts: list[OpaqueResourceFact]) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "display_key": "qualified source/evidence presentation only; compiler identity is DefId-authoritative",
+        "candidates": [
+            {
+                "carrier_key": fact.carrier_key,
+                "module": fact.module,
+                "resource": fact.resource,
+                "source_path": fact.source_path,
+                "close_body_range": list(fact.close_body_range),
+                "release_symbol": fact.release_symbol,
+                "producer_symbols": list(fact.producer_symbols),
+            }
+            for fact in facts
+        ],
+        "compiler_e2e_cases": [
+            {
+                "carrier_key": fact.carrier_key,
+                "release_symbol": fact.release_symbol,
+                "close_symbol": f"{fact.carrier_key}::close",
+                "scope_exit_source": (
+                    f"import {fact.module.replace('.', '::')}::{{ {fact.resource} }};\n"
+                    f"fn scope_exit_case(consume value: {fact.resource}) {{ }}\n"
+                ),
+                "explicit_close_source": (
+                    f"import {fact.module.replace('.', '::')}::{{ {fact.resource} }};\n"
+                    f"fn explicit_close_case(consume value: {fact.resource}) {{ value.close(); }}\n"
+                ),
+            }
+            for fact in facts
+        ],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1287,6 +1631,16 @@ def main() -> int:
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--presentation-baseline", type=Path)
     parser.add_argument("--ast-grep", type=Path)
+    parser.add_argument(
+        "--opaque-resource-facts",
+        type=Path,
+        help="write AST-derived shipped opaque resource facts (use - for stdout)",
+    )
+    parser.add_argument(
+        "--opaque-resource-facts-only",
+        action="store_true",
+        help="stop after the AST-derived lifecycle artifact is written",
+    )
     args = parser.parse_args()
     root = args.root.resolve()
     repo_root = Path(__file__).resolve().parents[1]
@@ -1294,6 +1648,21 @@ def main() -> int:
     if not ast_grep.is_file():
         raise SystemExit(f"pinned ast-grep is absent: {ast_grep}")
     parser_sentinel(ast_grep)
+    opaque_facts: list[OpaqueResourceFact] = []
+    if (root / "std").is_dir():
+        hew_parser_sentinel(ast_grep, root)
+        opaque_facts = discover_opaque_resource_facts(ast_grep, root)
+        if args.opaque_resource_facts:
+            rendered = (
+                json.dumps(opaque_fact_json(opaque_facts), indent=2, sort_keys=True)
+                + "\n"
+            )
+            if str(args.opaque_resource_facts) == "-":
+                print(rendered, end="")
+            else:
+                args.opaque_resource_facts.write_text(rendered)
+        if args.opaque_resource_facts_only:
+            return 0
 
     inventory = args.inventory or root / "scripts/structural-authority-inventory.tsv"
     presentation_path = (
@@ -1354,6 +1723,26 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    if opaque_facts:
+        opaque_floor = next(
+            (
+                line.split("\t")[2]
+                for line in floor_rows
+                if line.startswith("opaque-resource-lifecycle-facts\t")
+            ),
+            None,
+        )
+        if (
+            opaque_floor is None
+            or not opaque_floor.isdigit()
+            or int(opaque_floor) != len(opaque_facts)
+        ):
+            print(
+                "opaque-resource-lifecycle-facts corpus floor is stale or missing "
+                f"(expected {len(opaque_facts)})",
+                file=sys.stderr,
+            )
+            return 1
     semantic_leaf_count = sum(
         count
         for (group, _, _), count in actual.items()
@@ -1366,6 +1755,7 @@ def main() -> int:
         f"{len(presentation)} exact presentation AST contexts; "
         f"{len(expected)} authority form/path rows; "
         f"{len(test_ranges)} parsed test-only item ranges; "
+        f"{len(opaque_facts)} AST-derived opaque resource lifecycle candidates; "
         "0 scalar SpanKey -> SiteId authorities"
     )
     return 0

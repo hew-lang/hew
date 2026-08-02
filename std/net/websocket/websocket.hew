@@ -60,6 +60,7 @@ fn checked_recv_deadline(deadline_ms: i64) -> Result<i64, net.NetError> {
 /// Created by calling `websocket.connect(url)`, which returns `Err` when the
 /// connection or handshake fails. Use `send_text()` to
 /// send messages and `recv()` to receive them.
+#[resource]
 #[opaque]
 pub type Conn {
 }
@@ -97,14 +98,11 @@ trait ConnMethods {
     /// no OS errno channel).
     fn recv_timeout(self, deadline_ms: i64) -> Result<Message, net.NetError>;
 
-    /// Close the WebSocket connection.
-    fn close(self);
-
     /// Attach this connection to an actor (Erlang-style active mode).
     /// The runtime reads frames in a background thread and delivers
-    /// them as actor messages. Transfers ownership — the Conn handle
-    /// is consumed and must not be used for recv() after this call.
-    /// The actor can still call conn.send_text() for outbound messages.
+    /// them as actor messages. The connection remains the caller's resource;
+    /// attach transfers read authority only. Outbound sends and close remain
+    /// valid while the reader retains the transport's shared inner state.
     ///
     /// `handler` is the actor that will receive `on_message` and `on_close`.
     /// The compiler synthesises both protocol message IDs from the concrete
@@ -153,17 +151,21 @@ impl ConnMethods for Conn {
             Err(net.net_error_from_errno(0))
         }
     }
-    fn close(conn: Conn) {
-        unsafe {
-            hew_ws_close(conn)
-        };
-    }
     /// Compiler-lowered active-mode attach.
     ///
     /// Every call site is rewritten to `hew_ws_attach_local`; codegen resolves
     /// the concrete actor's `on_message` / `on_close` protocol IDs and emits
     /// the four-argument runtime ABI. This stub is never lowered.
     fn attach(conn: Conn, handler: LocalPid<WebSocketHandler>) {}
+}
+
+impl Conn {
+    /// Release this connection early. Scope exit performs the same release.
+    fn close(consuming self) {
+        unsafe {
+            hew_ws_close(self)
+        };
+    }
 }
 
 #[test]
@@ -211,6 +213,7 @@ impl Message {
 /// Created by calling `websocket.listen(addr)`, which returns `Err` when the
 /// address cannot be bound. Use `accept()` to wait
 /// for the next client connection.
+#[resource]
 #[opaque]
 pub type Server {
 }
@@ -223,9 +226,6 @@ trait ServerMethods {
 
     /// Get the port the server is listening on.
     fn port(self) -> i64;
-
-    /// Close the server and stop listening.
-    fn close(self);
 }
 
 impl ServerMethods for Server {
@@ -239,9 +239,13 @@ impl ServerMethods for Server {
             hew_ws_server_port(server) as i64
         }
     }
-    fn close(server: Server) {
+}
+
+impl Server {
+    /// Stop listening and release this server early.
+    fn close(consuming self) {
         unsafe {
-            hew_ws_server_close(server)
+            hew_ws_server_close(self)
         };
     }
 }
@@ -367,12 +371,12 @@ extern "C" {
     fn hew_ws_recv_timeout(ws: Conn, deadline_ms: i32) -> MessageHandle;
     fn hew_ws_recv_last_timed_out() -> i32; // INTERNAL-ABI: thread-local timeout sentinel; 1=timeout, 0=ok-or-error
     fn hew_ws_message_is_valid(msg: MessageHandle) -> bool;
-    fn hew_ws_close(ws: Conn);
+    fn hew_ws_close(consume ws: Conn);
     fn hew_ws_message_type(msg: MessageHandle) -> i32;
     fn hew_ws_message_text(msg: MessageHandle) -> string;
     fn hew_ws_message_free(msg: MessageHandle);
     fn hew_ws_server_new(addr: string) -> Server;
     fn hew_ws_server_port(server: Server) -> i32;
     fn hew_ws_server_accept(server: Server) -> Conn;
-    fn hew_ws_server_close(server: Server);
+    fn hew_ws_server_close(consume server: Server);
 }

@@ -1443,20 +1443,18 @@ impl Checker {
             .insert(SpanKey::in_module(span, self.current_module_idx), dispatch);
     }
 
-    fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {
+    pub(super) fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {
         let Ty::Named { name, .. } = receiver_ty else {
             return None;
         };
-        if self.module_registry.is_handle_type(name) {
-            return Some(name.clone());
-        }
-        if name.contains('.') {
-            return Some(name.clone());
-        }
-        self.module_registry.qualify_handle_type(name)
+        self.module_registry.canonical_handle_type_identity(name)
     }
 
-    fn record_handle_method_call_receiver_kind_if_any(&mut self, receiver_ty: &Ty, span: &Span) {
+    pub(super) fn record_handle_method_call_receiver_kind_if_any(
+        &mut self,
+        receiver_ty: &Ty,
+        span: &Span,
+    ) {
         let Some(type_name) = self.canonical_handle_receiver_type_name(receiver_ty) else {
             return;
         };
@@ -1983,7 +1981,11 @@ impl Checker {
     /// `user_modules` is intentionally not consulted: it is a legacy lexical
     /// spelling set and therefore cannot distinguish two paths with the same
     /// final component.
-    fn module_binding_has_user_declaration(&self, module_name: &str, method: &str) -> bool {
+    pub(super) fn module_binding_has_user_declaration(
+        &self,
+        module_name: &str,
+        method: &str,
+    ) -> bool {
         let owner = self.canonical_module_import_owner(module_name);
         let declaration = format!("{owner}.{method}");
         self.fn_def_spans
@@ -1991,6 +1993,60 @@ impl Checker {
             .is_some_and(|(_, declaring_module)| {
                 declaring_module.as_deref() == Some(owner.as_str())
             })
+    }
+
+    /// Reject an exact native-only function at the semantic call/reference
+    /// boundary. Module spellings are lexical only: aliases resolve to their
+    /// canonical imported owner before consulting the fully-qualified
+    /// manifest policy, while user declarations with the same spelling remain
+    /// valid. Whole-module policy remains owned by
+    /// `wasm_native_only_module_feature` so the two tables cannot emit duplicate
+    /// diagnostics for the same call.
+    pub(super) fn reject_wasm_native_only_module_function(
+        &mut self,
+        module_name: &str,
+        method: &str,
+        span: &Span,
+    ) {
+        if !self.wasm_target {
+            return;
+        }
+        let owner = self.canonical_module_import_owner(module_name);
+        if !self.canonical_std_module_sources.contains(&owner) {
+            return;
+        }
+        // Function policy is fully qualified and therefore cannot be shadowed
+        // by a user module whose leaf happens to be `fs`.
+        for rejection in crate::NATIVE_ONLY_WASM_FUNCTION_REJECTIONS {
+            if owner == rejection.module && method == rejection.function {
+                self.reject_wasm_feature(span, rejection.feature);
+            }
+        }
+    }
+
+    /// Apply exact function policy after a named import has resolved its
+    /// declaration owner.  Unlike a bare surface spelling this carries the
+    /// source identity (`std.fs.try_read`) and cannot be captured by a user
+    /// function or a same-leaf module.
+    pub(super) fn reject_wasm_native_only_function_identity(
+        &mut self,
+        source_identity: &str,
+        span: &Span,
+    ) {
+        if !self.wasm_target {
+            return;
+        }
+        let Some((module, function)) = source_identity.rsplit_once('.') else {
+            return;
+        };
+        if !self.canonical_std_module_sources.contains(module) {
+            return;
+        }
+        for rejection in crate::NATIVE_ONLY_WASM_FUNCTION_REJECTIONS {
+            if module == rejection.module && function == rejection.function {
+                self.reject_wasm_feature(span, rejection.feature);
+            }
+        }
     }
 
     /// Record a channel method rewrite to be resolved after inference settles.
@@ -2102,9 +2158,8 @@ impl Checker {
     /// a fielded `#[resource]` wrapper — whose qualified name is not in the
     /// opaque `handle_types` set and whose short name matches no fieldless
     /// handle — so its methods keep dispatching through their real impl body.
-    fn receiver_is_opaque_handle(&self, name: &str) -> bool {
+    pub(super) fn receiver_is_opaque_handle(&self, name: &str) -> bool {
         self.module_registry.is_handle_type(name)
-            || self.module_registry.qualify_handle_type(name).is_some()
     }
 
     pub(super) fn record_module_qualified_stdlib_call_rewrite_if_any(
@@ -2219,23 +2274,40 @@ impl Checker {
             return;
         }
         match name.as_str() {
-            "http_client.Response" => {
+            "http_client.Response" | "std.net.http.http_client.Response" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpClient);
             }
-            "smtp.Conn" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Smtp),
-            "process.Child" => {
+            "smtp.Conn" | "std.net.smtp.Conn" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Smtp);
+            }
+            "websocket.Conn"
+            | "websocket.Server"
+            | "websocket.Message"
+            | "std.net.websocket.Conn"
+            | "std.net.websocket.Server"
+            | "std.net.websocket.Message" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::WebSocket);
+            }
+            "process.Child" | "std.process.Child" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::ProcessExecution);
             }
-            "http.Server" | "http.Request" => {
+            "http.Server" | "http.Request" | "std.net.http.Server" | "std.net.http.Request" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpServer);
             }
             STD_NET_LISTENER | STD_NET_CONNECTION => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking);
             }
-            "tls.TlsStream" => {
+            "tls.TlsStream" | "std.net.tls.TlsStream" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Tls);
             }
-            "quic.QUICEndpoint" | "quic.QUICConnection" | "quic.QUICStream" | "quic.QUICEvent" => {
+            "quic.QUICEndpoint"
+            | "quic.QUICConnection"
+            | "quic.QUICStream"
+            | "quic.QUICEvent"
+            | "std.net.quic.QUICEndpoint"
+            | "std.net.quic.QUICConnection"
+            | "std.net.quic.QUICStream"
+            | "std.net.quic.QUICEvent" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Quic);
             }
             _ => {}
@@ -2251,7 +2323,7 @@ impl Checker {
         let Ty::Named { name, .. } = receiver_ty else {
             return;
         };
-        if name != "semaphore.Semaphore" || self.user_modules.contains("semaphore") {
+        if name != "std.semaphore.Semaphore" {
             return;
         }
         if matches!(method, "acquire" | "acquire_timeout") {
@@ -2464,7 +2536,7 @@ impl Checker {
             .or_else(|| {
                 self.module_registry
                     .resolve_handle_method_sig(type_name, method)
-                    .map(|(_c_symbol, params, return_type)| FnSig {
+                    .map(|(_c_symbol, params, return_type, _canonical_owner)| FnSig {
                         params,
                         return_type,
                         ..FnSig::default()
@@ -2561,14 +2633,24 @@ impl Checker {
     /// Only names proven in the same owner's `type_defs` are qualified. An
     /// already-qualified result (including `foo.Connection`) is authoritative
     /// and unchanged, as are builtins and a method on a bare/root receiver.
-    fn qualify_method_return_to_receiver_owner(&self, receiver_name: &str, ty: &Ty) -> Ty {
-        let Some((owner, _)) = receiver_name.rsplit_once('.') else {
+    pub(super) fn qualify_method_return_to_receiver_owner(
+        &self,
+        receiver_name: &str,
+        ty: &Ty,
+    ) -> Ty {
+        let canonical_registry_receiver = self
+            .module_registry
+            .canonical_method_receiver_identity(receiver_name);
+        let exact_receiver = if let Some(canonical) = canonical_registry_receiver.as_deref() {
+            canonical
+        } else if self.type_defs.contains_key(receiver_name) {
+            receiver_name
+        } else {
             return ty.clone();
         };
-        if !self.type_defs.contains_key(receiver_name) {
+        let Some((owner, _)) = exact_receiver.rsplit_once('.') else {
             return ty.clone();
-        }
-
+        };
         self.qualify_method_return_to_owner(owner, ty)
     }
 
@@ -2584,6 +2666,10 @@ impl Checker {
             return mapped;
         };
         if name.contains('.') {
+            let name = self
+                .module_registry
+                .canonical_registry_signature_type_identity(&name, owner)
+                .unwrap_or(name);
             return Ty::Named {
                 name,
                 args,
@@ -2592,7 +2678,9 @@ impl Checker {
         }
         let qualified = format!("{owner}.{name}");
         Ty::Named {
-            name: if self.type_defs.contains_key(&qualified) {
+            name: if self.type_defs.contains_key(&qualified)
+                || self.module_registry.is_method_receiver_type(&qualified)
+            {
                 qualified
             } else {
                 name
@@ -2756,7 +2844,7 @@ impl Checker {
                 trait_name,
                 assoc_name,
                 ..
-            } if trait_name.as_ref() == "Pid" && assoc_name.as_ref() == "Msg"
+            } if trait_name.as_ref() == "std.builtins.Pid" && assoc_name.as_ref() == "Msg"
         )
     }
 
@@ -7269,18 +7357,20 @@ impl Checker {
                 // their runtime implementations are not compiled there.
                 // The manifest-generated module rejection slice is shared with
                 // the value-position guard in expressions.rs.
-                if !self.user_modules.contains(name) {
-                    for rejection in crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
-                        if name == rejection.module {
-                            self.reject_wasm_feature(span, rejection.feature);
-                        }
-                    }
-                    // crypto.random_bytes and its fallible twin depend on a
-                    // native-only secure entropy source absent from the wasm32 link
-                    // set; reject so secure randomness fails closed on wasm32.
-                    if name == "crypto" && matches!(method, "random_bytes" | "try_random_bytes") {
-                        self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
-                    }
+                if let Some(feature) = self.wasm_native_only_module_feature(name) {
+                    self.reject_wasm_feature(span, feature);
+                }
+                // Exact-function policy is separately keyed by canonical
+                // source owner, so supported modules can retain native-only
+                // member exclusions without weakening alias coverage.
+                self.reject_wasm_native_only_module_function(name, method, span);
+                // crypto.random_bytes and its fallible twin depend on a
+                // native-only secure entropy source absent from the wasm32 link
+                // set; reject so secure randomness fails closed on wasm32.
+                if self.is_shipped_crypto_module(name)
+                    && matches!(method, "random_bytes" | "try_random_bytes")
+                {
+                    self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
                 }
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
                     if let Some(caller) = &self.current_function {
@@ -7312,7 +7402,7 @@ impl Checker {
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are
                     // linked through unification.
-                    if canonical_owner == "std.channel.channel" && method == "new" {
+                    if canonical_owner == "std.channel" && method == "new" {
                         let t = Ty::Var(TypeVar::fresh());
                         return Ty::Tuple(vec![Ty::sender(t.clone()), Ty::receiver(t)]);
                     }
@@ -9112,6 +9202,11 @@ impl Checker {
                         // The resolved receiver owner is executable dispatch
                         // authority. Registration publishes this exact key;
                         // never retry through the receiver's final segment.
+                        // The receiver's resolved nominal owner is executable
+                        // dispatch authority. The declaration map is keyed by
+                        // that exact source identity even when compatibility
+                        // `fn_sigs` aliases retain a shorter presentation.
+                        // Never retry through either the type or method leaf.
                         let method_owner = name.as_str();
                         let method_key = format!("{method_owner}::{method}");
                         // Wire codec instance serialize methods on a `#[wire]`
@@ -9170,6 +9265,7 @@ impl Checker {
                                 }
                             }
                         } else if self.fn_sigs.contains_key(&method_key)
+                            || self.impl_method_declaration_ids.contains_key(&method_key)
                             || (!type_args.is_empty() && {
                                 // Concrete-specialised-impl check (#2270): the
                                 // type_args may resolve to a mangled key even
@@ -9377,7 +9473,7 @@ impl Checker {
                             },
                             true,
                         );
-                        if declaring_trait == "Pid" && method == "send" {
+                        if declaring_trait == "std.builtins.Pid" && method == "send" {
                             // TODO(A640): replace this fail-closed branch with
                             // a first-class `P::Msg: Serializable` projection
                             // bound once the checker can express that shape on
@@ -9589,8 +9685,10 @@ impl Checker {
                 }
 
                 if let Some(mut sig) = found_sig {
-                    let pid_send_dispatch = found_bound
-                        .is_some_and(|bound| bound.trait_name == "Pid" && method == "send");
+                    let pid_send_dispatch = found_bound.as_ref().is_some_and(|bound| {
+                        self.trait_ref_lookup_key(&bound.trait_name) == "std.builtins.Pid"
+                            && method == "send"
+                    });
                     if let Some(bound) = found_bound {
                         self.record_method_call_receiver_kind(
                             span,
@@ -10131,6 +10229,43 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
 mod tests {
     use super::*;
     use crate::module_registry::ModuleRegistry;
+
+    #[test]
+    fn wasm_file_stream_function_policy_uses_canonical_std_owner_not_spellings() {
+        let span = 0..0;
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.enable_wasm_target();
+        checker
+            .canonical_std_module_sources
+            .insert("std.fs".to_string());
+        checker
+            .module_import_bindings
+            .insert((None, "files".to_string()), "std.fs".to_string());
+        checker.reject_wasm_native_only_module_function("files", "try_read", &span);
+        assert_eq!(checker.errors.len(), 1, "module alias must reject");
+
+        // Use a fresh checker: the production de-duplication key intentionally
+        // suppresses repeated diagnostics at one source span.
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.enable_wasm_target();
+        checker
+            .canonical_std_module_sources
+            .insert("std.fs".to_string());
+        checker.reject_wasm_native_only_function_identity("std.fs.try_read", &span);
+        assert_eq!(checker.errors.len(), 1, "named-import identity must reject");
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.enable_wasm_target();
+        checker
+            .module_import_bindings
+            .insert((None, "lookalike".to_string()), "app.fs".to_string());
+        checker.reject_wasm_native_only_module_function("lookalike", "try_read", &span);
+        checker.reject_wasm_native_only_function_identity("app.fs.try_read", &span);
+        assert!(
+            checker.errors.is_empty(),
+            "a user package with the same leaf must not inherit std.fs policy"
+        );
+    }
 
     #[test]
     fn ask_reply_send_gate_uses_exact_import_owner_and_fails_closed_without_it() {

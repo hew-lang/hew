@@ -2121,16 +2121,21 @@ impl Builder {
         let fields = self.lookup_record_field_order(key)?;
         let field_tys: Vec<ResolvedTy> = fields.iter().map(|(_, ty)| ty.clone()).collect();
         let record_layouts = self.record_layouts_for_classification();
-        crate::state_clone::classify_owned_string_record_fields(&field_tys, &record_layouts, &[])
-            .ok()
-            .flatten()
+        crate::state_clone::classify_owned_string_record_fields(
+            &field_tys,
+            &record_layouts,
+            &self.enum_layouts,
+            &self.lifecycle_registry,
+        )
+        .ok()
+        .flatten()
     }
     /// Unified owned-aggregate-record value-class authority (RC-4 / RC-6 / G12).
     ///
     /// Returns `Some(kinds)` iff the record named by `key`:
     ///   1. has a registered layout (`record_field_orders`),
     ///   2. classifies cleanly under the SAME resource-aware field classifier
-    ///      actor state uses (`classify_actor_state_fields_with_resource_handles`),
+    ///      actor state uses (`classify_actor_state_fields_with_lifecycle_registry`),
     ///      AND
     ///   3. every field's kind is admissible to the in-place record value-class
     ///      (`StateFieldCloneKind::supports_value_class_drop_spine`) — so codegen
@@ -2190,12 +2195,12 @@ impl Builder {
             .map(|(_, ty)| self.normalize_machine_field_ty(ty))
             .collect();
         let record_layouts = self.record_layouts_for_classification();
-        let kinds = crate::state_clone::classify_actor_state_fields_with_resource_handles(
+        let kinds = crate::state_clone::classify_actor_state_fields_with_lifecycle_registry(
             &field_tys,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         )?;
         // Fail closed at the value-class gate, not late at codegen. An admitted
         // owned-aggregate record is seeded for `DropKind::RecordInPlace`, which
@@ -2255,7 +2260,7 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
             &self.resource_record_names_for_drop_readiness(),
         )
         .unwrap_or(false)
@@ -2281,7 +2286,7 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
             &resource_record_names,
         )
         .unwrap_or(false)
@@ -2295,7 +2300,7 @@ impl Builder {
                 &record_layouts,
                 &self.enum_layouts,
                 &self.opaque_handle_names,
-                &self.resource_opaque_close,
+                &self.lifecycle_registry,
                 &resource_record_names,
             )
             .unwrap_or(false)
@@ -2312,7 +2317,6 @@ impl Builder {
             .filter(|name| {
                 self.type_classes
                     .get(name.as_str())
-                    .or_else(|| self.type_classes.get(hew_types::short_name(name)))
                     .is_some_and(|(marker, _)| matches!(marker, ResourceMarker::Resource))
             })
             .cloned()

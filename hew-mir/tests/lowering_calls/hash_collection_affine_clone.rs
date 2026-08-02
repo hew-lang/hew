@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use hew_hir::{
     ids::IdGen, lower_program, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral,
     HirModule, HirStmt, HirStmtKind, IntentKind, ResolutionCtx, ResourceMarker, ScopeId,
-    ValueClass,
+    TypeClassTable, ValueClass,
 };
 use hew_mir::{lower_hir_module, IrPipeline};
 use hew_types::module_registry::ModuleRegistry;
@@ -118,7 +118,7 @@ fn constructed_affine_collection_call(
         ty: ResolvedTy::Unit,
         span: 0..0,
     };
-    let mut type_classes = HashMap::new();
+    let mut type_classes = TypeClassTable::default();
     type_classes.insert(
         "Token".to_string(),
         (ResourceMarker::Resource, Some("close".to_string())),

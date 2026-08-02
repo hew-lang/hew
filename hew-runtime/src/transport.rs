@@ -2108,6 +2108,44 @@ mod tests {
         (server, client)
     }
 
+    #[test]
+    fn exact_tcp_connection_and_listener_release_valid_handles() {
+        run_in_isolated_test_process(
+            "transport::tests::exact_tcp_connection_and_listener_release_valid_handles",
+            "HEW_RUNTIME_EXACT_TCP_LIFECYCLE",
+            || {
+                let _guard = crate::runtime_test_guard();
+                let bind = CString::new("127.0.0.1:0").unwrap();
+                // SAFETY: `bind` is a live NUL-terminated string for this call.
+                let listener = unsafe { hew_tcp_listen(bind.as_ptr()) };
+                assert!(listener > 0, "producer must return a valid listener handle");
+                let port = hew_tcp_listener_local_port(listener);
+                assert!(port > 0, "ephemeral listener must expose its bound port");
+
+                let address = CString::new(format!("127.0.0.1:{port}")).unwrap();
+                // SAFETY: `address` is a live NUL-terminated string for this call.
+                let connection = unsafe { hew_tcp_connect(address.as_ptr()) };
+                assert!(
+                    connection > 0,
+                    "producer must return a valid connection handle"
+                );
+
+                assert_eq!(hew_tcp_close(connection), 0);
+                assert_eq!(hew_tcp_listener_close(listener), 0);
+                assert_eq!(
+                    hew_tcp_close(connection),
+                    -1,
+                    "connection released exactly once"
+                );
+                assert_eq!(
+                    hew_tcp_listener_close(listener),
+                    -1,
+                    "listener released exactly once"
+                );
+            },
+        );
+    }
+
     /// A broken-pipe outbound `framed_send` must fail closed with `-1` instead
     /// of killing the process with SIGPIPE. This exercises the send-path
     /// defense-in-depth in isolation — `MSG_NOSIGNAL` on Linux/Android
@@ -2165,6 +2203,30 @@ mod tests {
         TCP_API_STATE.access(|state| {
             state.listeners.remove(&handle);
         });
+    }
+
+    /// The two stdlib resource types intentionally publish distinct release
+    /// symbols even though the listener shim delegates to the shared close
+    /// implementation. Exercise both exported endpoints against live table
+    /// entries so lifecycle evidence cannot be satisfied by a similarly named
+    /// test that never releases either resource.
+    #[test]
+    fn tcp_resource_release_symbols_remove_live_handles_exactly_once() {
+        let _guard = crate::runtime_test_guard();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let address = listener
+            .local_addr()
+            .expect("read loopback listener address");
+        let client = TcpStream::connect(address).expect("connect loopback peer");
+        let (server, _) = listener.accept().expect("accept loopback peer");
+        let connection_handle = register_stream(server);
+        let listener_handle = register_listener(listener);
+
+        assert_eq!(hew_tcp_close(connection_handle), 0);
+        assert_eq!(hew_tcp_close(connection_handle), -1);
+        assert_eq!(hew_tcp_listener_close(listener_handle), 0);
+        assert_eq!(hew_tcp_listener_close(listener_handle), -1);
+        drop(client);
     }
 
     #[derive(Clone, Default)]

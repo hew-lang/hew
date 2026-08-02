@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::{Deref, DerefMut};
 
 use hew_parser::ast::ResourceMarker as AstResourceMarker;
 use hew_types::{BuiltinType, ResolvedTy};
@@ -36,7 +37,220 @@ impl From<hew_parser::ast::ResourceMarker> for ResourceMarker {
 /// for compatibility with existing HIR/MIR construction sites; callers must use
 /// `lookup_type_marker` so `BitCopy` registrations that have no parser spelling
 /// are still observed. LESSONS: `type-info-survival`.
-pub type TypeClassTable = HashMap<String, (ResourceMarker, Option<String>)>;
+/// Checker-admitted lifecycle for one exact qualified opaque resource.
+///
+/// This is deliberately distinct from the user-facing type-class entry.  The
+/// class says that values are affine; this fact says *why* that class was
+/// admitted and pins its sole automatic close to the exact producer/release
+/// contract the checker validated.  Downstream stages consume this fact and
+/// never reconstruct it from a short type name or a method spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OpaqueResourceLifecycle {
+    pub resource_declaration: hew_types::DefId,
+    pub close_declaration: hew_types::DefId,
+    pub release_declaration: hew_types::DefId,
+    /// Emitted linkage names. These are never semantic lookup keys.
+    pub close_symbol: String,
+    pub release_symbol: String,
+    pub discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth,
+    pub producer_declarations: std::collections::BTreeSet<hew_types::DefId>,
+    pub producer_symbols: std::collections::BTreeSet<String>,
+    pub producer_modules: std::collections::BTreeSet<String>,
+}
+
+/// MIR-admitted lifecycle for one exact field-bearing resource record.
+///
+/// Record resources share the same declaration-identity authority as opaque
+/// resources.  The emitted close symbol is linkage metadata only; semantic
+/// lookup is always keyed by the exact qualified resource declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResourceRecordLifecycle {
+    pub resource_declaration: hew_types::DefId,
+    pub close_declaration: hew_types::DefId,
+    pub close_symbol: String,
+}
+
+/// Canonical declaration-identity registry for resource lifecycles.
+///
+/// This is the only carrier permitted beyond HIR lowering.  It intentionally
+/// exposes exact [`hew_types::DefId`] lookup only: callers may not retry a
+/// qualified miss with a short, suffix, or leaf name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LifecycleRegistry {
+    opaque_resources: BTreeMap<hew_types::DefId, OpaqueResourceLifecycle>,
+    resource_records: BTreeMap<hew_types::DefId, ResourceRecordLifecycle>,
+}
+
+impl LifecycleRegistry {
+    /// Admit one exact opaque-resource lifecycle into a standalone registry.
+    ///
+    /// # Errors
+    /// Returns the rejected lifecycle on duplicate declaration identity.
+    pub fn admit_opaque_resource(
+        &mut self,
+        lifecycle: OpaqueResourceLifecycle,
+    ) -> Result<(), Box<OpaqueResourceLifecycle>> {
+        use std::collections::btree_map::Entry;
+        match self
+            .opaque_resources
+            .entry(lifecycle.resource_declaration.clone())
+        {
+            Entry::Vacant(entry) => {
+                entry.insert(lifecycle);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(Box::new(lifecycle)),
+        }
+    }
+    #[must_use]
+    pub fn opaque_resource(
+        &self,
+        resource_declaration: &hew_types::DefId,
+    ) -> Option<&OpaqueResourceLifecycle> {
+        self.opaque_resources.get(resource_declaration)
+    }
+
+    #[must_use]
+    pub fn opaque_resource_for_ty(&self, ty: &ResolvedTy) -> Option<&OpaqueResourceLifecycle> {
+        let ResolvedTy::Named {
+            name,
+            builtin: None,
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        self.opaque_resource(&hew_types::DefId::new(name))
+    }
+
+    #[must_use]
+    pub fn opaque_resources(&self) -> impl ExactSizeIterator<Item = &OpaqueResourceLifecycle> {
+        self.opaque_resources.values()
+    }
+
+    /// Admit one exact field-bearing resource-record lifecycle.
+    ///
+    /// # Errors
+    /// Returns the rejected lifecycle on duplicate declaration identity.
+    fn admit_resource_record(
+        &mut self,
+        lifecycle: ResourceRecordLifecycle,
+    ) -> Result<(), Box<ResourceRecordLifecycle>> {
+        use std::collections::btree_map::Entry;
+        match self
+            .resource_records
+            .entry(lifecycle.resource_declaration.clone())
+        {
+            Entry::Vacant(entry) => {
+                entry.insert(lifecycle);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(Box::new(lifecycle)),
+        }
+    }
+
+    #[must_use]
+    pub fn resource_record(
+        &self,
+        resource_declaration: &hew_types::DefId,
+    ) -> Option<&ResourceRecordLifecycle> {
+        self.resource_records.get(resource_declaration)
+    }
+
+    #[must_use]
+    pub fn resource_records(&self) -> impl ExactSizeIterator<Item = &ResourceRecordLifecycle> {
+        self.resource_records.values()
+    }
+}
+
+/// Per-named-type classification plus exact closeable-opaque lifecycles.
+///
+/// `Deref` preserves the long-established map API for ordinary class reads;
+/// lifecycle consumers must use [`Self::opaque_resource_lifecycle`] so an
+/// exact qualified key is mandatory and no short-name retry is available.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TypeClassTable {
+    classes: HashMap<String, (ResourceMarker, Option<String>)>,
+    lifecycle_registry: LifecycleRegistry,
+}
+
+impl Deref for TypeClassTable {
+    type Target = HashMap<String, (ResourceMarker, Option<String>)>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.classes
+    }
+}
+
+impl DerefMut for TypeClassTable {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.classes
+    }
+}
+
+impl TypeClassTable {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Admit one lifecycle. Duplicate exact identities are refused even when
+    /// equal: HIR admission is a one-shot boundary, not a merge operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the rejected lifecycle when its exact qualified identity was
+    /// already admitted.
+    pub fn admit_opaque_resource_lifecycle(
+        &mut self,
+        lifecycle: OpaqueResourceLifecycle,
+    ) -> Result<(), Box<OpaqueResourceLifecycle>> {
+        self.lifecycle_registry.admit_opaque_resource(lifecycle)
+    }
+
+    /// Admit one exact field-bearing resource-record lifecycle at the HIR
+    /// boundary. Downstream phases receive only an immutable registry view.
+    ///
+    /// # Errors
+    /// Returns the rejected lifecycle when the resource declaration was
+    /// already admitted.
+    pub fn admit_resource_record_lifecycle(
+        &mut self,
+        lifecycle: ResourceRecordLifecycle,
+    ) -> Result<(), Box<ResourceRecordLifecycle>> {
+        self.lifecycle_registry.admit_resource_record(lifecycle)
+    }
+
+    #[must_use]
+    pub fn opaque_resource_lifecycle(
+        &self,
+        resource_declaration: &hew_types::DefId,
+    ) -> Option<&OpaqueResourceLifecycle> {
+        self.lifecycle_registry
+            .opaque_resource(resource_declaration)
+    }
+
+    #[must_use]
+    pub fn opaque_resource_lifecycle_for_type_name(
+        &self,
+        canonical_type_name: &str,
+    ) -> Option<&OpaqueResourceLifecycle> {
+        self.opaque_resource_lifecycle(&hew_types::DefId::new(canonical_type_name))
+    }
+
+    #[must_use]
+    pub fn opaque_resource_lifecycles(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &OpaqueResourceLifecycle> {
+        self.lifecycle_registry.opaque_resources()
+    }
+
+    /// Return the structured lifecycle authority carried into MIR/codegen.
+    #[must_use]
+    pub const fn lifecycle_registry(&self) -> &LifecycleRegistry {
+        &self.lifecycle_registry
+    }
+}
 
 #[must_use]
 pub fn lookup_type_marker(name: &str, type_classes: &TypeClassTable) -> Option<ResourceMarker> {
@@ -426,7 +640,7 @@ mod tests {
     fn qualified_payload_does_not_select_bare_instantiation_marker() {
         use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
 
-        let mut table: TypeClassTable = std::collections::HashMap::default();
+        let mut table = TypeClassTable::default();
         // Registered under a distinct bare declaration identity.
         let bare_key = crate::monomorph::mangle("Holder", &[ResolvedTy::named_user("Box", vec![])]);
         table.insert(bare_key, (ResourceMarker::BitCopy, None));
@@ -449,7 +663,7 @@ mod tests {
     fn qualified_origin_does_not_select_bare_instantiation_marker() {
         use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
 
-        let mut table: TypeClassTable = std::collections::HashMap::default();
+        let mut table = TypeClassTable::default();
         // The mono instance is registered under a distinct bare origin.
         let bare_key = crate::monomorph::mangle("Key", &[ResolvedTy::String]);
         table.insert(bare_key, (ResourceMarker::BitCopy, None));
@@ -472,7 +686,7 @@ mod tests {
     fn distinct_payload_does_not_resolve_marker_via_concrete_key() {
         use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
 
-        let mut table: TypeClassTable = std::collections::HashMap::default();
+        let mut table = TypeClassTable::default();
         // Only `Holder$$i64` is registered with a BitCopy marker.
         let bare_key = crate::monomorph::mangle("Holder", &[ResolvedTy::I64]);
         table.insert(bare_key, (ResourceMarker::BitCopy, None));
@@ -488,5 +702,62 @@ mod tests {
         assert_eq!(lookup_type_marker_for_ty(&qualified, &table), None);
         // Sanity: the unused variant keeps the linter honest.
         let _ = ResourceMarker::Resource;
+    }
+
+    #[test]
+    fn resource_record_registry_is_exact_and_refuses_duplicate_identity() {
+        use super::{ResourceRecordLifecycle, TypeClassTable};
+        use hew_types::DefId;
+
+        let lifecycle = |owner: &str, close: &str, symbol: &str| ResourceRecordLifecycle {
+            resource_declaration: DefId::new(owner),
+            close_declaration: DefId::new(close),
+            close_symbol: symbol.to_string(),
+        };
+        let mut table = TypeClassTable::default();
+        table
+            .admit_resource_record_lifecycle(lifecycle(
+                "left.Connection",
+                "left.Connection::close",
+                "left.Connection::close",
+            ))
+            .unwrap();
+        table
+            .admit_resource_record_lifecycle(lifecycle(
+                "right.Connection",
+                "right.Connection::close",
+                "right.Connection::close",
+            ))
+            .unwrap();
+
+        let registry = table.lifecycle_registry();
+        assert_eq!(registry.resource_records().len(), 2);
+        assert!(registry
+            .resource_record(&DefId::new("Connection"))
+            .is_none());
+        assert_eq!(
+            registry
+                .resource_record(&DefId::new("right.Connection"))
+                .unwrap()
+                .close_declaration,
+            DefId::new("right.Connection::close")
+        );
+
+        assert!(table
+            .admit_resource_record_lifecycle(lifecycle(
+                "left.Connection",
+                "other.close",
+                "other_close",
+            ))
+            .is_err());
+        assert_eq!(
+            table
+                .lifecycle_registry()
+                .resource_record(&DefId::new("left.Connection"))
+                .unwrap()
+                .close_declaration,
+            DefId::new("left.Connection::close"),
+            "duplicate admission must not overwrite the sole close authority"
+        );
     }
 }

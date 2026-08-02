@@ -1157,6 +1157,22 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     elem_llvm_ty: BasicTypeEnum<'ctx>,
     label: &str,
 ) -> CodegenResult<PointerValue<'ctx>> {
+    // Exact opaque resources (including `std.net.Connection`) are affine:
+    // array-literal ingress moves the sole pointer into the Vec slot, clone is
+    // intentionally null, and the drop callback invokes the registry-carried
+    // close exactly once during `hew_vec_free_owned`'s element walk.
+    if let Some(lifecycle) = regs
+        .lifecycle_registry
+        .opaque_resource_for_ty(elem_resolved_ty)
+    {
+        return opaque_resource_vec_elem_layout_descriptor_ptr(
+            ctx,
+            llvm_mod,
+            target_data,
+            lifecycle,
+            elem_llvm_ty,
+        );
+    }
     // `Receiver<T>` is affine and has a close protocol but no semantic clone.
     // Its Vec descriptor is therefore clone-null/drop-present: the array
     // literal lowering moves the sole pointer into its slot through
@@ -1280,6 +1296,128 @@ pub(crate) fn owned_elem_layout_descriptor_ptr<'ctx>(
     g.set_linkage(Linkage::Private);
     g.set_initializer(&init);
     Ok(g.as_pointer_value())
+}
+
+fn opaque_resource_vec_elem_layout_descriptor_ptr<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+    lifecycle: &hew_hir::OpaqueResourceLifecycle,
+    elem_llvm_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let BasicTypeEnum::PointerType(ptr_ty) = elem_llvm_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "opaque resource `{}` Vec element must lower to a pointer slot, got {elem_llvm_ty:?}",
+            lifecycle.resource_declaration.full_path()
+        )));
+    };
+    let key = hew_hir::mangle_dotted_name(lifecycle.resource_declaration.full_path());
+    let layout_name = format!("__hew_vec_elem_layout_resource_{key}_drop_only");
+    if let Some(layout) = llvm_mod.get_global(&layout_name) {
+        return Ok(layout.as_pointer_value());
+    }
+
+    let close_fn = llvm_mod
+        .get_function(&lifecycle.close_symbol)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "opaque resource `{}` Vec element has no emitted close body `{}`",
+                lifecycle.resource_declaration.full_path(),
+                lifecycle.close_symbol
+            ))
+        })?;
+    let return_ty = close_fn.get_type().get_return_type();
+    let unit_return = return_ty.is_none()
+        || return_ty.is_some_and(
+            |ty| matches!(ty, BasicTypeEnum::IntType(int_ty) if int_ty.get_bit_width() == 8),
+        );
+    if close_fn.count_params() != 1 || !unit_return {
+        return Err(CodegenError::FailClosed(format!(
+            "opaque resource `{}` Vec close `{}` must have ABI void(ptr) or Hew Unit i8(ptr), got `{}`",
+            lifecycle.resource_declaration.full_path(),
+            lifecycle.close_symbol,
+            close_fn.get_type().print_to_string().to_string()
+        )));
+    }
+
+    let drop_name = format!("__hew_vec_resource_{key}_drop_inplace");
+    let drop_fn = llvm_mod.get_function(&drop_name).unwrap_or_else(|| {
+        llvm_mod.add_function(
+            &drop_name,
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::Internal),
+        )
+    });
+    if drop_fn.count_basic_blocks() == 0 {
+        let entry = ctx.append_basic_block(drop_fn, "entry");
+        let close_bb = ctx.append_basic_block(drop_fn, "close");
+        let done_bb = ctx.append_basic_block(drop_fn, "done");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        let slot = drop_fn
+            .get_nth_param(0)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "opaque resource Vec drop `{drop_name}` is missing its slot parameter"
+                ))
+            })?
+            .into_pointer_value();
+        let resource = builder
+            .build_load(ptr_ty, slot, "resource_slot")
+            .llvm_ctx("opaque resource Vec drop load slot")?
+            .into_pointer_value();
+        let is_null = builder
+            .build_is_null(resource, "resource_is_null")
+            .llvm_ctx("opaque resource Vec drop null guard")?;
+        builder
+            .build_conditional_branch(is_null, done_bb, close_bb)
+            .llvm_ctx("opaque resource Vec drop null branch")?;
+        builder.position_at_end(close_bb);
+        builder
+            .build_call(close_fn, &[resource.into()], "resource_close")
+            .llvm_ctx("opaque resource Vec close call")?;
+        builder
+            .build_store(slot, ptr_ty.const_null())
+            .llvm_ctx("opaque resource Vec drop clear slot")?;
+        builder
+            .build_unconditional_branch(done_bb)
+            .llvm_ctx("opaque resource Vec drop join")?;
+        builder.position_at_end(done_bb);
+        builder
+            .build_return(None)
+            .llvm_ctx("opaque resource Vec drop return")?;
+    }
+
+    let (size, align) = abi_size_align(elem_llvm_ty, Some(target_data))?;
+    let size_ty = ctx.ptr_sized_int_type(target_data, None);
+    let i8_ty = ctx.i8_type();
+    let layout_ty = ctx.struct_type(
+        &[
+            size_ty.into(),
+            size_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+    let init = layout_ty.const_named_struct(&[
+        size_ty.const_int(size, false).into(),
+        size_ty.const_int(u64::from(align), false).into(),
+        i8_ty
+            .const_int(
+                ownership_kind_byte(HewTypeOwnershipKind::LayoutManaged),
+                false,
+            )
+            .into(),
+        ptr_ty.const_null().into(),
+        drop_fn.as_global_value().as_pointer_value().into(),
+    ]);
+    let layout = llvm_mod.add_global(layout_ty, None, &layout_name);
+    layout.set_constant(true);
+    layout.set_linkage(Linkage::Private);
+    layout.set_initializer(&init);
+    Ok(layout.as_pointer_value())
 }
 
 /// Emit the one clone-null descriptor shared by every

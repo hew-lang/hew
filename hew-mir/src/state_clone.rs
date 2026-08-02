@@ -251,7 +251,7 @@ pub enum StateFieldCloneKind {
     ///
     /// Only single-slot opaque resources reach this arm. A non-opaque
     /// `#[resource]` RECORD has its own record layout, classifies as
-    /// [`UserRecord`], and runs its `close` through the `resource_record_close`
+    /// [`UserRecord`], and runs its `close` through the typed lifecycle registry
     /// registry (the up-front / on-demand record-drop thunk) — it is never a
     /// `Resource` kind.
     ///
@@ -272,7 +272,7 @@ pub enum StateFieldCloneKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ResourceCloseAuthority {
     Runtime(hew_types::runtime_call::RuntimeDropDescriptor),
-    User(String),
+    User(Box<hew_hir::OpaqueResourceLifecycle>),
 }
 
 /// Reusable structural clone/drop plan for one owned value.
@@ -319,7 +319,7 @@ impl ValueSnapshotPlan {
         record_layouts: &[RecordLayout],
         enum_layouts: &[EnumLayout],
         opaque_handle_names: &[String],
-        resource_close: &[(String, String)],
+        resource_close: &hew_hir::LifecycleRegistry,
     ) -> Result<bool, ClassificationError> {
         let mut visited = HashSet::new();
         clone_kind_is_total(
@@ -338,7 +338,7 @@ fn clone_kind_is_total(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     visited: &mut HashSet<String>,
 ) -> Result<bool, ClassificationError> {
     match kind {
@@ -416,7 +416,7 @@ fn clone_record_is_total(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     visited: &mut HashSet<String>,
 ) -> Result<bool, ClassificationError> {
     let visit_key = format!("record:{name}");
@@ -451,7 +451,7 @@ fn clone_enum_is_total(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     visited: &mut HashSet<String>,
 ) -> Result<bool, ClassificationError> {
     let visit_key = format!("enum:{name}");
@@ -490,7 +490,7 @@ fn classified_type_is_clone_total(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     visited: &mut HashSet<String>,
 ) -> Result<bool, ClassificationError> {
     let kind = classify_state_field_full_impl(
@@ -706,7 +706,7 @@ impl StateFieldCloneKind {
     /// MIR-admits/codegen-refuses seam. This predicate moves the refusal back to
     /// the W3.029 value-class gate (`fail-closed at the gate, not late`).
     ///
-    /// `IoHandle` (`Generator`/`Stream`/`Sink`/`Connection`/`CancellationToken`)
+    /// `IoHandle` (`Generator`/`Stream`/`Sink`/`CancellationToken`)
     /// is admitted: a `ValueClass::AffineResource`/`Linear` field is NOT
     /// owned-aggregate-by-value, so a record carrying one is dropped field-wise
     /// through the resource-drop path (`hew_gen_coro_destroy` / `*_close`) and is
@@ -756,14 +756,15 @@ impl StateFieldCloneKind {
             // no closure pair (the managed clone would shallow-copy the pair
             // and alias its sole-owner environment; closure-pair Vecs ride the
             // release-only descriptor, not a cloneable state witness), no
-            // `#[resource]` handle (RAII-1 wires the exactly-once
-            // close only for direct/nested-record fields, not for a managed
-            // collection element / tuple member whose tag-aware clone would
-            // alias the handle), and the element/key/value kind is itself
-            // supported.
-            StateFieldCloneKind::Vec { elem }
-            | StateFieldCloneKind::HashSet { elem }
-            | StateFieldCloneKind::Array { elem, .. } => {
+            // `#[resource]` values are drop-capable inside these shapes; their
+            // clone path is independently refused, while Vec uses a drop-only
+            // element descriptor carrying the exact close callback.
+            StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::Array { elem, .. } => {
+                !self.contains_opaque_handle()
+                    && !self.contains_closure_pair()
+                    && elem.supports_value_class_drop_spine()
+            }
+            StateFieldCloneKind::HashSet { elem } => {
                 !self.contains_opaque_handle()
                     && !self.contains_closure_pair()
                     && !self.contains_resource()
@@ -772,7 +773,6 @@ impl StateFieldCloneKind {
             StateFieldCloneKind::Tuple { elems } => {
                 !self.contains_opaque_handle()
                     && !self.contains_closure_pair()
-                    && !self.contains_resource()
                     && elems
                         .iter()
                         .all(StateFieldCloneKind::supports_value_class_drop_spine)
@@ -791,19 +791,12 @@ impl StateFieldCloneKind {
     }
 }
 
-/// IO-handle subkind. Today the only inhabitant is `Connection`; the
-/// audit at §6 push-back #3 documents the open question for other handle
-/// types (`Listener`, `tls.Connection`, `quic.QUICConnection`). They are
-/// not yet seen in actor state in the audited corpus, so they are not
-/// modelled here; adding them must extend this enum AND extend
-/// `classify_state_field`'s handle-arm match, which is fail-closed today.
+/// Runtime handle kinds whose clone policy is independent of their drop
+/// authority. Opaque resources, including `std.net.Connection`, use
+/// [`StateFieldCloneKind::Resource`] when the canonical lifecycle registry is
+/// available.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IoHandleKind {
-    /// `net.Connection` (`hew-runtime/src/transport.rs:2020`). No
-    /// `hew_connection_dup` runtime helper exists. Direct spawn is
-    /// move-semantic (byte-copy at spawn). Supervisor-restart clone path
-    /// must `FailClosed` at codegen time per plan §4.5 B.
-    Connection,
     /// `Stream<T>` read handle. Its scope-exit release is `hew_stream_close`
     /// (the same symbol `Stream.close()` and the single-handle drop path use).
     /// No `hew_stream_dup` runtime helper exists, so the clone/restart path
@@ -955,6 +948,7 @@ pub fn mangle_actor_state_drop_fn(actor_name: &str) -> String {
 /// fires on a self-referential user record, or if a nested record's
 /// layout is absent from `record_layouts`. No partial result is
 /// returned — fail-closed per `no-silent-no-op-stubs`.
+#[cfg(test)]
 pub fn classify_actor_state_fields(
     state_field_tys: &[ResolvedTy],
     record_layouts: &[RecordLayout],
@@ -978,6 +972,7 @@ pub fn classify_actor_state_fields(
 /// # Errors
 ///
 /// Same conditions as [`classify_actor_state_fields`].
+#[cfg(test)]
 pub fn classify_actor_state_fields_with_enum_layouts(
     state_field_tys: &[ResolvedTy],
     record_layouts: &[RecordLayout],
@@ -1003,18 +998,19 @@ pub fn classify_actor_state_fields_with_enum_layouts(
 /// # Errors
 ///
 /// Same conditions as [`classify_actor_state_fields_with_enum_layouts`].
+#[cfg(test)]
 pub fn classify_actor_state_fields_with_opaque_handles(
     state_field_tys: &[ResolvedTy],
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
 ) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
-    classify_actor_state_fields_with_resource_handles(
+    classify_actor_state_fields_with_lifecycle_registry(
         state_field_tys,
         record_layouts,
         enum_layouts,
         opaque_handle_names,
-        &[],
+        &hew_hir::LifecycleRegistry::default(),
     )
 }
 
@@ -1032,17 +1028,17 @@ pub fn classify_actor_state_fields_with_opaque_handles(
 /// # Errors
 ///
 /// Same conditions as [`classify_actor_state_fields_with_opaque_handles`].
-pub fn classify_actor_state_fields_with_resource_handles(
+pub fn classify_actor_state_fields_with_lifecycle_registry(
     state_field_tys: &[ResolvedTy],
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
 ) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
     state_field_tys
         .iter()
         .map(|ty| {
-            classify_value_snapshot_plan_with_resource_handles(
+            classify_value_snapshot_plan_with_lifecycle_registry(
                 ty,
                 record_layouts,
                 enum_layouts,
@@ -1065,12 +1061,12 @@ pub fn classify_actor_state_fields_with_resource_handles(
 ///
 /// Returns [`ClassificationError`] for every unsupported or recursively
 /// unclassifiable shape accepted by the underlying closed classifier.
-pub fn classify_value_snapshot_plan_with_resource_handles(
+pub fn classify_value_snapshot_plan_with_lifecycle_registry(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
 ) -> Result<ValueSnapshotPlan, ClassificationError> {
     let mut visited = HashSet::new();
     classify_state_field_full_impl(
@@ -1110,10 +1106,10 @@ pub fn inline_enum_overwrite_drop_is_ready(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     resource_record_names: &[String],
 ) -> Result<bool, ClassificationError> {
-    let plan = classify_value_snapshot_plan_with_resource_handles(
+    let plan = classify_value_snapshot_plan_with_lifecycle_registry(
         ty,
         record_layouts,
         enum_layouts,
@@ -1162,10 +1158,10 @@ pub fn record_with_inline_enum_drop_is_ready(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     resource_record_names: &[String],
 ) -> Result<bool, ClassificationError> {
-    let plan = classify_value_snapshot_plan_with_resource_handles(
+    let plan = classify_value_snapshot_plan_with_lifecycle_registry(
         ty,
         record_layouts,
         enum_layouts,
@@ -1219,10 +1215,9 @@ fn type_reaches_forbidden_overwrite_boundary(
             builtin,
             ..
         } => {
-            let short = hew_types::short_name(name);
             if resource_record_names
                 .iter()
-                .any(|resource| resource == name || hew_types::short_name(resource) == short)
+                .any(|resource| resource == name)
             {
                 return true;
             }
@@ -1311,9 +1306,15 @@ pub fn classify_owned_string_record_fields(
     field_tys: &[ResolvedTy],
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> Result<Option<Vec<StateFieldCloneKind>>, ClassificationError> {
-    let kinds =
-        classify_actor_state_fields_with_enum_layouts(field_tys, record_layouts, enum_layouts)?;
+    let kinds = classify_actor_state_fields_with_lifecycle_registry(
+        field_tys,
+        record_layouts,
+        enum_layouts,
+        &[],
+        lifecycle_registry,
+    )?;
     let mut has_string = false;
     for kind in &kinds {
         match kind {
@@ -1351,6 +1352,7 @@ pub fn classify_owned_string_record_fields(
     clippy::implicit_hasher,
     reason = "the substrate is internally-consumed; callers don't pick the hasher"
 )]
+#[cfg(test)]
 pub fn classify_state_field(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
@@ -1371,6 +1373,7 @@ pub fn classify_state_field(
     clippy::implicit_hasher,
     reason = "the substrate is internally-consumed; callers don't pick the hasher"
 )]
+#[cfg(test)]
 pub fn classify_state_field_with_enum_layouts(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
@@ -1392,6 +1395,7 @@ pub fn classify_state_field_with_enum_layouts(
     clippy::implicit_hasher,
     reason = "the substrate is internally-consumed; callers don't pick the hasher"
 )]
+#[cfg(test)]
 pub fn classify_state_field_full(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
@@ -1404,7 +1408,7 @@ pub fn classify_state_field_full(
         record_layouts,
         enum_layouts,
         opaque_handle_names,
-        &[],
+        &hew_hir::LifecycleRegistry::default(),
         visited,
     )
 }
@@ -1431,12 +1435,12 @@ pub fn classify_state_field_full(
     clippy::implicit_hasher,
     reason = "the substrate is internally-consumed; callers don't pick the hasher"
 )]
-pub fn classify_state_field_with_resource_handles(
+pub fn classify_state_field_with_lifecycle_registry(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     classify_state_field_full_impl(
@@ -1449,13 +1453,21 @@ pub fn classify_state_field_with_resource_handles(
     )
 }
 
+#[cfg(test)]
 fn classify_state_field_impl(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
-    classify_state_field_full_impl(ty, record_layouts, enum_layouts, &[], &[], visited)
+    classify_state_field_full_impl(
+        ty,
+        record_layouts,
+        enum_layouts,
+        &[],
+        &hew_hir::LifecycleRegistry::default(),
+        visited,
+    )
 }
 
 fn classify_state_field_full_impl(
@@ -1463,7 +1475,7 @@ fn classify_state_field_full_impl(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     match ty {
@@ -1526,10 +1538,7 @@ fn classify_state_field_full_impl(
                 resource_close,
                 visited,
             )?;
-            if elem_kind.contains_opaque_handle()
-                || elem_kind.contains_closure_pair()
-                || elem_kind.contains_resource()
-            {
+            if elem_kind.contains_opaque_handle() || elem_kind.contains_closure_pair() {
                 return Err(ClassificationError::Unsupported {
                     rendered: format!("{ty:?}"),
                 });
@@ -1633,7 +1642,7 @@ fn classify_container_element(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     if let ResolvedTy::Named {
@@ -1677,7 +1686,15 @@ fn reject_unclonable_opaque_container(
     elem: &ResolvedTy,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    resource_close: &hew_hir::LifecycleRegistry,
 ) -> Result<(), ClassificationError> {
+    // Vec has a clone-null/drop-present element descriptor for exact opaque
+    // resources. HashMap/HashSet do not; keep those containers rejected at the
+    // classifier boundary until their runtime layouts can carry the same
+    // lifecycle callback.
+    if outer == "Vec" && resource_close.opaque_resource_for_ty(elem).is_some() {
+        return Ok(());
+    }
     if crate::model::ty_contains_unclonable_opaque(elem, record_layouts, enum_layouts) {
         return Err(ClassificationError::OpaqueInContainer {
             outer: outer.to_string(),
@@ -1701,7 +1718,7 @@ fn classify_named(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     if matches!(builtin, Some(hew_types::BuiltinType::Rc)) {
@@ -1768,16 +1785,6 @@ fn classify_named(
         }
     }
 
-    // `std.net.Connection` is a stdlib opaque handle, but unlike generic opaque
-    // blobs it has actor-owned fd teardown semantics. Route it through the
-    // existing IO-handle discriminator before the generic opaque fail-closed arm
-    // so codegen can apply the restart-safe null-clone policy.
-    if args.is_empty() && name == hew_types::stdlib::STD_NET_CONNECTION {
-        return Ok(StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        });
-    }
-
     // ── resource-handle discriminator (RAII-1, checked BEFORE is_opaque) ──
     //
     // A single-slot `#[resource]` handle (`#[resource] #[opaque]`, e.g.
@@ -1791,19 +1798,18 @@ fn classify_named(
     // single-slot resources (lower.rs `resource_opaque_close_registry`), so a
     // non-opaque `#[resource]` RECORD — which has a record layout and was
     // already routed to `classify_user_record` above — is never in it and keeps
-    // its existing `resource_record_close` thunk path. The field name may be
-    // qualified (`regex.Pattern`) while the registry key is the unqualified
-    // decl name (`Pattern`); match both spellings, mirroring the opaque
-    // name-set fallback below.
-    let resource_short = hew_types::short_name(name);
-    if let Some((_, close_symbol)) = resource_close
-        .iter()
-        .find(|(n, _)| n == name)
-        .or_else(|| resource_close.iter().find(|(n, _)| n == resource_short))
-    {
+    // its existing typed lifecycle-registry thunk path. The field name may be
+    // canonical; declaration identity is never retried by leaf spelling.
+    let resolved_resource_ty = ResolvedTy::Named {
+        name: name.to_string(),
+        args: args.to_vec(),
+        builtin,
+        is_opaque,
+    };
+    if let Some(lifecycle) = resource_close.opaque_resource_for_ty(&resolved_resource_ty) {
         return Ok(StateFieldCloneKind::Resource {
             name: name.to_string(),
-            close: ResourceCloseAuthority::User(close_symbol.clone()),
+            close: ResourceCloseAuthority::User(Box::new(lifecycle.clone())),
         });
     }
 
@@ -1869,26 +1875,7 @@ fn classify_named(
     // handles above (they returned `OpaqueHandle`), so any `Named` reaching
     // here with an `EnumLayout` is a genuine enum (monomorphic, generic, or
     // indirect) and classifies as `Enum`.
-    // Non-opaque enum layouts were handled before the `Connection` exception.
-
-    // ── opaque-handle name fallback (defence-in-depth) ──────────────────
-    //
-    // The `is_opaque` discriminator above is the authoritative opaque check.
-    // This name-set fallback remains ONLY as defence-in-depth for any path
-    // that produces a `Named` for a `#[opaque]` decl without the discriminator
-    // stamped (e.g. a `ResolvedTy` synthesised outside `lower_type`). It is
-    // reached only after record-layouts-first and enum-layouts, so a user
-    // record/enum that shadows the name still routes correctly. It never
-    // captures a user type that has its own layout. `opaque_handle_names`
-    // carries the unqualified decl name (`"Value"`); use sites may carry the
-    // qualified form (`"json.Value"`), so match both the full name and the
-    // short suffix.
-    let short = hew_types::short_name(name);
-    if opaque_handle_names.iter().any(|n| n == name || n == short) {
-        return Ok(StateFieldCloneKind::OpaqueHandle {
-            name: name.to_string(),
-        });
-    }
+    // Non-opaque enum layouts were handled before builtin-handle classification.
 
     // ── Typed builtin arms ───────────────────────────────────────────
 
@@ -1928,7 +1915,7 @@ fn classify_named(
     // `hew_stream_close` / `hew_sink_close` (the same symbols the single-handle
     // `.close()` and standalone-binding drop paths use). No dup helper exists,
     // so the clone/restart direction fails closed (handled in the codegen clone
-    // step), matching the `Connection` posture.
+    // step), matching the affine-resource posture.
     if matches!(builtin, Some(hew_types::BuiltinType::Stream)) {
         return Ok(StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Stream,
@@ -1972,7 +1959,13 @@ fn classify_named(
             // shallow-copying the opaque pointer (double-free / UAF on restart).
             // The single transitive authority covers Vec<json.Value>,
             // Vec<Option<json.Value>>, Vec<RecordWithOpaqueField>, etc.
-            reject_unclonable_opaque_container("Vec", elem, record_layouts, enum_layouts)?;
+            reject_unclonable_opaque_container(
+                "Vec",
+                elem,
+                record_layouts,
+                enum_layouts,
+                resource_close,
+            )?;
             let elem_kind = classify_container_element(
                 elem,
                 record_layouts,
@@ -1997,8 +1990,20 @@ fn classify_named(
                     rendered: format!("Named {{ name: \"HashMap\", args: {args:?} }}"),
                 })?;
             // Fail closed on either an opaque key or an opaque value.
-            reject_unclonable_opaque_container("HashMap", key, record_layouts, enum_layouts)?;
-            reject_unclonable_opaque_container("HashMap", val, record_layouts, enum_layouts)?;
+            reject_unclonable_opaque_container(
+                "HashMap",
+                key,
+                record_layouts,
+                enum_layouts,
+                resource_close,
+            )?;
+            reject_unclonable_opaque_container(
+                "HashMap",
+                val,
+                record_layouts,
+                enum_layouts,
+                resource_close,
+            )?;
             // The key position is not a self-recursion boundary (a hashable key
             // does not recurse through the map); classify it directly. The value
             // position IS a container-indirected boundary, so it takes the
@@ -2030,7 +2035,13 @@ fn classify_named(
                 .ok_or_else(|| ClassificationError::Unsupported {
                     rendered: format!("Named {{ name: \"HashSet\", args: {args:?} }}"),
                 })?;
-            reject_unclonable_opaque_container("HashSet", elem, record_layouts, enum_layouts)?;
+            reject_unclonable_opaque_container(
+                "HashSet",
+                elem,
+                record_layouts,
+                enum_layouts,
+                resource_close,
+            )?;
             let elem_kind = classify_container_element(
                 elem,
                 record_layouts,
@@ -2150,7 +2161,7 @@ fn classify_enum(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     if layout.is_indirect {
@@ -2238,7 +2249,7 @@ fn validate_enum_variant_payloads(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     visited: &mut HashSet<String>,
 ) -> Result<(), ClassificationError> {
     for variant in &layout.variants {
@@ -2303,7 +2314,7 @@ fn classify_user_record(
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
-    resource_close: &[(String, String)],
+    resource_close: &hew_hir::LifecycleRegistry,
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
     if !visited.insert(name.to_string()) {
@@ -2365,6 +2376,34 @@ mod tests {
     /// `lower_type` stamps for an opaque-handle reference (e.g. `json.Value`).
     fn named_opaque(name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
         ResolvedTy::named_opaque(name, args)
+    }
+
+    fn lifecycle(name: &str, close: &str) -> hew_hir::OpaqueResourceLifecycle {
+        hew_hir::OpaqueResourceLifecycle {
+            resource_declaration: hew_types::DefId::new(name),
+            close_declaration: hew_types::DefId::new(close),
+            release_declaration: hew_types::DefId::new(close),
+            close_symbol: close.to_string(),
+            release_symbol: close.to_string(),
+            discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+            producer_declarations: std::collections::BTreeSet::new(),
+            producer_symbols: std::collections::BTreeSet::new(),
+            producer_modules: std::collections::BTreeSet::new(),
+        }
+    }
+
+    fn registry(entries: &[(&str, &str)]) -> hew_hir::LifecycleRegistry {
+        let mut registry = hew_hir::LifecycleRegistry::default();
+        for (name, close) in entries {
+            registry
+                .admit_opaque_resource(lifecycle(name, close))
+                .expect("unique test lifecycle");
+        }
+        registry
+    }
+
+    fn user_close(name: &str, close: &str) -> ResourceCloseAuthority {
+        ResourceCloseAuthority::User(Box::new(lifecycle(name, close)))
     }
 
     #[test]
@@ -2446,12 +2485,22 @@ mod tests {
         let rc = builtin(hew_types::BuiltinType::Rc, vec![payload.clone()]);
         let weak = builtin(hew_types::BuiltinType::Weak, vec![payload]);
 
-        let rc_plan =
-            classify_value_snapshot_plan_with_resource_handles(&rc, &no_records(), &[], &[], &[])
-                .unwrap();
-        let weak_plan =
-            classify_value_snapshot_plan_with_resource_handles(&weak, &no_records(), &[], &[], &[])
-                .unwrap();
+        let rc_plan = classify_value_snapshot_plan_with_lifecycle_registry(
+            &rc,
+            &no_records(),
+            &[],
+            &[],
+            &registry(&[]),
+        )
+        .unwrap();
+        let weak_plan = classify_value_snapshot_plan_with_lifecycle_registry(
+            &weak,
+            &no_records(),
+            &[],
+            &[],
+            &registry(&[]),
+        )
+        .unwrap();
 
         assert_eq!(rc_plan.root(), &StateFieldCloneKind::Rc);
         assert_eq!(weak_plan.root(), &StateFieldCloneKind::Weak);
@@ -2471,7 +2520,9 @@ mod tests {
                 ],
             },
         };
-        assert!(cloneable.is_clone_total(&[], &[], &[], &[]).unwrap());
+        assert!(cloneable
+            .is_clone_total(&[], &[], &[], &registry(&[]))
+            .unwrap());
 
         for root in [
             StateFieldCloneKind::IoHandle {
@@ -2480,14 +2531,14 @@ mod tests {
             StateFieldCloneKind::ClosurePair,
             StateFieldCloneKind::Resource {
                 name: "Pattern".to_string(),
-                close: ResourceCloseAuthority::User("Pattern::free".to_string()),
+                close: user_close("Pattern", "Pattern::free"),
             },
             StateFieldCloneKind::OpaqueHandle {
                 name: "json.Value".to_string(),
             },
         ] {
             assert!(!ValueSnapshotPlan { root }
-                .is_clone_total(&[], &[], &[], &[])
+                .is_clone_total(&[], &[], &[], &registry(&[]))
                 .unwrap());
         }
 
@@ -2514,14 +2565,14 @@ mod tests {
                 name: "Cloneable".to_string(),
             },
         }
-        .is_clone_total(&records, &[], &[], &[])
+        .is_clone_total(&records, &[], &[], &registry(&[]))
         .unwrap());
         assert!(!ValueSnapshotPlan {
             root: StateFieldCloneKind::UserRecord {
                 name: "DropOnly".to_string(),
             },
         }
-        .is_clone_total(&records, &[], &[], &[])
+        .is_clone_total(&records, &[], &[], &registry(&[]))
         .unwrap());
     }
 
@@ -2569,7 +2620,7 @@ mod tests {
     }
 
     #[test]
-    fn net_connection_classifies_as_iohandle_per_audit_section_6() {
+    fn net_connection_without_lifecycle_registry_fails_closed_as_opaque() {
         let mut v = HashSet::new();
         let ty = ResolvedTy::Named {
             name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
@@ -2579,8 +2630,8 @@ mod tests {
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection,
+            StateFieldCloneKind::OpaqueHandle {
+                name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
             },
         );
     }
@@ -2678,7 +2729,7 @@ mod tests {
     }
 
     #[test]
-    fn opaque_net_connection_classifies_as_iohandle() {
+    fn opaque_net_connection_with_lifecycle_classifies_as_resource() {
         let mut v = HashSet::new();
         let ty = ResolvedTy::Named {
             name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
@@ -2687,16 +2738,24 @@ mod tests {
             is_opaque: true,
         };
         assert_eq!(
-            classify_state_field_full(
+            classify_state_field_with_lifecycle_registry(
                 &ty,
                 &no_records(),
                 &[],
                 &[hew_types::stdlib::STD_NET_CONNECTION.to_string()],
+                &registry(&[(
+                    hew_types::stdlib::STD_NET_CONNECTION,
+                    "std.net.Connection::close",
+                )]),
                 &mut v,
             )
             .unwrap(),
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection,
+            StateFieldCloneKind::Resource {
+                name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
+                close: user_close(
+                    hew_types::stdlib::STD_NET_CONNECTION,
+                    "std.net.Connection::close",
+                ),
             },
         );
     }
@@ -2705,15 +2764,12 @@ mod tests {
     fn qualified_user_connection_uses_exact_resource_close() {
         let mut visited = HashSet::new();
         let ty = ResolvedTy::named_opaque("foo.Connection".to_string(), Vec::new());
-        let registry = vec![
-            ("Connection".to_string(), "Connection::close".to_string()),
-            (
-                "foo.Connection".to_string(),
-                "foo.Connection::close".to_string(),
-            ),
-        ];
+        let registry = registry(&[
+            ("Connection", "Connection::close"),
+            ("foo.Connection", "foo.Connection::close"),
+        ]);
         assert_eq!(
-            classify_state_field_with_resource_handles(
+            classify_state_field_with_lifecycle_registry(
                 &ty,
                 &no_records(),
                 &[],
@@ -2724,7 +2780,7 @@ mod tests {
             .unwrap(),
             StateFieldCloneKind::Resource {
                 name: "foo.Connection".to_string(),
-                close: ResourceCloseAuthority::User("foo.Connection::close".to_string()),
+                close: user_close("foo.Connection", "foo.Connection::close"),
             },
         );
     }
@@ -2742,9 +2798,9 @@ mod tests {
             builtin: None,
             is_opaque: true,
         };
-        let registry = vec![("Pattern".to_string(), "Pattern::free".to_string())];
+        let registry = registry(&[("Pattern", "Pattern::free")]);
         assert_eq!(
-            classify_state_field_with_resource_handles(
+            classify_state_field_with_lifecycle_registry(
                 &ty,
                 &no_records(),
                 &[],
@@ -2755,7 +2811,7 @@ mod tests {
             .unwrap(),
             StateFieldCloneKind::Resource {
                 name: "Pattern".to_string(),
-                close: ResourceCloseAuthority::User("Pattern::free".to_string()),
+                close: user_close("Pattern", "Pattern::free"),
             },
         );
     }
@@ -2775,12 +2831,12 @@ mod tests {
             is_opaque: true,
         };
         assert_eq!(
-            classify_state_field_with_resource_handles(
+            classify_state_field_with_lifecycle_registry(
                 &ty,
                 &no_records(),
                 &[],
                 &["Pattern".to_string()],
-                &[],
+                &registry(&[]),
                 &mut v,
             )
             .unwrap(),
@@ -2791,10 +2847,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_qualified_field_name_matches_short_registry_key() {
-        // The field type may be qualified (`regex.Pattern`) while the registry
-        // key is the unqualified decl name (`Pattern`). Both spellings must
-        // match, mirroring the opaque name-set fallback.
+    fn resource_qualified_field_refuses_short_registry_key() {
         let mut v = HashSet::new();
         let ty = ResolvedTy::Named {
             name: "regex.Pattern".to_string(),
@@ -2802,9 +2855,9 @@ mod tests {
             builtin: None,
             is_opaque: true,
         };
-        let registry = vec![("Pattern".to_string(), "Pattern::free".to_string())];
-        assert!(matches!(
-            classify_state_field_with_resource_handles(
+        let registry = registry(&[("Pattern", "Pattern::free")]);
+        assert_eq!(
+            classify_state_field_with_lifecycle_registry(
                 &ty,
                 &no_records(),
                 &[],
@@ -2813,15 +2866,17 @@ mod tests {
                 &mut v,
             )
             .unwrap(),
-            StateFieldCloneKind::Resource { .. }
-        ));
+            StateFieldCloneKind::OpaqueHandle {
+                name: "regex.Pattern".to_string(),
+            }
+        );
     }
 
     #[test]
     fn resource_kind_predicates_and_drop_spine() {
         let res = StateFieldCloneKind::Resource {
             name: "Pattern".to_string(),
-            close: ResourceCloseAuthority::User("Pattern::free".to_string()),
+            close: user_close("Pattern", "Pattern::free"),
         };
         // A bare resource leaf IS admitted to the owned-aggregate drop spine
         // (the close fires in the owning record's drop body) and is a resource.
@@ -2830,24 +2885,23 @@ mod tests {
         // It is neither an opaque handle nor a closure pair.
         assert!(!res.contains_opaque_handle());
         assert!(!res.contains_closure_pair());
-        // A resource carried DIRECTLY in a container is fail-closed (the managed
-        // /tag-aware clone would alias the handle → double-close): the container
-        // does not support the drop spine, so a record holding it stays at the
-        // W3.029 reject.
+        // A resource carried directly in a container remains drop-capable. Its
+        // clone path refuses independently, while the drop spine retains the
+        // exact lifecycle close.
         let vec_of_res = StateFieldCloneKind::Vec {
             elem: Box::new(res.clone()),
         };
         assert!(vec_of_res.contains_resource());
-        assert!(!vec_of_res.supports_value_class_drop_spine());
+        assert!(vec_of_res.supports_value_class_drop_spine());
         let tuple_of_res = StateFieldCloneKind::Tuple {
             elems: vec![StateFieldCloneKind::BitCopy { size_bytes: 8 }, res],
         };
         assert!(tuple_of_res.contains_resource());
-        assert!(!tuple_of_res.supports_value_class_drop_spine());
+        assert!(tuple_of_res.supports_value_class_drop_spine());
     }
 
     #[test]
-    fn vec_of_connection_carries_iohandle_through() {
+    fn vec_of_connection_carries_resource_drop_authority_but_refuses_clone() {
         // Exercises the mqtt_broker `Vec<std.net.Connection>` shape from the
         // audit. The exact std identity is required: a user package may
         // declare its own `Connection` resource. Stage 2 emission consumes the
@@ -2860,17 +2914,79 @@ mod tests {
                 name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
                 args: vec![],
                 builtin: None,
-                is_opaque: false,
+                is_opaque: true,
             }],
         );
+        let kind = classify_state_field_with_lifecycle_registry(
+            &ty,
+            &no_records(),
+            &[],
+            &[hew_types::stdlib::STD_NET_CONNECTION.to_string()],
+            &registry(&[(
+                hew_types::stdlib::STD_NET_CONNECTION,
+                "std.net.Connection::close",
+            )]),
+            &mut v,
+        )
+        .unwrap();
         assert_eq!(
-            classify_state_field(&ty, &no_records(), &mut v).unwrap(),
+            kind,
             StateFieldCloneKind::Vec {
-                elem: Box::new(StateFieldCloneKind::IoHandle {
-                    kind: IoHandleKind::Connection,
+                elem: Box::new(StateFieldCloneKind::Resource {
+                    name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
+                    close: user_close(
+                        hew_types::stdlib::STD_NET_CONNECTION,
+                        "std.net.Connection::close",
+                    ),
                 }),
             },
         );
+        assert!(kind.contains_resource());
+        assert!(kind.supports_value_class_drop_spine());
+    }
+
+    #[test]
+    fn hash_containers_of_exact_resources_fail_before_codegen() {
+        let resource = ResolvedTy::Named {
+            name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: true,
+        };
+        let lifecycle = registry(&[(
+            hew_types::stdlib::STD_NET_CONNECTION,
+            "std.net.Connection::close",
+        )]);
+        for (outer, ty) in [
+            (
+                "HashMap",
+                builtin(
+                    hew_types::BuiltinType::HashMap,
+                    vec![ResolvedTy::I64, resource.clone()],
+                ),
+            ),
+            (
+                "HashSet",
+                builtin(hew_types::BuiltinType::HashSet, vec![resource.clone()]),
+            ),
+        ] {
+            let error = classify_state_field_with_lifecycle_registry(
+                &ty,
+                &no_records(),
+                &[],
+                &[hew_types::stdlib::STD_NET_CONNECTION.to_string()],
+                &lifecycle,
+                &mut HashSet::new(),
+            )
+            .expect_err("hash containers have no resource drop-only descriptor");
+            assert_eq!(
+                error,
+                ClassificationError::OpaqueInContainer {
+                    outer: outer.to_string(),
+                    opaque: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
+                }
+            );
+        }
     }
 
     #[test]
@@ -3690,26 +3806,25 @@ mod tests {
         assert!(v.is_empty());
     }
 
-    /// Corollary: when `"Value"` is NOT in `record_layouts` but IS in
-    /// `opaque_handle_names`, it must classify as `OpaqueHandle`.  This is the
-    /// stdlib `json.Value` case — no user record shadows it.
+    /// Corollary: an exact `is_opaque` identity present in the canonical
+    /// opaque-handle set classifies as `OpaqueHandle` when no record shadows it.
     #[test]
-    fn opaque_handle_classifies_when_no_shadowing_record_present() {
-        let opaque_names = vec!["Value".to_string()];
+    fn opaque_handle_classifies_from_exact_discriminator() {
+        let opaque_names = vec!["std.encoding.json.Value".to_string()];
         let ty = ResolvedTy::Named {
-            name: "Value".to_string(),
+            name: "std.encoding.json.Value".to_string(),
             args: vec![],
             builtin: None,
-            is_opaque: false,
+            is_opaque: true,
         };
         let mut v = HashSet::new();
         let result = classify_state_field_full(&ty, &[], &[], &opaque_names, &mut v).unwrap();
         assert_eq!(
             result,
             StateFieldCloneKind::OpaqueHandle {
-                name: "Value".to_string(),
+                name: "std.encoding.json.Value".to_string(),
             },
-            "opaque handle must classify as OpaqueHandle when no user record shadows it",
+            "exact opaque identity must classify without a leaf fallback",
         );
         assert!(v.is_empty());
     }
@@ -4160,10 +4275,6 @@ mod tests {
         // (generator_exec) drops the handle once with no record thunk; rejecting
         // it here would over-reject that working shape.
         assert!(StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        }
-        .supports_value_class_drop_spine());
-        assert!(StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Generator,
         }
         .supports_value_class_drop_spine());
@@ -4196,5 +4307,28 @@ mod tests {
             len: 1,
         }
         .supports_value_class_drop_spine());
+    }
+
+    #[test]
+    fn resource_overwrite_boundary_uses_exact_nominal_owner() {
+        let mut visited = HashSet::new();
+        assert!(type_reaches_forbidden_overwrite_boundary(
+            &named("left.Resource", Vec::new()),
+            &[],
+            &[],
+            &["left.Resource".to_string()],
+            &mut visited,
+        ));
+        let mut visited = HashSet::new();
+        assert!(
+            !type_reaches_forbidden_overwrite_boundary(
+                &named("right.Resource", Vec::new()),
+                &[],
+                &[],
+                &["left.Resource".to_string()],
+                &mut visited,
+            ),
+            "a same-leaf foreign type is not a resource overwrite boundary"
+        );
     }
 }

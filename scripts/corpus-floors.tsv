@@ -31,9 +31,9 @@
 # key	mode	floor	slack	description
 asan-fixture-gates	exact	21	-	ASan/LSan fixture verdicts asserted by scripts/asan-fixture-check.sh
 checked-mir-fixtures	exact	57	-	golden-MIR fixtures under examples/v05/checked-mir
-ci-parity-marked-steps	exact	30	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
+ci-parity-marked-steps	exact	33	-	steps inside the CI-PARITY-STEPS blocks of .github/workflows/ci.yml
 ci-required-checks	exact	33	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
-corpus-floor-registry	exact	24	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
+corpus-floor-registry	exact	25	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
 coverage-e2e-programs	min	70	30	self-contained examples/*.hew programs the runtime coverage report executes
 doc-hew-fences	min	297	60	hew fences extracted from the language guide and the spec
 ffi-arity-checked-contracts	min	469	80	FFI ownership contracts whose declared arity was checked against the Rust signature
@@ -43,13 +43,14 @@ hew-corpus-check-files	min	1685	250	tracked .hew files swept by scripts/hew-corp
 hew-fmt-check-files	min	648	150	std/ and examples/ .hew sources checked by make hew-fmt-check
 hew-suite-tests	min	1169	200	tests executed by hew test tests/hew under the suite ratchet
 ll-oracle-fixtures	exact	15	-	ll-oracle corpus fixtures under tests/ll-oracle/corpus
-macos-leak-oracle-binaries	exact	107	-	nonempty hew-cli memory-oracle binaries selected by scripts/macos-leak-oracle.sh, including ffi_link_e2e
-macos-leak-oracle-tests	exact	712	-	test verdicts selected by scripts/macos-leak-oracle.sh, including ffi_link_e2e
+macos-leak-oracle-binaries	exact	110	-	nonempty hew-cli memory-oracle binaries selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
+macos-leak-oracle-tests	exact	735	-	test verdicts selected by scripts/macos-leak-oracle.sh, including source-discovered probes and ffi_link_e2e
 o2-differential-outcomes	min	1169	200	per-test outcomes compared by the O0-vs-O2 differential gate
+opaque-resource-lifecycle-facts	exact	17	-	AST-derived shipped empty opaque resource declarations with one close/release/producer lifecycle
 sandbox-vm-binaries	exact	4	-	VM-dependent hew-sandbox-wasm test binaries requiring whole-binary exclusion
 stdlib-int-surface-files	exact	74	-	tracked std/ .hew files scanned for removed int/uint aliases
 stdlib-proof-modules	exact	70	-	public stdlib modules mapped to executable proof fixtures
 stdlib-ratchet-files	exact	74	-	std/ .hew files type-checked by scripts/stdlib-ratchet.sh
-structural-authority-inventory	exact	169	-	reviewed compiler authority form/path rows plus exact presentation AST contexts
+structural-authority-inventory	exact	164	-	reviewed compiler authority form/path rows plus exact presentation AST contexts
 surface-example-expectations	exact	14	-	v0.5 surface examples compared against a paired .expected
 ux-example-expectations	exact	27	-	ux and progressive tutorials compared against a paired .expected

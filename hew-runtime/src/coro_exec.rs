@@ -687,6 +687,7 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 1,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
         })
     }
 
@@ -1126,6 +1127,7 @@ mod forced_ordering_probe {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 1,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
         })
     }
 

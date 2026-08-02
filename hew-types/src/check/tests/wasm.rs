@@ -631,6 +631,142 @@ mod wasm_rejects {
     }
 
     #[test]
+    fn wasm_rejects_native_rc1_resource_modules() {
+        let cases = [
+            (
+                "std::net::http",
+                "http.listen(\"127.0.0.1:0\")",
+                "HTTP server operations",
+            ),
+            (
+                "std::process",
+                "process.run(\"echo hew\")",
+                "Process execution operations",
+            ),
+            (
+                "std::net::smtp",
+                "smtp.connect(\"127.0.0.1\", 25, \"\", \"\")",
+                "std::net::smtp operations",
+            ),
+        ];
+
+        for (module, expression, diagnostic_name) in cases {
+            let short_name = module.rsplit("::").next().expect("module short name");
+            let source =
+                format!("import {module};\nfn main() {{ let _resource = {expression}; }}\n");
+            let output = check_wasm_with_registry(&source);
+            let precise_rejections = output
+                .errors
+                .iter()
+                .filter(|error| {
+                    error.kind == TypeErrorKind::PlatformLimitation
+                        && error.message.contains(diagnostic_name)
+                })
+                .count();
+            assert_eq!(
+                precise_rejections, 1,
+                "{short_name} resource construction must have one precise Wasm rejection: {:#?}",
+                output.errors
+            );
+        }
+    }
+
+    #[test]
+    fn wasm_rejects_file_stream_owner_through_alias_call_and_function_value() {
+        let source = concat!(
+            "import std::fs as files;\n",
+            "fn main() {\n",
+            "    let _result = files.try_read(\"/dev/null\");\n",
+            "    let _producer = files.try_read;\n",
+            "}\n",
+        );
+        let output = check_wasm_with_registry(source);
+        let rejections = output
+            .errors
+            .iter()
+            .filter(|error| {
+                error.kind == TypeErrorKind::PlatformLimitation
+                    && error.message.contains("File-backed stream operations")
+            })
+            .count();
+        assert_eq!(
+            rejections, 2,
+            "both the aliased call and function value must reject at the capability boundary: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_named_std_function_imports_preserve_exact_owner_for_calls_and_values() {
+        for (binding, import) in [
+            ("try_read", "import std::fs::{ try_read };"),
+            (
+                "read_handle",
+                "import std::fs::{ try_read as read_handle };",
+            ),
+        ] {
+            let source = format!(
+                "{import}\nfn main() {{ let _result = {binding}(\"/dev/null\"); let _producer = {binding}; }}\n"
+            );
+            let parsed = hew_parser::parse(&source);
+            assert!(
+                parsed.errors.is_empty(),
+                "parse errors: {:?}",
+                parsed.errors
+            );
+            let mut checker = Checker::new(test_registry());
+            checker.enable_wasm_target();
+            let output = checker.check_program(&parsed.program);
+            assert_eq!(
+                checker
+                    .import_fn_name_aliases
+                    .get(&(None, binding.to_string())),
+                Some(&"std.fs.try_read".to_string()),
+                "named binding `{binding}` must retain exact source identity; all bindings: {:#?}",
+                checker.import_fn_name_aliases,
+            );
+            let rejections = output
+                .errors
+                .iter()
+                .filter(|error| {
+                    error.kind == TypeErrorKind::PlatformLimitation
+                        && error.message.contains("File-backed stream operations")
+                })
+                .count();
+            assert_eq!(
+                rejections, 2,
+                "named binding `{binding}` must preserve the std.fs.try_read policy for call and value positions: {:#?}",
+                output.errors
+            );
+            assert!(
+                !output.errors.iter().any(|error| {
+                    matches!(
+                        error.kind,
+                        TypeErrorKind::UndefinedFunction | TypeErrorKind::UndefinedVariable
+                    )
+                }),
+                "named binding `{binding}` must resolve as an actual function import: {:#?}",
+                output.errors
+            );
+            assert!(output.fn_sigs.contains_key(binding));
+            assert!(
+                !output
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.kind == TypeErrorKind::UnusedImport),
+                "using named binding `{binding}` must credit its import: {:#?}",
+                output.warnings
+            );
+            if binding == "read_handle" {
+                assert!(
+                    !output.fn_sigs.contains_key("try_read"),
+                    "a renamed import must not publish the original bare name"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn wasm_rejects_tls_module_call() {
         let source = concat!(
             "import std::net::tls;\n",
@@ -666,6 +802,89 @@ mod wasm_rejects {
             "error message should mention QUIC feature; got: {:?}",
             output.errors
         );
+    }
+
+    #[test]
+    fn wasm_rejects_websocket_module_calls_and_values() {
+        let source = concat!(
+            "import std::net::websocket;\n",
+            "fn main() {\n",
+            "    websocket.connect(\"ws://127.0.0.1:9001/\");\n",
+            "    websocket.listen(\"127.0.0.1:9002\");\n",
+            "    let _connect = websocket.connect;\n",
+            "    let _listen = websocket.listen;\n",
+            "}\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "websocket calls and values should fail closed on WASM: {:?}",
+            output.errors
+        );
+        assert!(platform_error_contains(&output, "std::net::websocket"));
+    }
+
+    #[test]
+    fn wasm_rejects_aliased_websocket_module_calls_and_values() {
+        let source = concat!(
+            "import std::net::websocket as ws;\n",
+            "fn main() {\n",
+            "    ws.connect(\"ws://127.0.0.1:9001/\");\n",
+            "    let _connect = ws.connect;\n",
+            "}\n",
+            "fn use_conn(conn: ws.Conn) { conn.send_text(\"payload\"); }\n",
+            "fn use_server(server: ws.Server) { server.port(); }\n",
+            "fn use_message(message: ws.Message) { message.msg_type(); }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "aliased websocket calls and values should fail closed on WASM: {:?}",
+            output.errors
+        );
+        assert!(platform_error_contains(&output, "std::net::websocket"));
+    }
+
+    #[test]
+    fn native_only_module_aliases_require_shipped_source_authority() {
+        let mut checker = Checker::new(test_registry());
+        checker
+            .module_import_bindings
+            .insert((None, "ws".to_string()), "acme.websocket".to_string());
+        assert_eq!(
+            checker.wasm_native_only_module_feature("ws"),
+            None,
+            "a user module sharing the websocket leaf must not inherit stdlib capability policy"
+        );
+
+        checker
+            .module_import_bindings
+            .insert((None, "ws".to_string()), "std.net.websocket".to_string());
+        checker
+            .canonical_std_module_sources
+            .insert("std.net.websocket".to_string());
+        assert_eq!(
+            checker.wasm_native_only_module_feature("ws"),
+            Some(WasmUnsupportedFeature::WebSocket),
+            "an alias of the shipped module must retain its exact native-only capability"
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_websocket_handle_methods() {
+        let source = concat!(
+            "import std::net::websocket;\n",
+            "fn use_conn(conn: websocket.Conn) { conn.send_text(\"payload\"); }\n",
+            "fn use_server(server: websocket.Server) { server.port(); }\n",
+            "fn use_message(message: websocket.Message) { message.msg_type(); }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "websocket handle methods should fail closed on WASM: {:?}",
+            output.errors
+        );
+        assert!(platform_error_contains(&output, "std::net::websocket"));
     }
 
     #[test]

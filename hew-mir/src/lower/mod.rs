@@ -129,11 +129,11 @@ use self::drop_plan::{
     classify_closure_pair_rhs, classify_dyn_trait_storage, cow_value_leaf_drop_symbol,
     describe_vec_element, dyn_rebind_source_binding, elaborate, exit_block_id,
     field_override_uses_record_field_drop, is_borrowing_call_abi, is_handle_borrowing_call_abi,
-    note_payload_escape, render_owned_handle_ty, resource_drop_fn, resource_opaque_close_registry,
-    stream_handle_drop_descriptor, string_binder_read_is_user_fn_borrow, ty_is_closure_pair,
-    ty_is_generator_handle, ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple,
-    ty_is_indirect_enum, ty_is_local_collection_handle, ty_is_nonowning_handle_leaf,
-    ty_is_owned_handle_leaf, ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
+    note_payload_escape, render_owned_handle_ty, resource_drop_fn, stream_handle_drop_descriptor,
+    string_binder_read_is_user_fn_borrow, ty_is_closure_pair, ty_is_generator_handle,
+    ty_is_heap_owning_enum_composite, ty_is_heap_owning_tuple, ty_is_indirect_enum,
+    ty_is_local_collection_handle, ty_is_nonowning_handle_leaf, ty_is_owned_handle_leaf,
+    ty_is_stream_handle, ty_is_vec, validate_discharge_authority,
     validate_discharge_authority_corroboration, validate_drop_plan, validate_field_drop_in_place,
     validate_obligation_balance, vec_iter_init_vec_source_expr, vec_iter_let_cursor_owns_handle,
     vec_iter_yield_abandonment_diagnostics,
@@ -1137,13 +1137,13 @@ struct Builder {
     /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
     /// for every single-slot `#[resource] #[opaque]` handle (see
     /// `resource_opaque_close_registry`). Threaded into
-    /// `classify_actor_state_fields_with_resource_handles` at the owned-aggregate
+    /// `classify_actor_state_fields_with_lifecycle_registry` at the owned-aggregate
     /// admission gate so a resource-bearing record field classifies as
     /// `StateFieldCloneKind::Resource` (RAII drop spine) instead of the
     /// no-op-drop `OpaqueHandle` (the W3.029 leak). Built from
     /// `opaque_handle_names` + `type_classes` in the Builder ctor; `IrPipeline`
     /// rebuilds the identical registry for codegen so the two never drift.
-    pub(crate) resource_opaque_close: Vec<(String, String)>,
+    pub(crate) lifecycle_registry: hew_hir::LifecycleRegistry,
     pub(crate) current_actor_state_fields: HashMap<String, (FieldOffset, ResolvedTy)>,
     /// Names of every user-defined function declared in the module. Used by
     /// `lower_value` `HirExprKind::Call` to distinguish user-fn callees
@@ -2135,7 +2135,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // in the same cluster; the HIR registry is unconsumed scaffolding without
     // this consumer.
     // Register layouts for monomorphic builtin enums declared in
-    // `std/builtins.hew` (today: `LookupError`). These never appear in
+    // stdlib authority sources (for example `std.builtins.LookupError`). These never appear in
     // `module.items` (builtins.hew is consumed for signature wiring, not
     // emitted into the items list) and never appear in
     // `module.enum_layouts` (they have no type params, so
@@ -2149,9 +2149,9 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // `register_enum_layouts` in codegen processes `pipeline.enum_layouts`
     // in order; an entry's `build_tagged_union_layout` call resolves each
     // variant's `field_tys` against the layouts registered so far. Generic
-    // instantiations like `Result<RemotePid<T>, LookupError>` reference
-    // `Named { name: "LookupError" }` in their Err variant — that lookup
-    // requires the `LookupError` layout to be registered first.
+    // instantiations like `Result<RemotePid<T>, LookupError>` reference the
+    // canonical `Named { name: "std.builtins.LookupError" }` in their Err
+    // variant — that exact layout must be registered first.
     register_builtin_monomorphic_enum_layouts(&mut enum_layouts);
 
     for hir_layout in &module.enum_layouts {
@@ -2233,8 +2233,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             _ => None,
         })
         .collect();
-    let resource_opaque_close =
-        resource_opaque_close_registry(&opaque_handle_names, &module.type_classes);
+    let lifecycle_registry = module.type_classes.lifecycle_registry().clone();
 
     // Machines are enums at the value-classification layer.  Materialise one
     // layout for every HIR machine-mono entry, not one bare layout per source
@@ -2386,13 +2385,14 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         let closure_field = actor.state_fields.iter().enumerate().find(|(_, field)| {
             crate::model::ty_contains_closure_value(&field.ty, &record_layouts, &enum_layouts)
         });
-        let classification = crate::state_clone::classify_actor_state_fields_with_resource_handles(
-            &state_field_tys,
-            &record_layouts,
-            &classification_enum_layouts,
-            &opaque_handle_names,
-            &resource_opaque_close,
-        );
+        let classification =
+            crate::state_clone::classify_actor_state_fields_with_lifecycle_registry(
+                &state_field_tys,
+                &record_layouts,
+                &classification_enum_layouts,
+                &opaque_handle_names,
+                &lifecycle_registry,
+            );
         let (clone_sym, drop_sym, clone_kinds) = if let Some((field_index, field)) = closure_field {
             let reason = format!(
                 "field `{}` holds (or transitively contains) a function value; \
@@ -2443,11 +2443,12 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     let mut found = false;
                     for (idx, field) in actor.state_fields.iter().enumerate() {
                         let mut v = std::collections::HashSet::new();
-                        if crate::state_clone::classify_state_field_full(
+                        if crate::state_clone::classify_state_field_with_lifecycle_registry(
                             &field.ty,
                             &record_layouts,
                             &classification_enum_layouts,
                             &opaque_handle_names,
+                            &lifecycle_registry,
                             &mut v,
                         )
                         .is_err()
@@ -3756,41 +3757,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // reads, and the `<Type>::close` symbol matches `declare_function`'s
     // flattened `<Self>::<method>` mangling, so MIR and codegen agree without
     // translation glue.
-    let colliding_record_shorts: HashSet<&str> = record_layouts
-        .iter()
-        .filter_map(|layout| {
-            let short = short_name(&layout.name);
-            (record_layouts
-                .iter()
-                .filter(|other| short_name(&other.name) == short)
-                .count()
-                > 1)
-            .then_some(short)
-        })
-        .collect();
-    let resource_record_close: Vec<(String, String)> = record_layouts
-        .iter()
-        .filter_map(|layout| {
-            let short = short_name(&layout.name);
-            let entry = module
-                .type_classes
-                .get(layout.name.as_str())
-                .or_else(|| module.type_classes.get(short))?;
-            let (marker, close) = entry;
-            if !matches!(marker, ResourceMarker::Resource) {
-                return None;
-            }
-            let close_method = close.as_ref()?;
-            let symbol_type = if colliding_record_shorts.contains(short) {
-                layout.name.as_str()
-            } else {
-                short
-            };
-            let symbol = format!("{symbol_type}::{close_method}");
-            Some((layout.name.clone(), symbol))
-        })
-        .collect();
-
     let capabilities = crate::model::ModuleCapabilities::from_raw_mir(&raw_mir, &extern_decls);
 
     IrPipeline {
@@ -3841,8 +3807,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         // here so the lowerer does not depend on `TypeCheckOutput` directly.
         user_clone_record_seeds: Vec::new(),
         lint_warnings,
-        resource_record_close,
-        resource_opaque_close,
+        lifecycle_registry,
     }
 }
 
@@ -4205,28 +4170,29 @@ fn prepare_owned_call_carriers(
         }
 
         for arg in &site.args {
-            let plan = match crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
-                &arg.ty,
-                &record_layouts,
-                &builder.enum_layouts,
-                &builder.opaque_handle_names,
-                &builder.resource_opaque_close,
-            ) {
-                Ok(plan) => plan,
-                Err(error) => {
-                    builder.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::NotYetImplemented {
-                            construct: format!(
-                                "owned call-carrier plan for `{}`",
-                                arg.ty.user_facing()
-                            ),
-                            site: arg.site,
-                        },
-                        note: error.to_string(),
-                    });
-                    continue;
-                }
-            };
+            let plan =
+                match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+                    &arg.ty,
+                    &record_layouts,
+                    &builder.enum_layouts,
+                    &builder.opaque_handle_names,
+                    &builder.lifecycle_registry,
+                ) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        builder.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!(
+                                    "owned call-carrier plan for `{}`",
+                                    arg.ty.user_facing()
+                                ),
+                                site: arg.site,
+                            },
+                            note: error.to_string(),
+                        });
+                        continue;
+                    }
+                };
             // Caller half of the admission predicate: the callee half never
             // registers these roots (`register_owned_call_carrier_param`),
             // so preparing a transfer or clone here would strand an owner.
@@ -4342,7 +4308,7 @@ fn prepare_owned_call_carriers(
                 &record_layouts,
                 &builder.enum_layouts,
                 &builder.opaque_handle_names,
-                &builder.resource_opaque_close,
+                &builder.lifecycle_registry,
             ) {
                 Ok(true) => {
                     let dest = builder.alloc_local(arg.ty.clone());
@@ -4599,12 +4565,12 @@ fn resolve_outbound_actor_modes(
                     return SendAliasMode::TransferLastUse;
                 }
 
-                match crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                     &arg.ty,
                     &record_layouts,
                     &builder.enum_layouts,
                     &builder.opaque_handle_names,
-                    &builder.resource_opaque_close,
+                    &builder.lifecycle_registry,
                 ) {
                     Ok(plan) => match plan.root() {
                         SnapshotFieldKind::BitCopy { .. } => SendAliasMode::SnapshotBitCopy,
@@ -4895,12 +4861,12 @@ fn prepare_outbound_actor_payloads(
                             authority: crate::model::NeutralizeAuthority::SendTransferLastUse,
                         });
                         if let Ok(plan) =
-                            crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                            crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                                 &arg.ty,
                                 &record_layouts,
                                 &builder.enum_layouts,
                                 &builder.opaque_handle_names,
-                                &builder.resource_opaque_close,
+                                &builder.lifecycle_registry,
                             )
                         {
                             if !matches!(plan.root(), SnapshotFieldKind::BitCopy { .. }) {
@@ -4917,12 +4883,12 @@ fn prepare_outbound_actor_payloads(
                     }
                     SendAliasMode::SnapshotRetain | SendAliasMode::SnapshotMaterialize => {
                         let Ok(plan) =
-                            crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                            crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                                 &arg.ty,
                                 &record_layouts,
                                 &builder.enum_layouts,
                                 &builder.opaque_handle_names,
-                                &builder.resource_opaque_close,
+                                &builder.lifecycle_registry,
                             )
                         else {
                             prepared.push(arg.source);
@@ -5008,12 +4974,12 @@ fn prepare_outbound_actor_payloads(
             let cleanup_plan = base_local(prepared_payload)
                 .and_then(|local| builder.locals.get(local as usize))
                 .and_then(|ty| {
-                    crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                    crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                         ty,
                         &record_layouts,
                         &builder.enum_layouts,
                         &builder.opaque_handle_names,
-                        &builder.resource_opaque_close,
+                        &builder.lifecycle_registry,
                     )
                     .ok()
                 })
@@ -5179,7 +5145,7 @@ pub(crate) fn lower_function(
         machine_layout_names: machine_layout_names.clone(),
         enum_layouts: enum_layouts.to_vec(),
         opaque_handle_names: opaque_handle_names.to_vec(),
-        resource_opaque_close: resource_opaque_close_registry(opaque_handle_names, type_classes),
+        lifecycle_registry: type_classes.lifecycle_registry().clone(),
         supervisor_layout_map: supervisor_layout_map.clone(),
         current_actor_state_fields: current_actor_name
             .and_then(|name| actor_layouts.get(name))
@@ -5809,9 +5775,9 @@ pub(crate) fn lower_function(
     // null-after-move land (RAII-2), the compiler refuses both rather than emit
     // the leak / double-free (LESSONS boundary-fail-closed, raii-null-after-move).
     let opaque_resource_names: HashSet<String> = builder
-        .resource_opaque_close
-        .iter()
-        .map(|(name, _)| name.clone())
+        .lifecycle_registry
+        .opaque_resources()
+        .map(|lifecycle| lifecycle.resource_declaration.full_path().to_string())
         .collect();
     for check in detect_opaque_resource_field_misuse(
         &raw.blocks,

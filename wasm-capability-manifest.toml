@@ -27,7 +27,9 @@
 #   - pass rows MUST NOT have enum_variant.
 #   - todo rows MAY have label, MUST have note and tracking.
 #   - enum_variant values are unique and stable.
-#   - native_only_modules are unique and belong only to reject rows.
+#   - native_only_modules/native_only_functions are unique and belong only to
+#     reject rows. Function entries use canonical qualified `module.function`
+#     identity (for example `std.fs.try_read`).
 
 manifest_version = 1
 
@@ -86,6 +88,17 @@ checker = "pass"
 runtime = "implemented"
 runtime_status = "Implemented"
 categories = ["runtime", "actors"]
+
+[[feature]]
+id = "actor-crash-containment"
+label = "Actor-local panic/trap containment and restart"
+checker = "todo"
+runtime = "unavailable"
+runtime_status = "Unsupported on the production wasm32-wasip1 panic=abort artifact; a handler panic or canonical trap terminates the module instead of restarting one actor"
+categories = ["runtime", "actors", "failure"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(actor-crash-containment):"
+note = "Tier 2 basic actor dispatch remains supported, but panic/trap containment is a separate capability. Host-side native parity tests may unwind to exercise bookkeeping; they are not evidence that the production WASI artifact can recover."
 
 [[feature]]
 id = "generators"
@@ -291,6 +304,20 @@ tracking_label = "WASM-TODO(streams):"
 native_only_modules = ["stream"]
 
 [[feature]]
+id = "filesystem-streams"
+enum_variant = "FilesystemStreams"
+label = "File-backed stream operations"
+prose_label = "`std::fs::try_read` (file-stream ownership path)"
+reason = "the FileReadStream runtime and stream collector are not compiled for wasm32; reject before code generation rather than leaving unresolved native symbols"
+checker = "reject"
+runtime = "unavailable"
+runtime_status = "File-backed stream runtime is native-only; path-independent fs helpers remain separately classified"
+categories = ["stdlib", "filesystem"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(filesystem-streams):"
+native_only_functions = ["std.fs.try_read"]
+
+[[feature]]
 id = "http-client"
 enum_variant = "HttpClient"
 label = "std::net::http::http_client operations"
@@ -317,6 +344,20 @@ categories = ["stdlib", "networking"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(smtp):"
 native_only_modules = ["smtp"]
+
+[[feature]]
+id = "websocket"
+enum_variant = "WebSocket"
+label = "std::net::websocket operations"
+prose_label = "`std::net::websocket.*`, `websocket.Conn.*`, `websocket.Server.*`, `websocket.Message.*`"
+reason = "the std::net::websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet"
+checker = "reject"
+runtime = "native-only"
+runtime_status = "Native-only socket and reader-thread transport"
+categories = ["stdlib", "networking"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(websocket):"
+native_only_modules = ["websocket"]
 
 [[feature]]
 id = "http-server"
@@ -479,6 +520,12 @@ id = "channels"
 gap = "Blocking channel recv / full-queue backpressure parity"
 blocker = "Cooperative-scheduler recv yield/resume + send backpressure beyond the bounded fail-closed slice in `channel_wasm.rs`"
 tracking_label = "WASM-TODO(channels):"
+
+[[backlog]]
+id = "actor-crash-containment"
+gap = "Actor-local panic/trap containment and restart on production WASI"
+blocker = "The shipped wasm32-wasip1 Rust sysroot supports panic=abort; containment requires a supported unwind runtime or an explicit generated-code status/CPS failure ABI"
+tracking_label = "WASM-TODO(actor-crash-containment):"
 
 [[backlog]]
 id = "semaphore"
@@ -721,12 +768,6 @@ id = "wasi-errno"
 gap = "WASI error-code classification"
 blocker = "Target-aware filesystem and network error mapping for WASI errno values"
 tracking_label = "WASM-TODO(wasi-errno):"
-
-[[backlog]]
-id = "websocket"
-gap = "WebSocket transport parity"
-blocker = "A browser/WASI WebSocket bridge without the native thread and socket implementation"
-tracking_label = "WASM-TODO(websocket):"
 
 # ---------------------------------------------------------------------------
 # Curated playground WASI exclusions.

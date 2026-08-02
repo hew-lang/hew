@@ -2047,12 +2047,10 @@ impl Builder {
             let deadline_result_dest =
                 deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
             let error_dest = deadline_ns.map(|_| {
-                self.alloc_local(hew_types::ResolvedTy::Named {
-                    name: "TimeoutError".to_string(),
-                    args: Vec::new(),
-                    builtin: Some(hew_types::BuiltinType::TimeoutError),
-                    is_opaque: false,
-                })
+                self.alloc_local(
+                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
+                        .expect("generated builtin enum catalog must contain TimeoutError"),
+                )
             });
             let next = self.alloc_block();
             if let Some(ns) = deadline_ns {
@@ -2151,12 +2149,10 @@ impl Builder {
             let deadline_result_dest =
                 deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
             let error_dest = deadline_ns.map(|_| {
-                self.alloc_local(hew_types::ResolvedTy::Named {
-                    name: "TimeoutError".to_string(),
-                    args: Vec::new(),
-                    builtin: Some(hew_types::BuiltinType::TimeoutError),
-                    is_opaque: false,
-                })
+                self.alloc_local(
+                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
+                        .expect("generated builtin enum catalog must contain TimeoutError"),
+                )
             });
             let next = self.alloc_block();
             if let Some(ns) = deadline_ns {

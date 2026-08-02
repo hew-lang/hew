@@ -1230,6 +1230,7 @@ fn main() {
             "sign",
             "http_client",
             "smtp",
+            "websocket",
         ];
         assert_eq!(
             expected.len(),
@@ -1248,6 +1249,7 @@ fn main() {
             ("net", "std::net::net", "connect"),
             ("tls", "std::net::tls", "connect"),
             ("dns", "std::net::dns", "resolve"),
+            ("websocket", "std::net::websocket", "connect"),
         ];
         for (module, import_path, func) in sample {
             let source = format!("import {import_path};\nfn main() {{ let f = {module}.{func}; }}");

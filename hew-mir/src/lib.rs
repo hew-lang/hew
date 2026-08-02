@@ -58,8 +58,8 @@ pub use model::{
     ty_contains_heap_owning, ty_contains_unclonable_opaque,
     ty_contains_unclonable_opaque_with_names, ty_heap_ownership, ty_owns_heap, ty_owns_heap_mir,
     validate_context_markers, ActorHandlerKind, ActorHandlerLayout, ActorLayout,
-    ActorStateLoadMode, AggregateOwner, BasicBlock, BlockKind, BorrowKind, CaptureKind,
-    CheckedMirFunction, ChildInitArg, ClosureEnvAllocation, ClosureEnvFieldInit,
+    ActorStateLoadMode, ActorStateStoreHandoff, AggregateOwner, BasicBlock, BlockKind, BorrowKind,
+    CaptureKind, CheckedMirFunction, ChildInitArg, ClosureEnvAllocation, ClosureEnvFieldInit,
     ClosureEnvFieldOwnership, ClosureEnvMode, CmpPred, CooperateKind, CooperateSite,
     CoroutineFacts, CoroutineSchema, DecisionFact, Direction, DropFnSpec, DropKind, DropPlan,
     DynVtableInstance, ElabBlock, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
@@ -83,11 +83,8 @@ pub use ownership::{
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{
-    classify_actor_state_fields, classify_actor_state_fields_with_enum_layouts,
-    classify_actor_state_fields_with_opaque_handles,
-    classify_actor_state_fields_with_resource_handles, classify_owned_string_record_fields,
-    classify_state_field, classify_state_field_full, classify_state_field_with_enum_layouts,
-    classify_state_field_with_resource_handles, mangle_actor_state_clone_fn,
+    classify_actor_state_fields_with_lifecycle_registry, classify_owned_string_record_fields,
+    classify_state_field_with_lifecycle_registry, mangle_actor_state_clone_fn,
     mangle_actor_state_drop_fn, ClassificationError, IoHandleKind, ResourceCloseAuthority,
     StateFieldCloneKind,
 };

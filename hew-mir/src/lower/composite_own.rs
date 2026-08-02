@@ -20,7 +20,7 @@ use super::{
     instr_source_places, local_is_byte_copy_aggregate, note_payload_escape,
     place_is_interior_projection, place_is_tag_read, propagate_whole_value_alias_roots,
     readmit_retained_bytes_tuple_roots, render_owned_handle_ty,
-    retained_string_terminator_drop_safe, shift_instr_spans_on_insert, short_name,
+    retained_string_terminator_drop_safe, shift_instr_spans_on_insert,
     string_binder_read_is_user_fn_borrow, string_field_load_producer_dest,
     terminator_escape_places, terminator_source_places, ty_is_heap_owning_enum_composite,
     ty_is_heap_owning_tuple, ty_is_owned_handle_leaf, user_record_layout_key,
@@ -1142,7 +1142,7 @@ pub(super) fn proven_borrow_whole_arg_locals(
 /// composite is not free: an `EnumInPlace` drop makes codegen synthesise the
 /// whole in-place helper family for that layout, and the clone half of that
 /// family fails closed on payloads with no dup symbol (`Stream` / `Sink` /
-/// `Generator` / `CancellationToken` handles, `Connection`). A
+/// `Generator` / `CancellationToken` handles, registry-backed resources). A
 /// `Result<(Stream<string>, Sink<string>), string>` scrutinee whose `Err(e)`
 /// binder is interpolated would otherwise turn a leak into a hard
 /// `E_NOT_YET_IMPLEMENTED` compile failure.
@@ -1198,7 +1198,7 @@ fn enum_payloads_are_plain_string(
 /// authority (the same one the audited extern-return table uses to admit a
 /// scalar-return extern), extended here to `char`-sized aggregates of scalars.
 /// Deliberately EXHAUSTIVE-by-rejection: every non-listed form — `Named` (which
-/// covers `Stream`/`Sink`/`Generator`/`CancellationToken`/`Connection`, every
+/// covers `Stream`/`Sink`/`Generator`/`CancellationToken` and resources, every
 /// user record and nested enum, every `#[opaque]` handle and `#[resource]`),
 /// `String`, `Bytes`, `Slice`, `Function`, `Closure`, `Pointer`, `Borrow`,
 /// `TraitObject`, `Task`, `TypeParam` — answers `false`.
@@ -6543,17 +6543,12 @@ pub(super) fn detect_opaque_resource_field_misuse(
         // `ResourceMarker::Resource` ∩ user-`close`. A MIR local's `is_opaque`
         // flag is NOT reliably propagated (the field-load dest arrives as
         // `is_opaque: false` even for a `#[opaque]` type), so match on the
-        // resolved type NAME against the registry, not the flag: within a
-        // compilation a name resolves to exactly one type, so a `Named` whose
-        // name is in the registry IS that opaque resource. Full-name match with
-        // a short-name fallback bridges any module-prefix asymmetry; the only
-        // residual (a cross-module short-name twin) over-refuses — a compile
-        // error, never a double-free (boundary-fail-closed).
+        // resolved type NAME against the registry, not the flag. The match is
+        // exact nominal identity: a same-leaf declaration from another owner
+        // must not acquire this resource's close discipline.
         matches!(
             ty,
-            ResolvedTy::Named { name, .. }
-                if opaque_resource_names.contains(name.as_str())
-                    || opaque_resource_names.contains(short_name(name))
+            ResolvedTy::Named { name, .. } if opaque_resource_names.contains(name.as_str())
         )
     };
     // local → the user binding it carries (for the diagnostic name): the
@@ -6662,9 +6657,8 @@ pub(super) fn detect_opaque_resource_field_misuse(
 ///   - kinds with an existing release-before-store — `String`/`Bytes`/`Vec`/
 ///     `HashMap`/`HashSet` go through `emit_state_field_old_value_release`'s
 ///     pointer-inequality guard, which releases the old payload before the store;
-///   - `IoHandle::Connection` — its state-level drop is a no-op (the fd is torn
-///     down by the runtime's actor-teardown, not the state drop), so overwriting
-///     the slot leaks nothing;
+///   - no-drop `IoHandle` kinds; clone refusal never transfers drop authority
+///     to the runtime;
 ///   - no-close `OpaqueHandle` (e.g. `json.Value`) and `BitCopy` — no owned
 ///     resource to leak.
 fn actor_state_kind_leaks_on_overwrite(kind: &crate::state_clone::StateFieldCloneKind) -> bool {

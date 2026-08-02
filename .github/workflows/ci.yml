@@ -563,6 +563,18 @@ jobs:
         # hosted suite exercise the same fresh artifacts as local preflight.
         run: make test
 
+      - name: Run compiler pipeline and local opaque-resource lifecycle evidence
+        if: env.RUN_CODE_PATH == 'true'
+        # The focused compiler ladder owns the source-derived lifecycle matrix;
+        # keep this explicit CI edge so neither target can become local-only.
+        run: make test-compiler-pipeline
+
+      - name: Run external-network opaque-resource lifecycle evidence
+        if: env.RUN_CODE_PATH == 'true'
+        # These are bounded loopback/network lifecycle proofs intentionally
+        # deferred by the local profile, not live-service smoke tests.
+        run: make test-opaque-resource-lifecycle-matrix-external
+
       - name: Run C-ABI crate tests
         if: env.RUN_CODE_PATH == 'true'
         # hew-cabi is excluded from every workspace run above because its

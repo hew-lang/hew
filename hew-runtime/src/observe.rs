@@ -1007,7 +1007,14 @@ pub unsafe extern "C" fn hew_observe_string_free(ptr: *mut c_char) {
     unsafe { free_cstring(ptr) };
 }
 
-pub(crate) fn reset_all() {
+/// Reset metrics that are safe to clear while dispatchers are live.
+///
+/// These are interval counters: a concurrent increment may land on either
+/// side of the reset boundary, but it can never invalidate runtime ownership.
+/// In particular, this deliberately does **not** reset live gauges or the
+/// dispatch-ticket/barrier state.  Those values have active writers and are
+/// reset only by [`reset_all`] after scheduler shutdown has joined workers.
+pub(crate) fn reset_live_safe_counters() {
     shard_reset(&HEAP_ALLOCATED_TOTAL);
     shard_reset(&HEAP_FREED_TOTAL);
     shard_reset(&HEAP_ALLOCATIONS_TOTAL);
@@ -1016,24 +1023,36 @@ pub(crate) fn reset_all() {
     shard_reset(&ACTOR_TURN_DURATION_NS_TOTAL);
     SCHEDULER_PARKS_TOTAL.store(0, Ordering::Relaxed);
     SCHEDULER_UNPARKS_TOTAL.store(0, Ordering::Relaxed);
-    COROUTINES_LIVE.store(0, Ordering::Relaxed);
-    COROUTINES_SUSPENDED.store(0, Ordering::Relaxed);
     COROUTINES_RESUMES_TOTAL.store(0, Ordering::Relaxed);
     COROUTINES_SUSPENDS_TOTAL.store(0, Ordering::Relaxed);
-    COROUTINES_FRAME_BYTES_LIVE.store(0, Ordering::Relaxed);
-    REACTOR_REGISTRATIONS_LIVE.store(0, Ordering::Relaxed);
     REACTOR_READY_EVENTS_TOTAL.store(0, Ordering::Relaxed);
     ACTORS_CRASHES_TOTAL.store(0, Ordering::Relaxed);
     ACTORS_RESTARTS_TOTAL.store(0, Ordering::Relaxed);
     ARENA_RESETS_TOTAL.store(0, Ordering::Relaxed);
-    THREADS_BLOCKING_COUNT.store(0, Ordering::Relaxed);
     ATTRIBUTED_TURNS.access(|slot| {
         if let Some(map) = slot.as_mut() {
             map.clear();
         }
     });
-    // Clear the developer-defined metric registry on the same session
-    // boundary so a fresh session never observes a prior session's metrics.
+}
+
+/// Reset every observe/session value after the runtime has quiesced.
+///
+/// Quiescence authority is `scheduler::hew_sched_shutdown`: it joins native
+/// workers before firing `session_reset`, which invokes this hook.  Do not call
+/// this from a live metrics API: clearing a dispatch ticket while its worker
+/// still owns it makes that worker panic when it closes the ticket.
+pub(crate) fn reset_all() {
+    reset_live_safe_counters();
+    COROUTINES_LIVE.store(0, Ordering::Relaxed);
+    COROUTINES_SUSPENDED.store(0, Ordering::Relaxed);
+    COROUTINES_FRAME_BYTES_LIVE.store(0, Ordering::Relaxed);
+    REACTOR_REGISTRATIONS_LIVE.store(0, Ordering::Relaxed);
+    THREADS_BLOCKING_COUNT.store(0, Ordering::Relaxed);
+
+    // Clear the developer-defined metric registry on the same proven-quiescent
+    // session boundary so a fresh session never observes a prior session's
+    // metrics.
     crate::metrics::session_reset_metrics();
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -1076,6 +1095,27 @@ mod tests {
         let scrape = scrape_text();
         assert!(scrape.contains("heap_live_bytes"));
         assert!(scrape.contains("scheduler_queue_depth"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn live_metrics_reset_keeps_an_active_dispatch_ticket_closable() {
+        let _runtime = crate::runtime_test_guard();
+        reset_all();
+        set_current_worker_shard(0);
+
+        // This is the exact formerly-fatal interleaving: a worker began a
+        // dispatch, then an external metrics reader reset counters before that
+        // worker reached its attribution/close edge.  The reset runs on a
+        // separate thread to keep the production cross-thread shape, while the
+        // barrier makes the active-ticket ordering deterministic.
+        let ticket = observe_dispatch_begin();
+        std::thread::spawn(|| crate::scheduler::hew_sched_metrics_reset())
+            .join()
+            .expect("live metrics reset thread must not panic");
+
+        observe_dispatch_attributed(ticket);
+        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
     }
 
     #[test]

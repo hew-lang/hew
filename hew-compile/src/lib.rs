@@ -944,7 +944,15 @@ fn extract_module_info(
         let Item::Import(decl) = item else { continue };
 
         let (module_id, first_source_path) = if !decl.path.is_empty() {
-            (ModuleId::new(decl.path.clone()), None)
+            let requested = decl.path.join(".");
+            let canonical = hew_types::module_registry::canonical_source_module_identity(
+                &requested,
+                &decl.resolved_source_paths,
+            );
+            (
+                ModuleId::new(canonical.split('.').map(String::from).collect()),
+                None,
+            )
         } else if let Some(file_path) = &decl.file_path {
             let resolved = current_source
                 .parent()

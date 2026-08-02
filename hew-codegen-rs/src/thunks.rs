@@ -15,7 +15,6 @@
 use inkwell::context::Context;
 use std::collections::HashSet;
 
-use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetData;
 use inkwell::types::{BasicType, BasicTypeEnum, FloatType, IntType, StructType};
@@ -26,8 +25,8 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use hew_hir::mangle_dotted_name;
 use hew_mir::{
-    model::CoalesceKeyKind, ActorLayout, IoHandleKind, LambdaEnvFieldDrop, Place,
-    SpawnEnvFieldOwnership, StateFieldCloneKind,
+    model::CoalesceKeyKind, ActorLayout, LambdaEnvFieldDrop, Place, SpawnEnvFieldOwnership,
+    StateFieldCloneKind,
 };
 use hew_runtime::internal::types::HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH;
 use hew_runtime::mailbox_header::HewSysMsg;
@@ -349,10 +348,12 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
         })
         .collect();
     let mut visited = HashSet::new();
-    let kind = hew_mir::classify_state_field_with_enum_layouts(
+    let kind = hew_mir::classify_state_field_with_lifecycle_registry(
         reply_ty,
         &record_layouts,
         fn_ctx.enum_layouts,
+        &[],
+        fn_ctx.lifecycle_registry,
         &mut visited,
     )
     .map_err(|e| {
@@ -365,14 +366,11 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
 
     match &kind {
         // No embedded heap: the free leg frees the buffer alone (prior
-        // behaviour). Opaque handles are user-owned (`.free()` is explicit) and
-        // a borrowed `Connection` is not released by the reply path, so both are
-        // also null here — matching `emit_field_drop_step`'s no-op arms.
-        StateFieldCloneKind::BitCopy { .. }
-        | StateFieldCloneKind::OpaqueHandle { .. }
-        | StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => Ok(ptr_ty.const_null()),
+        // behaviour). Opaque handles are user-owned (`.free()` is explicit),
+        // so they are also null here — matching `emit_field_drop_step`'s no-op arm.
+        StateFieldCloneKind::BitCopy { .. } | StateFieldCloneKind::OpaqueHandle { .. } => {
+            Ok(ptr_ty.const_null())
+        }
         // Record / enum reply: register the already-seeded in-place drop thunk.
         StateFieldCloneKind::UserRecord { name } => {
             Ok(
@@ -854,8 +852,8 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
     // (LIFO — the same order the elaboration pass drops scope-exit locals and
     // the record/actor-state drop bodies use). `env` IS the captures region
     // pointer (the header sits BEFORE it at `env - HEADER`), so the env struct
-    // GEPs land directly on the capture fields. BitCopy / Connection / opaque
-    // arms are no-ops inside `emit_field_drop_step`; every owning class routes
+    // GEPs land directly on the capture fields. BitCopy / opaque arms are
+    // no-ops inside `emit_field_drop_step`; every owning class routes
     // to its single canonical release.
     let record_layouts = crate::llvm::codegen_record_layouts(fn_ctx);
     let w = crate::llvm::fn_ctx_drop_witnesses(fn_ctx, &record_layouts);
@@ -1081,7 +1079,7 @@ pub(crate) fn emit_tuple_inplace_thunk_bodies<'ctx>(
         target_data,
         record_layouts: &record_layouts,
         record_structs: &empty_record_structs,
-        resource_record_close: &[],
+        lifecycle_registry: regs.lifecycle_registry,
     };
 
     let clone_fn = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, tuple_key);
@@ -2300,9 +2298,10 @@ pub(crate) fn get_or_emit_hash_thunk<'ctx>(
 /// pointer (offset 0) and all other dispatch-substrate state. `state` is
 /// present only to satisfy the `terminate_fn: fn(*mut c_void) -> void` ABI.
 ///
-/// Panic safety: if any on(stop) body panics, `call_terminate_fn`'s
-/// `catch_unwind` catches it and releases the lock via
+/// Panic safety on unwind-capable native profiles: if any on(stop) body panics,
+/// `call_terminate_fn`'s `catch_unwind` catches it and releases the lock via
 /// `hew_actor_state_lock_release_after_panic` (LESSONS: cleanup-all-exits P0).
+/// A panic=abort artifact has no catchable panic edge.
 pub(crate) fn emit_actor_terminate_trampoline<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -2697,10 +2696,12 @@ pub(crate) fn emit_actor_message_drop_fn<'ctx>(
             )?);
             let mut visited = HashSet::new();
             field_kinds.push(
-                hew_mir::classify_state_field_with_enum_layouts(
+                hew_mir::classify_state_field_with_lifecycle_registry(
                     param_ty,
                     mir_record_layouts,
                     enum_layouts,
+                    &[],
+                    w.lifecycle_registry,
                     &mut visited,
                 )
                 .map_err(|error| {
@@ -3432,6 +3433,9 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
         .llvm_ctx("dispatch borrow payload null branch")?;
 
     // Fail-closed arm: hard panic, never return to the load.
+    // TRAP-DISPOSITION: actor-cooperative(hew_panic). This generated thunk
+    // calls the plain-C runtime symbol directly: an installed actor recovery
+    // frame catches it; otherwise the process exits. It cannot Rust-unwind.
     builder.position_at_end(borrow_null_bb);
     let panic_fn = llvm_mod.get_function("hew_panic").unwrap_or_else(|| {
         // `void hew_panic(void)` (hew-runtime/src/actor.rs) — diverges via
@@ -3851,15 +3855,13 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     }
 
     builder.position_at_end(default_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap, &[], "actor_dispatch_unknown_msg_trap")
-        .llvm_ctx("actor dispatch trap")?;
-    builder
-        .build_unreachable()
-        .llvm_ctx("actor dispatch unreachable")?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        &builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "actor_dispatch_unknown_msg_trap",
+    )?;
 
     builder.position_at_end(after_bb);
     // D-A.2 / NEW-3a: the trampoline returns the dispatch suspend outcome — a

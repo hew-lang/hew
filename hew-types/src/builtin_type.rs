@@ -73,6 +73,7 @@ pub enum BuiltinType {
     DownNotification,
     SendError,
     AskError,
+    LookupError,
     RecvError,
     LinkError,
     MonitorError,
@@ -209,6 +210,7 @@ builtin_types! {
     DownNotification => "DownNotification",
     SendError => "SendError",
     AskError => "AskError",
+    LookupError => "LookupError",
     RecvError => "RecvError",
     LinkError => "LinkError",
     MonitorError => "MonitorError",
@@ -395,6 +397,7 @@ impl BuiltinType {
             | Self::DownNotification
             | Self::SendError
             | Self::AskError
+            | Self::LookupError
             | Self::RecvError
             | Self::LinkError
             | Self::MonitorError
@@ -547,8 +550,10 @@ pub const fn builtin_types() -> &'static [BuiltinTypeInfo] {
 #[must_use]
 pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
     match name {
-        "channel.Sender" | "std.channel.channel.Sender" => return Some(BuiltinType::Sender),
-        "channel.Receiver" | "std.channel.channel.Receiver" => {
+        "channel.Sender" | "std.channel.Sender" => {
+            return Some(BuiltinType::Sender);
+        }
+        "channel.Receiver" | "std.channel.Receiver" => {
             return Some(BuiltinType::Receiver);
         }
         "stream.Stream" | "std.stream.Stream" => return Some(BuiltinType::Stream),
@@ -649,6 +654,22 @@ mod tests {
             lookup_builtin_type("std.link_monitor.MonitorError"),
             Some(BuiltinType::MonitorError)
         );
+    }
+
+    #[test]
+    fn lookup_accepts_exact_channel_owners_without_leaf_fallback() {
+        assert_eq!(
+            lookup_builtin_type("std.channel.Sender"),
+            Some(BuiltinType::Sender)
+        );
+        assert_eq!(
+            lookup_builtin_type("std.channel.Receiver"),
+            Some(BuiltinType::Receiver)
+        );
+        assert_eq!(lookup_builtin_type("std.channel.channel.Sender"), None);
+        assert_eq!(lookup_builtin_type("std.channel.channel.Receiver"), None);
+        assert_eq!(lookup_builtin_type("acme.channel.Sender"), None);
+        assert_eq!(lookup_builtin_type("acme.channel.Receiver"), None);
     }
 
     #[test]

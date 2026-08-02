@@ -10,7 +10,7 @@ use hew_hir::ResourceMarker as HirResourceMarker;
 use hew_hir::{
     BindingId, HirBlock, HirExpr, HirExprKind, HirField, HirItem, HirMachineDecl, HirMachineEvent,
     HirMachineState, HirMachineTransition, HirModule, HirStmt, HirStmtKind, IntentKind,
-    MachineMonoEntry, MachineMonoKey, ResolvedRef, ValueClass,
+    MachineMonoEntry, MachineMonoKey, ResolvedRef, TypeClassTable, ValueClass,
 };
 use hew_mir::{
     lower_hir_module, FunctionCallConv, Instr, Place, SourceOrigin, Terminator, TrapKind,
@@ -88,7 +88,7 @@ fn empty_module(mut items: Vec<HirItem>) -> HirModule {
         root_item_ids: std::collections::HashSet::new(),
         caller_visible_param_projections: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(HashMap::default()),
-        type_classes: HashMap::default(),
+        type_classes: TypeClassTable::default(),
         monomorphisations: vec![],
         call_site_type_args: HashMap::default(),
         vec_generic_element_abi: HashMap::default(),

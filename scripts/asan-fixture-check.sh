@@ -90,6 +90,38 @@ ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck disable=SC1091
 source "${ROOT}/scripts/lib/corpus-floor.sh"
 
+asan_or_lsan_reported() {
+  local report="$1"
+  grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|detected memory leaks|SUMMARY: (AddressSanitizer|LeakSanitizer)" \
+    <<< "${report}"
+}
+
+# The deliberate generated-code leak is the proof that this gate has a working
+# ASan/LSan observer.  Keep its verdict predicate independently executable:
+# an arbitrary non-zero process exit must never impersonate a sanitizer report.
+# This runs before the Linux/toolchain guards so every host can prove the
+# fail-closed classifier without building an instrumented compiler.
+if [[ "${1:-}" == "--selftest" ]]; then
+  if [[ "$#" -ne 1 ]]; then
+    echo "usage: scripts/asan-fixture-check.sh [--selftest | --llvm-version <N>]" >&2
+    exit 2
+  fi
+  if ! asan_or_lsan_reported "==42==ERROR: LeakSanitizer: detected memory leaks"; then
+    echo "asan-fixture-check selftest: failed to accept a LeakSanitizer report" >&2
+    exit 1
+  fi
+  if asan_or_lsan_reported "probe exited 137 after an unrelated trap"; then
+    echo "asan-fixture-check selftest: unmarked non-zero exit falsely passed as ASan evidence" >&2
+    exit 1
+  fi
+  if asan_or_lsan_reported ""; then
+    echo "asan-fixture-check selftest: empty report falsely passed as ASan evidence" >&2
+    exit 1
+  fi
+  echo "asan-fixture-check selftest: PASS (only a sanitizer diagnostic certifies the sentinel)"
+  exit 0
+fi
+
 # ── Platform guard ────────────────────────────────────────────────────────
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "asan-fixture-check: skipped on $(uname -s) (use the macOS leaks oracle)" >&2
@@ -274,8 +306,7 @@ run_asan_fixture() {
   # Use a here-string to avoid a printf | grep -q pipeline: under set -o pipefail
   # grep -q closes stdin after the first match, sending SIGPIPE to printf, which
   # makes the pipeline exit 141 (false negative) on large reports.
-  if grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|SUMMARY: (AddressSanitizer|LeakSanitizer)" \
-       <<< "${asan_output}"; then
+  if asan_or_lsan_reported "${asan_output}"; then
     echo "    FAIL ${label}: ASan/LSan reported findings:" >&2
     printf '%s\n' "${asan_output}" | sed 's/^/    /' >&2
     return 1
@@ -290,10 +321,10 @@ run_asan_fixture() {
 }
 
 # ── Helper: run one binary expecting an ASan/LSan finding ─────────────────
-# The inverse of run_asan_fixture.  Returns 0 (pass) if the binary's ASan/LSan
-# report contains a finding marker or the binary exits non-zero due to LSan.
-# Returns 1 (fail) if no finding is detected — indicating ASan/LSan is not
-# firing and the gate would silently miss leaks.
+# The inverse of run_asan_fixture.  Returns 0 (pass) only if the binary's
+# ASan/LSan report contains a finding marker.  Returns 1 (fail) if no finding
+# is detected — an unrelated trap/non-zero exit is not evidence that the
+# sanitizer caught the deliberate leak.
 run_asan_fixture_expect_leak() {
   local label="$1"
   local bin="$2"
@@ -328,11 +359,7 @@ run_asan_fixture_expect_leak() {
   # pipeline exits 141 instead of 0 on any large report (false negative).
   local combined_asan="${asan_output}"$'\n'"${asan_stderr}"
   local gate_fired=false
-  if grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|detected memory leaks|SUMMARY: (AddressSanitizer|LeakSanitizer)" \
-       <<< "${combined_asan}"; then
-    gate_fired=true
-  elif [[ "${actual_exit}" -ne 0 ]]; then
-    # LSan exits non-zero when leaks are detected even without matching text
+  if asan_or_lsan_reported "${combined_asan}"; then
     gate_fired=true
   fi
 
@@ -340,7 +367,10 @@ run_asan_fixture_expect_leak() {
     echo "    PASS ${label}: gate correctly caught deliberate generated-code leak (exit ${actual_exit})"
     return 0
   else
-    echo "    FAIL ${label}: gate did NOT catch the deliberate 1 KiB malloc leak" >&2
+    echo "    FAIL ${label}: gate did NOT report the deliberate 1 KiB malloc leak" >&2
+    if [[ "${actual_exit}" -ne 0 ]]; then
+      echo "    The probe exited ${actual_exit}, but an unmarked non-zero exit is not sanitizer evidence." >&2
+    fi
     echo "    This means ASan/LSan is not firing on compiled Hew binaries." >&2
     echo "    Check: -fsanitize=address at both compile and link steps." >&2
     echo "    Binary: ${bin}" >&2

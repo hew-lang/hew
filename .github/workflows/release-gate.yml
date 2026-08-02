@@ -187,6 +187,17 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci --no-fail-fast
 
+      - name: Run foundational compiled-Hew and lifecycle gates
+        run: |
+          make check-gate-reachability
+          make test-release-workflow-contract
+          make test-compiler-pipeline
+          make test-opaque-resource-lifecycle-matrix-external
+          make test-vertical-slice
+          make test-hew-ratchet
+          make test-stdlib-ratchet
+          make test-stdlib-execution-proofs
+
       - name: Run MQTT broker end-to-end oracle
         # The Linux release lane has explicit mosquitto_pub/sub provisioning
         # above, so this exercises a real external client against the shipped
@@ -311,8 +322,16 @@ jobs:
   # macOS arm64 — full Rust build + workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-macos:
-    name: Release Gate — macOS arm64
-    runs-on: macos-14
+    name: Release Gate — macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: aarch64
+          - os: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
@@ -469,7 +488,7 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
@@ -530,6 +549,9 @@ jobs:
             # at link time. Run it on its own so the C-ABI ownership contract
             # is actually proven on this platform rather than merely skipped.
             cargo nextest run --profile ci -p hew-cabi
+
+            gmake test-vertical-slice
+            gmake test-hew-ratchet
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD aarch64 — full build + workspace tests
@@ -561,7 +583,7 @@ jobs:
             # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
             # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
             # the macOS and Linux gates.
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
@@ -622,3 +644,6 @@ jobs:
             # at link time. Run it on its own so the C-ABI ownership contract
             # is actually proven on this platform rather than merely skipped.
             cargo nextest run --profile ci -p hew-cabi
+
+            gmake test-vertical-slice
+            gmake test-hew-ratchet

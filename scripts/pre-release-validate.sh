@@ -128,7 +128,7 @@ verify_libhew_external_link() {
 # ── Determine which platforms to validate ────────────────────────────────────
 
 if [[ $# -eq 0 ]]; then
-    PLATFORMS=(linux macos freebsd windows)
+    PLATFORMS=(linux linux-aarch64 macos freebsd windows)
 else
     PLATFORMS=("$@")
 fi
@@ -281,6 +281,11 @@ validate_linux() {
     banner "Linux (local static-link build)"
 
     local log="${LOG_DIR}/linux.log"
+    if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
+        fail "linux" "requires a native Linux x86_64 host (got $(uname -s)/$(uname -m))"
+        return 1
+    fi
+
     local release_dir release_lib_dir
     release_dir=$(cargo_profile_dir "$REPO_ROOT" release)
     release_lib_dir=$(cargo_profile_dir "$REPO_ROOT" release-lib)
@@ -322,6 +327,16 @@ validate_linux() {
 
         echo "==> Step 4: Run gating test suite"
         run_with_timeout "${TEST_TIMEOUT}" bash -o pipefail -lc 'cargo test -p hew-runtime --quiet 2>&1 | tail -3'
+
+        echo "==> Step 4b: Run foundational compiled-Hew and evidence gates"
+        run_with_timeout "${TEST_TIMEOUT}" make check-gate-reachability
+        run_with_timeout "${TEST_TIMEOUT}" make test-release-workflow-contract
+        run_with_timeout "${TEST_TIMEOUT}" make test-compiler-pipeline
+        run_with_timeout "${TEST_TIMEOUT}" make test-opaque-resource-lifecycle-matrix-external
+        run_with_timeout "${TEST_TIMEOUT}" make test-vertical-slice
+        run_with_timeout "${TEST_TIMEOUT}" make test-hew-ratchet
+        run_with_timeout "${TEST_TIMEOUT}" make test-stdlib-ratchet
+        run_with_timeout "${TEST_TIMEOUT}" make test-stdlib-execution-proofs
 
         echo "==> Step 5: Verify no dynamic LLVM/MLIR dependencies"
         if ldd "${release_dir}/hew" 2>/dev/null | grep -qi 'llvm\|mlir'; then
@@ -412,6 +427,15 @@ validate_macos() {
             set -eux
             cd ${remote_stage}
 
+            [ \"\$(uname -s)\" = Darwin ] || {
+                echo \"FATAL: macOS validator reached \$(uname -s)/\$(uname -m)\" >&2
+                exit 1
+            }
+            case \"\$(uname -m)\" in
+                arm64|x86_64) ;;
+                *) echo \"FATAL: unsupported macOS architecture: \$(uname -m)\" >&2; exit 1 ;;
+            esac
+
             # Prefer an operator-supplied LLVM root. Otherwise try Homebrew
             # when it exists, then probe the canonical versioned Homebrew
             # prefixes directly so a working llvm@22 install does not require
@@ -472,6 +496,9 @@ validate_macos() {
             make stdlib
             scripts/test-release-binary.sh --no-build
 
+            echo \"==> Darwin release-authority leak corpus\"
+            make macos-leak-oracle
+
             echo \"macOS build succeeded\"
         '"
     ) > "$log" 2>&1
@@ -515,6 +542,20 @@ validate_linux_aarch64() {
         run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${LINUX_AARCH64_HOST}" bash -lc "'
             set -eux
             cd ${remote_stage}
+
+            [ \"\$(uname -s)\" = Linux ] || {
+                echo \"FATAL: Linux aarch64 validator reached \$(uname -s)/\$(uname -m)\" >&2
+                exit 1
+            }
+            case \"\$(uname -m)\" in
+                aarch64|arm64) ;;
+                *) echo \"FATAL: Linux aarch64 validator reached \$(uname -m)\" >&2; exit 1 ;;
+            esac
+            . /etc/os-release
+            [ \"\${ID:-}\" = ubuntu ] && [ \"\${VERSION_ID:-}\" = 24.04 ] || {
+                echo \"FATAL: Linux aarch64 validator requires Ubuntu 24.04, got \${ID:-unknown}/\${VERSION_ID:-unknown}\" >&2
+                exit 1
+            }
 
             sudo mkdir -p /etc/apt/keyrings
             wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
@@ -596,6 +637,15 @@ validate_freebsd() {
         run_with_timeout "${REMOTE_BUILD_TIMEOUT}" ssh "${FREEBSD_HOST}" bash -lc "'
             set -eux
             cd ${remote_stage}
+
+            [ \"\$(uname -s)\" = FreeBSD ] || {
+                echo \"FATAL: FreeBSD validator reached \$(uname -s)/\$(uname -m)\" >&2
+                exit 1
+            }
+            [ \"\$(uname -m)\" = amd64 ] || {
+                echo \"FATAL: FreeBSD x86_64 validator reached \$(uname -m)\" >&2
+                exit 1
+            }
 
             # Auto-detect LLVM 22 from typical FreeBSD install locations
             for dir in /usr/local/llvm22 /usr/local/llvm22-src /usr/local; do

@@ -10,6 +10,10 @@ Visual Studio environment is imported.
 
 $ErrorActionPreference = 'Stop'
 
+if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
+    throw "Windows x86_64 validator requires an AMD64 host, got $env:PROCESSOR_ARCHITECTURE"
+}
+
 function Assert-NativeSuccess([string]$Label) {
     if ($LASTEXITCODE -ne 0) {
         throw "${Label} failed with exit code $LASTEXITCODE"
@@ -34,8 +38,8 @@ if (-not (Test-Path $LlvmConfigExe -PathType Leaf)) {
 }
 $LlvmVersion = & $LlvmConfigExe --version
 Assert-NativeSuccess 'llvm-config.exe --version'
-if ([string]::IsNullOrWhiteSpace([string]$LlvmVersion) -or $LlvmVersion -notmatch '^22\.1\.\d+\s*$') {
-    throw "Expected LLVM 22.1.x from $LlvmConfigExe, got: $LlvmVersion"
+if ([string]::IsNullOrWhiteSpace([string]$LlvmVersion) -or $LlvmVersion -notmatch '^22\.1\.0\s*$') {
+    throw "Expected release-toolchain LLVM 22.1.0 from $LlvmConfigExe, got: $LlvmVersion"
 }
 Write-Host "Using LLVM $LlvmVersion from $LlvmPrefix"
 

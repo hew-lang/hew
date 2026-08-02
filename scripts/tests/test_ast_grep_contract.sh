@@ -82,29 +82,29 @@ extern "C" {
 }
 EOF
 ast_grep="$ROOT/.ast-grep/tool/bin/ast-grep"
-[[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --kind clone_expression --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
+[[ "$("$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --kind clone_expression --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
     echo "pinned Hew grammar did not parse exactly one clone-prefix expression" >&2
     exit 1
 }
 for operator in '&+' '&-' '&*'; do
-    [[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --pattern "\$A $operator \$B" --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
+    [[ "$("$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --pattern "\$A $operator \$B" --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
         echo "pinned Hew grammar did not parse wrapping operator $operator" >&2
         exit 1
     }
 done
 # The dollar-prefixed names are ast-grep metavariables, not shell expansions.
 # shellcheck disable=SC2016
-[[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --pattern 'fn $F(consume $P: $T);' --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
+[[ "$("$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --pattern 'fn $F(consume $P: $T);' --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
     echo "pinned Hew grammar did not parse a leading named consume parameter" >&2
     exit 1
 }
 # shellcheck disable=SC2016
-[[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --pattern 'fn $F($A: $AT, consume $B: $BT);' --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
+[[ "$("$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --pattern 'fn $F($A: $AT, consume $B: $BT);' --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
     echo "pinned Hew grammar did not parse a secondary named consume parameter" >&2
     exit 1
 }
 # shellcheck disable=SC2016
-[[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --pattern 'fn $F(consume var $P: $T) { $$$BODY }' --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
+[[ "$("$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --pattern 'fn $F(consume var $P: $T) { $$$BODY }' --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
     echo "pinned Hew grammar did not parse a mutable consuming parameter" >&2
     exit 1
 }

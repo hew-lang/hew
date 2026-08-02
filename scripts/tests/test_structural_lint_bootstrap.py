@@ -14,10 +14,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 with tempfile.TemporaryDirectory() as temp:
     work = Path(temp)
+    (work / "Cargo.toml").write_text('[workspace]\nresolver = "2"\n')
     shutil.copy(ROOT / "Makefile", work / "Makefile")
     (work / "scripts/tests").mkdir(parents=True)
     shutil.copy(
         ROOT / "scripts/cargo-output-dir.py", work / "scripts/cargo-output-dir.py"
+    )
+    (work / "scripts/lib").mkdir()
+    shutil.copy(
+        ROOT / "scripts/lib/toml_compat.py", work / "scripts/lib/toml_compat.py"
     )
     inputs = work / "scripts/libhew-inputs.py"
     inputs.write_text("#!/bin/sh\nprintf 'Makefile\\n'\n")

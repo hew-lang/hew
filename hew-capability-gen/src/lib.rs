@@ -242,6 +242,28 @@ impl Manifest {
                     }
                 }
             }
+            match feature.checker {
+                CheckerDisposition::Warn if feature.runtime != RuntimeDisposition::Cooperative => {
+                    return Err(format!(
+                        "warning feature `{}` must have cooperative runtime disposition",
+                        feature.id
+                    ));
+                }
+                CheckerDisposition::Reject
+                    if matches!(
+                        feature.runtime,
+                        RuntimeDisposition::Implemented
+                            | RuntimeDisposition::HostDependent
+                            | RuntimeDisposition::Cooperative
+                    ) =>
+                {
+                    return Err(format!(
+                        "reject feature `{}` has runnable runtime disposition {:?}",
+                        feature.id, feature.runtime
+                    ));
+                }
+                _ => {}
+            }
             if (!feature.native_only_modules.is_empty()
                 || !feature.native_only_functions.is_empty())
                 && feature.checker != CheckerDisposition::Reject

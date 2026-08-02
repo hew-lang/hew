@@ -1281,19 +1281,19 @@ fn mark_unproven_param_place(
 
 type RepresentationEffectEdge = (usize, usize, usize, usize);
 
-/// Whether one direct MIR argument has an audited contract that proves it is
-/// borrowed only. These calls do not replace a caller parameter's
-/// representation, even though catalog and source-stdlib FFI shims have no
-/// raw MIR body to appear in `function_index`.
+/// Whether one checker-authorized standard-library extern argument has an
+/// audited contract that proves it is borrowed only. These calls do not
+/// replace a caller parameter's representation, even though source-stdlib FFI
+/// shims have no raw MIR body to appear in `function_index`.
 ///
 /// This answers only the representation-effect question.  It is deliberately
 /// a positive, argument-indexed query over the concrete emitted ABI symbol
-/// (for example `hew_string_length` or `hew_tcp_listen`), after HIR's catalog
-/// `ItemId` join projected that symbol into raw MIR. The generated FFI table
-/// is the authority for source externs; the runtime table remains the
-/// authority for compiler-presented catalog calls. Unknown, consuming, and
+/// (for example `hew_metric_counter_register` or `hew_tcp_listen`), but is
+/// reachable only through [`crate::CallAuthority::Extern`]. The generated FFI
+/// table is the authority for checker-proven source externs; a `Direct` call
+/// cannot acquire it by reusing a linker spelling. Unknown, consuming, and
 /// escaping arguments keep the normal fail-closed `Unproven` result below.
-fn callee_has_proven_borrowed_string_abi(callee: &str, arg_index: usize) -> bool {
+fn checked_std_extern_borrows_argument(callee: &str, arg_index: usize) -> bool {
     use crate::ffi_contracts::ExternParamOwnership;
 
     if let Some(contract) = crate::ffi_contracts::extern_ownership_contract(callee).contract() {
@@ -1363,11 +1363,18 @@ fn scan_function_representation_effects(
                         effects[function][caller_param] = RepresentationEffectState::Unproven;
                     }
                 }
-            } else if matches!(authority, crate::CallAuthority::Direct) {
+            } else if matches!(authority, crate::CallAuthority::Extern) {
                 for (arg_index, &arg) in args.iter().enumerate() {
-                    if !callee_has_proven_borrowed_string_abi(callee, arg_index) {
+                    if !checked_std_extern_borrows_argument(callee, arg_index) {
                         mark_unproven_param_place(arg, facts, &mut effects[function]);
                     }
+                }
+            } else if matches!(authority, crate::CallAuthority::Direct) {
+                // A direct call may be a user function, an opaque host extern,
+                // or a malformed fixture. Its linker spelling is deliberately
+                // not authority to read the generated FFI table.
+                for &arg in args {
+                    mark_unproven_param_place(arg, facts, &mut effects[function]);
                 }
             }
         }
@@ -1737,6 +1744,10 @@ mod param_boundary_effect_tests {
         raw[0].params = vec![ResolvedTy::String];
         raw[0].locals = vec![ResolvedTy::String];
         raw[0].decisions[0].ty = ResolvedTy::String;
+        let Terminator::Call { authority, .. } = &mut raw[0].blocks[0].terminator else {
+            unreachable!("test helper constructs a direct call terminator");
+        };
+        *authority = crate::CallAuthority::Extern;
 
         finalize(&mut raw);
 
@@ -1775,16 +1786,14 @@ mod param_boundary_effect_tests {
                 call("unclassified_bytes_abi"),
             ),
         ];
-        for index in [0, 2] {
-            let Terminator::Call { authority, .. } = &mut raw[index].blocks[0].terminator else {
-                unreachable!("test helper constructs a direct call terminator");
-            };
-            // The first is the real catalog family; the third deliberately
-            // carries that marker with no matching ABI row. The scanner must
-            // consult the emitted symbol and argument, never catalog membership.
-            *authority =
-                crate::CallAuthority::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecLen);
-        }
+        let Terminator::Call { authority, .. } = &mut raw[0].blocks[0].terminator else {
+            unreachable!("test helper constructs a direct call terminator");
+        };
+        // The first is the real catalog family. Runtime families carry their
+        // ownership semantics independently of this direct-extern
+        // representation scan.
+        *authority =
+            crate::CallAuthority::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecLen);
 
         finalize(&mut raw);
 
@@ -1845,7 +1854,7 @@ mod param_boundary_effect_tests {
     }
 
     #[test]
-    fn source_stdlib_ffi_borrow_contract_keeps_network_address_read_only() {
+    fn checker_authorized_std_extern_contract_keeps_network_address_read_only() {
         // Source stdlib wrappers call their declared externs directly, rather
         // than through a catalog presentation name. The generated FFI contract
         // is therefore the proof that `listen` and `connect_timeout` read the
@@ -1871,6 +1880,10 @@ mod param_boundary_effect_tests {
             function.params = vec![ResolvedTy::String];
             function.locals = vec![ResolvedTy::String];
             function.decisions[0].ty = ResolvedTy::String;
+            let Terminator::Call { authority, .. } = &mut function.blocks[0].terminator else {
+                unreachable!("test helper constructs a direct call terminator");
+            };
+            *authority = crate::CallAuthority::Extern;
         }
 
         finalize(&mut raw);
@@ -1881,7 +1894,46 @@ mod param_boundary_effect_tests {
                 ParamBoundaryMode::BorrowReadOnly,
                 ParamBoundaryMode::BorrowReadOnly,
             ],
-            "audited TCP address borrows must not manufacture representation-mutation authority"
+            "checker-authorized std extern borrows must not manufacture representation-mutation authority"
+        );
+    }
+
+    #[test]
+    fn same_symbol_user_extern_cannot_claim_std_ffi_borrow_contract() {
+        // The linker spelling is intentionally identical. Only the
+        // checker/HIR-projected `Extern` authority may consult the generated
+        // ownership row; a direct user declaration stays fail-closed.
+        let mut raw = vec![
+            raw_function(
+                "compiled_std_metrics",
+                FunctionCallConv::Default,
+                vec![],
+                call("hew_metric_counter_register"),
+            ),
+            raw_function(
+                "user_same_symbol",
+                FunctionCallConv::Default,
+                vec![],
+                call("hew_metric_counter_register"),
+            ),
+        ];
+        for function in &mut raw {
+            function.params = vec![ResolvedTy::String];
+            function.locals = vec![ResolvedTy::String];
+            function.decisions[0].ty = ResolvedTy::String;
+        }
+        let Terminator::Call { authority, .. } = &mut raw[0].blocks[0].terminator else {
+            unreachable!("test helper constructs a direct call terminator");
+        };
+        *authority = crate::CallAuthority::Extern;
+
+        finalize(&mut raw);
+
+        assert_eq!(mode(&raw[0]), ParamBoundaryMode::BorrowReadOnly);
+        assert_eq!(
+            mode(&raw[1]),
+            ParamBoundaryMode::RejectUnprovenRepresentationMutation,
+            "a user extern must not acquire a standard-library representation contract by symbol collision"
         );
     }
 

@@ -4979,7 +4979,9 @@ fn is_exact_release_forwarding_expr(
         HirExprKind::Call { target, args, .. } => {
             matches!(
                 target,
-                hew_types::CallTarget::Extern { declaration, endpoint }
+                hew_types::CallTarget::Extern {
+                    declaration, endpoint, ..
+                }
                     if declaration == release_declaration && endpoint == release_symbol
             ) && args.get(release_param_index).is_some_and(|arg| {
                 matches!(

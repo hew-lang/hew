@@ -3785,13 +3785,20 @@ impl Builder {
                     hew_types::CallTarget::Extern {
                         declaration: _,
                         endpoint,
+                        trusted_compiled_stdlib,
                     } => {
                         // The endpoint was validated and attached by the
                         // checker-side extern-symbol rewrite.  It is not a
                         // source declaration lookup and therefore must not be
                         // routed through the impl-body symbol map.
-                        return self
-                            .lower_direct_call(endpoint, None, None, args, &expr.ty, expr.site);
+                        let authority = if *trusted_compiled_stdlib {
+                            crate::CallAuthority::Extern
+                        } else {
+                            crate::CallAuthority::Direct
+                        };
+                        return self.lower_direct_call_with_authority(
+                            endpoint, None, args, &expr.ty, expr.site, authority,
+                        );
                     }
                     hew_types::CallTarget::Unsupported { reason } => {
                         self.diagnostics.push(MirDiagnostic {
@@ -8815,6 +8822,31 @@ impl Builder {
         ret_ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
+        self.lower_direct_call_with_authority(
+            callee_symbol,
+            callee_item,
+            hir_args,
+            ret_ty,
+            site,
+            builtin
+                .map(crate::CallAuthority::Runtime)
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Lower a direct call using the checker/HIR-projected authority. The
+    /// `Extern` variant is the capability to read an audited FFI parameter
+    /// contract; it does not select a specialised codegen ABI.
+    fn lower_direct_call_with_authority(
+        &mut self,
+        callee_symbol: &str,
+        callee_item: Option<hew_hir::ItemId>,
+        hir_args: &[hew_hir::HirExpr],
+        ret_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+        authority: crate::CallAuthority,
+    ) -> Option<Place> {
+        let builtin = authority.runtime_family();
         // `Terminator::Call` invariant (model.rs): a carried family IS the
         // callee identity — the symbol string must be its catalog
         // presentation. Enforced in all build profiles; a violation here
@@ -8974,9 +9006,7 @@ impl Builder {
         self.note_owned_call_site(callee_item, hir_args, &arg_places);
         self.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
-            authority: builtin
-                .map(crate::CallAuthority::Runtime)
-                .unwrap_or_default(),
+            authority,
             args: arg_places,
             dest,
             next,

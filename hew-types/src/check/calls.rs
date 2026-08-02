@@ -1094,6 +1094,10 @@ impl Checker {
             return CallTarget::Extern {
                 declaration: crate::DefId::new(extern_decl.signature_key.clone()),
                 endpoint: extern_decl.symbol.clone(),
+                trusted_compiled_stdlib: extern_decl
+                    .declaring_module
+                    .as_deref()
+                    .is_some_and(|module| self.canonical_std_module_sources.contains(module)),
             };
         }
         if let Some(family) = self.intrinsic_runtime_target_for_signature(signature_key) {

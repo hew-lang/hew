@@ -212,6 +212,11 @@ pub enum CallTarget {
     Extern {
         declaration: DefId,
         endpoint: String,
+        /// Positive checker proof that this declaration originated in a
+        /// compiler-embedded standard-library module. Downstream may consult
+        /// the generated FFI ownership row only with this capability; a user
+        /// `extern` that reuses an ABI spelling remains opaque.
+        trusted_compiled_stdlib: bool,
     },
     /// A compiler-known runtime entrypoint.
     Runtime(RuntimeCallFamily),

@@ -875,7 +875,7 @@ impl Checker {
             if actual.has_inference_var() {
                 continue;
             }
-            let _ = unify(&mut self.subst, &expected, &actual);
+            let _ = self.try_unify_with_owner_identity(&expected, &actual);
         }
     }
 

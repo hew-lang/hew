@@ -401,21 +401,142 @@ impl Checker {
     /// that owner-qualified nominal identity REJECTS — i.e. the specific
     /// bare↔qualified nominal collision issue #2651 is about.
     ///
-    /// Returns `true` only when the two types are structurally identical under
-    /// the suffix rule (so `unify` would accept them) but NOT under the strict
-    /// owner-qualified identity — the signature of a root-local type conflated
-    /// with an unrelated import (`Widget` vs `widgeti8.Widget`). A same-def
+    /// Returns `true` when any corresponding nominal nodes would match under
+    /// the suffix rule but NOT under strict owner-qualified identity — the
+    /// signature of a root-local type conflated with an unrelated import
+    /// (`Widget` vs `widgeti8.Widget`). A same-def
     /// alias (`Box` vs `nestbox.Box`, a prelude `MonitorError` vs
     /// `link_monitor.MonitorError`, a builtin handle `HashSet` vs
     /// `collections.HashSet`) is strictly equal and so is NOT flagged; a genuine
-    /// structural mismatch is not suffix-equal and so is left for `unify` to
-    /// report (preserving its coercion-recovery paths).
+    /// outer-name mismatch is not suffix-equal and so is left for `unify` to
+    /// report (preserving its coercion-recovery paths). Nested inference
+    /// variables do not defer an already-provable outer owner mismatch.
     ///
     /// This is a READ-ONLY comparison: it rewrites no stored name and binds no
     /// inference variable, so it cannot leak a canonical spelling downstream.
-    /// The caller guarantees both types are fully concrete.
     pub(super) fn nominal_owner_conflict(&self, a: &Ty, b: &Ty) -> bool {
-        self.nominal_structural_eq(a, b, false) && !self.nominal_structural_eq(a, b, true)
+        self.nominal_owner_conflict_on_unification_path(a, b)
+    }
+
+    /// Whether permissive unification would cross a provably distinct nominal
+    /// owner at any corresponding named node.
+    ///
+    /// This intentionally ignores differences below the named node while
+    /// deciding its owner. `Local<T>` versus `foreign.Local<i64>` is already an
+    /// invalid owner pairing even while `T` is unresolved; waiting until the
+    /// whole type is concrete lets suffix unification bind `T` and permanently
+    /// erase the conflict. Composite recursion covers the same nested type
+    /// positions that [`crate::unify::unify`] traverses.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive mirror of the type shapes traversed by context-free unification"
+    )]
+    pub(super) fn nominal_owner_conflict_on_unification_path(&self, a: &Ty, b: &Ty) -> bool {
+        match (a, b) {
+            (
+                Ty::Named {
+                    name: an,
+                    args: aa,
+                    builtin: ab,
+                },
+                Ty::Named {
+                    name: bn,
+                    args: ba,
+                    builtin: bb,
+                },
+            ) => {
+                (Ty::names_match_qualified(an, bn)
+                    && !self.strict_names_same_owner(an, *ab, bn, *bb))
+                    || (aa.len() == ba.len()
+                        && aa.iter().zip(ba).any(|(left, right)| {
+                            self.nominal_owner_conflict_on_unification_path(left, right)
+                        }))
+            }
+            (Ty::Tuple(left), Ty::Tuple(right)) => {
+                left.len() == right.len()
+                    && left.iter().zip(right).any(|(left, right)| {
+                        self.nominal_owner_conflict_on_unification_path(left, right)
+                    })
+            }
+            (Ty::Array(left, left_len), Ty::Array(right, right_len)) => {
+                left_len == right_len
+                    && self.nominal_owner_conflict_on_unification_path(left, right)
+            }
+            (Ty::Slice(left), Ty::Slice(right))
+            | (Ty::Task(left), Ty::Task(right))
+            | (Ty::Borrow { pointee: left }, Ty::Borrow { pointee: right }) => {
+                self.nominal_owner_conflict_on_unification_path(left, right)
+            }
+            (
+                Ty::Function {
+                    params: left_params,
+                    ret: left_ret,
+                }
+                | Ty::Closure {
+                    params: left_params,
+                    ret: left_ret,
+                    ..
+                },
+                Ty::Function {
+                    params: right_params,
+                    ret: right_ret,
+                }
+                | Ty::Closure {
+                    params: right_params,
+                    ret: right_ret,
+                    ..
+                },
+            ) => {
+                (left_params.len() == right_params.len()
+                    && left_params.iter().zip(right_params).any(|(left, right)| {
+                        self.nominal_owner_conflict_on_unification_path(left, right)
+                    }))
+                    || self.nominal_owner_conflict_on_unification_path(left_ret, right_ret)
+            }
+            (
+                Ty::Pointer {
+                    is_mutable: left_mutable,
+                    pointee: left,
+                },
+                Ty::Pointer {
+                    is_mutable: right_mutable,
+                    pointee: right,
+                },
+            ) => {
+                left_mutable == right_mutable
+                    && self.nominal_owner_conflict_on_unification_path(left, right)
+            }
+            (
+                Ty::TraitObject {
+                    traits: left_traits,
+                },
+                Ty::TraitObject {
+                    traits: right_traits,
+                },
+            ) => left_traits.iter().any(|left| {
+                right_traits
+                    .iter()
+                    .find(|right| right.trait_name == left.trait_name)
+                    .is_some_and(|right| {
+                        (left.args.len() == right.args.len()
+                            && left.args.iter().zip(&right.args).any(|(left, right)| {
+                                self.nominal_owner_conflict_on_unification_path(left, right)
+                            }))
+                            || left.assoc_bindings.iter().any(|(left_name, left_ty)| {
+                                right
+                                    .assoc_bindings
+                                    .iter()
+                                    .find(|(right_name, _)| right_name == left_name)
+                                    .is_some_and(|(_, right_ty)| {
+                                        self.nominal_owner_conflict_on_unification_path(
+                                            left_ty, right_ty,
+                                        )
+                                    })
+                            })
+                    })
+            }),
+            _ => false,
+        }
     }
 
     /// The strict owner-qualified identity a concrete `Ty::Named` name denotes
@@ -492,83 +613,6 @@ impl Checker {
         let b_foreign = b_id.contains('.');
         let provable_conflict = (a_local && b_foreign) || (b_local && a_foreign);
         !provable_conflict
-    }
-
-    /// Structural equality of two concrete types, comparing each `Ty::Named`
-    /// either by the permissive suffix rule (`strict == false`) or by
-    /// owner-qualified definition identity (`strict == true`). Non-nominal
-    /// leaves compare exactly; unhandled composite variants fall back to exact
-    /// equality (conservative — a difference there is never reported as a
-    /// #2651 owner conflict).
-    fn nominal_structural_eq(&self, a: &Ty, b: &Ty, strict: bool) -> bool {
-        match (a, b) {
-            (
-                Ty::Named {
-                    name: an,
-                    args: aa,
-                    builtin: ab,
-                },
-                Ty::Named {
-                    name: bn,
-                    args: ba,
-                    builtin: bb,
-                },
-            ) => {
-                let names_ok = if strict {
-                    self.strict_names_same_owner(an, *ab, bn, *bb)
-                } else {
-                    Ty::names_match_qualified(an, bn)
-                };
-                names_ok
-                    && aa.len() == ba.len()
-                    && aa
-                        .iter()
-                        .zip(ba.iter())
-                        .all(|(x, y)| self.nominal_structural_eq(x, y, strict))
-            }
-            (Ty::Tuple(x), Ty::Tuple(y)) => {
-                x.len() == y.len()
-                    && x.iter()
-                        .zip(y.iter())
-                        .all(|(p, q)| self.nominal_structural_eq(p, q, strict))
-            }
-            (Ty::Array(e1, n1), Ty::Array(e2, n2)) => {
-                n1 == n2 && self.nominal_structural_eq(e1, e2, strict)
-            }
-            (Ty::Slice(e1), Ty::Slice(e2)) => self.nominal_structural_eq(e1, e2, strict),
-            (
-                Ty::Function {
-                    params: p1,
-                    ret: r1,
-                },
-                Ty::Function {
-                    params: p2,
-                    ret: r2,
-                },
-            ) => {
-                p1.len() == p2.len()
-                    && p1
-                        .iter()
-                        .zip(p2.iter())
-                        .all(|(x, y)| self.nominal_structural_eq(x, y, strict))
-                    && self.nominal_structural_eq(r1, r2, strict)
-            }
-            (
-                Ty::Pointer {
-                    is_mutable: m1,
-                    pointee: p1,
-                },
-                Ty::Pointer {
-                    is_mutable: m2,
-                    pointee: p2,
-                },
-            ) => m1 == m2 && self.nominal_structural_eq(p1, p2, strict),
-            (Ty::Borrow { pointee: p1 }, Ty::Borrow { pointee: p2 }) => {
-                self.nominal_structural_eq(p1, p2, strict)
-            }
-            (Ty::Task(i1), Ty::Task(i2)) => self.nominal_structural_eq(i1, i2, strict),
-            _ => a == b,
-        }
     }
 
     /// Fail closed on a bare TYPE reference whose qualified-by-default scope is

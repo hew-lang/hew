@@ -79,7 +79,10 @@ with tempfile.TemporaryDirectory() as temp:
         'const DECOY: &str = "short_name(name); name.rsplit(\\"::\\")";\n'
         'fn macro_decoy() { format!("short_name(name) name.rsplit"); }\n'
     )
-    assert run(work).returncode == 0, "comments and strings must not create findings"
+    result = run(work)
+    assert result.returncode == 0, (
+        "comments and strings must not create findings: " + result.stderr
+    )
 
     target.write_text("fn authority() { let _ = short_name(name); }\n")
     result = run(work)
@@ -173,6 +176,22 @@ with tempfile.TemporaryDirectory() as temp:
         "#[cfg(not(test))]\nfn non_test_guard() { let _ = short_name(name); }\n"
     )
     assert run(work).returncode != 0, "cfg(not(test)) is production authority"
+
+    target.write_text(
+        "fn bypass() { let _ = Ty::names_match_qualified(left, right); }\n"
+    )
+    result = run(work)
+    assert result.returncode != 0, (
+        "semantic suffix matching outside its authority must fail"
+    )
+    assert "forbidden context-free nominal authority" in result.stderr
+
+    target.write_text("fn bypass() { let _ = unify(&mut subst, left, right); }\n")
+    result = run(work)
+    assert result.returncode != 0, (
+        "raw checker unification outside its owner guard must fail"
+    )
+    assert "forbidden context-free nominal authority" in result.stderr
 
     # RC1 carrier inventories are syntax-node based: comments and strings do
     # not create a checker fact, call target, suspend, or retirement finding.

@@ -338,9 +338,9 @@ impl Checker {
     /// no name is rewritten and no variable is bound, so nothing leaks into a
     /// `Subst` binding or the downstream checker→HIR/MIR name handoff (the
     /// record-layout registry keeps single-module references bare on purpose).
-    /// Fire only when both sides are fully concrete after substitution, so an
-    /// already-bound generic `T` inferred to a callee-frame type is seen as the
-    /// type it denotes. A genuine same-def alias (`Box` ↔ `nestbox.Box`, prelude
+    /// Resolve existing substitutions first, then inspect every corresponding
+    /// nominal node even when another generic argument remains unresolved. A
+    /// genuine same-def alias (`Box` ↔ `nestbox.Box`, prelude
     /// `MonitorError` ↔ `link_monitor.MonitorError`, builtin `HashSet` ↔
     /// `collections.HashSet`) is owner-identical and passes straight through to
     /// `unify`; a real structural mismatch is not suffix-equal and is left for
@@ -349,10 +349,7 @@ impl Checker {
     fn reject_nominal_owner_conflict(&mut self, expected: &Ty, actual: &Ty, span: &Span) -> bool {
         let expected_resolved = self.subst.resolve(expected);
         let actual_resolved = self.subst.resolve(actual);
-        if expected_resolved.has_inference_var()
-            || actual_resolved.has_inference_var()
-            || !self.nominal_owner_conflict(&expected_resolved, &actual_resolved)
-        {
+        if !self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
             return false;
         }
         self.report_error(
@@ -368,6 +365,20 @@ impl Checker {
             ),
         );
         true
+    }
+
+    /// Run a non-diagnostic unification probe without bypassing nominal-owner
+    /// identity. Callers that use unification for inference, coercion trials,
+    /// or associated-type projection must route through this helper; raw
+    /// suffix unification has no lexical/import context and cannot distinguish
+    /// a legal alias from a same-leaf foreign owner.
+    pub(super) fn try_unify_with_owner_identity(&mut self, expected: &Ty, actual: &Ty) -> bool {
+        let expected_resolved = self.subst.resolve(expected);
+        let actual_resolved = self.subst.resolve(actual);
+        if self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
+            return false;
+        }
+        unify(&mut self.subst, expected, actual).is_ok()
     }
 
     pub(super) fn expect_type(&mut self, expected: &Ty, actual: &Ty, span: &Span) {

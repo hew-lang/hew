@@ -6762,8 +6762,7 @@ impl Checker {
             } => {
                 if matches!(receiver_resolved, Ty::Var(_)) {
                     return !Self::ty_contains_impl_param(self_arg, impl_params)
-                        && crate::unify::unify(&mut self.subst, &receiver_resolved, self_arg)
-                            .is_ok();
+                        && self.try_unify_with_owner_identity(&receiver_resolved, self_arg);
                 }
                 let Ty::Named {
                     name: r_name,
@@ -6785,8 +6784,7 @@ impl Checker {
             // equality, or unify an unbound receiver var with the concrete leaf.
             concrete => {
                 if matches!(receiver_resolved, Ty::Var(_)) {
-                    return crate::unify::unify(&mut self.subst, &receiver_resolved, concrete)
-                        .is_ok();
+                    return self.try_unify_with_owner_identity(&receiver_resolved, concrete);
                 }
                 receiver_resolved == *concrete
             }

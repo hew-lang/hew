@@ -924,10 +924,47 @@ fn main() {
         let ops = all_instruction_ops(&bytecode);
         assert!(ops.contains(&"regex.compile"));
         assert!(ops.contains(&"regex.find"));
+        assert!(ops.contains(&"regex.free"));
         assert!(bytecode
             .capabilities
             .iter()
             .any(|cap| cap.id == "std.text.regex.compile" && cap.disposition == "reserved"));
+    }
+
+    #[test]
+    fn user_pattern_cannot_mint_regex_profile_authority() {
+        set_test_hewpath();
+        let source = r#"
+type Pattern {
+    value: string;
+}
+
+impl Pattern {
+    fn find(self, input: string) -> string {
+        input
+    }
+}
+
+fn main() {
+    let pattern = Pattern { value: "user" };
+    println(pattern.find("input"));
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "a user-defined Pattern must not emit regex bytecode"
+        );
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.phase == "profile"
+                    && diagnostic.kind == "unknown_method_symbol"
+                    && diagnostic.message.contains("method `find`")
+            }),
+            "a user-defined Pattern must not gain regex method authority: {:#?}",
+            output.diagnostics
+        );
     }
 
     #[test]

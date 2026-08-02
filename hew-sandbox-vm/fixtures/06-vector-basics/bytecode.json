@@ -793,6 +793,61 @@
         "name": "ReplyToken"
       },
       {
+        "id": "type:std.builtins.AskError",
+        "kind": "enum",
+        "name": "std.builtins.AskError"
+      },
+      {
+        "id": "type:std.builtins.HashMapIter",
+        "kind": "record",
+        "name": "std.builtins.HashMapIter"
+      },
+      {
+        "id": "type:std.builtins.LinkError",
+        "kind": "enum",
+        "name": "std.builtins.LinkError"
+      },
+      {
+        "id": "type:std.builtins.LocalPid",
+        "kind": "record",
+        "name": "std.builtins.LocalPid"
+      },
+      {
+        "id": "type:std.builtins.Location",
+        "kind": "record",
+        "name": "std.builtins.Location"
+      },
+      {
+        "id": "type:std.builtins.LookupError",
+        "kind": "enum",
+        "name": "std.builtins.LookupError"
+      },
+      {
+        "id": "type:std.builtins.NodeId",
+        "kind": "record",
+        "name": "std.builtins.NodeId"
+      },
+      {
+        "id": "type:std.builtins.RemotePid",
+        "kind": "record",
+        "name": "std.builtins.RemotePid"
+      },
+      {
+        "id": "type:std.builtins.SendError",
+        "kind": "enum",
+        "name": "std.builtins.SendError"
+      },
+      {
+        "id": "type:std.builtins.TimeoutError",
+        "kind": "enum",
+        "name": "std.builtins.TimeoutError"
+      },
+      {
+        "id": "type:std.builtins.VecIter",
+        "kind": "record",
+        "name": "std.builtins.VecIter"
+      },
+      {
         "id": "type:string",
         "kind": "string",
         "name": "string"
@@ -823,7 +878,7 @@
       }
     ]
   },
-  "package_id": "pkg:7790986448c2429c",
+  "package_id": "pkg:f2bf21696f27c2df",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

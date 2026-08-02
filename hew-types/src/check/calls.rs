@@ -32,15 +32,21 @@ impl Checker {
             // the bare lexical prefix (`Parcel::Filled`), but the declaration
             // is keyed under its full owner (`left.render.Parcel`). Resolve
             // that owner before consulting the compatibility bare entry.
+            let canonical_owner_key = self.canonical_nominal_name(type_prefix);
             let local_owner_key = (!type_prefix.contains('.'))
                 .then(|| {
                     self.current_module_identity()
                         .map(|owner| format!("{owner}.{type_prefix}"))
                 })
                 .flatten();
-            let direct_key = local_owner_key
+            let direct_key = canonical_owner_key
                 .as_deref()
                 .filter(|key| self.type_defs.contains_key(*key))
+                .or_else(|| {
+                    local_owner_key
+                        .as_deref()
+                        .filter(|key| self.type_defs.contains_key(*key))
+                })
                 .unwrap_or(type_prefix);
             let direct = self.type_defs.get(direct_key).and_then(|td| {
                 if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
@@ -1186,8 +1192,12 @@ impl Checker {
         if self
             .canonical_std_module_sources
             .contains("std.channel.channel")
+            || self.canonical_std_module_sources.contains("std.channel")
         {
-            if let Some(c_symbol) = signature_key.strip_prefix("std.channel.channel.") {
+            if let Some(c_symbol) = signature_key
+                .strip_prefix("std.channel.channel.")
+                .or_else(|| signature_key.strip_prefix("std.channel."))
+            {
                 if let Some(family) =
                     crate::runtime_call::RuntimeCallFamily::from_c_symbol(c_symbol)
                 {

@@ -168,6 +168,15 @@ pub fn source_nominal_matches_qualified(
     declaring_module: Option<&str>,
     source_type: &str,
 ) -> bool {
+    // An already fully-qualified nominal carries its own exact source owner.
+    // This is the cross-module re-declaration case used by std adapters (for
+    // example `std.net` borrowing `std.stream.StreamPair`).  Requiring the
+    // extern block itself to live in the resource's declaring module would
+    // discard that stronger type provenance and turn audited borrows into
+    // moves.  A same-leaf foreign type still cannot pass this equality.
+    if source_type == qualified {
+        return true;
+    }
     let Some((expected_module, _)) = qualified.rsplit_once('.') else {
         return false;
     };
@@ -354,6 +363,11 @@ mod tests {
             Some(result.owner_module),
             "example.io.Socket"
         ));
+        assert!(source_nominal_matches_qualified(
+            result.resource_type,
+            Some("adapter.net"),
+            "example.io.Socket"
+        ));
         assert!(!source_nominal_matches_qualified(
             result.resource_type,
             None,
@@ -368,6 +382,11 @@ mod tests {
             result.resource_type,
             Some(result.owner_module),
             "Pipe"
+        ));
+        assert!(!source_nominal_matches_qualified(
+            result.resource_type,
+            Some("adapter.net"),
+            "other.io.Socket"
         ));
     }
 

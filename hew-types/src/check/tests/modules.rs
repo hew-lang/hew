@@ -68,6 +68,45 @@ fn nested_module_leaf_is_not_a_nominal_self_qualifier() {
 }
 
 #[test]
+fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("std.net.tls".to_string());
+    checker.modules.insert("net".to_string());
+    checker
+        .canonical_std_module_sources
+        .insert("std.net".to_string());
+    checker.module_import_bindings.insert(
+        (Some("std.net.tls".to_string()), "net".to_string()),
+        "std.net".to_string(),
+    );
+    checker.known_types.insert("net.NetError".to_string());
+
+    assert_eq!(
+        checker.canonical_nominal_name("NetError"),
+        Some("std.net.NetError".to_string()),
+        "the unique compatibility surface must project through the proven exact std owner"
+    );
+
+    checker.module_import_bindings.insert(
+        (Some("std.net.tls".to_string()), "sibling".to_string()),
+        "acme.net".to_string(),
+    );
+    checker.known_types.insert("acme.net.NetError".to_string());
+    assert_eq!(
+        checker.canonical_nominal_name("sibling.NetError"),
+        Some("acme.net.NetError".to_string()),
+        "an explicit sibling binding retains its own full owner"
+    );
+
+    checker.local_type_defs.insert("NetError".to_string());
+    assert_eq!(
+        checker.canonical_nominal_name("NetError"),
+        None,
+        "a local same-leaf enum shadows imported compatibility surfaces"
+    );
+}
+
+#[test]
 fn module_graph_body_type_error_is_reported() {
     // fn bad() -> i64 { true }  — body returns bool, declared i64
     let bad_fn = FnDecl {

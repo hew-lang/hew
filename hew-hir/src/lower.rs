@@ -21065,7 +21065,9 @@ impl LowerCtx {
             };
         }
         let canonical = self.canonical_current_module_record_name(&name);
-        if canonical == name {
+        if let Some(builtin) = self.qualified_source_builtin(&canonical) {
+            ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args)
+        } else if canonical == name {
             ResolvedTy::Named {
                 name,
                 args,
@@ -21199,6 +21201,32 @@ impl LowerCtx {
                 .filter(|builtin| !builtin.requires_source_import());
         }
 
+        // Parser/checker compatibility spellings for the core channel/stream
+        // carriers omit the leading `std.`.  While lowering a canonical stdlib
+        // module, project only those fixed catalog identities to their exact
+        // source declarations, and require that declaration provenance to be
+        // present. This is not a module-leaf retry: arbitrary `stream.Sink`
+        // source outside `std.*` remains a user nominal.
+        let canonical_compat = self
+            .current_module_name
+            .as_deref()
+            .filter(|module| module.starts_with("std."))
+            .and(match name {
+                "stream.Stream" => Some(("std.stream.Stream", BuiltinType::Stream)),
+                "stream.Sink" => Some(("std.stream.Sink", BuiltinType::Sink)),
+                "channel.Sender" => Some(("std.channel.channel.Sender", BuiltinType::Sender)),
+                "channel.Receiver" => Some(("std.channel.channel.Receiver", BuiltinType::Receiver)),
+                _ => None,
+            });
+        if let Some((canonical, builtin)) = canonical_compat {
+            if self
+                .canonical_std_source_type_identities
+                .contains(canonical)
+            {
+                return Some(builtin);
+            }
+        }
+
         let owner = name.rsplit_once('.').map(|(owner, _)| owner);
         let current_std_owner = self.current_module_name.as_deref().is_some_and(|module| {
             owner == Some(module)
@@ -21228,36 +21256,6 @@ impl LowerCtx {
             "std.failure.CrashAction" => Some(BuiltinType::CrashAction),
             "std.link_monitor.MonitorRef" => Some(BuiltinType::MonitorRef),
             _ => None,
-        }
-    }
-
-    fn qualify_imported_impl_method_symbol(
-        &self,
-        symbol: &str,
-        receiver_ty: &ResolvedTy,
-    ) -> String {
-        let Some((symbol_type, method)) = symbol.split_once("::") else {
-            return symbol.to_string();
-        };
-        let ResolvedTy::Named {
-            name: receiver_name,
-            ..
-        } = receiver_ty
-        else {
-            return symbol.to_string();
-        };
-        let receiver_short = hew_types::short_name(receiver_name);
-        if receiver_short == receiver_name {
-            return symbol.to_string();
-        }
-        if receiver_short != symbol_type {
-            return symbol.to_string();
-        }
-        let qualified = format!("{receiver_name}::{method}");
-        if self.fn_registry.contains_key(&qualified) {
-            qualified
-        } else {
-            symbol.to_string()
         }
     }
 
@@ -21362,6 +21360,14 @@ impl LowerCtx {
                     || self
                         .source_type_identities
                         .contains(&format!("{source_module}.{name}"))
+                    || name.rsplit_once('.').is_some_and(|(binding, item)| {
+                        self.module_import_bindings
+                            .get(&(Some(source_module.to_string()), binding.to_string()))
+                            .is_some_and(|owner| {
+                                self.source_type_identities
+                                    .contains(&format!("{owner}.{item}"))
+                            })
+                    })
             };
             let sig_unresolvable = method_signature_type_exprs(method).any(|ty| {
                 !imported_impl_signature_type_is_safe(
@@ -24441,7 +24447,9 @@ impl LowerCtx {
                     .get(&key)
                     .cloned()
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                    .unwrap_or(ResolvedTy::Unit);
+                    .map_or(ResolvedTy::Unit, |ty| {
+                        self.qualify_current_module_record_ty(ty)
+                    });
                 let reply_ty = match &ret_ty {
                     ResolvedTy::Named {
                         builtin: Some(BuiltinType::Result),
@@ -24520,7 +24528,9 @@ impl LowerCtx {
                     .get(&key)
                     .cloned()
                     .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                    .unwrap_or(ResolvedTy::Unit);
+                    .map_or(ResolvedTy::Unit, |ty| {
+                        self.qualify_current_module_record_ty(ty)
+                    });
                 let c_symbol = match &target {
                     CallTarget::ImplMethod(declaration) => {
                         let Some(symbol) = self.registered_impl_method_symbol(declaration) else {
@@ -24594,11 +24604,12 @@ impl LowerCtx {
                     IntentKind::Read
                 };
                 let lowered_receiver = self.lower_expr(receiver, receiver_intent);
-                let c_symbol = if matches!(&target, CallTarget::ImplMethod(_)) {
-                    c_symbol
-                } else {
-                    self.qualify_imported_impl_method_symbol(&c_symbol, &lowered_receiver.ty)
-                };
+                // `c_symbol` is either projected from the exact selected impl
+                // declaration above or carried by a typed runtime/user target.
+                // Never rediscover an imported owner from receiver/name leaf
+                // equality: same-named types in sibling modules can both have
+                // registered methods, making that fallback select a real but
+                // wrong body.
                 // Slice 2: a by-value direct-dot call to a generic impl method
                 // on a concrete generic receiver (e.g. `p.first()` where
                 // `impl<T> Pair<T> { fn first(self) -> T }` and `p: Pair<i64>`)
@@ -32793,6 +32804,44 @@ fn main() {}
     }
 
     #[test]
+    fn impl_body_projection_never_retries_through_a_same_leaf_symbol() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        let left = hew_types::DefId::new(
+            "left.render.Result::<impl inherent for left.render.Result>::echo",
+        );
+        let right = hew_types::DefId::new(
+            "right.render.Result::<impl inherent for right.render.Result>::echo",
+        );
+        ctx.impl_method_body_symbols
+            .insert(left.clone(), "left.render.Result::echo".to_string());
+        ctx.fn_registry.insert(
+            "right.render.Result::echo".to_string(),
+            FnEntry {
+                id: ItemId(1),
+                return_ty: ResolvedTy::I64,
+                param_tys: Vec::new(),
+                linkage: None,
+                type_params: Vec::new(),
+                builtin_family: None,
+            },
+        );
+
+        assert_eq!(
+            ctx.registered_impl_method_symbol(&left).as_deref(),
+            Some("left.render.Result::echo")
+        );
+        assert_eq!(
+            ctx.registered_impl_method_symbol(&right),
+            None,
+            "a real same-leaf registry entry cannot substitute for the selected declaration body"
+        );
+    }
+
+    #[test]
     fn imported_opaque_identity_precedes_short_builtin_fallback() {
         let mut ctx = LowerCtx::new(
             &TypeCheckOutput::default(),
@@ -32891,6 +32940,47 @@ fn main() {}
             )),
             ResolvedTy::named_opaque("http.ResponseHandle".to_string(), Vec::new()),
             "a checker-authored qualified opaque identity must recover its declaration discriminator"
+        );
+    }
+
+    #[test]
+    fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.canonical_std_source_type_identities
+            .insert("std.stream.Sink".to_string());
+        ctx.current_module_name = Some("std.net.http".to_string());
+        let checker_result = ResolvedTy::named_builtin(
+            "Result",
+            BuiltinType::Result,
+            vec![
+                ResolvedTy::named_user("stream.Sink", vec![ResolvedTy::String]),
+                ResolvedTy::String,
+            ],
+        );
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(checker_result),
+            ResolvedTy::named_builtin(
+                "Result",
+                BuiltinType::Result,
+                vec![
+                    ResolvedTy::named_builtin("Sink", BuiltinType::Sink, vec![ResolvedTy::String],),
+                    ResolvedTy::String,
+                ],
+            )
+        );
+
+        ctx.current_module_name = Some("acme.http".to_string());
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "stream.Sink",
+                vec![ResolvedTy::String],
+            )),
+            ResolvedTy::named_user("stream.Sink", vec![ResolvedTy::String]),
+            "a user `stream.Sink` collision must not inherit std carrier identity"
         );
     }
 

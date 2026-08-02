@@ -180,14 +180,19 @@ pub(crate) fn is_supervisor_registered_for_test(
 /// happen, so we simply drop the supervisor structs to release child
 /// spec resources (names, `init_state`).  Actors themselves are freed
 /// separately by [`crate::actor::cleanup_all_actors`].
-pub(crate) unsafe fn free_registered_supervisors() {
+///
+/// Returns `false` if a delayed-restart timer still borrows a supervisor. The
+/// caller must leave the runtime and actors installed for a later retry.
+pub(crate) unsafe fn free_registered_supervisors() -> bool {
     let to_free = with_supervisor_roots(std::mem::take);
+    let mut complete = true;
     for s in to_free {
         if !s.0.is_null() {
             // SAFETY: supervisor was registered and pointer is valid.
-            unsafe { crate::supervisor::free_supervisor_resources(s.0) };
+            complete &= unsafe { crate::supervisor::free_supervisor_resources(s.0) };
         }
     }
+    complete
 }
 
 #[cfg(feature = "profiler")]

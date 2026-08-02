@@ -14,7 +14,7 @@ use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::actor::{self, HewActor, HewActorOpts};
 use crate::internal::types::{
@@ -743,6 +743,16 @@ pub struct HewSupervisor {
 }
 
 const SUPERVISOR_PIN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+/// A public stop must never spin forever when a failed worker left a
+/// supervisor/child activation Runnable or Running.  This matches the
+/// actor-termination quiescence window: on expiry we preserve the allocation
+/// and hand it back to canonical post-worker cleanup rather than free live
+/// state.
+const SUPERVISOR_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Canonical cleanup runs after workers have stopped, but delayed-restart
+/// threads can still hold a raw supervisor borrow.  It gets the same bounded
+/// lease: expiry retains the allocation instead of freeing under that borrow.
+const SUPERVISOR_CLEANUP_TIMER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct ClosedSupervisorAccess {
     control: Arc<crate::lifetime::local_handles::SupervisorControl>,
@@ -1695,7 +1705,18 @@ fn request_supervisor_shutdown(sup: *mut HewSupervisor) {
     }
 }
 
-fn wait_for_supervisor_self_actor_quiescent(sup: *mut HewSupervisor) -> bool {
+#[inline]
+fn supervisor_quiescence_expired(deadline: Instant) -> bool {
+    scheduler::shutdown_requested() || Instant::now() >= deadline
+}
+
+fn actor_is_supervisor_quiescent(actor: *mut HewActor) -> bool {
+    // SAFETY: callers keep `actor` live throughout their wait.
+    let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+    state != HewActorState::Running as i32 && state != HewActorState::Runnable as i32
+}
+
+fn wait_for_supervisor_self_actor_quiescent(sup: *mut HewSupervisor, deadline: Instant) -> bool {
     if sup.is_null() {
         return true;
     }
@@ -1709,16 +1730,56 @@ fn wait_for_supervisor_self_actor_quiescent(sup: *mut HewSupervisor) -> bool {
 
         actor::hew_actor_stop(s.self_actor);
         loop {
-            let state = (*s.self_actor).actor_state.load(Ordering::Acquire);
-            if state != HewActorState::Running as i32 && state != HewActorState::Runnable as i32 {
+            if actor_is_supervisor_quiescent(s.self_actor) {
                 return true;
             }
-            if scheduler::shutdown_requested() {
+            if supervisor_quiescence_expired(deadline) {
                 return false;
             }
             std::thread::yield_now();
         }
     }
+}
+
+fn wait_for_pending_restart_timers(sup: *const HewSupervisor, deadline: Instant) -> bool {
+    // SAFETY: the teardown owner keeps the supervisor allocation live through
+    // this wait; timer threads only decrement this counter.
+    while unsafe { (*sup).pending_restart_timers.load(Ordering::Acquire) } != 0 {
+        if supervisor_quiescence_expired(deadline) {
+            return false;
+        }
+        std::thread::yield_now();
+    }
+    true
+}
+
+fn wait_for_pending_restart_timers_after_worker_shutdown(
+    sup: *const HewSupervisor,
+    deadline: Instant,
+) -> bool {
+    // Scheduler shutdown is the expected state on canonical cleanup, so unlike
+    // the public-stop wait it is not itself an abort condition.  The timer
+    // thread remains the only raw borrower and must either finish within this
+    // bounded lease or keep the supervisor allocation alive.
+    // SAFETY: canonical-cleanup ownership keeps `sup` allocated while an
+    // outstanding timer may still read and later decrement this field.
+    while unsafe { (*sup).pending_restart_timers.load(Ordering::Acquire) } != 0 {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::yield_now();
+    }
+    true
+}
+
+fn wait_for_child_quiescent(child: *mut HewActor, deadline: Instant) -> bool {
+    while !actor_is_supervisor_quiescent(child) {
+        if supervisor_quiescence_expired(deadline) {
+            return false;
+        }
+        std::thread::yield_now();
+    }
+    true
 }
 
 unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSupervisor) {
@@ -1732,6 +1793,7 @@ unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSupervisor) {
     if unsafe { (*sup).parent.is_null() } {
         // SAFETY: the deferred owner is returning the still-live allocation
         // without consuming it.
+        // SAFETY: canonical cleanup still owns the live top-level allocation.
         unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
     }
 }
@@ -1753,7 +1815,9 @@ unsafe fn stop_supervisor_owned(
         return;
     };
     request_supervisor_shutdown(sup);
-    if !wait_for_supervisor_self_actor_quiescent(sup) {
+    let quiescence_deadline = Instant::now() + SUPERVISOR_QUIESCENCE_TIMEOUT;
+    if !wait_for_supervisor_self_actor_quiescent(sup, quiescence_deadline) {
+        set_last_error("supervisor teardown timed out waiting for self actor quiescence");
         // SAFETY: teardown ownership is still held and no allocation was
         // consumed; canonical runtime cleanup takes ownership back.
         unsafe { return_supervisor_to_runtime_cleanup(sup) };
@@ -1762,14 +1826,12 @@ unsafe fn stop_supervisor_owned(
 
     // SAFETY: teardown ownership is held exclusively by this thread and the
     // supervisor memory remains live until `Box::from_raw` below.
-    let shared = unsafe { &*sup };
-    while shared.pending_restart_timers.load(Ordering::Acquire) != 0 {
-        if scheduler::shutdown_requested() {
-            // SAFETY: as above; the supervisor has not been consumed yet.
-            unsafe { return_supervisor_to_runtime_cleanup(sup) };
-            return;
-        }
-        std::thread::yield_now();
+    if !wait_for_pending_restart_timers(sup, quiescence_deadline) {
+        set_last_error("supervisor teardown timed out waiting for restart timers");
+        // SAFETY: no ownership was consumed; a timer may still hold a raw
+        // borrow, so canonical cleanup must retain the allocation.
+        unsafe { return_supervisor_to_runtime_cleanup(sup) };
+        return;
     }
 
     // SAFETY: teardown ownership was claimed once for this supervisor, the
@@ -1796,26 +1858,20 @@ unsafe fn stop_supervisor_owned(
         if !child.is_null() {
             // SAFETY: child pointer is valid.
             unsafe { actor::hew_actor_stop(child) };
-            // SAFETY: child pointer is valid.
-            unsafe {
-                loop {
-                    let state = (*child).actor_state.load(Ordering::Acquire);
-                    if state != HewActorState::Running as i32
-                        && state != HewActorState::Runnable as i32
-                    {
-                        break;
-                    }
-                    if scheduler::shutdown_requested() {
-                        let sup = Box::into_raw(s);
-                        // SAFETY: Box ownership is converted back to the raw
-                        // pointer expected by canonical runtime cleanup.
-                        return_supervisor_to_runtime_cleanup(sup);
-                        return;
-                    }
-                    std::thread::yield_now();
-                }
-                actor::hew_actor_free(child);
+            if !wait_for_child_quiescent(child, quiescence_deadline) {
+                set_last_error("supervisor teardown timed out waiting for child quiescence");
+                // `take_child_slot` detached this still-live child. Restore it
+                // before returning ownership, otherwise canonical cleanup could
+                // free the supervisor while the child remains unowned/live.
+                store_child_slot(&mut s, i, child);
+                let sup = Box::into_raw(s);
+                // SAFETY: Box ownership is converted back to the raw pointer
+                // expected by canonical runtime cleanup.
+                unsafe { return_supervisor_to_runtime_cleanup(sup) };
+                return;
             }
+            // SAFETY: child has reached a wake-proof terminal state.
+            unsafe { actor::hew_actor_free(child) };
         }
     }
 
@@ -3396,6 +3452,114 @@ mod tests {
             let child = (&(*sup).children)[0];
             let self_actor = (*sup).self_actor;
             (sup, child, self_actor)
+        }
+    }
+
+    #[test]
+    fn supervisor_teardown_quiescence_waits_expire_fail_closed() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: this test owns the fresh tree and restores terminal states
+        // before consuming it through the normal public stop path.
+        unsafe {
+            let (sup, child, self_actor) = make_supervisor_with_child();
+
+            // A worker can die with any one of these ownership edges still
+            // active.  Each wait must return at its shared deadline rather than
+            // spin forever; the caller then returns the tree to cleanup without
+            // freeing a live actor or timer-borrowed supervisor.
+            (*self_actor)
+                .actor_state
+                .store(HewActorState::Running as i32, Ordering::Release);
+            assert!(!wait_for_supervisor_self_actor_quiescent(
+                sup,
+                Instant::now()
+            ));
+
+            (*sup).pending_restart_timers.store(1, Ordering::Release);
+            assert!(!wait_for_pending_restart_timers(sup, Instant::now()));
+
+            (*child)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Release);
+            assert!(!wait_for_child_quiescent(child, Instant::now()));
+
+            (*sup).pending_restart_timers.store(0, Ordering::Release);
+            (*self_actor)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            (*child)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
+    fn runtime_cleanup_retains_tree_until_restart_timer_drains() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the test owns the fresh tree, models the outstanding timer
+        // borrow with its production counter, and drains that counter before
+        // the second canonical cleanup consumes the allocation.
+        unsafe {
+            let (sup, child, self_actor) = make_supervisor_with_child();
+            let child_id = (*child).id;
+            let self_id = (*self_actor).id;
+            crate::shutdown::hew_shutdown_register_supervisor(sup);
+            (*sup).pending_restart_timers.store(1, Ordering::Release);
+
+            crate::scheduler::hew_runtime_cleanup();
+
+            assert!(
+                crate::shutdown::is_supervisor_registered_for_test(sup),
+                "canonical cleanup must retain a supervisor while a timer could dereference it"
+            );
+            assert!(
+                actor::is_actor_live_with_id(child_id, child)
+                    && actor::is_actor_live_with_id(self_id, self_actor),
+                "incomplete cleanup must leave runtime-owned actors live with the retained tree"
+            );
+            assert!(
+                !crate::runtime::default_runtime_ptr(Ordering::Acquire).is_null(),
+                "incomplete cleanup must leave the runtime installed for retry"
+            );
+
+            (*sup).pending_restart_timers.store(0, Ordering::Release);
+            crate::scheduler::hew_runtime_cleanup();
+            assert!(
+                crate::runtime::default_runtime_ptr(Ordering::Acquire).is_null(),
+                "retry after timer drain must reclaim the retained tree and runtime"
+            );
+        }
+    }
+
+    #[test]
+    fn supervisor_restart_completes_while_metrics_reset_runs_in_parallel() {
+        let _rt = crate::runtime_test_guard();
+        let _scheduler = RealSchedulerGuard::new();
+        // SAFETY: this test owns the supervisor and joins the concurrent
+        // metrics caller before stopping it.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            (&mut (*sup).child_specs)[0].restart_policy = RESTART_PERMANENT;
+            hew_supervisor_set_restart_notify(sup);
+
+            let started = Arc::new(std::sync::Barrier::new(2));
+            let reset_started = Arc::clone(&started);
+            let resetter = std::thread::spawn(move || {
+                reset_started.wait();
+                for _ in 0..2_048 {
+                    crate::scheduler::hew_sched_metrics_reset();
+                }
+            });
+
+            started.wait();
+            actor::hew_actor_trap(child, 1);
+            assert!(
+                hew_supervisor_wait_restart(sup, 1, 2_000) >= 1,
+                "a supervisor restart must complete while live metrics reset runs"
+            );
+            resetter.join().expect("metrics resetter must not panic");
+            hew_supervisor_stop(sup);
         }
     }
 
@@ -6073,18 +6237,31 @@ mod tests {
 ///
 /// `sup` must be a valid, non-null pointer to a `HewSupervisor`.
 /// Worker threads must have been joined before calling.
-pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) {
+///
+/// Returns `false` when a delayed-restart timer still borrows this tree. The
+/// incomplete tree remains registered and its runtime/actors must stay alive
+/// until a later cleanup retry can safely reclaim it.
+pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) -> bool {
     // SAFETY: canonical cleanup still owns a live raw supervisor allocation.
     let Some(access) = (unsafe { close_supervisor_access(sup, SUPERVISOR_PIN_DRAIN_TIMEOUT) })
     else {
         set_last_error("runtime cleanup left a pinned supervisor allocated");
-        return;
+        // SAFETY: canonical cleanup still owns this live top-level root.
+        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        return false;
     };
     // SAFETY: caller guarantees sup is valid.
     let s = unsafe { &mut *sup };
     s.cancelled.store(true, Ordering::Release);
-    while s.pending_restart_timers.load(Ordering::Acquire) != 0 {
-        std::thread::yield_now();
+    let deadline = Instant::now() + SUPERVISOR_CLEANUP_TIMER_DRAIN_TIMEOUT;
+    if !wait_for_pending_restart_timers_after_worker_shutdown(sup, deadline) {
+        set_last_error("runtime cleanup retained supervisor with pending restart timers");
+        // The timer thread still owns a raw borrow.  Retain this root so a
+        // later cleanup attempt can reclaim it after the borrow drains; freeing
+        // now would be a use-after-free in the delayed-restart thread.
+        // SAFETY: canonical cleanup still owns the live top-level allocation.
+        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        return false;
     }
     if !s.self_actor.is_null() {
         // Null out state so cleanup_all_actors won't libc::free it
@@ -6096,17 +6273,25 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) {
         }
     }
 
-    // Recursively free child supervisors.
+    // Recursively free child supervisors. A child that cannot drain its
+    // restart timer becomes an independent root before its parent Box is
+    // dropped, so it never retains a dangling parent pointer.
+    let mut complete = true;
     for child_sup in &s.child_supervisors {
         if !child_sup.is_null() {
-            // SAFETY: child_sup is non-null (checked above) and was allocated by us.
-            unsafe { free_supervisor_resources(*child_sup) };
+            // SAFETY: child_sup is non-null (checked above), workers are joined,
+            // and the parent still owns the child supervisor allocation.
+            unsafe { (**child_sup).parent = ptr::null_mut() };
+            // SAFETY: ownership was detached above; the child either frees now
+            // or re-registers itself as an independent retained root.
+            complete &= unsafe { free_supervisor_resources(*child_sup) };
         }
     }
     // Drop the Box — child spec Drop impls free names + init_state.
     // SAFETY: sup was allocated with Box::into_raw and is valid per caller contract.
     drop(unsafe { Box::from_raw(sup) }); // ALLOCATOR-PAIRING: GlobalAlloc
     finish_supervisor_reclamation(&access);
+    complete
 }
 
 /// Handle a crashed child actor by applying the supervisor's restart strategy.

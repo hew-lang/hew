@@ -66,6 +66,10 @@
 //! - **Crash-cleanup finalizer fault**: a signal arrives while a detached
 //!   typed cleanup drain is active. The finalizer may already have performed
 //!   a non-idempotent close; longjmp would bypass and poison the drain guard.
+//! - **Actor-state old-value finalizer fault**: generated replacement lowering
+//!   has neutralized the old escrow field and may be inside a non-idempotent
+//!   close. Hardware signals and intentional Hew traps are process-fatal until
+//!   the replacement is prepared as escrow authority.
 //! - **No recovery context**: the faulting thread has no valid
 //!   `sigjmp_buf` installed (signal raised in scheduler internals,
 //!   pre-dispatch Rust code, or any worker before `init_worker_recovery`
@@ -132,6 +136,10 @@ mod shared {
         /// longjmp decision: abandoning a partially executed finalizer would
         /// poison the drain TLS and make retry safety unknowable.
         pub(super) crash_cleanup_drain_active: AtomicBool,
+        /// Set while generated code is between neutralizing an actor-state
+        /// escrow field and preparing its replacement. A hardware fault in
+        /// this non-idempotent finalizer interval cannot safely longjmp.
+        pub(super) state_field_finalizer_active: AtomicBool,
         /// `true` when the recovery was entered through the runtime's
         /// intentional direct-longjmp path (a Hew `panic()` or a `HEW_TRAP_*`
         /// runtime trap), `false` when it was entered through the hardware
@@ -156,6 +164,7 @@ mod shared {
                 worker_id,
                 msg_type: AtomicI32::new(0),
                 crash_cleanup_drain_active: AtomicBool::new(false),
+                state_field_finalizer_active: AtomicBool::new(false),
                 intentional_panic: AtomicBool::new(false),
             }
         }
@@ -468,6 +477,12 @@ mod shared {
         state: &mut RecoveryState,
         code: i32,
     ) -> bool {
+        if state.state_field_finalizer_active.load(Ordering::Acquire) {
+            // An intentional Hew panic/trap is no safer than a hardware fault
+            // while an old actor-state owner may be partially finalized.
+            // Actor recovery would abandon indeterminate authority.
+            std::process::abort();
+        }
         if !state.jmp_buf_valid.load(Ordering::Acquire) {
             return false;
         }
@@ -748,6 +763,15 @@ mod platform {
             // SAFETY: _exit is async-signal-safe.
             unsafe { libc::_exit(128 + sig) };
         }
+        if ctx
+            .state
+            .state_field_finalizer_active
+            .load(Ordering::Acquire)
+        {
+            // SAFETY: _exit is async-signal-safe. The old field may have been
+            // partially finalized, so actor recovery cannot retry or abandon it.
+            unsafe { libc::_exit(128 + sig) };
+        }
 
         // Re-entrancy check: if we're already recovering from a signal,
         // a second crash means the recovery path itself is broken.
@@ -1008,6 +1032,20 @@ mod platform {
         unsafe { &*ctx }
             .state
             .crash_cleanup_drain_active
+            .store(active, Ordering::Release);
+    }
+
+    /// Publish non-idempotent actor-state finalizer state to the signal handler.
+    pub(crate) fn set_state_field_finalizer_active(active: bool) {
+        // SAFETY: this is called on the worker that owns its recovery context.
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        // SAFETY: the TLS context is exclusively owned by this thread.
+        unsafe { &*ctx }
+            .state
+            .state_field_finalizer_active
             .store(active, Ordering::Release);
     }
 
@@ -1324,6 +1362,13 @@ mod platform {
         if ctx.state.crash_cleanup_drain_active.load(Ordering::Acquire) {
             return EXCEPTION_CONTINUE_SEARCH;
         }
+        if ctx
+            .state
+            .state_field_finalizer_active
+            .load(Ordering::Acquire)
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
 
         // Re-entrancy guard.
         if ctx.state.in_recovery.swap(true, Ordering::Acquire) {
@@ -1441,6 +1486,19 @@ mod platform {
             .store(active, Ordering::Release);
     }
 
+    pub(crate) fn set_state_field_finalizer_active(active: bool) {
+        // SAFETY: retrieves this thread's exclusively owned recovery context.
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        // SAFETY: the TLS context belongs to this thread.
+        unsafe { &*ctx }
+            .state
+            .state_field_finalizer_active
+            .store(active, Ordering::Release);
+    }
+
     pub(crate) unsafe fn handle_crash_recovery() -> (i32, usize) {
         // SAFETY: Retrieves the per-thread recovery context via TLS.
         // May return null (handled below).
@@ -1545,6 +1603,7 @@ mod platform {
     pub(crate) fn init_crash_handling() {}
     pub(crate) fn init_worker_recovery(_worker_id: u32) {}
     pub(crate) fn set_crash_cleanup_drain_active(_active: bool) {}
+    pub(crate) fn set_state_field_finalizer_active(_active: bool) {}
 
     /// No-op on WASM: wasm32 has no POSIX signals, so there is no `SIGPIPE` to
     /// ignore. A broken-pipe / reset condition on the simulated transport
@@ -1604,7 +1663,8 @@ mod platform {
 pub(crate) use platform::{
     clear_dispatch_recovery, handle_crash_recovery, ignore_sigpipe, init_crash_handling,
     init_worker_recovery, mark_recovery_active, prepare_dispatch_recovery,
-    set_crash_cleanup_drain_active, sigsetjmp, try_direct_longjmp, try_direct_longjmp_with_code,
+    set_crash_cleanup_drain_active, set_state_field_finalizer_active, sigsetjmp,
+    try_direct_longjmp, try_direct_longjmp_with_code,
 };
 
 // ── Terminal off-dispatch crash diagnostic (subprocess test) ─────────────────

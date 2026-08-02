@@ -1793,7 +1793,7 @@ pub(crate) struct FrameCleanupThunkCache<'ctx> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActorStateStoreTransaction {
     /// The scheduler has opened a crash-cleanup domain for this handler's
-    /// actor state. Every clear/publish/transfer must validate against it.
+    /// actor state. Every begin/prepare/transfer must validate against it.
     Required,
     /// The function is a lifecycle/template phase whose state is not the
     /// active scheduler dispatch domain. Old-value release and source-owner
@@ -1904,8 +1904,15 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// runs from the teardown trampoline, and crash mutates the child's restart
     /// template while the supervisor's dispatch domain is active. Those phases
     /// must retain ordinary overwrite release/ownership handoff without asking
-    /// the active registry to clear or publish bytes from the wrong domain.
+    /// the active registry to mutate escrow bytes from the wrong domain.
     actor_state_store_transaction: ActorStateStoreTransaction,
+    /// Per-field replacement scratch slots for transactional actor-state
+    /// stores. Allocated once in the dominating alloca prologue and reused by
+    /// looped or repeated stores, never dynamically per iteration.
+    actor_state_replacement_slots: RefCell<HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>>,
+    /// Dominating allocation block: ordinary `entry` for synchronous functions
+    /// and post-`coro.begin` `alloca.prologue` for coroutines.
+    alloca_prologue: inkwell::basic_block::BasicBlock<'ctx>,
     /// Local-register id → (stack slot, slot's LLVM type). Keyed by the
     /// `Place::Local(N)` index — an MIR identity, not a checker derivative.
     pub(crate) locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
@@ -17436,6 +17443,43 @@ fn emit_field_overwrite_release(
     }
 }
 
+fn actor_state_replacement_slot<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    field: u32,
+    field_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    if let Some(&(slot, prior_ty)) = fn_ctx.actor_state_replacement_slots.borrow().get(&field) {
+        if prior_ty != field_ty {
+            return Err(CodegenError::FailClosed(format!(
+                "actor-state replacement scratch type drift for field {field}: \
+                 prior={prior_ty:?}, current={field_ty:?}"
+            )));
+        }
+        return Ok(slot);
+    }
+
+    let current = fn_ctx.builder.get_insert_block().ok_or_else(|| {
+        CodegenError::Llvm("actor-state replacement scratch has no insertion block".into())
+    })?;
+    if let Some(terminator) = fn_ctx.alloca_prologue.get_terminator() {
+        fn_ctx.builder.position_before(&terminator);
+    } else {
+        fn_ctx.builder.position_at_end(fn_ctx.alloca_prologue);
+    }
+    let slot = fn_ctx
+        .builder
+        .build_alloca(field_ty, &format!("state_f{field}_replacement"))
+        .llvm_ctx("ActorStateFieldStore replacement entry alloca")?;
+    // Lowering always appends to the current unterminated MIR block. Restore
+    // that exact append position after inserting the prologue scratch.
+    fn_ctx.builder.position_at_end(current);
+    fn_ctx
+        .actor_state_replacement_slots
+        .borrow_mut()
+        .insert(field, (slot, field_ty));
+    Ok(slot)
+}
+
 fn lower_actor_state_field_store(
     fn_ctx: &FnCtx<'_, '_>,
     field_offset: FieldOffset,
@@ -17469,6 +17513,19 @@ fn lower_actor_state_field_store(
             &format!("actor_state_field_{idx}_ptr"),
         )
         .llvm_ctx("ActorStateFieldStore gep")?;
+    // Enter the process-fatal replacement phase before an allocating
+    // borrow-gated clone can produce an otherwise untracked owner. The runtime
+    // validates the field range first, then atomically publishes the signal
+    // guard before neutralizing this field in the old state escrow.
+    if fn_ctx.actor_state_store_transaction == ActorStateStoreTransaction::Required {
+        emit_checked_dispatch_state_cleanup_call(
+            fn_ctx,
+            "hew_dispatch_state_cleanup_begin_replace",
+            field_ptr,
+            field_ty,
+            &format!("state_f{idx}_crash_begin_replace"),
+        )?;
+    }
     let src_val = fn_ctx
         .builder
         .build_load(field_ty, src_ptr, &format!("actor_state_field_{idx}_src"))
@@ -17481,16 +17538,27 @@ fn lower_actor_state_field_store(
     // under `borrow_mode == 0` (copy mode) the field byte-copies the handler's
     // private handle exactly as before (the handler no longer drops it — it was
     // read here as a source operand — so the field is its sole owner).
-    let src_val =
-        if let (Some(borrow_mode), Some(base)) = (fn_ctx.borrow_mode, place_base_local(&src)) {
-            if fn_ctx.borrow_tainted.contains(&base) {
-                emit_borrow_gated_string_clone(fn_ctx, borrow_mode, src_val, "field_store")?
-            } else {
-                src_val
-            }
+    let replacement_differs_from_source = place_base_local(&src)
+        .is_some_and(|base| fn_ctx.borrow_tainted.contains(&base))
+        && fn_ctx.borrow_mode.is_some();
+    let src_val = if replacement_differs_from_source {
+        if let Some(borrow_mode) = fn_ctx.borrow_mode {
+            emit_borrow_gated_string_clone(fn_ctx, borrow_mode, src_val, "field_store")?
         } else {
-            src_val
-        };
+            unreachable!("replacement difference requires borrow_mode")
+        }
+    } else {
+        src_val
+    };
+    // Materialize the exact value that will become state-owned. In particular,
+    // a borrow-gated String clone is not byte-identical to `src_ptr`; both the
+    // pre-store escrow and aggregate alias guards must consume the selected SSA
+    // value rather than reloading the unretained ingress view.
+    let replacement_ptr = actor_state_replacement_slot(fn_ctx, idx, field_ty)?;
+    fn_ctx
+        .builder
+        .build_store(replacement_ptr, src_val)
+        .llvm_ctx("ActorStateFieldStore replacement materialization")?;
     // Old-value release before overwrite (bytes / string state fields). The
     // store below blindly replaces the field's previous value; without a
     // preceding release its heap allocation leaks permanently on every
@@ -17522,9 +17590,14 @@ fn lower_actor_state_field_store(
     //     deliberately untouched.
     //   - `BitCopy` / `OpaqueHandle`: no owned heap / user-managed; nothing
     //     to release.
-    // Clear only this field from the dispatch-owned state escrow before any
-    // old-value release that may transitively panic. Untouched sibling fields
-    // remain valid in the snapshot and are still dropped on crash.
+    // Enter a process-fatal state-finalizer phase and neutralize the old escrow
+    // before old-value release. A signal cannot actor-longjmp out of a partially
+    // executed non-idempotent finalizer. Intentional Hew panic/trap is fatal in
+    // the same interval; neither failure class may raw-abandon indeterminate old
+    // authority. After release, prepare the replacement in escrow and leave it
+    // before the live store. Thus pre-store and post-store crash windows both
+    // drop the new owner from escrow, while normal finish raw-discards escrow
+    // and leaves live state as sole owner.
     //
     // Lifecycle/template functions deliberately have no state transaction for
     // THIS pointer. They may execute with no scheduler registry at all (direct
@@ -17532,15 +17605,6 @@ fn lower_actor_state_field_store(
     // from a handler and supervisor on(crash)). Never snapshot or clear that
     // unrelated domain, and never fabricate a whole-state escrow for init:
     // lifecycle lowering does not carry per-field initialization validity.
-    if fn_ctx.actor_state_store_transaction == ActorStateStoreTransaction::Required {
-        emit_checked_dispatch_state_cleanup_call(
-            fn_ctx,
-            "hew_dispatch_state_cleanup_clear",
-            field_ptr,
-            field_ty,
-            &format!("state_f{idx}_crash_clear"),
-        )?;
-    }
     if let Some(kinds) = fn_ctx.actor_state_field_kinds {
         let kind = kinds.get(idx as usize).ok_or_else(|| {
             CodegenError::FailClosed(format!(
@@ -17554,40 +17618,37 @@ fn lower_actor_state_field_store(
             fn_ctx,
             field_ptr,
             field_ty,
-            src_ptr,
+            replacement_ptr,
             src_val,
             kind,
             &format!("state_f{idx}"),
             true,
         )?;
     }
+    if fn_ctx.actor_state_store_transaction == ActorStateStoreTransaction::Required {
+        emit_actor_state_cleanup_prepare(
+            fn_ctx,
+            src,
+            src_ptr,
+            replacement_ptr,
+            field_ptr,
+            field_ty,
+            &format!("state_f{idx}_crash_prepare"),
+        )?;
+    }
     fn_ctx
         .builder
         .build_store(field_ptr, src_val)
         .llvm_ctx("ActorStateFieldStore store")?;
-    // Validate and transfer the source token plus escrow publication in one
-    // non-failing runtime transaction. A rejected token/range leaves the
-    // source active; borrowed-message ingress has no armed source token and
-    // therefore takes the separately validated no-source publication path.
-    //
     // Outside a dispatch state transaction the stored value still consumes its
-    // lexical source owner. Retire that dynamic authority without publishing
-    // the field into whichever unrelated/no registry happens to be current.
+    // lexical source owner. Retire that dynamic authority after the live write
+    // without addressing whichever unrelated/no registry happens to be current.
     match handoff {
         hew_mir::ActorStateStoreHandoff::ConsumeSource => {
-            match fn_ctx.actor_state_store_transaction {
-                ActorStateStoreTransaction::Required => {
-                    emit_actor_state_cleanup_handoff(
-                        fn_ctx,
-                        src,
-                        field_ptr,
-                        field_ty,
-                        &format!("state_f{idx}_crash_handoff"),
-                    )?;
-                }
-                ActorStateStoreTransaction::LifecycleOutsideDispatch => {
-                    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, src)?;
-                }
+            if fn_ctx.actor_state_store_transaction
+                == ActorStateStoreTransaction::LifecycleOutsideDispatch
+            {
+                emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, src)?;
             }
         }
     }
@@ -22459,17 +22520,69 @@ fn emit_checked_dispatch_state_cleanup_call(
     Ok(())
 }
 
-fn emit_actor_state_cleanup_handoff(
+fn emit_dispatch_state_cleanup_prepare_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    replacement: PointerValue<'_>,
+    field: PointerValue<'_>,
+    field_ty: BasicTypeEnum<'_>,
+    label: &str,
+) -> CodegenResult<()> {
+    let (size, _) = abi_size_align(field_ty, Some(fn_ctx.target_data))?;
+    let callee = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_dispatch_state_cleanup_prepare",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            callee,
+            &[
+                replacement.into(),
+                field.into(),
+                fn_ctx.ctx.i64_type().const_int(size, false).into(),
+            ],
+            &format!("{label}_call"),
+        )
+        .llvm_ctx("hew_dispatch_state_cleanup_prepare call")?;
+    Ok(())
+}
+
+fn emit_dispatch_state_cleanup_abort_invariant(
+    fn_ctx: &FnCtx<'_, '_>,
+    label: &str,
+) -> CodegenResult<()> {
+    let callee = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_dispatch_state_cleanup_abort_invariant",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(callee, &[], &format!("{label}_call"))
+        .llvm_ctx("hew_dispatch_state_cleanup_abort_invariant call")?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .llvm_ctx("actor-state cleanup invariant unreachable")?;
+    Ok(())
+}
+
+fn emit_actor_state_cleanup_prepare(
     fn_ctx: &FnCtx<'_, '_>,
     src: Place,
+    owner_source: PointerValue<'_>,
+    replacement: PointerValue<'_>,
     field: PointerValue<'_>,
     field_ty: BasicTypeEnum<'_>,
     label: &str,
 ) -> CodegenResult<()> {
     let Some(owner) = fn_ctx.helper_crash_cleanup_owners.get(&src).cloned() else {
-        return emit_checked_dispatch_state_cleanup_call(
+        return emit_dispatch_state_cleanup_prepare_call(
             fn_ctx,
-            "hew_dispatch_state_cleanup_publish",
+            replacement,
             field,
             field_ty,
             label,
@@ -22513,13 +22626,12 @@ fn emit_actor_state_cleanup_handoff(
         )
         .llvm_ctx("actor-state handoff token load")?
         .into_int_value();
-    let (source, _source_ty) = place_pointer(fn_ctx, src)?;
     let (size, _) = abi_size_align(field_ty, Some(fn_ctx.target_data))?;
     let transfer = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_dispatch_state_cleanup_transfer",
+        "hew_dispatch_state_cleanup_prepare_transfer",
     )?;
     let accepted = fn_ctx
         .builder
@@ -22527,17 +22639,20 @@ fn emit_actor_state_cleanup_handoff(
             transfer,
             &[
                 token.into(),
-                source.into(),
+                owner_source.into(),
+                replacement.into(),
                 field.into(),
                 fn_ctx.ctx.i64_type().const_int(size, false).into(),
             ],
             &format!("{label}_transfer_call"),
         )
-        .llvm_ctx("hew_dispatch_state_cleanup_transfer call")?
+        .llvm_ctx("hew_dispatch_state_cleanup_prepare_transfer call")?
         .try_as_basic_value()
         .basic()
         .ok_or_else(|| {
-            CodegenError::FailClosed("hew_dispatch_state_cleanup_transfer returned void".into())
+            CodegenError::FailClosed(
+                "hew_dispatch_state_cleanup_prepare_transfer returned void".into(),
+            )
         })?
         .into_int_value();
     let accepted_bb = fn_ctx
@@ -22551,10 +22666,12 @@ fn emit_actor_state_cleanup_handoff(
         .build_conditional_branch(accepted, accepted_bb, rejected_bb)
         .llvm_ctx("actor-state handoff result branch")?;
     fn_ctx.builder.position_at_end(rejected_bb);
-    emit_trap_with_code(
+    // `false` spans missing/inactive/mismatched runtime authority; generated
+    // local guards cannot prove an exact active token survived. No rejection is
+    // an expected program outcome, so actor recovery would be unsound.
+    emit_dispatch_state_cleanup_abort_invariant(
         fn_ctx,
-        HEW_TRAP_ACTOR_SEND_FAILED as u64,
-        &format!("{label}_transfer_trap"),
+        &format!("{label}_transfer_rejected_abort"),
     )?;
     fn_ctx.builder.position_at_end(accepted_bb);
     fn_ctx
@@ -22567,9 +22684,9 @@ fn emit_actor_state_cleanup_handoff(
         .llvm_ctx("actor-state transfer merge branch")?;
 
     fn_ctx.builder.position_at_end(publish_bb);
-    emit_checked_dispatch_state_cleanup_call(
+    emit_dispatch_state_cleanup_prepare_call(
         fn_ctx,
-        "hew_dispatch_state_cleanup_publish",
+        replacement,
         field,
         field_ty,
         &format!("{label}_publish"),
@@ -33161,6 +33278,8 @@ fn lower_function<'ctx>(
         actor_state_ty,
         actor_state_field_kinds,
         actor_state_store_transaction: actor_state_store_transaction(func),
+        actor_state_replacement_slots: RefCell::new(HashMap::new()),
+        alloca_prologue: prologue_bb,
         locals,
         local_tys,
         blocks: blocks.clone(),

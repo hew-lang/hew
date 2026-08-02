@@ -21,6 +21,10 @@
 #                       Point at an unpacked copy of CI's upstream LLVM tarball
 #                       for byte-faithful parity (a host's system lld/LLVM can
 #                       diverge from CI on fixture linking).
+#   HEW_CI_REMOTE_WORKTREE_REL
+#                       Home-relative scratch worktree path (default:
+#                       .cache/hew-ci/<branch>). Keeping build output on the
+#                       user's filesystem avoids small or quota-limited /tmp.
 set -euo pipefail
 
 STEP="${1:-${STEP:-all}}"
@@ -38,7 +42,7 @@ BRANCH="$(git -C "${ROOT}" rev-parse --abbrev-ref HEAD)"
 SHA="$(git -C "${ROOT}" rev-parse --short HEAD)"
 SLUG="ci-local-$(printf '%s' "${BRANCH}" | tr '/:' '--')"   # slash-safe ref/worktree name
 REF="refs/hew-ci/${SLUG}"
-WT="/tmp/${SLUG}"
+WT_REL="${HEW_CI_REMOTE_WORKTREE_REL:-.cache/hew-ci/${SLUG}}"
 
 echo "==> Syncing ${BRANCH} (${SHA}) → ${HOST}:${REMOTE_REL} as ${SLUG}"
 # This private non-branch ref is scratch space owned by the harness. Keeping it
@@ -49,9 +53,9 @@ git -C "${ROOT}" push --force "${HOST}:${REMOTE_REL}" "HEAD:${REF}" 2>&1 | tail 
 
 echo "==> Running 'Build & test (Linux)' step '${STEP}' on ${HOST} (LLVM_SYS_221_PREFIX=${LLVM_PREFIX})"
 # Quoted heredoc: the body runs verbatim server-side; locals are passed as args.
-ssh "${HOST}" bash -s -- "${STEP}" "${SLUG}" "${REF}" "${WT}" "${REMOTE_REL}" "${LLVM_PREFIX}" <<'REMOTE'
+ssh "${HOST}" bash -s -- "${STEP}" "${SLUG}" "${REF}" "${WT_REL}" "${REMOTE_REL}" "${LLVM_PREFIX}" <<'REMOTE'
 set -euo pipefail
-STEP="$1"; SLUG="$2"; REF="$3"; WT="$4"; REMOTE_REL="$5"; LLVM_PREFIX="$6"
+STEP="$1"; SLUG="$2"; REF="$3"; WT="$HOME/$4"; REMOTE_REL="$5"; LLVM_PREFIX="$6"
 cd "$HOME/$REMOTE_REL"
 git fetch . "$REF" >/dev/null
 rm -rf "$WT"; git worktree prune

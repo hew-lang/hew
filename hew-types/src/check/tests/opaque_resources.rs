@@ -401,7 +401,8 @@ fn shipped_lifecycle_evidence_is_complete_for_the_structural_inventory() {
             evidence.source_path
         );
         assert_eq!(
-            evidence.release_symbol, graph.candidates[&resource].release_symbol,
+            evidence.release_symbol,
+            graph.candidates[resource.as_str()].release_symbol,
             "{resource} evidence must name the source-derived release authority"
         );
         assert_test_anchor(&repo_root, &evidence.runtime, "runtime", &resource);

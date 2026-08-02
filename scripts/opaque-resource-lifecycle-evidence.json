@@ -80,10 +80,10 @@
       "source_path": "std/net/net.hew",
       "resource": "Connection",
       "runtime": {
-        "path": "hew-cli/tests/string_result_retention_leak_oracle.rs",
-        "test": "tcp_crash_resource_lifecycles_are_exact_zero_at_low_and_high_frames",
+        "path": "hew-runtime/src/transport.rs",
+        "test": "tcp_resource_release_symbols_remove_live_handles_exactly_once",
         "valid_handle": true,
-        "execution_profile": "external-network"
+        "execution_profile": "local"
       },
       "wasm": {
         "profile": "wasm32-wasi",
@@ -95,10 +95,10 @@
       "source_path": "std/net/net.hew",
       "resource": "Listener",
       "runtime": {
-        "path": "hew-cli/tests/string_result_retention_leak_oracle.rs",
-        "test": "tcp_crash_resource_lifecycles_are_exact_zero_at_low_and_high_frames",
+        "path": "hew-runtime/src/transport.rs",
+        "test": "tcp_resource_release_symbols_remove_live_handles_exactly_once",
         "valid_handle": true,
-        "execution_profile": "external-network"
+        "execution_profile": "local"
       },
       "wasm": {
         "profile": "wasm32-wasi",

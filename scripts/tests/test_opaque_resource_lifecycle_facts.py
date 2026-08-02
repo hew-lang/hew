@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import tempfile
 from pathlib import Path
+
+from bounded_subprocess import run as bounded_run
 
 ROOT = Path(__file__).resolve().parents[2]
 AUDIT = ROOT / "scripts/structural-authority-audit.py"
 AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 HEW = Path(os.environ.get("HEW_BIN", ROOT / "target/debug/hew"))
+AUDIT_TIMEOUT_SECONDS = 60
+COMPILER_TIMEOUT_SECONDS = 90
 
 if not AST_GREP.is_file():
     raise SystemExit("bootstrap pinned ast-grep before lifecycle fact test")
@@ -21,11 +24,10 @@ if not HEW.is_file():
 
 
 def compile_dump(source: Path, stage: str) -> str:
-    result = subprocess.run(
+    result = bounded_run(
         [str(HEW), "compile", "--dump-mir", stage, str(source)],
         cwd=ROOT,
-        text=True,
-        capture_output=True,
+        timeout_seconds=COMPILER_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, (
         f"{source.name} did not reach {stage} MIR\n"
@@ -44,7 +46,7 @@ def function_section(dump: str, name: str) -> str:
 
 with tempfile.TemporaryDirectory() as temp:
     facts = Path(temp) / "facts.json"
-    result = subprocess.run(
+    result = bounded_run(
         [
             "python3",
             str(AUDIT),
@@ -55,8 +57,7 @@ with tempfile.TemporaryDirectory() as temp:
             "--opaque-resource-facts-only",
         ],
         cwd=ROOT,
-        text=True,
-        capture_output=True,
+        timeout_seconds=AUDIT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(facts.read_text())

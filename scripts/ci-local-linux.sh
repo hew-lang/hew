@@ -54,6 +54,13 @@ git worktree add "$WT" "$SLUG" >/dev/null
 cd "$WT"
 export LLVM_SYS_221_PREFIX="$LLVM_PREFIX"
 export CARGO_TERM_COLOR=always
+# Non-login SSH shells do not inherit the installer-managed Wasmtime path.
+# Prefer an already-provisioned per-user install before declaring the WASI
+# runner unavailable; this keeps the reusable Linux parity harness faithful to
+# CI without requiring host-specific shell startup files.
+if [[ -x "$HOME/.wasmtime/bin/wasmtime" ]]; then
+  export PATH="$HOME/.wasmtime/bin:$PATH"
+fi
 export CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run"
 
 case "$STEP" in

@@ -7,16 +7,28 @@ import argparse
 import copy
 import json
 import os
+import re
+import shutil
 import subprocess
 import tempfile
 import tomllib
 from pathlib import Path
+
+from bounded_subprocess import run as bounded_run
 
 ROOT = Path(__file__).resolve().parents[2]
 AUDIT = ROOT / "scripts/structural-authority-audit.py"
 AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 MANIFEST = ROOT / "scripts/opaque-resource-lifecycle-evidence.json"
 HEW = Path(os.environ.get("HEW_BIN", ROOT / "target/debug/hew"))
+AUDIT_TIMEOUT_SECONDS = 60
+COMPILER_TIMEOUT_SECONDS = 90
+WASM_VALIDATION_TIMEOUT_SECONDS = 60
+RUNTIME_TIMEOUT_SECONDS = 300
+# `hew compile` names its emitted-module target by the LLVM freestanding
+# triple. Exact wasm32-wasi availability is checked first; accepted cases then
+# continue through this real Wasm backend target and Wasmtime validation.
+WASM_CODEGEN_TARGET = "wasm32-unknown-unknown"
 
 
 def fail(message: str) -> None:
@@ -141,13 +153,53 @@ def run_counterfactuals(candidates: list[dict], rows: list[dict]) -> None:
     }
 
 
-def cargo_test_command(anchor: dict[str, object]) -> list[str]:
+def exact_test_body(anchor: dict[str, object]) -> str:
     path = ROOT / str(anchor["path"])
     if not path.is_file():
         fail(f"stale runtime path: {path.relative_to(ROOT)}")
-    source = path.read_text()
-    if f"fn {anchor['test']}(" not in source:
-        fail(f"stale runtime test: {anchor['test']} in {path.relative_to(ROOT)}")
+    result = bounded_run(
+        [
+            str(AST_GREP),
+            "run",
+            "--lang",
+            "rust",
+            "--kind",
+            "function_item",
+            "--json=stream",
+            str(path),
+        ],
+        cwd=ROOT,
+        timeout_seconds=AUDIT_TIMEOUT_SECONDS,
+    )
+    if result.returncode != 0:
+        fail(
+            f"cannot inspect runtime anchor {path.relative_to(ROOT)}:\n{result.stderr}"
+        )
+    function_name = str(anchor["test"])
+    signature = re.compile(rf"(?:^|\s)fn\s+{re.escape(function_name)}\s*\(")
+    matches = [
+        str(match["text"])
+        for line in result.stdout.splitlines()
+        if line.strip()
+        for match in [json.loads(line)]
+        if signature.search(str(match["text"]))
+    ]
+    if len(matches) != 1:
+        fail(
+            f"runtime test must resolve to one structural function: "
+            f"{function_name} in {path.relative_to(ROOT)} (found {len(matches)})"
+        )
+    return matches[0]
+
+
+def cargo_test_command(anchor: dict[str, object], release_symbol: str) -> list[str]:
+    path = ROOT / str(anchor["path"])
+    body = exact_test_body(anchor)
+    if release_symbol not in body:
+        fail(
+            f"runtime test {anchor['test']} does not exercise exact release authority "
+            f"{release_symbol}"
+        )
     cargo_root = path.parent
     while cargo_root != ROOT and not (cargo_root / "Cargo.toml").is_file():
         cargo_root = cargo_root.parent
@@ -174,7 +226,7 @@ def run_runtime_evidence(evidence: dict[str, dict], profile: str) -> None:
     executed = 0
     deferred = 0
     for carrier, row in evidence.items():
-        command = cargo_test_command(row["runtime"])
+        command = cargo_test_command(row["runtime"], str(row["release_symbol"]))
         if (
             profile == "local"
             and row["runtime"]["execution_profile"] == "external-network"
@@ -186,8 +238,11 @@ def run_runtime_evidence(evidence: dict[str, dict], profile: str) -> None:
         if key not in completed:
             env = os.environ.copy()
             env["RUSTC_WRAPPER"] = ""
-            completed[key] = subprocess.run(
-                command, cwd=ROOT, env=env, text=True, capture_output=True
+            completed[key] = bounded_run(
+                command,
+                cwd=ROOT,
+                env=env,
+                timeout_seconds=RUNTIME_TIMEOUT_SECONDS,
             )
         result = completed[key]
         output = result.stdout + result.stderr
@@ -221,12 +276,20 @@ def assert_wasm_disposition(
 
 
 def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) -> None:
+    wasmtime = shutil.which("wasmtime")
+    if wasmtime is None:
+        fail("wasmtime is required to validate accepted wasm32-wasi artifacts")
     failures = []
     for index, case in enumerate(cases):
         carrier = str(case["carrier_key"])
         source = temp / f"{index:02}-wasm.hew"
-        source.write_text(str(case["scope_exit_source"]))
-        result = subprocess.run(
+        emit_dir = temp / f"{index:02}-emit"
+        emit_dir.mkdir()
+        # The source-derived scope function is the lifecycle subject. A tiny
+        # exported entry point lets the full compile lane link a standalone
+        # module without constructing a synthetic resource value.
+        source.write_text(str(case["scope_exit_source"]) + "\npub fn main() { }\n")
+        disposition = bounded_run(
             [
                 str(HEW),
                 "compile",
@@ -237,14 +300,57 @@ def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) 
                 str(source),
             ],
             cwd=ROOT,
-            text=True,
-            capture_output=True,
+            timeout_seconds=COMPILER_TIMEOUT_SECONDS,
         )
         expected = evidence[carrier]["wasm"]["disposition"]
         try:
             assert_wasm_disposition(
-                carrier, expected, result.returncode, result.stdout + result.stderr
+                carrier,
+                expected,
+                disposition.returncode,
+                disposition.stdout + disposition.stderr,
             )
+            if expected == "accepted":
+                codegen = bounded_run(
+                    [
+                        str(HEW),
+                        "compile",
+                        "--target",
+                        WASM_CODEGEN_TARGET,
+                        "--emit-dir",
+                        str(emit_dir),
+                        str(source),
+                    ],
+                    cwd=ROOT,
+                    timeout_seconds=COMPILER_TIMEOUT_SECONDS,
+                )
+                if codegen.returncode != 0:
+                    fail(
+                        f"{carrier}: accepted resource did not reach Wasm codegen\n"
+                        f"{codegen.stdout}{codegen.stderr}"
+                    )
+                artifacts = list(emit_dir.glob("*.wasm"))
+                if len(artifacts) != 1:
+                    fail(
+                        f"{carrier}: successful wasm32-wasi codegen produced "
+                        f"{len(artifacts)} .wasm artifacts"
+                    )
+                validation = bounded_run(
+                    [
+                        wasmtime,
+                        "compile",
+                        "--output",
+                        str(emit_dir / "validated.cwasm"),
+                        str(artifacts[0]),
+                    ],
+                    cwd=ROOT,
+                    timeout_seconds=WASM_VALIDATION_TIMEOUT_SECONDS,
+                )
+                if validation.returncode != 0:
+                    fail(
+                        f"{carrier}: wasmtime rejected generated artifact\n"
+                        f"{validation.stdout}{validation.stderr}"
+                    )
         except AssertionError as error:
             failures.append(str(error))
     if failures:
@@ -265,7 +371,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as directory:
         temp = Path(directory)
         facts_path = temp / "facts.json"
-        audit = subprocess.run(
+        audit = bounded_run(
             [
                 "python3",
                 str(AUDIT),
@@ -276,8 +382,7 @@ def main() -> None:
                 "--opaque-resource-facts-only",
             ],
             cwd=ROOT,
-            text=True,
-            capture_output=True,
+            timeout_seconds=AUDIT_TIMEOUT_SECONDS,
         )
         assert audit.returncode == 0, audit.stderr
         facts = json.loads(facts_path.read_text())

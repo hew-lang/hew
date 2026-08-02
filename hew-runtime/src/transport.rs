@@ -2167,6 +2167,30 @@ mod tests {
         });
     }
 
+    /// The two stdlib resource types intentionally publish distinct release
+    /// symbols even though the listener shim delegates to the shared close
+    /// implementation. Exercise both exported endpoints against live table
+    /// entries so lifecycle evidence cannot be satisfied by a similarly named
+    /// test that never releases either resource.
+    #[test]
+    fn tcp_resource_release_symbols_remove_live_handles_exactly_once() {
+        let _guard = crate::runtime_test_guard();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback listener");
+        let address = listener
+            .local_addr()
+            .expect("read loopback listener address");
+        let client = TcpStream::connect(address).expect("connect loopback peer");
+        let (server, _) = listener.accept().expect("accept loopback peer");
+        let connection_handle = register_stream(server);
+        let listener_handle = register_listener(listener);
+
+        assert_eq!(hew_tcp_close(connection_handle), 0);
+        assert_eq!(hew_tcp_close(connection_handle), -1);
+        assert_eq!(hew_tcp_listener_close(listener_handle), 0);
+        assert_eq!(hew_tcp_listener_close(listener_handle), -1);
+        drop(client);
+    }
+
     #[derive(Clone, Default)]
     struct TestLogBuffer {
         bytes: Arc<Mutex<Vec<u8>>>,

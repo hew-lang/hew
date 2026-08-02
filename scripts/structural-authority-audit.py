@@ -1356,10 +1356,9 @@ def load_inventory(path: Path) -> dict[tuple[str, str, str], int]:
 class OpaqueResourceFact:
     """AST-derived, qualified lifecycle fact for one shipped empty handle.
 
-    `carrier_key` is intentionally a presentation-key adapter.  The checker/HIR
-    foundation currently publishes this same qualified spelling; a DefId union
-    can replace this one field without teaching the source/evidence layers
-    about compiler identity internals.
+    `carrier_key` is a qualified display key for joining source facts to test
+    evidence. Compiler authority remains the foundation's DefId carriers; this
+    audit neither constructs nor authorizes compiler identity from the display.
     """
 
     carrier_key: str
@@ -1422,6 +1421,21 @@ def discover_opaque_resource_facts(
     calls = run_hew_query(ast_grep, root, pattern="$F($$$ARGS)")
     extern_blocks = run_hew_query(ast_grep, root, pattern='extern "C" { $$$BODY }')
     parser_error_nodes = run_hew_query(ast_grep, root, kind="ERROR")
+    if parser_error_nodes:
+        paths = sorted({_match_path(node) for node in parser_error_nodes})
+        raise SystemExit(
+            "pinned Hew grammar must parse the shipped std corpus without ERROR nodes: "
+            + ", ".join(paths)
+        )
+    extern_functions = run_hew_query(
+        ast_grep, root, pattern="fn $NAME($$$ARGS) -> $RET;"
+    )
+    consuming_extern_functions = run_hew_query(
+        ast_grep, root, pattern="fn $NAME(consume $PARAM: $TYPE) -> $RET;"
+    )
+    consuming_extern_functions.extend(
+        run_hew_query(ast_grep, root, pattern="fn $NAME(consume $PARAM: $TYPE);")
+    )
     facts: list[OpaqueResourceFact] = []
     for declaration in declarations:
         path = _match_path(declaration)
@@ -1477,38 +1491,12 @@ def discover_opaque_resource_facts(
         module_externs = [
             block for block in extern_blocks if _match_path(block) == path
         ]
-        # Some current grammar revisions retain a malformed extern declaration
-        # as one ERROR sibling when an older stdlib spelling uses `consume`.
-        # Use the parsed extern-block child text (never a file-wide text scan)
-        # as the fallback token stream, preserving the block/range join above.
-        # Well-formed declarations are also represented here, so one path
-        # handles both grammar shapes without a per-resource exception list.
-        signatures: list[tuple[str, str, str]] = []
-        for block in module_externs:
-            children = _meta_many(block, "BODY") + [
-                str(error["text"])
-                for error in parser_error_nodes
-                if _contained(block, error)
-                or (
-                    _match_path(block) == _match_path(error)
-                    and 0 <= _match_offsets(error)[0] - _match_offsets(block)[1] <= 16
-                )
-            ]
-            for child in children:
-                for symbol, params, returned in re.findall(
-                    r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(?:->\s*([A-Za-z_][A-Za-z0-9_.<>]*))?\s*;",
-                    child,
-                ):
-                    signatures.append((symbol, params, returned))
         release_declarations = [
-            signature
-            for signature in signatures
-            if signature[0] == release_symbol
-            and any(
-                parameter.strip().startswith("consume ")
-                and parameter.strip().endswith(f": {resource}")
-                for parameter in signature[1].split(",")
-            )
+            function
+            for function in consuming_extern_functions
+            if any(_contained(block, function) for block in module_externs)
+            and single_meta(function, "NAME") == release_symbol
+            and single_meta(function, "TYPE") == resource
         ]
         if len(release_declarations) != 1:
             raise SystemExit(
@@ -1516,9 +1504,11 @@ def discover_opaque_resource_facts(
             )
         producers = sorted(
             {
-                symbol
-                for symbol, _params, returned in signatures
-                if returned == resource and symbol != release_symbol
+                single_meta(function, "NAME")
+                for function in extern_functions
+                if any(_contained(block, function) for block in module_externs)
+                and single_meta(function, "RET") == resource
+                and single_meta(function, "NAME") != release_symbol
             }
         )
         if not producers:
@@ -1549,7 +1539,7 @@ def discover_opaque_resource_facts(
 def opaque_fact_json(facts: list[OpaqueResourceFact]) -> dict[str, object]:
     return {
         "schema_version": 1,
-        "carrier_adapter": "qualified-presentation-key; replace with DefId union at canonical integration",
+        "display_key": "qualified source/evidence presentation only; compiler identity is DefId-authoritative",
         "candidates": [
             {
                 "carrier_key": fact.carrier_key,

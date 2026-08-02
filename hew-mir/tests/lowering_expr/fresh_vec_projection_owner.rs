@@ -3,6 +3,7 @@
 
 use hew_mir::{DropKind, ExitPath, Instr, IrPipeline, MirStatement, Place, Terminator};
 use hew_types::module_registry::ModuleRegistry;
+use hew_types::runtime_call::{RuntimeCallFamily, VecGetElem};
 use hew_types::Checker;
 
 const OWNER_NAME: &str = "__hew_vec_get_clone_projection_base";
@@ -77,6 +78,22 @@ fn call_count(pipeline: &IrPipeline, fn_name: &str, symbol: &str) -> usize {
             )
         })
         .count()
+}
+
+fn call_builtin(pipeline: &IrPipeline, fn_name: &str, symbol: &str) -> Option<RuntimeCallFamily> {
+    pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == fn_name)
+        .unwrap_or_else(|| panic!("function {fn_name} must be present"))
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::Call {
+                callee, builtin, ..
+            } if callee == symbol => *builtin,
+            _ => None,
+        })
 }
 
 fn runtime_call_count(pipeline: &IrPipeline, fn_name: &str, symbol: &str) -> usize {
@@ -172,6 +189,11 @@ fn borrowed_control() -> i64 {
     );
 
     assert_eq!(call_count(&p, "direct", "hew_vec_get_clone"), 1);
+    assert_eq!(
+        call_builtin(&p, "direct", "hew_vec_get_clone"),
+        Some(RuntimeCallFamily::VecGet(VecGetElem::Clone)),
+        "ordinary owned indexing must carry its typed clone family on the emitted terminator"
+    );
     assert_eq!(synthetic_binds(&p, "direct"), 1);
     let direct_locals = synthetic_locals(&p, "direct");
     assert_eq!(direct_locals.len(), 1);
@@ -180,6 +202,10 @@ fn borrowed_control() -> i64 {
     assert!(matches!(direct_exits[0], (ExitPath::Return { .. }, 1)));
 
     assert_eq!(call_count(&p, "bound", "hew_vec_get_clone"), 1);
+    assert_eq!(
+        call_builtin(&p, "bound", "hew_vec_get_clone"),
+        Some(RuntimeCallFamily::VecGet(VecGetElem::Clone))
+    );
     assert_eq!(synthetic_binds(&p, "bound"), 0);
     assert!(synthetic_locals(&p, "bound").is_empty());
 

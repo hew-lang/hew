@@ -983,7 +983,14 @@ pub extern "C" fn hew_runtime_cleanup() {
     // Workers are already joined so we cannot send stop messages; we just
     // drop the struct.
     // SAFETY: All workers have been joined by hew_sched_shutdown.
-    unsafe { crate::shutdown::free_registered_supervisors() };
+    if !unsafe { crate::shutdown::free_registered_supervisors() } {
+        // A delayed-restart timer still holds a raw supervisor borrow. The
+        // retained root points into this runtime and its actors, so do not
+        // sweep actors or detach the runtime underneath it. A later cleanup
+        // retry owns reclamation after the timer drains.
+        set_last_error("runtime cleanup retained supervisor tree with pending restart timer");
+        return;
+    }
 
     // SAFETY: All workers have been joined by hew_sched_shutdown.
     unsafe { actor::cleanup_all_actors() };
@@ -4358,7 +4365,12 @@ pub extern "C" fn hew_sched_metrics_active_workers() -> u64 {
     ACTIVE_WORKERS.load(Ordering::Relaxed)
 }
 
-/// Reset all scheduler metrics counters to zero.
+/// Reset scheduler interval counters to zero.
+///
+/// Safe while workers are dispatching.  Live gauges (including
+/// `active_workers`) and observe dispatch-ticket/barrier state deliberately
+/// retain their values: resetting either while a worker owns it can underflow a
+/// later decrement or make the worker close a ticket that no longer exists.
 #[no_mangle]
 pub extern "C" fn hew_sched_metrics_reset() {
     TASKS_SPAWNED.store(0, Ordering::Relaxed);
@@ -4366,8 +4378,7 @@ pub extern "C" fn hew_sched_metrics_reset() {
     STEALS_TOTAL.store(0, Ordering::Relaxed);
     MESSAGES_SENT.store(0, Ordering::Relaxed);
     MESSAGES_RECEIVED.store(0, Ordering::Relaxed);
-    ACTIVE_WORKERS.store(0, Ordering::Relaxed);
-    crate::observe::reset_all();
+    crate::observe::reset_live_safe_counters();
 }
 
 /// Return the total number of worker threads.
@@ -7006,6 +7017,21 @@ mod tests {
         // hew_sched_init is idempotent — second call is a no-op returning 0.
         let result = hew_sched_init();
         assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn metrics_reset_preserves_an_active_worker_gauge() {
+        let _guard = SchedTestLock::acquire();
+        let prior = ACTIVE_WORKERS.swap(1, Ordering::AcqRel);
+
+        hew_sched_metrics_reset();
+
+        assert_eq!(
+            hew_sched_metrics_active_workers(),
+            1,
+            "a live worker must retain its gauge across an interval counter reset"
+        );
+        ACTIVE_WORKERS.store(prior, Ordering::Release);
     }
 
     /// The ticker thread must be stopped during runtime cleanup so it

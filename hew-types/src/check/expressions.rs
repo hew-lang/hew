@@ -5587,23 +5587,19 @@ impl Checker {
                                 // the call-form guard in methods.rs.
                                 // The manifest-generated rejection slice is the
                                 // single source; both guards iterate it.
-                                if self.wasm_target && !self.user_modules.contains(name.as_str()) {
-                                    for rejection in crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
-                                        if name.as_str() == rejection.module {
-                                            self.reject_wasm_feature(span, rejection.feature);
-                                        }
-                                    }
-                                    // crypto.random_bytes and its fallible twin depend on a
-                                    // native-only secure entropy source absent from the wasm32
-                                    // link set.
-                                    if name.as_str() == "crypto"
-                                        && matches!(field, "random_bytes" | "try_random_bytes")
-                                    {
-                                        self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::CryptoRandom,
-                                        );
-                                    }
+                                if let Some(feature) = self.wasm_native_only_module_feature(name) {
+                                    self.reject_wasm_feature(span, feature);
+                                }
+                                // crypto.random_bytes and its fallible twin depend on a
+                                // native-only secure entropy source absent from the wasm32
+                                // link set.
+                                if self.is_shipped_crypto_module(name)
+                                    && matches!(field, "random_bytes" | "try_random_bytes")
+                                {
+                                    self.reject_wasm_feature(
+                                        span,
+                                        WasmUnsupportedFeature::CryptoRandom,
+                                    );
                                 }
                                 return ty;
                             }

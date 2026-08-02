@@ -929,15 +929,11 @@ impl Checker {
             }
         }
         self.require_unsafe(&key, span);
-        if !self.user_modules.contains(module_name) {
-            for rejection in crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
-                if module_name == rejection.module {
-                    self.reject_wasm_feature(span, rejection.feature);
-                }
-            }
-            if module_name == "crypto" && method == "random_bytes" {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
-            }
+        if let Some(feature) = self.wasm_native_only_module_feature(module_name) {
+            self.reject_wasm_feature(span, feature);
+        }
+        if self.is_shipped_crypto_module(module_name) && method == "random_bytes" {
+            self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
         }
         let sig = self.fn_sigs.get(&key).cloned()?;
         if let Some(caller) = &self.current_function {

@@ -730,6 +730,52 @@ mod wasm_rejects {
     }
 
     #[test]
+    fn wasm_rejects_aliased_websocket_module_calls_and_values() {
+        let source = concat!(
+            "import std::net::websocket as ws;\n",
+            "fn main() {\n",
+            "    ws.connect(\"ws://127.0.0.1:9001/\");\n",
+            "    let _connect = ws.connect;\n",
+            "}\n",
+            "fn use_conn(conn: ws.Conn) { conn.send_text(\"payload\"); }\n",
+            "fn use_server(server: ws.Server) { server.port(); }\n",
+            "fn use_message(message: ws.Message) { message.msg_type(); }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "aliased websocket calls and values should fail closed on WASM: {:?}",
+            output.errors
+        );
+        assert!(platform_error_contains(&output, "std::net::websocket"));
+    }
+
+    #[test]
+    fn native_only_module_aliases_require_shipped_source_authority() {
+        let mut checker = Checker::new(test_registry());
+        checker
+            .module_import_bindings
+            .insert((None, "ws".to_string()), "acme.websocket".to_string());
+        assert_eq!(
+            checker.wasm_native_only_module_feature("ws"),
+            None,
+            "a user module sharing the websocket leaf must not inherit stdlib capability policy"
+        );
+
+        checker
+            .module_import_bindings
+            .insert((None, "ws".to_string()), "std.net.websocket".to_string());
+        checker
+            .canonical_std_module_sources
+            .insert("std.net.websocket".to_string());
+        assert_eq!(
+            checker.wasm_native_only_module_feature("ws"),
+            Some(WasmUnsupportedFeature::WebSocket),
+            "an alias of the shipped module must retain its exact native-only capability"
+        );
+    }
+
+    #[test]
     fn wasm_rejects_websocket_handle_methods() {
         let source = concat!(
             "import std::net::websocket;\n",

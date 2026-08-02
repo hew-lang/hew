@@ -143,6 +143,40 @@ impl Checker {
         });
     }
 
+    /// Resolve a lexical module spelling through the current import binding and
+    /// return its manifest-defined native-only capability, when it is an exact
+    /// shipped stdlib module.
+    ///
+    /// Native-only module checks must not use a source spelling directly:
+    /// `import std::net::websocket as ws` is the same module as `websocket`,
+    /// while a user module named `websocket` must never inherit the standard
+    /// library's Wasm restriction.  `canonical_std_module_sources` is the
+    /// provenance boundary that distinguishes those cases.
+    pub(super) fn wasm_native_only_module_feature(
+        &self,
+        surface_module: &str,
+    ) -> Option<WasmUnsupportedFeature> {
+        let source_module = self.canonical_module_import_owner(surface_module);
+        if !self.canonical_std_module_sources.contains(&source_module) {
+            return None;
+        }
+        let module_leaf = source_module.rsplit('.').next()?;
+        crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS
+            .iter()
+            .find(|rejection| rejection.module == module_leaf)
+            .map(|rejection| rejection.feature)
+    }
+
+    /// Whether a lexical module spelling proves the exact shipped crypto
+    /// module.  Secure-randomness is a member-level restriction, unlike the
+    /// manifest's native-only module rows, so it shares the same owner and
+    /// provenance admission boundary explicitly.
+    pub(super) fn is_shipped_crypto_module(&self, surface_module: &str) -> bool {
+        let source_module = self.canonical_module_import_owner(surface_module);
+        source_module == "std.crypto.crypto"
+            && self.canonical_std_module_sources.contains(&source_module)
+    }
+
     pub(super) fn report_error(&mut self, kind: TypeErrorKind, span: &Span, message: String) {
         self.errors.push(TypeError {
             severity: crate::error::Severity::Error,

@@ -19,7 +19,7 @@
 //! module's [`FreshOwnerVerdicts`](crate::return_provenance::FreshOwnerVerdicts)
 //! authority, or to both. [`Builder::register_owned_local`],
 //! [`Builder::register_owned_local_alias`] and
-//! [`Builder::register_synthetic_owned_local`] each REQUIRE one, and withhold
+//! [`Builder::adopt_synthetic_owned_local`] each REQUIRE one, and withhold
 //! the mint when it answers foreign.
 //!
 //! Rust's module privacy is the mechanism, so the property is a compile-time
@@ -72,7 +72,7 @@
 //!   [`Builder::owner_warrant_for_owned_parameter`] for the argument and the
 //!   tripwire that pins it.
 
-use super::{BindingId, Builder, HirExpr, HirExprKind, ResolvedTy};
+use super::{BindingId, Builder, HirExpr, HirExprKind, ProducedValueOwnership, ResolvedTy};
 
 /// Which value the owner is being minted over, as the question was actually
 /// put. Recorded on the warrant so the withheld/granted decision names its own
@@ -285,6 +285,55 @@ impl Builder {
         OwnerMintWarrant::new(OwnerMintOrigin::ForwardedFromAdmissionGate, foreign)
     }
 
+    /// The call-scrutinee admission token has already proved a fresh
+    /// caller-owned return at the exact consuming boundary.  Preserve that
+    /// proof through the eventual owner mint while still refusing a local
+    /// binding that the foreign-provenance ledger has explicitly tainted.
+    /// This is narrower than the generic temporary query: it is callable only
+    /// after the consumer's `Admit` verdict.
+    pub(crate) fn owner_warrant_for_admitted_call_scrutinee(
+        &self,
+        producer: &HirExpr,
+    ) -> OwnerMintWarrant {
+        OwnerMintWarrant::new(
+            OwnerMintOrigin::ForwardedFromAdmissionGate,
+            self.expr_reads_a_proven_foreign_binding(producer),
+        )
+    }
+
+    /// The checker/HIR carrier is the release authority for a newly published
+    /// result. The typed fact has already applied the opaque-foreign call
+    /// contract; MIR additionally refuses a result expression that reads a
+    /// locally recorded foreign binding, so a malformed carrier can only
+    /// withhold a mint, never fabricate one.
+    pub(crate) fn owner_warrant_for_typed_produced_value(
+        &self,
+        producer: &HirExpr,
+        ownership: ProducedValueOwnership,
+    ) -> OwnerMintWarrant {
+        let typed_owner = matches!(ownership, ProducedValueOwnership::Owned { .. });
+        // A recursive aggregate/container mint owns every embedded leaf.  Its
+        // typed top-level `Fresh` row is therefore necessary but not sufficient:
+        // a fresh record/tuple/closure shell around a borrowed or opaque extern
+        // result must not acquire authority to release that foreign payload.
+        // Ask the existing strict composite provenance authority for precisely
+        // those recursive producers; ordinary leaf/call publications retain the
+        // typed contract's polarity.
+        let recursively_owns_payload = matches!(
+            &producer.kind,
+            HirExprKind::StructInit { .. }
+                | HirExprKind::TupleLiteral { .. }
+                | HirExprKind::MachineVariantCtor { .. }
+                | HirExprKind::RecordCloneCall { .. }
+                | HirExprKind::Closure { .. }
+        );
+        let foreign = !typed_owner
+            || self.expr_reads_a_proven_foreign_binding(producer)
+            || (recursively_owns_payload
+                && !self.value_is_free_of_opaque_foreign_provenance(producer));
+        OwnerMintWarrant::new(OwnerMintOrigin::ForwardedFromAdmissionGate, foreign)
+    }
+
     /// Forward the string-only carrier admission for an anonymous borrowing-call
     /// argument.
     ///
@@ -325,7 +374,7 @@ mod tests {
         // provenance question to the ledger or the module authority. This is a
         // property of the SOURCE, so it holds for constructors nobody has
         // written yet.
-        const ASKS: [&str; 7] = [
+        const ASKS: [&str; 8] = [
             "note_let_binder_proven_foreign",
             "note_payload_binder_proven_foreign",
             "note_rebind_proven_foreign",
@@ -333,6 +382,7 @@ mod tests {
             "proven_foreign_bindings",
             "callee_returns_fresh_variant_payload",
             "caller_borrowed_temp_arg_owned_ty",
+            "expr_reads_a_proven_foreign_binding",
         ];
         let source = include_str!("owner_mint.rs");
         let squeezed: String = source.chars().filter(|c| !c.is_whitespace()).collect();
@@ -399,7 +449,7 @@ mod tests {
         for registrar in [
             "register_owned_local",
             "register_owned_local_alias",
-            "register_synthetic_owned_local",
+            "adopt_synthetic_owned_local",
         ] {
             let needle = format!("pub(crate) fn {registrar}(");
             let start = source
@@ -527,7 +577,7 @@ mod tests {
                  `lower`, so this compiles — and mints a scope-exit owner having \
                  asked the provenance authority nothing. Route it through \
                  `register_owned_local` / `register_owned_local_alias` / \
-                 `register_synthetic_owned_local`, which demand an \
+                 `adopt_synthetic_owned_local`, which demand an \
                  `OwnerMintWarrant`."
             );
             sites += count;

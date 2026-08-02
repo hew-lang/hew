@@ -1177,7 +1177,10 @@ fn walk_expr(
         | HirExprKind::Unsupported(_) => {}
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             walk_expr(
                 receiver,
                 subst,

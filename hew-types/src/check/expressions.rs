@@ -7229,7 +7229,12 @@ impl Checker {
             .entry(key.clone())
             .or_insert_with(|| result.clone())
             .clone();
-        if self.published_value_occurrences.insert(key) {
+        let first_publication = self.published_value_occurrences.insert(key);
+        // The parser currently gives a lambda actor and its synthetic body
+        // block the same source span. Body checking therefore publishes first,
+        // but the enclosing expression is the materialized `LambdaPid` value
+        // and must replace that provisional ownership node.
+        if first_publication || matches!(expr, Expr::SpawnLambdaActor { .. }) {
             self.record_produced_value_fact(expr, span, &published_ty);
         }
         result
@@ -7388,6 +7393,12 @@ impl Checker {
                     )
                 }) {
                     ProducedValueFact::result(Ownership::owned(Acquisition::Delivery))
+                } else if inner_ty.as_ref() != Some(&resolved) {
+                    // A specialised await may wrap its source (for example an
+                    // actor reply `R` in `Result<R, AskError>`).  That wrapper
+                    // is a new typed publication boundary, not an identity
+                    // alias of differently-shaped storage.
+                    ProducedValueFact::result(Ownership::owned(Acquisition::Delivery))
                 } else {
                     self.join_produced_facts([inner.1.clone()])
                 }
@@ -7404,7 +7415,19 @@ impl Checker {
             } else {
                 Ownership::owned(Acquisition::Delivery)
             }),
-            Expr::Timeout { expr, .. } => self.join_produced_facts([expr.1.clone()]),
+            Expr::Timeout { expr, .. } => {
+                let inner_ty = self
+                    .expr_types
+                    .get(&SpanKey::in_module(&expr.1, self.current_module_idx))
+                    .map(|ty| self.subst.resolve(ty));
+                if no_owner {
+                    ProducedValueFact::result(Ownership::NoOwner)
+                } else if inner_ty.as_ref() == Some(&resolved) {
+                    self.join_produced_facts([expr.1.clone()])
+                } else {
+                    ProducedValueFact::result(Ownership::owned(Acquisition::Delivery))
+                }
+            }
             Expr::Scope { body } | Expr::ScopeDeadline { body, .. } => body
                 .trailing_expr
                 .as_deref()
@@ -7519,14 +7542,36 @@ impl Checker {
                         )
                     }) =>
             {
-                Some(ProducedValueDependency::Identity(SpanKey::in_module(
+                Some(ProducedValueDependency::Subsumes(SpanKey::in_module(
                     &inner.1,
                     self.current_module_idx,
                 )))
             }
-            Expr::Timeout { expr: inner, .. } => Some(ProducedValueDependency::Identity(
+            Expr::Timeout { expr: inner, .. } => Some(ProducedValueDependency::Subsumes(
                 SpanKey::in_module(&inner.1, self.current_module_idx),
             )),
+            Expr::Clone(inner)
+                if matches!(
+                    self.method_call_rewrites.get(&key),
+                    Some(MethodCallRewrite::CopyCloneNoop)
+                ) =>
+            {
+                Some(ProducedValueDependency::Subsumes(SpanKey::in_module(
+                    &inner.1,
+                    self.current_module_idx,
+                )))
+            }
+            Expr::MethodCall { receiver, .. }
+                if matches!(
+                    self.method_call_rewrites.get(&key),
+                    Some(MethodCallRewrite::CopyCloneNoop)
+                ) =>
+            {
+                Some(ProducedValueDependency::Subsumes(SpanKey::in_module(
+                    &receiver.1,
+                    self.current_module_idx,
+                )))
+            }
             Expr::Select { arms, timeout } => {
                 let mut children: Vec<SpanKey> = arms
                     .iter()
@@ -7547,10 +7592,31 @@ impl Checker {
             }
             _ => None,
         };
+        // Divergent (`Never`) branches never materialize the join destination;
+        // exclude them from the ownership convergence set rather than
+        // pretending they are a differently-typed value generation.
+        let dependency = dependency.and_then(|dependency| match dependency {
+            ProducedValueDependency::Join(mut children) => {
+                children.retain(|child| {
+                    !self
+                        .expr_types
+                        .get(child)
+                        .map(|ty| self.subst.resolve(ty))
+                        .is_some_and(|ty| matches!(ty, Ty::Never))
+                });
+                Self::non_empty_produced_join(children)
+            }
+            other => Some(other),
+        });
         if !self.dyn_trait_coercions.contains_key(&key) {
             if let Some(dependency) = dependency {
                 self.produced_value_dependencies
                     .insert(key.clone(), dependency);
+            } else {
+                // A leaf publication is authoritative too. This also retires a
+                // provisional edge when two synthetic AST occurrences share a
+                // source span (notably lambda actors and their body block).
+                self.produced_value_dependencies.remove(&key);
             }
         }
         self.produced_value_ownership.insert(key, fact);

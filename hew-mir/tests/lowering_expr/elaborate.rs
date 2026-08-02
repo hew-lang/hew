@@ -75,6 +75,17 @@ fn main_ask_reply_dest(p: &IrPipeline) -> Place {
     reply_dest
 }
 
+fn main_ask_result_dest(p: &IrPipeline) -> Place {
+    let main = main_function(&p.raw_mir, |func| func.name.as_str());
+    main.blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            Terminator::Ask { result_dest, .. } => Some(*result_dest),
+            _ => None,
+        })
+        .expect("main should contain one actor ask result destination")
+}
+
 fn first(p: &IrPipeline) -> &ElaboratedMirFunction {
     &p.elaborated_mir[0]
 }
@@ -182,6 +193,35 @@ fn awaited_actor_ask_lowers_to_ask_terminator_with_no_diagnostics() {
 
     // The Ask terminator must be present with the R-ASK fields.
     let _reply_dest = main_ask_reply_dest(&awaited);
+    let result_dest = main_ask_result_dest(&awaited);
+    let main = main_function(&awaited.raw_mir, |func| func.name.as_str());
+    let Place::Local(result_local) = result_dest else {
+        panic!("ask result must publish into a local, got {result_dest:?}");
+    };
+    let result_ty = &main.locals[result_local as usize];
+    assert!(matches!(
+        result_ty,
+        hew_types::ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Result),
+            ..
+        }
+    ));
+    let all_drops = main_function(&awaited.elaborated_mir, |func| func.name.as_str())
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| &plan.drops)
+        .collect::<Vec<_>>();
+    assert!(
+        all_drops.iter().any(|drop| &drop.ty == result_ty),
+        "Result<string, AskError> ask publication must retain cleanup authority after binding moves"
+    );
+    assert!(
+        all_drops
+            .iter()
+            .filter(|drop| drop.place == result_dest)
+            .all(|drop| &drop.ty == result_ty),
+        "an awaited heap reply must never adopt/drop Result storage as its inner string type: {all_drops:?}"
+    );
 }
 
 #[test]

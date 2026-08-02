@@ -11857,3 +11857,119 @@ fn emit_select_no_winner_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<(
         .llvm_ctx("select no winner unreachable")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod produced_owner_publication_tests {
+    /// Every result-bearing suspend family must deactivate the existing typed
+    /// owner before its ABI write and arm it only after that write succeeds.
+    /// This is source-structural on purpose: adding a new `SuspendKind` result
+    /// emitter cannot silently bypass the one owner/token lifecycle while a
+    /// happy-path integration test happens not to exercise that family.
+    #[test]
+    fn result_bearing_suspend_emitters_use_the_post_write_owner_lifecycle() {
+        let source = include_str!("suspend.rs");
+        // Keep the destination expression alongside each emitter.  This proves
+        // the owner lifecycle surrounds the exact slot the MIR terminator
+        // publishes, rather than merely some cleanup pair elsewhere in the
+        // large emitter.
+        let families = [
+            ("emit_suspending_read_terminator", "term.result_dest"),
+            ("emit_suspending_accept_terminator", "term.result_dest"),
+            ("emit_suspending_stream_next_terminator", "term.result_dest"),
+            (
+                "emit_suspending_channel_recv_terminator",
+                "term.result_dest",
+            ),
+            ("emit_suspending_task_await_terminator", "result_dest"),
+            ("emit_suspending_ask_terminator", "term.reply_dest"),
+            ("emit_suspending_call_closure_terminator", "dest"),
+            (
+                "emit_suspending_remote_actor_ask_terminator",
+                "term.reply_dest",
+            ),
+            ("emit_select_terminator", "binding_place"),
+            ("emit_join_terminator", "result"),
+        ];
+        for (family, destination) in families {
+            let start = source
+                .find(&format!("fn {family}"))
+                .unwrap_or_else(|| panic!("missing result-bearing suspend emitter {family}"));
+            let rest = &source[start..];
+            let end = rest
+                .find("\npub(crate) fn ")
+                .or_else(|| rest.find("\nfn "))
+                .unwrap_or(rest.len());
+            let body = &rest[..end];
+            let deactivate = body
+                .find("emit_helper_crash_cleanup_deactivate_before_write")
+                .unwrap_or_else(|| panic!("{family} must deactivate before result publication"));
+            let arm = body
+                .find("emit_helper_crash_cleanup_arm_after_write")
+                .unwrap_or_else(|| panic!("{family} must arm after result publication"));
+            assert!(
+                deactivate < arm,
+                "{family} armed cleanup before deactivating its result owner"
+            );
+            assert!(
+                body.contains(&format!(
+                    "emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, {destination})"
+                )),
+                "{family} must deactivate the MIR-published destination {destination}"
+            );
+            assert!(
+                body.contains(&format!(
+                    "emit_helper_crash_cleanup_arm_after_write(fn_ctx, {destination})"
+                )),
+                "{family} must arm the MIR-published destination {destination}"
+            );
+        }
+
+        // Keep the collapsed `SuspendKind` dispatch exhaustive for every
+        // variant that directly writes a result. `RestartWait` deliberately
+        // does *not* write here: its MIR resume edge re-fetches the handle, so
+        // it cannot bypass this lifecycle by growing an ABI result write.
+        let dispatcher = include_str!("llvm.rs");
+        let dispatcher = &dispatcher[dispatcher
+            .find("fn dispatch_collapsed_suspend")
+            .expect("missing collapsed SuspendKind dispatcher")..];
+        let routes = [
+            ("Ask", "emit_suspending_ask_terminator"),
+            ("Read", "emit_suspending_read_terminator"),
+            ("Accept", "emit_suspending_accept_terminator"),
+            ("CallClosure", "emit_suspending_call_closure_terminator"),
+            ("StreamNext", "emit_suspending_stream_next_terminator"),
+            ("ChannelRecv", "emit_suspending_channel_recv_terminator"),
+            ("RemoteAsk", "emit_suspending_remote_actor_ask_terminator"),
+            ("TaskAwait", "emit_suspending_task_await_terminator"),
+        ];
+        for (variant, emitter) in routes {
+            let start = dispatcher
+                .find(&format!("SuspendKind::{variant}"))
+                .unwrap_or_else(|| panic!("missing SuspendKind::{variant} dispatch"));
+            let rest = &dispatcher[start..];
+            let end = rest.find("\n        SuspendKind::").unwrap_or(rest.len());
+            assert!(
+                rest[..end].contains(emitter),
+                "SuspendKind::{variant} must route through {emitter}"
+            );
+        }
+        let restart_wait_start = dispatcher
+            .find("SuspendKind::RestartWait")
+            .expect("missing SuspendKind::RestartWait dispatch");
+        let restart_wait = &dispatcher[restart_wait_start..];
+        let restart_wait_end = restart_wait
+            .find("\n        SuspendKind::")
+            .unwrap_or(restart_wait.len());
+        assert!(
+            restart_wait[..restart_wait_end].contains("emit_suspending_restart_wait_terminator")
+        );
+
+        // The coroutine select path delegates result publication to the same
+        // winner setup/bind helper that the blocking select emitter exercises.
+        let suspended_select = source
+            .split("pub(crate) fn emit_suspending_select_terminator")
+            .nth(1)
+            .expect("missing suspending select emitter");
+        assert!(suspended_select.contains("emit_select_arm_setup"));
+    }
+}

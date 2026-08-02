@@ -182,6 +182,11 @@ pub struct TypeCheckOutput {
     /// that projection and may not reconstruct ownership from callee spellings,
     /// result types, or expression intent.
     pub produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
+    /// Closed structural dependency graph for result ownership.  This carries
+    /// the checker-proven source relation alongside the final ownership
+    /// verdict, so downstream lowering never has to reconstruct a transfer
+    /// from expression spelling or a local-number coincidence.
+    pub produced_value_dependencies: HashMap<SpanKey, ProducedValueDependency>,
     /// Declaration spans of non-receiver parameters whose resolved type has
     /// at least one checker-proven projection into storage shared with the
     /// caller.
@@ -1190,6 +1195,7 @@ impl Default for TypeCheckOutput {
         Self {
             expr_types: HashMap::new(),
             produced_value_ownership: HashMap::new(),
+            produced_value_dependencies: HashMap::new(),
             caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
@@ -1430,8 +1436,17 @@ pub(super) struct PendingMethodCallOwnership {
 }
 
 #[derive(Debug, Clone)]
-pub(super) enum ProducedValueDependency {
+pub enum ProducedValueDependency {
+    /// This expression itself is the authority boundary for its produced
+    /// value.  Keeping leaves explicit makes the checker output a total,
+    /// closed graph rather than asking downstream consumers to treat a
+    /// missing map entry as semantic information.
+    Leaf,
     Identity(SpanKey),
+    /// A specialised parent preserves the child's ownership disposition and
+    /// provenance but is the sole materialized publication. Parent and child
+    /// types may differ; downstream lowering must mint only the parent slot.
+    Subsumes(SpanKey),
     Join(Vec<SpanKey>),
     MoveOut(SpanKey),
     Projection(SpanKey),

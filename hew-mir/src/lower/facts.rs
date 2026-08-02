@@ -481,7 +481,10 @@ fn collect_binding_defs_in_expr<'f>(
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             collect_binding_defs_in_expr(receiver, defs, let_ids);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -1152,6 +1155,7 @@ pub(super) fn compute_param_ownership(
         &call_param_consume_bool,
     );
     ParamOwnershipFacts {
+        produced_value_facts: HashMap::new(),
         param_consume,
         borrow_arg_sites,
         proven_borrow_arg_sites,
@@ -2189,9 +2193,10 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
-            scan_expr_for_consume(receiver, b_p, pc)
-        }
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => scan_expr_for_consume(receiver, b_p, pc),
         HirExprKind::MachineVariantCtor { payload, .. } => payload.as_ref().is_some_and(|fields| {
             fields
                 .iter()
@@ -2544,7 +2549,10 @@ fn collect_borrow_arg_sites_in_expr(
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => go!(receiver),
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => go!(receiver),
         HirExprKind::MachineVariantCtor { payload, .. } => {
             if let Some(fields) = payload {
                 for (_, val) in fields {
@@ -3112,7 +3120,10 @@ fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExp
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+        | HirExprKind::RecordCloneCall { src: receiver, .. }
+        | HirExprKind::SubsumedValue {
+            source: receiver, ..
+        } => {
             collect_return_values_in_expr(receiver, out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -4158,6 +4169,7 @@ mod enum_layout_tests {
     fn minimal_module(items: Vec<HirItem>) -> HirModule {
         HirModule {
             items,
+            produced_value_facts: HashMap::default(),
             diagnostic_source_modules: HashMap::default(),
             root_item_ids: std::collections::HashSet::new(),
             caller_visible_param_projections: std::collections::HashSet::new(),

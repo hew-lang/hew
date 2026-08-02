@@ -15,9 +15,9 @@ use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, HirNodeId, ResolvedRef, SiteId};
 use crate::node::{
     HirBlock, HirExpr, HirExprKind, HirGenCaptureSource, HirItem, HirLiteral, HirMatchArmPredicate,
-    HirModule, HirStmtKind,
+    HirModule, HirProducedValueRelation, HirProducedValueSourceAnchor, HirStmtKind,
 };
-use hew_types::{BuiltinType, RcIntrinsicOp, ResolvedTy};
+use hew_types::{BuiltinType, ProducedValueOwnership, RcIntrinsicOp, ResolvedTy};
 
 #[must_use]
 pub fn verify_hir(module: &HirModule) -> Vec<HirDiagnostic> {
@@ -39,6 +39,47 @@ pub fn collect_site_spans(module: &HirModule) -> HashMap<SiteId, HirSiteSource> 
     verifier.site_spans
 }
 
+/// Parent relation for every HIR expression occurrence.  Checker facts name
+/// logical AST spans; HIR may clone those spans during desugaring, so consumers
+/// pair a dependency only with the candidate inside the current occurrence's
+/// structural subtree.
+#[must_use]
+pub fn collect_site_parents(module: &HirModule) -> HashMap<SiteId, Option<SiteId>> {
+    let mut verifier = Verifier::default();
+    verifier.module(module);
+    verifier.site_parents
+}
+
+/// Complete the module carrier after all HIR transforms have run.
+///
+/// Source expressions retain their checker-authored row.  Expressions created
+/// by HIR-only desugarings have no source checker span, so they receive an
+/// explicit `Unknown` result fact instead of silently escaping the ownership
+/// authority.  This is intentionally fail-closed: a later ownership-demanding
+/// sink must reject the synthetic result until its producer gains a typed
+/// contract.
+#[must_use]
+pub fn complete_produced_value_facts(
+    module: &HirModule,
+) -> HashMap<SiteId, crate::node::HirProducedValueFact> {
+    let mut verifier = Verifier::default();
+    verifier.module(module);
+    let mut facts = module.produced_value_facts.clone();
+    for (site, producer) in verifier.observed_producers {
+        facts
+            .entry(site)
+            .or_insert(crate::node::HirProducedValueFact {
+                producer,
+                ownership: ProducedValueOwnership::Unknown,
+                relation: crate::node::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            });
+    }
+    facts
+}
+
 #[derive(Debug, Default)]
 struct Verifier {
     bindings: HashSet<BindingId>,
@@ -47,10 +88,21 @@ struct Verifier {
     diagnostics: Vec<HirDiagnostic>,
     current_source_module: Option<String>,
     site_spans: HashMap<SiteId, HirSiteSource>,
+    produced_value_facts: HashMap<SiteId, crate::node::HirProducedValueFact>,
+    observed_producers: HashMap<SiteId, crate::node::HirProducedValueProducer>,
+    site_types: HashMap<SiteId, ResolvedTy>,
+    current_expr_parent: Option<SiteId>,
+    site_parents: HashMap<SiteId, Option<SiteId>>,
 }
 
 impl Verifier {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "module verification exhaustively dispatches every HIR item family"
+    )]
     fn module(&mut self, module: &HirModule) {
+        self.produced_value_facts
+            .clone_from(&module.produced_value_facts);
         for item in &module.items {
             self.current_source_module = Self::item_source_module(module, item);
             match item {
@@ -70,11 +122,33 @@ impl Verifier {
                     self.node(decl.node, decl.span.clone());
                 }
                 HirItem::Machine(machine) => {
-                    // Machine declarations are structurally verified here.
-                    // Body expressions are not lowered to HirExpr in Lane A,
-                    // so there are no binding or site IDs to verify beyond
-                    // the machine's own node ID.
                     self.node(machine.node, machine.span.clone());
+                    for state in &machine.states {
+                        for field in &state.fields {
+                            if let Some(default) = &field.default {
+                                self.expr(default);
+                            }
+                        }
+                        if let Some(entry) = &state.entry {
+                            self.block(entry);
+                        }
+                        if let Some(exit) = &state.exit {
+                            self.block(exit);
+                        }
+                    }
+                    for event in &machine.events {
+                        for field in &event.fields {
+                            if let Some(default) = &field.default {
+                                self.expr(default);
+                            }
+                        }
+                    }
+                    for transition in &machine.transitions {
+                        if let Some(guard) = &transition.guard {
+                            self.expr(guard);
+                        }
+                        self.expr(&transition.body);
+                    }
                 }
                 HirItem::Record(record) => {
                     // Record declarations contribute only their HirNodeId
@@ -85,6 +159,11 @@ impl Verifier {
                 }
                 HirItem::Actor(actor) => {
                     self.node(actor.node, actor.span.clone());
+                    for field in &actor.state_fields {
+                        if let Some(default) = &field.default {
+                            self.expr(default);
+                        }
+                    }
                     if let Some(init) = &actor.init {
                         for param in &init.params {
                             self.binding(param.id, param.span.clone());
@@ -157,6 +236,272 @@ impl Verifier {
             }
             self.current_source_module = None;
         }
+        self.verify_produced_value_facts();
+    }
+
+    /// Validate the HIR result-fact carrier independently of lowering.  This
+    /// catches stale carrier classifications, facts attached to a disappeared
+    /// expression, and receiver-identity rows that lost their receiver site.
+    #[expect(
+        clippy::too_many_lines,
+        clippy::items_after_statements,
+        reason = "one fail-closed pass validates carrier structure, types, and cycles"
+    )]
+    fn verify_produced_value_facts(&mut self) {
+        let is_in_subtree = |candidate: SiteId, root: SiteId| {
+            let mut cursor = Some(candidate);
+            while let Some(site) = cursor {
+                if site == root {
+                    return true;
+                }
+                cursor = self.site_parents.get(&site).copied().flatten();
+            }
+            false
+        };
+        let mut relation_edges: HashMap<SiteId, Vec<SiteId>> = HashMap::new();
+        for (site, fact) in &self.produced_value_facts {
+            if !self.sites.contains(site) {
+                self.diagnostics.push(self.diagnostic(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "produced value fact".to_string(),
+                        reason: format!("fact refers to unknown HIR site {site}"),
+                    },
+                    0..0,
+                    format!(
+                        "produced-value fact at {site} must be attached to a live HIR expression"
+                    ),
+                ));
+            }
+            if matches!(fact.ownership, ProducedValueOwnership::ReceiverIdentity)
+                != fact.receiver.is_some()
+            {
+                self.diagnostics.push(
+                    self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "produced value receiver identity".to_string(),
+                            reason: "receiver site presence disagrees with ownership disposition"
+                                .to_string(),
+                        },
+                        0..0,
+                        "receiver-identity ownership must carry exactly one receiver site",
+                    ),
+                );
+            }
+            if let Some(receiver) = fact.receiver {
+                if !self.sites.contains(&receiver) {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "produced value receiver identity".to_string(),
+                            reason: format!("receiver refers to unknown HIR site {receiver}"),
+                        },
+                        0..0,
+                        "receiver-identity ownership must reference a live HIR expression",
+                    ));
+                } else if !is_in_subtree(receiver, *site) {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "produced value receiver identity".to_string(),
+                            reason: format!(
+                                "receiver {receiver} is outside result {site}'s structural subtree"
+                            ),
+                        },
+                        0..0,
+                        "receiver ownership transfer must remain inside the result occurrence subtree",
+                    ));
+                } else if let (Some(result_ty), Some(receiver_ty)) =
+                    (self.site_types.get(site), self.site_types.get(&receiver))
+                {
+                    if result_ty != receiver_ty {
+                        self.diagnostics.push(self.diagnostic(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "produced value receiver identity".to_string(),
+                                reason: format!(
+                                    "receiver {receiver} has type {receiver_ty:?}, but result {site} has type {result_ty:?}"
+                                ),
+                            },
+                            0..0,
+                            "receiver ownership transfer requires type-congruent storage",
+                        ));
+                    }
+                }
+            }
+            let sources = match &fact.relation {
+                HirProducedValueRelation::Leaf => Vec::new(),
+                HirProducedValueRelation::Identity(source)
+                | HirProducedValueRelation::Subsumes(source)
+                | HirProducedValueRelation::MoveOut(source)
+                | HirProducedValueRelation::Projection(source) => vec![*source],
+                HirProducedValueRelation::Join(sources) => {
+                    if sources.is_empty() {
+                        self.diagnostics.push(self.diagnostic(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "produced value dependency".to_string(),
+                                reason: "join relation has no source sites".to_string(),
+                            },
+                            0..0,
+                            "produced-value join must name at least one live source",
+                        ));
+                    }
+                    sources.clone()
+                }
+            };
+            for source in &sources {
+                if !self.sites.contains(source) {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "produced value dependency".to_string(),
+                            reason: format!("relation refers to unknown HIR site {source}"),
+                        },
+                        0..0,
+                        "produced-value relation must reference a live HIR expression",
+                    ));
+                } else if !self.produced_value_facts.contains_key(source) {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "produced value dependency".to_string(),
+                            reason: format!("relation source {source} has no produced-value fact"),
+                        },
+                        0..0,
+                        "produced-value relation source must retain its authority row",
+                    ));
+                } else if !is_in_subtree(*source, *site) {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "produced value dependency".to_string(),
+                            reason: format!(
+                                "relation source {source} is outside result {site}'s structural subtree"
+                            ),
+                        },
+                        0..0,
+                        "produced-value relation must remain inside its result occurrence subtree",
+                    ));
+                }
+            }
+            if let HirProducedValueRelation::Identity(source) = &fact.relation {
+                if let (Some(result_ty), Some(source_ty)) =
+                    (self.site_types.get(site), self.site_types.get(source))
+                {
+                    if result_ty != source_ty {
+                        self.diagnostics.push(self.diagnostic(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "produced value identity".to_string(),
+                                reason: format!(
+                                    "identity source {source} has type {source_ty:?}, but result {site} has type {result_ty:?}"
+                                ),
+                            },
+                            self.site_spans
+                                .get(site)
+                                .map_or(0..0, |source| source.span.clone()),
+                            "identity ownership transfer requires type-congruent source and result storage",
+                        ));
+                    }
+                }
+            }
+            if let HirProducedValueRelation::Join(sources) = &fact.relation {
+                if let Some(result_ty) = self.site_types.get(site) {
+                    for source in sources {
+                        if let Some(source_ty) = self.site_types.get(source) {
+                            if source_ty != result_ty {
+                                self.diagnostics.push(self.diagnostic(
+                                    HirDiagnosticKind::CheckerBoundaryViolation {
+                                        name: "produced value join".to_string(),
+                                        reason: format!(
+                                            "join source {source} has type {source_ty:?}, but result {site} has type {result_ty:?}"
+                                        ),
+                                    },
+                                    self.site_spans
+                                        .get(site)
+                                        .map_or(0..0, |source| source.span.clone()),
+                                    "join ownership convergence requires type-congruent source and result storage",
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            if let HirProducedValueRelation::Subsumes(source) = &fact.relation {
+                if self.site_parents.get(source).copied().flatten() != Some(*site) {
+                    self.diagnostics.push(self.diagnostic(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "produced value subsumption".to_string(),
+                            reason: format!(
+                                "subsumed source {source} is not a direct structural child of {site}"
+                            ),
+                        },
+                        self.site_spans
+                            .get(site)
+                            .map_or(0..0, |source| source.span.clone()),
+                        "specialised ownership subsumption must preserve its ordered nested source spine",
+                    ));
+                }
+            }
+            relation_edges.insert(*site, sources);
+        }
+        for (site, producer) in &self.observed_producers {
+            if !self.produced_value_facts.contains_key(site) {
+                self.diagnostics.push(self.diagnostic(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "produced value fact".to_string(),
+                        reason: format!(
+                            "live HIR site {site} ({producer:?}) has no produced-value authority row"
+                        ),
+                    },
+                    self.site_spans
+                        .get(site)
+                        .map_or(0..0, |source| source.span.clone()),
+                    "every observed HIR result producer must retain an explicit fact",
+                ));
+            }
+        }
+
+        // Relation edges form a checker-authored DAG.  Never let a cyclic
+        // carrier degrade into a traversal-order ownership inference.
+        fn visit(
+            site: SiteId,
+            edges: &HashMap<SiteId, Vec<SiteId>>,
+            states: &mut HashMap<SiteId, u8>,
+            stack: &mut Vec<SiteId>,
+            cyclic: &mut HashSet<SiteId>,
+        ) {
+            states.insert(site, 1);
+            stack.push(site);
+            if let Some(sources) = edges.get(&site) {
+                for source in sources {
+                    if !edges.contains_key(source) {
+                        continue;
+                    }
+                    match states.get(source).copied().unwrap_or(0) {
+                        0 => visit(*source, edges, states, stack, cyclic),
+                        1 => {
+                            if let Some(start) = stack.iter().position(|entry| entry == source) {
+                                cyclic.extend(stack[start..].iter().copied());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            stack.pop();
+            states.insert(site, 2);
+        }
+        let mut states = HashMap::new();
+        let mut stack = Vec::new();
+        let mut cyclic = HashSet::new();
+        for site in relation_edges.keys().copied().collect::<Vec<_>>() {
+            if states.get(&site).copied().unwrap_or(0) == 0 {
+                visit(site, &relation_edges, &mut states, &mut stack, &mut cyclic);
+            }
+        }
+        for site in cyclic {
+            self.diagnostics.push(self.diagnostic(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "produced value dependency".to_string(),
+                    reason: format!("relation graph contains a cycle through HIR site {site}"),
+                },
+                0..0,
+                "produced-value relation graph must be acyclic",
+            ));
+        }
     }
 
     fn diagnostic(
@@ -221,15 +566,68 @@ impl Verifier {
         }
     }
 
+    fn expr(&mut self, expr: &HirExpr) {
+        let parent = self.current_expr_parent.replace(expr.site);
+        self.site_parents.insert(expr.site, parent);
+        self.expr_inner(expr);
+        self.current_expr_parent = parent;
+    }
+
+    fn produced_value_source_anchor(
+        &mut self,
+        anchor: &HirProducedValueSourceAnchor,
+        parent: SiteId,
+    ) {
+        self.site_parents.insert(anchor.site, Some(parent));
+        self.site_types.insert(anchor.site, anchor.ty.clone());
+        self.node(anchor.node, anchor.span.clone());
+        self.site(anchor.site, anchor.span.clone());
+        self.observed_producers.insert(anchor.site, anchor.producer);
+        if let Some(fact) = self.produced_value_facts.get(&anchor.site) {
+            if fact.producer != anchor.producer {
+                self.diagnostics.push(self.diagnostic(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "produced value source anchor".to_string(),
+                        reason: format!(
+                            "carrier says {:?}, but source anchor is {:?}",
+                            fact.producer, anchor.producer
+                        ),
+                    },
+                    anchor.span.clone(),
+                    "produced-value source anchor must retain the consumed node's producer class",
+                ));
+            }
+        }
+        if let Some(source) = &anchor.source {
+            self.produced_value_source_anchor(source, anchor.site);
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
-        reason = "exhaustive match on all HirExprKind variants; splitting would \
-                  obscure the exhaustiveness requirement and scatter the fail-closed \
-                  Unsupported arm away from the variants it guards"
+        reason = "exhaustive match remains in one structural HIR walker"
     )]
-    fn expr(&mut self, expr: &HirExpr) {
+    fn expr_inner(&mut self, expr: &HirExpr) {
         self.node(expr.node, expr.span.clone());
         self.site(expr.site, expr.span.clone());
+        self.site_types.insert(expr.site, expr.ty.clone());
+        let actual_producer = crate::node::HirProducedValueProducer::classify(&expr.kind);
+        self.observed_producers.insert(expr.site, actual_producer);
+        if let Some(fact) = self.produced_value_facts.get(&expr.site) {
+            if fact.producer != actual_producer {
+                self.diagnostics.push(self.diagnostic(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "produced value fact".to_string(),
+                        reason: format!(
+                            "carrier says {:?}, but HIR node is {:?}",
+                            fact.producer, actual_producer
+                        ),
+                    },
+                    expr.span.clone(),
+                    "produced-value fact must use the node's structural producer class",
+                ));
+            }
+        }
         match &expr.kind {
             HirExprKind::RcIntrinsic {
                 op,
@@ -281,9 +679,23 @@ impl Verifier {
             HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
                 self.expr(operand);
             }
-            HirExprKind::ConnAwaitRead { conn, .. } => self.expr(conn),
+            HirExprKind::ConnAwaitRead {
+                conn,
+                source_anchor,
+                ..
+            } => {
+                self.expr(conn);
+                self.produced_value_source_anchor(source_anchor, expr.site);
+            }
             HirExprKind::AwaitRestart { child } => self.expr(child),
-            HirExprKind::ListenerAwaitAccept { listener, .. } => self.expr(listener),
+            HirExprKind::ListenerAwaitAccept {
+                listener,
+                source_anchor,
+                ..
+            } => {
+                self.expr(listener);
+                self.produced_value_source_anchor(source_anchor, expr.site);
+            }
             HirExprKind::ChannelRecvAwait { receiver, .. } => self.expr(receiver),
             HirExprKind::StreamRecvAwait { stream, .. } => self.expr(stream),
             HirExprKind::NumericCast {
@@ -408,19 +820,44 @@ impl Verifier {
                     self.expr(elem);
                 }
             }
-            HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            HirExprKind::Call { callee, args } => {
                 self.expr(callee);
                 for arg in args {
                     self.expr(arg);
                 }
+            }
+            HirExprKind::SpawnedCall {
+                callee,
+                args,
+                source_anchor,
+                ..
+            } => {
+                self.expr(callee);
+                for arg in args {
+                    self.expr(arg);
+                }
+                self.produced_value_source_anchor(source_anchor, expr.site);
             }
             HirExprKind::Spawn { args, .. } => {
                 for (_, arg) in args {
                     self.expr(arg);
                 }
             }
+            HirExprKind::ActorAsk {
+                receiver,
+                args,
+                source_anchor,
+                ..
+            } => {
+                self.expr(receiver);
+                for arg in args {
+                    self.expr(arg);
+                }
+                if let Some(anchor) = source_anchor {
+                    self.produced_value_source_anchor(anchor, expr.site);
+                }
+            }
             HirExprKind::ActorSend { receiver, args, .. }
-            | HirExprKind::ActorAsk { receiver, args, .. }
             | HirExprKind::ActorGenStream { receiver, args, .. }
             | HirExprKind::CallDynMethod { receiver, args, .. }
             | HirExprKind::ResolvedImplCall { receiver, args, .. }
@@ -468,13 +905,17 @@ impl Verifier {
             HirExprKind::FieldAccess { object, .. } => {
                 self.expr(object);
             }
+            HirExprKind::MachineFieldAccess { source_anchor, .. }
+            | HirExprKind::MachineEventFieldAccess { source_anchor, .. } => {
+                if let Some(anchor) = source_anchor {
+                    self.produced_value_source_anchor(anchor, expr.site);
+                }
+            }
             HirExprKind::ContextReader { .. }
             | HirExprKind::Literal(_)
             | HirExprKind::RegexLiteralRef { .. }
-            | HirExprKind::MachineFieldAccess { .. }
             | HirExprKind::Continue { .. }
-            | HirExprKind::ActorSelf
-            | HirExprKind::MachineEventFieldAccess { .. } => {}
+            | HirExprKind::ActorSelf => {}
             HirExprKind::Scope { body }
             | HirExprKind::ForkBlock { body, .. }
             | HirExprKind::Loop { body, .. } => self.block(body),
@@ -482,7 +923,12 @@ impl Verifier {
                 self.expr(duration);
                 self.block(body);
             }
-            HirExprKind::AwaitTask { binding_id, .. } => {
+            HirExprKind::AwaitTask {
+                binding_id,
+                source_anchor,
+                ..
+            } => {
+                self.produced_value_source_anchor(source_anchor, expr.site);
                 // Verify the binding-id referenced by the await is known to the verifier.
                 // If it's not in `self.bindings`, that indicates a dangling reference.
                 if !self.bindings.contains(binding_id) {
@@ -746,6 +1192,7 @@ impl Verifier {
             | HirExprKind::RecordCloneCall { src: receiver, .. } => {
                 self.expr(receiver);
             }
+            HirExprKind::SubsumedValue { source, .. } => self.expr(source),
             HirExprKind::MachineVariantCtor { payload, .. } => {
                 if let Some(fields) = payload {
                     for (_, val) in fields {

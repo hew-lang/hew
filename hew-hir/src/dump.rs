@@ -559,6 +559,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             args,
             reply_ty,
             deadline_ns,
+            ..
         } => {
             let deadline = deadline_ns
                 .map(|ns| format!(" | after {ns}ns"))
@@ -789,6 +790,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             binding_name,
             binding_id,
             output_ty,
+            ..
         } => {
             writeln!(
                 out,
@@ -805,6 +807,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             conn,
             to_string,
             deadline_ns,
+            ..
         } => {
             let deadline = deadline_ns
                 .map(|ns| format!(" | after {ns}ns"))
@@ -1155,6 +1158,10 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 .expect("write to string");
             dump_expr(out, src, indent + 4);
         }
+        HirExprKind::SubsumedValue { source, producer } => {
+            writeln!(out, "{pad}  subsumed-value {producer:?}").expect("write to string");
+            dump_expr(out, source, indent + 4);
+        }
         HirExprKind::MachineEmit { event_idx, fields } => {
             writeln!(out, "{pad}  machine-emit event_idx={event_idx}").expect("write to string");
             for (field_name, field_val) in fields {
@@ -1213,6 +1220,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             state_idx,
             field_idx,
             field_name,
+            ..
         } => {
             writeln!(
                 out,
@@ -1225,6 +1233,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             event_idx,
             field_idx,
             field_name,
+            ..
         } => {
             writeln!(
                 out,

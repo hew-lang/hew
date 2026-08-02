@@ -52,10 +52,11 @@ pub use check::{
     MethodCallReceiverKind, MethodCallRewrite, MethodTarget, MethodTargetFamily,
     NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
     OptionResultMethod, PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField,
-    PlanSub, PoolAccessor, PoolAccessorKind, ProducedValueFact, RcIntrinsicOp, ResolvedCall,
-    RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering, TyPattern, TypeCheckOutput,
-    VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering,
-    WireCodecDirection, WireFieldLayout, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    PlanSub, PoolAccessor, PoolAccessorKind, ProducedValueDependency, ProducedValueFact,
+    RcIntrinsicOp, ResolvedCall, RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering,
+    TyPattern, TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod,
+    WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout, WireLayoutEntry,
+    WireLayoutTable, WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

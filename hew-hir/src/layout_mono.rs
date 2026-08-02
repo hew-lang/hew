@@ -371,55 +371,39 @@ pub fn run_layout_mono_pass(
         }
     }
 
-    // Seed the synthetic `VecIter<T>` record (the `for x in vec` / `into_iter`
-    // desugar target) into `record_decls`, mirroring the Option/Result enum
-    // seeding above. `VecIter` is NOT a `HirItem::Record`/`TypeDecl` — the HIR
-    // for-in desugar (`lower::LowerCtx::make_vec_iter_init`) synthesises its
-    // `StructInit` and registers its layout directly — so the item-loop never
-    // adds it. Under a generic body the origin-site `register_vec_iter_layout`
-    // only registers the ABSTRACT `VecIter<T>`; the concrete element becomes
-    // observable only once the enclosing fn is substituted (`iterate$$i64`),
-    // exactly mirroring how a user `record Box<T>` constructed inside a generic
-    // fn body is discovered here. Seeding the decl lets `visit_ty` register the
-    // concrete `VecIter$$<elem>` layout per monomorphisation, so MIR's
-    // field-order lookup (StructInit + FieldAccess) resolves it. The field
-    // shape is sourced from the single `vec_iter_field_shape` authority the
-    // origin-site path also consumes, so the two registrations can never
-    // disagree. The reserved declaration key is disjoint from every user
-    // record spelling; typed `BuiltinType::VecIter` is the only route here.
-    let ty_t_vec_iter = ResolvedTy::named_user("T", vec![]);
-    record_decls.insert(
-        "@synthetic.VecIter".to_string(),
-        RecordDecl {
-            id: crate::lower::SYNTHETIC_VEC_ITER_ITEM,
-            type_params: vec!["T".to_string()],
-            symbol_class: crate::mono::SymbolClass::SyntheticRecord,
-            fields: crate::lower::vec_iter_field_shape(&ty_t_vec_iter),
-        },
-    );
-    all_type_params.insert("T".to_string());
-
-    // Seed the synthetic `HashMapIter<K, V>` record (the `for (k, v) in m`
-    // desugar target), mirroring `VecIter` above: it is declared in
-    // `std/builtins.hew` but never emitted as a HIR item, so `visit_ty` needs
-    // the decl here to register each concrete `HashMapIter$$<K, V>` layout per
-    // monomorphisation (StructInit + FieldAccess field-order lookup). The field
-    // shape comes from the single `hashmap_iter_field_shape` authority the
-    // for-in desugar also constructs from. The reserved declaration key and
-    // synthetic symbol class keep a user `HashMapIter<K, V>` disjoint.
-    let ty_k_hm_iter = ResolvedTy::named_user("K", vec![]);
-    let ty_v_hm_iter = ResolvedTy::named_user("V", vec![]);
-    record_decls.insert(
-        "@synthetic.HashMapIter".to_string(),
-        RecordDecl {
-            id: crate::lower::SYNTHETIC_HASHMAP_ITER_ITEM,
-            type_params: vec!["K".to_string(), "V".to_string()],
-            symbol_class: crate::mono::SymbolClass::SyntheticRecord,
-            fields: crate::lower::hashmap_iter_field_shape(&ty_k_hm_iter, &ty_v_hm_iter),
-        },
-    );
-    all_type_params.insert("K".to_string());
-    all_type_params.insert("V".to_string());
+    // Synthetic cursors are not emitted as HIR declarations, so seed their
+    // abstract shapes for discovery after generic-function substitution. This
+    // consumes the same typed catalog as origin-site registration; adding a
+    // cursor family in one place automatically closes both paths.
+    for spec in crate::lower::SYNTHETIC_CURSOR_LAYOUT_SPECS {
+        let type_params: Vec<String> = spec
+            .type_params
+            .iter()
+            .map(|param| (*param).to_string())
+            .collect();
+        let type_args: Vec<ResolvedTy> = type_params
+            .iter()
+            .map(|param| ResolvedTy::named_user(param, vec![]))
+            .collect();
+        let Some((_, fields)) = crate::lower::synthetic_cursor_layout(spec.builtin, &type_args)
+        else {
+            debug_assert!(
+                false,
+                "synthetic cursor catalog arity must match its field-shape authority"
+            );
+            continue;
+        };
+        record_decls.insert(
+            format!("@synthetic.{}", spec.builtin.canonical_name()),
+            RecordDecl {
+                id: spec.origin,
+                type_params: type_params.clone(),
+                symbol_class: crate::mono::SymbolClass::SyntheticRecord,
+                fields,
+            },
+        );
+        all_type_params.extend(type_params);
+    }
 
     let mut disc = Discovery {
         record_decls: &record_decls,

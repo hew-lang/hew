@@ -2539,15 +2539,14 @@ impl Builder {
                     return;
                 };
                 let object_ty = self.subst_ty(&object.ty);
-                // Both generic and monomorphic field stores use the exact
-                // checker-resolved outer identity. The shared layout helper
-                // makes that dotted owner native-safe; it must never be
-                // reduced to its leaf name before lookup.
+                // Resolve every record class through the typed authority.
+                // User records preserve their canonical nominal owner;
+                // compiler cursors select the reserved synthetic class from
+                // their builtin discriminator and concrete arguments.
                 let type_name = match &object_ty {
-                    ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
-                        mangle_layout_key(name, args)
+                    ResolvedTy::Named { name, .. } => {
+                        user_record_layout_key(&object_ty).unwrap_or_else(|| name.clone())
                     }
-                    ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::UnsupportedNode {
@@ -4793,22 +4792,16 @@ impl Builder {
 
                 // Resolve the record type key from the object's type so we
                 // can look up the field offset in the field-order table.
-                // For a generic record instantiation (`b: Box<i64>` reading
-                // `b.value`) the key is the mangled name `Box$$i64`; for a
-                // monomorphic record the key is the (possibly qualified) name.
-                // Route the GENERIC arm's outer name through `short_name` before
-                // mangling — identical to the `StructInit` arm — since a generic
-                // record's layout is registered under the bare outer name. The
-                // monomorphic arm keeps `name` so a same-bare-name record
-                // registered under its QUALIFIED key (`widgeti8.Widget` vs
-                // `widgeti64.Widget`) hits its own divergent layout;
-                // `lookup_record_field_order` strips the qualifier on a miss.
+                // Field loads consume the same typed key as StructInit and
+                // field stores. In particular, `VecIter<T>` / `HashMapIter<K,V>`
+                // must retain their synthetic-record class; rebuilding a plain
+                // name mangle here would miss the published layout and damage
+                // the rest of the function's control-flow graph.
                 let object_ty = self.subst_ty(&object.ty);
                 let type_name = match &object_ty {
-                    ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
-                        mangle_layout_key(name, args)
+                    ResolvedTy::Named { name, .. } => {
+                        user_record_layout_key(&object_ty).unwrap_or_else(|| name.clone())
                     }
-                    ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
                         let _ = self.lower_value(object);
                         self.diagnostics.push(MirDiagnostic {

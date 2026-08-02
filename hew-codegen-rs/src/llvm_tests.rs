@@ -438,6 +438,39 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
 }
 
 #[test]
+fn ordinary_mixed_width_integer_move_fails_closed() {
+    let mut pipeline = empty_pipeline_with_const_42();
+    let main = &mut pipeline.raw_mir[0];
+    main.locals = vec![ResolvedTy::I32, ResolvedTy::I64];
+    main.blocks[0].instructions = vec![
+        Instr::ConstI64 {
+            dest: Place::Local(0),
+            value: -1,
+        },
+        Instr::Move {
+            dest: Place::Local(1),
+            src: Place::Local(0),
+        },
+        Instr::Move {
+            dest: Place::ReturnSlot,
+            src: Place::Local(1),
+        },
+    ];
+
+    let ctx = Context::create();
+    let err = build_module(&ctx, &pipeline, "mixed_width_move")
+        .expect_err("ordinary i32 -> i64 Move must not guess signedness");
+    let message = match err {
+        CodegenError::FailClosed(message) => message,
+        other => panic!("expected FailClosed, got {other:?}"),
+    };
+    assert!(
+        message.contains("Move type mismatch"),
+        "mismatched ordinary integer Move must fail at the typed boundary: {message}"
+    );
+}
+
+#[test]
 fn wasm_wasi_main_adapter_normalizes_source_integer_width() {
     let ctx = Context::create();
     let pipeline = empty_pipeline_with_const_42();
@@ -14704,6 +14737,25 @@ fn record_inplace_drop_name_mangles_generic_instantiation() {
         ))
         .unwrap(),
         expected,
+    );
+    // Compiler cursors use the discriminator-selected synthetic record key;
+    // a same-leaf user record cannot select this helper namespace.
+    let cursor_args = vec![ResolvedTy::I64, ResolvedTy::String];
+    let cursor_expected =
+        hew_hir::synthetic_cursor_layout_key(hew_types::BuiltinType::HashMapIter, &cursor_args)
+            .unwrap();
+    assert_eq!(
+        record_inplace_drop_name(&ResolvedTy::named_builtin(
+            "HashMapIter",
+            hew_types::BuiltinType::HashMapIter,
+            cursor_args.clone(),
+        ))
+        .unwrap(),
+        cursor_expected,
+    );
+    assert_ne!(
+        record_inplace_drop_name(&ResolvedTy::named_user("HashMapIter", cursor_args)).unwrap(),
+        cursor_expected,
     );
     // A non-record type fails closed (never a dangling helper name).
     assert!(matches!(

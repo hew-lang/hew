@@ -95,6 +95,76 @@ fn imported_iter_adapter_next_impls_are_registered_by_exact_owner() {
 }
 
 #[test]
+fn compiler_iterator_impls_retain_their_typed_receiver_identities() {
+    let output = std_iter_output("fn main() -> i64 { 0 }");
+    let index = build_trait_impl_method_index(&output.module.items);
+    let iterator = DefId::new("std.builtins.Iterator");
+    let next = DefId::new("std.builtins.Iterator::next");
+    let receivers: Vec<_> = index
+        .keys()
+        .filter(|key| key.declaring_trait == iterator && key.method == next)
+        .map(|key| key.self_type.nominal.full_path().to_string())
+        .collect();
+
+    for expected in [
+        "std.builtins.VecIter",
+        "std.builtins.HashMapIter",
+        "Generator",
+        "AsyncGenerator",
+    ] {
+        assert!(
+            receivers.iter().any(|receiver| receiver == expected),
+            "missing exact builtin Iterator impl receiver `{expected}`; registered: {receivers:?}"
+        );
+    }
+}
+
+#[test]
+fn user_hashmap_iter_shadow_cannot_capture_the_compiler_cursor_impl() {
+    let output = std_iter_output(
+        r"
+type HashMapIter<T> { value: Option<T>; }
+impl<T> Iterator for HashMapIter<T> {
+    type Item = T;
+    fn next(var self) -> Option<T> { None }
+}
+fn main() -> i64 { 0 }
+",
+    );
+    let index = build_trait_impl_method_index(&output.module.items);
+    let iterator = DefId::new("std.builtins.Iterator");
+    let next = DefId::new("std.builtins.Iterator::next");
+    let builtin = lookup_trait_impl_entry_by_id(
+        &index,
+        &iterator,
+        &NominalInstance {
+            nominal: NominalId::new("std.builtins.HashMapIter"),
+            args: Vec::new(),
+        },
+        &next,
+    )
+    .unwrap_or_else(|| {
+        panic!(
+            "the compiler cursor keeps its exact std impl; keys: {:#?}",
+            index.keys().collect::<Vec<_>>()
+        )
+    });
+    let user = lookup_trait_impl_entry_by_id(
+        &index,
+        &iterator,
+        &NominalInstance {
+            nominal: NominalId::new("HashMapIter"),
+            args: Vec::new(),
+        },
+        &next,
+    )
+    .expect("the user same-leaf nominal keeps an independent impl");
+
+    assert_ne!(builtin.method, user.method);
+    assert_ne!(builtin.method_symbol, user.method_symbol);
+}
+
+#[test]
 fn user_map_shadow_does_not_capture_imported_iter_map_dispatch() {
     let output = std_iter_output(
         r"

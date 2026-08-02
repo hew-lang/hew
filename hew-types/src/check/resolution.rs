@@ -54,6 +54,7 @@ impl Checker {
             "std.channel.Sender" => Some(BuiltinType::Sender),
             "std.channel.Receiver" => Some(BuiltinType::Receiver),
             "std.builtins.VecIter" => Some(BuiltinType::VecIter),
+            "std.builtins.HashMapIter" => Some(BuiltinType::HashMapIter),
             "std.builtins.LocalPid" => Some(BuiltinType::LocalPid),
             "std.builtins.RemotePid" => Some(BuiltinType::RemotePid),
             _ => crate::lookup_builtin_type(name),

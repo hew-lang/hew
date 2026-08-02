@@ -1604,6 +1604,22 @@ fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
     )
 }
 
+/// Linker/metadata owner for one compiler-injected builtin impl target.
+/// Synthetic cursors use their canonical std owner so a root user nominal
+/// with the same leaf can emit an independent impl and method body. The input
+/// comes only from the parsed `BUILTINS_HEW_SOURCE` program; ordinary source
+/// declarations never call this projection.
+fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
+    SYNTHETIC_CURSOR_LAYOUT_SPECS
+        .iter()
+        .find(|spec| spec.builtin.canonical_name() == source_name)
+        .map_or(source_name, |spec| match spec.builtin {
+            BuiltinType::VecIter => "std.builtins.VecIter",
+            BuiltinType::HashMapIter => "std.builtins.HashMapIter",
+            _ => unreachable!("synthetic cursor catalog contains only cursor builtins"),
+        })
+}
+
 fn is_builtin_display_impl(item: &Item) -> bool {
     let Item::Impl(impl_decl) = item else {
         return false;
@@ -1695,15 +1711,82 @@ fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
 }
 
 fn check_builtin_receiver_impl_program(program: &Program) -> TypeCheckOutput {
+    // The parsed embedded source uses private leaf spellings for its synthetic
+    // cursor declarations. Type-check a projection whose impl targets carry
+    // their exact compiler owner so declaration IDs and call facts cannot
+    // collide with root user nominals of the same leaf. The executable HIR is
+    // still lowered from the original source AST, preserving all source spans.
+    let mut checker_program = program.clone();
+    for (item, _) in &mut checker_program.items {
+        let Item::Impl(impl_decl) = item else {
+            continue;
+        };
+        canonicalize_injected_cursor_type_expr(&mut impl_decl.target_type.0);
+        for alias in &mut impl_decl.type_aliases {
+            canonicalize_injected_cursor_type_expr(&mut alias.ty.0);
+        }
+        for method in &mut impl_decl.methods {
+            for param in &mut method.params {
+                canonicalize_injected_cursor_type_expr(&mut param.ty.0);
+            }
+            if let Some(return_type) = &mut method.return_type {
+                canonicalize_injected_cursor_type_expr(&mut return_type.0);
+            }
+        }
+    }
     let mut checker =
         hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
-    let output = checker.check_program(program);
+    let output = checker.check_program(&checker_program);
     debug_assert!(
         output.errors.is_empty(),
         "std/builtins.hew receiver impls failed to type-check: {:?}",
         output.errors
     );
     output
+}
+
+fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
+    match ty {
+        TypeExpr::Named { name, type_args } => {
+            let canonical = injected_builtin_impl_symbol_owner(name).to_string();
+            if canonical != *name {
+                *name = canonical;
+            }
+            if let Some(type_args) = type_args {
+                for arg in type_args {
+                    canonicalize_injected_cursor_type_expr(&mut arg.0);
+                }
+            }
+        }
+        TypeExpr::Result { ok, err } => {
+            canonicalize_injected_cursor_type_expr(&mut ok.0);
+            canonicalize_injected_cursor_type_expr(&mut err.0);
+        }
+        TypeExpr::Option(inner)
+        | TypeExpr::Slice(inner)
+        | TypeExpr::Borrow(inner)
+        | TypeExpr::Pointer { pointee: inner, .. } => {
+            canonicalize_injected_cursor_type_expr(&mut inner.0);
+        }
+        TypeExpr::Tuple(elements) => {
+            for element in elements {
+                canonicalize_injected_cursor_type_expr(&mut element.0);
+            }
+        }
+        TypeExpr::Array { element, .. } => {
+            canonicalize_injected_cursor_type_expr(&mut element.0);
+        }
+        TypeExpr::Function {
+            params,
+            return_type,
+        } => {
+            for param in params {
+                canonicalize_injected_cursor_type_expr(&mut param.0);
+            }
+            canonicalize_injected_cursor_type_expr(&mut return_type.0);
+        }
+        TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
+    }
 }
 
 /// Map each *spliced file-import* entry in `program.items` to the `module_idx`
@@ -3665,10 +3748,13 @@ pub fn lower_program_with_mono_cap(
                     continue;
                 }
                 if let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 {
+                    let symbol_owner = injected_builtin_impl_symbol_owner(name);
                     let method_symbols: Vec<String> = impl_decl
                         .methods
                         .iter()
-                        .map(|method| crate::node::HirImplBlock::method_symbol(name, &method.name))
+                        .map(|method| {
+                            crate::node::HirImplBlock::method_symbol(symbol_owner, &method.name)
+                        })
                         .collect();
                     if method_symbols
                         .iter()
@@ -3678,7 +3764,7 @@ pub fn lower_program_with_mono_cap(
                     }
                     let impl_type_params = impl_type_param_names(impl_decl);
                     for method in &impl_decl.methods {
-                        ctx.register_impl_method_fn_entry(name, method, &impl_type_params);
+                        ctx.register_impl_method_fn_entry(symbol_owner, method, &impl_type_params);
                     }
                     builtin_receiver_impl_method_symbols.extend(method_symbols);
                 }
@@ -4521,13 +4607,41 @@ pub fn lower_program_with_mono_cap(
                         let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
                             continue;
                         };
+                        let symbol_owner = injected_builtin_impl_symbol_owner(name);
                         let registered = impl_decl.methods.iter().all(|method| {
                             builtin_receiver_impl_method_symbols.contains(
-                                &crate::node::HirImplBlock::method_symbol(name, &method.name),
+                                &crate::node::HirImplBlock::method_symbol(
+                                    symbol_owner,
+                                    &method.name,
+                                ),
                             )
                         });
                         if !registered {
                             continue;
+                        }
+                        // The checker output for the isolated builtins source
+                        // keys impl declarations by its source symbol
+                        // (`HashMapIter::next`). The emitted synthetic cursor
+                        // body uses the canonical owner-qualified linker symbol
+                        // so it cannot collide with a root user same-leaf impl.
+                        // Alias the exact checker declaration onto that linker
+                        // projection only inside this injected-source scope.
+                        for method in &impl_decl.methods {
+                            let source_symbol =
+                                crate::node::HirImplBlock::method_symbol(name, &method.name);
+                            let emitted_symbol = crate::node::HirImplBlock::method_symbol(
+                                symbol_owner,
+                                &method.name,
+                            );
+                            if let Some(declaration) = output
+                                .impl_method_declaration_ids
+                                .get(&emitted_symbol)
+                                .or_else(|| output.impl_method_declaration_ids.get(&source_symbol))
+                                .cloned()
+                            {
+                                ctx.impl_method_declaration_ids
+                                    .insert(emitted_symbol, declaration);
+                            }
                         }
                         ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
                     }
@@ -8984,6 +9098,7 @@ impl LowerCtx {
         let bare_type_name = self_type_name
             .split_once("$$")
             .map_or(self_type_name, |(bare, _)| bare);
+        let bare_type_name = hew_types::short_name(bare_type_name);
         let symbol = crate::node::HirImplBlock::method_symbol(self_type_name, &method.name);
         self.register_fn_entry(&symbol, method);
         if Self::is_var_self_method_for_type(method, bare_type_name) {
@@ -10927,9 +11042,13 @@ impl LowerCtx {
         };
         // Symbol name for this impl's methods: mangled when the impl is a concrete
         // specialisation of a generic type, bare otherwise.
-        let base_symbol_self_name = imported
-            .and_then(|context| context.symbol_self_name)
-            .unwrap_or(self_type_name.as_str());
+        let base_symbol_self_name = if self.lowering_injected_items {
+            injected_builtin_impl_symbol_owner(self_type_name)
+        } else {
+            imported
+                .and_then(|context| context.symbol_self_name)
+                .unwrap_or(self_type_name.as_str())
+        };
         let symbol_self_name: std::borrow::Cow<str> = if self_type_concrete_args.is_empty() {
             std::borrow::Cow::Borrowed(base_symbol_self_name)
         } else {
@@ -10960,7 +11079,25 @@ impl LowerCtx {
         // compiler-reserved inherent-impl exception below. Source spellings
         // such as `Vec`, `Option`, and `Result` are ordinary user nominals
         // unless they carry the corresponding builtin discriminator.
-        let resolved_impl_self_ty = self.lower_type(&decl.target_type);
+        let mut resolved_impl_self_ty = self.lower_type(&decl.target_type);
+        // Injected `std/builtins.hew` impls are compiler-owned declarations.
+        // A root user declaration with the same source leaf must not retag
+        // their `Self` type or their static-dispatch metadata. Recover the
+        // exact builtin discriminator only at this provenance-bearing injected
+        // boundary; ordinary source impls continue to trust checker resolution.
+        if self.lowering_injected_items {
+            let injected_builtin = SYNTHETIC_CURSOR_LAYOUT_SPECS
+                .iter()
+                .find(|spec| spec.builtin.canonical_name() == self_type_name)
+                .map(|spec| spec.builtin)
+                .or_else(|| hew_types::lookup_builtin_type(self_type_name));
+            if let (Some(builtin), ResolvedTy::Named { args, .. }) =
+                (injected_builtin, &resolved_impl_self_ty)
+            {
+                resolved_impl_self_ty =
+                    ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args.clone());
+            }
+        }
         let builtin_impl_kind = match &resolved_impl_self_ty {
             ResolvedTy::Named { builtin, .. } => *builtin,
             ResolvedTy::Duration => Some(BuiltinType::Duration),
@@ -11094,6 +11231,14 @@ impl LowerCtx {
         // this metadata with parameter zero to distinguish a true receiver
         // from an associated function's ordinary first argument.
         let hir_impl_self_type_name = match &resolved_impl_self_ty {
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::VecIter),
+                ..
+            } => "std.builtins.VecIter".to_string(),
+            ResolvedTy::Named {
+                builtin: Some(BuiltinType::HashMapIter),
+                ..
+            } => "std.builtins.HashMapIter".to_string(),
             ResolvedTy::Named { name, .. } => self.current_module_name.as_deref().map_or_else(
                 || name.clone(),
                 |module| {
@@ -21420,6 +21565,14 @@ impl LowerCtx {
             .current_module_name
             .as_deref()
             .is_some_and(|module| self.file_import_module_names.contains(module));
+        // Synthetic iterator cursors have no user-selectable constructor
+        // authority: the checker stamps them only while lowering a compiler
+        // `into_iter` result. Preserve that exact discriminator even when the
+        // source scope declares the same leaf; the user nominal arrives with
+        // `builtin: None` and remains distinct below.
+        if let Some(cursor @ (BuiltinType::VecIter | BuiltinType::HashMapIter)) = builtin {
+            return ResolvedTy::named_builtin(cursor.canonical_name(), cursor, args);
+        }
         // A checker compatibility marker is representation metadata, not a
         // license to replace a declaration selected from the current source
         // scope.  This is especially important for generic prelude names:
@@ -21530,12 +21683,11 @@ impl LowerCtx {
                 is_opaque,
             };
         }
-        // `Ty::Named` facts emitted for generic actor handles can lose the
-        // builtin discriminator at the checker→HIR boundary.  Recover only a
-        // compiler-registered root carrier after lexical source authority has
-        // had a chance to win.  Named imports are real source bindings too:
-        // project them to their exact owner first, so `import peer::{RemotePid}`
-        // never acquires the runtime actor-handle representation.
+        // Named imports are real source bindings, not catalog aliases. Project
+        // their bare spelling to the exact source owner before normalising the
+        // nominal. An unchanged checker-authored `builtin: None` remains user
+        // owned below; HIR must not manufacture representation authority from
+        // a bare spelling in the runtime catalog.
         if !name.contains('.')
             && !self.current_scope_declares_source_type(&name, current_module_is_file_import)
         {
@@ -21547,11 +21699,6 @@ impl LowerCtx {
                     imported.clone(),
                     args,
                 ));
-            }
-            if let Some(registration) =
-                crate::builtin_type_classes::builtin_type_registration(&name)
-            {
-                return ResolvedTy::named_builtin(registration.name(), registration.builtin, args);
             }
         }
         let canonical = self.canonical_current_module_record_name(&name);
@@ -33818,7 +33965,7 @@ fn main() {}
     }
 
     #[test]
-    fn checker_remote_pid_fact_recovers_builtin_without_reclassifying_source_names() {
+    fn checker_remote_pid_fact_requires_discriminator_and_preserves_source_names() {
         let mut ctx = LowerCtx::new(
             &TypeCheckOutput::default(),
             MONOMORPHISATION_REGISTRY_CAP,
@@ -33829,8 +33976,17 @@ fn main() {}
             ctx.qualify_current_module_record_ty(
                 ResolvedTy::named_user("RemotePid", args.clone(),)
             ),
+            ResolvedTy::named_user("RemotePid", args.clone()),
+            "a bare spelling cannot manufacture the compiler actor-carrier discriminator"
+        );
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_builtin(
+                "RemotePid",
+                BuiltinType::RemotePid,
+                args.clone(),
+            )),
             ResolvedTy::named_builtin("RemotePid", BuiltinType::RemotePid, args.clone()),
-            "checker facts for the compiler-owned actor carrier retain its value class"
+            "a checker-authored compiler actor carrier retains its value class"
         );
 
         ctx.root_visible_source_type_short_names
@@ -35091,9 +35247,22 @@ fn main() {}
                 builtin: None,
             },
         );
+        let stored_user_vec_ty = user_vec_ctx
+            .expr_types
+            .get(&SpanKey::in_module(&(0..0), 0))
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .map(|ty| user_vec_ctx.qualify_current_module_record_ty(ty));
         assert!(
-            user_vec_ctx.array_literal_vec_ty(&(0..0)).is_none(),
-            "a user Vec<T> must not acquire array literal runtime lowering"
+            matches!(
+                stored_user_vec_ty,
+                Some(ResolvedTy::Named { builtin: None, .. })
+            ),
+            "checker/HIR qualification must preserve a user Vec<T>, got {stored_user_vec_ty:?}"
+        );
+        let user_vec_literal_ty = user_vec_ctx.array_literal_vec_ty(&(0..0));
+        assert!(
+            user_vec_literal_ty.is_none(),
+            "a user Vec<T> must not acquire array literal runtime lowering, got {user_vec_literal_ty:?}"
         );
 
         let mut map_ctx = LowerCtx::new(

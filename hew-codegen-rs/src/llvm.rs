@@ -13899,16 +13899,20 @@ fn lower_instruction_with_cancel_drops(
                 // WHEN obsolete: when the supervisor accessor MIR is redesigned
                 // to carry a ptr-typed handle field directly.
                 use inkwell::types::BasicTypeEnum;
-                // Slice 5: integer width mismatch (iW → iN where N >= W)
-                // arises when Slice 4b's dispatch tree moves a narrow
-                // machine tag (iW from `Place::MachineTag`) into an I64
-                // scratch local for comparison. Emit a `zext` load+store
-                // so the dispatch keeps its I64 invariant without forcing
-                // each tag-width to introduce a new MIR-level narrow type.
+                // Integer-width repair is reserved for enum/machine TAG
+                // storage. Tags are unsigned discriminants, so widening them
+                // into the dispatch tree's i64 scratch slot is necessarily a
+                // zext, and construction writes truncate the i64 scratch value
+                // back to the declared tag width. Ordinary integer values must
+                // carry signedness authority in `Instr::NumericCast`; accepting
+                // a generic local-to-local mismatch here would silently zext a
+                // negative i8/i16/i32 value.
                 if let (BasicTypeEnum::IntType(src_int), BasicTypeEnum::IntType(dest_int)) =
                     (src_ty, dest_ty)
                 {
-                    if src_int.get_bit_width() < dest_int.get_bit_width() {
+                    let tag_read = matches!(src, Place::MachineTag(_) | Place::EnumTag(_))
+                        && matches!(dest, Place::Local(_));
+                    if tag_read && src_int.get_bit_width() < dest_int.get_bit_width() {
                         let narrow = fn_ctx
                             .builder
                             .build_load(src_ty, src_ptr, "move_iN_load")
@@ -13929,7 +13933,9 @@ fn lower_instruction_with_cancel_drops(
                     // The transition body's `MachineVariantCtor` emits an
                     // `Instr::ConstI64` into an I64 local then moves it
                     // into the tag slot.
-                    if src_int.get_bit_width() > dest_int.get_bit_width() {
+                    let tag_write = matches!(dest, Place::MachineTag(_) | Place::EnumTag(_))
+                        && matches!(src, Place::Local(_));
+                    if tag_write && src_int.get_bit_width() > dest_int.get_bit_width() {
                         let wide = fn_ctx
                             .builder
                             .build_load(src_ty, src_ptr, "move_iN_load_wide")
@@ -23461,6 +23467,19 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
             builtin: Some(_),
             ..
         } if args.is_empty() => Ok(name.clone()),
+        ResolvedTy::Named {
+            args,
+            builtin:
+                Some(
+                    builtin @ (hew_types::BuiltinType::VecIter
+                    | hew_types::BuiltinType::HashMapIter),
+                ),
+            ..
+        } => hew_hir::synthetic_cursor_layout_key(*builtin, args).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "RecordInPlace drop has no synthetic cursor layout key for {ty:?}"
+            ))
+        }),
         other => Err(CodegenError::FailClosed(format!(
             "RecordInPlace drop requires a user record type; got {other:?}"
         ))),

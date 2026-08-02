@@ -2099,7 +2099,7 @@ fn resource_opaque_return_releases_through(
     }
     module
         .type_classes
-        .opaque_resource_lifecycle_for_lowered_type(name)
+        .opaque_resource_lifecycle_for_type_name(name)
         .is_some_and(|lifecycle| {
             discharge_depth != crate::ffi_contracts::ReleaseDischargeDepth::None
                 && lifecycle.release_symbol == release_symbol
@@ -6691,11 +6691,15 @@ mod measured_extern_result_transfer {
         module
             .type_classes
             .admit_opaque_resource_lifecycle(hew_hir::OpaqueResourceLifecycle {
-                resource_type: "std.net.Connection".to_string(),
-                lowered_type_name: "Connection".to_string(),
+                resource_declaration: hew_types::DefId::new("Connection"),
+                close_declaration: hew_types::DefId::new("Connection::close"),
+                release_declaration: hew_types::DefId::new("hew_tcp_connection_close"),
                 close_symbol: "Connection::close".to_string(),
                 release_symbol: release_symbol.to_string(),
                 discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Shallow,
+                producer_declarations: [hew_types::DefId::new("hew_tcp_connect")]
+                    .into_iter()
+                    .collect(),
                 producer_symbols: ["hew_tcp_connect".to_string()].into_iter().collect(),
                 producer_modules: ["std.net".to_string()].into_iter().collect(),
             })
@@ -6791,11 +6795,15 @@ fn main() {}
         module
             .type_classes
             .admit_opaque_resource_lifecycle(hew_hir::OpaqueResourceLifecycle {
-                resource_type: "std.encoding.json.Value".to_string(),
-                lowered_type_name: "Value".to_string(),
+                resource_declaration: hew_types::DefId::new("Value"),
+                close_declaration: hew_types::DefId::new("Value::close"),
+                release_declaration: hew_types::DefId::new("hew_json_free"),
                 close_symbol: "Value::close".to_string(),
                 release_symbol: "hew_json_free".to_string(),
                 discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Deep,
+                producer_declarations: [hew_types::DefId::new("hew_json_array_new")]
+                    .into_iter()
+                    .collect(),
                 producer_symbols: ["hew_json_array_new".to_string()].into_iter().collect(),
                 producer_modules: ["std.encoding.json".to_string()].into_iter().collect(),
             })

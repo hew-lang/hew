@@ -90,8 +90,14 @@ pub(super) struct ActorInitParamInfo {
 /// Downstream stages may consume it; they must not rebuild it from names.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OpaqueResourceLifecycleCandidate {
+    /// Canonical identity of the opaque nominal declaration.
+    pub resource_declaration: crate::DefId,
     pub resource_type: String,
     pub owner_module: String,
+    /// Canonical identity of the inherent consuming `close` declaration.
+    pub close_declaration: crate::DefId,
+    /// Canonical identity of the source extern release declaration.
+    pub release_declaration: crate::DefId,
     pub release_symbol: String,
     /// Exact source/contract parameter position consumed by the release.
     /// HIR validates receiver forwarding from this fact rather than searching
@@ -101,6 +107,8 @@ pub struct OpaqueResourceLifecycleCandidate {
     pub result_ownership: crate::ffi_contracts::ExternResultOwnership,
     pub result_retention: crate::ffi_contracts::ExternResultRetention,
     pub producer_symbols: BTreeSet<String>,
+    /// Canonical source declarations whose contracts produce this resource.
+    pub producer_declarations: BTreeSet<crate::DefId>,
     /// Source modules that declare compatible producer externs.
     ///
     /// This is provenance only: membership never authorizes a release
@@ -115,6 +123,7 @@ pub enum OpaqueResourceLifecycleConflictKind {
         actual: String,
     },
     ReleaseDeclarationMissing,
+    CloseDeclarationMissing,
     ReleaseSignatureMismatch {
         detail: String,
     },
@@ -136,12 +145,13 @@ pub struct OpaqueResourceLifecycleConflict {
 /// Checker-authoritative candidate graph for closeable opaque lifecycles.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct OpaqueResourceCandidateGraph {
-    pub candidates: BTreeMap<String, OpaqueResourceLifecycleCandidate>,
+    pub candidates: BTreeMap<crate::DefId, OpaqueResourceLifecycleCandidate>,
     pub conflicts: Vec<OpaqueResourceLifecycleConflict>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct SourceExternDeclaration {
+    pub(super) declaration: crate::DefId,
     pub(super) symbol: String,
     /// Declarative endpoint template, when `symbol` has no call-independent
     /// expansion. Candidate derivation matches this only against the closed

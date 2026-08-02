@@ -319,7 +319,11 @@ fn shipped_source_and_checker_lifecycle_inventories_are_a_bijection() {
         "source-derived lifecycle conflicts: {:#?}",
         graph.conflicts
     );
-    let candidate_resources: BTreeSet<_> = graph.candidates.keys().cloned().collect();
+    let candidate_resources: BTreeSet<_> = graph
+        .candidates
+        .keys()
+        .map(|declaration| declaration.full_path().to_string())
+        .collect();
     assert_eq!(
         candidate_resources, source_resources,
         "every shipped closeable opaque declaration must reach exactly one checker candidate, and no contract-only candidate may survive source removal"
@@ -692,8 +696,12 @@ fn synthetic_resource_contracts(
 }
 
 const SYNTHETIC_OWNER: &str = r#"
+#[resource]
 #[opaque]
 pub type Socket {}
+impl Socket {
+    fn close(consuming self) { unsafe { example_socket_close(self) }; }
+}
 extern "C" {
     fn example_socket_close(consume socket: Socket) -> i32;
 }
@@ -703,8 +711,12 @@ extern "C" {
 fn generic_extern_template_joins_only_exact_canonical_contract_expansions() {
     let checker = checker_with_registered_module(
         r#"
+        #[resource]
         #[opaque]
         pub type Socket {}
+        impl Socket {
+            fn close(consuming self) { unsafe { example_socket_close(self) }; }
+        }
         extern "C" {
             fn example_socket_close(consume socket: Socket) -> i32;
             #[extern_symbol("example_socket_{T}")]
@@ -917,6 +929,15 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
             }
             "#,
         ),
+        (
+            &["example", "noise"],
+            r#"
+            import example::owner;
+            extern "C" {
+                fn example_socket_open_left() -> i64;
+            }
+            "#,
+        ),
     ]);
     let mut contracts = synthetic_resource_contracts(&[
         ("example_socket_open_left", "example_socket_close"),
@@ -927,7 +948,9 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
     let matching = matching_graph
         .candidates
         .get("example.owner.Socket")
-        .expect("matching imported producers must aggregate");
+        .unwrap_or_else(|| {
+            panic!("matching imported producers must aggregate: {matching_graph:#?}")
+        });
     assert_eq!(matching.producer_symbols.len(), 2);
     assert_eq!(
         matching.producer_modules,

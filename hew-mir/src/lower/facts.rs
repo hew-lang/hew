@@ -4266,6 +4266,7 @@ mod enum_layout_tests {
         HirTypeDecl {
             id: ItemId(0),
             node: HirNodeId(0),
+            declaration: hew_types::DefId::new("Shape"),
             name: "Shape".to_string(),
             defining_module: None,
             marker: ResourceMarker::None,
@@ -4335,6 +4336,7 @@ mod enum_layout_tests {
         let decl = HirTypeDecl {
             id: ItemId(1),
             node: HirNodeId(1),
+            declaration: hew_types::DefId::new("Colour"),
             name: "Colour".to_string(),
             defining_module: None,
             marker: ResourceMarker::None,
@@ -4521,6 +4523,7 @@ mod enum_layout_tests {
         let decl = HirTypeDecl {
             id: option_item_id,
             node: HirNodeId(10),
+            declaration: hew_types::DefId::new("Option"),
             name: "Option".to_string(),
             defining_module: None,
             marker: ResourceMarker::None,

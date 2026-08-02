@@ -46,13 +46,14 @@ impl From<hew_parser::ast::ResourceMarker> for ResourceMarker {
 /// never reconstruct it from a short type name or a method spelling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaqueResourceLifecycle {
-    pub resource_type: String,
-    /// Exact HIR/MIR named-type key for this declaration. This temporary
-    /// adapter differs from `resource_type` only on the pre-DefId HIR model.
-    pub lowered_type_name: String,
+    pub resource_declaration: hew_types::DefId,
+    pub close_declaration: hew_types::DefId,
+    pub release_declaration: hew_types::DefId,
+    /// Emitted linkage names. These are never semantic lookup keys.
     pub close_symbol: String,
     pub release_symbol: String,
     pub discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth,
+    pub producer_declarations: std::collections::BTreeSet<hew_types::DefId>,
     pub producer_symbols: std::collections::BTreeSet<String>,
     pub producer_modules: std::collections::BTreeSet<String>,
 }
@@ -65,7 +66,7 @@ pub struct OpaqueResourceLifecycle {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TypeClassTable {
     classes: HashMap<String, (ResourceMarker, Option<String>)>,
-    opaque_resource_lifecycles: BTreeMap<String, OpaqueResourceLifecycle>,
+    opaque_resource_lifecycles: BTreeMap<hew_types::DefId, OpaqueResourceLifecycle>,
 }
 
 impl Deref for TypeClassTable {
@@ -103,7 +104,7 @@ impl TypeClassTable {
 
         match self
             .opaque_resource_lifecycles
-            .entry(lifecycle.resource_type.clone())
+            .entry(lifecycle.resource_declaration.clone())
         {
             Entry::Vacant(entry) => {
                 entry.insert(lifecycle);
@@ -116,19 +117,17 @@ impl TypeClassTable {
     #[must_use]
     pub fn opaque_resource_lifecycle(
         &self,
-        qualified_resource_type: &str,
+        resource_declaration: &hew_types::DefId,
     ) -> Option<&OpaqueResourceLifecycle> {
-        self.opaque_resource_lifecycles.get(qualified_resource_type)
+        self.opaque_resource_lifecycles.get(resource_declaration)
     }
 
     #[must_use]
-    pub fn opaque_resource_lifecycle_for_lowered_type(
+    pub fn opaque_resource_lifecycle_for_type_name(
         &self,
-        lowered_type_name: &str,
+        canonical_type_name: &str,
     ) -> Option<&OpaqueResourceLifecycle> {
-        self.opaque_resource_lifecycles
-            .values()
-            .find(|lifecycle| lifecycle.lowered_type_name == lowered_type_name)
+        self.opaque_resource_lifecycle(&hew_types::DefId::new(canonical_type_name))
     }
 
     #[must_use]

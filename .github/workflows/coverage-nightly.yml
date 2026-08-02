@@ -30,6 +30,55 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Runtime FFI coverage is produced only by real compiled Hew programs. Keep
+  # it separate from cargo-llvm-cov: their covmaps are not merge-compatible,
+  # and fail if any curated program fails to build, run, or emit profile data.
+  runtime-e2e-coverage:
+    name: Runtime E2E coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          components: llvm-tools
+          cache-shared-key: runtime-e2e-coverage
+
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo rm -rf /usr/lib/jvm || true
+          sudo rm -rf /usr/local/julia* || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Compile, run, and measure the runtime corpus
+        env:
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+        run: timeout 2400 bash scripts/coverage-runtime-e2e.sh
+
+      - name: Publish runtime coverage summary
+        if: always()
+        run: |
+          if [[ -f coverage-out/runtime-e2e/runtime-summary.txt ]]; then
+            cat coverage-out/runtime-e2e/runtime-summary.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload runtime coverage summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: runtime-e2e-coverage
+          path: coverage-out/runtime-e2e/runtime-summary.txt
+          if-no-files-found: ignore
+
   # ─────────────────────────────────────────────────────────────────────────
   # Code coverage — Rust workspace tests instrumented with cargo-llvm-cov.
   # Moved verbatim off ci.yml's per-PR path: same LLVM setup, same disk purge,

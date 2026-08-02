@@ -4635,6 +4635,7 @@ pub fn crash_only_param_loan_drop(
 /// method collide with a builtin runtime descriptor (`Receiver::close`,
 /// `MonitorRef::close`, ...). The resolved type's builtin discriminator is the
 /// sole authority that selects runtime-vs-user teardown later.
+#[cfg(test)]
 pub(super) fn resource_opaque_close_registry(
     type_classes: &hew_hir::TypeClassTable,
 ) -> Vec<(String, String)> {

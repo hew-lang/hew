@@ -1075,14 +1075,14 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         )
         .map_err(|error| error.to_string())?;
         match plan.is_clone_total(
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         ) {
             Ok(true) => Ok(()),
             Ok(false) => Err(format!(

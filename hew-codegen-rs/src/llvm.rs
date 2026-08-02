@@ -1695,6 +1695,7 @@ pub(crate) struct OwnedElemRegistries<'a, 'ctx> {
     pub(crate) enum_layouts: &'a [EnumLayout],
     pub(crate) machine_layouts: &'a MachineLayoutMap<'ctx>,
     pub(crate) record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
+    pub(crate) lifecycle_registry: &'a hew_hir::LifecycleRegistry,
 }
 
 /// The place/guard-independent identity of one typed frame-cleanup ritual.
@@ -1934,7 +1935,7 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// `Resource`-classified close-then-teardown body the up-front synthesis
     /// pass emits — the two synthesis points cannot diverge on whether the
     /// handle's `close(self)` fires.
-    pub(crate) resource_opaque_close: &'a [(String, String)],
+    pub(crate) lifecycle_registry: &'a hew_hir::LifecycleRegistry,
     /// Module-wide actor layouts keyed by `ActorLayout.name` at use sites.
     /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
     /// producer before calling into the runtime spawn ABI.
@@ -4958,21 +4959,29 @@ pub(crate) fn emit_owned_config_field_clone<'ctx>(
     child: &SupervisorChildLayout,
     field_ty: &ResolvedTy,
     mir_record_layouts: &[RecordLayout],
+    mir_enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     cfg_field_ptr: PointerValue<'ctx>,
     dst_field_ptr: PointerValue<'ctx>,
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let mut visited = std::collections::HashSet::new();
-    let kind = hew_mir::classify_state_field(field_ty, mir_record_layouts, &mut visited).map_err(
-        |err| {
-            CodegenError::FailClosed(format!(
-                "init thunk owned config field for child `{}`: field type {field_ty:?} could not \
+    let kind = hew_mir::classify_state_field_with_resource_handles(
+        field_ty,
+        mir_record_layouts,
+        mir_enum_layouts,
+        &[],
+        lifecycle_registry,
+        &mut visited,
+    )
+    .map_err(|err| {
+        CodegenError::FailClosed(format!(
+            "init thunk owned config field for child `{}`: field type {field_ty:?} could not \
                  be classified for cloning ({err:?}) — owned config init supports only \
                  clone-able types",
-                child.name
-            ))
-        },
-    )?;
+            child.name
+        ))
+    })?;
     // #2238 item 1: intercept owned collection kinds before the panic arm in
     // `clone_helper_for_kind` and fail closed coherently (see the helper doc).
     owned_config_field_clone_support(&kind, &child.name, field_ty)?;
@@ -5685,7 +5694,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
     enum_inplace_drop_seeds: &[String],
     vec_owned_record_seeds: &[String],
     resource_record_close: &[(String, String)],
-    resource_opaque_close: &[(String, String)],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<()> {
     // Per-record AND per-enum helpers must exist before the per-actor body
     // that calls them is emitted. Collect-then-emit two passes. The
@@ -5702,7 +5711,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         opaque_handle_names,
         enum_inplace_drop_seeds,
         vec_owned_record_seeds,
-        resource_opaque_close,
+        lifecycle_registry,
     )?;
     // Resource-record close-symbol lookup (spec §3.7.3). A `#[resource]`
     // record's recursive drop thunk must run the user `close(self)` FIRST,
@@ -5738,6 +5747,7 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         record_layouts: pipeline_records,
         record_structs: record_struct_map,
         resource_record_close,
+        lifecycle_registry,
     };
     for (record_name, kinds) in &record_classifications {
         let record_struct = record_struct_map.get(record_name).copied().ok_or_else(|| {
@@ -7031,7 +7041,8 @@ pub(crate) fn emit_field_drop_step<'ctx>(
                         symbol,
                     )
                 }
-                ResourceCloseAuthority::User(symbol) => {
+                ResourceCloseAuthority::User(lifecycle) => {
+                    let symbol = lifecycle.close_symbol.as_str();
                     let close_fn = llvm_mod.get_function(symbol).ok_or_else(|| {
                         CodegenError::FailClosed(format!(
                             "resource `{name}` field drop: no LLVM function for close symbol \
@@ -7043,7 +7054,7 @@ pub(crate) fn emit_field_drop_step<'ctx>(
                              lifecycle-symmetry)."
                         ))
                     })?;
-                    (close_fn, symbol.as_str())
+                    (close_fn, symbol)
                 }
             };
             if close_fn.count_params() != 1 {
@@ -7772,7 +7783,7 @@ fn collect_reachable_clone_targets(
     opaque_handle_names: &[String],
     extra_enum_seeds: &[String],
     extra_record_seeds: &[String],
-    resource_opaque_close: &[(String, String)],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<(
     Vec<(String, Vec<StateFieldCloneKind>)>,
     Vec<(String, EnumVariantKinds)>,
@@ -7823,6 +7834,7 @@ fn collect_reachable_clone_targets(
             &record.field_tys,
             pipeline_records,
             enum_layouts,
+            lifecycle_registry,
         )
         .ok()
         .flatten()
@@ -7859,7 +7871,7 @@ fn collect_reachable_clone_targets(
                 pipeline_records,
                 enum_layouts,
                 opaque_handle_names,
-                resource_opaque_close,
+                lifecycle_registry,
             )
             .map_err(|e| {
                 CodegenError::FailClosed(format!(
@@ -7902,7 +7914,7 @@ fn collect_reachable_clone_targets(
                         pipeline_records,
                         enum_layouts,
                         opaque_handle_names,
-                        resource_opaque_close,
+                        lifecycle_registry,
                         &mut visited,
                     )
                     .map_err(|e| {
@@ -8263,6 +8275,7 @@ pub(crate) struct DropSynthWitnesses<'a, 'ctx> {
     /// `#[resource]` record → user `close(self)` symbol, so an on-demand record
     /// drop body runs the RAII close before its field teardown (spec §3.7.3).
     pub(crate) resource_record_close: &'a [(String, String)],
+    pub(crate) lifecycle_registry: &'a hew_hir::LifecycleRegistry,
 }
 
 /// Build a `DropSynthWitnesses` from a live `FnCtx`. `record_layouts` is the
@@ -8279,6 +8292,7 @@ pub(crate) fn fn_ctx_drop_witnesses<'a, 'ctx>(
         record_layouts,
         record_structs: fn_ctx.record_layouts,
         resource_record_close: fn_ctx.resource_record_close,
+        lifecycle_registry: fn_ctx.lifecycle_registry,
     }
 }
 
@@ -8290,6 +8304,7 @@ fn classify_enum_drop_variants_raw(
     enum_key: &str,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<EnumVariantKinds> {
     let layout = enum_layouts
         .iter()
@@ -8308,10 +8323,12 @@ fn classify_enum_drop_variants_raw(
                 .iter()
                 .map(|field_ty| {
                     let mut visited = HashSet::new();
-                    hew_mir::classify_state_field_with_enum_layouts(
+                    hew_mir::classify_state_field_with_resource_handles(
                         field_ty,
                         record_layouts,
                         enum_layouts,
+                        &[],
+                        lifecycle_registry,
                         &mut visited,
                     )
                     .map_err(|e| {
@@ -8332,6 +8349,7 @@ fn classify_record_drop_fields_raw(
     record_key: &str,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<Vec<StateFieldCloneKind>> {
     let record = record_layouts
         .iter()
@@ -8346,10 +8364,12 @@ fn classify_record_drop_fields_raw(
         .iter()
         .map(|field_ty| {
             let mut visited = HashSet::new();
-            hew_mir::classify_state_field_with_enum_layouts(
+            hew_mir::classify_state_field_with_resource_handles(
                 field_ty,
                 record_layouts,
                 enum_layouts,
+                &[],
+                lifecycle_registry,
                 &mut visited,
             )
             .map_err(|e| {
@@ -8397,8 +8417,12 @@ fn ensure_enum_drop_body<'ctx>(
                  tagged-union layout"
         ))
     })?;
-    let variant_kinds =
-        classify_enum_drop_variants_raw(enum_key, w.record_layouts, w.enum_layouts)?;
+    let variant_kinds = classify_enum_drop_variants_raw(
+        enum_key,
+        w.record_layouts,
+        w.enum_layouts,
+        w.lifecycle_registry,
+    )?;
     emit_enum_drop_inplace_body(ctx, llvm_mod, enum_key, layout, &variant_kinds, w)
 }
 
@@ -8416,8 +8440,12 @@ fn ensure_record_drop_body<'ctx>(
         return Ok(());
     }
     let record_struct = record_struct_raw(record_key, w.record_structs)?;
-    let field_kinds =
-        classify_record_drop_fields_raw(record_key, w.record_layouts, w.enum_layouts)?;
+    let field_kinds = classify_record_drop_fields_raw(
+        record_key,
+        w.record_layouts,
+        w.enum_layouts,
+        w.lifecycle_registry,
+    )?;
     let resource_close = w
         .resource_record_close
         .iter()
@@ -8901,7 +8929,12 @@ pub(crate) fn emit_indirect_enum_free_body_raw<'ctx>(
     // below releases EVERY owned field — not just direct indirect-enum children.
     // Variant order mirrors `EnumLayout.variants`, registered in lockstep with
     // `layout.variant_struct_tys`; guard against drift before zipping them.
-    let variant_kinds = classify_enum_drop_variants_raw(enum_name, w.record_layouts, enum_layouts)?;
+    let variant_kinds = classify_enum_drop_variants_raw(
+        enum_name,
+        w.record_layouts,
+        enum_layouts,
+        w.lifecycle_registry,
+    )?;
     if variant_kinds.len() != layout.variant_struct_tys.len() {
         return Err(CodegenError::FailClosed(format!(
             "indirect-enum free synthesis: `{enum_name}` has {} classified variants but {} \
@@ -16038,7 +16071,7 @@ fn borrowed_aggregate_retain_kind(
         &record_layouts,
         fn_ctx.enum_layouts,
         &[],
-        fn_ctx.resource_opaque_close,
+        fn_ctx.lifecycle_registry,
         &mut visited,
     )
     .map_err(|error| {
@@ -18755,7 +18788,8 @@ pub(crate) fn emit_prepared_carrier_drop<'ctx>(
                     &mut fn_ctx.runtime_decls.borrow_mut(),
                     descriptor.c_symbol(),
                 )?,
-                ResourceCloseAuthority::User(symbol) => {
+                ResourceCloseAuthority::User(lifecycle) => {
+                    let symbol = lifecycle.close_symbol.as_str();
                     fn_ctx.llvm_mod.get_function(symbol).ok_or_else(|| {
                         CodegenError::FailClosed(format!(
                             "prepared user resource close `{symbol}` is not declared"
@@ -19199,10 +19233,12 @@ pub(crate) fn env_field_drop_kinds(
     let mut kinds = Vec::with_capacity(field_tys.len());
     for (idx, field_ty) in field_tys.iter().enumerate() {
         let mut visited = std::collections::HashSet::new();
-        let kind = hew_mir::classify_state_field_with_enum_layouts(
+        let kind = hew_mir::classify_state_field_with_resource_handles(
             field_ty,
             &record_layouts,
             fn_ctx.enum_layouts,
+            &[],
+            fn_ctx.lifecycle_registry,
             &mut visited,
         )
         .map_err(|e| {
@@ -20318,12 +20354,15 @@ fn tuple_field_clone_kind(
     elem_ty: &ResolvedTy,
     record_layouts: &[hew_mir::RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<hew_mir::StateFieldCloneKind> {
     let mut visited = HashSet::new();
-    hew_mir::classify_state_field_with_enum_layouts(
+    hew_mir::classify_state_field_with_resource_handles(
         elem_ty,
         record_layouts,
         enum_layouts,
+        &[],
+        lifecycle_registry,
         &mut visited,
     )
     .map_err(|e| {
@@ -20367,6 +20406,7 @@ pub(crate) fn tuple_inplace_field_kinds<'ctx>(
             elem,
             &record_layouts,
             regs.enum_layouts,
+            regs.lifecycle_registry,
         )?);
     }
     Ok((tuple_struct, kinds))
@@ -24090,7 +24130,7 @@ fn classify_record_drop_fields_for_key(
                 &record_layouts,
                 fn_ctx.enum_layouts,
                 &[],
-                fn_ctx.resource_opaque_close,
+                fn_ctx.lifecycle_registry,
                 &mut visited,
             )
             .map_err(|e| {
@@ -24126,10 +24166,12 @@ fn classify_enum_drop_variants_for_key(
                 .iter()
                 .map(|field_ty| {
                     let mut visited = HashSet::new();
-                    hew_mir::classify_state_field_with_enum_layouts(
+                    hew_mir::classify_state_field_with_resource_handles(
                         field_ty,
                         &record_layouts,
                         fn_ctx.enum_layouts,
+                        &[],
+                        fn_ctx.lifecycle_registry,
                         &mut visited,
                     )
                     .map_err(|e| {
@@ -24367,10 +24409,12 @@ fn emit_heap_slot_drop<'ctx>(
     if matches!(ty, ResolvedTy::Named { .. }) {
         let record_layouts = codegen_record_layouts(fn_ctx);
         let mut visited = HashSet::new();
-        let kind = hew_mir::classify_state_field_with_enum_layouts(
+        let kind = hew_mir::classify_state_field_with_resource_handles(
             ty,
             &record_layouts,
             fn_ctx.enum_layouts,
+            &[],
+            fn_ctx.lifecycle_registry,
             &mut visited,
         )
         .map_err(|e| {
@@ -27466,7 +27510,7 @@ fn validate_generator_env_plan<'ctx>(
                     &record_layouts,
                     fn_ctx.enum_layouts,
                     &[],
-                    fn_ctx.resource_opaque_close,
+                    fn_ctx.lifecycle_registry,
                 )
                 .map_err(|error| {
                     CodegenError::FailClosed(format!(
@@ -27507,7 +27551,7 @@ fn validate_generator_env_plan<'ctx>(
                         &record_layouts,
                         fn_ctx.enum_layouts,
                         &[],
-                        fn_ctx.resource_opaque_close,
+                        fn_ctx.lifecycle_registry,
                     )
                     .map_err(|error| {
                         CodegenError::FailClosed(format!(
@@ -32043,7 +32087,7 @@ fn lower_function<'ctx>(
     const_globals: &ConstGlobalMap<'ctx>,
     frame_cleanup_thunks: &RefCell<FrameCleanupThunkCache<'ctx>>,
     resource_record_close: &[(String, String)],
-    resource_opaque_close: &[(String, String)],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     emit_wasm_entry_alias: bool,
     has_supervisors: bool,
     module_uses_runtime: bool,
@@ -32957,7 +33001,7 @@ fn lower_function<'ctx>(
         frame_cleanup_thunks,
         machine_step_symbols,
         resource_record_close,
-        resource_opaque_close,
+        lifecycle_registry,
         actor_layouts,
         machine_layouts,
         enum_layouts,
@@ -34029,6 +34073,7 @@ fn build_module_for_target<'ctx>(
             record_layouts: &pipeline.record_layouts,
             record_structs: &record_layouts,
             resource_record_close: &pipeline.resource_record_close,
+            lifecycle_registry: &pipeline.lifecycle_registry,
         };
         crate::thunks::emit_actor_message_drop_fn(
             ctx,
@@ -34089,7 +34134,7 @@ fn build_module_for_target<'ctx>(
         &thunk_requirements.enum_seeds,
         &thunk_requirements.record_seeds,
         &pipeline.resource_record_close,
-        &pipeline.resource_opaque_close,
+        &pipeline.lifecycle_registry,
     )?;
     // Supervisor bootstraps replace the MIR-side synthesised body wholesale
     // with the canonical `hew_supervisor_new` → `add_child_spec` × N →
@@ -34140,6 +34185,8 @@ fn build_module_for_target<'ctx>(
             &pipeline.actor_layouts,
             &record_layouts,
             &pipeline.record_layouts,
+            &pipeline.enum_layouts,
+            &pipeline.lifecycle_registry,
         )?;
     }
     for func in &pipeline.raw_mir {
@@ -34192,7 +34239,7 @@ fn build_module_for_target<'ctx>(
             &const_globals,
             &frame_cleanup_thunks,
             &pipeline.resource_record_close,
-            &pipeline.resource_opaque_close,
+            &pipeline.lifecycle_registry,
             emit_wasm_entry_alias,
             !pipeline.supervisor_layouts.is_empty(),
             module_uses_runtime,
@@ -34225,6 +34272,7 @@ fn build_module_for_target<'ctx>(
         &machine_layouts,
         &pipeline.record_layouts,
         &pipeline.enum_layouts,
+        &pipeline.lifecycle_registry,
         &target_data,
     )? {
         module_init_ctors.push(f);
@@ -34305,6 +34353,7 @@ fn build_module_for_target<'ctx>(
         &pipeline.dyn_vtable_registry,
         &pipeline.record_layouts,
         &synthesis_enum_layouts,
+        &pipeline.lifecycle_registry,
     )?;
     // Finalise the `%hew.dyn.vtable.N` opaque struct and the
     // `@__hew_vtable__{trait}__{concrete}__{vtable_id} = private constant`
@@ -34911,6 +34960,7 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
     registry: &[hew_mir::DynVtableInstance],
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<()> {
     if registry.is_empty() {
         return Ok(());
@@ -34933,10 +34983,12 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
         // `get_or_declare_{record,enum}_drop_inplace` mangle into the
         // helper symbol, so classification + dispatch can never drift.
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let kind = hew_mir::classify_state_field_with_enum_layouts(
+        let kind = hew_mir::classify_state_field_with_resource_handles(
             &inst.concrete_type,
             pipeline_records,
             enum_layouts,
+            &[],
+            lifecycle_registry,
             &mut visited,
         )
         .map_err(|e| {
@@ -35469,6 +35521,7 @@ fn emit_wire_codec_call_thunks<'ctx>(
                             machine_layouts,
                             pipeline_records,
                             enum_layouts,
+                            &pipeline.lifecycle_registry,
                             target_data,
                         )?;
                     }
@@ -35586,6 +35639,7 @@ fn emit_actor_codec_module_init<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<Option<FunctionValue<'ctx>>> {
     // Collect (dispatch global, msg_type, msg_ty, reply_ty) for every handler.
@@ -35689,6 +35743,7 @@ fn emit_actor_codec_module_init<'ctx>(
             machine_layouts,
             pipeline_records,
             enum_layouts,
+            lifecycle_registry,
             target_data,
         )?;
         if !matches!(reply_ty, ResolvedTy::Unit | ResolvedTy::Never) {
@@ -35701,6 +35756,7 @@ fn emit_actor_codec_module_init<'ctx>(
                 machine_layouts,
                 pipeline_records,
                 enum_layouts,
+                lifecycle_registry,
                 target_data,
             )?;
         }

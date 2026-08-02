@@ -112,7 +112,7 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         ) else {
             return;
         };
@@ -179,7 +179,7 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         ) else {
             // Unreachable for a registered carrier: the parameter registration
             // requires a clone-total plan over the whole enum, which
@@ -280,7 +280,7 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         ) {
             // Callee half of the admission predicate (see
             // `snapshot_root_outside_carrier_protocol` for the full
@@ -296,7 +296,7 @@ impl Builder {
                             &record_layouts,
                             &self.enum_layouts,
                             &self.opaque_handle_names,
-                            &self.resource_opaque_close,
+                            &self.lifecycle_registry,
                         )
                         .unwrap_or(false) =>
             {
@@ -805,7 +805,7 @@ impl Builder {
                             &record_layouts,
                             &self.enum_layouts,
                             &self.opaque_handle_names,
-                            &self.resource_opaque_close,
+                            &self.lifecycle_registry,
                         )
                         .is_ok_and(|plan| {
                             super::snapshot_root_outside_carrier_protocol(plan.root())

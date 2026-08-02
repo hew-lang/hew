@@ -7021,6 +7021,8 @@ pub(crate) fn emit_supervisor_bootstrap_body<'ctx>(
     actor_layouts: &[ActorLayout],
     record_layouts: &RecordLayoutMap<'ctx>,
     mir_record_layouts: &[RecordLayout],
+    mir_enum_layouts: &[hew_mir::EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&layout.bootstrap_symbol).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -7242,8 +7244,15 @@ pub(crate) fn emit_supervisor_bootstrap_body<'ctx>(
                 .is_some_and(|r| {
                     r.field_tys.iter().any(|ty| {
                         let mut visited = std::collections::HashSet::new();
-                        hew_mir::classify_state_field(ty, mir_record_layouts, &mut visited)
-                            .is_ok_and(|kind| !matches!(kind, StateFieldCloneKind::BitCopy { .. }))
+                        hew_mir::classify_state_field_with_resource_handles(
+                            ty,
+                            mir_record_layouts,
+                            mir_enum_layouts,
+                            &[],
+                            lifecycle_registry,
+                            &mut visited,
+                        )
+                        .is_ok_and(|kind| !matches!(kind, StateFieldCloneKind::BitCopy { .. }))
                     })
                 });
             if config_has_owned {
@@ -7394,6 +7403,8 @@ pub(crate) fn emit_supervisor_bootstrap_body<'ctx>(
                 actor_layouts,
                 record_layouts,
                 mir_record_layouts,
+                mir_enum_layouts,
+                lifecycle_registry,
                 target_data,
             )?;
             continue;
@@ -7442,6 +7453,8 @@ pub(crate) fn emit_supervisor_bootstrap_body<'ctx>(
                 actor_layouts,
                 record_layouts,
                 mir_record_layouts,
+                mir_enum_layouts,
+                lifecycle_registry,
                 target_data,
             )?;
             actor_child_index += 1;
@@ -7695,6 +7708,8 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     actor_layouts: &[ActorLayout],
     record_layouts: &RecordLayoutMap<'ctx>,
     mir_record_layouts: &[RecordLayout],
+    mir_enum_layouts: &[hew_mir::EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<()> {
     let i32_ty = ctx.i32_type();
@@ -7889,6 +7904,8 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                 actor_layouts,
                 record_layouts,
                 mir_record_layouts,
+                mir_enum_layouts,
+                lifecycle_registry,
                 target_data,
             )?;
             init_fn_ptr = thunk.as_global_value().as_pointer_value().into();
@@ -8309,6 +8326,8 @@ fn emit_static_pool_members<'ctx>(
     actor_layouts: &[ActorLayout],
     record_layouts: &RecordLayoutMap<'ctx>,
     mir_record_layouts: &[RecordLayout],
+    mir_enum_layouts: &[hew_mir::EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<usize> {
     let i32_ty = ctx.i32_type();
@@ -8383,6 +8402,8 @@ fn emit_static_pool_members<'ctx>(
                     actor_layouts,
                     record_layouts,
                     mir_record_layouts,
+                    mir_enum_layouts,
+                    lifecycle_registry,
                     target_data,
                 )?;
                 // Bind this member's static index into the pool. `idx as u64`
@@ -8466,6 +8487,8 @@ fn emit_child_init_thunk<'ctx>(
     actor_layouts: &[ActorLayout],
     record_layouts: &RecordLayoutMap<'ctx>,
     mir_record_layouts: &[RecordLayout],
+    mir_enum_layouts: &[hew_mir::EnumLayout],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
     target_data: &TargetData,
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let thunk_name = format!(
@@ -8659,6 +8682,8 @@ fn emit_child_init_thunk<'ctx>(
                         child,
                         field_ty,
                         mir_record_layouts,
+                        mir_enum_layouts,
+                        lifecycle_registry,
                         cfg_gep,
                         dst_gep,
                     )?;

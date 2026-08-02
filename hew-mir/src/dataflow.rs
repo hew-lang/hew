@@ -1515,7 +1515,7 @@ mod tests {
             &[],
             &[],
             &[],
-            &[],
+            &hew_hir::LifecycleRegistry::default(),
         )
         .expect("string snapshot plan");
         let enum_projection = Place::EnumVariant {

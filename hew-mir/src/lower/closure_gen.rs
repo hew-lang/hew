@@ -36,14 +36,14 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         )
         .and_then(|plan| {
             plan.is_clone_total(
                 &record_layouts,
                 &self.enum_layouts,
                 &self.opaque_handle_names,
-                &self.resource_opaque_close,
+                &self.lifecycle_registry,
             )
         })
         .unwrap_or(false)
@@ -61,7 +61,7 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-            &self.resource_opaque_close,
+            &self.lifecycle_registry,
         )
         .ok()?;
         if matches!(
@@ -492,7 +492,7 @@ impl Builder {
             // inside a closure shim / lambda-actor / gen body classifies the
             // handle as `Resource` (runs its close), not the empty-registry
             // `OpaqueHandle` no-op that would leak it.
-            resource_opaque_close: self.resource_opaque_close.clone(),
+            lifecycle_registry: self.lifecycle_registry.clone(),
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),

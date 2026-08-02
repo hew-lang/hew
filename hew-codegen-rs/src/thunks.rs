@@ -349,10 +349,12 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
         })
         .collect();
     let mut visited = HashSet::new();
-    let kind = hew_mir::classify_state_field_with_enum_layouts(
+    let kind = hew_mir::classify_state_field_with_resource_handles(
         reply_ty,
         &record_layouts,
         fn_ctx.enum_layouts,
+        &[],
+        fn_ctx.lifecycle_registry,
         &mut visited,
     )
     .map_err(|e| {
@@ -1082,6 +1084,7 @@ pub(crate) fn emit_tuple_inplace_thunk_bodies<'ctx>(
         record_layouts: &record_layouts,
         record_structs: &empty_record_structs,
         resource_record_close: &[],
+        lifecycle_registry: regs.lifecycle_registry,
     };
 
     let clone_fn = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, tuple_key);
@@ -2697,10 +2700,12 @@ pub(crate) fn emit_actor_message_drop_fn<'ctx>(
             )?);
             let mut visited = HashSet::new();
             field_kinds.push(
-                hew_mir::classify_state_field_with_enum_layouts(
+                hew_mir::classify_state_field_with_resource_handles(
                     param_ty,
                     mir_record_layouts,
                     enum_layouts,
+                    &[],
+                    w.lifecycle_registry,
                     &mut visited,
                 )
                 .map_err(|error| {

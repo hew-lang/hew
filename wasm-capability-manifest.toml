@@ -13,6 +13,9 @@
 #   [[tier]]            one per WASM compilation target tier.
 #   [[feature]]         one per row of the "Feature disposition table".
 #   [[backlog]]         one per row of the "WASM-TODO backlog" table.
+#     marker_disposition = "source" (default) requires at least one actionable
+#       source marker. "non-source" requires a non_source_reason and rejects
+#       actionable source markers for that row.
 #
 # Feature invariants (to be enforced by the generator binary):
 #   checker = "pass" | "warn" | "reject" | "todo"
@@ -467,12 +470,16 @@ id = "semaphore"
 gap = "Blocking semaphore acquire parity"
 blocker = "Cooperative permit wait / timeout semantics for `Semaphore::acquire*` on wasm32"
 tracking_label = "WASM-TODO(semaphore):"
+marker_disposition = "non-source"
+non_source_reason = "The capability is rejected by checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
 id = "wasi-sockets"
 gap = "Raw socket-backed Hew networking surface"
 blocker = "Stable cross-host socket abstraction above host-provided WASI sockets"
 tracking_label = "WASM-TODO(wasi-sockets):"
+marker_disposition = "non-source"
+non_source_reason = "Raw WASI sockets have no supported Hew source surface; this row tracks host-capability API design only."
 
 [[backlog]]
 id = "streams"

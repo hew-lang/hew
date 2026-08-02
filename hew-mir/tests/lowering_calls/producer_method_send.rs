@@ -455,6 +455,54 @@ fn send_call_count(instrs: &[Instr]) -> usize {
         .count()
 }
 
+/// A lambda actor keeps its ABI identity after crossing a function-return
+/// boundary. Returned handles occupy ordinary MIR locals, so routing solely by
+/// `Place::LambdaActorHandle` would type-pun the handle as a raw duplex queue.
+#[test]
+fn returned_lambda_pid_send_uses_lambda_actor_abi() {
+    let source = r"
+        fn make_multiplier(factor: i64) -> LambdaPid<i64, ()> {
+            actor |x: i64| {
+                let product = x * factor;
+            }
+        }
+
+        fn main() -> i64 {
+            let multiplier = make_multiplier(3);
+            multiplier.send(10);
+            multiplier.send(7);
+            await multiplier.close();
+            return 0;
+        }
+    ";
+    let pipeline = pipeline_with_tc(source);
+    let instrs = all_instrs(&pipeline, "main");
+    let lambda_sends = instrs
+        .iter()
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::CallRuntimeAbi(call) if call.symbol() == "hew_lambda_actor_send"
+            )
+        })
+        .count();
+    let duplex_sends = instrs
+        .iter()
+        .filter(|instr| {
+            matches!(
+                instr,
+                Instr::CallRuntimeAbi(call) if call.symbol() == "hew_duplex_send"
+            )
+        })
+        .count();
+
+    assert_eq!(lambda_sends, 2, "both sends must retain the LambdaPid ABI");
+    assert_eq!(
+        duplex_sends, 0,
+        "a returned LambdaPid must never be passed to the raw duplex ABI"
+    );
+}
+
 /// Statement-context ask-shaped `.send` (a non-unit `Duplex` reply →
 /// `Result<R, AskError>`) must fail closed: no send `CallRuntimeAbi` is emitted
 /// and the stable `NotYetImplemented` diagnostic fires. This is the regression

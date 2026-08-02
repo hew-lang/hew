@@ -347,13 +347,20 @@ impl ModuleCapabilities {
                     if let Some(family) = authority.runtime_family() {
                         capabilities.insert_family(family);
                     }
-                    if extern_decls.iter().any(|decl| {
-                        decl.name == *callee
-                            && decl.runtime_capability
-                                == Some(hew_types::ExternRuntimeCapability::BlockingOffload)
-                    }) {
-                        capabilities
-                            .insert(hew_types::runtime_call::RuntimeCapability::BlockingOffload);
+                    if let Some(capability) = extern_decls
+                        .iter()
+                        .find(|decl| decl.name == *callee)
+                        .and_then(|decl| decl.runtime_capability)
+                    {
+                        let capability = match capability {
+                            hew_types::ExternRuntimeCapability::BlockingOffload => {
+                                hew_types::runtime_call::RuntimeCapability::BlockingOffload
+                            }
+                            hew_types::ExternRuntimeCapability::Metrics => {
+                                hew_types::runtime_call::RuntimeCapability::Metrics
+                            }
+                        };
+                        capabilities.insert(capability);
                     }
                 }
             }

@@ -182,7 +182,9 @@ pub(crate) fn is_supervisor_registered_for_test(
 /// separately by [`crate::actor::cleanup_all_actors`].
 ///
 /// Returns `false` if a delayed-restart timer still borrows a supervisor. The
-/// caller must leave the runtime and actors installed for a later retry.
+/// caller must leave the runtime and actors installed. There is no automatic
+/// retry; an embedder may explicitly invoke cleanup again after the borrower
+/// drains, while one-shot process teardown leaks the retained state fail-closed.
 pub(crate) unsafe fn free_registered_supervisors() -> bool {
     let to_free = with_supervisor_roots(std::mem::take);
     let mut complete = true;

@@ -986,8 +986,10 @@ pub extern "C" fn hew_runtime_cleanup() {
     if !unsafe { crate::shutdown::free_registered_supervisors() } {
         // A delayed-restart timer still holds a raw supervisor borrow. The
         // retained root points into this runtime and its actors, so do not
-        // sweep actors or detach the runtime underneath it. A later cleanup
-        // retry owns reclamation after the timer drains.
+        // sweep actors or detach the runtime underneath it. No background retry
+        // is installed: embedders may explicitly call cleanup again after the
+        // borrower drains; one-shot process teardown intentionally leaks this
+        // state fail-closed rather than freeing through a raw borrow.
         set_last_error("runtime cleanup retained supervisor tree with pending restart timer");
         return;
     }
@@ -5480,8 +5482,8 @@ mod tests {
             .store(HewActorState::Running as i32, Ordering::Release);
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(2));
-        let handle = (&raw mut *frame).cast::<std::ffi::c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(2);
+        let handle = frame.handle();
 
         // SAFETY: actor owned by this frame; scratch handle is live.
         let parked = unsafe { park_suspended_activation(actor_ptr, handle) };
@@ -5527,8 +5529,8 @@ mod tests {
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         // Scratch frame: Ready on the 2nd resume.
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(2));
-        let handle = (&raw mut *frame).cast::<std::ffi::c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(2);
+        let handle = frame.handle();
 
         // SAFETY: actor owned; scratch handle live.
         assert!(unsafe { park_suspended_activation(actor_ptr, handle) });
@@ -5626,8 +5628,8 @@ mod tests {
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         // Park a scratch cont (completes on the 1st resume).
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<std::ffi::c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         // SAFETY: actor owned; scratch handle live.
         assert!(unsafe { park_suspended_activation(actor_ptr, handle) });
         assert_eq!(
@@ -6502,9 +6504,9 @@ mod tests {
         // Park a continuation that never completes. `suspends_before_done` is
         // irrelevant here because the outline is replaced — the frame's resume
         // slot is never nulled, so every poll reports `Pending`.
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(u32::MAX));
+        let mut frame = crate::coro_exec::test_support::ScratchFrameOwner::new(u32::MAX);
         frame.resume = Some(stop_during_resume_outline);
-        let handle = Box::into_raw(frame).cast::<std::ffi::c_void>();
+        let handle = frame.into_handle();
         // SAFETY: the actor is live and owned by this test thread.
         unsafe {
             assert!(crate::coro_exec::begin_park(&actor).is_ok());
@@ -6534,10 +6536,10 @@ mod tests {
             "FG4: the cancelled park's slot is nulled"
         );
 
-        // SAFETY: `handle` is the frame `Box::into_raw`'d above; the destroy
-        // outline freed only its `heap_guard`, not the frame struct.
+        // SAFETY: `handle` came from ScratchFrameOwner::into_handle above; the
+        // destroy outline freed only its heap_guard, not the outer frame.
         let frame =
-            unsafe { Box::from_raw(handle.cast::<crate::coro_exec::test_support::ScratchFrame>()) };
+            unsafe { crate::coro_exec::test_support::ScratchFrameOwner::from_handle(handle) };
         assert_eq!(
             frame.destroyed.load(Ordering::Acquire),
             1,

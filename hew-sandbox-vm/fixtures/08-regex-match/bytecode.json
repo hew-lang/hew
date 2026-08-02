@@ -184,7 +184,7 @@
           "mutable": false,
           "name": null,
           "span": "span:51-70",
-          "type": "type:Regex"
+          "type": "type:std.text.regex.Pattern"
         },
         {
           "id": "local:main.2",
@@ -282,11 +282,6 @@
         "id": "type:NodeId",
         "kind": "record",
         "name": "NodeId"
-      },
-      {
-        "id": "type:Regex",
-        "kind": "regex",
-        "name": "Regex"
       },
       {
         "id": "type:RemotePid",
@@ -400,7 +395,7 @@
       },
       {
         "id": "type:std.text.regex.Pattern",
-        "kind": "record",
+        "kind": "regex",
         "name": "std.text.regex.Pattern"
       },
       {
@@ -439,7 +434,7 @@
       }
     ]
   },
-  "package_id": "pkg:c93bde1d41b6e712",
+  "package_id": "pkg:3c72948fbe402d70",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {

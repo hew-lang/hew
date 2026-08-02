@@ -1004,6 +1004,55 @@ fn main() {
     }
 
     #[test]
+    fn user_regex_record_and_std_regex_handle_keep_distinct_layout_identities() {
+        set_test_hewpath();
+        let source = r#"
+import std::text::regex;
+
+type Regex {
+    value: i64;
+}
+
+fn main() {
+    let value = Regex { value: 7 };
+    let pattern = regex.new("[0-9]+");
+    println(pattern.find("abc123"));
+    println(value.value);
+    pattern.close();
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let user = bytecode
+            .layouts
+            .types
+            .iter()
+            .find(|layout| layout.name == "Regex")
+            .expect("user Regex record layout");
+        assert_eq!(user.kind, "record");
+        assert_eq!(user.id, "type:Regex");
+
+        let builtin = bytecode
+            .layouts
+            .types
+            .iter()
+            .find(|layout| layout.name == "std.text.regex.Pattern")
+            .expect("canonical stdlib regex handle layout");
+        assert_eq!(builtin.kind, "regex");
+        assert_eq!(builtin.id, "type:std.text.regex.Pattern");
+        assert_ne!(user.id, builtin.id);
+    }
+
+    #[test]
     fn user_regex_name_cannot_mint_regex_method_authority() {
         set_test_hewpath();
         let source = r#"

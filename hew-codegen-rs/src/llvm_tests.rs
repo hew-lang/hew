@@ -401,7 +401,6 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -1031,7 +1030,6 @@ fn non_context_function_callclosure_uses_zeroed_fallback_context() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
@@ -1126,7 +1124,6 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -1258,7 +1255,6 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -1373,7 +1369,6 @@ fn pipeline_with_user_const_load(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -1505,7 +1500,6 @@ fn pipeline_with_float_return() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -1642,7 +1636,6 @@ fn actor_handler_signature_leads_with_execution_context_pointer() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
@@ -1731,7 +1724,6 @@ fn context_field_actor_offset_emits_gep_and_load() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
@@ -1814,7 +1806,6 @@ fn string_literal_return_builds_and_verifies() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
@@ -2099,7 +2090,6 @@ fn pipeline_with_select_terminator(arm_kind: hew_mir::SelectArmKind) -> IrPipeli
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -2317,7 +2307,6 @@ fn pipeline_with_select_arms(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -3413,7 +3402,6 @@ fn generic_enum_local_resolves_by_mangled_key() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
@@ -3504,7 +3492,6 @@ fn yield_terminator_lowers_to_coro_suspend_and_publishes_out_pointer() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
@@ -3669,7 +3656,6 @@ fn make_generator_terminator_constructs_coro_companion_and_module_verifies() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
@@ -4154,7 +4140,6 @@ fn cancellation_token_is_cancelled_emits_runtime_observation_call() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ctx = Context::create();
@@ -4432,7 +4417,6 @@ fn verify_drop_dispatch_resolves_rejects_unresolved_drop_fn() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let syms = empty_fn_symbols();
@@ -4505,7 +4489,6 @@ fn verify_drop_dispatch_resolves_accepts_runtime_symbol_drop() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let syms = empty_fn_symbols();
@@ -4564,7 +4547,6 @@ fn wasm_exclusion_scan_flags_runtime_duplex_close_in_elab_drop() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let found = uses_wasm_excluded_symbol(&pipeline)
@@ -4606,7 +4588,6 @@ fn raw_mir_only_pipeline(body: RawMirFunction) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -5278,7 +5259,6 @@ fn wasm_exclusion_scan_ignores_user_fn_close_in_elab_drop() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     assert!(
@@ -5623,7 +5603,6 @@ fn make_test_fn_ctx<'a, 'ctx>(
         fn_symbols: &harness.fn_symbols,
         frame_cleanup_thunks: &harness.frame_cleanup_thunks,
         machine_step_symbols: &harness.machine_step_symbols,
-        resource_record_close: &[],
         lifecycle_registry: &harness.lifecycle_registry,
         actor_layouts: &harness.actor_layouts,
         machine_layouts: &harness.machine_layouts,
@@ -8796,7 +8775,6 @@ fn coerce_to_dyn_trait_arm_emits_fat_ptr_when_vtable_registry_populated() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = tempfile::Builder::new()
@@ -9140,7 +9118,6 @@ fn coerce_to_dyn_trait_fails_closed_when_source_slot_disagrees_with_concrete_typ
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = tempfile::Builder::new()
@@ -9255,7 +9232,6 @@ fn coerce_to_dyn_trait_arm_fails_closed_when_vtable_registry_missing_entry() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = tempfile::Builder::new()
@@ -10060,7 +10036,6 @@ fn frame_owned_trait_object_drop_with_drop_fn_fails_closed() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = tempfile::Builder::new()
@@ -10198,7 +10173,6 @@ fn single_resource_drop_pipeline(name: &str, resource_ty: ResolvedTy) -> IrPipel
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -10583,7 +10557,6 @@ fn minimal_pipeline_with_unit_main(with_actor: bool) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -10987,7 +10960,6 @@ fn pipeline_with_coro_probe() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -11134,7 +11106,6 @@ fn pipeline_with_string_stream_send_pump() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -12643,7 +12614,6 @@ fn pipeline_with_two_suspends() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -12839,7 +12809,6 @@ fn non_ptr_logical_return_coro_fn_compiles_as_ptr_ramp() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
 
@@ -13061,7 +13030,6 @@ fn pipeline_with_actor_handlers(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -14440,7 +14408,6 @@ fn empty_drop_witnesses<'a, 'ctx>(
         target_data,
         record_layouts: &[],
         record_structs,
-        resource_record_close: &[],
         lifecycle_registry: &EMPTY_LIFECYCLES,
     }
 }

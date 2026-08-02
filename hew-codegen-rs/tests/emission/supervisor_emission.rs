@@ -209,7 +209,6 @@ fn supervisor_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -523,7 +522,6 @@ fn on_crash_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -865,7 +863,6 @@ fn nested_supervisor_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -1073,7 +1070,6 @@ fn pool_then_static_pipeline() -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }

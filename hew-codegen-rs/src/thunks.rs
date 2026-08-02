@@ -1083,7 +1083,6 @@ pub(crate) fn emit_tuple_inplace_thunk_bodies<'ctx>(
         target_data,
         record_layouts: &record_layouts,
         record_structs: &empty_record_structs,
-        resource_record_close: &[],
         lifecycle_registry: regs.lifecycle_registry,
     };
 

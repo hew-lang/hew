@@ -153,7 +153,6 @@ fn pipeline_discard_extern_owned(
         polymorphic_mir: vec![],
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }

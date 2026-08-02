@@ -251,7 +251,7 @@ pub enum StateFieldCloneKind {
     ///
     /// Only single-slot opaque resources reach this arm. A non-opaque
     /// `#[resource]` RECORD has its own record layout, classifies as
-    /// [`UserRecord`], and runs its `close` through the `resource_record_close`
+    /// [`UserRecord`], and runs its `close` through the typed lifecycle registry
     /// registry (the up-front / on-demand record-drop thunk) — it is never a
     /// `Resource` kind.
     ///
@@ -1800,7 +1800,7 @@ fn classify_named(
     // single-slot resources (lower.rs `resource_opaque_close_registry`), so a
     // non-opaque `#[resource]` RECORD — which has a record layout and was
     // already routed to `classify_user_record` above — is never in it and keeps
-    // its existing `resource_record_close` thunk path. The field name may be
+    // its existing typed lifecycle-registry thunk path. The field name may be
     // canonical; declaration identity is never retried by leaf spelling.
     let resolved_resource_ty = ResolvedTy::Named {
         name: name.to_string(),

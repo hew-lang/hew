@@ -4537,6 +4537,7 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.type_classes,
         &mut ctx.diagnostics,
     );
+    admit_resource_record_lifecycles(&items, &mut ctx.type_classes, &mut ctx.diagnostics);
 
     let mut module = HirModule {
         items,
@@ -4565,6 +4566,132 @@ pub fn lower_program_with_mono_cap(
         module,
         diagnostics: ctx.diagnostics,
     }
+}
+
+/// Admit field-bearing resource lifecycles while exact HIR declaration and
+/// body identities are simultaneously available. No downstream stage may
+/// reconstruct a close declaration from a record-layout or symbol spelling.
+fn admit_resource_record_lifecycles(
+    items: &[HirItem],
+    type_classes: &mut crate::value_class::TypeClassTable,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for decl in items.iter().filter_map(|item| match item {
+        HirItem::TypeDecl(decl)
+            if !decl.is_opaque
+                && decl.marker == ResourceMarker::Resource
+                && decl.variants.is_empty() =>
+        {
+            Some(decl)
+        }
+        _ => None,
+    }) {
+        let exact_owner = decl.declaration.full_path();
+        let close_methods: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Impl(impl_block)
+                    if impl_block.trait_name.is_none()
+                        && impl_block.self_type_name == exact_owner =>
+                {
+                    Some(impl_block)
+                }
+                _ => None,
+            })
+            .flat_map(|impl_block| {
+                impl_block
+                    .method_names
+                    .iter()
+                    .zip(&impl_block.method_ids)
+                    .zip(&impl_block.method_symbols)
+            })
+            .filter_map(|((name, declaration), symbol)| {
+                (name == "close")
+                    .then(|| declaration.as_ref().map(|id| (id.clone(), symbol.clone())))
+                    .flatten()
+            })
+            .collect();
+
+        let [(close_declaration, close_symbol)] = close_methods.as_slice() else {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                exact_owner,
+                format!(
+                    "resource record requires one exact inherent close declaration; found {}",
+                    close_methods.len()
+                ),
+                &decl.span,
+                "resource lifecycle identity did not survive HIR lowering",
+            ));
+            continue;
+        };
+
+        let close_bodies: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(function)
+                    if function.declaration == *close_declaration
+                        && function.name == *close_symbol =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .collect();
+        let [close_body] = close_bodies.as_slice() else {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                close_declaration.full_path(),
+                format!(
+                    "resource record close requires one exact emitted body; found {}",
+                    close_bodies.len()
+                ),
+                &decl.span,
+                "resource lifecycle close body did not survive HIR lowering",
+            ));
+            continue;
+        };
+        if close_body.return_ty != ResolvedTy::Unit || close_body.params.len() != 1 {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                close_declaration.full_path(),
+                "resource record close body must take one receiver and return unit".to_string(),
+                &decl.span,
+                "resource lifecycle close body has an inadmissible signature",
+            ));
+            continue;
+        }
+
+        let lifecycle = crate::ResourceRecordLifecycle {
+            resource_declaration: decl.declaration.clone(),
+            close_declaration: close_declaration.clone(),
+            close_symbol: close_symbol.clone(),
+        };
+        if type_classes
+            .admit_resource_record_lifecycle(lifecycle)
+            .is_err()
+        {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                exact_owner,
+                "duplicate exact resource-record lifecycle admission".to_string(),
+                &decl.span,
+                "one qualified resource may have exactly one automatic lifecycle authority",
+            ));
+        }
+    }
+}
+
+fn resource_lifecycle_boundary_diagnostic(
+    name: &str,
+    reason: String,
+    span: &Span,
+    note: &str,
+) -> HirDiagnostic {
+    HirDiagnostic::new(
+        HirDiagnosticKind::CheckerBoundaryViolation {
+            name: name.to_string(),
+            reason,
+        },
+        span.clone(),
+        note,
+    )
 }
 
 /// Admit checker-derived opaque lifecycles only after every declaration,
@@ -33492,6 +33619,66 @@ fn main() {}
         assert_eq!(lifecycle.release_declaration, candidate.release_declaration);
         assert_eq!(lifecycle.release_symbol, "hew_file_read_stream_close");
         assert!(lifecycle.close_symbol.ends_with("FileReadStream::close"));
+    }
+
+    #[test]
+    fn resource_record_lifecycle_requires_its_exact_emitted_close_body() {
+        let (_program, tco, lowered) = parse_typecheck_and_lower(
+            r"
+            #[resource]
+            type Connection { label: string }
+
+            impl Connection {
+                fn close(consuming self) {}
+            }
+
+            fn main() {}
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "valid exact lifecycle should lower cleanly: {:#?}",
+            lowered.diagnostics
+        );
+        let resource_declaration = lowered
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::TypeDecl(decl) if decl.name == "Connection" => {
+                    Some(decl.declaration.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        let expected_close = tco
+            .impl_method_declaration_ids
+            .get("Connection::close")
+            .expect("checker close identity");
+        let lifecycle = lowered
+            .module
+            .type_classes
+            .lifecycle_registry()
+            .resource_record(&resource_declaration)
+            .expect("HIR lifecycle admission");
+        assert_eq!(&lifecycle.close_declaration, expected_close);
+
+        let mut items = lowered.module.items.clone();
+        items.retain(|item| {
+            !matches!(item, HirItem::Function(function) if &function.declaration == expected_close)
+        });
+        let mut table = crate::TypeClassTable::default();
+        let mut diagnostics = Vec::new();
+        admit_resource_record_lifecycles(&items, &mut table, &mut diagnostics);
+        assert!(table
+            .lifecycle_registry()
+            .resource_record(&resource_declaration)
+            .is_none());
+        assert!(diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { reason, .. }
+                if reason.contains("exact emitted body")
+        )));
     }
 
     #[test]

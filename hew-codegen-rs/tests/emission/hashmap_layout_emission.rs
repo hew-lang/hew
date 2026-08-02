@@ -128,7 +128,6 @@ fn base_pipeline(
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }
@@ -602,7 +601,6 @@ fn hash_thunk_dedup_one_per_record_per_module() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ll = emit_ll(pipeline, "hash_dedup");
@@ -754,7 +752,6 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ll = emit_ll(pipeline, "shared_eq_dedup");
@@ -1176,7 +1173,6 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let ll = emit_ll(pipeline, "cross_shape_dedup");

@@ -8288,8 +8288,9 @@ mod heap_owning_tests {
         assert!(!ty_contains_unclonable_opaque(&qualified, &[], &enums));
     }
 
-    /// Structural guard: generic layout keys are built only by the shared HIR
-    /// authority, once for enums and once for records.
+    /// Structural guard: enum lookups call the mangle helper directly, while
+    /// record lookups route through the broader HIR named-layout authority
+    /// (which carries builtin and source-owner cases too).
     #[test]
     fn layout_keys_use_the_shared_full_owner_authority() {
         let src = include_str!("model.rs");
@@ -8297,15 +8298,25 @@ mod heap_owning_tests {
             .split("#[cfg(test)]")
             .next()
             .expect("model.rs has a non-test prefix");
-        let authority_calls = prod
+        let enum_authority_calls = prod
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))
             .map(|line| line.matches("mangle_layout_key(").count())
             .sum::<usize>();
         assert_eq!(
-            authority_calls, 2,
-            "find_enum_layout and record_lookup_keys must be the only model-side \
-             consumers of the shared full-owner layout-key helper; found {authority_calls}."
+            enum_authority_calls, 1,
+            "find_enum_layout must be the only direct model-side consumer of the \
+             generic enum-layout helper; found {enum_authority_calls}."
+        );
+        let named_layout_authority_calls = prod
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(|line| line.matches("layout_key_for_named(").count())
+            .sum::<usize>();
+        assert_eq!(
+            named_layout_authority_calls, 1,
+            "record_lookup_keys must be the only model-side consumer of the \
+             shared named-layout authority; found {named_layout_authority_calls}."
         );
     }
 }

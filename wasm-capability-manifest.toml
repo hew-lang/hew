@@ -319,6 +319,20 @@ tracking_label = "WASM-TODO(smtp):"
 native_only_modules = ["smtp"]
 
 [[feature]]
+id = "websocket"
+enum_variant = "WebSocket"
+label = "std::net::websocket operations"
+prose_label = "`std::net::websocket.*`, `websocket.Conn.*`, `websocket.Server.*`, `websocket.Message.*`"
+reason = "the std::net::websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet"
+checker = "reject"
+runtime = "native-only"
+runtime_status = "Native-only socket and reader-thread transport"
+categories = ["stdlib", "networking"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(websocket):"
+native_only_modules = ["websocket"]
+
+[[feature]]
 id = "http-server"
 enum_variant = "HttpServer"
 label = "HTTP server operations"
@@ -721,12 +735,6 @@ id = "wasi-errno"
 gap = "WASI error-code classification"
 blocker = "Target-aware filesystem and network error mapping for WASI errno values"
 tracking_label = "WASM-TODO(wasi-errno):"
-
-[[backlog]]
-id = "websocket"
-gap = "WebSocket transport parity"
-blocker = "A browser/WASI WebSocket bridge without the native thread and socket implementation"
-tracking_label = "WASM-TODO(websocket):"
 
 # ---------------------------------------------------------------------------
 # Curated playground WASI exclusions.

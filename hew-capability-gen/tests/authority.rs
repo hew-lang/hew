@@ -1,4 +1,6 @@
-use hew_capability_gen::{stale_outputs, write_outputs, Manifest, PLAYGROUND_OUTPUT, RUST_OUTPUT};
+use hew_capability_gen::{
+    stale_outputs, write_outputs, Manifest, MATRIX_OUTPUT, PLAYGROUND_OUTPUT, RUST_OUTPUT,
+};
 use std::path::{Path, PathBuf};
 
 type SourceMutation = fn(String) -> String;
@@ -17,6 +19,21 @@ fn manifest_source() -> String {
 
 fn parsed() -> Manifest {
     Manifest::parse(&manifest_source()).expect("typed authority parses and validates")
+}
+
+fn seed_checked_outputs(root: &Path, manifest: &Manifest) {
+    for output in manifest.generated_outputs() {
+        let path = root.join(output.path);
+        std::fs::create_dir_all(path.parent().expect("output parent")).expect("create parent");
+    }
+    let matrix_path = root.join(MATRIX_OUTPUT);
+    std::fs::create_dir_all(matrix_path.parent().expect("matrix parent")).expect("create docs");
+    std::fs::write(
+        &matrix_path,
+        std::fs::read_to_string(repo_root().join(MATRIX_OUTPUT)).expect("read live matrix"),
+    )
+    .expect("seed matrix");
+    write_outputs(root, manifest).expect("seed generated outputs");
 }
 
 #[test]
@@ -126,20 +143,20 @@ fn playground_authority_cannot_declare_pass() {
 fn every_checked_output_gate_detects_mutation() {
     let manifest = parsed();
     let temp = tempfile::tempdir().expect("tempdir");
-    for output in manifest.generated_outputs() {
-        let path = temp.path().join(output.path);
-        std::fs::create_dir_all(path.parent().expect("output parent")).expect("create parent");
-    }
-    write_outputs(temp.path(), &manifest).expect("seed generated outputs");
+    seed_checked_outputs(temp.path(), &manifest);
     assert!(stale_outputs(temp.path(), &manifest)
         .expect("clean check")
         .is_empty());
 
-    for path in [RUST_OUTPUT, PLAYGROUND_OUTPUT] {
+    for path in [RUST_OUTPUT, PLAYGROUND_OUTPUT, MATRIX_OUTPUT] {
         write_outputs(temp.path(), &manifest).expect("restore outputs");
         let output = temp.path().join(path);
         let mut contents = std::fs::read_to_string(&output).expect("read generated output");
-        contents.push_str("MUTATION\n");
+        if path == MATRIX_OUTPUT {
+            contents = contents.replacen("| `basic-actors` |", "| `mutated-basic-actors` |", 1);
+        } else {
+            contents.push_str("MUTATION\n");
+        }
         std::fs::write(&output, contents).expect("mutate generated output");
         let stale = stale_outputs(temp.path(), &manifest).expect("mutated check");
         assert_eq!(stale, vec![output], "{path} mutation must turn gate red");
@@ -150,10 +167,7 @@ fn every_checked_output_gate_detects_mutation() {
 fn checker_variant_mutations_turn_the_freshness_gate_red() {
     let manifest = parsed();
     let temp = tempfile::tempdir().expect("tempdir");
-    for output in manifest.generated_outputs() {
-        let path = temp.path().join(output.path);
-        std::fs::create_dir_all(path.parent().expect("output parent")).expect("create parent");
-    }
+    seed_checked_outputs(temp.path(), &manifest);
 
     let mutations: &[(&str, SourceMutation)] = &[
         ("omitted variant", |source| {
@@ -185,6 +199,60 @@ fn checker_variant_mutations_turn_the_freshness_gate_red() {
             stale_outputs(temp.path(), &manifest).expect("check mutated output"),
             vec![rust_path],
             "{name} must turn the checker authority gate red"
+        );
+    }
+}
+
+#[test]
+fn matrix_policy_field_mutations_turn_the_freshness_gate_red() {
+    let manifest = parsed();
+    let temp = tempfile::tempdir().expect("tempdir");
+    seed_checked_outputs(temp.path(), &manifest);
+    let mutations = [
+        ("id", "`supervision-trees`", "`changed-id`"),
+        (
+            "feature surface",
+            "Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`)",
+            "Changed feature surface",
+        ),
+        (
+            "diagnostic label",
+            "Supervision tree operations",
+            "Changed diagnostic label",
+        ),
+        (
+            "checker disposition",
+            "Reject (`SupervisionTrees`)",
+            "Warn (`SupervisionTrees`)",
+        ),
+        (
+            "diagnostic reason",
+            "they require OS threads for restart strategies and child supervision",
+            "changed diagnostic reason",
+        ),
+        (
+            "runtime status",
+            "Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated",
+            "changed runtime status",
+        ),
+        (
+            "tracking label",
+            "WASM-TODO(supervision):",
+            "WASM-TODO(changed-supervision):",
+        ),
+    ];
+
+    for (name, old, new) in mutations {
+        write_outputs(temp.path(), &manifest).expect("restore outputs");
+        let matrix_path = temp.path().join(MATRIX_OUTPUT);
+        let source = std::fs::read_to_string(&matrix_path).expect("read matrix");
+        let mutated = source.replacen(old, new, 1);
+        assert_ne!(mutated, source, "{name} mutation must alter matrix");
+        std::fs::write(&matrix_path, mutated).expect("write matrix mutation");
+        assert_eq!(
+            stale_outputs(temp.path(), &manifest).expect("check mutated matrix"),
+            vec![matrix_path],
+            "{name} drift must turn the matrix authority gate red"
         );
     }
 }

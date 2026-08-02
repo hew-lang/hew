@@ -60,6 +60,17 @@ fn primitive_display_static_callee(
     }
 }
 
+/// The embedded `string` Display implementation is compiled as the catalog
+/// identity conversion, not as a separately emitted impl body.  Imported stdlib
+/// source can retain the exact implementation declaration in its checked call
+/// target, so recognize that declaration directly rather than requiring a
+/// linker symbol from the importing module's HIR item list.
+fn stdlib_string_display_impl_callee(declaration: &hew_types::DefId) -> Option<&'static str> {
+    (declaration.full_path()
+        == "std.builtins.string::<impl std.builtins.Display for std.builtins.string>::fmt")
+        .then_some("to_string_str")
+}
+
 /// The stdlib's generic `Iterator::next` body reaches MIR as static trait
 /// dispatch after its `I` parameter is monomorphised. `VecIter<T>` is a
 /// compiler-owned cursor, though: its concrete next operation is the same
@@ -96,6 +107,13 @@ fn builtin_vec_iter_static_next_element<'a>(
         return None;
     };
     (args.len() == 1).then(|| &args[0])
+}
+
+pub(super) fn binding_seeds_drop_elaboration(
+    ty: &ResolvedTy,
+    type_classes: &hew_hir::TypeClassTable,
+) -> bool {
+    ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
 }
 
 #[cfg(test)]
@@ -135,13 +153,6 @@ mod builtin_vec_iter_static_next_tests {
             "a different Iterator method must remain ordinary static dispatch"
         );
     }
-}
-
-pub(super) fn binding_seeds_drop_elaboration(
-    ty: &ResolvedTy,
-    type_classes: &hew_hir::TypeClassTable,
-) -> bool {
-    ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
 }
 
 /// The specialised terminal either does not apply, or it owns the call site
@@ -4091,6 +4102,10 @@ impl Builder {
                         );
                     }
                     hew_types::CallTarget::ImplMethod(declaration) => {
+                        if let Some(callee) = stdlib_string_display_impl_callee(declaration) {
+                            return self
+                                .lower_direct_call(callee, None, None, args, &expr.ty, expr.site);
+                        }
                         let Some(symbol) = self.direct_call_symbols.get(declaration).cloned()
                         else {
                             self.diagnostics.push(MirDiagnostic {
@@ -8403,18 +8418,25 @@ impl Builder {
         // Then arm.
         self.start_block(then_bb);
         let then_value = self.lower_composite_result_value(then_expr);
-        if let Some(src) = then_value {
-            let src = self.normalize_checker_numeric_value(
-                src,
-                &then_expr.ty,
-                result_ty,
-                "if then branch",
-                then_expr.site,
-            )?;
-            self.push_instr(Instr::Move {
-                dest: result_place,
-                src,
-            });
+        // A nested divergent expression still has a placeholder result place
+        // so its enclosing HIR node can keep a uniform value shape.  Its
+        // cursor, however, is unreachable: do not attempt to coerce that
+        // placeholder (often `!`) into this `if`'s checker-selected join
+        // type or emit a dead Move.
+        if !self.cursor_unreachable {
+            if let Some(src) = then_value {
+                let src = self.normalize_checker_numeric_value(
+                    src,
+                    &then_expr.ty,
+                    result_ty,
+                    "if then branch",
+                    then_expr.site,
+                )?;
+                self.push_instr(Instr::Move {
+                    dest: result_place,
+                    src,
+                });
+            }
         }
         if !self.cursor_unreachable {
             join_reachable = true;
@@ -8428,18 +8450,20 @@ impl Builder {
         self.start_block(else_bb);
         if let Some(else_expr) = else_expr {
             let else_value = self.lower_composite_result_value(else_expr);
-            if let Some(src) = else_value {
-                let src = self.normalize_checker_numeric_value(
-                    src,
-                    &else_expr.ty,
-                    result_ty,
-                    "if else branch",
-                    else_expr.site,
-                )?;
-                self.push_instr(Instr::Move {
-                    dest: result_place,
-                    src,
-                });
+            if !self.cursor_unreachable {
+                if let Some(src) = else_value {
+                    let src = self.normalize_checker_numeric_value(
+                        src,
+                        &else_expr.ty,
+                        result_ty,
+                        "if else branch",
+                        else_expr.site,
+                    )?;
+                    self.push_instr(Instr::Move {
+                        dest: result_place,
+                        src,
+                    });
+                }
             }
         }
         if !self.cursor_unreachable {

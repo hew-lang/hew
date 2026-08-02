@@ -799,6 +799,22 @@ pub(super) fn elaborate(
     // guarded scope-exit drop fires only where the reassignment reset the flag
     // to zero and is skipped where the prior value moved out.
     enum_composite_drop_allowed.extend(builder.overwrite_guard_flags.keys().copied());
+    // A call scrutinee held across a `while let` iteration has an explicit,
+    // per-edge consume recorded by the loop lowerer.  Its short lifetime can
+    // make the whole-function sole-owner scan conservatively decline the
+    // normal scope-exit class, but that must not erase the typed drop template
+    // the already-recorded back-edge, mismatch, panic, and early-exit plans
+    // need.  These bindings come only from `record_iteration_owner_drop`,
+    // which is reached after the call-result admission proof; re-admitting
+    // them here gives those exact consume edges the same EnumInPlace drop they
+    // had before the scan without granting an arbitrary local a release.
+    enum_composite_drop_allowed.extend(
+        builder
+            .iteration_owner_drop_blocks
+            .values()
+            .flatten()
+            .copied(),
+    );
 
     // W5.016 — owned-element `Vec<T>` scope-exit drop allow-set. An owned Vec
     // earns its `hew_vec_free_owned` release UNLESS the fail-closed escape-scan
@@ -8327,6 +8343,7 @@ mod drop_admission_type_shape_pins {
     fn production_source() -> String {
         [
             include_str!("mod.rs"),
+            include_str!("drop_plan.rs"),
             include_str!("ownership.rs"),
             include_str!("scope.rs"),
             include_str!("expr.rs"),

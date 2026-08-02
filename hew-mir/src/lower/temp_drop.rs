@@ -409,6 +409,106 @@ fn seed_fresh_string_instruction_locals(
     }
     fresh
 }
+
+/// Whether `local`'s active definition at `instr_index` was minted earlier in
+/// the same block by a fresh string producer.
+///
+/// This is stronger than merely knowing that a local is producer-backed
+/// somewhere in the function: the nearest preceding write proves that every
+/// execution of a cyclic block refreshes the owner before handing it onward.
+/// Such a move is a transfer even inside a loop; retaining it would preserve a
+/// synthetic source generation that has no later drop.
+fn fresh_string_owner_defined_before(
+    block: &BasicBlock,
+    instr_index: usize,
+    local: u32,
+    locals: &[ResolvedTy],
+    owned_string_return_carrier_symbols: &HashSet<String>,
+) -> bool {
+    block.instructions[..instr_index]
+        .iter()
+        .rev()
+        .find(|instr| {
+            crate::dataflow::instr_reads_writes(instr)
+                .1
+                .iter()
+                .any(|place| base_local(*place) == Some(local))
+        })
+        .is_some_and(|instr| {
+            fresh_string_producer_dest(instr, owned_string_return_carrier_symbols)
+                .or_else(|| string_field_load_producer_dest(instr, locals))
+                .or_else(|| wire_codec_string_producer_dest(instr, locals))
+                .and_then(base_local)
+                == Some(local)
+        })
+}
+
+/// Whether the currently-live generation of `local` is read after a site
+/// before every path overwrites it.
+///
+/// [`local_is_used_after`] intentionally conflates loop iterations. That is
+/// conservative for borrowed aliases, but wrong for a fresh producer in a
+/// loop: the next iteration's write creates a new generation and cannot make
+/// the previous generation a co-owner. This walk stops a path at the first
+/// overwrite, keeping retain decisions tied to the actual allocation.
+fn fresh_generation_is_used_after(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    source_local: u32,
+    source_block: u32,
+    source_instr_index: usize,
+) -> bool {
+    let mut worklist = vec![(source_block, source_instr_index.saturating_add(1))];
+    let mut visited = HashSet::new();
+    while let Some((block_id, start)) = worklist.pop() {
+        if !visited.insert((block_id, start)) {
+            continue;
+        }
+        let Some(block) = block_by_id(blocks, block_id) else {
+            return true;
+        };
+        let mut overwritten = false;
+        for instr in block.instructions.iter().skip(start) {
+            let (reads, writes, _) = crate::dataflow::instr_reads_writes(instr);
+            if reads
+                .iter()
+                .any(|place| base_local(*place) == Some(source_local))
+            {
+                return true;
+            }
+            if writes
+                .iter()
+                .any(|place| base_local(*place) == Some(source_local))
+            {
+                overwritten = true;
+                break;
+            }
+        }
+        if overwritten {
+            continue;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .iter()
+            .any(|place| base_local(*place) == Some(source_local))
+        {
+            return true;
+        }
+        if crate::dataflow::terminator_write_places(&block.terminator)
+            .iter()
+            .any(|place| base_local(*place) == Some(source_local))
+        {
+            continue;
+        }
+        worklist.extend(
+            block
+                .successors()
+                .into_iter()
+                .map(|successor| (successor, 0)),
+        );
+    }
+    false
+}
+
 pub(super) fn string_share_sink_places(instr: &Instr) -> Vec<Place> {
     match instr {
         // Fork-entry environments preserve their existing move-in contract: the
@@ -875,9 +975,25 @@ pub(super) fn derive_cow_sole_owner(
             if src_binding == dest_binding {
                 continue;
             }
-            let used_after =
-                local_is_used_after(blocks, suspend_kinds, src_local, block.id, instr_index);
-            if !used_after && entry_block == Some(block.id) {
+            let freshly_defined_here = fresh_string_owner_defined_before(
+                block,
+                instr_index,
+                src_local,
+                locals,
+                owned_string_return_carrier_symbols,
+            );
+            let used_after = if freshly_defined_here {
+                fresh_generation_is_used_after(
+                    blocks,
+                    suspend_kinds,
+                    src_local,
+                    block.id,
+                    instr_index,
+                )
+            } else {
+                local_is_used_after(blocks, suspend_kinds, src_local, block.id, instr_index)
+            };
+            if !used_after && (entry_block == Some(block.id) || freshly_defined_here) {
                 handoff_move_sites.insert((block.id, instr_index));
                 let handoff_binding = candidate_local_to_binding
                     .get(&src_local)
@@ -927,9 +1043,20 @@ pub(super) fn derive_cow_sole_owner(
         }
         cyclic
     };
-    let share_needs_retain = |local: u32, block: u32, instr_index: usize| {
-        cyclic_blocks.contains(&block)
-            || local_is_used_after(blocks, suspend_kinds, local, block, instr_index)
+    let share_needs_retain = |local: u32, block: &BasicBlock, instr_index: usize| {
+        let freshly_defined_here = fresh_string_owner_defined_before(
+            block,
+            instr_index,
+            local,
+            locals,
+            owned_string_return_carrier_symbols,
+        );
+        if freshly_defined_here {
+            fresh_generation_is_used_after(blocks, suspend_kinds, local, block.id, instr_index)
+        } else {
+            cyclic_blocks.contains(&block.id)
+                || local_is_used_after(blocks, suspend_kinds, local, block.id, instr_index)
+        }
     };
 
     let borrowed_alias_of =
@@ -1005,7 +1132,7 @@ pub(super) fn derive_cow_sole_owner(
                         }
                         if let Some(&root) = alias_of.get(&src_local) {
                             if let Some(&binding) = candidate_local_to_binding.get(&root) {
-                                if share_needs_retain(src_local, block.id, instr_index) {
+                                if share_needs_retain(src_local, block, instr_index) {
                                     pending_share_sites.push((
                                         block.id,
                                         instr_index,
@@ -1154,13 +1281,24 @@ pub(super) fn derive_cow_sole_owner(
                         && binding_local_bases.contains(&local)
                         && !parameter_locals.contains(&local)
                     {
-                        let survives = local_is_used_after(
-                            blocks,
-                            suspend_kinds,
-                            local,
-                            block.id,
+                        let freshly_defined_here = fresh_string_owner_defined_before(
+                            block,
                             instr_index,
+                            local,
+                            locals,
+                            owned_string_return_carrier_symbols,
                         );
+                        let survives = if freshly_defined_here {
+                            fresh_generation_is_used_after(
+                                blocks,
+                                suspend_kinds,
+                                local,
+                                block.id,
+                                instr_index,
+                            )
+                        } else {
+                            local_is_used_after(blocks, suspend_kinds, local, block.id, instr_index)
+                        };
                         let entry = external_groups
                             .entry(local)
                             .or_insert_with(|| (survives, Vec::new()));
@@ -1173,7 +1311,7 @@ pub(super) fn derive_cow_sole_owner(
                         continue;
                     };
                     let source_local = base_local(values[0]).unwrap_or(root);
-                    if share_needs_retain(source_local, block.id, instr_index) {
+                    if share_needs_retain(source_local, block, instr_index) {
                         // Follow whole-value moves and enclosing records to the
                         // state leaf while keeping the borrowed owner mint at
                         // the first leaf-bearing constructor, where the source
@@ -1597,6 +1735,21 @@ pub(super) fn derive_cow_sole_owner(
                     required_bindings: Vec::new(),
                 });
             } else {
+                if fresh_string_owner_defined_before(
+                    block,
+                    instr_index,
+                    src_local,
+                    locals,
+                    owned_string_return_carrier_symbols,
+                ) && !fresh_generation_is_used_after(
+                    blocks,
+                    suspend_kinds,
+                    src_local,
+                    block.id,
+                    instr_index,
+                ) {
+                    continue;
+                }
                 if !string_place_is_typed(*src, locals)
                     || !((binding_local_bases.contains(&src_local)
                         && !parameter_locals.contains(&src_local))
@@ -5225,6 +5378,104 @@ fn fresh_bytes_producer_defs_in_block(
     }
     defs
 }
+
+/// Prove that `local` at `target_block:target_instr_index` is still the exact
+/// owner minted by one fresh bytes producer.
+///
+/// Terminator calls often split aggregate construction across several blocks
+/// (`to_bytes()` followed by another field producer, then `RecordInit`). Walk
+/// only a single-predecessor, single-successor chain and reject every intervening
+/// read or overwrite. This keeps the proof allocation-specific without relying
+/// on source-level binding names or loop-wide liveness.
+fn fresh_bytes_owner_reaches_site(
+    blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
+    locals: &[ResolvedTy],
+    local: u32,
+    target_block: u32,
+    target_instr_index: usize,
+) -> bool {
+    let mut defs = blocks
+        .iter()
+        .flat_map(|block| fresh_bytes_producer_defs_in_block(block, locals))
+        .filter(|(candidate, _)| *candidate == local);
+    let Some((_, def)) = defs.next() else {
+        return false;
+    };
+    if defs.next().is_some() {
+        return false;
+    }
+
+    let predecessor_counts = blocks.iter().flat_map(BasicBlock::successors).fold(
+        HashMap::<u32, usize>::new(),
+        |mut counts, successor| {
+            *counts.entry(successor).or_default() += 1;
+            counts
+        },
+    );
+    let (mut block_id, mut start) = match def {
+        NestedDefSite::Instr { block, idx } => (block, idx.saturating_add(1)),
+        NestedDefSite::Term { block } => {
+            let Some(next) = block_by_id(blocks, block)
+                .and_then(|producer| call_terminator_next(&producer.terminator))
+            else {
+                return false;
+            };
+            if predecessor_counts.get(&next).copied().unwrap_or(0) != 1 {
+                return false;
+            }
+            (next, 0)
+        }
+    };
+
+    let mut visited = HashSet::new();
+    loop {
+        if !visited.insert(block_id) {
+            return false;
+        }
+        let Some(block) = block_by_id(blocks, block_id) else {
+            return false;
+        };
+        let end = if block_id == target_block {
+            if start > target_instr_index || target_instr_index > block.instructions.len() {
+                return false;
+            }
+            target_instr_index
+        } else {
+            block.instructions.len()
+        };
+        for instr in &block.instructions[start..end] {
+            let (reads, writes, _) = crate::dataflow::instr_reads_writes(instr);
+            if reads
+                .iter()
+                .chain(&writes)
+                .any(|place| base_local(*place) == Some(local))
+            {
+                return false;
+            }
+        }
+        if block_id == target_block {
+            return true;
+        }
+        if terminator_source_places(&block.terminator, suspend_kinds.get(&block.id))
+            .iter()
+            .chain(crate::dataflow::terminator_write_places(&block.terminator).iter())
+            .any(|place| base_local(*place) == Some(local))
+        {
+            return false;
+        }
+        let successors = block.successors();
+        let [next] = successors.as_slice() else {
+            return false;
+        };
+        if predecessor_counts.get(next).copied().unwrap_or(0) != 1 {
+            return false;
+        }
+        block_id = *next;
+        start = 0;
+    }
+}
+
 /// The destination place of an `Instr::CallRuntimeAbi` whose ownership contract
 /// classifies its result as a fresh, solely-owned `bytes` (`hew_bytes_slice`) —
 /// a `+1` owner the caller must balance with exactly one `hew_bytes_drop`. Only
@@ -6462,6 +6713,26 @@ pub(super) fn finalize_bytes_ownership(
         }
     }
     derivation.retain_sites.retain(|site| {
+        let fresh_handoff = matches!(site.placement, BytesRetainPlacement::Before)
+            && base_local(site.value).is_some_and(|local| {
+                fresh_bytes_owner_reaches_site(
+                    &raw.blocks,
+                    &builder.suspend_kinds,
+                    &builder.locals,
+                    local,
+                    site.block,
+                    site.instr_index,
+                ) && !fresh_generation_is_used_after(
+                    &raw.blocks,
+                    &builder.suspend_kinds,
+                    local,
+                    site.block,
+                    site.instr_index,
+                )
+            });
+        if fresh_handoff {
+            return false;
+        }
         bytes_retain_site_is_required(
             &raw.blocks,
             &builder.actor_message_cow_drop_flags,
@@ -6525,6 +6796,17 @@ mod cow_sole_owner_derivation {
             instructions,
             terminator: Terminator::Return,
         }
+    }
+
+    fn concat(lhs: u32, rhs: u32, dest: u32) -> Instr {
+        Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                "hew_string_concat",
+                vec![Place::Local(lhs), Place::Local(rhs)],
+                Some(Place::Local(dest)),
+            )
+            .expect("hew_string_concat is an allowlisted runtime call"),
+        )
     }
 
     fn bytes_retain_site(binding: BindingId, instr_index: usize) -> BytesRetainSite {
@@ -7136,6 +7418,106 @@ mod cow_sole_owner_derivation {
                 condition: StringRetainCondition::Always,
                 required_bindings: Vec::new(),
             }]
+        );
+    }
+
+    #[test]
+    fn cyclic_fresh_record_ingress_transfers_each_allocation_without_retain() {
+        let source = BindingId(72);
+        let owned = vec![(source, "source".to_string(), ResolvedTy::String)];
+        let binding_locals = HashMap::from([(source, Place::Local(3))]);
+        let mut loop_block = block(vec![
+            concat(1, 2, 3),
+            Instr::RecordInit {
+                ty: ResolvedTy::named_user("Holder", vec![]),
+                fields: vec![(FieldOffset(0), Place::Local(3))],
+                dest: Place::Local(4),
+            },
+        ]);
+        loop_block.terminator = Terminator::Goto { target: 0 };
+
+        let derivation = derive_cow_sole_owner(
+            &[loop_block],
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[
+                ResolvedTy::Unit,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::named_user("Holder", vec![]),
+            ],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+        assert!(
+            derivation.retain_sites.is_empty(),
+            "the next loop iteration overwrites the source with a new allocation; \
+             the current generation is handed to the record"
+        );
+    }
+
+    #[test]
+    fn unbound_fresh_temp_moves_into_owned_capture_without_retain() {
+        let produced = BindingId(u32::MAX - 64);
+        let capture = BindingId(73);
+        let owned = vec![(capture, "capture".to_string(), ResolvedTy::String)];
+        let binding_locals =
+            HashMap::from([(produced, Place::Local(3)), (capture, Place::Local(4))]);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Goto { target: 1 },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![
+                    concat(1, 2, 3),
+                    Instr::Move {
+                        dest: Place::Local(4),
+                        src: Place::Local(3),
+                    },
+                ],
+                terminator: Terminator::Return,
+            },
+        ];
+
+        let derivation = derive_cow_sole_owner(
+            &blocks,
+            &HashMap::new(),
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &HashSet::new(),
+            &[
+                ResolvedTy::Unit,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::String,
+                ResolvedTy::String,
+            ],
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &crate::return_provenance::ExternContractTable::default(),
+            &HashSet::new(),
+        );
+        assert!(
+            derivation.retain_sites.is_empty(),
+            "an unbound fresh result transfers its only owner into the capture"
         );
     }
 

@@ -1,22 +1,8 @@
-//! Cardinality lock-step between the TOML manifest and the prose matrix.
+//! Prose-matrix coverage checks for the typed WASM capability authority.
 //!
-//! The initial revision of `wasm-capability-manifest.toml` is a transcription
-//! of `docs/wasm-capability-matrix.md`. The byte-exact round-trip renderer
-//! arrives in a subsequent change; until then the minimum invariant enforced
-//! here is that row counts never drift between the two files.
-//!
-//! WHY row-count-only (shortcut):
-//!   A full drift gate walks every field and asserts a byte-exact rerender
-//!   equals the committed markdown. The renderer is deferred so the initial
-//!   transcription can land quickly; the row-count assertion is strictly
-//!   weaker but catches the most common drift class — a new row added to one
-//!   file only.
-//! WHEN to remove:
-//!   When the byte-exact renderer lands, this test becomes redundant with the
-//!   full diff check and should be deleted.
-//! WHAT the real solution looks like:
-//!   `cargo run -p hew-capability-gen -- --check` regenerates every output
-//!   into a tempdir and unified-diffs each against the committed copy.
+//! The generator now owns reject/warn identity and checked consumer outputs.
+//! These tests retain the narrower documentation coverage contract until the
+//! prose renderer moves under the generator too.
 
 use std::path::{Path, PathBuf};
 
@@ -162,22 +148,13 @@ fn manifest_runtime_statuses_match_prose_matrix() {
             "feature row for {} must have four cells: {row:?}",
             feature.id
         );
-        let runtime_status = feature
-            .extra
-            .get("runtime_status")
-            .and_then(toml::Value::as_str)
-            .unwrap_or_else(|| panic!("feature {} has no runtime_status", feature.id));
         assert_eq!(
-            row[2], runtime_status,
+            row[2], feature.runtime_status,
             "runtime status drift for feature {} ({})",
             feature.id, row[0]
         );
 
-        let manifest_tracking = feature
-            .extra
-            .get("tracking_label")
-            .and_then(toml::Value::as_str)
-            .unwrap_or("—");
+        let manifest_tracking = feature.tracking_label.as_deref().unwrap_or("—");
         let prose_tracking = row[3].trim_matches('`');
         assert_eq!(
             prose_tracking, manifest_tracking,

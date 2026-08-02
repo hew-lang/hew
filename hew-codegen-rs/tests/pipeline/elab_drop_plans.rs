@@ -214,7 +214,7 @@ fn elab_drop_plan_duplex_close_blocks_wasm_emission() {
     };
     let result = emit_module(&pipeline, &options);
     match result {
-        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+        Err(CodegenError::WasmUnsupportedSubstrate { symbol, .. }) => {
             assert!(
                 symbol.starts_with("hew_duplex_"),
                 "WasmUnsupportedSubstrate symbol must be a duplex C-ABI \

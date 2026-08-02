@@ -913,6 +913,30 @@ fn assert_cursor_release_disarms_before_later_cancellation(pipeline: &IrPipeline
 
 #[test]
 fn cursor_call_carrier_transfer_rearms_the_local_destination_owner() {
+    fn inherits_owned_zero(
+        place: Place,
+        instructions: &[&Instr],
+        seen: &mut std::collections::HashSet<Place>,
+    ) -> bool {
+        if !seen.insert(place) {
+            return false;
+        }
+        if instructions.iter().any(|instr| {
+            matches!(
+                instr,
+                Instr::ConstI64 { dest, value: 0 } if *dest == place
+            )
+        }) {
+            return true;
+        }
+        instructions.iter().any(|instr| match instr {
+            Instr::Move { dest, src } if *dest == place => {
+                inherits_owned_zero(*src, instructions, seen)
+            }
+            _ => false,
+        })
+    }
+
     let pipeline = pipeline(
         r"
         fn consume_cursor(cursor: VecIter<Rc<i64>>) {
@@ -924,29 +948,37 @@ fn cursor_call_carrier_transfer_rearms_the_local_destination_owner() {
     let guard_flags = vec_iter_release_guard_flags(&pipeline, "consume_cursor");
     assert_eq!(
         guard_flags.len(),
-        2,
-        "the moved local and its discarded read must each have a guarded VecIter release"
+        3,
+        "the source parameter, moved local, and discarded read retain path-sensitive guarded releases: {:#?}",
+        raw_instructions(&pipeline, "consume_cursor")
     );
     let instructions = raw_instructions(&pipeline, "consume_cursor");
     assert!(
-        guard_flags.iter().any(|guard_flag| {
-            instructions.iter().any(|instr| match instr {
-                Instr::Move { dest, src } if dest == guard_flag => {
-                    instructions.iter().any(|candidate| {
-                        matches!(
-                            candidate,
-                            Instr::ConstI64 {
-                                dest,
-                                value: 0
-                            } if dest == src
-                        )
-                    })
-                }
-                _ => false,
-            })
-        }),
+        guard_flags.iter().any(|guard_flag| inherits_owned_zero(
+            *guard_flag,
+            &instructions,
+            &mut std::collections::HashSet::new(),
+        )),
         "moving and neutralizing an owned call-carrier parameter must re-arm \
          the destination sidecar as owned: {instructions:#?}"
+    );
+    assert!(
+        guard_flags.iter().any(|guard_flag| {
+            instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::ConstI64 { dest, value: 0 } if dest == guard_flag
+                )
+            }) && instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::ConstI64 { dest, value: 1 } if dest == guard_flag
+                )
+            })
+        }),
+        "the source parameter's initially-owned sidecar must be disarmed after \
+         transfer, so its retained path-sensitive release cannot double-drop: \
+         {instructions:#?}"
     );
 }
 

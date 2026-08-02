@@ -1246,6 +1246,7 @@ fn seed_missing_boundary_facts(raw: &mut RawMirFunction) {
 fn mark_param_place(
     place: Place,
     param_tys: &[ResolvedTy],
+    facts: &[ParamBoundaryFact],
     state: RepresentationEffectState,
     effects: &mut [RepresentationEffectState],
 ) {
@@ -1255,15 +1256,23 @@ fn mark_param_place(
     let Ok(param_index) = usize::try_from(local) else {
         return;
     };
+    let Some(param_ty) = param_tys.get(param_index) else {
+        return;
+    };
     // The representation-loan ABI exists solely for inline `bytes` triples.
-    // A record/adapter parameter is passed as the callee's value snapshot, so
-    // mutating one of its fields is ordinary local state evolution, not a
-    // write through caller-visible representation storage. Treating every
-    // aggregate field store as an ABI mutation rejects valid `var self`
-    // iterator adapters after monomorphisation.
-    if matches!(param_tys.get(param_index), Some(ResolvedTy::Bytes)) {
-        effects[param_index] = effects[param_index].max(state);
-    }
+    // Every other interior write through a checker-proven caller-visible
+    // projection has no admitted representation-mutation contract, so it must
+    // fail closed instead of silently retaining a read-only boundary.
+    effects[param_index] = if matches!(param_ty, ResolvedTy::Bytes) {
+        effects[param_index].max(state)
+    } else if facts
+        .get(param_index)
+        .is_some_and(|fact| fact.caller_visible_projection)
+    {
+        RepresentationEffectState::Unproven
+    } else {
+        effects[param_index]
+    };
 }
 
 fn mark_unproven_param_place(
@@ -1320,9 +1329,19 @@ fn scan_function_representation_effects(
     for block in &raw.blocks {
         for instr in &block.instructions {
             for place in crate::dataflow::instr_interior_write_places(instr) {
+                // A record parameter is materialised as the callee's by-value
+                // aggregate snapshot. `var self` iterator adapters update that
+                // snapshot with `RecordFieldStore`; this is ordinary local
+                // state evolution, not a write through shared caller storage.
+                // Other interior operations can drain or neutralise projected
+                // ownership and therefore retain the fail-closed path above.
+                if matches!(instr, Instr::RecordFieldStore { record, .. } if *record == place) {
+                    continue;
+                }
                 mark_param_place(
                     place,
                     &raw.params,
+                    facts,
                     RepresentationEffectState::MayReplace,
                     &mut effects[function],
                 );
@@ -1730,6 +1749,40 @@ mod param_boundary_effect_tests {
         finalize(&mut raw);
 
         assert_eq!(mode(&raw[0]), ParamBoundaryMode::BorrowReadOnly);
+    }
+
+    #[test]
+    fn caller_visible_user_record_field_drain_fails_closed() {
+        // A Holder value is passed by value, so an ordinary RecordFieldStore
+        // updates only its callee-local snapshot (the adapter case above).
+        // Draining an owned shared-handle field is different: without an
+        // owned-carrier boundary it can retire storage still visible to the
+        // caller. The representation pass must reject that unproven mutation,
+        // not erase it merely because the outer parameter is not `bytes`.
+        let holder = ResolvedTy::named_user("Holder", Vec::new());
+        let shared_vec =
+            ResolvedTy::named_builtin("Vec", hew_types::BuiltinType::Vec, vec![ResolvedTy::I64]);
+        let mut raw = vec![raw_function(
+            "drain_shared_field",
+            FunctionCallConv::Default,
+            vec![Instr::FieldDropInPlace {
+                base: Place::Local(0),
+                field: crate::model::FieldAddr::Record(crate::model::FieldOffset(0)),
+                ty: shared_vec,
+            }],
+            Terminator::Return,
+        )];
+        raw[0].params = vec![holder.clone()];
+        raw[0].locals = vec![holder.clone()];
+        raw[0].decisions[0].ty = holder;
+
+        finalize(&mut raw);
+
+        assert_eq!(
+            mode(&raw[0]),
+            ParamBoundaryMode::RejectUnprovenRepresentationMutation,
+            "a caller-visible shared-handle field drain needs explicit ownership authority"
+        );
     }
 
     #[test]
@@ -4342,23 +4395,16 @@ mod layout_key_shortening_guard {
 
     /// The production (non-test) sources containing record layout-key consumers.
     ///
-    /// Normalises CRLF→LF before splitting: on a Windows checkout
-    /// (`core.autocrlf=true`) the embedded `include_str!` source carries
-    /// `\r\n`, so a split on the LF-anchored `\n#[cfg(test)]\n` never matches
-    /// and would return the WHOLE file — pulling the test module's own
-    /// `mangle_layout_key(name, args)` string literals into the scan and
-    /// breaking the bare-key count guard below. Normalising keeps the guard
-    /// deterministic across line-ending conventions.
+    /// Normalises CRLF→LF for deterministic source scanning. Test-only
+    /// helpers may appear before later production items in these large module
+    /// files, so truncating at the first `#[cfg(test)] mod` would silently omit
+    /// real consumers. Scan the complete files: the forbidden short-name call
+    /// is absent everywhere, while the positive full-owner calls are ordinary
+    /// Rust expressions rather than strings manufactured by this guard.
     fn production_source() -> String {
         [include_str!("mod.rs"), include_str!("expr.rs")]
             .into_iter()
-            .map(|src| {
-                src.replace("\r\n", "\n")
-                    .split("\n#[cfg(test)]\nmod ")
-                    .next()
-                    .expect("lower module source has a non-test prefix")
-                    .to_string()
-            })
+            .map(|src| src.replace("\r\n", "\n"))
             .collect::<Vec<_>>()
             .join("\n")
     }

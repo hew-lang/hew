@@ -644,6 +644,62 @@ fn for_range_mixed_width_bounds_resolves_to_wider_type() {
     );
 }
 
+/// Mixed signedness is not an implicit range conversion. Keeping this rejected
+/// is the counterfactual for MIR's signedness-aware widening: every accepted
+/// mixed-width range has one unambiguous extension mode.
+#[test]
+fn for_range_mixed_signedness_bounds_are_rejected() {
+    let source = r"
+        fn main() {
+            let start: i32 = -2;
+            let end: u64 = 6;
+            for value in start .. end {
+                println(value);
+            }
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|error| error
+            .message
+            .contains("range bounds require compatible integer types")),
+        "mixed-signedness range must be rejected before MIR: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn numeric_branch_joins_accept_checker_selected_common_types() {
+    let source = r"
+        fn main() {
+            let flag = true;
+            let narrow_signed: i32 = -2;
+            let wide_signed: i64 = 4;
+            let signed = if flag { narrow_signed } else { wide_signed };
+            let narrow_unsigned: u16 = 65534;
+            let wide_unsigned: u64 = 65537;
+            let unsigned = if flag { narrow_unsigned } else { wide_unsigned };
+            let float = if flag { narrow_signed } else { 4.5 };
+            let present: Option<i64> = Some(1);
+            let signed_if_let = if let Some(_) = present {
+                narrow_signed
+            } else {
+                wide_signed
+            };
+            println(signed);
+            println(unsigned);
+            println(float);
+            println(signed_if_let);
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "checker-selected branch normalizations must remain explicit downstream, not be rejected by the ownership graph: {:#?}",
+        output.errors
+    );
+}
+
 /// Checker accepts negative literal range bounds (`-5..5`) when the loop
 /// variable is narrowed to i32 via context.
 ///

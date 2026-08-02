@@ -8,6 +8,55 @@ use super::{
 };
 
 impl Builder {
+    /// Normalize one checker-admitted range operand to the range element type.
+    ///
+    /// The checker records the common integer type on `Range<T>`, while HIR
+    /// deliberately preserves each bound's source type.  Range CFG operations
+    /// must all use `T`; a plain `Move` cannot express whether a widening is
+    /// signed or unsigned.  Carry that authority explicitly in `NumericCast`
+    /// before the value reaches any comparison or checked arithmetic.
+    fn normalize_range_integer_operand(
+        &mut self,
+        expr: &HirExpr,
+        src: Place,
+        target_ty: &ResolvedTy,
+        role: &str,
+    ) -> Option<Place> {
+        let source_ty = self.subst_ty(&expr.ty);
+        if source_ty == *target_ty {
+            return Some(src);
+        }
+
+        let source_width = integer_bit_width(&source_ty, self.pointer_width);
+        let target_width = integer_bit_width(target_ty, self.pointer_width);
+        let source_sign = integer_signedness(&source_ty);
+        let target_sign = integer_signedness(target_ty);
+        let fixed_width_pair = !matches!(source_ty, ResolvedTy::Isize | ResolvedTy::Usize)
+            && !matches!(target_ty, ResolvedTy::Isize | ResolvedTy::Usize);
+        let admitted_widening = fixed_width_pair
+            && source_sign.is_some()
+            && source_sign == target_sign
+            && source_width.is_some()
+            && source_width < target_width;
+
+        if !admitted_widening {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: format!(
+                        "for-range {role} type `{}` cannot normalize to checker-selected element type `{}`",
+                        source_ty.user_facing(),
+                        target_ty.user_facing()
+                    ),
+                },
+                note: "range operands must be fixed-width integers of matching signedness, and implicit normalization may only widen"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        self.normalize_checker_numeric_value(src, &source_ty, target_ty, role, expr.site)
+    }
+
     /// Lower `let PAT = scrutinee else { <divergent block> };`.
     ///
     /// Mirrors `lower_if_let`'s tag-test CFG, with two deliberate differences:
@@ -1545,6 +1594,14 @@ impl Builder {
             None
         };
         if let Some(src) = then_value {
+            let source_ty = body.tail.as_ref().map_or(result_ty, |tail| &tail.ty);
+            let src = self.normalize_checker_numeric_value(
+                src,
+                source_ty,
+                result_ty,
+                "if-let then branch",
+                body.tail.as_ref().map_or(scrutinee.site, |tail| tail.site),
+            )?;
             self.push_instr(Instr::Move {
                 dest: result_place,
                 src,
@@ -1583,6 +1640,14 @@ impl Builder {
                 None
             };
             if let Some(src) = else_value {
+                let source_ty = eb.tail.as_ref().map_or(result_ty, |tail| &tail.ty);
+                let src = self.normalize_checker_numeric_value(
+                    src,
+                    source_ty,
+                    result_ty,
+                    "if-let else branch",
+                    eb.tail.as_ref().map_or(scrutinee.site, |tail| tail.site),
+                )?;
                 self.push_instr(Instr::Move {
                     dest: result_place,
                     src,
@@ -1735,11 +1800,8 @@ impl Builder {
         // setup Move carries the for-loop statement span — gdb steps onto the
         // for line, not the prior statement.
         let step_place = self.lower_value(step)?;
-        let step_val = self.alloc_local(counter_ty.clone());
-        self.push_instr(Instr::Move {
-            dest: step_val,
-            src: step_place,
-        });
+        let step_val =
+            self.normalize_range_integer_operand(step, step_place, &counter_ty, "step")?;
         // Runtime fail-closed guard: a zero step would never advance the
         // counter and spin forever.  The checker rejects a statically-zero
         // literal step; this covers a dynamic `step_by(n)` with `n == 0`.
@@ -1788,6 +1850,10 @@ impl Builder {
 
         let raw_start = self.lower_value(start)?;
         let raw_end = self.lower_value(end)?;
+        let raw_start =
+            self.normalize_range_integer_operand(start, raw_start, &counter_ty, "start bound")?;
+        let raw_end =
+            self.normalize_range_integer_operand(end, raw_end, &counter_ty, "end bound")?;
 
         if descending {
             // Descending: counter starts at the high element and the header

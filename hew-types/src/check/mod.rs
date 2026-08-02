@@ -1225,6 +1225,13 @@ impl Checker {
             }
         }
 
+        fn is_checker_numeric_normalization(from: &Ty, to: &Ty, pointer_width: u8) -> bool {
+            from != to
+                && from.is_numeric()
+                && to.is_numeric()
+                && coerce::common_numeric_type(from, to, pointer_width).as_ref() == Some(to)
+        }
+
         fn visit(
             key: &SpanKey,
             expr_types: &HashMap<SpanKey, Ty>,
@@ -1307,7 +1314,14 @@ impl Checker {
                 {
                     // Tail `Ok` coercion is a recorded materialization boundary: HIR
                     // wraps this payload child before validating the identity edge.
-                    if parent_ty != child_ty && !self.tail_ok_coercions.contains(child) {
+                    if parent_ty != child_ty
+                        && !self.tail_ok_coercions.contains(child)
+                        && !is_checker_numeric_normalization(
+                            child_ty,
+                            parent_ty,
+                            self.pointer_width(),
+                        )
+                    {
                         invalid.insert(parent.clone());
                         findings.push((
                             parent.clone(),
@@ -1324,7 +1338,14 @@ impl Checker {
                         if let Some(child_ty) = expr_types.get(child) {
                             // As above, marked children acquire the parent `Result`
                             // type when the HIR wrapper is materialized.
-                            if child_ty != parent_ty && !self.tail_ok_coercions.contains(child) {
+                            if child_ty != parent_ty
+                                && !self.tail_ok_coercions.contains(child)
+                                && !is_checker_numeric_normalization(
+                                    child_ty,
+                                    parent_ty,
+                                    self.pointer_width(),
+                                )
+                            {
                                 invalid.insert(parent.clone());
                                 findings.push((
                                     parent.clone(),

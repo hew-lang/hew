@@ -8404,6 +8404,13 @@ impl Builder {
         self.start_block(then_bb);
         let then_value = self.lower_composite_result_value(then_expr);
         if let Some(src) = then_value {
+            let src = self.normalize_checker_numeric_value(
+                src,
+                &then_expr.ty,
+                result_ty,
+                "if then branch",
+                then_expr.site,
+            )?;
             self.push_instr(Instr::Move {
                 dest: result_place,
                 src,
@@ -8422,6 +8429,13 @@ impl Builder {
         if let Some(else_expr) = else_expr {
             let else_value = self.lower_composite_result_value(else_expr);
             if let Some(src) = else_value {
+                let src = self.normalize_checker_numeric_value(
+                    src,
+                    &else_expr.ty,
+                    result_ty,
+                    "if else branch",
+                    else_expr.site,
+                )?;
                 self.push_instr(Instr::Move {
                     dest: result_place,
                     src,

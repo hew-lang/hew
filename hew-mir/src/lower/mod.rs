@@ -6648,6 +6648,54 @@ impl Builder {
         Place::Local(id)
     }
 
+    /// Materialize a checker-selected common numeric type before a CFG value
+    /// crosses into a destination slot of that type.
+    ///
+    /// HIR preserves each source expression's concrete type even when the
+    /// checker assigns a wider/common type to the enclosing expression. A
+    /// plain `Move` carries no signedness or numeric-conversion authority, so
+    /// branch joins and other common-type boundaries must emit `NumericCast`
+    /// explicitly. The backend then has enough type information to choose
+    /// sign extension, zero extension, or an integer/float conversion.
+    pub(crate) fn normalize_checker_numeric_value(
+        &mut self,
+        src: Place,
+        source_ty: &ResolvedTy,
+        target_ty: &ResolvedTy,
+        role: &str,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let source_ty = self.subst_ty(source_ty);
+        let target_ty = self.subst_ty(target_ty);
+        if source_ty == target_ty {
+            return Some(src);
+        }
+        if !source_ty.can_implicitly_numeric_normalize_to(&target_ty) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "{role} type `{}` cannot normalize to checker-selected type `{}`",
+                        source_ty.user_facing(),
+                        target_ty.user_facing()
+                    ),
+                    site,
+                },
+                note: "checker-selected numeric joins must carry an admitted typed conversion into MIR"
+                    .to_string(),
+            });
+            return None;
+        }
+
+        let dest = self.alloc_local(target_ty.clone());
+        self.push_instr(Instr::NumericCast {
+            dest,
+            src,
+            from_ty: source_ty,
+            to_ty: target_ty,
+        });
+        Some(dest)
+    }
+
     /// Record a source-level binding name for an already-allocated local
     /// slot, for `-g` variable DIEs. A no-op for any place that is not a
     /// `Place::Local` (e.g. a `Place::LambdaActorHandle` wrapping a handle id

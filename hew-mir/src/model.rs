@@ -4852,10 +4852,13 @@ pub enum Instr {
         /// ingress carrying the destination leaf path.
         condition: StringRetainCondition,
     },
-    /// Explicit checker-admitted numeric `as` cast.
+    /// Typed checker-admitted numeric conversion.
     ///
-    /// `from_ty` and `to_ty` are carried from HIR so codegen can choose the
-    /// correct truncation, extension, signed/unsigned int-float conversion, or
+    /// This represents both an explicit source `as` cast and a
+    /// compiler-inserted normalization to a checker-selected common numeric
+    /// type (for example, an `i32` range bound normalized to `Range<i64>`).
+    /// `from_ty` and `to_ty` are carried so codegen can choose the correct
+    /// truncation, extension, signed/unsigned int-float conversion, or
     /// bool/integer canonicalization without re-deriving semantics from LLVM
     /// storage widths alone.
     NumericCast {

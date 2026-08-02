@@ -550,7 +550,7 @@ fn close_conn(conn: net.Connection) {
             .any(|kind| matches!(
                 kind,
                 hew_types::MethodCallReceiverKind::HandleInstance { type_name }
-                    if type_name == "net.Connection"
+                    if type_name == "std.net.Connection"
             )),
         "expected handle method call receiver metadata, got: {:?}",
         output.method_call_receiver_kinds

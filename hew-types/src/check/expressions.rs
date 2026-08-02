@@ -6454,8 +6454,11 @@ impl Checker {
             .type_defs
             .iter()
             .filter_map(|(type_name, td)| {
+                let canonical_type_name = self
+                    .canonical_nominal_name(type_name)
+                    .unwrap_or_else(|| type_name.clone());
                 let expected = Ty::Named {
-                    name: type_name.clone(),
+                    name: canonical_type_name.clone(),
                     args: vec![],
                     builtin: None,
                 };
@@ -6468,7 +6471,7 @@ impl Checker {
                     .or_else(|| td.variants.get(surface_name))
                 {
                     Some(VariantDef::Struct(fields)) => {
-                        Some((type_name.clone(), fields.clone(), td.type_params.clone()))
+                        Some((canonical_type_name, fields.clone(), td.type_params.clone()))
                     }
                     _ => None,
                 }
@@ -6526,6 +6529,7 @@ impl Checker {
         // qualified-name layout into the diagnostic and gives the user no
         // actionable signal.  Success cases (both type and variant exist) fall
         // through to the existing struct/enum-variant init logic.
+        let mut resolved_module_variant_name = None;
         if let Some(dot) = name.find('.') {
             let module_short = &name[..dot];
             if self.modules.contains(module_short) {
@@ -6570,10 +6574,18 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    // Both type and variant exist — fall through.
+                    // Both type and variant exist. Carry the exact declaration
+                    // owner into the shared struct-variant path; retaining the
+                    // lexical module alias here would leave both its surface
+                    // alias and the full declaration as candidates.
+                    resolved_module_variant_name = Some(format!(
+                        "{}.{type_name}::{variant_name}",
+                        self.canonical_module_import_owner(module_short)
+                    ));
                 }
             }
         }
+        let name = resolved_module_variant_name.as_deref().unwrap_or(name);
         // Fail closed under qualified-by-default before binding a bare record
         // constructor: a bare name published by more than one module is
         // ambiguous, and one exported but published by none is not in scope.

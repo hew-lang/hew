@@ -257,6 +257,7 @@ struct TestEvidence {
 struct WasmEvidence {
     profile: String,
     disposition: String,
+    proof_kind: String,
 }
 
 fn assert_nonempty(value: &str, field: &str, resource: &str) {
@@ -298,12 +299,28 @@ fn assert_test_anchor(repo_root: &Path, evidence: &TestEvidence, field: &str, re
 
 fn assert_wasm_anchor(evidence: &WasmEvidence, resource: &str) {
     assert_nonempty(&evidence.profile, "wasm.profile", resource);
+    assert_nonempty(&evidence.proof_kind, "wasm.proof_kind", resource);
     assert_eq!(evidence.profile, "wasm32-wasi");
     assert!(
         matches!(evidence.disposition.as_str(), "accepted" | "rejected"),
         "{resource} has an invalid measured Wasm disposition {}",
         evidence.disposition
     );
+    match evidence.disposition.as_str() {
+        "accepted" => assert!(
+            matches!(
+                evidence.proof_kind.as_str(),
+                "public-lifecycle" | "internal-transient"
+            ),
+            "{resource} accepted Wasm evidence has invalid proof kind {}",
+            evidence.proof_kind
+        ),
+        "rejected" => assert_eq!(
+            evidence.proof_kind, "rejected-boundary",
+            "{resource} rejected Wasm evidence must prove the rejection boundary"
+        ),
+        _ => unreachable!("Wasm disposition was validated above"),
+    }
 }
 
 fn source_derived_resource_key(source_path: &str, resource: &str) -> String {

@@ -478,6 +478,49 @@ impl ModuleRegistry {
         self.registry_handle_spelling(name).is_some()
     }
 
+    /// Whether `name` is an exact source receiver represented by a loaded
+    /// registry module. This includes fielded resource wrappers as well as
+    /// fieldless opaque handles.
+    #[must_use]
+    pub fn is_method_receiver_type(&self, name: &str) -> bool {
+        self.registry_method_receiver_spelling(name).is_some()
+    }
+
+    /// Resolve a registry receiver spelling to its exact loaded source owner.
+    /// Returns `None` when more than one loaded module could own the extracted
+    /// spelling, preserving fail-closed nominal identity.
+    #[must_use]
+    pub fn canonical_method_receiver_identity(&self, name: &str) -> Option<String> {
+        let spelling = self.registry_method_receiver_spelling(name)?;
+        let leaf = crate::short_name(&spelling);
+        let explicit_owner = name.rsplit_once('.').map(|(owner, _)| owner);
+        let mut candidates = self
+            .modules
+            .iter()
+            .filter_map(|(module_id, info)| {
+                let owner = module_id.path.join(".");
+                if explicit_owner
+                    .is_some_and(|requested| requested.contains('.') && requested != owner)
+                {
+                    return None;
+                }
+                (info.handle_types.contains(&spelling)
+                    || info.resource_wrapper_types.contains(&spelling)
+                    || info
+                        .handle_methods
+                        .iter()
+                        .any(|method| method.type_name == spelling))
+                .then(|| format!("{owner}.{leaf}"))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable();
+        candidates.dedup();
+        match candidates.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        }
+    }
+
     /// Check if a fully-qualified name is a drop type across all loaded modules.
     #[must_use]
     pub fn is_drop_type(&self, name: &str) -> bool {

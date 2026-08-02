@@ -7129,6 +7129,112 @@ impl Builder {
         }
     }
 
+    /// Materialise the checker-selected common type for a pair of integer
+    /// operands. HIR records the common result type, but each child expression
+    /// still carries its independently resolved type; without this boundary a
+    /// legal `i64 + i32` reaches codegen as two different LLVM integer widths.
+    ///
+    /// This mirrors `hew-types::check::coerce::common_integer_type` for the
+    /// post-checker `ResolvedTy` domain: fixed-width integers of matching
+    /// signedness choose the wider type, while platform-sized integers combine
+    /// only with their exact own type. Invalid combinations fail closed rather
+    /// than manufacturing an implicit cast the checker does not admit.
+    fn normalize_integer_binary_operands(
+        &mut self,
+        lhs: Place,
+        rhs: Place,
+        lhs_ty: &ResolvedTy,
+        rhs_ty: &ResolvedTy,
+        result_ty: Option<&ResolvedTy>,
+        site: hew_hir::SiteId,
+    ) -> Option<(Place, Place, ResolvedTy)> {
+        debug_assert!(lhs_ty.is_integer() && rhs_ty.is_integer());
+
+        let common_ty = if lhs_ty == rhs_ty {
+            lhs_ty.clone()
+        } else {
+            if matches!(lhs_ty, ResolvedTy::Isize | ResolvedTy::Usize)
+                || matches!(rhs_ty, ResolvedTy::Isize | ResolvedTy::Usize)
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "implicit integer coercion between `{}` and `{}`",
+                            lhs_ty.user_facing(),
+                            rhs_ty.user_facing()
+                        ),
+                        site,
+                    },
+                    note: "platform-sized integers combine only with the exact same type; use an explicit conversion"
+                        .to_string(),
+                });
+                return None;
+            }
+            let lhs_sign = integer_signedness(lhs_ty);
+            let rhs_sign = integer_signedness(rhs_ty);
+            let lhs_width = integer_bit_width(lhs_ty, self.pointer_width);
+            let rhs_width = integer_bit_width(rhs_ty, self.pointer_width);
+            if lhs_sign.is_none()
+                || lhs_sign != rhs_sign
+                || lhs_width.is_none()
+                || rhs_width.is_none()
+            {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "implicit integer coercion between `{}` and `{}`",
+                            lhs_ty.user_facing(),
+                            rhs_ty.user_facing()
+                        ),
+                        site,
+                    },
+                    note: "integer operands must have compatible signedness and width; use an explicit conversion"
+                        .to_string(),
+                });
+                return None;
+            }
+            if lhs_width >= rhs_width {
+                lhs_ty.clone()
+            } else {
+                rhs_ty.clone()
+            }
+        };
+
+        if let Some(result_ty) = result_ty {
+            if result_ty != &common_ty {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::UnsupportedNode {
+                        reason: format!(
+                            "integer binary result `{}` disagrees with common operand type `{}`",
+                            result_ty.user_facing(),
+                            common_ty.user_facing()
+                        ),
+                    },
+                    note: "the checker and MIR integer-coercion authorities must select the same result type"
+                        .to_string(),
+                });
+                return None;
+            }
+        }
+
+        let mut cast_operand = |src: Place, from_ty: &ResolvedTy| {
+            if from_ty == &common_ty {
+                return src;
+            }
+            let dest = self.alloc_local(common_ty.clone());
+            self.push_instr(Instr::NumericCast {
+                dest,
+                src,
+                from_ty: from_ty.clone(),
+                to_ty: common_ty.clone(),
+            });
+            dest
+        };
+        let lhs = cast_operand(lhs, lhs_ty);
+        let rhs = cast_operand(rhs, rhs_ty);
+        Some((lhs, rhs, common_ty))
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "lower_binary is a flat dispatch over the BinaryOp enum; line count grows \
@@ -7149,7 +7255,43 @@ impl Builder {
         ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
+        let lhs_ty = self.subst_ty(lhs_ty);
+        let rhs_ty = self.subst_ty(rhs_ty);
+        let ty = self.subst_ty(ty);
         let dest = self.alloc_local(ty.clone());
+
+        // One post-checker coercion authority feeds every integer binary MIR
+        // instruction. Comparisons have a bool result and therefore derive the
+        // common type solely from their operands; all other integer operators
+        // additionally prove that HIR's result type is that same common type.
+        let is_comparison = matches!(
+            op,
+            BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual
+        );
+        let (lhs, rhs) = if lhs_ty.is_integer() && rhs_ty.is_integer() {
+            let expected_result = (!is_comparison).then_some(&ty);
+            let Some((lhs, rhs, _common_ty)) = self.normalize_integer_binary_operands(
+                lhs,
+                rhs,
+                &lhs_ty,
+                &rhs_ty,
+                expected_result,
+                site,
+            ) else {
+                // No cast locals are allocated on the reject path, so the
+                // destination remains the last local and can be rolled back.
+                self.locals.pop();
+                return None;
+            };
+            (lhs, rhs)
+        } else {
+            (lhs, rhs)
+        };
         // Comparison binops: lower to `Instr::IntCmp` with a `CmpPred`
         // discriminator. The result Place is allocated to whatever type
         // HIR resolved for the expression (`ResolvedTy::Bool` for cmp
@@ -7174,8 +7316,6 @@ impl Builder {
             _ => None,
         };
         if let Some(pred) = cmp_pred {
-            let lhs_ty = self.subst_ty(lhs_ty);
-            let rhs_ty = self.subst_ty(rhs_ty);
             // Select the predicate signed/unsigned variant based on
             // operand signedness.  `Eq`/`NotEq` are signedness-agnostic
             // and pass through unchanged.  The checker rejects mixed-sign
@@ -7295,10 +7435,10 @@ impl Builder {
         // path below (which is only for `+`/`-`/`*`).
         match op {
             BinaryOp::Divide | BinaryOp::Modulo => {
-                return self.lower_div_rem(op, dest, lhs, rhs, ty, site);
+                return self.lower_div_rem(op, dest, lhs, rhs, &ty, site);
             }
             BinaryOp::Shl | BinaryOp::Shr => {
-                return self.lower_shift(op, dest, lhs, rhs, ty, site);
+                return self.lower_shift(op, dest, lhs, rhs, &ty, site);
             }
             _ => {}
         }
@@ -7345,7 +7485,7 @@ impl Builder {
         // Float `+` / `-` / `*`: emit `Instr::Float{Add,Sub,Mul}` directly —
         // no trap blocks, no overflow flag. IEEE 754 overflow produces
         // ±inf, not a runtime trap.
-        if let Some(width) = float_width(ty) {
+        if let Some(width) = float_width(&ty) {
             let float_instr = match arith_op {
                 IntArithOp::Add => Instr::FloatAdd {
                     dest,
@@ -7370,7 +7510,7 @@ impl Builder {
             return Some(dest);
         }
 
-        if matches!(op, BinaryOp::Add) && matches!(ty, ResolvedTy::String) {
+        if matches!(op, BinaryOp::Add) && matches!(&ty, ResolvedTy::String) {
             self.push_instr(Instr::CallRuntimeAbi(
                 crate::model::RuntimeCall::new("hew_string_concat", vec![lhs, rhs], Some(dest))
                     .expect("hew_string_concat is an allowlisted runtime symbol"),
@@ -7391,7 +7531,7 @@ impl Builder {
         // only emission). LESSONS `boundary-fail-closed` (P0 —
         // default arithmetic IS the boundary; trap-on-overflow is
         // fail-closed for accidental overflow).
-        let Some(signed) = integer_signedness(ty) else {
+        let Some(signed) = integer_signedness(&ty) else {
             // Non-integer, non-float reaching `+` / `-` / `*` is a
             // B-1 mixed-width or unsupported-type violation upstream.
             // Fail closed rather than emit unchecked arithmetic.

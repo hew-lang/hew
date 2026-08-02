@@ -4614,10 +4614,10 @@ pub fn crash_only_param_loan_drop(
 /// for every single-slot `#[resource] #[opaque]` handle whose close is a USER
 /// method.
 ///
-/// Parallel to the `resource_record_close` registry (which keys off
+/// Parallel to the typed resource-record lifecycle registry (which keys off
 /// `record_layouts` for `#[resource]` RECORDS): a single-handle opaque
 /// `#[resource]` has no record layout, so it is excluded from
-/// `resource_record_close` — that exclusion is exactly the W3.029 leak this
+/// resource-record lifecycles — that exclusion is exactly the W3.029 leak this
 /// registry closes. The classifier (`classify_named`) consults it to route such
 /// a handle to [`StateFieldCloneKind::Resource`] instead of the no-op-drop
 /// `OpaqueHandle`, and codegen reads the carried symbol to call `close(self)`
@@ -4628,7 +4628,7 @@ pub fn crash_only_param_loan_drop(
 /// and `type_classes`, so MIR and codegen classify a resource-bearing record
 /// the same way (no drift). The `<short>::<method>` symbol matches
 /// `declare_function`'s flattened `<Self>::<method>` mangling and the spelling
-/// `resource_record_close` / `resource_drop_fn` use.
+/// lifecycle registry / `resource_drop_fn` use.
 ///
 /// This registry contains declarations, not resolved use-site types. A user
 /// resource is therefore always registered even when its short name and close

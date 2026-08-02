@@ -283,7 +283,6 @@ fn floor_pipeline_with_driver(driver: RawMirFunction) -> IrPipeline {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     }
 }

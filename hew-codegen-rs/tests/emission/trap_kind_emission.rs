@@ -145,7 +145,6 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
         lint_warnings: vec![],
-        resource_record_close: vec![],
         lifecycle_registry: hew_hir::LifecycleRegistry::default(),
     };
     let tmp = std::env::temp_dir().join(format!("hew-trap-kind-{module_name}"));

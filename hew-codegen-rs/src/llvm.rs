@@ -1918,23 +1918,8 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// Symbols of functions carrying typed machine-step provenance in raw MIR.
     /// Call lowering consults this set instead of interpreting the callee name.
     pub(crate) machine_step_symbols: &'a HashSet<String>,
-    /// Field-bearing `#[resource]` record → `<Type>::close` symbol registry
-    /// (`IrPipeline::resource_record_close`). Consulted by the on-demand
-    /// record-drop thunk synthesis in `emit_aggregate_recursive_drop` so a
-    /// `#[resource]` record reached as a tuple/array element gets the SAME
-    /// close-then-teardown thunk the up-front synthesis pass emits — the two
-    /// synthesis points cannot diverge on whether close fires (spec §3.7.3).
-    pub(crate) resource_record_close: &'a [(String, String)],
-    /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
-    /// for single-slot `#[resource] #[opaque]` handles
-    /// (`IrPipeline::resource_opaque_close`). The COMPLEMENT of
-    /// `resource_record_close`. Consulted by the on-demand record-drop thunk
-    /// synthesis in `emit_aggregate_recursive_drop` (via
-    /// `classify_record_drop_fields_for_key`) so a record holding a resource
-    /// handle, reached as a tuple/array element, gets the SAME
-    /// `Resource`-classified close-then-teardown body the up-front synthesis
-    /// pass emits — the two synthesis points cannot diverge on whether the
-    /// handle's `close(self)` fires.
+    /// Exact declaration-identity lifecycle authority for both opaque and
+    /// field-bearing resources. Linkage symbols are payload, never lookup keys.
     pub(crate) lifecycle_registry: &'a hew_hir::LifecycleRegistry,
     /// Module-wide actor layouts keyed by `ActorLayout.name` at use sites.
     /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
@@ -5693,7 +5678,6 @@ fn emit_state_clone_drop_synthesis<'ctx>(
     target_data: Option<&TargetData>,
     enum_inplace_drop_seeds: &[String],
     vec_owned_record_seeds: &[String],
-    resource_record_close: &[(String, String)],
     lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<()> {
     // Per-record AND per-enum helpers must exist before the per-actor body
@@ -5713,14 +5697,6 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         vec_owned_record_seeds,
         lifecycle_registry,
     )?;
-    // Resource-record close-symbol lookup (spec §3.7.3). A `#[resource]`
-    // record's recursive drop thunk must run the user `close(self)` FIRST,
-    // before the field-wise teardown — so a `#[resource]` field at any depth
-    // gets its RAII close through the same thunk that frees its heap leaves.
-    let resource_close_by_record: HashMap<&str, &str> = resource_record_close
-        .iter()
-        .map(|(record, symbol)| (record.as_str(), symbol.as_str()))
-        .collect();
     // Concrete target-data for any indirect-enum child free thunk this pass
     // synthesises (F4). Falls back to the host layout when no target machine is
     // bound — the same policy `struct_abi_size` / `build_tagged_union_layout` use,
@@ -5746,7 +5722,6 @@ fn emit_state_clone_drop_synthesis<'ctx>(
         target_data: resolved_td,
         record_layouts: pipeline_records,
         record_structs: record_struct_map,
-        resource_record_close,
         lifecycle_registry,
     };
     for (record_name, kinds) in &record_classifications {
@@ -5779,7 +5754,9 @@ fn emit_state_clone_drop_synthesis<'ctx>(
                 record_name,
                 record_struct,
                 kinds,
-                resource_close_by_record.get(record_name.as_str()).copied(),
+                lifecycle_registry
+                    .resource_record(&hew_types::DefId::new(record_name))
+                    .map(|lifecycle| lifecycle.close_symbol.as_str()),
                 &drop_witnesses,
             )?;
         }
@@ -7562,7 +7539,7 @@ pub(crate) fn emit_aggregate_drop_inplace_body<'ctx>(
 /// close runs, then fields drop in reverse declaration order).
 ///
 /// `resource_close_symbol` is `Some("<Type>::close")` ONLY for a field-bearing
-/// `#[resource]` record (seeded from `IrPipeline::resource_record_close`); the
+/// `#[resource]` record (seeded from `IrPipeline::lifecycle_registry`); the
 /// symbol must already be declared (every user `impl` method reaches
 /// `declare_function` before drop-thunk synthesis). The close receives the
 /// loaded aggregate `self` by value, exactly like a normal user call and like
@@ -8272,9 +8249,7 @@ pub(crate) struct DropSynthWitnesses<'a, 'ctx> {
     /// Codegen record struct types — the LLVM struct authority for synthesising
     /// a record's in-place drop body on demand.
     pub(crate) record_structs: &'a RecordLayoutMap<'ctx>,
-    /// `#[resource]` record → user `close(self)` symbol, so an on-demand record
-    /// drop body runs the RAII close before its field teardown (spec §3.7.3).
-    pub(crate) resource_record_close: &'a [(String, String)],
+    /// Exact resource lifecycle authority, including record close payloads.
     pub(crate) lifecycle_registry: &'a hew_hir::LifecycleRegistry,
 }
 
@@ -8291,7 +8266,6 @@ pub(crate) fn fn_ctx_drop_witnesses<'a, 'ctx>(
         target_data: fn_ctx.target_data,
         record_layouts,
         record_structs: fn_ctx.record_layouts,
-        resource_record_close: fn_ctx.resource_record_close,
         lifecycle_registry: fn_ctx.lifecycle_registry,
     }
 }
@@ -8447,10 +8421,9 @@ fn ensure_record_drop_body<'ctx>(
         w.lifecycle_registry,
     )?;
     let resource_close = w
-        .resource_record_close
-        .iter()
-        .find(|(record, _)| record == record_key)
-        .map(|(_, symbol)| symbol.as_str());
+        .lifecycle_registry
+        .resource_record(&hew_types::DefId::new(record_key))
+        .map(|lifecycle| lifecycle.close_symbol.as_str());
     emit_record_drop_inplace_body(
         ctx,
         llvm_mod,
@@ -17458,9 +17431,9 @@ fn emit_field_overwrite_release(
         StateFieldCloneKind::UserRecord { name } => {
             if !release_resource_records
                 && fn_ctx
-                    .resource_record_close
-                    .iter()
-                    .any(|(record, _)| record == name)
+                    .lifecycle_registry
+                    .resource_record(&hew_types::DefId::new(name))
+                    .is_some()
             {
                 return Ok(());
             }
@@ -24439,10 +24412,9 @@ fn emit_heap_slot_drop<'ctx>(
                     // the two synthesis points cannot diverge on whether the
                     // user `close(self)` fires (spec §3.7.3).
                     let resource_close = fn_ctx
-                        .resource_record_close
-                        .iter()
-                        .find(|(record, _)| record == &name)
-                        .map(|(_, symbol)| symbol.as_str());
+                        .lifecycle_registry
+                        .resource_record(&hew_types::DefId::new(&name))
+                        .map(|lifecycle| lifecycle.close_symbol.as_str());
                     emit_record_drop_inplace_body(
                         fn_ctx.ctx,
                         fn_ctx.llvm_mod,
@@ -32086,7 +32058,6 @@ fn lower_function<'ctx>(
     dyn_vtable_registry: &[DynVtableInstance],
     const_globals: &ConstGlobalMap<'ctx>,
     frame_cleanup_thunks: &RefCell<FrameCleanupThunkCache<'ctx>>,
-    resource_record_close: &[(String, String)],
     lifecycle_registry: &hew_hir::LifecycleRegistry,
     emit_wasm_entry_alias: bool,
     has_supervisors: bool,
@@ -33000,7 +32971,6 @@ fn lower_function<'ctx>(
         fn_symbols,
         frame_cleanup_thunks,
         machine_step_symbols,
-        resource_record_close,
         lifecycle_registry,
         actor_layouts,
         machine_layouts,
@@ -34072,7 +34042,6 @@ fn build_module_for_target<'ctx>(
             target_data: &target_data,
             record_layouts: &pipeline.record_layouts,
             record_structs: &record_layouts,
-            resource_record_close: &pipeline.resource_record_close,
             lifecycle_registry: &pipeline.lifecycle_registry,
         };
         crate::thunks::emit_actor_message_drop_fn(
@@ -34133,7 +34102,6 @@ fn build_module_for_target<'ctx>(
         Some(&target_data),
         &thunk_requirements.enum_seeds,
         &thunk_requirements.record_seeds,
-        &pipeline.resource_record_close,
         &pipeline.lifecycle_registry,
     )?;
     // Supervisor bootstraps replace the MIR-side synthesised body wholesale
@@ -34238,7 +34206,6 @@ fn build_module_for_target<'ctx>(
             &pipeline.dyn_vtable_registry,
             &const_globals,
             &frame_cleanup_thunks,
-            &pipeline.resource_record_close,
             &pipeline.lifecycle_registry,
             emit_wasm_entry_alias,
             !pipeline.supervisor_layouts.is_empty(),

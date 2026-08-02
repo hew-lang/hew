@@ -3756,41 +3756,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // reads, and the `<Type>::close` symbol matches `declare_function`'s
     // flattened `<Self>::<method>` mangling, so MIR and codegen agree without
     // translation glue.
-    let colliding_record_shorts: HashSet<&str> = record_layouts
-        .iter()
-        .filter_map(|layout| {
-            let short = short_name(&layout.name);
-            (record_layouts
-                .iter()
-                .filter(|other| short_name(&other.name) == short)
-                .count()
-                > 1)
-            .then_some(short)
-        })
-        .collect();
-    let resource_record_close: Vec<(String, String)> = record_layouts
-        .iter()
-        .filter_map(|layout| {
-            let short = short_name(&layout.name);
-            let entry = module
-                .type_classes
-                .get(layout.name.as_str())
-                .or_else(|| module.type_classes.get(short))?;
-            let (marker, close) = entry;
-            if !matches!(marker, ResourceMarker::Resource) {
-                return None;
-            }
-            let close_method = close.as_ref()?;
-            let symbol_type = if colliding_record_shorts.contains(short) {
-                layout.name.as_str()
-            } else {
-                short
-            };
-            let symbol = format!("{symbol_type}::{close_method}");
-            Some((layout.name.clone(), symbol))
-        })
-        .collect();
-
     let capabilities = crate::model::ModuleCapabilities::from_raw_mir(&raw_mir, &extern_decls);
 
     IrPipeline {
@@ -3841,7 +3806,6 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         // here so the lowerer does not depend on `TypeCheckOutput` directly.
         user_clone_record_seeds: Vec::new(),
         lint_warnings,
-        resource_record_close,
         lifecycle_registry,
     }
 }

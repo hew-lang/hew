@@ -144,7 +144,7 @@ impl IrPipeline {
                 &self.raw_mir,
                 &self.record_layouts,
                 &synthesis_enum_layouts,
-                &self.resource_record_close,
+                &self.lifecycle_registry,
             );
         merge_seeds(&mut record_seeds, field_store_record_seeds);
         merge_seeds(&mut enum_seeds, field_store_enum_seeds);
@@ -537,7 +537,7 @@ fn collect_record_field_store_overwrite_seeds(
     raw_mir: &[RawMirFunction],
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
-    resource_record_close: &[(String, String)],
+    lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> (Vec<String>, Vec<String>) {
     let mut record_seeds = Vec::new();
     let mut record_seen = HashSet::new();
@@ -574,9 +574,9 @@ fn collect_record_field_store_overwrite_seeds(
                 };
                 if let Some(layout) = record_layout_for_ty(field_ty, record_layouts) {
                     let key = layout.name.clone();
-                    if !resource_record_close
-                        .iter()
-                        .any(|(resource, _)| resource == &key)
+                    if lifecycle_registry
+                        .resource_record(&hew_types::DefId::new(&key))
+                        .is_none()
                         && record_seen.insert(key.clone())
                     {
                         record_seeds.push(key);
@@ -1418,8 +1418,12 @@ mod record_field_store_overwrite_tests {
             vec_iter_string,
         )];
 
-        let (record_seeds, enum_seeds) =
-            collect_record_field_store_overwrite_seeds(&funcs, &layouts, &[], &[]);
+        let (record_seeds, enum_seeds) = collect_record_field_store_overwrite_seeds(
+            &funcs,
+            &layouts,
+            &[],
+            &hew_hir::LifecycleRegistry::default(),
+        );
         assert_eq!(record_seeds, [key]);
         assert!(enum_seeds.is_empty());
     }
@@ -1457,8 +1461,12 @@ mod record_field_store_overwrite_tests {
             cursor,
         )];
 
-        let (record_seeds, enum_seeds) =
-            collect_record_field_store_overwrite_seeds(&funcs, &layouts, &[], &[]);
+        let (record_seeds, enum_seeds) = collect_record_field_store_overwrite_seeds(
+            &funcs,
+            &layouts,
+            &[],
+            &hew_hir::LifecycleRegistry::default(),
+        );
         assert_eq!(record_seeds, [key]);
         assert!(enum_seeds.is_empty());
     }
@@ -1487,8 +1495,12 @@ mod record_field_store_overwrite_tests {
             ResolvedTy::named_user("Maybe", vec![ResolvedTy::String]),
         )];
 
-        let (record_seeds, enum_seeds) =
-            collect_record_field_store_overwrite_seeds(&funcs, &records, &enums, &[]);
+        let (record_seeds, enum_seeds) = collect_record_field_store_overwrite_seeds(
+            &funcs,
+            &records,
+            &enums,
+            &hew_hir::LifecycleRegistry::default(),
+        );
         assert!(record_seeds.is_empty());
         assert_eq!(enum_seeds, [key]);
     }
@@ -1524,14 +1536,19 @@ mod record_field_store_overwrite_tests {
                 ResolvedTy::named_user("ResourceRecord", vec![]),
             ),
         ];
+        let mut type_classes = hew_hir::TypeClassTable::default();
+        type_classes
+            .admit_resource_record_lifecycle(hew_hir::ResourceRecordLifecycle {
+                resource_declaration: hew_types::DefId::new("ResourceRecord"),
+                close_declaration: hew_types::DefId::new("ResourceRecord::close"),
+                close_symbol: "ResourceRecord::close".to_string(),
+            })
+            .unwrap();
         let (record_seeds, enum_seeds) = collect_record_field_store_overwrite_seeds(
             &funcs,
             &layouts,
             &[],
-            &[(
-                "ResourceRecord".to_string(),
-                "ResourceRecord::close".to_string(),
-            )],
+            type_classes.lifecycle_registry(),
         );
         assert!(record_seeds.is_empty());
         assert!(enum_seeds.is_empty());

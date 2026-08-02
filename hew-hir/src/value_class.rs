@@ -58,7 +58,19 @@ pub struct OpaqueResourceLifecycle {
     pub producer_modules: std::collections::BTreeSet<String>,
 }
 
-/// Canonical declaration-identity registry for opaque resource lifecycles.
+/// MIR-admitted lifecycle for one exact field-bearing resource record.
+///
+/// Record resources share the same declaration-identity authority as opaque
+/// resources.  The emitted close symbol is linkage metadata only; semantic
+/// lookup is always keyed by the exact qualified resource declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResourceRecordLifecycle {
+    pub resource_declaration: hew_types::DefId,
+    pub close_declaration: hew_types::DefId,
+    pub close_symbol: String,
+}
+
+/// Canonical declaration-identity registry for resource lifecycles.
 ///
 /// This is the only carrier permitted beyond HIR lowering.  It intentionally
 /// exposes exact [`hew_types::DefId`] lookup only: callers may not retry a
@@ -66,6 +78,7 @@ pub struct OpaqueResourceLifecycle {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LifecycleRegistry {
     opaque_resources: BTreeMap<hew_types::DefId, OpaqueResourceLifecycle>,
+    resource_records: BTreeMap<hew_types::DefId, ResourceRecordLifecycle>,
 }
 
 impl LifecycleRegistry {
@@ -114,6 +127,40 @@ impl LifecycleRegistry {
     pub fn opaque_resources(&self) -> impl ExactSizeIterator<Item = &OpaqueResourceLifecycle> {
         self.opaque_resources.values()
     }
+
+    /// Admit one exact field-bearing resource-record lifecycle.
+    ///
+    /// # Errors
+    /// Returns the rejected lifecycle on duplicate declaration identity.
+    fn admit_resource_record(
+        &mut self,
+        lifecycle: ResourceRecordLifecycle,
+    ) -> Result<(), Box<ResourceRecordLifecycle>> {
+        use std::collections::btree_map::Entry;
+        match self
+            .resource_records
+            .entry(lifecycle.resource_declaration.clone())
+        {
+            Entry::Vacant(entry) => {
+                entry.insert(lifecycle);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(Box::new(lifecycle)),
+        }
+    }
+
+    #[must_use]
+    pub fn resource_record(
+        &self,
+        resource_declaration: &hew_types::DefId,
+    ) -> Option<&ResourceRecordLifecycle> {
+        self.resource_records.get(resource_declaration)
+    }
+
+    #[must_use]
+    pub fn resource_records(&self) -> impl ExactSizeIterator<Item = &ResourceRecordLifecycle> {
+        self.resource_records.values()
+    }
 }
 
 /// Per-named-type classification plus exact closeable-opaque lifecycles.
@@ -159,6 +206,19 @@ impl TypeClassTable {
         lifecycle: OpaqueResourceLifecycle,
     ) -> Result<(), Box<OpaqueResourceLifecycle>> {
         self.lifecycle_registry.admit_opaque_resource(lifecycle)
+    }
+
+    /// Admit one exact field-bearing resource-record lifecycle at the HIR
+    /// boundary. Downstream phases receive only an immutable registry view.
+    ///
+    /// # Errors
+    /// Returns the rejected lifecycle when the resource declaration was
+    /// already admitted.
+    pub fn admit_resource_record_lifecycle(
+        &mut self,
+        lifecycle: ResourceRecordLifecycle,
+    ) -> Result<(), Box<ResourceRecordLifecycle>> {
+        self.lifecycle_registry.admit_resource_record(lifecycle)
     }
 
     #[must_use]
@@ -642,5 +702,62 @@ mod tests {
         assert_eq!(lookup_type_marker_for_ty(&qualified, &table), None);
         // Sanity: the unused variant keeps the linter honest.
         let _ = ResourceMarker::Resource;
+    }
+
+    #[test]
+    fn resource_record_registry_is_exact_and_refuses_duplicate_identity() {
+        use super::{ResourceRecordLifecycle, TypeClassTable};
+        use hew_types::DefId;
+
+        let lifecycle = |owner: &str, close: &str, symbol: &str| ResourceRecordLifecycle {
+            resource_declaration: DefId::new(owner),
+            close_declaration: DefId::new(close),
+            close_symbol: symbol.to_string(),
+        };
+        let mut table = TypeClassTable::default();
+        table
+            .admit_resource_record_lifecycle(lifecycle(
+                "left.Connection",
+                "left.Connection::close",
+                "left.Connection::close",
+            ))
+            .unwrap();
+        table
+            .admit_resource_record_lifecycle(lifecycle(
+                "right.Connection",
+                "right.Connection::close",
+                "right.Connection::close",
+            ))
+            .unwrap();
+
+        let registry = table.lifecycle_registry();
+        assert_eq!(registry.resource_records().len(), 2);
+        assert!(registry
+            .resource_record(&DefId::new("Connection"))
+            .is_none());
+        assert_eq!(
+            registry
+                .resource_record(&DefId::new("right.Connection"))
+                .unwrap()
+                .close_declaration,
+            DefId::new("right.Connection::close")
+        );
+
+        assert!(table
+            .admit_resource_record_lifecycle(lifecycle(
+                "left.Connection",
+                "other.close",
+                "other_close",
+            ))
+            .is_err());
+        assert_eq!(
+            table
+                .lifecycle_registry()
+                .resource_record(&DefId::new("left.Connection"))
+                .unwrap()
+                .close_declaration,
+            DefId::new("left.Connection::close"),
+            "duplicate admission must not overwrite the sole close authority"
+        );
     }
 }

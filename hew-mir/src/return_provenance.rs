@@ -94,7 +94,7 @@ use hew_types::ResolvedTy;
 /// generated from the container's LAYOUT, so there is no drop plan that frees
 /// the container's spine while sparing a field.* For a `#[resource]` record that
 /// premise is false. Its drop plan is
-/// [`IrPipeline::resource_record_close`](crate::model::IrPipeline::resource_record_close):
+/// [`IrPipeline::lifecycle_registry`](crate::model::IrPipeline::lifecycle_registry):
 /// codegen's `__hew_record_drop_inplace_<R>` thunk calls the user's
 /// `<R>::close(self)` as the FIRST step, and only then tears the fields down
 /// field-wise. The declared destructor IS the per-value drop plan the rule
@@ -107,7 +107,7 @@ use hew_types::ResolvedTy;
 /// 1. it carries `ResourceMarker::Resource` in the module's
 ///    [`TypeClassTable`](hew_hir::TypeClassTable);
 /// 2. that same table entry names its close method — the identical
-///    `(marker, close)` entry `resource_record_close` reads to seed the thunk,
+///    `(marker, close)` entry lowering admits into the typed lifecycle registry,
 ///    so this authority and codegen cannot disagree about which types have a
 ///    declared release;
 /// 3. **every declared field is one the post-close field-wise teardown cannot

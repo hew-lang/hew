@@ -9,7 +9,7 @@
 //! field.
 //!
 //! That premise is FALSE for a `#[resource]` record with a declared `close`.
-//! `IrPipeline::resource_record_close` makes codegen's
+//! `IrPipeline::lifecycle_registry` makes codegen's
 //! `__hew_record_drop_inplace_<R>` thunk call `<R>::close(self)` FIRST and only
 //! then tear the fields down field-wise. The declared destructor is exactly the
 //! per-value drop plan the composite rule assumed did not exist, so the answer

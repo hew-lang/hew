@@ -297,23 +297,7 @@ pub struct IrPipeline {
     /// `<Type>::close` symbol the user `impl` declares.
     ///
     /// Codegen's record-drop thunk synthesis consumes this so a `#[resource]`
-    /// record's user `close(self)` runs as the FIRST step of its scope-exit /
-    /// nested-field drop (spec §3.7.3 / §10(d)): the resource's own close fires
-    /// before the field-wise teardown, and a nested `#[resource]` field's close
-    /// fires through the same recursive thunk. Without this seed the field-wise
-    /// `RecordInPlace` drop would free heap leaves but silently skip the RAII
-    /// `close()` contract.
-    ///
-    /// Populated by `lower_hir_module` from `HirModule::type_classes` for every
-    /// `#[resource]`-marked type that ALSO has a record layout. A single-handle
-    /// `#[resource]` (no owned/aggregate field) is NOT listed: it routes to the
-    /// `AffineResource` close path and never reaches the record-drop thunk.
-    ///
-    /// WHY here and not in codegen directly: `IrPipeline` is the checker→codegen
-    /// boundary; codegen consumes pipeline fields, never the HIR `type_classes`
-    /// table. Mirrors `opaque_handle_names` / `user_clone_record_seeds`.
-    pub resource_record_close: Vec<(String, String)>,
-    /// Canonical, declaration-identity opaque-resource lifecycle authority.
+    /// Canonical, declaration-identity resource lifecycle authority.
     /// Every ownership/drop classifier receives this structured registry;
     /// generated containment paths may not reconstruct teardown from names.
     pub lifecycle_registry: hew_hir::LifecycleRegistry,

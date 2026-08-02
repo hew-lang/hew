@@ -893,7 +893,7 @@ impl Checker {
                 let owned = match &resolved_result {
                     Ty::Named { name, .. } => opaque_resource_candidates
                         .candidates
-                        .get(name)
+                        .get(name.as_str())
                         .filter(|candidate| candidate.producer_symbols.contains(symbol))
                         .filter(|candidate| {
                             pending
@@ -947,16 +947,17 @@ impl Checker {
                         && match (&resolved_result, contract.resource_result_type) {
                             (Ty::Named { name, .. }, Some(resource_type)) => {
                                 name == resource_type
-                                    && opaque_resource_candidates.candidates.get(name).is_some_and(
-                                        |candidate| {
+                                    && opaque_resource_candidates
+                                        .candidates
+                                        .get(name.as_str())
+                                        .is_some_and(|candidate| {
                                             candidate.producer_symbols.contains(&identity.endpoint)
                                                 && identity.declaring_module.as_ref().is_some_and(
                                                     |module| {
                                                         candidate.producer_modules.contains(module)
                                                     },
                                                 )
-                                        },
-                                    )
+                                        })
                             }
                             (_, Some(_)) => false,
                             (_, None) => identity.trusted_compiled_stdlib,

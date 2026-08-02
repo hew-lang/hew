@@ -6662,9 +6662,8 @@ pub(super) fn detect_opaque_resource_field_misuse(
 ///   - kinds with an existing release-before-store — `String`/`Bytes`/`Vec`/
 ///     `HashMap`/`HashSet` go through `emit_state_field_old_value_release`'s
 ///     pointer-inequality guard, which releases the old payload before the store;
-///   - `IoHandle::Connection` — its state-level drop is a no-op (the fd is torn
-///     down by the runtime's actor-teardown, not the state drop), so overwriting
-///     the slot leaks nothing;
+///   - every `IoHandle`, including the temporary `Connection` compatibility
+///     carrier; clone refusal never transfers drop authority to the runtime;
 ///   - no-close `OpaqueHandle` (e.g. `json.Value`) and `BitCopy` — no owned
 ///     resource to leak.
 fn actor_state_kind_leaks_on_overwrite(kind: &crate::state_clone::StateFieldCloneKind) -> bool {
@@ -6673,7 +6672,8 @@ fn actor_state_kind_leaks_on_overwrite(kind: &crate::state_clone::StateFieldClon
         kind,
         StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Stream
+                kind: IoHandleKind::Connection
+                    | IoHandleKind::Stream
                     | IoHandleKind::Sink
                     | IoHandleKind::Generator
                     | IoHandleKind::CancellationToken,

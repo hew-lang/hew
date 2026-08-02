@@ -3108,8 +3108,6 @@ pub fn lower_program_with_mono_cap(
     for (item, span) in &program.items {
         if let Item::TypeDecl(decl) = item {
             let hir_decl = ctx.lower_type_decl(decl, span.clone());
-            ctx.opaque_resource_decl_identities
-                .insert(hir_decl.id, hir_decl.name.clone());
             let marker = hir_decl.marker;
             let close_method = if marker == ResourceMarker::Resource {
                 hir_decl
@@ -3272,8 +3270,6 @@ pub fn lower_program_with_mono_cap(
                         {
                             let hir_decl =
                                 ctx.lower_imported_type_decl(decl, span.clone(), &source_module);
-                            ctx.opaque_resource_decl_identities
-                                .insert(hir_decl.id, format!("{source_module}.{}", hir_decl.name));
                             let close_method = if hir_decl.marker == ResourceMarker::Resource {
                                 hir_decl
                                     .consuming_methods
@@ -3422,8 +3418,6 @@ pub fn lower_program_with_mono_cap(
                         Item::TypeDecl(decl) => {
                             let hir_decl =
                                 ctx.lower_imported_type_decl(decl, span.clone(), &source_module);
-                            ctx.opaque_resource_decl_identities
-                                .insert(hir_decl.id, format!("{source_module}.{}", hir_decl.name));
                             let entry_fields: Vec<(String, ResolvedTy)> = hir_decl
                                 .fields
                                 .iter()
@@ -4046,8 +4040,6 @@ pub fn lower_program_with_mono_cap(
                             } else {
                                 ctx.lower_imported_type_decl(decl, span.clone(), &source_module)
                             };
-                            ctx.opaque_resource_decl_identities
-                                .insert(hir_decl.id, format!("{source_module}.{}", hir_decl.name));
                             items.push(HirItem::TypeDecl(hir_decl));
                         }
                         // Emit `HirItem::Machine` entries for imported pub
@@ -4541,9 +4533,7 @@ pub fn lower_program_with_mono_cap(
 
     admit_opaque_resource_lifecycles(
         &items,
-        &diagnostic_source_modules,
         &ctx.opaque_resource_candidates,
-        &ctx.opaque_resource_decl_identities,
         &mut ctx.type_classes,
         &mut ctx.diagnostics,
     );
@@ -4581,21 +4571,12 @@ pub fn lower_program_with_mono_cap(
 /// extern, and inherent close body has a resolved HIR identity.
 fn validate_opaque_resource_close(
     items: &[HirItem],
-    diagnostic_source_modules: &HashMap<ItemId, String>,
     candidate: &hew_types::OpaqueResourceLifecycleCandidate,
-    decl: &HirTypeDecl,
 ) -> Result<String, String> {
-    // Temporary pre-canonical adapter: foundation composition replaces this
-    // suffix match with the close method's canonical CallTarget/DefId identity.
-    let close_suffix = format!("{}::close", decl.name);
     let close_functions: Vec<_> = items
         .iter()
         .filter_map(|item| match item {
-            HirItem::Function(function)
-                if diagnostic_source_modules.get(&function.id) == Some(&candidate.owner_module)
-                    && (function.name == close_suffix
-                        || function.name.ends_with(&format!(".{close_suffix}"))) =>
-            {
+            HirItem::Function(function) if function.declaration == candidate.close_declaration => {
                 Some(function)
             }
             _ => None,
@@ -4605,11 +4586,7 @@ fn validate_opaque_resource_close(
         .iter()
         .filter_map(|item| match item {
             HirItem::ExternFn(extern_fn)
-                if extern_fn.name == candidate.release_symbol
-                    && matches!(
-                        &extern_fn.provenance,
-                        ExternProvenance::Module(module) if module == &candidate.owner_module
-                    ) =>
+                if extern_fn.declaration == candidate.release_declaration =>
             {
                 Some(extern_fn)
             }
@@ -4620,19 +4597,18 @@ fn validate_opaque_resource_close(
     match (close_functions.as_slice(), release_externs.as_slice()) {
         ([close], [release]) if close.return_ty == ResolvedTy::Unit && close.params.len() == 1 => {
             let receiver = close.params[0].id;
-            let forwarding_calls = count_direct_release_forwards(
+            let exact_wrapper = is_exact_release_forwarding_wrapper(
                 &close.body,
-                release.id,
+                &candidate.release_declaration,
                 &candidate.release_symbol,
                 candidate.release_param_index,
                 receiver,
             );
-            (forwarding_calls == 1)
+            exact_wrapper
                 .then(|| close.name.clone())
                 .ok_or_else(|| {
-                    format!(
-                        "canonical close must forward its receiver exactly once; found {forwarding_calls} exact calls"
-                    )
+                    "canonical close must be one unconditional straight-line exact release call"
+                        .to_string()
                 })
         }
         (closes, releases) => Err(format!(
@@ -4645,9 +4621,7 @@ fn validate_opaque_resource_close(
 
 fn admit_opaque_resource_lifecycles(
     items: &[HirItem],
-    diagnostic_source_modules: &HashMap<ItemId, String>,
     graph: &hew_types::OpaqueResourceCandidateGraph,
-    decl_identities: &HashMap<ItemId, String>,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -4668,9 +4642,7 @@ fn admit_opaque_resource_lifecycles(
         let matching_decls: Vec<_> = items
             .iter()
             .filter_map(|item| match item {
-                HirItem::TypeDecl(decl)
-                    if decl_identities.get(&decl.id) == Some(&candidate.resource_type) =>
-                {
+                HirItem::TypeDecl(decl) if decl.declaration == candidate.resource_declaration => {
                     Some(decl)
                 }
                 _ => None,
@@ -4710,17 +4682,18 @@ fn admit_opaque_resource_lifecycles(
             continue;
         }
 
-        let detail =
-            validate_opaque_resource_close(items, diagnostic_source_modules, candidate, decl);
+        let detail = validate_opaque_resource_close(items, candidate);
 
         match detail {
             Ok(close_symbol) => {
                 let lifecycle = crate::OpaqueResourceLifecycle {
-                    resource_type: candidate.resource_type.clone(),
-                    lowered_type_name: decl.qualified_name(),
+                    resource_declaration: candidate.resource_declaration.clone(),
+                    close_declaration: candidate.close_declaration.clone(),
+                    release_declaration: candidate.release_declaration.clone(),
                     close_symbol,
                     release_symbol: candidate.release_symbol.clone(),
                     discharge_depth: candidate.discharge_depth,
+                    producer_declarations: candidate.producer_declarations.clone(),
                     producer_symbols: candidate.producer_symbols.clone(),
                     producer_modules: candidate.producer_modules.clone(),
                 };
@@ -4752,59 +4725,45 @@ fn admit_opaque_resource_lifecycles(
     }
 }
 
-fn count_direct_release_forwards(
+fn is_exact_release_forwarding_wrapper(
     block: &HirBlock,
-    release_item: ItemId,
+    release_declaration: &hew_types::DefId,
     release_symbol: &str,
     release_param_index: usize,
     receiver: BindingId,
-) -> usize {
-    block
-        .statements
-        .iter()
-        .map(|statement| match &statement.kind {
-            HirStmtKind::Expr(expr) => count_direct_release_forwards_expr(
-                expr,
-                release_item,
-                release_symbol,
-                release_param_index,
-                receiver,
-            ),
-            _ => 0,
-        })
-        .sum::<usize>()
-        + block.tail.as_deref().map_or(0, |tail| {
-            count_direct_release_forwards_expr(
-                tail,
-                release_item,
-                release_symbol,
-                release_param_index,
-                receiver,
-            )
-        })
+) -> bool {
+    let expression = match (block.statements.as_slice(), block.tail.as_deref()) {
+        ([statement], None) => {
+            let HirStmtKind::Expr(expression) = &statement.kind else {
+                return false;
+            };
+            expression
+        }
+        ([], Some(expression)) => expression,
+        _ => return false,
+    };
+    is_exact_release_forwarding_expr(
+        expression,
+        release_declaration,
+        release_symbol,
+        release_param_index,
+        receiver,
+    )
 }
 
-fn count_direct_release_forwards_expr(
+fn is_exact_release_forwarding_expr(
     expr: &HirExpr,
-    release_item: ItemId,
+    release_declaration: &hew_types::DefId,
     release_symbol: &str,
     release_param_index: usize,
     receiver: BindingId,
-) -> usize {
+) -> bool {
     match &expr.kind {
-        HirExprKind::Call { callee, args, .. }
-            if matches!(
-                &callee.kind,
-                HirExprKind::BindingRef { name, resolved }
-                    if matches!(resolved, ResolvedRef::Item(item) if *item == release_item)
-                        // Pre-canonical HIR currently remints the emitted
-                        // `HirExternFn` id after function-registry resolution.
-                        // Require the exact admitted endpoint plus a resolved
-                        // item until the shared CallTarget/DefId carrier makes
-                        // both sides use one identity.
-                        || (name == release_symbol && matches!(resolved, ResolvedRef::Item(_)))
-                        || matches!(resolved, ResolvedRef::Builtin(family)
-                            if family.c_symbol() == release_symbol)
+        HirExprKind::Call { target, args, .. } => {
+            matches!(
+                target,
+                hew_types::CallTarget::Extern { declaration, endpoint }
+                    if declaration == release_declaration && endpoint == release_symbol
             ) && args.get(release_param_index).is_some_and(|arg| {
                 matches!(
                     arg.kind,
@@ -4813,18 +4772,22 @@ fn count_direct_release_forwards_expr(
                         ..
                     } if binding == receiver
                 )
-            }) =>
-        {
-            1
+            }) && args.iter().enumerate().all(|(index, arg)| {
+                index == release_param_index
+                    || matches!(
+                        arg.kind,
+                        HirExprKind::Literal(_) | HirExprKind::BindingRef { .. }
+                    )
+            })
         }
-        HirExprKind::Block(block) => count_direct_release_forwards(
+        HirExprKind::Block(block) => is_exact_release_forwarding_wrapper(
             block,
-            release_item,
+            release_declaration,
             release_symbol,
             release_param_index,
             receiver,
         ),
-        _ => 0,
+        _ => false,
     }
 }
 
@@ -5747,10 +5710,6 @@ struct LowerCtx {
     /// Checker-derived closeable-opaque candidates awaiting resolved HIR
     /// close-body admission.
     opaque_resource_candidates: hew_types::OpaqueResourceCandidateGraph,
-    /// Narrow pre-canonical adapter from HIR declaration id to the exact full
-    /// module-graph identity used by the checker. Lifecycle consumers never
-    /// retry a short key.
-    opaque_resource_decl_identities: HashMap<ItemId, String>,
     /// Pre-collected inherent-impl `close` method signatures, keyed by the
     /// self-type name. Populated in `lower_program` before the type-decl
     /// pre-pass so `lower_type_decl` can:
@@ -6698,7 +6657,6 @@ impl LowerCtx {
             imported_module_consts: None,
             type_classes,
             opaque_resource_candidates: tc_output.opaque_resource_candidates.clone(),
-            opaque_resource_decl_identities: HashMap::new(),
             impl_close_methods: HashMap::new(),
             impl_consuming_methods: HashSet::new(),
             diagnostics: Vec::new(),
@@ -11806,6 +11764,7 @@ impl LowerCtx {
         HirTypeDecl {
             id,
             node: self.ids.node(),
+            declaration: hew_types::DefId::new(decl.name.clone()),
             name: decl.name.clone(),
             // Root/local identity by default; the imported-module carrier
             // (`lower_imported_type_decl`) stamps `Some(module_short)` for
@@ -11900,10 +11859,11 @@ impl LowerCtx {
         &mut self,
         decl: &TypeDecl,
         span: std::ops::Range<usize>,
-        module_short: &str,
+        module_name: &str,
     ) -> HirTypeDecl {
         let mut lowered = self.lower_type_decl(decl, span);
-        lowered.defining_module = Some(module_short.to_string());
+        lowered.declaration = hew_types::DefId::new(format!("{module_name}.{}", decl.name));
+        lowered.defining_module = Some(module_name.to_string());
         lowered
     }
 
@@ -33415,13 +33375,12 @@ fn main() {}
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&program);
         assert!(output.errors.is_empty(), "{:#?}", output.errors);
-        assert!(
-            output
-                .opaque_resource_candidates
-                .candidates
-                .contains_key("std.fs.FileReadStream"),
-            "checker must admit the exact generated lifecycle"
-        );
+        let candidate = output
+            .opaque_resource_candidates
+            .candidates
+            .get("std.fs.FileReadStream")
+            .expect("checker must admit the exact generated lifecycle")
+            .clone();
 
         let lowered = lower_program(&program, &output, &ResolutionCtx, TargetArch::host());
         assert!(
@@ -33433,12 +33392,85 @@ fn main() {}
         let lifecycle = lowered
             .module
             .type_classes
-            .opaque_resource_lifecycle("std.fs.FileReadStream")
+            .opaque_resource_lifecycle(&candidate.resource_declaration)
             .expect("HIR must carry the checker-admitted lifecycle");
-        assert_eq!(lifecycle.resource_type, "std.fs.FileReadStream");
-        assert_eq!(lifecycle.lowered_type_name, "fs.FileReadStream");
+        assert_eq!(
+            lifecycle.resource_declaration,
+            candidate.resource_declaration
+        );
+        assert_eq!(lifecycle.close_declaration, candidate.close_declaration);
+        assert_eq!(lifecycle.release_declaration, candidate.release_declaration);
         assert_eq!(lifecycle.release_symbol, "hew_file_read_stream_close");
         assert!(lifecycle.close_symbol.ends_with("FileReadStream::close"));
+    }
+
+    #[test]
+    fn opaque_lifecycle_rejects_a_second_release_hidden_in_control_flow() {
+        use hew_parser::ast::Program;
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        let parsed = hew_parser::parse(
+            r#"
+            #[resource]
+            #[opaque]
+            pub type FileReadStream {}
+
+            impl FileReadStream {
+                fn close(consuming self) {
+                    unsafe { hew_file_read_stream_close(self) };
+                    if true { unsafe { hew_file_read_stream_close(self) }; }
+                }
+            }
+
+            extern "C" {
+                fn hew_file_read_stream_open(path: string) -> FileReadStream;
+                fn hew_file_read_stream_close(consume stream: FileReadStream);
+            }
+            "#,
+        );
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+
+        let module_id = ModuleId::new(vec!["std".to_string(), "fs".to_string()]);
+        let root_id = ModuleId::root();
+        let mut graph = ModuleGraph::new(root_id.clone());
+        graph
+            .add_module(Module {
+                id: module_id.clone(),
+                items: parsed.program.items,
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .expect("add std.fs test module");
+        graph.topo_order = vec![module_id, root_id];
+        let program = Program {
+            module_graph: Some(graph),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let candidate = output
+            .opaque_resource_candidates
+            .candidates
+            .get("std.fs.FileReadStream")
+            .expect("checker candidate")
+            .clone();
+        let lowered = lower_program(&program, &output, &ResolutionCtx, TargetArch::host());
+        assert!(lowered.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            HirDiagnosticKind::OpaqueResourceCloseMismatch { .. }
+        )));
+        assert!(
+            lowered
+                .module
+                .type_classes
+                .opaque_resource_lifecycle(&candidate.resource_declaration)
+                .is_none(),
+            "a conditional duplicate release must not earn automatic close authority"
+        );
     }
 
     #[test]

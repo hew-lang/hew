@@ -791,12 +791,11 @@ impl StateFieldCloneKind {
     }
 }
 
-/// IO-handle subkind. Today the only inhabitant is `Connection`; the
-/// audit at §6 push-back #3 documents the open question for other handle
-/// types (`Listener`, `tls.Connection`, `quic.QUICConnection`). They are
-/// not yet seen in actor state in the audited corpus, so they are not
-/// modelled here; adding them must extend this enum AND extend
-/// `classify_state_field`'s handle-arm match, which is fail-closed today.
+/// Runtime handle kinds whose clone policy is independent of their drop
+/// authority. Opaque resources use [`StateFieldCloneKind::Resource`] when the
+/// canonical lifecycle registry is available; the `Connection` variant is
+/// retained only as a fail-closed compatibility carrier during the codegen
+/// classifier cutover and must never suppress teardown.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IoHandleKind {
     /// `net.Connection` (`hew-runtime/src/transport.rs:2020`). No
@@ -1768,16 +1767,6 @@ fn classify_named(
         }
     }
 
-    // `std.net.Connection` is a stdlib opaque handle, but unlike generic opaque
-    // blobs it has actor-owned fd teardown semantics. Route it through the
-    // existing IO-handle discriminator before the generic opaque fail-closed arm
-    // so codegen can apply the restart-safe null-clone policy.
-    if args.is_empty() && name == hew_types::stdlib::STD_NET_CONNECTION {
-        return Ok(StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        });
-    }
-
     // ── resource-handle discriminator (RAII-1, checked BEFORE is_opaque) ──
     //
     // A single-slot `#[resource]` handle (`#[resource] #[opaque]`, e.g.
@@ -1792,15 +1781,8 @@ fn classify_named(
     // non-opaque `#[resource]` RECORD — which has a record layout and was
     // already routed to `classify_user_record` above — is never in it and keeps
     // its existing `resource_record_close` thunk path. The field name may be
-    // qualified (`regex.Pattern`) while the registry key is the unqualified
-    // decl name (`Pattern`); match both spellings, mirroring the opaque
-    // name-set fallback below.
-    let resource_short = hew_types::short_name(name);
-    if let Some((_, close_symbol)) = resource_close
-        .iter()
-        .find(|(n, _)| n == name)
-        .or_else(|| resource_close.iter().find(|(n, _)| n == resource_short))
-    {
+    // canonical; declaration identity is never retried by leaf spelling.
+    if let Some((_, close_symbol)) = resource_close.iter().find(|(n, _)| n == name) {
         return Ok(StateFieldCloneKind::Resource {
             name: name.to_string(),
             close: ResourceCloseAuthority::User(close_symbol.clone()),
@@ -2569,7 +2551,7 @@ mod tests {
     }
 
     #[test]
-    fn net_connection_classifies_as_iohandle_per_audit_section_6() {
+    fn net_connection_without_lifecycle_registry_fails_closed_as_opaque() {
         let mut v = HashSet::new();
         let ty = ResolvedTy::Named {
             name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
@@ -2579,8 +2561,8 @@ mod tests {
         };
         assert_eq!(
             classify_state_field(&ty, &no_records(), &mut v).unwrap(),
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection,
+            StateFieldCloneKind::OpaqueHandle {
+                name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
             },
         );
     }
@@ -2678,7 +2660,7 @@ mod tests {
     }
 
     #[test]
-    fn opaque_net_connection_classifies_as_iohandle() {
+    fn opaque_net_connection_with_lifecycle_classifies_as_resource() {
         let mut v = HashSet::new();
         let ty = ResolvedTy::Named {
             name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
@@ -2687,16 +2669,21 @@ mod tests {
             is_opaque: true,
         };
         assert_eq!(
-            classify_state_field_full(
+            classify_state_field_with_resource_handles(
                 &ty,
                 &no_records(),
                 &[],
                 &[hew_types::stdlib::STD_NET_CONNECTION.to_string()],
+                &[(
+                    hew_types::stdlib::STD_NET_CONNECTION.to_string(),
+                    "std.net.Connection::close".to_string(),
+                )],
                 &mut v,
             )
             .unwrap(),
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection,
+            StateFieldCloneKind::Resource {
+                name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
+                close: ResourceCloseAuthority::User("std.net.Connection::close".to_string()),
             },
         );
     }
@@ -2791,10 +2778,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_qualified_field_name_matches_short_registry_key() {
-        // The field type may be qualified (`regex.Pattern`) while the registry
-        // key is the unqualified decl name (`Pattern`). Both spellings must
-        // match, mirroring the opaque name-set fallback.
+    fn resource_qualified_field_refuses_short_registry_key() {
         let mut v = HashSet::new();
         let ty = ResolvedTy::Named {
             name: "regex.Pattern".to_string(),
@@ -2803,7 +2787,7 @@ mod tests {
             is_opaque: true,
         };
         let registry = vec![("Pattern".to_string(), "Pattern::free".to_string())];
-        assert!(matches!(
+        assert_eq!(
             classify_state_field_with_resource_handles(
                 &ty,
                 &no_records(),
@@ -2813,8 +2797,10 @@ mod tests {
                 &mut v,
             )
             .unwrap(),
-            StateFieldCloneKind::Resource { .. }
-        ));
+            StateFieldCloneKind::OpaqueHandle {
+                name: "regex.Pattern".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -2847,7 +2833,7 @@ mod tests {
     }
 
     #[test]
-    fn vec_of_connection_carries_iohandle_through() {
+    fn vec_of_connection_carries_resource_drop_authority_but_refuses_clone() {
         // Exercises the mqtt_broker `Vec<std.net.Connection>` shape from the
         // audit. The exact std identity is required: a user package may
         // declare its own `Connection` resource. Stage 2 emission consumes the
@@ -2860,17 +2846,32 @@ mod tests {
                 name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
                 args: vec![],
                 builtin: None,
-                is_opaque: false,
+                is_opaque: true,
             }],
         );
+        let kind = classify_state_field_with_resource_handles(
+            &ty,
+            &no_records(),
+            &[],
+            &[hew_types::stdlib::STD_NET_CONNECTION.to_string()],
+            &[(
+                hew_types::stdlib::STD_NET_CONNECTION.to_string(),
+                "std.net.Connection::close".to_string(),
+            )],
+            &mut v,
+        )
+        .unwrap();
         assert_eq!(
-            classify_state_field(&ty, &no_records(), &mut v).unwrap(),
+            kind,
             StateFieldCloneKind::Vec {
-                elem: Box::new(StateFieldCloneKind::IoHandle {
-                    kind: IoHandleKind::Connection,
+                elem: Box::new(StateFieldCloneKind::Resource {
+                    name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
+                    close: ResourceCloseAuthority::User("std.net.Connection::close".to_string()),
                 }),
             },
         );
+        assert!(kind.contains_resource());
+        assert!(!kind.supports_value_class_drop_spine());
     }
 
     #[test]

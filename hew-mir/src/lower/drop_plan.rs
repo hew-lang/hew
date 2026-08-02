@@ -4636,19 +4636,13 @@ pub fn crash_only_param_loan_drop(
 /// `MonitorRef::close`, ...). The resolved type's builtin discriminator is the
 /// sole authority that selects runtime-vs-user teardown later.
 pub(super) fn resource_opaque_close_registry(
-    opaque_handle_names: &[String],
     type_classes: &hew_hir::TypeClassTable,
 ) -> Vec<(String, String)> {
     type_classes
         .opaque_resource_lifecycles()
-        .filter(|lifecycle| {
-            opaque_handle_names
-                .iter()
-                .any(|name| name == &lifecycle.lowered_type_name)
-        })
         .map(|lifecycle| {
             (
-                lifecycle.lowered_type_name.clone(),
+                lifecycle.resource_declaration.full_path().to_string(),
                 lifecycle.close_symbol.clone(),
             )
         })
@@ -4692,12 +4686,16 @@ pub(super) fn resource_drop_fn(
         ResolvedTy::Named {
             name,
             builtin: None,
+            is_opaque,
             ..
         } => {
-            if let Some(lifecycle) = type_classes.opaque_resource_lifecycle_for_lowered_type(name) {
+            if let Some(lifecycle) = type_classes.opaque_resource_lifecycle_for_type_name(name) {
                 return Some(crate::model::DropFnSpec::UserClose(
                     lifecycle.close_symbol.clone(),
                 ));
+            }
+            if *is_opaque {
+                return None;
             }
             let short = short_name(name);
             let class_entry = type_classes
@@ -4724,11 +4722,16 @@ mod typed_resource_close_authority {
     fn admit_lifecycle(classes: &mut hew_hir::TypeClassTable, ty: &str, close: &str) {
         classes
             .admit_opaque_resource_lifecycle(OpaqueResourceLifecycle {
-                resource_type: ty.to_string(),
-                lowered_type_name: ty.to_string(),
+                resource_declaration: hew_types::DefId::new(ty),
+                close_declaration: hew_types::DefId::new(format!("{ty}::close")),
+                release_declaration: hew_types::DefId::new(format!(
+                    "hew_release_{}",
+                    ty.replace('.', "_")
+                )),
                 close_symbol: close.to_string(),
                 release_symbol: format!("hew_release_{}", ty.replace('.', "_")),
                 discharge_depth: ReleaseDischargeDepth::Shallow,
+                producer_declarations: BTreeSet::default(),
                 producer_symbols: BTreeSet::default(),
                 producer_modules: BTreeSet::default(),
             })
@@ -4792,11 +4795,7 @@ mod typed_resource_close_authority {
                 (ResourceMarker::Resource, Some(method.to_string())),
             );
         }
-        let opaque_names: Vec<_> = collisions
-            .iter()
-            .map(|(name, _)| (*name).to_string())
-            .collect();
-        let registry = resource_opaque_close_registry(&opaque_names, &classes);
+        let registry = resource_opaque_close_registry(&classes);
         assert!(
             registry.is_empty(),
             "the opaque registry must contain only checker-admitted lifecycle facts"
@@ -4812,7 +4811,7 @@ mod typed_resource_close_authority {
     }
 
     #[test]
-    fn qualified_user_collision_keeps_qualified_close_symbol() {
+    fn same_leaf_opaque_resources_keep_distinct_qualified_close_authority() {
         let mut classes = hew_hir::TypeClassTable::new();
         classes.insert(
             "Receiver".to_string(),
@@ -4827,13 +4826,37 @@ mod typed_resource_close_authority {
             (ResourceMarker::Resource, Some("close".to_string())),
         );
         admit_lifecycle(&mut classes, "foo.Receiver", "foo.Receiver::close");
-        let registry = resource_opaque_close_registry(&["foo.Receiver".to_string()], &classes);
+        admit_lifecycle(&mut classes, "bar.Receiver", "bar.Receiver::dispose");
+        let registry = resource_opaque_close_registry(&classes);
         assert_eq!(
             registry,
-            vec![(
-                "foo.Receiver".to_string(),
-                "foo.Receiver::close".to_string()
-            )]
+            vec![
+                (
+                    "bar.Receiver".to_string(),
+                    "bar.Receiver::dispose".to_string()
+                ),
+                (
+                    "foo.Receiver".to_string(),
+                    "foo.Receiver::close".to_string()
+                ),
+            ]
+        );
+        assert_eq!(
+            resource_drop_fn(
+                &ResolvedTy::named_opaque("bar.Receiver".to_string(), Vec::new()),
+                &classes,
+            ),
+            Some(crate::model::DropFnSpec::UserClose(
+                "bar.Receiver::dispose".to_string()
+            ))
+        );
+        assert_eq!(
+            resource_drop_fn(
+                &ResolvedTy::named_opaque("Receiver".to_string(), Vec::new()),
+                &classes,
+            ),
+            None,
+            "an opaque leaf spelling must not inherit either qualified lifecycle"
         );
         assert_eq!(
             resource_drop_fn(

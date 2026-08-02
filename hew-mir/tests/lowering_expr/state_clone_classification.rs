@@ -20,7 +20,7 @@ use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::model::RecordLayout;
 use hew_mir::{
     classify_actor_state_fields, classify_state_field_with_enum_layouts, lower_hir_module,
-    ty_contains_unclonable_opaque, ClassificationError, IoHandleKind, ResourceCloseAuthority,
+    ty_contains_unclonable_opaque, ClassificationError, ResourceCloseAuthority,
     StateFieldCloneKind,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
@@ -391,7 +391,7 @@ fn user_type_named_connection_classifies_as_user_record_not_iohandle() {
 }
 
 #[test]
-fn qualified_net_connection_without_record_layout_classifies_as_iohandle() {
+fn qualified_net_connection_without_lifecycle_registry_fails_closed_as_opaque() {
     // Direct-classifier test (no parser involvement) pinning both sides of the
     // identity contract. The runtime handle is the exact stdlib source identity
     // `std.net.Connection`; a foreign same-short-name type must not acquire its
@@ -411,8 +411,8 @@ fn qualified_net_connection_without_record_layout_classifies_as_iohandle() {
     .expect("classified");
     assert_eq!(
         result,
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
+        StateFieldCloneKind::OpaqueHandle {
+            name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
         },
     );
 

@@ -108,8 +108,15 @@ pub use wasm_capabilities_generated::{
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
+#[serde(transparent)]
 pub struct DefId {
     full_path: String,
+}
+
+impl std::borrow::Borrow<str> for DefId {
+    fn borrow(&self) -> &str {
+        &self.full_path
+    }
 }
 
 impl DefId {

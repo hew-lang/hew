@@ -2233,8 +2233,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
             _ => None,
         })
         .collect();
-    let resource_opaque_close =
-        resource_opaque_close_registry(&opaque_handle_names, &module.type_classes);
+    let resource_opaque_close = resource_opaque_close_registry(&module.type_classes);
 
     // Machines are enums at the value-classification layer.  Materialise one
     // layout for every HIR machine-mono entry, not one bare layout per source
@@ -5179,7 +5178,7 @@ pub(crate) fn lower_function(
         machine_layout_names: machine_layout_names.clone(),
         enum_layouts: enum_layouts.to_vec(),
         opaque_handle_names: opaque_handle_names.to_vec(),
-        resource_opaque_close: resource_opaque_close_registry(opaque_handle_names, type_classes),
+        resource_opaque_close: resource_opaque_close_registry(type_classes),
         supervisor_layout_map: supervisor_layout_map.clone(),
         current_actor_state_fields: current_actor_name
             .and_then(|name| actor_layouts.get(name))

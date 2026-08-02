@@ -312,8 +312,11 @@ fn imported_source_result_matches(
 
 fn lifecycle_description(candidate: &OpaqueResourceLifecycleCandidate) -> String {
     format!(
-        "release={}@{}, depth={:?}, result={:?}, retention={:?}",
+        "resource={}, close={}, release={}({})@{}, depth={:?}, result={:?}, retention={:?}",
+        candidate.resource_declaration.full_path(),
+        candidate.close_declaration.full_path(),
         candidate.release_symbol,
+        candidate.release_declaration.full_path(),
         candidate.release_param_index,
         candidate.discharge_depth,
         candidate.result_ownership,
@@ -325,7 +328,10 @@ fn lifecycle_matches(
     established: &OpaqueResourceLifecycleCandidate,
     candidate: &OpaqueResourceLifecycleCandidate,
 ) -> bool {
-    established.release_symbol == candidate.release_symbol
+    established.resource_declaration == candidate.resource_declaration
+        && established.close_declaration == candidate.close_declaration
+        && established.release_declaration == candidate.release_declaration
+        && established.release_symbol == candidate.release_symbol
         && established.release_param_index == candidate.release_param_index
         && established.discharge_depth == candidate.discharge_depth
         && established.result_ownership == candidate.result_ownership
@@ -412,11 +418,16 @@ fn validated_resource_candidate(
     typed_result: crate::ffi_contracts::ExternOwnedResourceResult,
     release_contract: &crate::ffi_contracts::ExternOwnershipContract,
     producer_declaration: &SourceExternDeclaration,
+    release_declaration: &SourceExternDeclaration,
+    close_declaration: crate::DefId,
     producer_symbol: &str,
 ) -> OpaqueResourceLifecycleCandidate {
     OpaqueResourceLifecycleCandidate {
+        resource_declaration: crate::DefId::new(typed_result.resource_type),
         resource_type: typed_result.resource_type.to_string(),
         owner_module: typed_result.owner_module.to_string(),
+        close_declaration,
+        release_declaration: release_declaration.declaration.clone(),
         release_symbol: typed_result.release_symbol.to_string(),
         release_param_index: release_contract
             .params
@@ -431,6 +442,9 @@ fn validated_resource_candidate(
         result_ownership: typed_result.result,
         result_retention: typed_result.result_retention,
         producer_symbols: [producer_symbol.to_string()].into_iter().collect(),
+        producer_declarations: [producer_declaration.declaration.clone()]
+            .into_iter()
+            .collect(),
         producer_modules: producer_declaration
             .declaring_module
             .iter()
@@ -441,6 +455,7 @@ fn validated_resource_candidate(
 
 #[expect(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "resource candidates join declaration, contract, import, and signature authorities"
 )]
 fn derive_source_resource_candidate(
@@ -451,6 +466,7 @@ fn derive_source_resource_candidate(
     fn_sigs: &HashMap<String, FnSig>,
     module_import_bindings: &HashMap<(Option<String>, String), String>,
     import_type_name_aliases: &HashMap<(Option<String>, String), String>,
+    impl_method_declaration_ids: &HashMap<String, crate::DefId>,
     contracts_by_symbol: &std::collections::BTreeMap<
         &str,
         &crate::ffi_contracts::ExternOwnershipContract,
@@ -480,6 +496,9 @@ fn derive_source_resource_candidate(
     };
 
     let Some(producer_signature) = fn_sigs.get(&producer_declaration.signature_key) else {
+        if producer_declaration.declaring_module.as_deref() != Some(typed_result.owner_module) {
+            return SourceCandidateOutcome::Irrelevant;
+        }
         return failure(
             OpaqueResourceLifecycleConflictKind::ProducerResultMismatch {
                 actual: "<missing source signature>".to_string(),
@@ -493,6 +512,13 @@ fn derive_source_resource_candidate(
         module_import_bindings,
         import_type_name_aliases,
     ) {
+        if producer_declaration.declaring_module.as_deref() != Some(typed_result.owner_module) {
+            // A direct importer may reuse the C endpoint spelling for an
+            // unrelated declaration. Until its result resolves to the exact
+            // owner nominal it has no standing to conflict-kill that owner's
+            // lifecycle.
+            return SourceCandidateOutcome::Irrelevant;
+        }
         return failure(
             OpaqueResourceLifecycleConflictKind::ProducerResultMismatch {
                 actual: format!("{:?}", producer_signature.return_type),
@@ -544,10 +570,20 @@ fn derive_source_resource_candidate(
         return failure(OpaqueResourceLifecycleConflictKind::ReleaseSignatureMismatch { detail });
     }
 
+    let close_dispatch_key = format!("{}::close", typed_result.resource_type);
+    let Some(close_declaration) = impl_method_declaration_ids
+        .get(&close_dispatch_key)
+        .cloned()
+    else {
+        return failure(OpaqueResourceLifecycleConflictKind::CloseDeclarationMissing);
+    };
+
     SourceCandidateOutcome::Candidate(validated_resource_candidate(
         typed_result,
         release_contract,
         producer_declaration,
+        release_declaration,
+        close_declaration,
         producer_symbol,
     ))
 }
@@ -568,6 +604,7 @@ fn derive_opaque_resource_candidate_graph(
     fn_sigs: &HashMap<String, FnSig>,
     module_import_bindings: &HashMap<(Option<String>, String), String>,
     import_type_name_aliases: &HashMap<(Option<String>, String), String>,
+    impl_method_declaration_ids: &HashMap<String, crate::DefId>,
     contracts: &[(&str, crate::ffi_contracts::ExternOwnershipContract)],
 ) -> OpaqueResourceCandidateGraph {
     let contracts_by_symbol: std::collections::BTreeMap<
@@ -593,6 +630,7 @@ fn derive_opaque_resource_candidate_graph(
                 fn_sigs,
                 module_import_bindings,
                 import_type_name_aliases,
+                impl_method_declaration_ids,
                 &contracts_by_symbol,
             ) {
                 SourceCandidateOutcome::Irrelevant => continue,
@@ -601,7 +639,7 @@ fn derive_opaque_resource_candidate_graph(
                     release_symbol,
                     kind,
                 } => {
-                    conflicted_types.insert(resource_type.clone());
+                    conflicted_types.insert(crate::DefId::new(resource_type.clone()));
                     graph.conflicts.push(OpaqueResourceLifecycleConflict {
                         resource_type,
                         producer_symbol: (*producer_symbol).to_string(),
@@ -612,8 +650,8 @@ fn derive_opaque_resource_candidate_graph(
                 }
                 SourceCandidateOutcome::Candidate(candidate) => candidate,
             };
-            let resource_type = candidate.resource_type.clone();
-            match graph.candidates.entry(resource_type.clone()) {
+            let resource_declaration = candidate.resource_declaration.clone();
+            match graph.candidates.entry(resource_declaration.clone()) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
                     entry.insert(candidate);
                 }
@@ -626,6 +664,10 @@ fn derive_opaque_resource_candidate_graph(
                         .insert((*producer_symbol).to_string());
                     entry
                         .get_mut()
+                        .producer_declarations
+                        .insert(producer_declaration.declaration.clone());
+                    entry
+                        .get_mut()
                         .producer_modules
                         .extend(candidate.producer_modules);
                 }
@@ -633,7 +675,7 @@ fn derive_opaque_resource_candidate_graph(
                     let established = lifecycle_description(entry.get());
                     let conflicting = lifecycle_description(&candidate);
                     graph.conflicts.push(OpaqueResourceLifecycleConflict {
-                        resource_type: resource_type.clone(),
+                        resource_type: candidate.resource_type.clone(),
                         producer_symbol: (*producer_symbol).to_string(),
                         release_symbol: candidate.release_symbol.clone(),
                         kind: OpaqueResourceLifecycleConflictKind::MultipleProducerLifecycle {
@@ -641,14 +683,14 @@ fn derive_opaque_resource_candidate_graph(
                             conflicting,
                         },
                     });
-                    conflicted_types.insert(resource_type);
+                    conflicted_types.insert(resource_declaration);
                 }
             }
         }
     }
 
-    for resource_type in conflicted_types {
-        graph.candidates.remove(&resource_type);
+    for resource_declaration in conflicted_types {
+        graph.candidates.remove(&resource_declaration);
     }
     graph.conflicts.sort_by(|left, right| {
         (
@@ -8902,6 +8944,7 @@ impl Checker {
             self.fn_sigs.insert(key.clone(), sig);
             self.source_extern_declarations
                 .push(SourceExternDeclaration {
+                    declaration: crate::DefId::new(key.clone()),
                     symbol: source_symbol,
                     symbol_template: source_symbol_template,
                     signature_key: key.clone(),
@@ -8949,6 +8992,7 @@ impl Checker {
             fn_sigs,
             &self.module_import_bindings,
             &self.import_type_name_aliases,
+            &self.impl_method_declaration_ids,
             crate::ffi_contracts::FFI_OWNERSHIP_CONTRACTS,
         )
     }
@@ -8964,6 +9008,7 @@ impl Checker {
             fn_sigs,
             &self.module_import_bindings,
             &self.import_type_name_aliases,
+            &self.impl_method_declaration_ids,
             contracts,
         )
     }

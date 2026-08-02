@@ -559,7 +559,7 @@ impl Checker {
                                 let err_ty = self.subst.resolve(&err_ty);
                                 if !matches!(ret_err, Ty::Error) && !matches!(err_ty, Ty::Error) {
                                     let snapshot = self.subst.snapshot();
-                                    if unify(&mut self.subst, &ret_err, &err_ty).is_err() {
+                                    if !self.try_unify_with_owner_identity(&ret_err, &err_ty) {
                                         self.subst.restore(snapshot);
                                         self.report_error(
                                             TypeErrorKind::InvalidOperation,
@@ -2262,7 +2262,7 @@ impl Checker {
                         if !matches!(resolved_body, Ty::Error | Ty::Var(_)) {
                             let snapshot = self.subst.snapshot();
                             let mismatch =
-                                unify(&mut self.subst, &resolved_body, &resolved).is_err();
+                                !self.try_unify_with_owner_identity(&resolved_body, &resolved);
                             self.subst.restore(snapshot);
                             if mismatch {
                                 self.report_error(
@@ -3696,7 +3696,7 @@ impl Checker {
         // re-unifies). Roll the probe back so it commits nothing.
         let snapshot = self.subst.snapshot();
         let full_result = Ty::result(ok_ty.clone(), err_ty.clone());
-        let unifies_full = unify(&mut self.subst, &full_result, actual).is_ok();
+        let unifies_full = self.try_unify_with_owner_identity(&full_result, actual);
         self.subst.restore(snapshot);
         if unifies_full {
             return None;
@@ -3707,7 +3707,7 @@ impl Checker {
         // expression's recorded type and any inference variables settle against
         // the `Ok` payload.
         let snapshot = self.subst.snapshot();
-        if unify(&mut self.subst, &ok_ty, actual).is_ok() {
+        if self.try_unify_with_owner_identity(&ok_ty, actual) {
             self.tail_ok_coercions
                 .insert(SpanKey::in_module(span, self.current_module_idx));
             // Return the full `Result` as this expression's check-against

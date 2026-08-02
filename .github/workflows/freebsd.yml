@@ -41,7 +41,7 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            pkg install -y -U -r FreeBSD llvm22 rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -U -r FreeBSD llvm22 gdb rust cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
 
           run: |
             set -eux
@@ -50,8 +50,13 @@ jobs:
             test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
             export LLVM_SYS_221_PREFIX=/usr/local/llvm22
+            export PATH="/usr/local/llvm22/bin:$PATH"
             export MAKE=gmake
             /usr/local/llvm22/bin/llvm-config --version
+            command -v gdb || command -v lldb || {
+              echo "No debugger found: install the FreeBSD gdb package or LLVM's lldb package" >&2
+              exit 1
+            }
 
             # The wasm codegen tests link with wasm-ld from the pkg LLVM tree.
             ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
@@ -102,3 +107,7 @@ jobs:
             # nextest alone does not execute these language-level gates.
             gmake test-vertical-slice
             gmake test-hew-ratchet
+
+            # The source-level DWARF debugger proof must execute on FreeBSD,
+            # not merely compile as part of the workspace test build.
+            cargo nextest run -p hew-cli --test dwarf_debugger_locals_e2e --profile ci

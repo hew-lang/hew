@@ -119,6 +119,38 @@ DEBUG_CONTEXT_PATTERNS = {
 }
 
 
+def generated_builtin_enum_leaves(root: Path) -> set[str]:
+    """Derive audited enum leaves from the checked-in ABI authority table."""
+    authority = root / "hew-types/src/stdlib_authority/codegen.rs"
+    try:
+        source = authority.read_text()
+    except OSError as error:
+        raise SystemExit(
+            f"generated builtin enum ABI authority is unreadable: {error}"
+        ) from error
+    table = re.search(
+        r"const\s+BUILTIN_ENUM_ABI\s*:\s*&\[BuiltinEnumAbi\]\s*=\s*&\[(.*?)\n\];",
+        source,
+        re.DOTALL,
+    )
+    if table is None:
+        raise SystemExit(
+            "generated builtin enum ABI authority table is absent or malformed"
+        )
+    body = table.group(1)
+    entry_count = len(re.findall(r"\bBuiltinEnumAbi\s*\{", body))
+    leaves = re.findall(r'\bname\s*:\s*"([A-Za-z_][A-Za-z0-9_]*)"', body)
+    if entry_count == 0 or len(leaves) != entry_count:
+        raise SystemExit(
+            "generated builtin enum ABI authority has missing or malformed name fields"
+        )
+    if len(set(leaves)) != len(leaves):
+        raise SystemExit(
+            "generated builtin enum ABI authority has duplicate leaf names"
+        )
+    return set(leaves)
+
+
 @dataclass(frozen=True, order=True)
 class Finding:
     group: str
@@ -1003,6 +1035,7 @@ def rc1_structural_authority_findings(
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
     test_ranges = test_only_ranges(ast_grep, root)
     findings: set[Finding] = set()
+    generated_enum_leaves = generated_builtin_enum_leaves(root)
 
     # Identifier nodes remain parsed inside Rust macro token trees. This closes
     # the call-expression blind spot without treating comments or string tokens
@@ -1050,16 +1083,6 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
                 finding("checker-hir-publication", "checker-insert-call", match)
             )
 
-    generated_enum_leaves = {
-        "LookupError",
-        "SendError",
-        "AskError",
-        "TimeoutError",
-        "LinkError",
-        "MonitorError",
-        "CrashAction",
-        "CrashKind",
-    }
     for pattern in (
         "Ty::Named { name: $NAME, $$$FIELDS }",
         "ResolvedTy::Named { name: $NAME, $$$FIELDS }",

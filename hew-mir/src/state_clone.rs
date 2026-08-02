@@ -3806,26 +3806,25 @@ mod tests {
         assert!(v.is_empty());
     }
 
-    /// Corollary: when `"Value"` is NOT in `record_layouts` but IS in
-    /// `opaque_handle_names`, it must classify as `OpaqueHandle`.  This is the
-    /// stdlib `json.Value` case — no user record shadows it.
+    /// Corollary: an exact `is_opaque` identity present in the canonical
+    /// opaque-handle set classifies as `OpaqueHandle` when no record shadows it.
     #[test]
-    fn opaque_handle_classifies_when_no_shadowing_record_present() {
-        let opaque_names = vec!["Value".to_string()];
+    fn opaque_handle_classifies_from_exact_discriminator() {
+        let opaque_names = vec!["std.encoding.json.Value".to_string()];
         let ty = ResolvedTy::Named {
-            name: "Value".to_string(),
+            name: "std.encoding.json.Value".to_string(),
             args: vec![],
             builtin: None,
-            is_opaque: false,
+            is_opaque: true,
         };
         let mut v = HashSet::new();
         let result = classify_state_field_full(&ty, &[], &[], &opaque_names, &mut v).unwrap();
         assert_eq!(
             result,
             StateFieldCloneKind::OpaqueHandle {
-                name: "Value".to_string(),
+                name: "std.encoding.json.Value".to_string(),
             },
-            "opaque handle must classify as OpaqueHandle when no user record shadows it",
+            "exact opaque identity must classify without a leaf fallback",
         );
         assert!(v.is_empty());
     }

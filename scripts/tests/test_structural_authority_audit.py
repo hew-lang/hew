@@ -53,6 +53,14 @@ with tempfile.TemporaryDirectory() as temp:
     source = work / "hew-mir/src/lower"
     source.mkdir(parents=True)
     target = source / "new_authority.rs"
+    enum_authority = work / "hew-types/src/stdlib_authority/codegen.rs"
+    enum_authority.parent.mkdir(parents=True)
+    enum_authority.write_text(
+        "struct BuiltinEnumAbi { name: &'static str }\n"
+        "const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[\n"
+        '    BuiltinEnumAbi { name: "AskError" },\n'
+        "];\n"
+    )
     set_inventory(work)
 
     # A dead executable that silently returns ast-grep's no-match status must
@@ -77,6 +85,49 @@ with tempfile.TemporaryDirectory() as temp:
     result = run(work)
     assert result.returncode != 0, "a new semantic short-name use must fail"
     assert "short-name-identifier" in result.stderr
+
+    target.write_text(
+        "fn bad() { let _ = ResolvedTy::Named {\n"
+        '    name: "AskError".to_string(), args: Vec::new(),\n'
+        "    builtin: None, is_opaque: false,\n"
+        "}; }\n"
+    )
+    result = run(work)
+    assert result.returncode != 0, "a generated enum leaf struct literal must fail"
+    assert (
+        "monomorphic-enum-leaf-synthesis/leaf-named-semantic-struct-literal"
+        in result.stderr
+    )
+    target.write_text(
+        'fn good() { let _ = resolved_monomorphic_builtin_enum_ty("AskError"); }\n'
+    )
+    assert run(work).returncode == 0, (
+        "the canonical catalog helper is the green control"
+    )
+
+    enum_authority.write_text(
+        "struct BuiltinEnumAbi { name: &'static str }\n"
+        "const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[\n"
+        '    BuiltinEnumAbi { name: "AskError" },\n'
+        '    BuiltinEnumAbi { name: "FutureGeneratedError" },\n'
+        "];\n"
+    )
+    target.write_text(
+        "fn future_bad() { let _ = Ty::Named {\n"
+        '    name: "FutureGeneratedError".to_string(), args: Vec::new(), builtin: None,\n'
+        "}; }\n"
+    )
+    result = run(work)
+    assert result.returncode != 0, (
+        "an added ABI catalog row must become audited without editing Python"
+    )
+    assert "monomorphic-enum-leaf-synthesis" in result.stderr
+    enum_authority.write_text(
+        "struct BuiltinEnumAbi { name: &'static str }\n"
+        "const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[\n"
+        '    BuiltinEnumAbi { name: "AskError" },\n'
+        "];\n"
+    )
 
     # Macro token trees are not call-expression ASTs, but their parsed
     # identifier/field-identifier nodes remain mandatory inventory findings.

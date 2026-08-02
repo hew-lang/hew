@@ -31,7 +31,7 @@
 #   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime + wire JSON/YAML/TOML archives
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
-#   make wasm-capability           — regenerate manifest-owned Rust/JSON outputs
+#   make wasm-capability           — regenerate manifest-owned Rust/JSON/docs outputs
 #   make wasm-capability-check     — verify manifest-owned generated outputs
 #   make playground-manifest       — regenerate examples/playground/manifest.json
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
@@ -307,7 +307,7 @@ wasm:
 wasm-capability:
 	cargo run -p hew-capability-gen
 
-# Verify the generated checker and playground capability consumers are current.
+# Verify the generated checker, playground, and matrix consumers are current.
 wasm-capability-check:
 	cargo run -p hew-capability-gen -- --check
 

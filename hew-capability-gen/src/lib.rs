@@ -2,7 +2,8 @@
 //!
 //! `wasm-capability-manifest.toml` is the only editable source of reject/warn
 //! feature identity, module exclusions, and curated playground WASI overrides.
-//! This crate validates that authority and renders the Rust and JSON consumers.
+//! This crate validates that authority and renders the Rust, JSON, and
+//! documentation-table consumers.
 
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,6 +18,9 @@ pub const RUST_OUTPUT: &str = "hew-types/src/wasm_capabilities_generated.rs";
 
 /// Repository-relative path of the generated playground WASI decisions.
 pub const PLAYGROUND_OUTPUT: &str = "examples/playground/wasm-capabilities.json";
+
+/// Repository-relative path whose feature-policy table is generated.
+pub const MATRIX_OUTPUT: &str = "docs/wasm-capability-matrix.md";
 
 /// Fully typed manifest schema.
 #[derive(Debug, Clone, Deserialize)]
@@ -326,6 +330,56 @@ impl Manifest {
         ]
     }
 
+    /// Render the complete manifest-owned feature-policy table.
+    ///
+    /// Every cell is derived from typed manifest data. The surrounding prose
+    /// remains hand-authored, while [`write_outputs`] replaces this table and
+    /// [`stale_outputs`] checks it byte-for-byte.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if called on a manually constructed, unvalidated manifest
+    /// whose warn/reject row omits its required enum variant. [`Manifest::parse`]
+    /// rejects that state.
+    #[must_use]
+    pub fn render_feature_policy_table(&self) -> String {
+        let mut out = String::from(
+            "| ID | Feature surface | Diagnostic label | Checker disposition | Diagnostic reason | Runtime status | Tracking |\n\
+             |----|-----------------|------------------|---------------------|-------------------|----------------|----------|\n",
+        );
+        for feature in &self.features {
+            let surface = feature.prose_label.as_deref().unwrap_or(&feature.label);
+            let reason = feature.reason.as_deref().unwrap_or("—");
+            let tracking = feature.tracking_label.as_deref().unwrap_or("—");
+            let disposition = feature.checker_detail.clone().unwrap_or_else(|| {
+                let variant = feature.enum_variant.as_deref();
+                match feature.checker {
+                    CheckerDisposition::Pass => "Pass".to_string(),
+                    CheckerDisposition::Todo => "WASM-TODO (not checker-gated)".to_string(),
+                    CheckerDisposition::Warn => {
+                        format!("Warn (`{}`)", variant.expect("validated warn variant"))
+                    }
+                    CheckerDisposition::Reject => {
+                        format!("Reject (`{}`)", variant.expect("validated reject variant"))
+                    }
+                }
+            });
+            writeln!(
+                out,
+                "| `{}` | {} | {} | {} | {} | {} | {} |",
+                markdown_cell(&feature.id),
+                markdown_cell(surface),
+                markdown_cell(&feature.label),
+                markdown_cell(&disposition),
+                markdown_cell(reason),
+                markdown_cell(&feature.runtime_status),
+                markdown_cell(tracking),
+            )
+            .expect("String write");
+        }
+        out
+    }
+
     fn checker_features(&self) -> impl Iterator<Item = &Feature> {
         self.features
             .iter()
@@ -519,6 +573,12 @@ pub fn write_outputs(root: &Path, manifest: &Manifest) -> Result<(), String> {
         std::fs::write(&path, output.contents)
             .map_err(|err| format!("write {}: {err}", path.display()))?;
     }
+    let matrix_path = root.join(MATRIX_OUTPUT);
+    let matrix = std::fs::read_to_string(&matrix_path)
+        .map_err(|err| format!("read {}: {err}", matrix_path.display()))?;
+    let rendered = replace_feature_policy_table(&matrix, manifest)?;
+    std::fs::write(&matrix_path, rendered)
+        .map_err(|err| format!("write {}: {err}", matrix_path.display()))?;
     Ok(())
 }
 
@@ -539,7 +599,56 @@ pub fn stale_outputs(root: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>, S
             Err(err) => return Err(format!("read {}: {err}", path.display())),
         }
     }
+    let matrix_path = root.join(MATRIX_OUTPUT);
+    match std::fs::read_to_string(&matrix_path) {
+        Ok(existing) => {
+            if replace_feature_policy_table(&existing, manifest)? != existing {
+                stale.push(matrix_path);
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => stale.push(matrix_path),
+        Err(err) => return Err(format!("read {}: {err}", matrix_path.display())),
+    }
     Ok(stale)
+}
+
+fn replace_feature_policy_table(source: &str, manifest: &Manifest) -> Result<String, String> {
+    const HEADING: &str = "## Feature disposition table";
+    let lines: Vec<&str> = source.split_inclusive('\n').collect();
+    let heading = lines
+        .iter()
+        .position(|line| line.trim_end_matches(['\r', '\n']) == HEADING)
+        .ok_or_else(|| format!("{MATRIX_OUTPUT}: missing `{HEADING}` heading"))?;
+    let table_start = lines
+        .iter()
+        .enumerate()
+        .skip(heading + 1)
+        .take_while(|(_, line)| !line.starts_with("## "))
+        .find_map(|(index, line)| line.starts_with('|').then_some(index))
+        .ok_or_else(|| format!("{MATRIX_OUTPUT}: missing feature policy table"))?;
+    let table_end = lines
+        .iter()
+        .enumerate()
+        .skip(table_start)
+        .find_map(|(index, line)| (!line.starts_with('|')).then_some(index))
+        .unwrap_or(lines.len());
+
+    let mut rendered = String::with_capacity(source.len());
+    for line in &lines[..table_start] {
+        rendered.push_str(line);
+    }
+    rendered.push_str(&manifest.render_feature_policy_table());
+    for line in &lines[table_end..] {
+        rendered.push_str(line);
+    }
+    Ok(rendered)
+}
+
+fn markdown_cell(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('|', "&#124;")
+        .replace(['\r', '\n'], "<br>")
 }
 
 fn unique<'a>(values: impl Iterator<Item = &'a str>, what: &str) -> Result<(), String> {

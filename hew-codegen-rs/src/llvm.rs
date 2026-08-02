@@ -247,10 +247,7 @@ pub enum CodegenError {
     /// The program uses a runtime substrate symbol that is excluded from, or
     /// deliberately fail-closed on, the wasm32 build. Omit the WASM target to
     /// produce a native binary instead.
-    WasmUnsupportedSubstrate {
-        symbol: String,
-        capability: WasmCapabilityId,
-    },
+    WasmUnsupportedSubstrate { symbol: String },
 }
 
 impl CodegenError {
@@ -318,43 +315,51 @@ impl std::fmt::Display for CodegenError {
             }
             Self::Link(s) => write!(f, "link: {s}"),
             Self::Io(e) => write!(f, "io: {e}"),
-            Self::WasmUnsupportedSubstrate { symbol, capability } => {
-                // Map the manifest identity to a user-facing construct label
-                // and backlog note. Symbol is retained as evidence, but it no
-                // longer owns capability classification.
-                let (construct, tracking) = match capability.as_str() {
-                    "duplex" => ("the `Duplex` channel substrate", "WASM-TODO(duplex):"),
-                    "supervision-trees" => (
+            Self::WasmUnsupportedSubstrate { symbol } => {
+                // Preserve the legacy public diagnostic shape. Capability
+                // classification itself happens earlier through the private,
+                // typed `WasmExclusion` carrier; only the offending symbol
+                // crosses this public compatibility boundary.
+                let (construct, tracking) = if symbol.starts_with("hew_duplex_") {
+                    ("the `Duplex` channel substrate", "WASM-TODO(duplex):")
+                } else if symbol.starts_with("hew_supervisor_") {
+                    (
                         "the supervisor restart machinery",
                         "WASM-TODO(supervision):",
-                    ),
-                    "structured-concurrency" | "tasks" => (
+                    )
+                } else if symbol.starts_with("hew_task_scope_") || symbol.starts_with("hew_task_") {
+                    (
                         "the `scope {}` structured-concurrency substrate",
                         "WASM-TODO(scope):",
-                    ),
-                    "tcp-networking" => {
-                        ("the TCP transport substrate", "WASM-TODO(tcp-networking):")
-                    }
-                    "channel-blocking-recv" => (
+                    )
+                } else if symbol == "hew_tcp_stream_from_conn" {
+                    ("the TCP transport substrate", "WASM-TODO(tcp-networking):")
+                } else if symbol == "hew_channel_poll" || symbol == "hew_channel_await_recv" {
+                    (
                         "the suspending channel-receive substrate",
                         "WASM-TODO(channels):",
-                    ),
-                    "streams" => ("the stream substrate", "WASM-TODO(streams):"),
-                    "lambda-actors" => ("the lambda-actor substrate", "WASM-TODO(lambda-actors):"),
-                    "link-monitor" => ("the link/monitor substrate", "WASM-TODO(link-monitor):"),
-                    "suspending-select" | "suspension-deadline" | "timer-suspension" => (
+                    )
+                } else if symbol.starts_with("hew_stream_") {
+                    ("the stream substrate", "WASM-TODO(streams):")
+                } else if symbol.starts_with("hew_lambda_actor_") {
+                    ("the lambda-actor substrate", "WASM-TODO(lambda-actors):")
+                } else if symbol == "hew_actor_demonitor" {
+                    ("the link/monitor substrate", "WASM-TODO(link-monitor):")
+                } else if symbol == "hew_await_cancel_schedule_deadline_ms" {
+                    (
                         "the suspending deadline substrate",
                         "WASM-TODO(suspension-deadline):",
-                    ),
-                    _ => (
+                    )
+                } else {
+                    (
                         "a native-only runtime substrate",
                         "WASM-TODO(runtime-substrate-classification):",
-                    ),
+                    )
                 };
                 write!(
                     f,
-                    "WASM target does not support {construct} (capability: {capability}; \
-                     symbol: {symbol}; {tracking}); omit the WASM target to produce a native binary instead"
+                    "WASM target does not support {construct} (symbol: {symbol}; \
+                     {tracking}); omit the WASM target to produce a native binary instead"
                 )
             }
         }
@@ -679,10 +684,7 @@ fn emit_module_with_options(
     // collateral missing-declaration symptom.
     if options.wasm {
         if let Some(exclusion) = uses_wasm_excluded_symbol(pipeline) {
-            return Err(CodegenError::WasmUnsupportedSubstrate {
-                symbol: exclusion.symbol,
-                capability: exclusion.capability,
-            });
+            return Err(exclusion.into_public_error());
         }
     }
     std::fs::create_dir_all(options.out_dir)?;
@@ -854,6 +856,16 @@ impl WasmExclusion {
         Self {
             symbol: symbol.into(),
             capability,
+        }
+    }
+
+    /// Cross the compatibility boundary without changing the public enum
+    /// variant's legacy `{ symbol }` shape. The typed capability remains on
+    /// this private carrier for exhaustive classification and internal tests.
+    fn into_public_error(self) -> CodegenError {
+        debug_assert!(!self.capability.as_str().is_empty());
+        CodegenError::WasmUnsupportedSubstrate {
+            symbol: self.symbol,
         }
     }
 }
@@ -1426,10 +1438,7 @@ fn wasm_excluded_call_family(
 fn validate_target_substrate(pipeline: &IrPipeline, triple: &str) -> CodegenResult<()> {
     if triple.starts_with("wasm32") {
         if let Some(exclusion) = uses_wasm_excluded_symbol(pipeline) {
-            return Err(CodegenError::WasmUnsupportedSubstrate {
-                symbol: exclusion.symbol,
-                capability: exclusion.capability,
-            });
+            return Err(exclusion.into_public_error());
         }
     }
     Ok(())

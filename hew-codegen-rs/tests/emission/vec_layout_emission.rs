@@ -882,7 +882,7 @@ fn vec_layout_contains_thunk_emits_for_wasm_target() {
     // variant is a contract violation.
     match result {
         Ok(_) => {}
-        Err(CodegenError::WasmUnsupportedSubstrate { symbol, .. }) => {
+        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
             assert_eq!(
                 symbol, "hew_vec_contains_thunk",
                 "WasmUnsupportedSubstrate symbol must name the contains-thunk \

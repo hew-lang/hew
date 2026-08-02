@@ -1,8 +1,8 @@
 //! Prose-matrix coverage checks for the typed WASM capability authority.
 //!
-//! The generator now owns reject/warn identity and checked consumer outputs.
-//! These tests retain the narrower documentation coverage contract until the
-//! prose renderer moves under the generator too.
+//! The manifest is the sole authority. The generator owns the complete
+//! feature-policy table; the remaining row-count checks cover the surrounding
+//! tier and backlog prose tables.
 
 use std::path::{Path, PathBuf};
 
@@ -44,10 +44,10 @@ fn count_markdown_table_rows(md: &str, start_heading: &str, end_heading: &str) -
     pipe_rows - 2
 }
 
-/// Returns the data rows from one markdown table, in committed order.
-fn markdown_table_rows(md: &str, start_heading: &str, end_heading: &str) -> Vec<Vec<String>> {
+/// Returns one markdown table byte-for-byte, including its trailing newline.
+fn markdown_table(md: &str, start_heading: &str, end_heading: &str) -> String {
     let mut in_section = false;
-    let mut rows = Vec::new();
+    let mut table = String::new();
     for line in md.lines() {
         if line.starts_with(start_heading) {
             in_section = true;
@@ -57,20 +57,15 @@ fn markdown_table_rows(md: &str, start_heading: &str, end_heading: &str) -> Vec<
             break;
         }
         if in_section && line.starts_with('|') {
-            rows.push(
-                line.trim_matches('|')
-                    .split('|')
-                    .map(|cell| cell.trim().to_string())
-                    .collect(),
-            );
+            table.push_str(line);
+            table.push('\n');
         }
     }
     assert!(
-        rows.len() >= 2,
+        table.lines().count() >= 2,
         "expected a header, separator, and data rows in section starting {start_heading:?}"
     );
-    rows.drain(..2);
-    rows
+    table
 }
 
 #[test]
@@ -124,44 +119,22 @@ fn manifest_row_counts_match_prose_matrix() {
 }
 
 #[test]
-fn manifest_runtime_statuses_match_prose_matrix() {
+fn manifest_feature_policy_table_matches_byte_for_byte() {
     let root = repo_root();
     let manifest_src = read(&root.join("wasm-capability-manifest.toml"));
     let matrix_src = read(&root.join("docs").join("wasm-capability-matrix.md"));
     let manifest = hew_capability_gen::Manifest::parse(&manifest_src)
         .expect("wasm-capability-manifest.toml parses");
-    let rows = markdown_table_rows(
+    let table = markdown_table(
         &matrix_src,
         "## Feature disposition table",
         "## Disposition rationale",
     );
-
     assert_eq!(
-        manifest.features.len(),
-        rows.len(),
-        "feature rows must stay in manifest order before their content can be compared"
+        table,
+        manifest.render_feature_policy_table(),
+        "feature policy table drifted from the sole manifest authority"
     );
-    for (feature, row) in manifest.features.iter().zip(&rows) {
-        assert_eq!(
-            row.len(),
-            4,
-            "feature row for {} must have four cells: {row:?}",
-            feature.id
-        );
-        assert_eq!(
-            row[2], feature.runtime_status,
-            "runtime status drift for feature {} ({})",
-            feature.id, row[0]
-        );
-
-        let manifest_tracking = feature.tracking_label.as_deref().unwrap_or("—");
-        let prose_tracking = row[3].trim_matches('`');
-        assert_eq!(
-            prose_tracking, manifest_tracking,
-            "tracking-label drift for feature {} ({})",
-            feature.id, row[0]
-        );
-    }
 }
 
 #[test]

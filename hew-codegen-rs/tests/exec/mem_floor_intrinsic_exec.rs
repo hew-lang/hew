@@ -317,8 +317,7 @@ fn mem_floor_is_not_a_wasm_excluded_substrate() {
         opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
-    if let Err(CodegenError::WasmUnsupportedSubstrate { symbol, .. }) =
-        emit_module(&pipeline, &options)
+    if let Err(CodegenError::WasmUnsupportedSubstrate { symbol }) = emit_module(&pipeline, &options)
     {
         panic!(
             "the memory floor must not be a wasm-excluded substrate — the runtime \

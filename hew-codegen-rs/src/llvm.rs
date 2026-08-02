@@ -4951,7 +4951,7 @@ pub(crate) fn emit_owned_config_field_clone<'ctx>(
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let mut visited = std::collections::HashSet::new();
-    let kind = hew_mir::classify_state_field_with_resource_handles(
+    let kind = hew_mir::classify_state_field_with_lifecycle_registry(
         field_ty,
         mir_record_layouts,
         mir_enum_layouts,
@@ -7793,7 +7793,7 @@ fn collect_reachable_clone_targets(
                      have rejected this with MissingRecordLayout"
                     ))
                 })?;
-            let kinds = hew_mir::classify_actor_state_fields_with_resource_handles(
+            let kinds = hew_mir::classify_actor_state_fields_with_lifecycle_registry(
                 &record.field_tys,
                 pipeline_records,
                 enum_layouts,
@@ -7836,7 +7836,7 @@ fn collect_reachable_clone_targets(
                 for field_ty in &variant.field_tys {
                     let mut visited: std::collections::HashSet<String> =
                         std::collections::HashSet::new();
-                    let kind = hew_mir::classify_state_field_with_resource_handles(
+                    let kind = hew_mir::classify_state_field_with_lifecycle_registry(
                         field_ty,
                         pipeline_records,
                         enum_layouts,
@@ -8247,7 +8247,7 @@ fn classify_enum_drop_variants_raw(
                 .iter()
                 .map(|field_ty| {
                     let mut visited = HashSet::new();
-                    hew_mir::classify_state_field_with_resource_handles(
+                    hew_mir::classify_state_field_with_lifecycle_registry(
                         field_ty,
                         record_layouts,
                         enum_layouts,
@@ -8288,7 +8288,7 @@ fn classify_record_drop_fields_raw(
         .iter()
         .map(|field_ty| {
             let mut visited = HashSet::new();
-            hew_mir::classify_state_field_with_resource_handles(
+            hew_mir::classify_state_field_with_lifecycle_registry(
                 field_ty,
                 record_layouts,
                 enum_layouts,
@@ -15970,7 +15970,7 @@ fn borrowed_aggregate_retain_kind(
 ) -> CodegenResult<StateFieldCloneKind> {
     let record_layouts = codegen_record_layouts(fn_ctx);
     let mut visited = HashSet::new();
-    hew_mir::classify_state_field_with_resource_handles(
+    hew_mir::classify_state_field_with_lifecycle_registry(
         ty,
         &record_layouts,
         fn_ctx.enum_layouts,
@@ -19131,7 +19131,7 @@ pub(crate) fn env_field_drop_kinds(
     let mut kinds = Vec::with_capacity(field_tys.len());
     for (idx, field_ty) in field_tys.iter().enumerate() {
         let mut visited = std::collections::HashSet::new();
-        let kind = hew_mir::classify_state_field_with_resource_handles(
+        let kind = hew_mir::classify_state_field_with_lifecycle_registry(
             field_ty,
             &record_layouts,
             fn_ctx.enum_layouts,
@@ -20255,7 +20255,7 @@ fn tuple_field_clone_kind(
     lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> CodegenResult<hew_mir::StateFieldCloneKind> {
     let mut visited = HashSet::new();
-    hew_mir::classify_state_field_with_resource_handles(
+    hew_mir::classify_state_field_with_lifecycle_registry(
         elem_ty,
         record_layouts,
         enum_layouts,
@@ -23704,6 +23704,13 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
     fn_ctx: &FnCtx<'_, '_>,
     elem: &ResolvedTy,
 ) -> bool {
+    if fn_ctx
+        .lifecycle_registry
+        .opaque_resource_for_ty(elem)
+        .is_some()
+    {
+        return true;
+    }
     match elem {
         // Bare scalar/string/bytes elements take the non-owned paths.
         ResolvedTy::String | ResolvedTy::Bytes => false,
@@ -24023,7 +24030,7 @@ fn classify_record_drop_fields_for_key(
         .iter()
         .map(|field_ty| {
             let mut visited = HashSet::new();
-            hew_mir::classify_state_field_with_resource_handles(
+            hew_mir::classify_state_field_with_lifecycle_registry(
                 field_ty,
                 &record_layouts,
                 fn_ctx.enum_layouts,
@@ -24064,7 +24071,7 @@ fn classify_enum_drop_variants_for_key(
                 .iter()
                 .map(|field_ty| {
                     let mut visited = HashSet::new();
-                    hew_mir::classify_state_field_with_resource_handles(
+                    hew_mir::classify_state_field_with_lifecycle_registry(
                         field_ty,
                         &record_layouts,
                         fn_ctx.enum_layouts,
@@ -24307,7 +24314,7 @@ fn emit_heap_slot_drop<'ctx>(
     if matches!(ty, ResolvedTy::Named { .. }) {
         let record_layouts = codegen_record_layouts(fn_ctx);
         let mut visited = HashSet::new();
-        let kind = hew_mir::classify_state_field_with_resource_handles(
+        let kind = hew_mir::classify_state_field_with_lifecycle_registry(
             ty,
             &record_layouts,
             fn_ctx.enum_layouts,
@@ -27402,7 +27409,7 @@ fn validate_generator_env_plan<'ctx>(
             None
         } else {
             Some(
-                hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                     field_ty,
                     &record_layouts,
                     fn_ctx.enum_layouts,
@@ -34875,7 +34882,7 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
         // `get_or_declare_{record,enum}_drop_inplace` mangle into the
         // helper symbol, so classification + dispatch can never drift.
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let kind = hew_mir::classify_state_field_with_resource_handles(
+        let kind = hew_mir::classify_state_field_with_lifecycle_registry(
             &inst.concrete_type,
             pipeline_records,
             enum_layouts,

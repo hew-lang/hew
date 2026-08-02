@@ -83,8 +83,8 @@ pub use ownership::{
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{
-    classify_actor_state_fields_with_resource_handles, classify_owned_string_record_fields,
-    classify_state_field_with_resource_handles, mangle_actor_state_clone_fn,
+    classify_actor_state_fields_with_lifecycle_registry, classify_owned_string_record_fields,
+    classify_state_field_with_lifecycle_registry, mangle_actor_state_clone_fn,
     mangle_actor_state_drop_fn, ClassificationError, IoHandleKind, ResourceCloseAuthority,
     StateFieldCloneKind,
 };

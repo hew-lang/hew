@@ -430,7 +430,7 @@ fn collect_supervisor_config_drop_seeds(
         // no config_drop_fn.
         let has_owned = record.field_tys.iter().any(|ty| {
             let mut visited = std::collections::HashSet::new();
-            crate::classify_state_field_with_resource_handles(
+            crate::classify_state_field_with_lifecycle_registry(
                 ty,
                 record_layouts,
                 enum_layouts,
@@ -750,7 +750,7 @@ fn collect_closure_capture_drop_seeds(
                 for field_ty in &env_layout.field_tys {
                     let mut visited: std::collections::HashSet<String> =
                         std::collections::HashSet::new();
-                    let Ok(kind) = crate::classify_state_field_with_resource_handles(
+                    let Ok(kind) = crate::classify_state_field_with_lifecycle_registry(
                         field_ty,
                         record_layouts,
                         enum_layouts,
@@ -944,7 +944,7 @@ fn collect_dyn_concrete_drop_seeds(
     let mut seen_enum: std::collections::HashSet<String> = std::collections::HashSet::new();
     for inst in registry {
         let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let Ok(kind) = crate::classify_state_field_with_resource_handles(
+        let Ok(kind) = crate::classify_state_field_with_lifecycle_registry(
             &inst.concrete_type,
             record_layouts,
             enum_layouts,

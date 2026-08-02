@@ -107,7 +107,7 @@ impl Builder {
             return;
         };
         let record_layouts = outbound_record_layouts(self);
-        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             field_ty,
             &record_layouts,
             &self.enum_layouts,
@@ -174,7 +174,7 @@ impl Builder {
             return;
         }
         let record_layouts = outbound_record_layouts(self);
-        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             binding_ty,
             &record_layouts,
             &self.enum_layouts,
@@ -275,7 +275,7 @@ impl Builder {
         }
 
         let record_layouts = outbound_record_layouts(self);
-        match crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             &owned_ty,
             &record_layouts,
             &self.enum_layouts,
@@ -800,7 +800,7 @@ impl Builder {
                     }
                     let record_layouts = outbound_record_layouts(self);
                     let stays_on_borrow_spine =
-                        crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                        crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                             &self.subst_ty(&arg.ty),
                             &record_layouts,
                             &self.enum_layouts,

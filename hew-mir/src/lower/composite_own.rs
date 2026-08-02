@@ -1177,17 +1177,7 @@ fn enum_payloads_are_plain_string(
     let ResolvedTy::Named { name, args, .. } = ty else {
         return false;
     };
-    let short = hew_types::short_name(name);
-    let layout = if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|el| el.name == *name || hew_types::short_name(&el.name) == short)
-    } else {
-        let mangled = crate::lower::mangle_layout_key(short, args);
-        enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
-    };
+    let layout = crate::model::find_enum_layout(name, args, enum_layouts);
     let Some(layout) = layout else {
         return false;
     };
@@ -3656,13 +3646,7 @@ fn carrier_cleanup_fields(
     } else {
         let key = user_record_layout_key(carrier_ty)?;
         record_field_orders
-            .get(&key)
-            .or_else(|| {
-                let bare = short_name(&key);
-                (bare != key)
-                    .then(|| record_field_orders.get(bare))
-                    .flatten()
-            })?
+            .get(&key)?
             .iter()
             .enumerate()
             .map(|(index, (_, ty))| {
@@ -8655,6 +8639,7 @@ mod witness_verifier_composite_traversal {
         let func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new("origin"),
             name: "origin".to_string(),
             type_params: declared.iter().map(|s| (*s).to_string()).collect(),
             is_generator: false,

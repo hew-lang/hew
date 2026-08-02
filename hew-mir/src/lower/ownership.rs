@@ -1,7 +1,7 @@
 use super::{
     actor_name_from_handle_ty, affine_release_needs_drop_flag, base_local, binding_ref_target,
     callee_returns_fresh_owner, callee_returns_retained_string_owner,
-    hir_expr_contains_synthetic_vec_get_clone, machine_layout_name_matches, mangle_layout_key,
+    hir_expr_contains_synthetic_vec_get_clone, machine_layout_ty_matches,
     monomorphic_user_record_key, named_type_marker, ty_is_closure_pair,
     ty_is_heap_owning_enum_composite, ty_is_local_collection_handle, user_record_layout_key,
     vec_iter_record_layout_key, ActiveIterationOwner, BasicBlock, BindingId, Builder, BuiltinType,
@@ -32,7 +32,7 @@ enum WholeParamEmbedClass {
 mod borrowed_temp_method_result_tests {
     use super::Builder;
     use hew_hir::{ids::IdGen, HirExpr, HirExprKind, HirLiteral, IntentKind, ValueClass};
-    use hew_types::{ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
+    use hew_types::{CallTarget, DefId, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
 
     fn expr(ids: &mut IdGen, ty: ResolvedTy, kind: HirExprKind) -> HirExpr {
         HirExpr {
@@ -78,6 +78,10 @@ mod borrowed_temp_method_result_tests {
             dyn_result.clone(),
             HirExprKind::CallTraitMethodStatic {
                 receiver: Box::new(static_receiver),
+                target: CallTarget::StaticTraitMethod {
+                    declaring_trait: DefId::new("Factory"),
+                    method: DefId::new("Factory::unrelated_spelling"),
+                },
                 receiver_type_param: "T".to_string(),
                 bound_trait: "Factory".to_string(),
                 declaring_trait: "Factory".to_string(),
@@ -92,6 +96,7 @@ mod borrowed_temp_method_result_tests {
             dyn_result.clone(),
             HirExprKind::ResolvedImplCall {
                 receiver: Box::new(resolved_receiver),
+                target: CallTarget::RuntimeCollection(MethodTargetFamily::Vec(VecMethod::Len)),
                 impl_id: ImplId(7),
                 method_name: "also_not_an_authority".to_string(),
                 target_symbol: "not_a_fresh_name".to_string(),
@@ -107,6 +112,11 @@ mod borrowed_temp_method_result_tests {
             dyn_result.clone(),
             HirExprKind::CallDynMethod {
                 receiver: Box::new(dyn_receiver),
+                target: CallTarget::DynamicVtable {
+                    declaring_trait: DefId::new("Factory"),
+                    method: DefId::new("Factory::still_not_a_name_authority"),
+                    slot: 3,
+                },
                 trait_name: "Factory".to_string(),
                 method_name: "still_not_a_name_authority".to_string(),
                 slot: 3,
@@ -133,6 +143,7 @@ mod borrowed_temp_method_result_tests {
             ResolvedTy::String,
             HirExprKind::ResolvedImplCall {
                 receiver: Box::new(non_dyn_receiver),
+                target: CallTarget::RuntimeCollection(MethodTargetFamily::Vec(VecMethod::Len)),
                 impl_id: ImplId(8),
                 method_name: "not_a_dyn_result".to_string(),
                 target_symbol: "not_a_fresh_name".to_string(),
@@ -1406,7 +1417,7 @@ impl Builder {
         // `Vec<_>`-iteration desugar, a `GeneratorNext`, a bare place, an
         // aggregate) is `NotApplicable` ON KIND — exactly `call_scrutinee_owned_ty`'s
         // early `None`, before any runtime-identity resolution can be consulted.
-        let HirExprKind::Call { callee, args } = &scrutinee.kind else {
+        let HirExprKind::Call { callee, args, .. } = &scrutinee.kind else {
             return Ok(CallScrutineeAdmission::NotApplicable);
         };
         if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
@@ -1594,7 +1605,7 @@ impl Builder {
             HirExprKind::MachineVariantCtor { payload, .. } => payload
                 .as_ref()
                 .is_none_or(|fs| fs.iter().all(|(_, v)| self.scrutinee_arg_provably_fresh(v))),
-            HirExprKind::Call { callee, args } => {
+            HirExprKind::Call { callee, args, .. } => {
                 let HirExprKind::BindingRef {
                     name,
                     resolved: ResolvedRef::Item(id),
@@ -2359,29 +2370,15 @@ impl Builder {
     }
     /// Look up the field-order entry for a record type by key.
     ///
-    /// The type checker qualifies imported record names with their module
-    /// prefix (e.g. `"process.CommandOutput"`), but the MIR layout loop
-    /// registers them under the bare type name (`"CommandOutput"`) taken
-    /// from `HirTypeDecl.name`.  Try the full key first; if that misses,
-    /// strip the last `.`-separated prefix and try the bare name.  This
-    /// covers every single-level module-qualified record (`module.Type`)
-    /// without touching the mangled generic case (`Type$$arg`) which
-    /// never contains a dot at the type-name position.
+    /// Record-field tables are keyed by the exact checker-resolved nominal
+    /// identity (or its exact generic layout mangle). A leaf-name retry would
+    /// let a same-leaf declaration from another module supply this record's
+    /// field order, so a miss remains a miss.
     pub(crate) fn lookup_record_field_order(
         &self,
         type_name: &str,
     ) -> Option<&Vec<(String, ResolvedTy)>> {
-        if let Some(order) = self.record_field_orders.get(type_name) {
-            return Some(order);
-        }
-        // Fallback: strip the module prefix and try the bare type name.
-        let bare = hew_types::short_name(type_name);
-        if bare != type_name {
-            if let Some(order) = self.record_field_orders.get(bare) {
-                return Some(order);
-            }
-        }
-        None
+        self.record_field_orders.get(type_name)
     }
     pub(crate) fn mark_owned_string_record_field_site(&mut self, object: &HirExpr) {
         let HirExprKind::BindingRef {
@@ -2626,7 +2623,7 @@ impl Builder {
                     self.collect_vec_owned_element_keys_from_expr(e);
                 }
             }
-            HirExprKind::Call { callee, args } => {
+            HirExprKind::Call { callee, args, .. } => {
                 self.collect_vec_owned_element_keys_from_expr(callee);
                 for a in args {
                     self.collect_vec_owned_element_keys_from_expr(a);
@@ -3057,7 +3054,7 @@ impl Builder {
             } => true,
             ResolvedTy::Named { name, args, .. } if args.is_empty() => {
                 self.actor_layouts.contains_key(name)
-                    || machine_layout_name_matches(&self.machine_layout_names, name)
+                    || machine_layout_ty_matches(&self.machine_layout_names, ty)
             }
             // Generic enum applications (`Named { name: "Option", args: [I64] }`):
             // the origin name is in `machine_layout_names` if the HIR mono pass
@@ -3066,9 +3063,7 @@ impl Builder {
             // arm is purely for generic enum types. Classifying as `BitCopy`
             // matches the tagged-union substrate — enums are stack-allocated
             // discriminated unions with no drop side-effect.
-            ResolvedTy::Named { name, .. } => {
-                machine_layout_name_matches(&self.machine_layout_names, name)
-            }
+            ResolvedTy::Named { .. } => machine_layout_ty_matches(&self.machine_layout_names, ty),
             _ => actor_name_from_handle_ty(ty).is_some(),
         }
     }
@@ -3463,17 +3458,7 @@ impl Builder {
                     )
             }
             ResolvedTy::Named { name, args, .. } => {
-                let short = hew_types::short_name(name);
-                let layout = if args.is_empty() {
-                    self.enum_layouts.iter().find(|layout| {
-                        layout.name == *name || hew_types::short_name(&layout.name) == short
-                    })
-                } else {
-                    let mangled = mangle_layout_key(short, args);
-                    self.enum_layouts
-                        .iter()
-                        .find(|layout| layout.name == mangled || layout.name == *name)
-                };
+                let layout = crate::model::find_enum_layout(name, args, &self.enum_layouts);
                 if let Some(layout) = layout {
                     let layout_name = layout.name.clone();
                     if !visited_enum_layouts.insert(layout_name.clone()) {

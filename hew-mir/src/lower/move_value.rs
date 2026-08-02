@@ -55,11 +55,8 @@ impl Builder {
     pub(crate) fn ty_is_machine(&self, ty: &hew_types::ResolvedTy) -> bool {
         matches!(
             ty,
-            hew_types::ResolvedTy::Named { name, .. }
-                if super::machine_layout_name_matches(
-                    &self.param_ownership.machine_decl_names,
-                    name,
-                )
+            hew_types::ResolvedTy::Named { .. }
+                if super::machine_layout_ty_matches(&self.machine_layout_names, ty)
         )
     }
 

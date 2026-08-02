@@ -5,7 +5,7 @@ use std::{
 
 use hew_hir::{sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
 use hew_types::{
-    short_name, NumericWidth, RcIntrinsicOp, ResolvedTy, TryConversionKind, WireCodecDirection,
+    BuiltinType, NumericWidth, RcIntrinsicOp, ResolvedTy, TryConversionKind, WireCodecDirection,
     WireLayoutTable,
 };
 
@@ -1347,7 +1347,7 @@ pub struct MachineVariantLayout {
 
 /// Layout descriptor for a `machine` declaration.
 ///
-/// Pairs the machine's name and tag-bit-width with its per-state variant
+/// Pairs the canonical concrete machine-layout key and tag-bit-width with its per-state variant
 /// list so codegen (Slice 5) can emit the tagged-union LLVM type and the
 /// `Place::MachineTag` / `Place::MachineVariant` addressing primitives can
 /// be validated without re-reading HIR.
@@ -1364,8 +1364,15 @@ pub struct MachineVariantLayout {
 /// correctly size the switch and dominance checks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MachineLayout {
-    /// Machine type name (e.g. `"TrafficLight"`). Matches `HirMachineDecl.name`.
+    /// Canonical machine layout key (e.g. `"TrafficLight"` or
+    /// `"control.Lifecycle$$i64"`).  This is the exact key derived from a
+    /// `MachineMonoEntry`, never a leaf-name fallback.
     pub name: String,
+    /// Canonical layout key for this machine's event companion (e.g.
+    /// `"TrafficLightEvent"` or `"control.LifecycleEvent$$i64"`).  Kept
+    /// explicit because `MachineEvent<T>` is mangled from its own nominal
+    /// origin, not by appending `Event` after the machine instance key.
+    pub event_name: String,
     /// Bit width of the discriminant tag field. Computed as
     /// `u32::max(1, (state_count as f64).log2().ceil() as u32)` —
     /// the minimum number of bits needed to enumerate all states.
@@ -1462,11 +1469,9 @@ pub fn machine_enum_views(machine_layouts: &[MachineLayout]) -> Vec<EnumLayout> 
 /// heap pointer rather than an inline tagged-union struct.
 #[must_use]
 pub fn is_indirect_enum(name: &str, enum_layouts: &[EnumLayout]) -> bool {
-    // Look up by exact name first, then by short (unqualified) name so
-    // module-qualified enums (`"mod.Expr"`) match `"Expr"` entries.
     enum_layouts
         .iter()
-        .find(|el| el.name == name || el.name == hew_types::short_name(name))
+        .find(|el| el.name == name)
         .is_some_and(|el| el.is_indirect)
 }
 
@@ -1485,7 +1490,8 @@ pub fn is_indirect_enum(name: &str, enum_layouts: &[EnumLayout]) -> bool {
 /// structurally impossible: the function shortens `args` internally before
 /// mangling, so a caller CANNOT pass a raw qualified spine into the key. Nested
 /// qualified payloads (`Result<Vec<json.Value>, _>`) are shortened at every
-/// depth. The empty-args arm keeps the existing bare-or-short-name match.
+/// depth. The outer declaration owner remains exact in both arms; no leaf-name
+/// retry may select a neighbouring module's layout.
 ///
 /// No call site in this module may build a generic enum-layout key with a raw
 /// `mangle(.., args)`; the `mangle_feeding_layout_lookup_is_centralised` guard
@@ -1495,22 +1501,14 @@ pub(crate) fn find_enum_layout<'a>(
     args: &[ResolvedTy],
     enum_layouts: &'a [EnumLayout],
 ) -> Option<&'a EnumLayout> {
-    let short = short_name(name);
-    if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|el| el.name == name || short_name(&el.name) == short)
+    let key = if args.is_empty() {
+        name.to_string()
     } else {
-        let short_args: Vec<ResolvedTy> = args
-            .iter()
-            .cloned()
-            .map(hew_hir::shorten_named_arg_qualifiers)
-            .collect();
-        let mangled = hew_hir::mangle(short, &short_args);
-        enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == name)
-    }
+        hew_hir::mangle_layout_key(name, args)
+    };
+    enum_layouts
+        .iter()
+        .find(|el| el.name == key || el.name == hew_hir::machine_layout_key(name, args))
 }
 
 /// THE single record-registry key authority for this module.
@@ -1524,52 +1522,49 @@ pub(crate) fn find_enum_layout<'a>(
 /// `Slot$$Box`). Shortening the args internally means a caller CANNOT pass a raw
 /// module-qualified spine into the key (the C1 qualified-spine miss class).
 ///
-/// Both record-side lookups — [`find_record_layout`] over `&[RecordLayout]` and
-/// the [`MirHeapLayouts`] adapter over `record_field_orders` — route through
+/// Both record-side lookups — [`find_record_layout_for_ty`] over
+/// `&[RecordLayout]` and the [`MirHeapLayouts`] adapter over
+/// `record_field_orders` — route through
 /// here so the record-key scheme is written once. The
 /// `mangle_feeding_layout_lookup_is_centralised` guard fails if a bare
 /// `mangle(.., args)` feeding a layout lookup reappears outside this and
 /// [`find_enum_layout`].
-fn record_lookup_keys(name: &str, args: &[ResolvedTy]) -> Vec<String> {
-    let short = short_name(name);
+fn record_lookup_keys(
+    name: &str,
+    args: &[ResolvedTy],
+    builtin: Option<BuiltinType>,
+) -> Vec<String> {
     if args.is_empty() {
-        let mut keys = vec![name.to_string()];
-        if short != name {
-            keys.push(short.to_string());
-        }
-        keys
+        vec![name.to_string()]
+    } else if matches!(
+        builtin,
+        Some(BuiltinType::VecIter | BuiltinType::HashMapIter)
+    ) {
+        hew_hir::synthetic_cursor_layout_key(builtin.expect("matched synthetic cursor"), args)
+            .into_iter()
+            .collect()
     } else {
-        let short_args: Vec<ResolvedTy> = args
-            .iter()
-            .cloned()
-            .map(hew_hir::shorten_named_arg_qualifiers)
-            .collect();
-        vec![
-            hew_hir::mangle(name, &short_args),
-            hew_hir::mangle(short, &short_args),
-            // Bare/short-name fallbacks for any registry that did not key the
-            // instantiation by its mangle (defensive; the generic arm above is
-            // the hot path).
-            name.to_string(),
-            short.to_string(),
-        ]
+        vec![hew_hir::mangle_layout_key(name, args)]
     }
 }
 
-/// Mangle-aware record layout lookup — the companion of [`find_enum_layout`]
-/// for the record side. Resolves both monomorphic records (bare-name or
-/// short-name) and generic instantiations (`LocalPid<Socket>` →
-/// `LocalPid$$Socket`) using the same mangling scheme as the HIR mono pass.
-///
-/// Mirrors `state_clone::lookup_record_layout` in authority; kept local to
-/// `model.rs` so `ty_contains_unclonable_opaque_inner` can use it without
-/// depending on the `state_clone` module.
-pub(crate) fn find_record_layout<'a>(
-    name: &str,
-    args: &[ResolvedTy],
+/// Mangle-aware record layout lookup. Synthetic compiler cursors use their
+/// reserved symbol class; user records with the same presentation name remain
+/// in the ordinary record class and cannot select the cursor layout.
+pub(crate) fn find_record_layout_for_ty<'a>(
+    ty: &ResolvedTy,
     record_layouts: &'a [RecordLayout],
 ) -> Option<&'a RecordLayout> {
-    let keys = record_lookup_keys(name, args);
+    let ResolvedTy::Named {
+        name,
+        args,
+        builtin,
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    let keys = record_lookup_keys(name, args, *builtin);
     record_layouts.iter().find(|r| keys.contains(&r.name))
 }
 
@@ -1607,9 +1602,14 @@ pub struct MirHeapLayouts<'a, S = std::collections::hash_map::RandomState> {
 }
 
 impl<S: std::hash::BuildHasher> HeapOwnershipLayouts for MirHeapLayouts<'_, S> {
-    fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
+    fn record_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+        builtin: Option<BuiltinType>,
+    ) -> Option<Vec<ResolvedTy>> {
         // Route the record-field lookup through the single `record_lookup_keys`
-        // authority — the same key scheme `find_record_layout` uses and the same
+        // authority — the same key scheme `find_record_layout_for_ty` uses and the same
         // `$$`-mangled key `record_field_orders` is registered under (`lower.rs`
         // ← `mangle(name, type_args)`), matching codegen's `CgHeapLayouts` and
         // the deleted `named_elem_owns_heap`.
@@ -1623,7 +1623,7 @@ impl<S: std::hash::BuildHasher> HeapOwnershipLayouts for MirHeapLayouts<'_, S> {
         // (`Holder<i64>{ payload: Vec<i64> }`) as non-owning — while codegen
         // (correctly keyed) classified it owning, re-creating the MIR↔codegen
         // adapter divergence DIV-1 exists to eliminate.
-        record_lookup_keys(name, args)
+        record_lookup_keys(name, args, builtin)
             .iter()
             .find_map(|key| self.record_field_orders.get(key))
             .map(|fields| fields.iter().map(|(_, ty)| ty.clone()).collect())
@@ -1690,7 +1690,12 @@ pub trait HeapOwnershipLayouts {
     /// Field types of a registered user record, resolved from a
     /// `Named { name, args }` (substituted concrete types in declaration order).
     /// `None` when `name`/`args` resolve to no user record layout in scope.
-    fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>>;
+    fn record_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+        builtin: Option<BuiltinType>,
+    ) -> Option<Vec<ResolvedTy>>;
 
     /// Variant payload field-type lists of a registered enum (or machine, whose
     /// state payloads the consumer surfaces here too). `None` when `name`/`args`
@@ -1798,7 +1803,12 @@ pub fn ty_heap_ownership(ty: &ResolvedTy, layouts: &impl HeapOwnershipLayouts) -
 struct EnumLayoutsOnly<'a>(&'a [EnumLayout]);
 
 impl HeapOwnershipLayouts for EnumLayoutsOnly<'_> {
-    fn record_field_tys(&self, _name: &str, _args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
+    fn record_field_tys(
+        &self,
+        _name: &str,
+        _args: &[ResolvedTy],
+        _builtin: Option<BuiltinType>,
+    ) -> Option<Vec<ResolvedTy>> {
         None
     }
 
@@ -1877,7 +1887,12 @@ fn ty_heap_ownership_inner(
                     ownership.union(ty_heap_ownership_inner(capture, layouts, visited))
                 })
         }
-        ResolvedTy::Named { name, args, .. } => {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
             let mut ownership = HeapOwnership {
                 owns_heap: false,
                 via_indirection: layouts.enum_is_indirect(name, args),
@@ -1890,7 +1905,7 @@ fn ty_heap_ownership_inner(
             //    field, e.g. `type Inner { payload: Vec<i64> }`, that the old A
             //    walker answered `false` for because it never looked up record
             //    layouts). The consumer's adapter substitutes the field types.
-            if let Some(fields) = layouts.record_field_tys(name, args) {
+            if let Some(fields) = layouts.record_field_tys(name, args, *builtin) {
                 let key = record_or_enum_visit_key(name, args);
                 if !visited.insert(key.clone()) {
                     // Recursive value type: the checker rejects these; force the
@@ -1969,10 +1984,10 @@ fn ty_heap_ownership_inner(
 /// fail-closed `true`.
 fn record_or_enum_visit_key(name: &str, args: &[ResolvedTy]) -> String {
     if args.is_empty() {
-        short_name(name).to_string()
+        name.to_string()
     } else {
         let arg_keys: Vec<String> = args.iter().map(hew_hir::mangle_resolved_ty).collect();
-        format!("{}<{}>", short_name(name), arg_keys.join(","))
+        format!("{name}<{}>", arg_keys.join(","))
     }
 }
 
@@ -2082,28 +2097,14 @@ fn ty_contains_unclonable_opaque_inner(
             if *is_opaque {
                 return true;
             }
-            let short = short_name(name);
             // 2. User record layout lookup — mangle-aware so a generic
             //    instantiation (`mymod.LocalPid<Socket>` registered as
             //    `LocalPid$$Socket`) is found before the handle-skip below.
             //    Field types in the layout are already substituted by the
             //    HIR mono pass, so we recurse concrete types directly.
             //
-            //    QUALIFIED-NAME GUARD: a short-name-only match does NOT prove
-            //    the type IS this user layout if the incoming name is qualified
-            //    (`json.Value` matching the short `Value`). Only an EXACT
-            //    (qualified) layout-name match or an unqualified-name ANY-match
-            //    constitutes a genuine resolution that suppresses the opaque
-            //    name-fallback (step 6). See also the old step-5 qualified guard.
-            let record_match = find_record_layout(name, args, record_layouts);
-            let name_is_qualified = name.contains('.');
-            let record_resolved = record_match.is_some_and(|r| {
-                if name_is_qualified {
-                    r.name == *name
-                } else {
-                    true
-                }
-            });
+            let record_match = find_record_layout_for_ty(ty, record_layouts);
+            let record_resolved = record_match.is_some();
             if let Some(record) = record_match {
                 if record_resolved && visited.insert(record.name.clone()) {
                     let found = record.field_tys.iter().any(|ft| {
@@ -2122,22 +2123,8 @@ fn ty_contains_unclonable_opaque_inner(
                 }
             }
             // 3. User enum layout lookup — recurse into variant payloads.
-            //    `find_enum_layout` shortens the spine so a qualified payload
-            //    resolves to its registered bare-arg key.
-            //
-            //    Same qualified-name guard as step 2: `find_enum_layout` uses
-            //    short-name mangling and can match `a.Wrapper<i64>` against the
-            //    `Wrapper$$i64` layout by short-outer-name. An exact match on
-            //    the layout key (== full-mangled key, not the bare or short
-            //    key) proves genuine resolution for a qualified name.
             let enum_found = find_enum_layout(name, args, enum_layouts);
-            let enum_resolved = enum_found.is_some_and(|el| {
-                if name_is_qualified {
-                    el.name == *name
-                } else {
-                    true
-                }
-            });
+            let enum_resolved = enum_found.is_some();
             if let Some(layout) = enum_found {
                 if enum_resolved && visited.insert(layout.name.clone()) {
                     let found = layout.variants.iter().any(|v| {
@@ -2207,11 +2194,7 @@ fn ty_contains_unclonable_opaque_inner(
             //    fallback, so the qualified opaque handle still fails closed
             //    even when a clean same-short user record/enum exists.
             let resolved_to_user_layout = record_resolved || enum_resolved;
-            if !resolved_to_user_layout
-                && opaque_handle_names
-                    .iter()
-                    .any(|n| n == name || short_name(n) == short)
-            {
+            if !resolved_to_user_layout && opaque_handle_names.iter().any(|n| n == name) {
                 return true;
             }
             false
@@ -2272,11 +2255,7 @@ fn ty_contains_closure_value_inner(
             }) {
                 return true;
             }
-            let short = short_name(name);
-            if let Some(record) = record_layouts
-                .iter()
-                .find(|r| r.name == *name || short_name(&r.name) == short)
-            {
+            if let Some(record) = find_record_layout_for_ty(ty, record_layouts) {
                 if visited.insert(record.name.clone()) {
                     let found = record.field_tys.iter().any(|ft| {
                         ty_contains_closure_value_inner(ft, record_layouts, enum_layouts, visited)
@@ -2372,11 +2351,7 @@ fn ty_contains_string_returning_callable_inner(
             }) {
                 return true;
             }
-            let short = short_name(name);
-            if let Some(record) = record_layouts
-                .iter()
-                .find(|record| record.name == *name || short_name(&record.name) == short)
-            {
+            if let Some(record) = find_record_layout_for_ty(ty, record_layouts) {
                 if visited.insert(record.name.clone()) {
                     let found = record.field_tys.iter().any(|field_ty| {
                         ty_contains_string_returning_callable_inner(
@@ -7455,7 +7430,6 @@ pub enum Strategy {
 #[cfg(test)]
 mod heap_owning_tests {
     use super::*;
-    use hew_types::BuiltinType;
 
     fn generator_ty() -> ResolvedTy {
         // `Generator<i64, ()>` — bit-copy generic args, but the handle itself
@@ -7913,7 +7887,7 @@ mod heap_owning_tests {
     }
 
     #[test]
-    fn name_fallback_flags_qualified_opaque_shadowed_by_same_short_record() {
+    fn exact_opaque_identity_beats_same_leaf_record() {
         // Security regression (UAF / double-free): a QUALIFIED opaque handle
         // whose `is_opaque` discriminator was cleared on the way to MIR
         // (`json.Value`, `is_opaque: false`) must STILL fail closed even when a
@@ -7950,18 +7924,16 @@ mod heap_owning_tests {
              suppress the opaque name-fallback)"
         );
 
-        // ...and when the opaque decl-name set carries the SHORT (decl) form.
+        // A leaf-only opaque identity is no longer an authority: it must not
+        // capture a distinct qualified declaration merely because both end in
+        // `Value`.
         let short_names = vec!["Value".to_string()];
-        assert!(
-            ty_contains_unclonable_opaque_with_names(
-                &qualified_opaque,
-                &records,
-                &[],
-                &short_names
-            ),
-            "a qualified opaque handle must also fail closed when the opaque \
-             decl-name set carries the bare short name"
-        );
+        assert!(!ty_contains_unclonable_opaque_with_names(
+            &qualified_opaque,
+            &records,
+            &[],
+            &short_names
+        ));
 
         // Negative control preserved: the same-short value record itself,
         // referenced UNqualified, stays admissible — the exact-name record
@@ -7979,7 +7951,7 @@ mod heap_owning_tests {
     }
 
     #[test]
-    fn name_fallback_flags_qualified_opaque_generic_shadowed_by_same_short_enum() {
+    fn exact_opaque_identity_beats_same_leaf_generic_enum() {
         // Security regression, GENERIC-ENUM variant (UAF / double-free): a
         // QUALIFIED generic opaque handle whose `is_opaque` discriminator was
         // cleared on the way to MIR (`a.Wrapper<i64>`, `is_opaque: false`) must
@@ -8029,13 +8001,15 @@ mod heap_owning_tests {
              match must not suppress the opaque name-fallback)"
         );
 
-        // ...and when the opaque decl-name set carries the bare SHORT name.
+        // A bare leaf is not a valid opaque identity for a qualified source
+        // declaration, even when a same-leaf generic enum exists.
         let short_names = vec!["Wrapper".to_string()];
-        assert!(
-            ty_contains_unclonable_opaque_with_names(&qualified_opaque, &[], &enums, &short_names),
-            "a qualified generic opaque handle must also fail closed when the \
-             opaque decl-name set carries the bare short name"
-        );
+        assert!(!ty_contains_unclonable_opaque_with_names(
+            &qualified_opaque,
+            &[],
+            &enums,
+            &short_names
+        ));
 
         // Negative control: the SAME generic-enum shape, but NOT in the opaque
         // set, still ADMITS. The fallback only flags names IN the opaque set, so
@@ -8068,26 +8042,21 @@ mod heap_owning_tests {
         assert!(!ty_contains_unclonable_opaque(&pair, &records, &[]));
     }
 
-    // ── Qualified-payload layout-key symmetry (C1) ──────────────────────────
+    // ── Canonical full-owner generic-layout identity ────────────────────────
     //
     // The MIR ownership/drop authorities probe `enum_layouts` by mangling the
     // outer name + type-arg spine. A generic enum instantiated through an
     // import-use site carries a MODULE-QUALIFIED payload in its args
-    // (`Slot<lmonobox.Box>`), while the layout is REGISTERED under the bare
-    // spine (`Slot$$Box`). If a probe mangles the raw qualified spine
-    // (`Slot$$lmonobox.Box`) it diverges from the registered key, the lookup
-    // falls through, and the ownership/drop/clone decision silently wrong-answers
-    // (no member-drop synthesised → leak, or no opaque fail-closed → unsound
-    // clone). `find_enum_layout` shortens the spine so the probe matches.
+    // (`Slot<lmonobox.Box>`). The registration and every probe must preserve
+    // that full owner through the one shared `mangle_layout_key` authority.
 
-    /// A generic enum registered under its bare-arg key resolves when probed
-    /// with a QUALIFIED payload, so its opaque variant payload still fails
+    /// A generic enum registered under its full-owner key resolves when probed
+    /// with the same qualified payload, so its opaque variant payload still fails
     /// closed for the actor-state clone direction.
     #[test]
     fn qualified_payload_enum_resolves_for_opaque_fail_closed() {
-        // Registered as `Slot$$Box` (bare outer, bare arg) — exactly what
-        // `EnumLayoutRegistry::insert` / `layout_mono` emit.
-        let registered_key = hew_hir::mangle("Slot", &[ResolvedTy::named_user("Box", vec![])]);
+        let payload = ResolvedTy::named_user("lmonobox.Box", vec![]);
+        let registered_key = hew_hir::mangle_layout_key("Slot", std::slice::from_ref(&payload));
         let enums = vec![EnumLayout {
             name: registered_key,
             tag_width: 1,
@@ -8099,14 +8068,10 @@ mod heap_owning_tests {
             }],
             is_indirect: false,
         }];
-        // The PROBE type carries the qualified payload as the import-use MIR does:
-        // `Slot<lmonobox.Box>`. A raw `mangle("Slot", [lmonobox.Box])` would key
-        // `Slot$$lmonobox.Box` and MISS the registered `Slot$$Box`.
-        let qualified =
-            ResolvedTy::named_user("Slot", vec![ResolvedTy::named_user("lmonobox.Box", vec![])]);
+        let qualified = ResolvedTy::named_user("Slot", vec![payload]);
         assert!(
             ty_contains_unclonable_opaque(&qualified, &[], &enums),
-            "qualified-payload enum must resolve to its bare-key layout and \
+            "qualified-payload enum must resolve to its full-owner layout and \
              fail closed on the opaque variant payload"
         );
     }
@@ -8116,7 +8081,8 @@ mod heap_owning_tests {
     /// heap-owning when probed with a qualified payload spine.
     #[test]
     fn qualified_payload_enum_resolves_for_heap_owning_drop() {
-        let registered_key = hew_hir::mangle("Slot", &[ResolvedTy::named_user("Box", vec![])]);
+        let payload = ResolvedTy::named_user("lmonobox.Box", vec![]);
+        let registered_key = hew_hir::mangle_layout_key("Slot", std::slice::from_ref(&payload));
         let enums = vec![EnumLayout {
             name: registered_key,
             tag_width: 1,
@@ -8127,26 +8093,21 @@ mod heap_owning_tests {
             }],
             is_indirect: false,
         }];
-        let qualified =
-            ResolvedTy::named_user("Slot", vec![ResolvedTy::named_user("lmonobox.Box", vec![])]);
+        let qualified = ResolvedTy::named_user("Slot", vec![payload]);
         assert!(
             ty_contains_heap_owning(&qualified, &enums),
-            "qualified-payload enum must resolve to its bare-key layout and be \
+            "qualified-payload enum must resolve to its full-owner layout and be \
              classified heap-owning so its member-drop fires"
         );
     }
 
-    /// A NESTED qualified payload (`Slot<Vec<lmonobox.Box>>`) shortens at every
-    /// depth, so the inner qualifier cannot leak into the key.
+    /// A NESTED qualified payload (`Slot<Vec<lmonobox.Box>>`) retains its
+    /// owner at every depth, so unrelated same-leaf layouts cannot collide.
     #[test]
     fn nested_qualified_payload_enum_resolves() {
-        let registered_key = hew_hir::mangle(
-            "Slot",
-            &[ResolvedTy::named_user(
-                "Vec",
-                vec![ResolvedTy::named_user("Box", vec![])],
-            )],
-        );
+        let payload =
+            ResolvedTy::named_user("Vec", vec![ResolvedTy::named_user("lmonobox.Box", vec![])]);
+        let registered_key = hew_hir::mangle_layout_key("Slot", std::slice::from_ref(&payload));
         let enums = vec![EnumLayout {
             name: registered_key,
             tag_width: 1,
@@ -8157,13 +8118,7 @@ mod heap_owning_tests {
             }],
             is_indirect: false,
         }];
-        let qualified = ResolvedTy::named_user(
-            "Slot",
-            vec![ResolvedTy::named_user(
-                "Vec",
-                vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
-            )],
-        );
+        let qualified = ResolvedTy::named_user("Slot", vec![payload]);
         assert!(ty_contains_unclonable_opaque(&qualified, &[], &enums));
     }
 
@@ -8190,43 +8145,24 @@ mod heap_owning_tests {
         assert!(!ty_contains_unclonable_opaque(&qualified, &[], &enums));
     }
 
-    /// Structural guard: every generic layout key built in this module must
-    /// route through either `find_enum_layout` (enum side) or `record_lookup_keys`
-    /// (record side — the key authority both `find_record_layout` and the
-    /// `MirHeapLayouts` adapter delegate to). A bare `mangle(.., args)` call
-    /// outside those functions re-opens the C1 qualified-spine miss class
-    /// (incorrect shortening of the type-arg spine → probe misses the registered
-    /// key). This self-scan of the source keeps the two-authority invariant from
-    /// silently eroding.
+    /// Structural guard: generic layout keys are built only by the shared HIR
+    /// authority, once for enums and once for records.
     #[test]
-    fn mangle_feeding_layout_lookup_is_centralised() {
+    fn layout_keys_use_the_shared_full_owner_authority() {
         let src = include_str!("model.rs");
-        // The authorised `mangle(` calls in this module's non-test code live in
-        // `find_enum_layout` (1 call: the `mangled` key) and `record_lookup_keys`
-        // (2 calls: full + short mangle). Strip the test module (which
-        // legitimately mangles bare-arg fixture keys) before scanning.
         let prod = src
             .split("#[cfg(test)]")
             .next()
             .expect("model.rs has a non-test prefix");
-        // Count only real call sites: drop comment lines (`//` / `///`) so the
-        // doc-comment mentions of `mangle(` in this module's prose don't inflate
-        // the count. The 3 remaining calls live in `find_enum_layout` (1) and
-        // `record_lookup_keys` (2).
-        let mangle_calls = prod
+        let authority_calls = prod
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))
-            .map(|line| line.matches("mangle(").count())
+            .map(|line| line.matches("mangle_layout_key(").count())
             .sum::<usize>();
         assert_eq!(
-            mangle_calls, 3,
-            "exactly three `mangle(` calls are allowed in model.rs non-test code: \
-             one in `find_enum_layout` and two in `record_lookup_keys` (the two \
-             authorised layout-key functions; `find_record_layout` and the \
-             `MirHeapLayouts` adapter both delegate to `record_lookup_keys`). A \
-             new bare call outside those functions feeds the C1 qualified-spine \
-             miss class — route through one of the authority functions instead. \
-             Found {mangle_calls}."
+            authority_calls, 2,
+            "find_enum_layout and record_lookup_keys must be the only model-side \
+             consumers of the shared full-owner layout-key helper; found {authority_calls}."
         );
     }
 }

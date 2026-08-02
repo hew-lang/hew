@@ -196,10 +196,15 @@ impl Builder {
         &self,
         cursor_ty: &ResolvedTy,
     ) -> Option<CowHeapRelease> {
-        let ResolvedTy::Named { name, args, .. } = cursor_ty else {
+        let ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::VecIter),
+            ..
+        } = cursor_ty
+        else {
             return None;
         };
-        if name.rsplit('.').next() != Some("VecIter") || args.len() != 1 {
+        if args.len() != 1 {
             return None;
         }
         let elem = args.first()?;

@@ -13,6 +13,10 @@ pub enum BuiltinType {
     Vec,
     HashMap,
     HashSet,
+    /// Compiler-synthesised owned snapshot cursor for `Vec<T>` iteration.
+    VecIter,
+    /// Compiler-synthesised parallel snapshot cursor for `HashMap<K, V>`.
+    HashMapIter,
     Task,
     StreamPair,
     Generator,
@@ -165,6 +169,8 @@ builtin_types! {
     Vec => "Vec",
     HashMap => "HashMap",
     HashSet => "HashSet",
+    VecIter => "VecIter",
+    HashMapIter => "HashMapIter",
     Task => "Task",
     StreamPair => "StreamPair",
     Generator => "Generator",
@@ -317,6 +323,8 @@ impl BuiltinType {
                 | Self::DownTarget
                 | Self::DownReason
                 | Self::DownNotification
+                | Self::MonitorError
+                | Self::MonitorRef
         )
     }
 
@@ -344,6 +352,7 @@ impl BuiltinType {
         match self {
             Self::Option
             | Self::Vec
+            | Self::VecIter
             | Self::HashSet
             | Self::Task
             | Self::Generator
@@ -363,6 +372,7 @@ impl BuiltinType {
             | Self::RecvHalf => 1,
             Self::Result
             | Self::HashMap
+            | Self::HashMapIter
             | Self::StreamPair
             | Self::Duplex
             | Self::SupervisorPool
@@ -496,6 +506,37 @@ impl BuiltinType {
     pub const fn lowers_as_pointer_vec_element(self) -> bool {
         matches!(self, Self::LocalPid)
     }
+
+    /// True when the builtin's complete value ABI is one opaque pointer word.
+    ///
+    /// This is codegen representation authority, not an ownership or source-
+    /// level handle classification. In particular, `RemotePid<T>` is excluded
+    /// because its value is an inline location aggregate, while
+    /// `SupervisorPool<S, T>` is a two-field aggregate. Consumers must use this
+    /// discriminator instead of presentation names so renamed builtin spellings
+    /// retain their ABI and same-spelling user nominals cannot acquire it.
+    #[must_use]
+    pub const fn lowers_as_opaque_pointer_abi(self) -> bool {
+        matches!(
+            self,
+            Self::Vec
+                | Self::HashMap
+                | Self::HashSet
+                | Self::Rc
+                | Self::Weak
+                | Self::Sender
+                | Self::Receiver
+                | Self::Duplex
+                | Self::Stream
+                | Self::Sink
+                | Self::SendHalf
+                | Self::RecvHalf
+                | Self::LocalPid
+                | Self::LambdaPid
+                | Self::Generator
+                | Self::AsyncGenerator
+        )
+    }
 }
 
 #[must_use]
@@ -506,12 +547,19 @@ pub const fn builtin_types() -> &'static [BuiltinTypeInfo] {
 #[must_use]
 pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
     match name {
-        "channel.Sender" => return Some(BuiltinType::Sender),
-        "channel.Receiver" => return Some(BuiltinType::Receiver),
-        "stream.Stream" => return Some(BuiltinType::Stream),
-        "stream.Sink" => return Some(BuiltinType::Sink),
+        "channel.Sender" | "std.channel.channel.Sender" => return Some(BuiltinType::Sender),
+        "channel.Receiver" | "std.channel.channel.Receiver" => {
+            return Some(BuiltinType::Receiver);
+        }
+        "stream.Stream" | "std.stream.Stream" => return Some(BuiltinType::Stream),
+        "stream.Sink" | "std.stream.Sink" => return Some(BuiltinType::Sink),
         "duplex.Duplex" => return Some(BuiltinType::Duplex),
-        "link_monitor.MonitorRef" => return Some(BuiltinType::MonitorRef),
+        "link_monitor.MonitorRef" | "std.link_monitor.MonitorRef" => {
+            return Some(BuiltinType::MonitorRef);
+        }
+        "link_monitor.MonitorError" | "std.link_monitor.MonitorError" => {
+            return Some(BuiltinType::MonitorError);
+        }
         _ => {}
     }
     builtin_types()
@@ -521,14 +569,28 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
 }
 
 /// Look up a source-owned lifecycle builtin by either its bare name or its
-/// canonical source identity (`failure.CrashNotification`, for example).
+/// canonical source identity (`std.failure.CrashNotification`, for example).
 ///
 /// This is deliberately narrower than [`lookup_builtin_type`]: callers use it
 /// to enforce source import authority, not to make arbitrary catalog names
 /// globally visible.
 #[must_use]
 pub fn lookup_source_owned_lifecycle_type(name: &str) -> Option<BuiltinType> {
-    let (owner, bare) = name.split_once('.').unwrap_or(("", name));
+    let (owner, bare) = if let Some(bare) = name.strip_prefix("std.failure.") {
+        ("std.failure", bare)
+    } else if let Some(bare) = name.strip_prefix("std.link_monitor.") {
+        ("std.link_monitor", bare)
+    } else if let Some(bare) = name.strip_prefix("failure.") {
+        // Retained only for reading older internal facts while the canonical
+        // producer identity is the full module path.
+        ("failure", bare)
+    } else if let Some(bare) = name.strip_prefix("link_monitor.") {
+        ("link_monitor", bare)
+    } else if name.contains('.') {
+        return None;
+    } else {
+        ("", name)
+    };
     let builtin = lookup_builtin_type(bare)?;
     builtin
         .requires_source_import()
@@ -538,14 +600,16 @@ pub fn lookup_source_owned_lifecycle_type(name: &str) -> Option<BuiltinType> {
                 || matches!(
                     (owner, builtin),
                     (
-                        "failure",
+                        "failure" | "std.failure",
                         BuiltinType::CrashNotification | BuiltinType::CrashKind
                     ) | (
-                        "link_monitor",
+                        "link_monitor" | "std.link_monitor",
                         BuiltinType::MonitorId
                             | BuiltinType::DownTarget
                             | BuiltinType::DownReason
                             | BuiltinType::DownNotification
+                            | BuiltinType::MonitorError
+                            | BuiltinType::MonitorRef
                     )
                 )
         })
@@ -572,6 +636,19 @@ mod tests {
     fn lookup_rejects_user_names() {
         assert_eq!(lookup_builtin_type("UserOption"), None);
         assert_eq!(lookup_builtin_type("user.Option"), None);
+        assert_eq!(lookup_builtin_type("user.MonitorError"), None);
+    }
+
+    #[test]
+    fn lookup_accepts_exact_renamed_monitor_carriers() {
+        assert_eq!(
+            lookup_builtin_type("link_monitor.MonitorError"),
+            Some(BuiltinType::MonitorError)
+        );
+        assert_eq!(
+            lookup_builtin_type("std.link_monitor.MonitorError"),
+            Some(BuiltinType::MonitorError)
+        );
     }
 
     #[test]
@@ -601,6 +678,37 @@ mod tests {
                 info.kind.is_caller_visible_shared_handle(),
                 expected.contains(&info.kind),
                 "{:?} caller-visible shared-handle classification",
+                info.kind
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_pointer_abi_facts_are_exact() {
+        let expected = [
+            BuiltinType::Vec,
+            BuiltinType::HashMap,
+            BuiltinType::HashSet,
+            BuiltinType::Rc,
+            BuiltinType::Weak,
+            BuiltinType::Sender,
+            BuiltinType::Receiver,
+            BuiltinType::Duplex,
+            BuiltinType::Stream,
+            BuiltinType::Sink,
+            BuiltinType::SendHalf,
+            BuiltinType::RecvHalf,
+            BuiltinType::LocalPid,
+            BuiltinType::LambdaPid,
+            BuiltinType::Generator,
+            BuiltinType::AsyncGenerator,
+        ];
+
+        for info in builtin_types() {
+            assert_eq!(
+                info.kind.lowers_as_opaque_pointer_abi(),
+                expected.contains(&info.kind),
+                "{:?} opaque-pointer ABI classification",
                 info.kind
             );
         }

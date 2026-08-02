@@ -14,8 +14,8 @@ use hew_hir::{
 use hew_mir::{lower_hir_module, IrPipeline};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::{
-    BuiltinType, Checker, HashMapMethod, HashSetMethod, ImplId, MethodTargetFamily, ResolvedTy,
-    TyPattern,
+    BuiltinType, CallTarget, Checker, HashMapMethod, HashSetMethod, ImplId, MethodTargetFamily,
+    ResolvedTy, TyPattern,
 };
 
 fn pipeline_allowing_mir_diagnostics(source: &str) -> IrPipeline {
@@ -94,6 +94,7 @@ fn constructed_affine_collection_call(
         intent: IntentKind::Read,
         kind: HirExprKind::ResolvedImplCall {
             receiver: Box::new(receiver),
+            target: CallTarget::RuntimeCollection(target_family),
             impl_id: ImplId(0),
             method_name: "clone-boundary".to_string(),
             target_symbol: target_symbol.to_string(),
@@ -126,6 +127,7 @@ fn constructed_affine_collection_call(
         items: vec![HirItem::Function(HirFn {
             id: ids.item(),
             node: ids.node(),
+            declaration: hew_types::DefId::new("main"),
             name: "main".to_string(),
             type_params: vec![],
             params: vec![],

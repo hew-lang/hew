@@ -107,7 +107,7 @@ fn generic_fn_called_at_two_types_produces_two_entries() {
         1,
         "both entries must share the same origin fn id"
     );
-    assert!(mono.iter().all(|m| m.key.origin_name == "id"));
+    assert!(mono.iter().all(|m| m.key.linker_symbol == "id"));
 
     // Each entry carries exactly one concrete arg.
     let arg_sets: std::collections::HashSet<Vec<ResolvedTy>> =

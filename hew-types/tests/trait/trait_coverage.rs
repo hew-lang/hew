@@ -329,17 +329,16 @@ fn sink_not_copy() {
 // Receiver type
 // ===========================================================================
 
-// Receiver is an opaque handle registered by the stdlib loader under
-// "channel.Receiver". is_handle_type_any() matches the unqualified "Receiver"
-// via the rsplit('.') fallback, granting Send/Copy/Clone/Debug — just like
-// other opaque handles (semaphore.Semaphore, json.Value, etc.).
+// Receiver is an opaque handle registered by the stdlib loader under its
+// canonical declaration path. Marker lookup must receive that same path.
 
 #[test]
 fn receiver_is_send_when_registered_as_handle_type() {
     let mut reg = TraitRegistry::new();
     reg.register_handle_type("channel.Receiver".to_string());
-    // Receiver<T> with args — the name alone drives the trait; args are opaque.
-    let rx = named_with("Receiver", vec![Ty::String]);
+    // Receiver<T> with args — the canonical nominal drives the trait; args are
+    // opaque.
+    let rx = named_with("channel.Receiver", vec![Ty::String]);
     assert!(reg.implements_marker(&rx, MarkerTrait::Send));
     assert!(reg.implements_marker(&rx, MarkerTrait::Sync));
 }
@@ -448,13 +447,13 @@ fn handle_type_is_send_copy_clone_debug() {
 }
 
 #[test]
-fn handle_type_unqualified_lookup() {
-    // Registering "json.Value" should match unqualified "Value" too
+fn handle_type_unqualified_lookup_is_rejected() {
+    // A bare leaf cannot select the qualified handle declaration.
     let mut reg = TraitRegistry::new();
     reg.register_handle_type("json.Value".to_string());
     let val = named("Value");
-    assert!(reg.implements_marker(&val, MarkerTrait::Copy));
-    assert!(reg.implements_marker(&val, MarkerTrait::Send));
+    assert!(!reg.implements_marker(&val, MarkerTrait::Copy));
+    assert!(!reg.implements_marker(&val, MarkerTrait::Send));
 }
 
 // ===========================================================================
@@ -476,11 +475,11 @@ fn drop_type_is_send_clone_debug_drop_not_copy() {
 }
 
 #[test]
-fn drop_type_unqualified_lookup() {
+fn drop_type_unqualified_lookup_is_rejected() {
     let mut reg = TraitRegistry::new();
     reg.register_drop_type("http.Request".to_string());
     let req = named("Request");
-    assert!(reg.implements_marker(&req, MarkerTrait::Drop));
+    assert!(!reg.implements_marker(&req, MarkerTrait::Drop));
     assert!(!reg.implements_marker(&req, MarkerTrait::Copy));
 }
 

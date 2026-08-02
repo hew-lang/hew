@@ -175,6 +175,9 @@ fn checker_output_contract_prunes_orphaned_method_call_metadata() {
             module_idx: 0,
         },
         MethodCallRewrite::RewriteToFunction {
+            target: CallTarget::Unsupported {
+                reason: "orphaned test metadata".to_string(),
+            },
             c_symbol: "hew_bar_method".to_string(),
             descriptor: None,
             extern_identity: None,

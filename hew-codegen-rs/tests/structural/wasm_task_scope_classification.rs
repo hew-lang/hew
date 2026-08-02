@@ -28,12 +28,7 @@ use hew_mir::{
 use hew_types::ResolvedTy;
 
 fn task_scope_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "HewTaskScope".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::named_opaque("renamed.HewTaskScope", vec![])
 }
 
 /// Build a minimal pipeline that opens a `HewTaskScope` via `hew_task_scope_new`
@@ -137,12 +132,7 @@ fn pipeline_with_task_new_call() -> IrPipeline {
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
             params: vec![],
-            locals: vec![ResolvedTy::Named {
-                name: "HewTask".to_string(),
-                args: vec![],
-                builtin: None,
-                is_opaque: false,
-            }],
+            locals: vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))],
             local_names: Vec::new(),
             local_scopes: Vec::new(),
             local_decl_bytes: Vec::new(),

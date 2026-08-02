@@ -49,6 +49,7 @@
 //! shape is genuinely serialisable.
 
 use crate::traits::MarkerTrait;
+use crate::{DefId, RuntimeCallFamily};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -194,6 +195,91 @@ pub struct MethodTarget {
     pub consumes_receiver: bool,
 }
 
+/// Canonical target selected for an admitted call.
+///
+/// A linker label may be carried beside this value after resolution, but it is
+/// never an authority-bearing lookup key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CallTarget {
+    /// A direct user function declaration.
+    User(DefId),
+    /// A user or trait-impl method declaration.
+    ImplMethod(DefId),
+    /// A checked open-set FFI endpoint selected by `#[extern_symbol]` on a
+    /// source declaration.  The declaration identity and ABI endpoint are
+    /// distinct: consumers must use the former for semantics/provenance and
+    /// the latter only as the validated linker target.
+    Extern {
+        declaration: DefId,
+        endpoint: String,
+    },
+    /// A compiler-known runtime entrypoint.
+    Runtime(RuntimeCallFamily),
+    /// A closed catalog builtin endpoint whose linkage is selected by the
+    /// compiler's builtin catalog rather than by a source declaration.  This
+    /// is distinct from [`Self::Runtime`]: not every catalog linkage is a C
+    /// ABI runtime family (for example `println_i64` is a codegen print
+    /// intercept), but an admitted catalog call must still cross HIR/MIR with
+    /// a typed, validated endpoint instead of degrading to `Unsupported`.
+    Builtin { endpoint: String },
+    /// A generic collection-runtime operation whose concrete ABI is selected
+    /// from carried type arguments. The family is closed and is never parsed
+    /// back from a linker label.
+    RuntimeCollection(MethodTargetFamily),
+    /// A dynamic trait-vtable dispatch slot.
+    DynamicVtable {
+        declaring_trait: DefId,
+        method: DefId,
+        slot: u32,
+    },
+    /// A generic static-trait method resolved after receiver substitution.
+    StaticTraitMethod {
+        declaring_trait: DefId,
+        method: DefId,
+    },
+    /// A checked call through a function value, closure, or function-typed
+    /// field. It carries no reconstructed declaration name: the callee value
+    /// itself is the authority for this indirect edge.
+    IndirectFunctionValue,
+    /// A checked but deliberately unsupported endpoint. Consumers must reject
+    /// it rather than retrying a leaf-name lookup.
+    Unsupported { reason: String },
+}
+
+impl CallTarget {
+    #[must_use]
+    pub const fn runtime(family: RuntimeCallFamily) -> Self {
+        Self::Runtime(family)
+    }
+
+    /// Carry a checker-allocated direct impl-method declaration identity.
+    ///
+    /// The typed argument deliberately makes it impossible for a downstream
+    /// linker label to manufacture semantic identity.
+    #[must_use]
+    pub const fn impl_method(declaration: DefId) -> Self {
+        Self::ImplMethod(declaration)
+    }
+
+    /// Carry checker-allocated static-trait declaration identities.
+    #[must_use]
+    pub const fn static_trait(declaring_trait: DefId, method: DefId) -> Self {
+        Self::StaticTraitMethod {
+            declaring_trait,
+            method,
+        }
+    }
+}
+
+impl MethodTarget {
+    /// Return the structured identity selected by this closed collection
+    /// registry. `symbol_name` is deliberately absent from the conversion.
+    #[must_use]
+    pub const fn target(&self) -> CallTarget {
+        CallTarget::RuntimeCollection(self.family)
+    }
+}
+
 /// Typed dispatch family for [`MethodTarget`].
 ///
 /// This is the *dispatch* authority — consumers (HIR/MIR/codegen) that
@@ -206,10 +292,10 @@ pub struct MethodTarget {
 /// this enum AND every consumer match — `match`'s exhaustiveness check
 /// is the invariant. New Vec methods extend [`VecMethod`] the same way.
 ///
-/// User-impl / open-set collection calls are not handled here: those flow
-/// through `MethodCallRewrite::RewriteToFunction` (where `descriptor`
-/// is `None` and the user trait `Type::method` key is the only
-/// identifier). This enum is for the runtime-known builtin generics.
+/// User/impl calls use [`CallTarget::User`] or [`CallTarget::ImplMethod`]
+/// instead of this closed collection family. Their linker labels may remain
+/// open-set, but declaration identity never falls back to a `Type::method`
+/// string key. This enum is for runtime-known builtin generics only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MethodTargetFamily {
     /// `HashMap` method dispatch. Arity invariant: 2 type-args (K, V).
@@ -304,10 +390,12 @@ pub struct ResolvedCall {
     /// [`ImplDef::self_pattern`]. Carried as [`TyPattern`] (not [`Ty`])
     /// for the same data-only / serde reasons as [`ImplDef`].
     pub type_args: Vec<TyPattern>,
-    /// The resolved target. Cloned from [`ImplDef::methods`] at resolve
-    /// time so downstream consumers do not have to re-traverse the
-    /// registry.
-    pub target: MethodTarget,
+    /// Canonical target selected at the resolver boundary. Every admitted
+    /// call carries this independently of its linker/display payload.
+    pub target: CallTarget,
+    /// Collection ABI metadata and the derived linker symbol. This is a
+    /// projection of the registry entry, not the semantic call target.
+    pub method_target: MethodTarget,
 }
 
 /// Structured failure verdict from [`resolve_method_call`].
@@ -599,11 +687,11 @@ pub fn resolve_method_call(
             last_partial = Some((impl_id, unsatisfied, witness));
             continue;
         }
-        let target = def
+        let method_target = def
             .methods
             .iter()
             .find_map(|(name, t)| (name == method).then(|| t.clone()));
-        let Some(target) = target else {
+        let Some(method_target) = method_target else {
             return Err(LookupError::UnknownMethod {
                 impl_id,
                 method: method.to_string(),
@@ -614,7 +702,8 @@ pub fn resolve_method_call(
             impl_id,
             method_name: method.to_string(),
             type_args,
-            target,
+            target: method_target.target(),
+            method_target,
         });
     }
     if let Some((impl_id, unsatisfied, witness)) = last_partial {

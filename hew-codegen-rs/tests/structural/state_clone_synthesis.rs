@@ -33,7 +33,7 @@ use hew_mir::{
     ActorLayout, BasicBlock, FunctionCallConv, IoHandleKind, IrPipeline, RawMirFunction,
     RecordLayout, StateFieldCloneKind, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 // ─── Pipeline builders ──────────────────────────────────────────────────
 
@@ -506,12 +506,11 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
 /// `Connection`, the substitution can be removed.
 #[test]
 fn state_clone_connection_actor_returns_null_up_front() {
-    let storage_ty = ResolvedTy::Named {
-        name: "LocalPid".into(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    };
+    let storage_ty = ResolvedTy::named_builtin(
+        "renamed.LocalPidPresentation",
+        BuiltinType::LocalPid,
+        vec![],
+    );
     let conn_actor = classified_actor(
         "NetReader",
         vec!["conn"],
@@ -792,12 +791,11 @@ fn state_clone_bytes_pointer_shaped_field_fails_closed() {
 /// `codegen-abi-authority`).
 #[test]
 fn state_clone_hashmap_and_hashset_string_elem_route_to_layout_helpers() {
-    let storage_ty = ResolvedTy::Named {
-        name: "LocalPid".into(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    };
+    let storage_ty = ResolvedTy::named_builtin(
+        "renamed.LocalPidPresentation",
+        BuiltinType::LocalPid,
+        vec![],
+    );
     let actor = classified_actor(
         "MapAndSetStringElem",
         vec!["by_name", "tags"],
@@ -872,12 +870,11 @@ fn state_clone_hashmap_and_hashset_string_elem_route_to_layout_helpers() {
 /// `_free_layout` name (`lifecycle-symmetry` P0).
 #[test]
 fn state_clone_hashmap_and_hashset_layout_route_to_layout_free() {
-    let storage_ty = ResolvedTy::Named {
-        name: "LocalPid".into(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    };
+    let storage_ty = ResolvedTy::named_builtin(
+        "renamed.LocalPidPresentation",
+        BuiltinType::LocalPid,
+        vec![],
+    );
     // Record `K` is the user-record key/elem; its in-place clone/drop
     // is synthesised by the runtime helper, not invoked from the actor
     // body, so a minimal field-list is enough.

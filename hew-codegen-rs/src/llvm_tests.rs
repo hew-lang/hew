@@ -2346,16 +2346,15 @@ fn pipeline_with_select_actor_handler_arms(
     pipeline
 }
 
-/// Helper: a `ResolvedTy::Named { name: "Duplex", .. }` so the
-/// codegen treats local 0 as an actor handle (the same shape
-/// `Place::DuplexHandle` references via `load_duplex_handle`).
+/// Checker-stamped Duplex identity with a deliberately non-canonical
+/// presentation name. Select/join fixtures therefore exercise the carried
+/// builtin discriminator rather than accidentally relying on the spelling.
 fn duplex_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "Duplex".to_string(),
-        args: Vec::new(),
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::named_builtin(
+        "renamed.DuplexPresentation",
+        BuiltinType::Duplex,
+        Vec::new(),
+    )
 }
 
 fn task_ty() -> ResolvedTy {
@@ -5750,7 +5749,7 @@ fn aggregate_borrowed_ingress_treats_channel_sender_as_non_string_terminal() {
 
 #[test]
 fn aggregate_borrowed_ingress_qualified_generic_record_uses_clone_kind_key() {
-    let key = hew_hir::mangle("Box", &[ResolvedTy::String]);
+    let key = hew_hir::mangle_layout_key("qualified.Box", &[ResolvedTy::String]);
     let record = MirRecordLayout {
         name: key.clone(),
         field_tys: vec![ResolvedTy::String],
@@ -6944,7 +6943,17 @@ fn hashmap_layout_ops_reject_user_named_collision() {
         BuiltinType::Option,
         vec![ResolvedTy::I64],
     );
-    alloc_local(&mut fn_ctx, 0, user_map_ty);
+    // Deliberately bypass `resolve_ty`: the type-lowering boundary now rejects
+    // this same-spelling user nominal before an alloca can be created. This
+    // malformed pointer slot exercises the map-operation boundary's own
+    // defence in depth without restoring the old nominal-name admission.
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let slot = fn_ctx
+        .builder
+        .build_alloca(ptr_ty, "user_hashmap_shadow")
+        .expect("allocate malformed user HashMap fixture slot");
+    fn_ctx.locals.insert(0, (slot, ptr_ty.into()));
+    fn_ctx.local_tys.insert(0, user_map_ty);
     alloc_local(&mut fn_ctx, 1, point_ty);
     alloc_local(&mut fn_ctx, 2, option_i64_ty);
 
@@ -7597,6 +7606,7 @@ fn record_field_of_machine_type_resolves_via_predeclared_opaque() {
     }];
     let machine_fixtures = vec![hew_mir::MachineLayout {
         name: "Worker".to_string(),
+        event_name: "WorkerEvent".to_string(),
         tag_width: 1,
         variants: vec![MachineVariantLayout {
             name: "Idle".to_string(),
@@ -8481,33 +8491,130 @@ fn resolve_ty_lowers_trait_object_to_fat_ptr_struct() {
 }
 
 #[test]
-fn resolve_ty_uses_channel_builtin_identity_without_admitting_user_shadow() {
+fn resolve_ty_uses_pointer_builtin_identity_without_admitting_user_shadows() {
     let ctx = Context::create();
     let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
     let target_data = host_target_data();
 
-    for builtin in [BuiltinType::Sender, BuiltinType::Receiver] {
+    let pointer_builtins = [
+        BuiltinType::Vec,
+        BuiltinType::HashMap,
+        BuiltinType::HashSet,
+        BuiltinType::Rc,
+        BuiltinType::Weak,
+        BuiltinType::Sender,
+        BuiltinType::Receiver,
+        BuiltinType::Duplex,
+        BuiltinType::Stream,
+        BuiltinType::Sink,
+        BuiltinType::SendHalf,
+        BuiltinType::RecvHalf,
+        BuiltinType::LocalPid,
+        BuiltinType::LambdaPid,
+        BuiltinType::Generator,
+        BuiltinType::AsyncGenerator,
+    ];
+
+    for builtin in pointer_builtins {
         let lowered = resolve_ty(
             &ctx,
             &target_data,
-            &ResolvedTy::named_builtin(builtin.canonical_name(), builtin, Vec::new()),
+            &ResolvedTy::named_builtin(
+                format!("renamed.{}Presentation", builtin.canonical_name()),
+                builtin,
+                Vec::new(),
+            ),
             &record_layouts,
         )
-        .expect("exact std channel identity must lower to its pointer representation");
+        .expect("typed builtin identity must lower to its pointer representation");
         let _ = lowered.into_pointer_type();
+
+        let err = resolve_ty(
+            &ctx,
+            &target_data,
+            &ResolvedTy::named_user(builtin.canonical_name(), Vec::new()),
+            &record_layouts,
+        )
+        .expect_err("same-spelling user nominal must remain outside the runtime handle ABI");
+        assert!(
+            matches!(err, CodegenError::FailClosed(ref message) if message.contains("D10 violation")),
+            "{builtin:?} user shadow must retain the D10 fail-closed boundary, got {err:?}"
+        );
     }
+}
+
+#[test]
+fn resolve_ty_uses_opaque_identity_for_synthetic_task_scope() {
+    let ctx = Context::create();
+    let record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
+    let target_data = host_target_data();
+
+    let lowered = resolve_ty(
+        &ctx,
+        &target_data,
+        &ResolvedTy::named_opaque("renamed.HewTaskScope", Vec::new()),
+        &record_layouts,
+    )
+    .expect("typed opaque task scope must lower to its pointer representation");
+    let _ = lowered.into_pointer_type();
+
+    let direct = primitive_to_llvm(
+        &ctx,
+        &target_data,
+        &ResolvedTy::named_opaque("renamed.HewTaskScope", Vec::new()),
+    )
+    .expect("direct thunk ABI lowering must agree on typed opaque handles");
+    let _ = direct.into_pointer_type();
 
     let err = resolve_ty(
         &ctx,
         &target_data,
-        &ResolvedTy::named_user("Sender".to_string(), Vec::new()),
+        &ResolvedTy::named_user("HewTaskScope", Vec::new()),
         &record_layouts,
     )
-    .expect_err("a user Sender shadow must remain outside the runtime handle ABI");
+    .expect_err("same-spelling user task scope must not acquire the runtime handle ABI");
     assert!(
         matches!(err, CodegenError::FailClosed(ref message) if message.contains("D10 violation")),
-        "user shadow must retain the D10 fail-closed boundary, got {err:?}"
+        "user task-scope shadow must retain the D10 fail-closed boundary, got {err:?}"
     );
+
+    let direct_err = primitive_to_llvm(
+        &ctx,
+        &target_data,
+        &ResolvedTy::named_user("HewTaskScope", Vec::new()),
+    )
+    .expect_err("direct thunk ABI lowering must reject a non-opaque user shadow");
+    assert!(
+        matches!(direct_err, CodegenError::FailClosed(ref message) if message.contains("D10 violation")),
+        "direct user task-scope shadow must retain D10, got {direct_err:?}"
+    );
+}
+
+#[test]
+fn builtin_named_args_uses_identity_not_presentation() {
+    for builtin in [
+        BuiltinType::Option,
+        BuiltinType::Vec,
+        BuiltinType::HashMap,
+        BuiltinType::HashSet,
+        BuiltinType::LocalPid,
+        BuiltinType::RemotePid,
+    ] {
+        let arg = ResolvedTy::named_user("Payload", Vec::new());
+        let renamed = ResolvedTy::named_builtin(
+            format!("renamed.{}Presentation", builtin.canonical_name()),
+            builtin,
+            vec![arg.clone()],
+        );
+        assert_eq!(builtin_named_args(&renamed, builtin), Some(&[arg][..]));
+
+        let shadow = ResolvedTy::named_user(builtin.canonical_name(), vec![ResolvedTy::I64]);
+        assert_eq!(
+            builtin_named_args(&shadow, builtin),
+            None,
+            "same-spelling {builtin:?} user nominal must not satisfy the builtin gate"
+        );
+    }
 }
 
 /// `Instr::CoerceToDynTrait` now emits the
@@ -13877,7 +13984,7 @@ fn heap_owning_record_composite_return_admits_registered_record_shape() {
     let mut record_layouts: RecordLayoutMap<'_> = RecordLayoutMap::new();
     // Register the per-instantiation struct under its mangled key, mirroring
     // `register_record_layouts` for a generic record.
-    let key = mangle("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
+    let key = mangle_with_shortened_args("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
     let st = ctx.opaque_struct_type(&key);
     st.set_body(
         &[
@@ -13902,7 +14009,7 @@ fn heap_owning_record_composite_return_admits_registered_record_shape() {
     // the heap decision belongs to the gate's record-aware outer guard, which
     // excludes it for owning no heap. (Pre-split this predicate folded the
     // heap check in; the gate now owns it — `dedup-semantic-boundary`.)
-    let bc_key = mangle("Pair", &[ResolvedTy::I64, ResolvedTy::I64]);
+    let bc_key = mangle_with_shortened_args("Pair", &[ResolvedTy::I64, ResolvedTy::I64]);
     let bc_st = ctx.opaque_struct_type(&bc_key);
     bc_st.set_body(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
     record_layouts.structs.insert(bc_key, bc_st);
@@ -13926,8 +14033,8 @@ fn heap_owning_record_composite_return_admits_registered_record_shape() {
 }
 
 /// Slice 3 — `record_inplace_drop_name` resolves the per-instantiation
-/// helper name. A bare-name monomorphic record keeps its (prefix-stripped)
-/// name; a generic INSTANTIATION mangles to the same `hew_hir::mangle`d key
+/// helper name. A monomorphic record keeps its full canonical owner; a generic
+/// INSTANTIATION mangles to the same `hew_hir::mangle_layout_key` key
 /// the MIR admit authority and the synthesis seed use (`Pair$$i64$string`),
 /// so the `__hew_record_drop_inplace_<key>` call resolves the synthesised
 /// body. A non-record type fails closed.
@@ -13938,13 +14045,13 @@ fn record_inplace_drop_name_mangles_generic_instantiation() {
         record_inplace_drop_name(&ResolvedTy::named_user("PairIS", vec![])).unwrap(),
         "PairIS",
     );
-    // Imported bare name: module prefix stripped.
+    // Imported monomorphic record: canonical owner is preserved.
     assert_eq!(
         record_inplace_drop_name(&ResolvedTy::named_user("process.CommandOutput", vec![])).unwrap(),
-        "CommandOutput",
+        "process.CommandOutput",
     );
     // Generic instantiation: mangled to the registered layout key.
-    let expected = mangle("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
+    let expected = mangle_with_shortened_args("Pair", &[ResolvedTy::I64, ResolvedTy::String]);
     assert_eq!(
         record_inplace_drop_name(&ResolvedTy::named_user(
             "Pair",
@@ -15090,63 +15197,48 @@ fn overwrite_heap_leaf_capacity_sums_records_and_maxes_enums() {
     assert_eq!(cap, 6, "capacity must sum records and max enum variants");
 }
 
-/// `mangle_with_shortened_args` is the single codegen layout-key authority:
-/// every layout-map lookup key must shorten the WHOLE type-arg spine to bare
-/// names before mangling, matching the enum/record layout-REGISTRATION spine.
-/// This pins that the authority is byte-identical to the (now-removed) inline
-/// "shorten `effective_args`, then `mangle`" path the `resolve_ty` lookup keys
-/// used to build — so the structural-purity reroute through the authority is
-/// proven behaviour-preserving, not just asserted. A nested qualified payload
-/// (`Result<Vec<fs.Foo>, _>`) is shortened at every depth.
+/// `mangle_with_shortened_args` is the codegen façade over HIR's canonical
+/// layout-key authority. It must preserve the declaration owner and every
+/// nested nominal argument so same-leaf generic layouts cannot collide.
 #[test]
-fn mangle_authority_matches_inline_shortened_mangle() {
-    // The inline path `resolve_ty` previously used at the layout-key sites:
-    // compute `effective_args` by shortening every arg when ANY needs it,
-    // then `mangle`. The authority must reproduce this byte-for-byte.
-    fn inline_legacy_key(name: &str, args: &[ResolvedTy]) -> String {
-        let effective: std::borrow::Cow<[ResolvedTy]> = if args.iter().any(needs_normalization) {
-            std::borrow::Cow::Owned(args.iter().cloned().map(shorten_named_args).collect())
-        } else {
-            std::borrow::Cow::Borrowed(args)
-        };
-        mangle(name, &effective)
-    }
-
+fn mangle_authority_preserves_full_nominal_identity() {
     let q = |n: &str, a: Vec<ResolvedTy>| ResolvedTy::named_user(n, a);
     let cases: Vec<(&str, Vec<ResolvedTy>)> = vec![
-        // bare (no normalisation needed) — Cow::Borrowed branch
         ("Pair", vec![ResolvedTy::I64, ResolvedTy::String]),
-        // top-level qualified payload — `fs.IoError` must shorten to `IoError`
         (
-            "Result",
-            vec![q("Listener", vec![]), q("fs.IoError", vec![])],
-        ),
-        // NESTED qualified payload — shortened at depth, not just top level
-        (
-            "Result",
+            "left.render.Result",
             vec![
-                ResolvedTy::named_user("Vec", vec![q("fs.Foo", vec![])]),
+                q("left.render.Listener", vec![]),
+                q("left.render.Error", vec![]),
+            ],
+        ),
+        (
+            "right.render.Result",
+            vec![
+                ResolvedTy::named_user("Vec", vec![q("right.render.Foo", vec![])]),
                 q("string", vec![]),
             ],
         ),
-        // mixed: one qualified, one already-bare arg
-        ("Option", vec![q("json.Value", vec![])]),
     ];
 
     for (name, args) in &cases {
         assert_eq!(
             mangle_with_shortened_args(name, args),
-            inline_legacy_key(name, args),
-            "authority diverged from the inline shortened-mangle path for `{name}` {args:?}"
-        );
-        // And the short-name spelling (the fallback key) must match too.
-        let short = short_name(name);
-        assert_eq!(
-            mangle_with_shortened_args(short, args),
-            inline_legacy_key(short, args),
-            "authority diverged on the short-name fallback key for `{name}` {args:?}"
+            hew_hir::mangle_layout_key(name, args),
+            "codegen must delegate layout-key construction to HIR for `{name}` {args:?}"
         );
     }
+    assert_ne!(
+        mangle_with_shortened_args(
+            "left.render.Box",
+            &[ResolvedTy::named_user("left.render.Payload", vec![])],
+        ),
+        mangle_with_shortened_args(
+            "right.render.Box",
+            &[ResolvedTy::named_user("right.render.Payload", vec![])],
+        ),
+        "same-leaf generic layouts must retain both declaration owners"
+    );
 }
 
 /// Structural-purity guard: every layout-key mangle inside `resolve_ty` must
@@ -15206,58 +15298,140 @@ fn resolve_ty_layout_keys_route_through_mangle_authority() {
     );
 }
 
-/// `record_struct_for` resolves a record's LLVM struct from
-/// `fn_ctx.record_layouts`, which registration keys on the BARE (short)
-/// outer name. A record reached through a module-qualified spelling
-/// (`shapes.Point` under qualified-by-default) misses the primary key, so
-/// the lookup MUST retry under `short_name(name)`. This guard brace-matches
-/// the function body and asserts the short-name fallback survives — a future
-/// edit that drops it re-opens the qualified-spine record-layout miss class
-/// for `RecordInit` / `RecordFieldLoad`, the codegen mirror of the lower.rs
-/// field-store / field-read shortening.
+/// Record layouts are keyed by the complete nominal owner. Same-leaf records
+/// must retain distinct LLVM layouts, and an unqualified leaf must never pick
+/// one by accident.
 #[test]
-fn record_struct_for_retries_under_short_name() {
-    let src = include_str!("llvm.rs");
-    let sig = "fn record_struct_for<'ctx>(";
-    let sig_at = src.find(sig).expect("record_struct_for signature present");
-    let body_open = src[sig_at..]
-        .find('{')
-        .map(|o| sig_at + o)
-        .expect("record_struct_for opening brace");
-    let mut depth = 0usize;
-    let mut body_end = body_open;
-    for (i, ch) in src[body_open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    body_end = body_open + i;
-                    break;
-                }
-            }
-            _ => {}
+fn record_struct_lookup_requires_exact_full_owner() {
+    let ctx = Context::create();
+    let left = ctx.opaque_struct_type("left.render.Box");
+    left.set_body(&[ctx.i64_type().into()], false);
+    let right = ctx.opaque_struct_type("right.render.Box");
+    right.set_body(&[ctx.ptr_type(AddressSpace::default()).into()], false);
+
+    let mut records = RecordLayoutMap::new();
+    records.insert("left.render.Box".to_string(), left);
+    records.insert("right.render.Box".to_string(), right);
+
+    assert_eq!(
+        record_struct_raw("left.render.Box", &records).expect("left owner resolves"),
+        left
+    );
+    assert_eq!(
+        record_struct_raw("right.render.Box", &records).expect("right owner resolves"),
+        right
+    );
+    assert!(
+        record_struct_raw("Box", &records).is_err(),
+        "an unqualified same-leaf record must not select either owner"
+    );
+}
+
+/// Tagged-union layouts are equally nominal: an unqualified same-leaf enum
+/// must fail rather than use an unrelated owner's layout.
+#[test]
+fn indirect_enum_layout_lookup_requires_exact_full_owner() {
+    let ctx = Context::create();
+    let make_layout = |name: &str| {
+        let outer = ctx.opaque_struct_type(name);
+        outer.set_body(
+            &[ctx.i8_type().into(), ctx.i8_type().array_type(8).into()],
+            false,
+        );
+        MachineCodegenLayout {
+            outer_struct: outer,
+            tag_int_ty: ctx.i8_type(),
+            variant_struct_tys: vec![ctx.struct_type(&[], false)],
+            variant_field_tys: vec![vec![]],
+            state_name_table: None,
         }
+    };
+    let mut layouts = MachineLayoutMap::new();
+    layouts.insert("left.render.Result".to_string(), make_layout("left_result"));
+    layouts.insert(
+        "right.render.Result".to_string(),
+        make_layout("right_result"),
+    );
+
+    assert!(indirect_enum_layout_by_key(&layouts, "left.render.Result").is_ok());
+    assert!(indirect_enum_layout_by_key(&layouts, "right.render.Result").is_ok());
+    assert!(
+        indirect_enum_layout_by_key(&layouts, "Result").is_err(),
+        "an unqualified same-leaf enum must not select either owner"
+    );
+}
+
+/// Debug DIEs display short enum names, but their storage attachment must use
+/// the full owner so similarly named enums cannot borrow each other's layout.
+#[test]
+fn enum_debug_layout_lookup_requires_exact_full_owner() {
+    let ctx = Context::create();
+    let left = ctx.opaque_struct_type("left.render.Result");
+    left.set_body(&[ctx.i8_type().into()], false);
+    let right = ctx.opaque_struct_type("right.render.Result");
+    right.set_body(&[ctx.i64_type().into()], false);
+    let mut records = RecordLayoutMap::new();
+    records.insert("left.render.Result".to_string(), left);
+    records.insert("right.render.Result".to_string(), right);
+
+    assert_eq!(
+        enum_debug_outer_struct(&records, "left.render.Result"),
+        Some(left)
+    );
+    assert_eq!(
+        enum_debug_outer_struct(&records, "right.render.Result"),
+        Some(right)
+    );
+    assert_eq!(
+        enum_debug_outer_struct(&records, "Result"),
+        None,
+        "a short display name must not attach either same-leaf enum layout"
+    );
+}
+
+/// Resource-close dispatch receives the exact canonical method symbol from
+/// MIR; it must not fall back from `left.render.Conn::close` to `Conn::close`.
+#[test]
+fn resource_close_lookup_requires_exact_full_owner() {
+    let ctx = Context::create();
+    let m = ctx.create_module("resource_close_exact_owner");
+    let void_ty = ctx.void_type();
+    let fn_ty = void_ty.fn_type(&[], false);
+    let bare = m.add_function("Conn::close", fn_ty, None);
+    let exact = m.add_function("left.render.Conn::close", fn_ty, None);
+    let mut symbols = FnSymbolMap::new();
+    for (symbol, value) in [("Conn::close", bare), ("left.render.Conn::close", exact)] {
+        symbols.insert(
+            symbol.to_string(),
+            FnSymbol::Real {
+                value,
+                return_ty: ctx.i64_type().into(),
+                returns_unit: true,
+                extern_record_ret: None,
+                extern_malloc_string_ret: false,
+            },
+        );
     }
+    match resolve_drop_fn(
+        &hew_mir::DropFnSpec::UserClose("left.render.Conn::close".to_string()),
+        &symbols,
+    )
+    .expect("exact resource close resolves")
+    {
+        DropDispatch::UserFn { value, symbol } => {
+            assert_eq!(value, exact);
+            assert_eq!(symbol, "left.render.Conn::close");
+        }
+        DropDispatch::RuntimeSymbol(symbol) => panic!("unexpected runtime close {symbol}"),
+    }
+    symbols.remove("left.render.Conn::close");
     assert!(
-        body_end > body_open,
-        "failed to brace-match record_struct_for body"
-    );
-    let body = &src[body_open..=body_end];
-    // The body must route the outer name through `short_name` on the
-    // fallback path — both the monomorphic retry and the generic retry that
-    // also shortens the type-arg spine.
-    assert!(
-        body.contains("short_name(name)"),
-        "record_struct_for must retry the record-layout lookup under \
-             `short_name(name)` so a module-qualified record resolves its \
-             bare-keyed layout; the short-name fallback is missing"
-    );
-    assert!(
-        body.contains("mangle_with_shortened_args(short_name(name), args)"),
-        "record_struct_for's generic fallback must shorten BOTH the outer \
-             name and the type-arg spine via \
-             `mangle_with_shortened_args(short_name(name), args)`"
+        resolve_drop_fn(
+            &hew_mir::DropFnSpec::UserClose("left.render.Conn::close".to_string()),
+            &symbols,
+        )
+        .is_err(),
+        "a qualified close must fail closed instead of falling back to Conn::close"
     );
 }
 

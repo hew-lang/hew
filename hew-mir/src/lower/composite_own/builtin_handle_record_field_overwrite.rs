@@ -1,7 +1,6 @@
 use super::{
-    base_local, render_owned_handle_ty, short_name, user_record_layout_key, AggregateOwner,
-    BasicBlock, BindingId, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement, Place,
-    ResolvedTy,
+    base_local, render_owned_handle_ty, user_record_layout_key, AggregateOwner, BasicBlock,
+    BindingId, FieldOffset, HashMap, HashSet, Instr, MirCheck, MirStatement, Place, ResolvedTy,
 };
 
 /// Fail closed on an ordinary record-field overwrite whose destination is a
@@ -44,9 +43,7 @@ pub(in crate::lower) fn detect_builtin_handle_record_field_overwrite(
         let local = base_local(record)?;
         let record_ty = local_tys.get(local as usize)?;
         let key = user_record_layout_key(record_ty)?;
-        let fields = record_field_orders
-            .get(&key)
-            .or_else(|| record_field_orders.get(short_name(&key)))?;
+        let fields = record_field_orders.get(&key)?;
         fields
             .get(field_offset.0 as usize)
             .map(|(_, field_ty)| field_ty)

@@ -24,22 +24,21 @@ use hew_mir::{
     ActorLayout, BasicBlock, ChildInitArg, FunctionCallConv, IrPipeline, RawMirFunction,
     RecordLayout, SupervisorChildLayout, SupervisorLayout, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 use hew_codegen_rs::{emit_module, EmitOptions};
 
 fn local_pid_of(actor: &str) -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "LocalPid".to_string(),
-        args: vec![ResolvedTy::Named {
+    ResolvedTy::named_builtin(
+        "renamed.LocalPidPresentation",
+        BuiltinType::LocalPid,
+        vec![ResolvedTy::Named {
             name: actor.to_string(),
             args: vec![],
             builtin: None,
             is_opaque: false,
         }],
-        builtin: None,
-        is_opaque: false,
-    }
+    )
 }
 
 /// Build a pipeline carrying `AppSupervisor` with one `Worker` child.

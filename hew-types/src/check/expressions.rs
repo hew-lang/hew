@@ -168,23 +168,26 @@ impl Checker {
         // above. Falling back to the literal name `"Display"` keeps
         // pre-lang-item check-time tests (no stdlib loaded) working with the
         // implicit naming convention.
-        let display_trait = self
-            .lang_items
-            .display_trait()
-            .map_or_else(|| "Display".to_string(), str::to_owned);
+        let (display_trait, display_trait_key) =
+            self.lang_items.get(crate::LANG_ITEM_DISPLAY).map_or_else(
+                || ("Display".to_string(), "Display".to_string()),
+                |binding| {
+                    (
+                        binding.trait_name.clone(),
+                        binding.trait_id.full_path().to_string(),
+                    )
+                },
+            );
         if let Some(canonical) = resolved.canonical_lowering_name() {
             if self
                 .primitive_trait_impls
-                .contains_key(&(canonical.to_string(), display_trait.clone()))
+                .contains_key(&(canonical.to_string(), display_trait_key.clone()))
             {
                 return;
             }
         }
         if let Ty::Named { name, args, .. } = &resolved {
-            if self
-                .trait_impls_set
-                .contains(&(name.clone(), display_trait.clone()))
-            {
+            if self.type_implements_trait_for_ty(&resolved, &display_trait_key) {
                 return;
             }
             // A bare type parameter (e.g. `T` in `fn f<T: Display>(x: T)`)
@@ -193,7 +196,7 @@ impl Checker {
             // satisfies the obligation abstractly. The concrete `Display`
             // impl is selected per monomorphisation by HIR's static
             // trait-dispatch lowering. Mirrors `type_satisfies_trait_bound`.
-            if args.is_empty() && self.type_param_carries_bound(name, &display_trait) {
+            if args.is_empty() && self.type_param_carries_bound(name, &display_trait_key) {
                 return;
             }
         }
@@ -1162,6 +1165,9 @@ impl Checker {
             return Ty::Error;
         };
         let name = canonical_lifecycle_name.as_deref().unwrap_or(name);
+        if self.report_bare_const_import_ambiguity(name, span) {
+            return Ty::Error;
+        }
         // Module-qualified value constructor reference encoded as a flat
         // `Identifier("module.Type::Variant")` by `parse_dot_postfix` when no
         // call-args or brace-body follow.  Dispatch to the fail-closed
@@ -1283,6 +1289,47 @@ impl Checker {
         }
     }
 
+    /// Reject a bare constant binding published by multiple imported owners.
+    /// The value environment retains one compatibility slot, so selecting it
+    /// before this check would silently choose the last registration.
+    fn report_bare_const_import_ambiguity(&mut self, name: &str, span: &Span) -> bool {
+        if name.contains('.') || name.contains("::") {
+            return false;
+        }
+        // A local/parameter in an inner body scope shadows imports normally.
+        // Only an outer import-scope binding can be ambiguous here.
+        if !matches!(self.env.lookup_ref_with_depth(name), Some((0, _))) {
+            return false;
+        }
+        if self.current_module.is_none() && self.root_value_bindings.contains(name) {
+            return false;
+        }
+        let Some(owners) = self
+            .published_bare_const_owners
+            .get(&(self.current_module.clone(), name.to_string()))
+        else {
+            return false;
+        };
+        if owners.len() < 2 {
+            return false;
+        }
+        let candidates: Vec<String> = owners.iter().cloned().collect();
+        self.mark_ambiguous_import_owners_used(&candidates);
+        self.report_error_with_suggestions(
+            TypeErrorKind::AmbiguousType,
+            span,
+            format!(
+                "ambiguous constant `{name}`: published by {} imported modules",
+                candidates.len()
+            ),
+            candidates
+                .iter()
+                .map(|candidate| format!("qualify the reference, e.g. `{candidate}`"))
+                .collect(),
+        );
+        true
+    }
+
     /// Look up whether any user-declared enum type (in `local_type_defs` or
     /// `source_type_defs`) has a variant named `variant_name`.  Returns the
     /// resolved `Ty` for that variant if found (unit variant → the enum type;
@@ -1293,6 +1340,20 @@ impl Checker {
     /// when `fn_sigs[variant_name].is_builtin_variant` is `true`, the builtin
     /// won the bare-name slot but a user-declared variant with the same name
     /// should take priority within this compilation unit.
+    /// Construct an enum nominal from the declaration authority already chosen
+    /// by the checker. A source declaration wins over the builtin catalog even
+    /// when its surface spelling is `Option` or `Result`; non-source entries
+    /// retain normal builtin canonicalization (including imported aliases).
+    pub(super) fn variant_nominal_ty(&self, type_name: String, type_args: Vec<Ty>) -> Ty {
+        if self.local_type_defs.contains(type_name.as_str())
+            || self.source_type_defs.contains(type_name.as_str())
+        {
+            Ty::named(type_name, type_args)
+        } else {
+            Ty::normalize_named(type_name, type_args)
+        }
+    }
+
     fn find_user_variant_shadow_ty(&self, variant_name: &str) -> Option<Ty> {
         // Iterate over local types (user-declared in root or imported source modules).
         // Two-set iteration: local first, then source.  In practice most programs
@@ -1318,7 +1379,7 @@ impl Checker {
                 .iter()
                 .map(|_| Ty::Var(TypeVar::fresh()))
                 .collect();
-            let return_type = Ty::normalize_named(type_name.clone(), type_args.clone());
+            let return_type = self.variant_nominal_ty(type_name.clone(), type_args.clone());
             return Some(match variant {
                 VariantDef::Tuple(payload_tys) => {
                     // Substitute generic type params with their corresponding
@@ -1354,6 +1415,15 @@ impl Checker {
         reason = "multi-branch variant resolution: unqualified, qualified-in-type_defs, and qualified-in-fn_sigs each need distinct handling"
     )]
     pub(super) fn resolve_identifier_variant(&mut self, name: &str, span: &Span) -> Ty {
+        // `Machine::State` / `Enum::Variant` is a value expression, so it
+        // bypasses the ordinary TypeExpr resolver. Apply the same published
+        // bare-type ambiguity gate before a last-writer `type_defs` entry can
+        // select one machine/enum owner.
+        if let Some((type_prefix, _)) = name.rsplit_once("::") {
+            if !type_prefix.contains('.') && self.report_bare_type_scope_error(type_prefix, span) {
+                return Ty::Error;
+            }
+        }
         // Two-pass scan: user-declared (local/source) types win over builtin/
         // imported types when both declare a unit variant with the same bare name
         // (local-shadows-global rule).  Pass 1 considers only types recorded in
@@ -1368,7 +1438,7 @@ impl Checker {
             }
             if let Some(variant) = td.variants.get(name) {
                 if matches!(variant, VariantDef::Unit) {
-                    let ty = Ty::normalize_named(type_name.clone(), vec![]);
+                    let ty = self.variant_nominal_ty(type_name.clone(), vec![]);
                     found = Some(ty);
                     break;
                 }
@@ -1384,7 +1454,7 @@ impl Checker {
                 }
                 if let Some(variant) = td.variants.get(name) {
                     if matches!(variant, VariantDef::Unit) {
-                        let ty = Ty::normalize_named(type_name.clone(), vec![]);
+                        let ty = self.variant_nominal_ty(type_name.clone(), vec![]);
                         found = Some(ty);
                         break;
                     }
@@ -1396,7 +1466,20 @@ impl Checker {
             if let Some(pos) = name.rfind("::") {
                 let type_prefix = &name[..pos];
                 let variant_name = &name[pos + 2..];
-                if let Some(td) = self.type_defs.get(type_prefix) {
+                // A bare prelude/import binding may name a source-owned enum
+                // whose declaration identity is qualified.  Preserve the
+                // exact published owner before constructing the variant result
+                // so `LookupError::NotFound` agrees with a `LookupError`
+                // annotation that already resolved to `std.lookup_error`.
+                let canonical_type_prefix = if !self.local_type_defs.contains(type_prefix)
+                    && !self.source_type_defs.contains(type_prefix)
+                {
+                    self.published_bare_type_qualified(type_prefix)
+                        .unwrap_or_else(|| type_prefix.to_string())
+                } else {
+                    type_prefix.to_string()
+                };
+                if let Some(td) = self.type_defs.get(&canonical_type_prefix) {
                     if let Some(variant) = td.variants.get(variant_name) {
                         if matches!(variant, VariantDef::Unit) {
                             // Instantiate type params with fresh inference variables
@@ -1410,12 +1493,15 @@ impl Checker {
                             // bare variant name; without the guard, `A::None` could return
                             // `Named { B, [?] }`.
                             let ty = if let Some(sig) = self.fn_sigs.get(variant_name).cloned() {
-                                let sig_names_correct_enum = sig
-                                    .return_type
-                                    .type_name()
-                                    .is_some_and(|n| Ty::names_match_qualified(n, type_prefix));
+                                let sig_names_correct_enum =
+                                    sig.return_type.type_name().is_some_and(|n| {
+                                        self.strict_nominal_identity(n) == canonical_type_prefix
+                                    });
                                 if sig_names_correct_enum {
                                     let mut ret = sig.return_type.clone();
+                                    if let Ty::Named { name, .. } = &mut ret {
+                                        name.clone_from(&canonical_type_prefix);
+                                    }
                                     for tp in &sig.type_params {
                                         ret = ret
                                             .substitute_named_param(tp, &Ty::Var(TypeVar::fresh()));
@@ -1423,11 +1509,11 @@ impl Checker {
                                     ret
                                 } else {
                                     // fn_sig belongs to a different enum; bare name is correct.
-                                    Ty::normalize_named(type_prefix.to_string(), vec![])
+                                    self.variant_nominal_ty(canonical_type_prefix.clone(), vec![])
                                 }
                             } else {
                                 // No fn_sig (monomorphic or machine variant) — bare name is correct.
-                                Ty::normalize_named(type_prefix.to_string(), vec![])
+                                self.variant_nominal_ty(canonical_type_prefix.clone(), vec![])
                             };
                             found = Some(ty);
                         }
@@ -1463,10 +1549,13 @@ impl Checker {
                                     {
                                         let sig_names_correct_enum =
                                             sig.return_type.type_name().is_some_and(|n| {
-                                                Ty::names_match_qualified(n, &canonical)
+                                                self.strict_nominal_identity(n) == canonical
                                             });
                                         if sig_names_correct_enum {
                                             let mut ret = sig.return_type.clone();
+                                            if let Ty::Named { name, .. } = &mut ret {
+                                                name.clone_from(&canonical);
+                                            }
                                             for tp in &sig.type_params {
                                                 ret = ret.substitute_named_param(
                                                     tp,
@@ -1475,10 +1564,10 @@ impl Checker {
                                             }
                                             ret
                                         } else {
-                                            Ty::normalize_named(canonical.clone(), vec![])
+                                            self.variant_nominal_ty(canonical.clone(), vec![])
                                         }
                                     } else {
-                                        Ty::normalize_named(canonical.clone(), vec![])
+                                        self.variant_nominal_ty(canonical.clone(), vec![])
                                     };
                                     found = Some(ty);
                                 }
@@ -1832,9 +1921,24 @@ impl Checker {
         };
         self.apply_trait_object_bound_substitutions(&mut sig, bound);
         let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
+        let target = self
+            .trait_method_call_target_ids(trait_name, "at")
+            .map_or_else(
+                || crate::check::dispatch::CallTarget::Unsupported {
+                    reason: format!(
+                        "dynamic trait method `{trait_name}::at` has no registered declaration identity"
+                    ),
+                },
+                |(declaring_trait, method)| crate::check::dispatch::CallTarget::DynamicVtable {
+                    declaring_trait,
+                    method,
+                    slot,
+                },
+            );
         self.dyn_trait_method_calls.insert(
             SpanKey::in_module(span, self.current_module_idx),
             crate::check::types::DynMethodCall {
+                target,
                 trait_name: trait_name.to_string(),
                 method_name: "at".to_string(),
                 slot,
@@ -2284,7 +2388,7 @@ impl Checker {
                         Ty::result(
                             ok_ty,
                             Ty::Named {
-                                name: "NetError".to_string(),
+                                name: crate::stdlib::STD_NET_ERROR.to_string(),
                                 args: Vec::new(),
                                 builtin: None,
                             },
@@ -2295,7 +2399,7 @@ impl Checker {
                         Ty::result(
                             inner_ty,
                             Ty::Named {
-                                name: "NetError".to_string(),
+                                name: crate::stdlib::STD_NET_ERROR.to_string(),
                                 args: Vec::new(),
                                 builtin: None,
                             },
@@ -3173,6 +3277,7 @@ impl Checker {
                 Ty::Named {
                     name: expected_enum_name,
                     args: expected_args,
+                    builtin: expected_builtin,
                     ..
                 },
             ) => {
@@ -3191,13 +3296,16 @@ impl Checker {
                     );
                 }
                 let short = name.rsplit("::").next().unwrap_or(name.as_str());
-                // Reject mismatched qualified prefix (e.g. OtherEnum::Variant
-                // when expected is MyEnum).
-                let prefix_ok = !name.contains("::")
-                    || Ty::names_match_qualified(
-                        name.split("::").next().unwrap_or(""),
-                        expected_enum_name,
-                    );
+                // Reject a mismatched qualified owner (e.g.
+                // `right.Status::Ready` when the expected nominal is
+                // `left.Status`). Alias and current-module lexical spellings
+                // are projected by the shared exact variant-owner authority.
+                let expected_nominal = Ty::Named {
+                    name: expected_enum_name.clone(),
+                    args: expected_args.clone(),
+                    builtin: *expected_builtin,
+                };
+                let prefix_ok = self.variant_surface_owner_matches(name, &expected_nominal);
 
                 let mut handled = false;
                 if prefix_ok {
@@ -4242,16 +4350,14 @@ impl Checker {
                     )
                 }
             }
-            UnsupportedComparison::PayloadEnum { type_name, reason } => {
-                (
-                    format!(
-                        "`{op}` on enum `{type_name}` with payload variants is not supported because {}",
-                        Self::structural_eq_ineligibility_reason(reason)
-                    ),
-                    "match on the enum and compare eligible payload fields in the relevant arms"
-                        .to_string(),
-                )
-            }
+            UnsupportedComparison::PayloadEnum { type_name, reason } => (
+                format!(
+                    "`{op}` on enum `{type_name}` with payload variants is not supported because {}",
+                    Self::structural_eq_ineligibility_reason(reason)
+                ),
+                "match on the enum and compare eligible payload fields in the relevant arms"
+                    .to_string(),
+            ),
             UnsupportedComparison::EnumOrdering(type_name) => (
                 format!("`{op}` is not supported for enum `{type_name}`"),
                 "match on the enum and compare an explicit value in each arm".to_string(),
@@ -5431,16 +5537,18 @@ impl Checker {
         //   - object is a bare `Expr::Identifier`
         //   - field does NOT contain `::` (plain const name, not a variant)
         //   - receiver is not a value binding or known type
-        //   - `"{name}.{field}"` IS registered in env (i.e. exported from the module)
-        // The env lookup is the authoritative guard: `register_user_module` inserts
-        // `module_short.CONST_NAME` into env for every `pub const` in the imported
-        // module, so any key found there is a valid exported constant.
+        //   - the lexical module binding resolves to an exact owner-qualified
+        //     constant key registered in env
         if let Expr::Identifier(name) = &object.0 {
             if !field.contains("::") {
                 let receiver_is_binding = self.env.lookup_ref(name).is_some();
                 let receiver_is_known_type = self.type_defs.contains_key(name);
                 if !receiver_is_binding && !receiver_is_known_type {
-                    let qualified_key = format!("{name}.{field}");
+                    let lexical_key = format!("{name}.{field}");
+                    let qualified_key = self
+                        .module_import_bindings
+                        .get(&(self.current_module.clone(), name.clone()))
+                        .map_or_else(|| lexical_key.clone(), |owner| format!("{owner}.{field}"));
                     if let Some(binding) = self.env.lookup_ref(&qualified_key) {
                         let ty = binding.ty.clone();
                         if self.modules.contains(name) {
@@ -6237,8 +6345,7 @@ impl Checker {
         ));
         let Some(td) = self.resolve_module_type(module_short, type_name) else {
             let similar = self
-                .module_type_exports
-                .get(module_short)
+                .module_type_exports_for_binding(module_short)
                 .map(|set| crate::error::find_similar(type_name, set.iter().map(String::as_str)))
                 .unwrap_or_default();
             self.report_error_with_suggestions(
@@ -6265,7 +6372,12 @@ impl Checker {
         let qualified_type = canonical_lifecycle
             .as_deref()
             .and_then(|path| path.split_once("::").map(|(ty, _)| ty.to_string()))
-            .unwrap_or_else(|| format!("{module_short}.{type_name}"));
+            .unwrap_or_else(|| {
+                format!(
+                    "{}.{type_name}",
+                    self.canonical_module_import_owner(module_short)
+                )
+            });
         match variant {
             VariantDef::Unit => {
                 // Instantiate type params with fresh inference vars so generic
@@ -6325,8 +6437,64 @@ impl Checker {
     }
 
     #[expect(
+        clippy::type_complexity,
+        reason = "exact variant-owner lookup carries the owner, fields, and type parameters together"
+    )]
+    fn lookup_struct_variant_init(
+        &self,
+        surface_name: &str,
+    ) -> Option<(String, Vec<(String, Ty)>, Vec<String>)> {
+        let variant_name = surface_name.rsplit("::").next().unwrap_or(surface_name);
+        let mut candidates: Vec<(String, Vec<(String, Ty)>, Vec<String>)> = self
+            .type_defs
+            .iter()
+            .filter_map(|(type_name, td)| {
+                let expected = Ty::Named {
+                    name: type_name.clone(),
+                    args: vec![],
+                    builtin: None,
+                };
+                if !self.variant_surface_owner_matches(surface_name, &expected) {
+                    return None;
+                }
+                match td
+                    .variants
+                    .get(variant_name)
+                    .or_else(|| td.variants.get(surface_name))
+                {
+                    Some(VariantDef::Struct(fields)) => {
+                        Some((type_name.clone(), fields.clone(), td.type_params.clone()))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        candidates.sort_by(|a, b| a.0.cmp(&b.0));
+        candidates.dedup_by(|a, b| a.0 == b.0);
+
+        if !surface_name.contains("::") {
+            let mut local = candidates
+                .iter()
+                .filter(|(type_name, _, _)| {
+                    self.local_type_defs.contains(type_name)
+                        || self.source_type_defs.contains(type_name)
+                })
+                .cloned();
+            let first = local.next();
+            if first.is_some() && local.next().is_none() {
+                return first;
+            }
+        }
+
+        match candidates.as_slice() {
+            [only] => Some(only.clone()),
+            _ => None,
+        }
+    }
+
+    #[expect(
         clippy::too_many_lines,
-        reason = "trait impl checking requires many cases"
+        reason = "struct and enum-variant initialization share one exact-owner diagnostic path"
     )]
     pub(super) fn check_struct_init(
         &mut self,
@@ -6366,8 +6534,7 @@ impl Checker {
                     ));
                     let Some(td) = self.resolve_module_type(module_short, type_name) else {
                         let similar = self
-                            .module_type_exports
-                            .get(module_short)
+                            .module_type_exports_for_binding(module_short)
                             .map(|set| {
                                 crate::error::find_similar(
                                     type_name,
@@ -6637,22 +6804,7 @@ impl Checker {
                 args: type_args,
             }
         } else if let Some((enum_name, variant_fields, enum_type_params)) =
-            self.type_defs.iter().find_map(|(type_name, td)| {
-                let short = name.rsplit("::").next().unwrap_or(name);
-                // For qualified names (e.g., Keeper::Holding), verify prefix
-                if name.contains("::") {
-                    let prefix = name.split("::").next().unwrap_or("");
-                    if prefix != type_name {
-                        return None;
-                    }
-                }
-                match td.variants.get(name).or_else(|| td.variants.get(short)) {
-                    Some(VariantDef::Struct(fields)) => {
-                        Some((type_name.clone(), fields.clone(), td.type_params.clone()))
-                    }
-                    _ => None,
-                }
-            })
+            self.lookup_struct_variant_init(name)
         {
             // Infer generic type args from field values, mirroring the plain-struct path.
             let mut type_arg_map: HashMap<String, Ty> = HashMap::new();
@@ -6951,13 +7103,13 @@ impl Checker {
                         // entry (which is copied from the module's own decl, so it
                         // is not clobbered by a same-named root/other-module type).
                         // Fail closed before HIR/MIR rather than misroute.
-                        let is_actor_export = self
+                        let actor_identity = self
                             .resolve_module_type(module, field)
-                            .is_some_and(|td| td.kind == TypeDefKind::Actor);
-                        if !is_actor_export {
+                            .filter(|td| td.kind == TypeDefKind::Actor)
+                            .map(|td| td.name);
+                        let Some(actor_identity) = actor_identity else {
                             let similar = self
-                                .module_type_exports
-                                .get(module)
+                                .module_type_exports_for_binding(module)
                                 .map(|set| {
                                     crate::error::find_similar(
                                         field,
@@ -6977,18 +7129,14 @@ impl Checker {
                             // calls on a `Ty::Error` receiver short-circuit),
                             // keeping a single clear diagnostic.
                             return Err(());
-                        }
+                        };
                         self.used_modules
                             .borrow_mut()
                             .insert(ImportKey::new(self.current_module.clone(), module.clone()));
-                        // Keep the module qualifier: the dotted
-                        // `{module}.{field}` key IS the actor's identity in
-                        // `type_defs`/`fn_sigs`, and the spawn result type
-                        // (`LocalPid<bank.Account>`) is what every ask site
-                        // and the MIR layout lookup key on. Stripping it to
-                        // the bare name made two same-named module actors
-                        // indistinguishable below the checker.
-                        Some(format!("{module}.{field}"))
+                        // Keep the exact source identity recovered through the
+                        // lexical module binding. The surface spelling may be
+                        // an alias or share its leaf with another module.
+                        Some(actor_identity)
                     } else {
                         None
                     }
@@ -7122,6 +7270,11 @@ impl Checker {
         candidate_modules: &[String],
         span: &Span,
     ) {
+        let candidate_identities: Vec<String> = candidate_modules
+            .iter()
+            .map(|module| format!("{module}.{name}"))
+            .collect();
+        self.mark_ambiguous_import_owners_used(&candidate_identities);
         let candidates_list = candidate_modules
             .iter()
             .map(|m| format!("`{m}.{name}`"))

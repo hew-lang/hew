@@ -1301,6 +1301,7 @@ mod slice3_invariants {
         HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new("handler"),
             name: "handler".to_string(),
             type_params: vec![],
             is_generator: false,
@@ -1358,6 +1359,7 @@ mod slice3_invariants {
                 &HashSet::new(),
                 &std::rc::Rc::new(crate::return_provenance::CallScrutineeProvenance::default()),
                 &std::rc::Rc::new(ParamOwnershipFacts::default()),
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 None,

@@ -14,7 +14,9 @@ use hew_hir::{
 use hew_parser::ast::{Item, Program};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
 use hew_types::error::TypeErrorKind;
-use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
+use hew_types::{
+    module_registry::ModuleRegistry, CallTarget, Checker, MethodCallRewrite, TypeCheckOutput,
+};
 
 /// Build a `Program` containing a non-root module `m` with arbitrary source.
 fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Program {
@@ -201,6 +203,50 @@ fn selected_imported_free_function_call_resolves_to_qualified_symbol() {
 }
 
 #[test]
+fn module_qualified_call_without_checker_rewrite_fails_closed_before_mir() {
+    let program = build_program_with_imported_module(
+        "pub fn entry(n: i64) -> i64 { n + 1 }",
+        "import m; fn main() -> i64 { m.entry(41) }",
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut tco = checker.check_program(&program);
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+    assert!(
+        tco.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                target: CallTarget::User(_),
+                ..
+            }
+        )),
+        "checker must publish the module-qualified direct-call target"
+    );
+    tco.method_call_rewrites.clear();
+
+    let output = lower_program_host_target(&program, &tco, &ResolutionCtx);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { ref reason, .. }
+                    if reason == "missing module-qualified call rewrite"
+            )
+        }),
+        "missing module rewrite must be diagnosed before MIR: {:#?}",
+        output.diagnostics
+    );
+    let main = function_by_name(&output, "main");
+    assert!(
+        matches!(
+            main.body.tail.as_deref().map(|expr| &expr.kind),
+            Some(HirExprKind::Unsupported(_))
+        ),
+        "missing module target fact must not leave an admitted Call for legacy MIR: {:#?}",
+        main.body
+    );
+}
+
+#[test]
 fn root_local_free_function_shadows_import_with_matching_signature() {
     for import in ["import m::{foo};", "import m::*;"] {
         let program = build_program_with_imported_module(
@@ -380,7 +426,7 @@ pub fn entry(n: i64) -> i64 { a(n) }
 }
 
 #[test]
-fn imported_pub_free_fn_unknown_bare_call_still_surfaces_as_unresolved_symbol() {
+fn imported_pub_free_fn_unknown_bare_call_fails_at_checker_target_boundary() {
     let program = build_program_with_imported_module(
         r"
 pub fn entry(n: i64) -> i64 { totally_unknown(n) }
@@ -393,9 +439,10 @@ pub fn entry(n: i64) -> i64 { totally_unknown(n) }
     assert!(
         output.diagnostics.iter().any(|d| matches!(
             &d.kind,
-            HirDiagnosticKind::UnresolvedSymbol { name } if name == "totally_unknown"
+            HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                if name == "totally_unknown" && reason == "missing direct_call_targets entry"
         )),
-        "unknown bare callee must continue to surface as UnresolvedSymbol; diagnostics: {:#?}",
+        "unknown bare callee must fail before HIR produces an executable Call; diagnostics: {:#?}",
         output.diagnostics
     );
 }

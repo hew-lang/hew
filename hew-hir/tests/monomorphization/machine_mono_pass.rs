@@ -12,7 +12,10 @@
 //!   baseline; populated by W3.039 once it lands — the slot's
 //!   identity-bearing role is what this test pins).
 
-use hew_hir::{HirDiagnosticKind, MachineMonoEntry};
+use hew_hir::{
+    machine_layout_key, mangle_instantiation, HirDiagnosticKind, ItemId, MachineMonoEntry,
+    MachineMonoKey, SymbolClass,
+};
 
 #[path = "../support/mod.rs"]
 mod support;
@@ -38,6 +41,25 @@ fn machine_keys(entries: &[MachineMonoEntry]) -> Vec<(String, Vec<String>)> {
             )
         })
         .collect()
+}
+
+#[test]
+fn machine_layout_key_matches_machine_mono_and_is_class_disjoint() {
+    let args = vec![hew_types::ResolvedTy::I64];
+    let key = MachineMonoKey::new(ItemId(9), "Shared".to_string(), args.clone());
+    let layout_key = machine_layout_key("Shared", &args);
+    assert_eq!(layout_key, key.mangle());
+    for class in [
+        SymbolClass::Function,
+        SymbolClass::Record,
+        SymbolClass::Enum,
+    ] {
+        assert_ne!(
+            layout_key,
+            mangle_instantiation(class, "Shared", &args, &[]),
+            "machine layouts must not share an instantiation key with {class:?}"
+        );
+    }
 }
 
 /// **Pass-ordering invariant**: a machine instantiation reachable
@@ -169,6 +191,7 @@ fn machine_mono_fails_closed_when_unresolved_type_var_survives() {
         id: ItemId(0),
         node: HirNodeId(0),
         name: "Holder".to_string(),
+        defining_module: None,
         type_params: vec!["T".to_string()],
         type_param_bounds: vec![],
         states: vec![],
@@ -217,6 +240,7 @@ fn machine_mono_fails_closed_when_unresolved_type_var_survives() {
     let touch_fn = HirFn {
         id: ItemId(1),
         node: HirNodeId(4),
+        declaration: hew_types::DefId::new("touch"),
         name: "touch".to_string(),
         type_params: vec!["T".to_string()],
         params: vec![],
@@ -236,7 +260,8 @@ fn machine_mono_fails_closed_when_unresolved_type_var_survives() {
     let mono = MonomorphizedFn {
         key: MonoKey {
             origin: ItemId(1),
-            origin_name: "touch".to_string(),
+            declaration: hew_types::DefId::new("touch"),
+            linker_symbol: "touch".to_string(),
             type_args: vec![abstract_t.clone()],
         },
         mangled_name: "touch$$T".to_string(),
@@ -417,6 +442,7 @@ fn machine_mono_emits_cap_diagnostic_when_distinct_instantiations_exceed_cap() {
         id: ItemId(0),
         node: HirNodeId(0),
         name: "M".to_string(),
+        defining_module: None,
         type_params: vec!["T".to_string()],
         type_param_bounds: vec![],
         states: vec![],
@@ -459,6 +485,7 @@ fn machine_mono_emits_cap_diagnostic_when_distinct_instantiations_exceed_cap() {
     let make_fn = HirFn {
         id: ItemId(1),
         node: HirNodeId(4),
+        declaration: hew_types::DefId::new("make"),
         name: "make".to_string(),
         type_params: vec!["T".to_string()],
         params: vec![],
@@ -481,7 +508,8 @@ fn machine_mono_emits_cap_diagnostic_when_distinct_instantiations_exceed_cap() {
         .map(|(i, ty)| MonomorphizedFn {
             key: MonoKey {
                 origin: ItemId(1),
-                origin_name: "make".to_string(),
+                declaration: hew_types::DefId::new("make"),
+                linker_symbol: "make".to_string(),
                 type_args: vec![ty.clone()],
             },
             mangled_name: format!("make$$arg{i}"),

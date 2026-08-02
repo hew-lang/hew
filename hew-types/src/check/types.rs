@@ -376,6 +376,23 @@ pub struct TypeCheckOutput {
     /// `register_builtin_monomorphic_enum_layouts`.
     pub internal_builtin_enum_names: HashSet<String>,
     pub fn_sigs: HashMap<String, FnSig>,
+    /// Checker-selected target for every ordinary direct or indirect call
+    /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
+    pub direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
+    /// Canonical trait and trait-method declaration identities, keyed by the
+    /// owner-qualified source spelling `Trait::method`. This is the sole
+    /// checker-to-HIR authority for static-trait implementation indexing.
+    pub trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
+    /// Canonical trait/method identities published through each exact import
+    /// binding.  The key is `(importer module, binding spelling, method)`;
+    /// HIR uses it when an impl names an imported trait bare or through an
+    /// alias, rather than inferring an owner from a leaf name.
+    pub trait_method_ids_by_binding:
+        HashMap<(Option<String>, String, String), (crate::DefId, crate::DefId)>,
+    /// Checker-allocated impl-method declaration identities keyed by their
+    /// linker presentation.  The key is a compatibility projection only;
+    /// HIR uses the stored ID directly and never constructs one from it.
+    pub impl_method_declaration_ids: HashMap<String, crate::DefId>,
     /// Root-scope value bindings declared by the program itself.
     ///
     /// Populated at the same checker registration sites that publish root
@@ -637,6 +654,13 @@ pub struct TypeCheckOutput {
     /// checker-proven qualified lifecycle spellings are consumed before HIR
     /// classifies them as ordinary user nominals.
     pub import_type_name_aliases: HashMap<(Option<String>, String), String>,
+    /// Exact declaring owner for each lexical whole-module import binding.
+    ///
+    /// Unlike `import_type_name_aliases`, this table covers qualified source
+    /// spellings such as `lmonobox.Box`: HIR must translate that lexical prefix
+    /// to the checker's canonical owner (`hew.lmonobox.Box`) before a generic
+    /// type argument can reach layout registration or unification.
+    pub module_import_bindings: HashMap<(Option<String>, String), String>,
 }
 
 /// Wire layout metadata for a single field, carried from AST through the
@@ -913,6 +937,10 @@ pub struct DynCoercion {
 /// `slot` is therefore `3 + method_decl_order` for the originating trait.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynMethodCall {
+    /// Full checker-selected dispatch identity.  HIR carries this verbatim;
+    /// it must not rebuild a declaration id from the diagnostic spellings
+    /// below.
+    pub target: crate::check::dispatch::CallTarget,
     /// Originating trait name (resolved from the receiver's `Ty::TraitObject`
     /// bound that defined the called method).
     pub trait_name: String,
@@ -1218,6 +1246,10 @@ impl Default for TypeCheckOutput {
             type_defs: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
             fn_sigs: HashMap::new(),
+            direct_call_targets: HashMap::new(),
+            trait_method_ids: HashMap::new(),
+            trait_method_ids_by_binding: HashMap::new(),
+            impl_method_declaration_ids: HashMap::new(),
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: HashSet::default(),
             cycle_capable_actors: HashSet::default(),
@@ -1248,6 +1280,7 @@ impl Default for TypeCheckOutput {
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             import_type_name_aliases: HashMap::new(),
+            module_import_bindings: HashMap::new(),
         }
     }
 }
@@ -1587,6 +1620,10 @@ pub enum MethodCallRewrite {
     /// discriminant rather than a receiver type name
     /// (LESSONS: drop-allowset-from-value-flow, raii-null-after-move).
     RewriteToFunction {
+        /// Canonical callee identity selected by checking.  `c_symbol` remains
+        /// an ABI/linker payload only; later phases must dispatch on this
+        /// structured target rather than reverse-parsing its spelling.
+        target: crate::check::dispatch::CallTarget,
         c_symbol: String,
         descriptor: Option<crate::runtime_call::RuntimeCallDescriptor>,
         /// Present only for open-set `#[extern_symbol]` methods. Carries both
@@ -1610,6 +1647,8 @@ pub enum MethodCallRewrite {
     ///
     /// See `RewriteToFunction::elem_ty` for the semantics of `elem_ty`.
     RewriteModuleQualifiedToFunction {
+        /// Checker-selected source declaration or typed runtime endpoint.
+        target: crate::check::dispatch::CallTarget,
         c_symbol: String,
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
     },
@@ -1758,6 +1797,9 @@ pub enum MethodCallRewrite {
     /// generic type parameter. HIR emits `CallTraitMethodStatic`; MIR
     /// resolves the concrete callee at monomorphization time.
     StaticTraitDispatch {
+        /// Checker-selected canonical trait-method identity.  HIR preserves
+        /// this exact verdict through monomorphisation.
+        target: crate::check::dispatch::CallTarget,
         /// The type-parameter name on the enclosing function that carries the bound
         /// (e.g. "T" in `fn foo<T: Show>(x: T)`). Used by MIR to look up the
         /// concrete type from the monomorphization substitution map.
@@ -2620,6 +2662,15 @@ pub struct Checker {
     /// Origin override used only while registering compiler-embedded stdlib
     /// source; unlike `current_module`, it never changes lookup keys.
     pub(super) registration_origin_module: Option<String>,
+    /// Exact module owners whose source path was selected by the canonical
+    /// stdlib search-path authority for this check. A `std.*` spelling alone
+    /// is not trusted: user packages may use the same path.
+    pub(super) canonical_std_module_sources: HashSet<String>,
+    /// Whether the module currently undergoing signature registration came
+    /// from a file-path import. Those items are flattened into the root program
+    /// before HIR lowering, so their declaration IDs are root-owned even though
+    /// their checker spans retain the source module index.
+    pub(super) registration_is_flat_file_import: bool,
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::caller_visible_param_projections`].
     pub(super) caller_visible_param_projections: HashSet<SpanKey>,
@@ -2719,6 +2770,38 @@ pub struct Checker {
     pub(super) stack_hints: Vec<StackHint>,
     pub(super) type_defs: HashMap<String, TypeDef>,
     pub(super) fn_sigs: HashMap<String, FnSig>,
+    /// Closed runtime call families published by compiler builtin
+    /// registration.  This is deliberately distinct from `fn_sigs`: a
+    /// signature name is an open-set source lookup key, whereas this table is
+    /// the checker-owned executable authority for compiler-provided builtins.
+    pub(super) runtime_builtin_targets: HashMap<String, crate::runtime_call::RuntimeCallFamily>,
+    /// Exact import bindings for free functions. Values retain the source
+    /// declaration identity (`owner.OriginalName`), so an aliased import never
+    /// causes the call-target boundary to manufacture `owner.Alias`.
+    pub(super) import_fn_name_aliases: HashMap<(Option<String>, String), String>,
+    /// Every source declaration published into a bare free-function binding.
+    /// The single-valued signature table is only a compatibility lookup index;
+    /// call resolution must reject a binding with more than one exact owner.
+    pub(super) published_bare_function_owners: HashMap<(Option<String>, String), BTreeSet<String>>,
+    /// Every source declaration published into a bare constant binding.  Like
+    /// functions, constants share an env slot for legacy lookup, so this exact
+    /// owner set is the ambiguity authority at identifier use sites.
+    pub(super) published_bare_const_owners: HashMap<(Option<String>, String), BTreeSet<String>>,
+    /// Per-call target facts for ordinary `Expr::Call` expressions.
+    pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
+    /// Checker-owned canonical declaration ids for trait methods. Keys are
+    /// owner-qualified source spellings, never linker symbols.
+    pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
+    /// Source-owned trait method IDs as exposed through an import binding.
+    /// Lookup registries may retain short compatibility keys, but call targets
+    /// use this full-path table and never mint identities from those keys.
+    pub(super) trait_method_ids_by_binding:
+        HashMap<(Option<String>, String, String), (crate::DefId, crate::DefId)>,
+    /// Declaration identities for impl methods, keyed by the checker-selected
+    /// dispatch symbol. These are allocated while registering the source impl
+    /// and selected at the call site; receiver monomorphisations must not mint
+    /// new declaration identities.
+    pub(super) impl_method_declaration_ids: HashMap<String, crate::DefId>,
     pub(super) root_value_bindings: HashSet<String>,
     pub(super) fn_type_param_assoc_bindings: HashMap<String, HashMap<(String, String, String), Ty>>,
     pub(super) handle_bearing_structs: HashSet<String>,
@@ -3015,7 +3098,7 @@ pub struct Checker {
     /// Lifecycle identities authorized for one lexical import binding.
     ///
     /// Entries are `(importing_module, binding, canonical_identity)`, for
-    /// example `(None, "f", "failure.CrashNotification")`.  Unlike ordinary
+    /// example `(None, "f", "std.failure.CrashNotification")`. Unlike ordinary
     /// type visibility and import tables, this authority is written only after
     /// the import target's exact source path has been proven to be the shipped
     /// `std.failure` or `std.link_monitor` source.
@@ -3529,6 +3612,8 @@ impl Checker {
             fn_param_ownership: HashMap::new(),
             extern_method_origins: HashMap::new(),
             registration_origin_module: None,
+            canonical_std_module_sources: HashSet::new(),
+            registration_is_flat_file_import: false,
             caller_visible_param_projections: HashSet::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
@@ -3565,6 +3650,14 @@ impl Checker {
             stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
+            runtime_builtin_targets: HashMap::new(),
+            import_fn_name_aliases: HashMap::new(),
+            published_bare_function_owners: HashMap::new(),
+            published_bare_const_owners: HashMap::new(),
+            direct_call_targets: HashMap::new(),
+            trait_method_ids: HashMap::new(),
+            trait_method_ids_by_binding: HashMap::new(),
+            impl_method_declaration_ids: HashMap::new(),
             root_value_bindings: HashSet::new(),
             fn_type_param_assoc_bindings: HashMap::new(),
             handle_bearing_structs: HashSet::new(),

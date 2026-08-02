@@ -549,7 +549,7 @@ fn return_alias_bits_scoped<P: LeafPolicy>(
                 acc | return_alias_bits_scoped(v, policy, scope)
             }),
         },
-        HirExprKind::Call { callee, args } => match policy.classify_call(callee) {
+        HirExprKind::Call { callee, args, .. } => match policy.classify_call(callee) {
             CallClass::Opaque => AliasBits::OPAQUE,
             CallClass::Fresh => AliasBits::EMPTY,
             CallClass::ParamSubst => args.iter().fold(AliasBits::EMPTY, |acc, a| {
@@ -3329,7 +3329,7 @@ pub fn reachable_bindings(expr: &HirExpr, out: &mut Reachable) {
         }
         // Calls / methods — an argument (or receiver) embedding a tracked local
         // carries it to the call boundary.
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             reachable_bindings(callee, out);
             for a in args {
                 reachable_bindings(a, out);
@@ -3630,7 +3630,7 @@ impl MutationScan<'_> {
             // argument reaches a heap-param class; a callable-param invocation is
             // may-mutate unconditionally when an arg reaches (or when the invoked
             // callable itself captures — conservatively any-arg).
-            HirExprKind::Call { callee, args } => {
+            HirExprKind::Call { callee, args, .. } => {
                 let callee_pure = self.callee_is_proven_pure(callee);
                 if !callee_pure && args.iter().any(|a| self.arg_reaches_param(a)) {
                     return true;
@@ -4168,7 +4168,7 @@ fn count_binding_refs(expr: &HirExpr, counts: &mut HashMap<BindingId, u32>, unkn
             }
         }
         HirExprKind::Continue { .. } => {}
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             count_binding_refs(callee, counts, unknown);
             for a in args {
                 count_binding_refs(a, counts, unknown);
@@ -4509,7 +4509,7 @@ impl<'f> DefCollector<'_, 'f> {
             // Caller-side call-argument taint: an argument reaching a heap local,
             // passed to a not-proven-pure direct callee, poisons that local's
             // class.
-            HirExprKind::Call { callee, args } => {
+            HirExprKind::Call { callee, args, .. } => {
                 let pure = callee_is_proven_pure_item(callee, self.may_mutate);
                 for a in args {
                     if !pure {
@@ -5193,7 +5193,12 @@ pub fn origin_fns_of(module: &hew_hir::HirModule) -> HashMap<hew_hir::ItemId, &H
 pub struct EmptyLayouts;
 
 impl crate::model::HeapOwnershipLayouts for EmptyLayouts {
-    fn record_field_tys(&self, _name: &str, _args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
+    fn record_field_tys(
+        &self,
+        _name: &str,
+        _args: &[ResolvedTy],
+        _builtin: Option<hew_types::BuiltinType>,
+    ) -> Option<Vec<ResolvedTy>> {
         None
     }
 

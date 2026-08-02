@@ -2,7 +2,7 @@
 use super::*;
 #[cfg(not(test))]
 use super::{
-    named_type_names, project_match_ownership_mode, short_name, BindingId, Builder, BuiltinType,
+    named_type_names, project_match_ownership_mode, BindingId, Builder, BuiltinType,
     CheckedMirFunction, ConsumeVerdict, DecisionFact, ElaboratedMirFunction, FunctionCallConv,
     HashMap, HashSet, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind, Instr,
     IntentKind, LayoutReadiness, MirDiagnostic, MirDiagnosticKind, MirStatement, ParamBoundaryFact,
@@ -324,7 +324,7 @@ fn collect_binding_defs_in_expr<'f>(
             collect_binding_defs_in_expr(receiver, defs, let_ids);
             collect_binding_defs_in_expr(arg, defs, let_ids);
         }
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_binding_defs_in_expr(callee, defs, let_ids);
             for arg in args {
                 collect_binding_defs_in_expr(arg, defs, let_ids);
@@ -1162,7 +1162,6 @@ pub(super) fn compute_param_ownership(
         call_param_consume,
         call_param_owned_carrier,
         caller_visible_param_projections: caller_visible_param_projections.clone(),
-        machine_decl_names: collect_machine_decl_names(items),
     }
 }
 
@@ -1282,6 +1281,27 @@ fn mark_unproven_param_place(
 
 type RepresentationEffectEdge = (usize, usize, usize, usize);
 
+/// Whether one direct MIR argument has an audited contract that proves it is
+/// borrowed only. These calls do not replace a caller parameter's
+/// representation, even though catalog and source-stdlib FFI shims have no
+/// raw MIR body to appear in `function_index`.
+///
+/// This answers only the representation-effect question.  It is deliberately
+/// a positive, argument-indexed query over the concrete emitted ABI symbol
+/// (for example `hew_string_length` or `hew_tcp_listen`), after HIR's catalog
+/// `ItemId` join projected that symbol into raw MIR. The generated FFI table
+/// is the authority for source externs; the runtime table remains the
+/// authority for compiler-presented catalog calls. Unknown, consuming, and
+/// escaping arguments keep the normal fail-closed `Unproven` result below.
+fn callee_has_proven_borrowed_string_abi(callee: &str, arg_index: usize) -> bool {
+    use crate::ffi_contracts::ExternParamOwnership;
+
+    if let Some(contract) = crate::ffi_contracts::extern_ownership_contract(callee).contract() {
+        return contract.params.get(arg_index) == Some(&ExternParamOwnership::Borrow);
+    }
+    crate::runtime_symbols::callee_ownership_contract(callee).borrows_string_call_args()
+}
+
 fn scan_function_representation_effects(
     function: usize,
     raw: &RawMirFunction,
@@ -1344,8 +1364,10 @@ fn scan_function_representation_effects(
                     }
                 }
             } else if builtin.is_none() {
-                for &arg in args {
-                    mark_unproven_param_place(arg, facts, &mut effects[function]);
+                for (arg_index, &arg) in args.iter().enumerate() {
+                    if !callee_has_proven_borrowed_string_abi(callee, arg_index) {
+                        mark_unproven_param_place(arg, facts, &mut effects[function]);
+                    }
                 }
             }
         }
@@ -1556,10 +1578,14 @@ mod param_boundary_effect_tests {
     }
 
     fn call(callee: &str) -> Terminator {
+        call_with_args(callee, vec![Place::Local(0)])
+    }
+
+    fn call_with_args(callee: &str, args: Vec<Place>) -> Terminator {
         Terminator::Call {
             callee: callee.to_string(),
             builtin: None,
-            args: vec![Place::Local(0)],
+            args,
             dest: None,
             next: 0,
         }
@@ -1696,6 +1722,74 @@ mod param_boundary_effect_tests {
     }
 
     #[test]
+    fn catalog_string_borrow_shim_keeps_visible_parameter_read_only() {
+        // The source builtin `len(s)` reaches raw MIR through the catalog row
+        // `len_str`, whose ItemId-backed HIR join projects the concrete ABI
+        // symbol `hew_string_length`.  It has no raw body, so the
+        // representation-effect scan must consult the audited borrowing
+        // contract instead of treating it like an arbitrary external call.
+        let mut raw = vec![raw_function(
+            "echo_len",
+            FunctionCallConv::Default,
+            vec![],
+            call("hew_string_length"),
+        )];
+        raw[0].params = vec![ResolvedTy::String];
+        raw[0].locals = vec![ResolvedTy::String];
+        raw[0].decisions[0].ty = ResolvedTy::String;
+
+        finalize(&mut raw);
+
+        assert_eq!(
+            mode(&raw[0]),
+            ParamBoundaryMode::BorrowReadOnly,
+            "an audited catalog string borrow must not manufacture \
+             representation-mutation authority"
+        );
+    }
+
+    #[test]
+    fn source_stdlib_ffi_borrow_contract_keeps_network_address_read_only() {
+        // Source stdlib wrappers call their declared externs directly, rather
+        // than through a catalog presentation name. The generated FFI contract
+        // is therefore the proof that `listen` and `connect_timeout` read the
+        // caller's address string without replacing its representation.
+        let mut raw = vec![
+            raw_function(
+                "listen",
+                FunctionCallConv::Default,
+                vec![],
+                call("hew_tcp_listen"),
+            ),
+            raw_function(
+                "connect_timeout",
+                FunctionCallConv::Default,
+                vec![],
+                call_with_args(
+                    "hew_tcp_connect_timeout",
+                    vec![Place::Local(0), Place::Local(0), Place::Local(0)],
+                ),
+            ),
+        ];
+        for function in &mut raw {
+            function.params = vec![ResolvedTy::String];
+            function.locals = vec![ResolvedTy::String];
+            function.decisions[0].ty = ResolvedTy::String;
+        }
+
+        finalize(&mut raw);
+
+        assert_eq!(
+            raw.iter().map(mode).collect::<Vec<_>>(),
+            vec![
+                ParamBoundaryMode::BorrowReadOnly,
+                ParamBoundaryMode::BorrowReadOnly,
+            ],
+            "audited TCP address borrows must not manufacture representation-mutation authority"
+        );
+    }
+
+    #[test]
     fn owned_resource_message_and_carrier_modes_remain_distinct() {
         let expected = [
             ParamBoundaryMode::TransferResource,
@@ -1726,18 +1820,6 @@ mod param_boundary_effect_tests {
     }
 }
 
-/// Declared `machine` names plus their synthesised `<Name>Event` companions —
-/// the machines-ONLY dual of the classification-wide `machine_layout_names`.
-fn collect_machine_decl_names(items: &[HirItem]) -> HashSet<String> {
-    items
-        .iter()
-        .filter_map(|item| match item {
-            HirItem::Machine(md) => Some([md.name.clone(), format!("{}Event", md.name)]),
-            _ => None,
-        })
-        .flatten()
-        .collect()
-}
 /// True when `expr` is a bare reference to binding `b_p`.
 fn is_binding_ref(expr: &HirExpr, b_p: BindingId) -> bool {
     matches!(
@@ -1883,7 +1965,7 @@ fn scan_expr_for_consume(expr: &HirExpr, b_p: BindingId, pc: &ScanCtx<'_>) -> bo
         // the callable pair: `CallClosure` does not store or take ownership of
         // its environment. Wrappers that compute a new callee remain outside
         // this place-root proof and recurse fail-closed.
-        HirExprKind::Call { callee, args } => {
+        HirExprKind::Call { callee, args, .. } => {
             let borrows_callable_param = matches!(
                 &callee.ty,
                 ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
@@ -2327,7 +2409,7 @@ fn collect_borrow_arg_sites_in_expr(
         // accurate (a borrowing receiver `Read`, a consuming receiver
         // `Consume`), so it must never be relaxed by the `pc` verdict (a
         // `close`-style `self` is BORROW in `pc` yet consumes at the call site).
-        HirExprKind::Call { callee, args } => {
+        HirExprKind::Call { callee, args, .. } => {
             if let Some(id) = callee_item_id(callee) {
                 if !pc.methods.contains(&id) {
                     for (j, arg) in args.iter().enumerate() {
@@ -2957,7 +3039,7 @@ fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExp
             collect_return_values_in_expr(receiver, out);
             collect_return_values_in_expr(arg, out);
         }
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             collect_return_values_in_expr(callee, out);
             for arg in args {
                 collect_return_values_in_expr(arg, out);
@@ -3260,65 +3342,50 @@ fn push_unknown_type_diagnostics_for_layout_ty(
     diagnostics: &mut Vec<MirDiagnostic>,
 ) {
     for component in codegen_relevant_named_components(ty) {
-        if component.builtin.is_some() || is_codegen_ready_user_name(&component.name, readiness) {
+        if component.builtin.is_some() || is_codegen_ready_user_component(&component, readiness) {
             continue;
         }
         push_unknown_type_diagnostic(component.name, reported, diagnostics);
     }
 }
-/// Strip the module prefix from every `Named` name in a type spine, recursing
-/// over every compound `ResolvedTy` shape. At import-use sites the MIR carries
-/// module-qualified names in both the origin AND the type args
-/// (`Pair<i64, json.Value>` -> `Named { name: "Pair", args: [i64, json.Value] }`),
-/// while every layout-registration + codegen-thunk site keys on the bare
-/// (short) names (`Pair$$i64$Value`). Normalising the whole spine here keeps
-/// MIR's `user_record_layout_key` byte-congruent with the codegen consumers.
-///
-/// Delegates to the single canonical `hew_hir::shorten_named_arg_qualifiers`
-/// so the record layout-registration key, the enum layout-registration key,
-/// and every codegen lookup/drop/codec key are produced by ONE shortener and
-/// cannot drift — including for a NESTED qualified payload
-/// (`Pair<Vec<json.Value>, _>`) that a `Named`-only shortener would miss.
-fn shorten_named_ty_spine(ty: &ResolvedTy) -> ResolvedTy {
-    hew_hir::shorten_named_arg_qualifiers(ty.clone())
-}
-/// Mangle a generic instantiation's LAYOUT key after shortening the whole
-/// type-arg spine to bare (unqualified) payload names — the MIR sibling of
-/// codegen's `mangle_with_shortened_args` and the generic arm of
-/// `user_record_layout_key`.
-///
-/// Every record/enum layout is registered under the bare-normalised spine (the
-/// HIR `EnumLayoutRegistry::insert`, the `layout_mono` pass, and the record
-/// origin-site path all route their `mangled_name` through
-/// `hew_hir::shorten_named_arg_qualifiers`). So every MIR layout LOOKUP that
-/// mangles a key from an expression's type — field access / field store,
-/// `StructInit`, the owned-element and enum-layout reachability walks — MUST
-/// shorten its spine identically, or a key carrying a module-qualified payload
-/// (`Holder<lmonobox.Box>` → `Holder$$lmonobox.Box`) diverges from the
-/// registered `Holder$$Box` and the lookup falls through the fail-closed gate.
-/// Nested qualified payloads (`Result<Vec<json.Value>, _>`) are shortened at
-/// every depth. In-repo unqualified generics are unaffected (a no-op strip).
+/// Build the canonical generic record/enum layout key.  This compatibility
+/// wrapper keeps existing MIR call sites on the one HIR-owned authority: the
+/// owner and every nominal type argument remain fully qualified, while dotted
+/// owners are encoded once for native-safe registry symbols.
 pub(crate) fn mangle_layout_key(name: &str, args: &[ResolvedTy]) -> String {
-    let short_args: Vec<ResolvedTy> = args.iter().map(shorten_named_ty_spine).collect();
-    hew_hir::mangle(name, &short_args)
+    hew_hir::mangle_layout_key(name, args)
+}
+
+/// Exact nominal layout key for a resolved named type.  Monomorphic names
+/// retain their full dotted owner; generic applications use the shared HIR
+/// mangler over that complete owner and argument spine.
+pub(crate) fn named_layout_key(name: &str, args: &[ResolvedTy]) -> String {
+    if args.is_empty() {
+        name.to_string()
+    } else {
+        mangle_layout_key(name, args)
+    }
+}
+
+pub(super) fn machine_layout_ty_matches(layout_names: &HashSet<String>, ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::Named { name, args, .. } => {
+            let enum_key = named_layout_key(name, args);
+            layout_names.contains(&enum_key)
+                || layout_names.contains(&hew_hir::machine_layout_key(name, args))
+        }
+        _ => false,
+    }
 }
 /// Resolve the `record_field_orders` key for a user record type — the key MIR
 /// and codegen must agree on so the value-class admit, the drop-plan validator,
 /// and the synthesised `__hew_record_{clone,drop}_inplace_<R>` thunk all name
 /// the same layout.
 ///
-/// For a generic INSTANTIATION the origin name AND every type arg are
-/// prefix-stripped before mangling, exactly as the codegen consumers do
-/// (`record_inplace_drop_name`, `collect_record_inplace_drop_seeds`,
-/// `is_heap_owning_record_composite_return`, and `resolve_ty` all
-/// `mangle(short_name(name), &shorten_named_args(args))`). Without the strip an
-/// IMPORTED generic record (`mymod.Pair<i64, string>`) keyed
-/// `mymod.Pair$$i64$string` here — or one carrying a module-qualified arg
-/// (`Pair<json.Value, i64>` keyed `Pair$$json.Value$i64`) — would diverge from
-/// the codegen-side `Pair$$i64$string` / `Pair$$Value$i64`. MIR would then
-/// admit/look up under a key downstream never resolves, a fail-closed mismatch.
-/// In-repo unqualified generics (`name == short`, no qualified args) are
-/// unaffected (the strip is a no-op).
+/// For a generic INSTANTIATION the declaration owner and every type argument
+/// remain canonical.  The owner is encoded into the native-safe `$` spelling
+/// before mangling, matching HIR's `RecordLayoutRegistry`; stripping it would
+/// collapse `left.render.Box<T>` and `right.render.Box<T>` into one layout.
 ///
 /// The bare-name MONOMORPHIC arm keeps the FULL qualified name: imported
 /// monomorphic records register under the bare name but `lookup_record_field_
@@ -3326,6 +3393,15 @@ pub(crate) fn mangle_layout_key(name: &str, args: &[ResolvedTy]) -> String {
 /// while preserving the legacy behaviour every monomorphic caller depends on.
 pub(super) fn user_record_layout_key(ty: &ResolvedTy) -> Option<String> {
     match ty {
+        ResolvedTy::Named {
+            args,
+            builtin:
+                Some(
+                    builtin @ (hew_types::BuiltinType::VecIter
+                    | hew_types::BuiltinType::HashMapIter),
+                ),
+            ..
+        } => hew_hir::synthetic_cursor_layout_key(*builtin, args),
         ResolvedTy::Named {
             name,
             args,
@@ -3337,10 +3413,7 @@ pub(super) fn user_record_layout_key(ty: &ResolvedTy) -> Option<String> {
             args,
             builtin: None,
             ..
-        } => {
-            let short_args: Vec<ResolvedTy> = args.iter().map(shorten_named_ty_spine).collect();
-            Some(hew_hir::mangle(short_name(name), &short_args))
-        }
+        } => Some(mangle_layout_key(name, args)),
         // M-5: a BUILTIN record with a registered `Struct` shape (today only
         // `CrashInfo`, which carries an owned `message: string`) is keyed by its
         // bare name so it routes through the SAME owned-aggregate record
@@ -3376,8 +3449,16 @@ pub(super) fn monomorphic_user_record_key(ty: &ResolvedTy) -> Option<String> {
     }
 }
 pub(super) fn vec_iter_record_layout_key(ty: &ResolvedTy) -> Option<String> {
-    let key = user_record_layout_key(ty)?;
-    (key == "VecIter" || key.starts_with("VecIter$$")).then_some(key)
+    match ty {
+        ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::VecIter),
+            ..
+        } if args.len() == 1 => {
+            hew_hir::synthetic_cursor_layout_key(hew_types::BuiltinType::VecIter, args)
+        }
+        _ => None,
+    }
 }
 /// The `vec`-field (`.0`) source place of a `record_init VecIter { vec, idx }`,
 /// or `None` for any other instruction.
@@ -3432,7 +3513,7 @@ fn push_unknown_type_diagnostics(
 ) {
     let readiness = builder.layout_readiness();
     for component in codegen_relevant_named_components(ty) {
-        if component.builtin.is_some() || is_codegen_ready_user_name(&component.name, &readiness) {
+        if component.builtin.is_some() || is_codegen_ready_user_component(&component, &readiness) {
             continue;
         }
         push_unknown_type_diagnostic(component.name, reported, diagnostics);
@@ -3457,14 +3538,21 @@ fn is_phantom_arg_pid(builtin: Option<BuiltinType>) -> bool {
 /// Named-type components codegen's layout graph must be able to resolve.
 /// Mirrors `hew_hir::named_type_components` but prunes the phantom type
 /// arguments of the opaque actor-reference families (see [`is_phantom_arg_pid`]).
-fn codegen_relevant_named_components(ty: &ResolvedTy) -> Vec<hew_hir::NamedTypeComponent> {
+#[derive(Debug, Clone)]
+struct CodegenNamedComponent {
+    name: String,
+    args: Vec<ResolvedTy>,
+    builtin: Option<BuiltinType>,
+}
+
+fn codegen_relevant_named_components(ty: &ResolvedTy) -> Vec<CodegenNamedComponent> {
     let mut components = Vec::new();
     collect_codegen_relevant_components(ty, &mut components);
     components
 }
 fn collect_codegen_relevant_components(
     ty: &ResolvedTy,
-    components: &mut Vec<hew_hir::NamedTypeComponent>,
+    components: &mut Vec<CodegenNamedComponent>,
 ) {
     match ty {
         ResolvedTy::Tuple(elems) => {
@@ -3481,10 +3569,10 @@ fn collect_codegen_relevant_components(
             builtin,
             ..
         } => {
-            components.push(hew_hir::NamedTypeComponent {
+            components.push(CodegenNamedComponent {
                 name: name.clone(),
+                args: args.clone(),
                 builtin: *builtin,
-                has_args: !args.is_empty(),
             });
             // Opaque actor-reference handles carry a phantom protocol marker
             // (often a trait) in their type argument; it is erased before
@@ -3532,39 +3620,36 @@ fn collect_codegen_relevant_components(
         _ => {}
     }
 }
-fn is_codegen_ready_user_name(name: &str, readiness: &LayoutReadiness) -> bool {
+fn is_codegen_ready_user_component(
+    component: &CodegenNamedComponent,
+    readiness: &LayoutReadiness,
+) -> bool {
+    let name = component.name.as_str();
+    let layout_key = named_layout_key(name, &component.args);
     // `#[opaque]` runtime handles are registered in `type_classes` but carry no
     // record-field-order entry — they lower to `ptr`. Fieldless handles may be
     // `BitCopy` (borrowed/id handles) or `Resource` (owned handles with
     // `close()` cleanup); both are codegen-ready without a structural record
     // layout. Fielded marker types already have a `record_field_orders` entry and
     // are accepted by the check below.
+    let marker = readiness
+        .type_classes
+        .get(&layout_key)
+        .map(|(marker, _)| *marker)
+        .or_else(|| hew_hir::lookup_type_marker(name, readiness.type_classes));
     if matches!(
-        hew_hir::lookup_type_marker(name, readiness.type_classes),
+        marker,
         Some(ResourceMarker::BitCopy | ResourceMarker::Resource)
     ) {
         return true;
     }
-    readiness.record_field_orders.contains_key(name)
-        || readiness
-            .record_field_orders
-            .keys()
-            .any(|known| short_name(known) == short_name(name))
-        // Generic record instantiations are keyed by the mangled SHORT name
-        // (e.g. "Wrapper$$i64"); match against the bare (short) prefix so that
-        // `UnknownType` is not emitted for types that DO have a concrete
-        // layout entry under a monomorphised symbol — including a qualified
-        // outer spelling (`shapes.Holder<...>` keyed `Holder$$Box`).
-        || {
-            let short = short_name(name);
-            readiness
-                .record_field_orders
-                .keys()
-                .any(|known| known.starts_with(short) && known[short.len()..].starts_with("$$"))
-        }
+    readiness.record_field_orders.contains_key(&layout_key)
         || readiness.actor_layouts.contains_key(name)
         || readiness.supervisor_layout_map.contains_key(name)
-        || machine_layout_name_matches(readiness.machine_layout_names, name)
+        || readiness.machine_layout_names.contains(&layout_key)
+        || readiness
+            .machine_layout_names
+            .contains(&hew_hir::machine_layout_key(name, &component.args))
 }
 fn push_unknown_type_diagnostic(
     name: String,
@@ -3579,11 +3664,6 @@ fn push_unknown_type_diagnostic(
                 .to_string(),
         });
     }
-}
-pub(super) fn machine_layout_name_matches(layout_names: &HashSet<String>, name: &str) -> bool {
-    layout_names
-        .iter()
-        .any(|known| known == name || hew_types::short_name(known) == hew_types::short_name(name))
 }
 #[cfg(test)]
 mod runtime_callee_ownership_contract_parity {
@@ -4073,20 +4153,10 @@ mod runtime_callee_ownership_contract_parity {
 }
 #[cfg(test)]
 mod layout_key_shortening_guard {
-    //! Structural guard: the GENERIC record-layout key the field-store,
-    //! field-read, and `StructInit` arms build must route the OUTER record name
-    //! through `short_name` before mangling. A generic record's layout is
-    //! registered under the bare outer name (`Holder$$Box`), so a module-
-    //! qualified outer spelling reached under qualified-by-default (`q.Holder`)
-    //! would mangle to a divergent key and miss its layout unless the qualifier
-    //! is shortened here. The three generic arms therefore use
-    //! `mangle_layout_key(short_name(name|tname), args)` — never a bare
-    //! `mangle_layout_key(name, args)`. (The MONOMORPHIC arms intentionally keep
-    //! the possibly-qualified `name` so a same-bare-name record registered under
-    //! its QUALIFIED key — `widgeti8.Widget` vs `widgeti64.Widget`, divergent
-    //! layouts — hits its own layout, with `lookup_record_field_order` stripping
-    //! the qualifier on a miss.) This scan keeps producer (registration) and
-    //! consumer (field load/store) generic keys from silently diverging.
+    //! Structural guard: generic record field-store, field-read, and
+    //! `StructInit` consumers preserve the checker's full nominal owner when
+    //! forming their layout key. A leaf-name rewrite would collapse
+    //! `left.render.Box<T>` and `right.render.Box<T>` before the layout table.
 
     /// The production (non-test) sources containing record layout-key consumers.
     ///
@@ -4111,47 +4181,23 @@ mod layout_key_shortening_guard {
             .join("\n")
     }
 
-    /// The field-store AND field-read GENERIC arms each shorten the outer name.
-    /// If a future edit drops the `short_name` wrap (re-opening the qualified-
-    /// spine layout miss for generic field load/store), this check fails and
-    /// names the regression.
+    /// The field-store, field-read, and `StructInit` generic arms must pass the
+    /// full outer name to the shared key helper. No production layout consumer
+    /// may shorten a nominal owner before keying the layout registry.
     #[test]
-    fn field_order_generic_arms_route_outer_name_through_short_name() {
-        let prod = production_source();
-        let generic_arm = "mangle_layout_key(short_name(name), args)";
-        let generic_hits = prod.matches(generic_arm).count();
-        assert!(
-            generic_hits >= 2,
-            "expected the field-store AND field-read generic arms to build the layout \
-             key via `{generic_arm}` (parity with the StructInit arm); found {generic_hits}. \
-             A bare `mangle_layout_key(name, args)` re-opens the qualified-spine layout miss."
-        );
-        // No field-order generic arm may feed a BARE-outer-name mangle. The only
-        // remaining `mangle_layout_key(name, args)` (bare outer) is the
-        // vec-owned-element key path, which has its own `short_name`-aware
-        // fallback lookups — assert the field-order arms are not among them by
-        // requiring every `mangle_layout_key(name, args)` to be paired with a
-        // `short_name`-based membership check within a few lines (the
-        // vec-owned-key shape). Here we simply pin that the shortened form is
-        // the dominant one for the field-order sites.
-        assert!(
-            prod.matches("mangle_layout_key(name, args)").count() <= 1,
-            "at most the single vec-owned-element-key site may mangle a bare outer \
-             name; a new bare-outer `mangle_layout_key(name, args)` likely feeds a \
-             field-order lookup and must shorten the outer name instead"
-        );
-    }
-
-    /// The `StructInit` arm — the parity reference — also shortens its outer
-    /// name. Pinned here so the three arms cannot drift apart.
-    #[test]
-    fn struct_init_arm_routes_outer_name_through_short_name() {
+    fn generic_record_layout_consumers_preserve_outer_owner() {
         let prod = production_source();
         assert!(
-            prod.contains("mangle_layout_key(short_name(tname), args)"),
-            "the StructInit record-key arm must shorten its outer name via \
-             `mangle_layout_key(short_name(tname), args)` — the parity reference the \
-             field-store and field-read arms mirror"
+            !prod.contains("mangle_layout_key(short_name"),
+            "layout keys must retain the full nominal owner, never `short_name(..)`"
+        );
+        assert!(
+            prod.matches("mangle_layout_key(name, args)").count() >= 2,
+            "field-store and field-read must both pass their resolved outer name"
+        );
+        assert!(
+            prod.contains("mangle_layout_key(tname, args)"),
+            "StructInit must pass its resolved outer name to the layout key helper"
         );
     }
 }
@@ -4406,7 +4452,7 @@ mod enum_layout_tests {
     }
 
     #[test]
-    fn fieldless_layout_key_generic_uses_mangled_key_not_short_fallback() {
+    fn fieldless_layout_key_generic_uses_full_owner_key_without_leaf_fallback() {
         use crate::model::{EnumLayout, MachineVariantLayout};
 
         fn fieldless_layout(name: String) -> EnumLayout {
@@ -4429,19 +4475,24 @@ mod enum_layout_tests {
             }
         }
 
-        let registered_key = hew_hir::mangle("Slot", &[ResolvedTy::named_user("Box", vec![])]);
+        let payload = ResolvedTy::named_user("lmonobox.Box", vec![]);
+        let registered_key =
+            hew_hir::mangle_layout_key("left.render.Slot", std::slice::from_ref(&payload));
         let builder = Builder {
-            enum_layouts: vec![
-                fieldless_layout(registered_key.clone()),
-                fieldless_layout("decoy.Slot".to_string()),
-            ],
+            enum_layouts: vec![fieldless_layout(registered_key.clone())],
             ..Builder::default()
         };
-        let qualified =
-            ResolvedTy::named_user("Slot", vec![ResolvedTy::named_user("lmonobox.Box", vec![])]);
+        let qualified = ResolvedTy::named_user("left.render.Slot", vec![payload.clone()]);
         assert_eq!(
             builder.fieldless_enum_layout_key(&qualified),
             Some(registered_key)
+        );
+
+        let same_leaf_other_owner = ResolvedTy::named_user("right.render.Slot", vec![payload]);
+        assert_eq!(
+            builder.fieldless_enum_layout_key(&same_leaf_other_owner),
+            None,
+            "a same-leaf enum from another module must not reuse left.render.Slot's layout"
         );
 
         let missing_mangled_builder = Builder {
@@ -4449,7 +4500,7 @@ mod enum_layout_tests {
             ..Builder::default()
         };
         let missing_mangled_probe = ResolvedTy::named_user(
-            "Slot",
+            "left.render.Slot",
             vec![ResolvedTy::named_user("lmonobox.Crate", vec![])],
         );
         assert_eq!(
@@ -4582,6 +4633,7 @@ mod call_param_verdict_tests {
         HirFn {
             id: ItemId(id),
             node: HirNodeId(0),
+            declaration: hew_types::DefId::new(format!("f{id}")),
             name: format!("f{id}"),
             type_params: Vec::new(),
             params: vec![HirBinding {
@@ -4632,6 +4684,7 @@ mod call_param_verdict_tests {
         let conservative = one_param_fn(
             20,
             expr(HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(binding_ref(99)),
                 args: vec![binding_ref(1)],
             }),

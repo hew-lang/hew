@@ -33,12 +33,7 @@ fn pipeline_with_task_abi_call(
     dest: Option<Place>,
     extra_locals: Vec<ResolvedTy>,
 ) -> IrPipeline {
-    let mut locals = vec![ResolvedTy::Named {
-        name: "HewTask".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }];
+    let mut locals = vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))];
     locals.extend(extra_locals);
 
     let raw_blocks = vec![BasicBlock {
@@ -631,12 +626,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         ],
         terminator: Terminator::Return,
     }];
-    let locals = vec![ResolvedTy::Named {
-        name: "HewTask".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }];
+    let locals = vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))];
     let pipeline = IrPipeline {
         thir: vec![],
         raw_mir: vec![RawMirFunction {

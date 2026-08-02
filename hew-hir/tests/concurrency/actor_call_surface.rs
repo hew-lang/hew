@@ -36,7 +36,7 @@ fn lower_checked(source: &str) -> hew_hir::LowerOutput {
 fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
     out.push(expr);
     match &expr.kind {
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             visit_expr(callee, out);
             for arg in args {
                 visit_expr(arg, out);

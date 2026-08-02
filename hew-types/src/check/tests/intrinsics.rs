@@ -8,9 +8,9 @@ pub(super) use super::*;
 fn intrinsic_in_floor_module_is_accepted() {
     // `std.math` is the canonical floor module for math intrinsics; the
     // bodyless `#[intrinsic("math.sqrt")]` declaration must register cleanly.
-    let output = check_source_in_module(
+    let output = check_source_in_canonical_std_module(
         r#"#[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;"#,
-        vec!["std".to_string(), "math".to_string()],
+        &["std".to_string(), "math".to_string()],
     );
     assert!(
         !output
@@ -61,6 +61,22 @@ fn intrinsic_in_non_floor_module_is_rejected() {
         "non-floor module `app` must be rejected with its path in the diagnostic, got: {:?}",
         output.errors
     );
+}
+
+#[test]
+fn std_math_spelling_without_canonical_source_is_rejected() {
+    let output = check_source_in_module(
+        r#"#[intrinsic("math.sqrt")] pub fn sqrt(x: f64) -> f64;"#,
+        vec!["std".to_string(), "math".to_string()],
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::IntrinsicOutsideFloor { .. })),
+        "a user module merely named std.math must not acquire compiler-intrinsic authority"
+    );
+    assert!(output.intrinsic_declarations.is_empty());
 }
 
 #[test]
@@ -150,7 +166,8 @@ fn mem_intrinsic_in_floor_module_is_accepted() {
 #[intrinsic("mem.ptr_offset")] pub fn ptr_offset(ptr: *mut u8, byte_offset: u64) -> *mut u8;
 #[intrinsic("mem.ptr_copy")] pub fn ptr_copy(dst: *mut u8, src: *mut u8, byte_count: u64);
 "#;
-    let output = check_source_in_module(source, vec!["std".to_string(), "mem".to_string()]);
+    let output =
+        check_source_in_canonical_std_module(source, &["std".to_string(), "mem".to_string()]);
     assert!(
         !output
             .errors

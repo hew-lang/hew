@@ -26,8 +26,8 @@ pub mod const_eval;
 mod diagnostics;
 pub mod dispatch;
 pub use self::dispatch::{
-    Bound, CallAbiHint, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry, LookupError,
-    MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
+    Bound, CallAbiHint, CallTarget, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
+    LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
 };
 mod expressions;
 mod generics;
@@ -306,6 +306,25 @@ impl Checker {
     )]
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
         self.root_value_bindings.clear();
+        // Record concrete stdlib source provenance once, before registration
+        // manufactures any compiler-recognised carrier signatures. Module
+        // spelling is not authority: a user package may be called
+        // `std.channel.channel`, but only the source selected by the stdlib
+        // search-path resolver may receive Sender/Receiver runtime identity.
+        self.canonical_std_module_sources.clear();
+        if let Some(module_graph) = &program.module_graph {
+            for (module_id, module) in &module_graph.modules {
+                let module_full_path = module_id.path.join(".");
+                if module.source_paths.iter().any(|source| {
+                    crate::module_registry::is_canonical_stdlib_module_source(
+                        source,
+                        &module_full_path,
+                    )
+                }) {
+                    self.canonical_std_module_sources.insert(module_full_path);
+                }
+            }
+        }
         self.register_builtins();
         // Compute the precise cross-module record-name collision set before any
         // registration runs, so the imported-actor registration can owner-qualify
@@ -1024,6 +1043,7 @@ impl Checker {
             // `TypeCheckOutput::resolved_calls`.
             resolved_calls: std::mem::take(&mut self.resolved_calls),
             import_type_name_aliases: std::mem::take(&mut self.import_type_name_aliases),
+            module_import_bindings: std::mem::take(&mut self.module_import_bindings),
             numeric_method_lowerings: std::mem::take(&mut self.numeric_method_lowerings),
             width_cast_lowerings: std::mem::take(&mut self.width_cast_lowerings),
             try_width_cast_lowerings: std::mem::take(&mut self.try_width_cast_lowerings),
@@ -1040,6 +1060,10 @@ impl Checker {
             type_defs: resolved_type_defs,
             internal_builtin_enum_names,
             fn_sigs: resolved_fn_sigs,
+            direct_call_targets: std::mem::take(&mut self.direct_call_targets),
+            trait_method_ids: std::mem::take(&mut self.trait_method_ids),
+            trait_method_ids_by_binding: std::mem::take(&mut self.trait_method_ids_by_binding),
+            impl_method_declaration_ids: std::mem::take(&mut self.impl_method_declaration_ids),
             root_value_bindings: std::mem::take(&mut self.root_value_bindings),
             handle_bearing_structs: {
                 // Flush any pending dirty registration before the set is moved
@@ -2584,31 +2608,20 @@ enum AnonContext {
 /// Collect every `actor` declaration in the program (root items + each
 /// module-graph module).
 ///
-/// Returns a triple `(collision_identity, sigs_key, actor_decl)` per actor:
-///
-/// - `collision_identity`: the full-path dotted form used for the descriptor
-///   map key and the cross-actor collision check.  Module path `["a","b"]` →
-///   `"a.b.Alpha"`.  Full path ensures actors in DISTINCT nested modules with
-///   an identical leaf component produce different identities so the collision
-///   check sees them as separate actors.
-/// - `sigs_key`: the module-short dotted form `"{leaf}.{Actor}"` (or bare
-///   name for root actors) that `fn_sigs` is keyed with during registration
-///   (`collect_functions` uses `current_module_short()` = the leaf segment).
-///   Used only for `fn_sigs.get("{sigs_key}::{handler}")` look-ups inside
-///   `build_actor_protocol_descriptors`.
-///
-/// The two fields differ for deeply-nested modules: `["a","b"].Alpha` has
-/// `collision_identity = "a.b.Alpha"` but `sigs_key = "b.Alpha"`.  Root and
-/// single-segment modules are the same for both.
+/// Returns `(owner_identity, actor_decl)` per actor. `owner_identity` is the
+/// full-path dotted declaration identity: module path `["a","b"]` yields
+/// `"a.b.Alpha"`, while root actors remain bare (`"Alpha"`). It is the sole
+/// semantic key used for signature lookup, descriptor publication, symbols,
+/// and collision attribution. Import aliases and leaf-qualified spellings are
+/// surface bindings and must not enter this declaration-identity walk.
 ///
 /// The walk is read-only so it can run after the checker has frozen its
 /// mutable state.
-fn collect_program_actors(program: &Program) -> Vec<(String, String, &ActorDecl)> {
-    let mut actors: Vec<(String, String, &ActorDecl)> = Vec::new();
+fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
+    let mut actors: Vec<(String, &ActorDecl)> = Vec::new();
     for (item, _) in &program.items {
         if let Item::Actor(ad) = item {
-            // Root actors: both keys are the bare name.
-            actors.push((ad.name.clone(), ad.name.clone(), ad));
+            actors.push((ad.name.clone(), ad));
         }
     }
     if let Some(mg) = &program.module_graph {
@@ -2616,24 +2629,15 @@ fn collect_program_actors(program: &Program) -> Vec<(String, String, &ActorDecl)
             if *mod_id == mg.root {
                 continue;
             }
-            let module_full = mod_id.path.join(".");
-            // The leaf segment is what `current_module_short()` (rsplit('.'))
-            // returns during `collect_functions`; that is the prefix used when
-            // fn_sigs keys are registered.
-            let module_leaf = mod_id.path.last().map_or("", String::as_str);
+            let module_owner = mod_id.path.join(".");
             for (item, _) in &module.items {
                 if let Item::Actor(ad) = item {
-                    let collision_identity = if module_full.is_empty() {
+                    let owner_identity = if module_owner.is_empty() {
                         ad.name.clone()
                     } else {
-                        format!("{module_full}.{}", ad.name)
+                        format!("{module_owner}.{}", ad.name)
                     };
-                    let sigs_key = if module_leaf.is_empty() {
-                        ad.name.clone()
-                    } else {
-                        format!("{module_leaf}.{}", ad.name)
-                    };
-                    actors.push((collision_identity, sigs_key, ad));
+                    actors.push((owner_identity, ad));
                 }
             }
         }
@@ -2669,7 +2673,7 @@ fn build_actor_protocol_descriptors(
     // refusing the collision at the source of truth keeps the wire unambiguous
     // for relays / mixed-binary peers (the `boundary-fail-closed` invariant).
     let mut cross_actor_seen: Vec<(u32, String, String, std::ops::Range<usize>)> = Vec::new();
-    for (collision_identity, sigs_key, ad) in collect_program_actors(program) {
+    for (actor_identity, ad) in collect_program_actors(program) {
         if ad.receive_fns.is_empty() {
             continue;
         }
@@ -2677,8 +2681,7 @@ fn build_actor_protocol_descriptors(
             Vec::with_capacity(ad.receive_fns.len());
         let mut all_signatures_resolved = true;
         for rf in &ad.receive_fns {
-            // fn_sigs are keyed by the module-short identity (leaf segment).
-            let key = format!("{sigs_key}::{}", rf.name);
+            let key = format!("{actor_identity}::{}", rf.name);
             let Some(sig) = fn_sigs.get(&key) else {
                 all_signatures_resolved = false;
                 break;
@@ -2706,7 +2709,7 @@ fn build_actor_protocol_descriptors(
             // is self-describing. Downstream consumers may continue to
             // derive their own emit name today; subsequent Q87 slices route
             // codegen through this `symbol` field.
-            let symbol = format!("{sigs_key}__{}", rf.name);
+            let symbol = format!("{actor_identity}__{}", rf.name);
             specs.push(crate::actor_protocol::ActorHandlerSpec {
                 name: rf.name.clone(),
                 param_tys,
@@ -2722,36 +2725,24 @@ fn build_actor_protocol_descriptors(
             continue;
         }
 
-        // Build the descriptor under `sigs_key` (module-short form) so that
-        // downstream consumers — HIR lowerer, coercion checker — can look it
-        // up via the same identity they registered actors under.
-        // `collision_identity` (full-path form) is used ONLY for the
-        // cross-actor collision check below, where its uniqueness across all
-        // nested-module actors matters.
+        // The descriptor is a source declaration fact, so its identity is the
+        // actor's full owner path. Surface aliases remain resolver bindings and
+        // never become protocol identities.
         match crate::actor_protocol::ActorProtocolDescriptor::from_handlers(
-            sigs_key.clone(),
+            actor_identity.clone(),
             &specs,
         ) {
             Ok(descriptor) => {
                 // Record each handler's msg_id for the cross-actor pass.
-                // Use `collision_identity` as the actor name so that two actors
-                // in different nested modules with the same leaf segment (and
-                // thus the same `sigs_key`, e.g. `b.Alpha`) appear as DISTINCT
-                // actors in the collision check.
                 for h in &descriptor.handlers {
                     let span = ad
                         .receive_fns
                         .iter()
                         .find(|rf| rf.name == h.name)
                         .map_or(0..0, |rf| rf.span.clone());
-                    cross_actor_seen.push((
-                        h.msg_id,
-                        collision_identity.clone(),
-                        h.name.clone(),
-                        span,
-                    ));
+                    cross_actor_seen.push((h.msg_id, actor_identity.clone(), h.name.clone(), span));
                 }
-                descriptors.insert(sigs_key.clone(), descriptor);
+                descriptors.insert(actor_identity.clone(), descriptor);
             }
             Err(collision) => {
                 // Pin the diagnostic to the second-colliding handler's span

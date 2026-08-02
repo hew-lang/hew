@@ -370,7 +370,7 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
                 walk_expr_for_suspend(elem, found);
             }
         }
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             walk_expr_for_suspend(callee, found);
             for a in args {
                 walk_expr_for_suspend(a, found);

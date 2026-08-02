@@ -5,8 +5,8 @@ use super::{
     cmp_select_by_signedness, context_reader_offset, describe_vec_element,
     dyn_rebind_source_binding, field_override_uses_record_field_drop, float_width,
     integer_bit_width, integer_signedness, is_self_expr, is_string_const_ty, machine_emit_type_id,
-    mangle_layout_key, mangle_machine_step, monomorphic_user_record_key, numeric_method_op,
-    numeric_method_signedness, option_payload_ty, runtime_symbol_for_call_expr, short_name,
+    mangle_layout_key, mangle_machine_step, monomorphic_user_record_key, named_layout_key,
+    numeric_method_op, numeric_method_signedness, option_payload_ty, runtime_symbol_for_call_expr,
     signed_min_value, ty_is_closure_pair, ty_is_generator_handle, ty_is_indirect_enum,
     ty_is_stream_handle, unary_op_label, unresolved_fn_sig_reason, user_record_layout_key,
     ActorStateLoadMode, BinaryOp, BindingId, Builder, BuiltinType, ChildKind, ClosurePairRhs,
@@ -119,12 +119,8 @@ impl Builder {
         } else {
             mangle_layout_key(elem_name, elem_args)
         };
-        let is_enum = self
-            .enum_layouts
-            .iter()
-            .any(|el| el.name == key || short_name(&el.name) == short_name(elem_name));
-        let is_record = self.lookup_record_field_order(&key).is_some()
-            || self.lookup_record_field_order(elem_name.as_str()).is_some();
+        let is_enum = self.enum_layouts.iter().any(|el| el.name == key);
+        let is_record = self.lookup_record_field_order(&key).is_some();
         if !is_enum && !is_record {
             return false;
         }
@@ -189,10 +185,7 @@ impl Builder {
         } else {
             mangle_layout_key(elem_name, elem_args)
         };
-        let is_enum = self
-            .enum_layouts
-            .iter()
-            .any(|el| el.name == key || short_name(&el.name) == short_name(elem_name));
+        let is_enum = self.enum_layouts.iter().any(|el| el.name == key);
         if is_enum {
             // Enums are gated by their own EnumInPlace drop path; record the
             // mangled enum key so a value of the enum admits as CowValue too.
@@ -200,12 +193,7 @@ impl Builder {
         } else {
             // Use the record-layout-key form for records (matches
             // `user_record_layout_key` consulted by the W3.029 escape hatch).
-            let record_key = if self.lookup_record_field_order(&key).is_some() {
-                key
-            } else {
-                elem_name.clone()
-            };
-            self.vec_owned_element_keys.insert(record_key);
+            self.vec_owned_element_keys.insert(key);
         }
     }
 
@@ -250,32 +238,26 @@ impl Builder {
         let ResolvedTy::Named { name, args, .. } = ty else {
             return None;
         };
-        let short = short_name(name);
         let key = if args.is_empty() {
             name.clone()
         } else {
-            mangle_layout_key(short, args)
+            mangle_layout_key(name, args)
         };
-        self.lookup_record_field_order(&key)
-            .or_else(|| self.lookup_record_field_order(name))
-            .map(|_| key)
+        self.lookup_record_field_order(&key).map(|_| key)
     }
 
     fn payload_enum_layout_key_for_eq(&self, ty: &ResolvedTy) -> Option<String> {
         let ResolvedTy::Named { name, args, .. } = ty else {
             return None;
         };
-        let short = short_name(name);
         let key = if args.is_empty() {
             name.clone()
         } else {
-            mangle_layout_key(short, args)
+            mangle_layout_key(name, args)
         };
         self.enum_layouts
             .iter()
-            .find(|layout| {
-                layout.name == key || layout.name == *name || short_name(&layout.name) == short
-            })
+            .find(|layout| layout.name == key)
             .filter(|layout| {
                 layout
                     .variants
@@ -298,17 +280,14 @@ impl Builder {
         let ResolvedTy::Named { name, args, .. } = ty else {
             return None;
         };
-        let short = short_name(name);
         let key = if args.is_empty() {
             name.clone()
         } else {
-            mangle_layout_key(short, args)
+            mangle_layout_key(name, args)
         };
         self.enum_layouts
             .iter()
-            .find(|layout| {
-                layout.name == key || layout.name == *name || short_name(&layout.name) == short
-            })
+            .find(|layout| layout.name == key)
             .map(|layout| layout.name.clone())
     }
 
@@ -383,23 +362,21 @@ impl Builder {
             } => !args.first().is_some_and(|e| {
                 matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
             }),
-            ResolvedTy::Named { name, args, .. } => {
-                let short = short_name(name);
-                let key = if args.is_empty() {
-                    name.clone()
-                } else {
-                    mangle_layout_key(name, args)
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                ..
+            } => {
+                let key = match builtin {
+                    Some(
+                        cursor @ (hew_types::BuiltinType::VecIter
+                        | hew_types::BuiltinType::HashMapIter),
+                    ) => hew_hir::synthetic_cursor_layout_key(*cursor, args),
+                    _ if args.is_empty() => Some(name.clone()),
+                    _ => Some(mangle_layout_key(name, args)),
                 };
-                self.vec_owned_element_keys.contains(&key)
-                    || self.vec_owned_element_keys.contains(name)
-                    || self
-                        .enum_layouts
-                        .iter()
-                        .any(|el| short_name(&el.name) == short)
-                        && self
-                            .vec_owned_element_keys
-                            .iter()
-                            .any(|k| short_name(k) == short)
+                key.is_some_and(|key| self.vec_owned_element_keys.contains(&key))
             }
             // Every remaining `ResolvedTy` shape is NOT an owned-descriptor Vec
             // element. The match is exhaustive (no `_ => false` fall-through) so a
@@ -624,7 +601,12 @@ impl Builder {
                 }
                 self.unsupported_vec_element_walk(elem, layouts, visiting)
             }
-            ResolvedTy::Named { name, args, .. } => {
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin,
+                ..
+            } => {
                 // Type arguments first (`Option<Vec<indirect_enum>>`,
                 // `HashMap<K, Vec<…>>`), then record fields, then enum variant
                 // payloads — cycle-guarded on the `Named` head so a recursive
@@ -639,7 +621,7 @@ impl Builder {
                     return None;
                 }
                 let found = layouts
-                    .record_field_tys(name, args)
+                    .record_field_tys(name, args, *builtin)
                     .into_iter()
                     .flatten()
                     .find_map(|field_ty| {
@@ -951,15 +933,12 @@ impl Builder {
         match elem_ty {
             ResolvedTy::Tuple(_) => true,
             ResolvedTy::Named { name, args, .. } => {
-                let short = short_name(name);
                 let key = if args.is_empty() {
                     name.clone()
                 } else {
-                    mangle_layout_key(short, args)
+                    mangle_layout_key(name, args)
                 };
-                self.record_field_orders
-                    .keys()
-                    .any(|known| known == &key || short_name(known) == short)
+                self.record_field_orders.contains_key(&key)
                     || self.ty_is_direct_enum_element(elem_ty)
             }
             _ => false,
@@ -984,15 +963,14 @@ impl Builder {
         let ResolvedTy::Named { name, args, .. } = elem_ty else {
             return false;
         };
-        let short = short_name(name);
         let key = if args.is_empty() {
             name.clone()
         } else {
-            mangle_layout_key(short, args)
+            mangle_layout_key(name, args)
         };
-        self.enum_layouts.iter().any(|el| {
-            !el.is_indirect && (el.name == key || el.name == *name || short_name(&el.name) == short)
-        })
+        self.enum_layouts
+            .iter()
+            .any(|el| !el.is_indirect && el.name == key)
     }
 
     /// True when `vec_ty` is a `Vec<T>` whose element `T` is an owned-Vec element.
@@ -1183,11 +1161,10 @@ impl Builder {
                     | None => {}
                 }
 
-                let short = short_name(name);
                 let key = if args.is_empty() {
                     name.clone()
                 } else {
-                    mangle_layout_key(short, args)
+                    mangle_layout_key(name, args)
                 };
                 let visit_key = format!("named:{key}");
                 if !visiting.insert(visit_key.clone()) {
@@ -1361,7 +1338,6 @@ impl Builder {
     /// element token this side derives matches the checker's `TypeDef`-backed
     /// verdict (`dedup-semantic-boundary`).
     fn nominal_indirect_for_vec_element(&self, name: &str, args: &[hew_types::Ty]) -> Option<bool> {
-        let short = short_name(name);
         // The layout registries key generic instantiations by the monomorphised
         // mangle (`W$$i64`), so form that key from the substituted arguments; a
         // monomorphic nominal keeps its bare declared name. Mirrors the
@@ -1375,16 +1351,10 @@ impl Builder {
         } else {
             name.to_string()
         };
-        if let Some(layout) = self
-            .enum_layouts
-            .iter()
-            .find(|el| el.name == key || el.name == name || short_name(&el.name) == short)
-        {
+        if let Some(layout) = self.enum_layouts.iter().find(|el| el.name == key) {
             return Some(layout.is_indirect);
         }
-        if self.lookup_record_field_order(&key).is_some()
-            || self.lookup_record_field_order(name).is_some()
-        {
+        if self.lookup_record_field_order(&key).is_some() {
             return Some(false);
         }
         None
@@ -2569,20 +2539,13 @@ impl Builder {
                     return;
                 };
                 let object_ty = self.subst_ty(&object.ty);
-                // Route the GENERIC arm's outer record name through `short_name`
-                // before mangling, exactly as the `StructInit` arm does
-                // (`mangle_layout_key(short_name(tname), args)`): registration
-                // keys a generic record's layout under the bare outer name
-                // (`Holder$$Box`), so a qualified outer spelling must shorten
-                // here or the mangled key diverges from the registered one. The
-                // monomorphic arm keeps the (possibly qualified) `name` so a
-                // same-bare-name record registered under its QUALIFIED key
-                // (`widgeti8.Widget` vs `widgeti64.Widget`, divergent layouts)
-                // hits its own layout; `lookup_record_field_order` strips the
-                // qualifier on a miss for bare-registered monomorphic records.
+                // Both generic and monomorphic field stores use the exact
+                // checker-resolved outer identity. The shared layout helper
+                // makes that dotted owner native-safe; it must never be
+                // reduced to its leaf name before lookup.
                 let type_name = match &object_ty {
                     ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
-                        mangle_layout_key(short_name(name), args)
+                        mangle_layout_key(name, args)
                     }
                     ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
@@ -3550,7 +3513,11 @@ impl Builder {
                 });
                 Some(dest)
             }
-            HirExprKind::Call { callee, args } => {
+            HirExprKind::Call {
+                target,
+                callee,
+                args,
+            } => {
                 if let Some((symbol, args, site)) = runtime_symbol_for_call_expr(expr) {
                     return self.lower_runtime_call(
                         &symbol,
@@ -3616,75 +3583,220 @@ impl Builder {
                         return self.lower_lambda_actor_call(callee, args, &expr.ty, expr.site);
                     }
                 }
-                // SHIM(E2→checker): user functions are still identified by
-                // callee name membership in `module_fn_names` until HIR threads
-                // resolved item/builtin variants through the bridge.
-                let callee_name = match &callee.kind {
-                    HirExprKind::BindingRef { name, resolved } => Some((name.as_str(), *resolved)),
+                // Direct-call target authority.  A `BindingRef` remains useful
+                // for source locations and ItemId-backed ownership facts, but
+                // never selects the callee.  In particular, a user declaration
+                // called `log` must not become the runtime math builtin `log`
+                // merely because their leaf spellings collide.
+                let callee_item = match &callee.kind {
+                    HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Item(item),
+                        ..
+                    } => Some(*item),
                     _ => None,
                 };
-                if let Some((name, callee_resolved)) = callee_name {
-                    // Generic top-level user fn: HIR recorded
-                    // `call_site_type_args[expr.site]` with the type
-                    // arguments observed at this call site (possibly
-                    // including the enclosing fn's type-parameter
-                    // symbols when this call is inside a generic
-                    // body). Substitute via this Builder's monomorph
-                    // substitution map and dispatch to the
-                    // per-instantiation mangled symbol.
-                    if let Some(type_args) = self.call_site_type_args.get(&expr.site).cloned() {
-                        let substituted: Vec<ResolvedTy> =
-                            type_args.iter().map(|t| self.subst_ty(t)).collect();
-                        let mangled = hew_hir::monomorph::mangle(name, &substituted);
-                        // If the mangled symbol is in `module_fn_names`,
-                        // a per-instantiation MIR function was emitted
-                        // by `lower_hir_module`; dispatch to it
-                        // directly. Otherwise fall through to the
-                        // unmangled lookup — the unspecialised origin
-                        // is being lowered in a context where no
-                        // monomorphisation was registered (e.g. when
-                        // tests directly invoke `lower_hir_module`
-                        // with a HirModule that bypassed the producer).
-                        if self.module_fn_names.contains(&mangled) {
-                            let ret_ty = self.subst_ty(&expr.ty);
-                            let callee_item = match callee_resolved {
-                                ResolvedRef::Item(item) => Some(item),
-                                _ => None,
-                            };
-                            return self.lower_direct_call(
-                                &mangled,
-                                None,
-                                callee_item,
-                                args,
-                                &ret_ty,
-                                expr.site,
-                            );
+                match target {
+                    hew_types::CallTarget::User(declaration) => {
+                        // The declaration ID is the semantic source and its
+                        // exact HIR declaration-to-symbol projection is the
+                        // linker authority.  No dotted-name reconstruction or
+                        // leaf-name retry is permitted below: an absent map
+                        // entry is a broken HIR/MIR boundary, not a spelling
+                        // the backend may recover.
+                        let Some(symbol) = self.direct_call_symbols.get(declaration).cloned()
+                        else {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "direct declaration `{}` without an HIR symbol map",
+                                        declaration.full_path()
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "MIR refuses to reconstruct a user-function linker label from a declaration path"
+                                    .to_string(),
+                            });
+                            return None;
+                        };
+                        let symbol = self.project_direct_call_symbol(symbol, expr.site);
+                        if !self.module_fn_names.contains(&symbol) {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "direct declaration `{}` has no emitted MIR body",
+                                        declaration.full_path()
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "the checker-selected declaration ID did not project to an emitted symbol; MIR will not retry the callee spelling"
+                                    .to_string(),
+                            });
+                            return None;
                         }
-                    }
-                    // User-defined function in the same module: emit a call terminator.
-                    // The callee symbol is the bare function name as declared;
-                    // codegen resolves it against the module's fn_symbols table.
-                    if self.module_fn_names.contains(name) {
-                        // Thread the typed builtin resolution (if any) so the
-                        // suspend-vs-blocking classification keys on the
-                        // checker-resolved family, never on the symbol string.
-                        let builtin = match callee_resolved {
-                            ResolvedRef::Builtin(family) => Some(family),
-                            _ => None,
-                        };
-                        let callee_item = match callee_resolved {
-                            ResolvedRef::Item(item) => Some(item),
-                            _ => None,
-                        };
                         return self.lower_direct_call(
-                            name,
-                            builtin,
+                            &symbol,
+                            None,
                             callee_item,
                             args,
                             &expr.ty,
                             expr.site,
                         );
                     }
+                    hew_types::CallTarget::Runtime(family) => {
+                        if family == &hew_types::runtime_call::RuntimeCallFamily::StringConcat {
+                            return self.lower_string_concat_runtime_call(
+                                args,
+                                expr.site,
+                                RuntimeCallContext::ValueNeeded,
+                                Some(&expr.ty),
+                            );
+                        }
+                        // `runtime_symbol_for_call_expr` handled the ABI subset
+                        // above.  The remaining typed families are the explicit
+                        // direct/codegen-intercept partition.
+                        let symbol = family.c_symbol();
+                        if !self.module_fn_names.contains(symbol) {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "runtime family `{family:?}` has no direct MIR route"
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "MIR consumes the checker-selected runtime family and does not retry a callee name"
+                                    .to_string(),
+                            });
+                            return None;
+                        }
+                        return self.lower_direct_call(
+                            symbol,
+                            Some(*family),
+                            None,
+                            args,
+                            &expr.ty,
+                            expr.site,
+                        );
+                    }
+                    hew_types::CallTarget::Builtin { endpoint } => {
+                        // Catalog builtin endpoints are checker/HIR-validated
+                        // call identities.  Unlike `Runtime`, some use a
+                        // codegen-only linkage such as `PrintIntercept` and
+                        // therefore have no RuntimeCallFamily.  The endpoint
+                        // itself is the closed catalog key; MIR does not
+                        // reinterpret the source callee spelling.
+                        // A catalog FFI shim has two distinct identities: the
+                        // checker-selected catalog endpoint (for example
+                        // `len_str`) and the concrete runtime symbol its ABI
+                        // declaration/codegen entry uses
+                        // (`hew_string_length`).  Join them by the callee's
+                        // catalog ItemId, never by a spelling lookup: a user
+                        // `extern` is allowed to share the endpoint spelling,
+                        // but must not inherit the catalog row's runtime
+                        // ownership facts.  Keeping the emitted symbol here
+                        // makes the raw-MIR call, representation-effect facts,
+                        // and codegen all refer to the same concrete ABI edge.
+                        let callee_symbol = callee_item
+                            .and_then(|item| {
+                                crate::return_provenance::stdlib_shim_emitted_symbol(endpoint, item)
+                            })
+                            .unwrap_or(endpoint.as_str());
+                        if !self.module_fn_names.contains(callee_symbol) {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "catalog builtin endpoint `{endpoint}` (emitted as \
+                                         `{callee_symbol}`) has no direct MIR route"
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "MIR consumes the HIR-selected catalog endpoint and does not retry a callee name"
+                                    .to_string(),
+                            });
+                            return None;
+                        }
+                        return self.lower_direct_call(
+                            callee_symbol,
+                            None,
+                            callee_item,
+                            args,
+                            &expr.ty,
+                            expr.site,
+                        );
+                    }
+                    hew_types::CallTarget::ImplMethod(declaration) => {
+                        let Some(symbol) = self.direct_call_symbols.get(declaration).cloned()
+                        else {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "direct impl method `{}` without an HIR symbol map",
+                                        declaration.full_path()
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "MIR refuses to reconstruct an impl-method linker label from a leaf method name"
+                                    .to_string(),
+                            });
+                            return None;
+                        };
+                        let symbol = self.project_direct_call_symbol(symbol, expr.site);
+                        if !self.module_fn_names.contains(&symbol) {
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "impl method `{}` has no emitted MIR body",
+                                        declaration.full_path()
+                                    ),
+                                    site: expr.site,
+                                },
+                                note: "the exact HIR declaration-to-symbol projection did not name an emitted function"
+                                    .to_string(),
+                            });
+                            return None;
+                        }
+                        return self.lower_direct_call(
+                            &symbol,
+                            None,
+                            callee_item,
+                            args,
+                            &expr.ty,
+                            expr.site,
+                        );
+                    }
+                    hew_types::CallTarget::Extern {
+                        declaration: _,
+                        endpoint,
+                    } => {
+                        // The endpoint was validated and attached by the
+                        // checker-side extern-symbol rewrite.  It is not a
+                        // source declaration lookup and therefore must not be
+                        // routed through the impl-body symbol map.
+                        return self
+                            .lower_direct_call(endpoint, None, None, args, &expr.ty, expr.site);
+                    }
+                    hew_types::CallTarget::Unsupported { reason } => {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::UnsupportedNode {
+                                reason: format!("unsupported checker call target: {reason}"),
+                            },
+                            note: "HIR must not pass an unsupported call target to MIR".to_string(),
+                        });
+                        return None;
+                    }
+                    hew_types::CallTarget::RuntimeCollection(_)
+                    | hew_types::CallTarget::DynamicVtable { .. }
+                    | hew_types::CallTarget::StaticTraitMethod { .. } => {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::UnsupportedNode {
+                                reason: "non-ordinary CallTarget reached ordinary call lowering"
+                                    .to_string(),
+                            },
+                            note: "this target family must use its dedicated HIR call variant"
+                                .to_string(),
+                        });
+                        return None;
+                    }
+                    hew_types::CallTarget::IndirectFunctionValue => {}
                 }
                 if matches!(
                     callee.kind,
@@ -3893,18 +4005,15 @@ impl Builder {
                 // single-module construction never carries a dotted name and
                 // falls through to the bare syntactic `name` byte-identically.
                 let expr_ty = self.subst_ty(&expr.ty);
-                let record_key = match &expr_ty {
+                let record_key = user_record_layout_key(&expr_ty).unwrap_or_else(|| name.clone());
+                let is_vec_iter_cursor = matches!(
+                    &expr_ty,
                     ResolvedTy::Named {
-                        name: tname, args, ..
-                    } if !args.is_empty() => mangle_layout_key(short_name(tname), args),
-                    ResolvedTy::Named {
-                        name: tname,
                         args,
-                        builtin: None,
+                        builtin: Some(BuiltinType::VecIter),
                         ..
-                    } if args.is_empty() && tname.contains('.') => tname.clone(),
-                    _ => name.clone(),
-                };
+                    } if args.len() == 1
+                );
                 // Look up the declaration-order field list for this record.
                 // If it's missing, the checker allowed a type that was never
                 // registered — fail closed rather than silently producing
@@ -4083,7 +4192,7 @@ impl Builder {
                     // treating every CowValue Capture as non-transferring;
                     // closure-environment and other aggregate ingress sites
                     // retain their ordinary ownership-boundary semantics.
-                    let borrows_vec_iter_source = name.rsplit('.').next() == Some("VecIter")
+                    let borrows_vec_iter_source = is_vec_iter_cursor
                         && fname == "vec"
                         && fexpr.intent == hew_hir::IntentKind::Capture;
                     let place = if borrows_vec_iter_source {
@@ -4697,7 +4806,7 @@ impl Builder {
                 let object_ty = self.subst_ty(&object.ty);
                 let type_name = match &object_ty {
                     ResolvedTy::Named { name, args, .. } if !args.is_empty() => {
-                        mangle_layout_key(short_name(name), args)
+                        mangle_layout_key(name, args)
                     }
                     ResolvedTy::Named { name, .. } => name.clone(),
                     other => {
@@ -5036,6 +5145,7 @@ impl Builder {
                 args,
                 ret_ty,
                 signature,
+                ..
             } => {
                 // Lower the receiver (a `dyn Trait` fat pointer) and the
                 // ordinary args. `Instr::CallTraitMethod` GEPs into the
@@ -5678,6 +5788,7 @@ impl Builder {
             }
             HirExprKind::CallTraitMethodStatic {
                 receiver,
+                target,
                 receiver_type_param,
                 declaring_trait,
                 method_name,
@@ -5740,9 +5851,9 @@ impl Builder {
                     });
                     return None;
                 };
-                // (2) canonical (self_type_name, type_args).
-                let Some((self_type_name, type_args)) =
-                    hew_hir::dispatch::receiver_self_type_for_impl_lookup(&concrete_ty)
+                // (2) canonical nominal instance.
+                let Some(self_type) =
+                    hew_hir::dispatch::receiver_self_type_for_impl_lookup_instance(&concrete_ty)
                 else {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::NotYetImplemented {
@@ -5758,30 +5869,44 @@ impl Builder {
                     });
                     return None;
                 };
-                // (3) structured registry lookup (tolerant of a
-                // module-qualified receiver name for imported impls).
-                // Pass `type_args` so the lookup finds concrete-specialised impls
-                // (`impl Describe for Wrapper<i64>`) keyed under the mangled name
-                // (`"Wrapper$$i64"`) before falling back to generic impls (#2270).
-                let Some(entry) = hew_hir::dispatch::lookup_trait_impl_entry(
+                let hew_types::CallTarget::StaticTraitMethod {
+                    declaring_trait: target_trait,
+                    method: target_method,
+                } = target
+                else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: "static trait call has no executable checker target"
+                                .to_string(),
+                        },
+                        note: "HIR must reject unsupported static-trait targets before MIR"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                // (3) structured registry lookup by checker-owned IDs. The
+                // only fallback inside the HIR index is the exact same nominal's
+                // generic implementation; there is no string/leaf retry.
+                let Some(entry) = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
                     &self.trait_impl_index,
-                    declaring_trait,
-                    &self_type_name,
-                    method_name,
-                    &type_args,
+                    target_trait,
+                    &self_type,
+                    target_method,
                 )
                 .cloned() else {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::StaticDispatchImplNotFound {
                             declaring_trait: declaring_trait.clone(),
-                            self_type_name: self_type_name.clone(),
+                            self_type_name: self_type.nominal.declaration().full_path().to_string(),
                             method_name: method_name.clone(),
                             site: expr.site,
                         },
                         note: format!(
-                            "no impl of trait `{declaring_trait}` for `{self_type_name}` \
+                            "no impl of trait `{}` for `{}` \
                              registered in the static-dispatch index; the checker should \
-                             have rejected this call"
+                             have rejected this call",
+                            target_trait.full_path(),
+                            self_type.nominal.declaration().full_path(),
                         ),
                     });
                     return None;
@@ -5792,7 +5917,11 @@ impl Builder {
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::StaticDispatchImplNotFound {
                                 declaring_trait: declaring_trait.clone(),
-                                self_type_name: self_type_name.clone(),
+                                self_type_name: self_type
+                                    .nominal
+                                    .declaration()
+                                    .full_path()
+                                    .to_string(),
                                 method_name: method_name.clone(),
                                 site: expr.site,
                             },
@@ -5806,7 +5935,10 @@ impl Builder {
                     }
                     entry.method_symbol.clone()
                 } else {
-                    let mangled = hew_hir::monomorph::mangle(&entry.method_symbol, &type_args);
+                    let mangled = hew_hir::monomorph::function_monomorph_symbol(
+                        &entry.method_symbol,
+                        &self_type.args,
+                    );
                     if !self.module_fn_names.contains(&mangled) {
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::StaticDispatchMonomorphisationMissing {
@@ -5849,13 +5981,16 @@ impl Builder {
             }
             HirExprKind::VarSelfMethodCall {
                 receiver,
+                call_target,
                 target,
                 args,
                 ret_ty,
                 receiver_ty,
+                ..
             } => self.lower_var_self_method_call(
                 expr.site,
                 receiver,
+                call_target,
                 target,
                 args,
                 ret_ty,
@@ -6182,8 +6317,12 @@ impl Builder {
                 };
                 let ret_local = self.alloc_local(ret_ty.clone());
                 let next = self.alloc_block();
+                let step_layout_key = match &receiver.ty {
+                    ResolvedTy::Named { name, args, .. } => named_layout_key(name, args),
+                    _ => machine_name.clone(),
+                };
                 self.finish_current_block(Terminator::Call {
-                    callee: mangle_machine_step(short_name(machine_name)),
+                    callee: mangle_machine_step(&step_layout_key),
                     builtin: None,
                     args: vec![self_arg, event_arg],
                     dest: Some(ret_local),
@@ -8257,9 +8396,14 @@ impl Builder {
     /// argument fails to produce a Place (an unsupported construct in its
     /// own right), the whole call fails closed and returns `None` —
     /// diagnostics from the argument lowering already capture the root cause.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fail-closed static dispatch gate keeps all exact-identity rejection paths together"
+    )]
     fn resolve_static_trait_method_callee(
         &mut self,
         receiver_type_param: &str,
+        target: &hew_types::CallTarget,
         declaring_trait: &str,
         method_name: &str,
         site: SiteId,
@@ -8282,8 +8426,8 @@ impl Builder {
             });
             return None;
         };
-        let Some((self_type_name, type_args)) =
-            hew_hir::dispatch::receiver_self_type_for_impl_lookup(&concrete_ty)
+        let Some(self_type) =
+            hew_hir::dispatch::receiver_self_type_for_impl_lookup_instance(&concrete_ty)
         else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
@@ -8299,26 +8443,40 @@ impl Builder {
             });
             return None;
         };
-        // Pass `type_args` so concrete-specialised impls resolve correctly (#2270).
-        let Some(entry) = hew_hir::dispatch::lookup_trait_impl_entry(
+        let hew_types::CallTarget::StaticTraitMethod {
+            declaring_trait: target_trait,
+            method: target_method,
+        } = target
+        else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: "var-self static trait call has no executable checker target"
+                        .to_string(),
+                },
+                note: "HIR must reject unsupported static-trait targets before MIR".to_string(),
+            });
+            return None;
+        };
+        let Some(entry) = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
             &self.trait_impl_index,
-            declaring_trait,
-            &self_type_name,
-            method_name,
-            &type_args,
+            target_trait,
+            &self_type,
+            target_method,
         )
         .cloned() else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::StaticDispatchImplNotFound {
                     declaring_trait: declaring_trait.to_string(),
-                    self_type_name: self_type_name.clone(),
+                    self_type_name: self_type.nominal.declaration().full_path().to_string(),
                     method_name: method_name.to_string(),
                     site,
                 },
                 note: format!(
-                    "no impl of trait `{declaring_trait}` for `{self_type_name}` \
+                    "no impl of trait `{}` for `{}` \
                      registered in the static-dispatch index; the checker should \
-                     have rejected this call"
+                     have rejected this call",
+                    target_trait.full_path(),
+                    self_type.nominal.declaration().full_path(),
                 ),
             });
             return None;
@@ -8328,7 +8486,7 @@ impl Builder {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::StaticDispatchImplNotFound {
                         declaring_trait: declaring_trait.to_string(),
-                        self_type_name: self_type_name.clone(),
+                        self_type_name: self_type.nominal.declaration().full_path().to_string(),
                         method_name: method_name.to_string(),
                         site,
                     },
@@ -8342,7 +8500,8 @@ impl Builder {
             }
             return Some(entry.method_symbol);
         }
-        let mangled = hew_hir::monomorph::mangle(&entry.method_symbol, &type_args);
+        let mangled =
+            hew_hir::monomorph::function_monomorph_symbol(&entry.method_symbol, &self_type.args);
         if !self.module_fn_names.contains(&mangled) {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::StaticDispatchMonomorphisationMissing {
@@ -8362,37 +8521,63 @@ impl Builder {
         Some(mangled)
     }
 
+    /// Project a checker-selected HIR body symbol to the exact emitted body at
+    /// one call site.  The declaration-to-symbol lookup happens at the caller;
+    /// this helper only applies its carried concrete type arguments.  Keeping
+    /// the projection shared by `User` and `ImplMethod` calls prevents generic
+    /// impl dispatch from falling back to a receiver/display-name reconstruction.
+    fn project_direct_call_symbol(&self, symbol: String, site: SiteId) -> String {
+        let Some(type_args) = self.call_site_type_args.get(&site) else {
+            return symbol;
+        };
+        let substituted: Vec<ResolvedTy> = type_args.iter().map(|ty| self.subst_ty(ty)).collect();
+        hew_hir::monomorph::function_monomorph_symbol(&symbol, &substituted)
+    }
+
     fn resolve_var_self_direct_callee(
         &mut self,
-        callee: &str,
+        call_target: &hew_types::CallTarget,
         site: SiteId,
         receiver_ty: &ResolvedTy,
     ) -> Option<String> {
-        // HIR is authoritative when it already emitted a directly callable
-        // symbol. In particular, a concrete-specialised impl method is named
-        // with its self-type arguments (`Vec$$i64::bump`) and appears in
-        // `module_fn_names` exactly as emitted. Trying the parameterised
-        // receiver fallback first would feed that already-mangled symbol back
-        // into `monomorph::mangle`, violating the origin-name invariant and
-        // panicking at `hew check`.
-        //
+        let hew_types::CallTarget::ImplMethod(declaration) = call_target else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: format!(
+                        "var-self direct call has non-impl checker target {call_target:?}"
+                    ),
+                },
+                note: "a direct var-self call requires a checker-owned ImplMethod declaration"
+                    .to_string(),
+            });
+            return None;
+        };
+        let Some(base_callee) = self.direct_call_symbols.get(declaration).cloned() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "var-self impl method `{}` without an HIR symbol map",
+                        declaration.full_path()
+                    ),
+                    site,
+                },
+                note:
+                    "MIR will not reconstruct a var-self method endpoint from `Type::method` text"
+                        .to_string(),
+            });
+            return None;
+        };
         // Generic impl/method origins are deliberately absent from
-        // `module_fn_names`; they therefore continue through the two
-        // monomorphisation probes below.
-        if self.module_fn_names.contains(callee) {
-            return Some(callee.to_string());
-        }
-        if let Some(type_args) = self.call_site_type_args.get(&site).cloned() {
-            let substituted: Vec<ResolvedTy> = type_args.iter().map(|t| self.subst_ty(t)).collect();
-            let mangled = hew_hir::monomorph::mangle(callee, &substituted);
-            if self.module_fn_names.contains(&mangled) {
-                return Some(mangled);
-            }
+        // `module_fn_names`; their type arguments are applied only after the
+        // exact declaration-to-symbol projection above.
+        let callee = self.project_direct_call_symbol(base_callee.clone(), site);
+        if self.module_fn_names.contains(&callee) {
+            return Some(callee);
         }
         let substituted_receiver = self.subst_ty(receiver_ty);
         if let ResolvedTy::Named { args, .. } = &substituted_receiver {
             if !args.is_empty() {
-                let mangled = hew_hir::monomorph::mangle(callee, args);
+                let mangled = hew_hir::monomorph::function_monomorph_symbol(&base_callee, args);
                 if self.module_fn_names.contains(&mangled) {
                     return Some(mangled);
                 }
@@ -8434,10 +8619,15 @@ impl Builder {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the var-self carrier is intentionally explicit across site, target, receiver, result, and writeback types"
+    )]
     fn lower_var_self_method_call(
         &mut self,
         site: SiteId,
         receiver: &HirExpr,
+        call_target: &hew_types::CallTarget,
         target: &HirVarSelfMethodTarget,
         args: &[HirExpr],
         ret_ty: &ResolvedTy,
@@ -8485,8 +8675,8 @@ impl Builder {
             return None;
         }
         let callee_symbol = match target {
-            HirVarSelfMethodTarget::Direct { callee } => {
-                self.resolve_var_self_direct_callee(callee, site, receiver_ty)?
+            HirVarSelfMethodTarget::Direct => {
+                self.resolve_var_self_direct_callee(call_target, site, receiver_ty)?
             }
             HirVarSelfMethodTarget::StaticTrait {
                 receiver_type_param,
@@ -8495,6 +8685,7 @@ impl Builder {
                 ..
             } => self.resolve_static_trait_method_callee(
                 receiver_type_param,
+                call_target,
                 declaring_trait,
                 method_name,
                 site,
@@ -9595,6 +9786,50 @@ impl Builder {
             to_ty: ResolvedTy::I64,
         });
         Some(count_i64)
+    }
+
+    /// Emit `hew_string_concat(lhs, rhs) -> string` for the typed runtime
+    /// call route used by f-string interpolation. Binary string `+` reaches
+    /// the same runtime through `lower_binary`; this arm closes the separate
+    /// `CallTarget::Runtime(StringConcat)` producer path without recovering a
+    /// callee from its source spelling.
+    fn lower_string_concat_runtime_call(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        if hir_args.len() != 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_string_concat` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_string_concat` expects 2 string arguments, got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        if !matches!(result_ty, Some(ResolvedTy::String)) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_string_concat` result type".to_string(),
+                    site,
+                },
+                note: "`hew_string_concat` requires the checker-recorded string result type"
+                    .to_string(),
+            });
+            return None;
+        }
+        let lhs = self.lower_value(&hir_args[0])?;
+        let rhs = self.lower_value(&hir_args[1])?;
+        let dest = self.alloc_local(ResolvedTy::String);
+        self.push_runtime_call("hew_string_concat", vec![lhs, rhs], Some(dest));
+        let _ = context;
+        Some(dest)
     }
 
     fn lower_observe_runtime_call(

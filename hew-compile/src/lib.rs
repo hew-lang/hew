@@ -787,13 +787,11 @@ fn build_module_graph_with_diagnostics(
     }
     rewrite_direct_stdlib_module_root(&mut graph, items, &input_canonical)?;
 
-    // Reject programs where two different module imports share the same short
-    // name (the last path segment).  HIR keys all cross-module fn registrations
-    // by `module_short.fn_name`; two modules with the same short name would
-    // silently collide in the fn-registry.  Fail closed here so HIR never sees
-    // the ambiguity.  The richer "did you mean foo::util or bar::util?"
-    // suggestion is deferred to a v0.6 diagnostic-quality lane.
-    if let Err(msg) = check_duplicate_short_module_names(&graph) {
+    // Canonical module IDs may share a final component. Reject only when two
+    // whole-module imports in the SAME source scope publish the same surface
+    // binding for different canonical paths. Distinct module aliases are
+    // unambiguous; named/glob symbol bindings remain checker-owned.
+    if let Err(msg) = check_ambiguous_module_import_bindings(&graph) {
         return Err(FrontendFailure::message_only(msg));
     }
 
@@ -814,21 +812,33 @@ fn build_module_graph_with_diagnostics(
     Ok(graph)
 }
 
-fn check_duplicate_short_module_names(
+fn check_ambiguous_module_import_bindings(
     graph: &hew_parser::module::ModuleGraph,
 ) -> Result<(), String> {
-    let mut seen: HashMap<&str, &hew_parser::module::ModuleId> = HashMap::new();
-    for mod_id in &graph.topo_order {
-        if *mod_id == graph.root {
-            continue;
-        }
-        let short = mod_id.path.last().map_or("", String::as_str);
-        if let Some(existing) = seen.insert(short, mod_id) {
-            return Err(format!(
-                "Error: two imported modules share the short name `{short}`: \
-                 `{existing}` and `{mod_id}`. \
-                 Rename one of the imports or use file-path import syntax."
-            ));
+    for (owner_id, module) in &graph.modules {
+        let mut seen: HashMap<String, String> = HashMap::new();
+        for (item, _) in &module.items {
+            let Item::Import(import) = item else {
+                continue;
+            };
+            if import.path.is_empty() || import.spec.is_some() {
+                continue;
+            }
+            let source = import.path.join("::");
+            let binding = import
+                .module_alias
+                .clone()
+                .or_else(|| import.path.last().cloned())
+                .expect("non-file module imports have a path");
+            if let Some(existing) = seen.insert(binding.clone(), source.clone()) {
+                if existing != source {
+                    return Err(format!(
+                        "Error: module `{owner_id}` imports both `{existing}` and `{source}` \
+                         under the ambiguous binding `{binding}`. \
+                         Give one import a distinct module alias."
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -1849,6 +1859,798 @@ mod tests {
     }
 
     #[test]
+    fn imported_private_externs_publish_exact_direct_call_symbols() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile has a workspace parent");
+        let input = repo_root.join("tests/pkg-import/imported_actor_ask_i32.hew");
+        let state = run_file_frontend_to_typecheck(
+            input.to_str().expect("fixture path is utf-8"),
+            &FrontendOptions {
+                pkg_path: Some(repo_root.join("tests/pkg-import/pkgs")),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("imported actor fixture must type-check");
+        let tco = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("type checking was enabled");
+        let hir = hew_hir::lower_program(
+            &state.program,
+            tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "imported actor fixture must lower without HIR diagnostics: {:#?}",
+            hir.diagnostics
+        );
+        let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
+        for name in [
+            "hew_testffi_count32",
+            "hew_testffi_count64",
+            "hew_testffi_name",
+            "hew_testffi_query",
+        ] {
+            let declaration = hew_types::DefId::new(format!("hew.testffi.{name}"));
+            assert_eq!(
+                symbols.get(&declaration),
+                Some(&name.to_string()),
+                "imported private extern `{declaration:?}` must have a canonical HIR direct-call symbol"
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the import-order regression keeps both declaration-owner permutations in one proof"
+    )]
+    fn mixed_file_and_package_impls_keep_declaration_owned_dispatch_in_both_import_orders() {
+        // A file import is flattened into the root program, whereas a package
+        // import retains its package-qualified declaration owner.  The two
+        // sources intentionally declare same-leaf `Result` / `ResultMethods`
+        // impls.  The checker must select the root-owned file declaration for
+        // `local.tag()` and the package-owned declaration for `r.rows()`;
+        // choosing an owner by the shared leaf name makes HIR's body lookup
+        // ambiguous or attaches the call to the wrong implementation.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile has a workspace parent");
+        let fixture_dir = repo_root.join("tests/pkg-import");
+        let input = fixture_dir.join("mixed_import_impl_collision.hew");
+        let package_path = fixture_dir.join("pkgs");
+
+        let source = fs::read_to_string(&input).expect("read mixed-import fixture");
+        let reversed_source = source.replacen(
+            "import hew::testffi;\nimport \"mixed_import_impl_collision_lib.hew\";",
+            "import \"mixed_import_impl_collision_lib.hew\";\nimport hew::testffi;",
+            1,
+        );
+        assert_ne!(
+            reversed_source, source,
+            "fixture imports must be reversed for the second frontend pass"
+        );
+        let reversed_dir = tempfile::tempdir().expect("create reversed-import fixture dir");
+        let reversed_input = write_source(
+            reversed_dir.path(),
+            "mixed_import_impl_collision.hew",
+            &reversed_source,
+        );
+        fs::copy(
+            fixture_dir.join("mixed_import_impl_collision_lib.hew"),
+            reversed_dir
+                .path()
+                .join("mixed_import_impl_collision_lib.hew"),
+        )
+        .expect("copy mixed-import library");
+
+        let root_tag = hew_types::DefId::new("Result::<impl ResultMethods for Result>::tag");
+        let package_rows = hew_types::DefId::new(
+            "hew.testffi.Result::<impl hew.testffi.ResultMethods for hew.testffi.Result>::rows",
+        );
+
+        for fixture in [
+            input.to_str().expect("fixture path is utf-8"),
+            reversed_input.as_str(),
+        ] {
+            let state = run_file_frontend_to_typecheck(
+                fixture,
+                &FrontendOptions {
+                    pkg_path: Some(package_path.clone()),
+                    ..FrontendOptions::default()
+                },
+            )
+            .expect("mixed-import fixture must type-check");
+            let tco = state
+                .typecheck_result
+                .tco
+                .as_ref()
+                .expect("type checking was enabled");
+
+            assert_eq!(
+                tco.impl_method_declaration_ids.get("Result::tag"),
+                Some(&root_tag),
+                "the flattened file-import implementation must retain a root declaration ID"
+            );
+            assert_eq!(
+                tco.impl_method_declaration_ids
+                    .get("hew.testffi.Result::rows"),
+                Some(&package_rows),
+                "the package implementation must retain its package-qualified declaration ID"
+            );
+            assert!(
+                tco.method_call_rewrites.values().any(|rewrite| matches!(
+                    rewrite,
+                    hew_types::check::MethodCallRewrite::RewriteToFunction {
+                        target: hew_types::check::CallTarget::ImplMethod(declaration),
+                        ..
+                    } if declaration == &root_tag
+                )),
+                "local Result.tag() must select the root file-import declaration: {:#?}",
+                tco.method_call_rewrites
+            );
+            assert!(
+                tco.method_call_rewrites.values().any(|rewrite| matches!(
+                    rewrite,
+                    hew_types::check::MethodCallRewrite::RewriteToFunction {
+                        target: hew_types::check::CallTarget::ImplMethod(declaration),
+                        ..
+                    } if declaration == &package_rows
+                )),
+                "package Result.rows() must select the package declaration: {:#?}",
+                tco.method_call_rewrites
+            );
+
+            let hir = hew_hir::lower_program(
+                &state.program,
+                tco,
+                &hew_hir::ResolutionCtx,
+                hew_hir::TargetArch::host(),
+            );
+            assert!(
+                hir.diagnostics.is_empty(),
+                "mixed imports must lower without declaration/body lookup diagnostics: {:#?}",
+                hir.diagnostics
+            );
+            let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
+            assert_eq!(symbols.get(&root_tag), Some(&"Result::tag".to_string()));
+            assert_eq!(
+                symbols.get(&package_rows),
+                Some(&"hew.testffi.Result::rows".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn imported_generic_impl_bodies_publish_each_checker_owned_declaration() {
+        // `privslot` deliberately combines all three conditions that used to
+        // make a body lookup tempting to recover from a leaf spelling: its
+        // module-private generic `Slot<T>` is nested in a public `Store<T>`,
+        // and the consumer dispatches two inherent methods after the root body
+        // was lowered.  The checker declaration is the sole identity handoff;
+        // every emitted impl function must retain that exact declaration and
+        // appear in the direct-body index before MIR begins.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile has a workspace parent");
+        let input = repo_root.join("tests/pkg-import/private_generic_record_vec_element.hew");
+        let state = run_file_frontend_to_typecheck(
+            input.to_str().expect("fixture path is utf-8"),
+            &FrontendOptions {
+                pkg_path: Some(repo_root.join("tests/pkg-import/pkgs")),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("private generic-record fixture must type-check");
+        let tco = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("type checking was enabled");
+        let expected = [
+            (
+                "hew.privslot.Store::add",
+                hew_types::DefId::new(
+                    "hew.privslot.Store::<impl inherent for hew.privslot.Store<T>>::add",
+                ),
+            ),
+            (
+                "hew.privslot.Store::generation_at",
+                hew_types::DefId::new(
+                    "hew.privslot.Store::<impl inherent for hew.privslot.Store<T>>::generation_at",
+                ),
+            ),
+        ];
+        for (symbol, declaration) in &expected {
+            assert_eq!(
+                tco.impl_method_declaration_ids.get(*symbol),
+                Some(declaration),
+                "checker must publish the canonical full-source symbol key `{symbol}`"
+            );
+        }
+
+        let hir = hew_hir::lower_program(
+            &state.program,
+            tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "generic imported impl methods must lower without body-plan diagnostics: {:#?}",
+            hir.diagnostics
+        );
+        let direct_symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
+        for (symbol, declaration) in &expected {
+            assert_eq!(
+                direct_symbols.get(declaration),
+                Some(&(*symbol).to_string()),
+                "every emitted imported impl body must carry its checker-owned declaration"
+            );
+        }
+
+        let pipeline = hew_mir::lower_hir_module(&hir.module);
+        assert!(
+            pipeline.diagnostics.is_empty(),
+            "MIR must project generic impl calls through their exact HIR body symbols: {:#?}",
+            pipeline.diagnostics
+        );
+        for (symbol, _) in &expected {
+            let concrete = hew_hir::monomorph::function_monomorph_symbol(
+                symbol,
+                &[hew_types::ResolvedTy::String],
+            );
+            assert!(
+                pipeline
+                    .raw_mir
+                    .iter()
+                    .any(|function| function.name == concrete),
+                "generic imported impl `{symbol}` must lower its string specialization `{concrete}`"
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the generic direct-symbol regression covers every module origin in one identity matrix"
+    )]
+    fn nested_generic_free_calls_keep_exact_direct_symbols_across_all_module_origins() {
+        // Every invocation sits in a closure body, which lowers through a child
+        // MIR builder.  Exercise all body origins that may be the selected
+        // generic declaration: root, flattened file import, package import,
+        // and two modules with the same final path component.  The same-leaf
+        // pair makes a linker-name or leaf-name recovery observably unsound.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile has a workspace parent");
+        let dir = tempfile::tempdir().expect("create generic-free-call fixture dir");
+        write_source(
+            dir.path(),
+            "file_helpers.hew",
+            "pub fn file_first<T>(xs: [T]) -> T { xs[0] }\n",
+        );
+        write_source(
+            dir.path(),
+            "alpha.hew",
+            "pub fn first<T>(xs: [T]) -> T { xs[0] }\n",
+        );
+        fs::create_dir_all(dir.path().join("beta")).expect("create same-leaf module directory");
+        write_source(
+            dir.path(),
+            "beta/alpha.hew",
+            "pub fn first<T>(xs: [T]) -> T { xs[0] }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            r#"
+import "file_helpers.hew";
+import hew::genhelpers;
+import alpha as flat_alpha;
+import beta::alpha as nested_alpha;
+
+fn root_first<T>(xs: [T]) -> T { xs[0] }
+
+fn main() {
+    let root = || root_first([1, 2]);
+    let file = || file_helpers.file_first([3, 4]);
+    let imported_pkg = || genhelpers.first([5, 6]);
+    let flat = || flat_alpha.first([7, 8]);
+    let nested = || nested_alpha.first([9, 10]);
+    println(root());
+    println(file());
+    println(imported_pkg());
+    println(flat());
+    println(nested());
+}
+"#,
+        );
+        let state = run_file_frontend_to_typecheck(
+            &input,
+            &FrontendOptions {
+                pkg_path: Some(repo_root.join("tests/pkg-import/pkgs")),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("generic free-call fixture must type-check");
+        let tco = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("type checking was enabled");
+        let hir = hew_hir::lower_program(
+            &state.program,
+            tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "all generic free-call origins must lower cleanly: {:#?}",
+            hir.diagnostics
+        );
+        let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
+        let expected = [
+            (hew_types::DefId::new("root_first"), "root_first"),
+            (
+                hew_types::DefId::new("file_helpers.file_first"),
+                "file_helpers$file_first",
+            ),
+            (
+                hew_types::DefId::new("hew.genhelpers.first"),
+                "hew$genhelpers$first",
+            ),
+            (hew_types::DefId::new("alpha.first"), "alpha$first"),
+            (
+                hew_types::DefId::new("beta.alpha.first"),
+                "beta$alpha$first",
+            ),
+        ];
+        for (declaration, symbol) in expected {
+            assert_eq!(
+                symbols.get(&declaration),
+                Some(&symbol.to_string()),
+                "generic declaration `{}` must retain its exact emitted body symbol",
+                declaration.full_path()
+            );
+        }
+        assert_ne!(
+            symbols.get(&hew_types::DefId::new("alpha.first")),
+            symbols.get(&hew_types::DefId::new("beta.alpha.first")),
+            "same-leaf generic functions must not share a direct-call symbol"
+        );
+
+        let pipeline = hew_mir::lower_hir_module(&hir.module);
+        assert!(
+            pipeline.diagnostics.is_empty(),
+            "nested generic direct calls must inherit the exact HIR symbol map: {:#?}",
+            pipeline.diagnostics
+        );
+        for (symbol, expected_value) in [
+            ("root_first", 1_i64),
+            ("file_helpers$file_first", 3_i64),
+            ("hew$genhelpers$first", 5_i64),
+            ("alpha$first", 7_i64),
+            ("beta$alpha$first", 9_i64),
+        ] {
+            let concrete = hew_hir::monomorph::function_monomorph_symbol(
+                symbol,
+                &[hew_types::ResolvedTy::I64],
+            );
+            assert!(
+                pipeline
+                    .raw_mir
+                    .iter()
+                    .any(|function| function.name == concrete),
+                "closure call returning {expected_value} must emit `{concrete}`"
+            );
+        }
+    }
+
+    #[test]
+    fn self_qualified_module_type_keeps_its_full_owner_through_mir_layout() {
+        // The package fixture names Meter both bare and through its own
+        // lexical leaf (`selfqualtype.Meter`) while its real owner is the
+        // full module-graph path `hew.selfqualtype`. This checks every
+        // handoff: checker signature, HIR declaration/parameter, and MIR
+        // layout must carry that same exact owner. A short-name fallback would
+        // falsely pass the fixture only until a same-leaf package is present.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile has a workspace parent");
+        let input = repo_root.join("tests/pkg-import/self_qualified_type_identity.hew");
+        let state = run_file_frontend_to_typecheck(
+            input.to_str().expect("fixture path is utf-8"),
+            &FrontendOptions {
+                pkg_path: Some(repo_root.join("tests/pkg-import/pkgs")),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("self-qualified package fixture must type-check");
+        let tco = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("type checking was enabled");
+        let expected = "hew.selfqualtype.Meter";
+        assert!(
+            matches!(
+                tco.fn_sigs
+                    .get("hew.selfqualtype.read")
+                    .expect("checker must retain imported read signature")
+                    .params
+                    .as_slice(),
+                [hew_types::Ty::Named { name, .. }] if name == expected
+            ),
+            "checker parameter type must be the complete module owner: {:#?}",
+            tco.fn_sigs.get("hew.selfqualtype.read")
+        );
+
+        let hir = hew_hir::lower_program(
+            &state.program,
+            tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "self-qualified package fixture must lower without HIR diagnostics: {:#?}",
+            hir.diagnostics
+        );
+        let meter_decl = hir
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == expected => Some(decl),
+                _ => None,
+            })
+            .expect("HIR must retain Meter under its full module owner");
+        assert!(
+            matches!(meter_decl.fields.as_slice(), [field] if field.name == "v" && field.ty == hew_types::ResolvedTy::I64),
+            "HIR Meter field must retain its declared shape: {meter_decl:#?}"
+        );
+        let read = hir
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                hew_hir::HirItem::Function(function)
+                    if function.declaration.full_path() == "hew.selfqualtype.read" =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .expect("HIR must emit the imported read body");
+        assert!(
+            matches!(read.params.as_slice(), [param] if param.name == "m" && matches!(&param.ty, hew_types::ResolvedTy::Named { name, .. } if name == expected)),
+            "HIR read parameter must retain the full self-qualified owner: {read:#?}"
+        );
+
+        let pipeline = hew_mir::lower_hir_module(&hir.module);
+        assert!(
+            pipeline.diagnostics.is_empty(),
+            "self-qualified Meter field access must find its exact MIR layout: {:#?}",
+            pipeline.diagnostics
+        );
+        assert!(
+            pipeline.record_layouts.iter().any(|layout| {
+                layout.name == expected
+                    && layout.field_names == ["v".to_string()]
+                    && layout.field_tys == [hew_types::ResolvedTy::I64]
+            }),
+            "MIR must register the full-owner Meter layout: {:#?}",
+            pipeline.record_layouts
+        );
+    }
+
+    #[test]
+    fn same_named_actor_replies_use_their_exact_import_owner_in_either_order() {
+        // `replysend.Reply` has an i64 field; `replynonsend.Reply` carries
+        // Rc<i64>. The actor method signatures spell both replies bare, so the
+        // ask Send gate must translate the actor's lexical module binding to
+        // the full source owner before marker lookup. Reversing imports proves
+        // the result is not a last-writer-wins bare marker row.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile has a workspace parent");
+        let fixture_dir = repo_root.join("tests/pkg-import");
+        let input = fixture_dir.join("samename_reply_reject.hew");
+        let source = fs::read_to_string(&input).expect("read same-name reply fixture");
+        let reversed = source.replacen(
+            "import hew::replysend;\n\nimport hew::replynonsend;",
+            "import hew::replynonsend;\n\nimport hew::replysend;",
+            1,
+        );
+        assert_ne!(reversed, source, "fixture must contain both imports");
+        let temp = tempfile::tempdir().expect("create reversed reply fixture dir");
+        let reversed_input = write_source(temp.path(), "samename_reply_reject.hew", &reversed);
+
+        for fixture in [input.to_string_lossy().into_owned(), reversed_input] {
+            let failure = check_file(
+                &fixture,
+                &FrontendOptions {
+                    pkg_path: Some(fixture_dir.join("pkgs")),
+                    ..FrontendOptions::default()
+                },
+            )
+            .expect_err("the Rc-backed reply must be rejected at the Send gate");
+            let invalid_send: Vec<_> = failure
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    matches!(
+                        &diagnostic.kind,
+                        FrontendDiagnosticKind::Type(error)
+                            if error.kind == hew_types::error::TypeErrorKind::InvalidSend
+                                && error.message.contains("E_DUPLEX_NON_SEND")
+                    )
+                })
+                .collect();
+            assert_eq!(
+                invalid_send.len(),
+                1,
+                "only the non-Send reply must fail regardless of import order: {:#?}",
+                failure.diagnostics
+            );
+            assert!(
+                failure
+                    .diagnostics
+                    .iter()
+                    .all(|diagnostic| !format!("{diagnostic:#?}").contains("D10 violation")),
+                "the checker-owned Send gate must reject before any codegen D10 fallback: {:#?}",
+                failure.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the same-leaf package regression proves both symbol publication and isolation together"
+    )]
+    fn same_leaf_package_functions_publish_distinct_direct_body_symbols() {
+        // `left::render` and `right::render` intentionally share the final
+        // module component and the generic free-function leaves
+        // `render_value`/`default_value`.  The checker-selected declaration
+        // IDs must each project to an emitted HIR body; a linker-name lookup
+        // or a partial impl-only projection drops these User calls before MIR.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile has a workspace parent");
+        let input = repo_root.join("tests/pkg-import/canonical_same_leaf_nested.hew");
+        let state = run_file_frontend_to_typecheck(
+            input.to_str().expect("fixture path is utf-8"),
+            &FrontendOptions {
+                pkg_path: Some(repo_root.join("tests/pkg-import/pkgs")),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("same-leaf fixture must type-check");
+        let tco = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("type checking was enabled");
+        let hir = hew_hir::lower_program(
+            &state.program,
+            tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "same-leaf fixture must lower without HIR diagnostics: {:#?}",
+            hir.diagnostics
+        );
+        let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
+        let ids = [
+            hew_types::DefId::new("left.render.render_value"),
+            hew_types::DefId::new("right.render.render_value"),
+            hew_types::DefId::new("left.render.default_value"),
+            hew_types::DefId::new("right.render.default_value"),
+        ];
+        let projected: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                symbols.get(id).cloned().unwrap_or_else(|| {
+                    panic!(
+                        "checker declaration `{}` has no emitted HIR body symbol; \n                         render symbols: {:#?}",
+                        id.full_path(),
+                        symbols
+                            .iter()
+                            .filter(|(candidate, _)| candidate.full_path().ends_with("render_value")
+                                || candidate.full_path().ends_with("default_value"))
+                            .collect::<Vec<_>>()
+                    )
+                })
+            })
+            .collect();
+        assert_ne!(projected[0], projected[1]);
+        assert_ne!(projected[2], projected[3]);
+
+        // Each trait's `provided` body is materialised for a generic `Box<T>`
+        // impl. Its trait-method ID is the static lookup key, but its concrete
+        // default-body declaration must drive the monomorphisation and remain
+        // distinct for these same-leaf packages.
+        let defaults: Vec<_> = hir
+            .module
+            .monomorphisations
+            .iter()
+            .filter(|mono| mono.key.linker_symbol.ends_with("Box::provided"))
+            .collect();
+        assert_eq!(
+            defaults.len(),
+            2,
+            "each same-leaf default body must be monomorphized: {defaults:#?}"
+        );
+        assert!(
+            defaults.iter().any(|mono| {
+                mono.key.declaration.full_path()
+                    == "left.render.Box::<default impl left.render.Render for left.render.Box<T>>::provided"
+            }),
+            "left default body must have its own synthetic implementation identity: {defaults:#?}"
+        );
+        assert!(
+            defaults.iter().any(|mono| {
+                mono.key.declaration.full_path()
+                    == "right.render.Box::<default impl right.render.Render for right.render.Box<T>>::provided"
+            }),
+            "right default body must have its own synthetic implementation identity: {defaults:#?}"
+        );
+        assert_ne!(defaults[0].mangled_name, defaults[1].mangled_name);
+        for mono in defaults {
+            assert_eq!(
+                mono.mangled_name,
+                hew_hir::monomorph::function_monomorph_symbol(
+                    &mono.key.linker_symbol,
+                    &mono.key.type_args
+                ),
+                "generic direct dispatch must use the shared MonoKey linker-symbol projection"
+            );
+        }
+
+        // Negative same-leaf control: both generic `Box<T>::render` bodies
+        // specialise to `bool`, so a later lookup by `Box::render` or by the
+        // `render` leaf would collapse these unrelated package owners.  MIR
+        // must preserve both qualified HIR symbols through monomorphisation.
+        let pipeline = hew_mir::lower_hir_module(&hir.module);
+        assert!(
+            pipeline.diagnostics.is_empty(),
+            "same-leaf generic impl bodies must lower through MIR: {:#?}",
+            pipeline.diagnostics
+        );
+        for symbol in ["left.render.Box::render", "right.render.Box::render"] {
+            let concrete = hew_hir::monomorph::function_monomorph_symbol(
+                symbol,
+                &[hew_types::ResolvedTy::Bool],
+            );
+            assert!(
+                pipeline
+                    .raw_mir
+                    .iter()
+                    .any(|function| function.name == concrete),
+                "same-leaf generic impl must retain its full owner in `{concrete}`"
+            );
+        }
+    }
+
+    #[test]
+    fn imported_impl_catalog_len_uses_emitted_borrowing_abi() {
+        // `echo_len` is intentionally an imported impl method whose body is
+        // the source builtin `len(s)`.  The HIR catalog endpoint is `len_str`,
+        // but raw MIR and codegen must agree on its concrete ABI symbol
+        // `hew_string_length`; otherwise the representation-effect pass sees
+        // an unknown call and incorrectly rejects the caller-visible `string`
+        // parameter. `echo_tag` is the transitive sibling control: if
+        // `echo_len` were not emitted safely, this package import would not
+        // make it through the full callable closure.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile has a workspace parent");
+        let input = repo_root.join("tests/pkg-import/imported_actor_ask_i32.hew");
+        let state = run_file_frontend_to_typecheck(
+            input.to_str().expect("fixture path is utf-8"),
+            &FrontendOptions {
+                pkg_path: Some(repo_root.join("tests/pkg-import/pkgs")),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("imported actor fixture must type-check");
+        let tco = state
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("type checking was enabled");
+        let hir = hew_hir::lower_program(
+            &state.program,
+            tco,
+            &hew_hir::ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(
+            hir.diagnostics.is_empty(),
+            "imported actor fixture must lower cleanly: {:#?}",
+            hir.diagnostics
+        );
+
+        let pipeline = hew_mir::lower_hir_module(&hir.module);
+        assert!(
+            pipeline.diagnostics.is_empty(),
+            "imported catalog len must lower cleanly through MIR: {:#?}",
+            pipeline.diagnostics
+        );
+        let echo_len = pipeline
+            .raw_mir
+            .iter()
+            .find(|function| function.name.ends_with("Result::echo_len"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected imported `Result::echo_len` MIR body; emitted functions: {:#?}",
+                    pipeline
+                        .raw_mir
+                        .iter()
+                        .map(|function| &function.name)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            echo_len.blocks.iter().any(|block| matches!(
+                &block.terminator,
+                hew_mir::Terminator::Call { callee, .. } if callee == "hew_string_length"
+            )),
+            "the catalog ItemId join must project `len_str` to the concrete \
+             `hew_string_length` ABI symbol: {echo_len:#?}"
+        );
+        let string_param_boundary = echo_len
+            .decisions
+            .iter()
+            .find_map(|decision| match decision.strategy {
+                hew_mir::Strategy::ParamBoundary(fact) if fact.param_index == 1 => Some(fact),
+                _ => None,
+            })
+            .expect("echo_len string parameter must carry a boundary fact");
+        assert_eq!(
+            string_param_boundary.mode,
+            hew_mir::ParamBoundaryMode::BorrowReadOnly,
+            "the audited string-length ABI must not create an unproven \
+             representation-mutation effect"
+        );
+
+        let echo_tag = pipeline
+            .raw_mir
+            .iter()
+            .find(|function| function.name.ends_with("Result::echo_tag"))
+            .expect("the transitive echo_tag caller must remain emitted");
+        assert!(
+            echo_tag.blocks.iter().any(|block| matches!(
+                &block.terminator,
+                hew_mir::Terminator::Call { callee, .. } if callee.ends_with("Result::echo_len")
+            )),
+            "echo_tag must preserve its direct call to the catalog-backed sibling: {echo_tag:#?}"
+        );
+        let echo_tag_string_boundary = echo_tag
+            .decisions
+            .iter()
+            .find_map(|decision| match decision.strategy {
+                hew_mir::Strategy::ParamBoundary(fact) if fact.param_index == 1 => Some(fact),
+                _ => None,
+            })
+            .expect("echo_tag string parameter must carry a boundary fact");
+        assert_eq!(
+            echo_tag_string_boundary.mode,
+            hew_mir::ParamBoundaryMode::BorrowReadOnly,
+            "the emitted sibling must inherit echo_len's audited read-only boundary"
+        );
+    }
+
+    #[test]
     fn edition_2026_is_accepted() {
         let dir = tempfile::tempdir().expect("create temp dir");
         write_toml(
@@ -2223,16 +3025,12 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         );
     }
 
-    /// Two imported modules resolving to the same short name (last path
-    /// segment) must be REJECTED. HIR keys every cross-module fn registration
-    /// by `module_short.fn_name`; admitting `alpha` and `beta::alpha` together
-    /// would let two distinct `alpha::val` functions silently collide in the
-    /// fn-registry and miscompile. The guard lives in
-    /// `check_duplicate_short_module_names` (called from
-    /// `build_module_graph_with_diagnostics`); this test is the regression
-    /// pin for it (the run.sh fixture exercises the CLI, not the crate).
+    /// Two whole-module imports that publish the same source binding in one
+    /// scope are genuinely ambiguous and must be rejected. Their canonical
+    /// module IDs remain distinct; the conflict is solely the unaliased
+    /// `alpha` surface binding both imports would create.
     #[test]
-    fn check_file_rejects_duplicate_short_module_names() {
+    fn check_file_rejects_ambiguous_unaliased_module_binding() {
         let dir = tempfile::tempdir().expect("create temp dir");
         // Two modules whose short name (last path segment) is the same `alpha`:
         // a flat `alpha.hew` and a nested `beta/alpha.hew`.
@@ -2246,40 +3044,37 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
-            .expect_err("colliding short module names must fail closed");
+            .expect_err("an ambiguous unaliased module binding must fail closed");
         assert!(
-            failure.message.contains("short name"),
-            "expected a duplicate-short-name diagnostic, got: {}",
+            failure.message.contains("ambiguous binding"),
+            "expected an ambiguous module-binding diagnostic, got: {}",
             failure.message
         );
         assert!(
             failure.message.contains("alpha"),
-            "diagnostic should name the colliding short name `alpha`, got: {}",
+            "diagnostic should name the colliding binding `alpha`, got: {}",
             failure.message
         );
     }
 
-    /// Negative control for the duplicate-short-name guard: two imported
-    /// modules with DISTINCT short names compile cleanly — the guard must not
-    /// over-reject. Same layout as the rejection case but the second module's
-    /// short name is `gamma`, not `alpha`.
+    /// Positive control: canonical module IDs may share their final component
+    /// when the source gives them distinct whole-module aliases.
     #[test]
-    fn check_file_accepts_distinct_short_module_names() {
+    fn check_file_accepts_same_leaf_modules_with_distinct_aliases() {
         let dir = tempfile::tempdir().expect("create temp dir");
         write_source(dir.path(), "alpha.hew", "pub fn val() -> i64 { 1 }\n");
         fs::create_dir_all(dir.path().join("beta")).expect("create beta dir");
-        write_source(dir.path(), "beta/gamma.hew", "pub fn val() -> i64 { 2 }\n");
+        write_source(dir.path(), "beta/alpha.hew", "pub fn val() -> i64 { 2 }\n");
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import alpha;\nimport beta::gamma;\n\nfn main() -> i64 { 0 }\n",
+            "import alpha as flat_alpha;\n\
+             import beta::alpha as nested_alpha;\n\n\
+             fn main() -> i64 { flat_alpha.val() + nested_alpha.val() }\n",
         );
 
-        // A successful `check_file` is the precise complement of the rejection:
-        // the duplicate-short-name guard fails the whole pipeline with `Err`,
-        // so reaching `Ok` proves the guard did not fire on distinct names.
         check_file(&input, &FrontendOptions::default())
-            .expect("distinct short module names must be accepted");
+            .expect("distinct aliases for same-leaf canonical modules must be accepted");
     }
 
     #[test]

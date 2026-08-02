@@ -5,8 +5,8 @@ use std::{
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
 use hew_types::{
-    ChildSlot, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy, Ty,
-    TyPattern, VariantMatch, WireLayoutTable,
+    ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
+    Ty, TyPattern, VariantMatch, WireLayoutTable,
 };
 use hew_types::{NumericMethodFamily, VecElementToken};
 use hew_types::{
@@ -337,6 +337,9 @@ impl ExternProvenance {
 pub struct HirExternFn {
     pub id: ItemId,
     pub node: HirNodeId,
+    /// Checker-owned source declaration identity.  `name` is the C/linker
+    /// endpoint and can be shared by declarations from distinct modules.
+    pub declaration: DefId,
     pub name: String,
     /// `"rt"`, `"C"`, etc. The checker validates `"rt"` against the JIT-stable
     /// symbol allowlist; other ABIs pass through unchanged.
@@ -403,6 +406,21 @@ pub struct HirImplBlock {
     /// `method_symbols`. For an inline supertrait method in `impl Sub for T`,
     /// this records the supertrait that declared the method, not `Sub`.
     pub method_declaring_traits: Vec<String>,
+    /// Checker-published declaring-trait identities, parallel to
+    /// `method_declaring_traits`. An absent identity is never reconstructed
+    /// from the diagnostic spelling and is excluded from static dispatch.
+    pub method_declaring_trait_ids: Vec<Option<hew_types::DefId>>,
+    /// Checker-published trait-method declaration identities, parallel to
+    /// `method_names`. This is the identity selected by a
+    /// `CallTarget::StaticTraitMethod`, so it keys the static impl registry.
+    /// It is deliberately distinct from the implementation declaration ID
+    /// below: an implementation of `Render::render` is not the declaration
+    /// `Render::render` itself.
+    pub method_trait_method_ids: Vec<Option<hew_types::DefId>>,
+    /// Checker-published implementation-method declaration identities,
+    /// parallel to `method_names`. Direct `CallTarget::ImplMethod` calls use
+    /// this identity to project to the emitted impl-method symbol.
+    pub method_ids: Vec<Option<hew_types::DefId>>,
     pub span: hew_parser::ast::Span,
 }
 
@@ -673,6 +691,14 @@ pub struct HirMachineDecl {
     pub id: ItemId,
     pub node: HirNodeId,
     pub name: String,
+    /// Defining-module identity of this machine declaration.
+    ///
+    /// `None` denotes the root program namespace; `Some(module)` is the
+    /// dotted owner of a package-module machine.  The declaration spelling is
+    /// intentionally kept bare in [`Self::name`], while this provenance lets
+    /// post-HIR registries distinguish, for example, `left.Lifecycle` from
+    /// `right.Lifecycle` without any leaf-name recovery.
+    pub defining_module: Option<String>,
     /// Generic type parameters declared on the machine (e.g. `Lifecycle<T>`).
     ///
     /// Names only — see `MachineDecl::type_params`. Threaded verbatim from
@@ -700,6 +726,18 @@ pub struct HirMachineDecl {
     /// without an explicit transition.
     pub has_default: bool,
     pub span: Span,
+}
+
+impl HirMachineDecl {
+    /// Dotted canonical identity used by machine monomorphisation and layout
+    /// registries.  Root-program machines retain their source spelling.
+    #[must_use]
+    pub fn qualified_name(&self) -> String {
+        match &self.defining_module {
+            Some(module) => format!("{module}.{}", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1127,6 +1165,14 @@ pub struct HirField {
 pub struct HirFn {
     pub id: ItemId,
     pub node: HirNodeId,
+    /// Checker-owned identity of the source declaration this body implements.
+    ///
+    /// This deliberately survives alongside the emitted `name`: the latter is
+    /// a linker symbol (and may be mangled for an imported module), whereas a
+    /// [`DefId`] is the semantic identity that checked `CallTarget::User`
+    /// edges carry.  Consumers must project from this field rather than
+    /// reconstructing an owner from a presentation name.
+    pub declaration: DefId,
     pub name: String,
     pub type_params: Vec<String>,
     pub params: Vec<HirBinding>,
@@ -1405,9 +1451,10 @@ pub struct HirProducedValueFact {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirVarSelfMethodTarget {
-    Direct {
-        callee: String,
-    },
+    /// The declaration identity lives in the sibling `call_target` field.
+    /// This marker carries no linker spelling, preventing var-self lowering
+    /// from re-selecting an impl method by `Type::method` text.
+    Direct,
     StaticTrait {
         /// Type-parameter name that carries the bound (e.g. "T").
         receiver_type_param: String,
@@ -1521,6 +1568,10 @@ pub enum HirExprKind {
         elements: Vec<HirExpr>,
     },
     Call {
+        /// Checker-selected direct, runtime, or indirect call target. The
+        /// callee expression remains the evaluation payload, never the
+        /// authority used to reconstruct this identity.
+        target: hew_types::CallTarget,
         callee: Box<HirExpr>,
         args: Vec<HirExpr>,
     },
@@ -1964,6 +2015,9 @@ pub enum HirExprKind {
     /// `DynMethodCall::slot`). HIR/MIR never re-derive the slot.
     CallDynMethod {
         receiver: Box<HirExpr>,
+        /// Checker-selected vtable target. The trait and method spellings
+        /// below remain diagnostic payload; dispatch authority is this value.
+        target: hew_types::CallTarget,
         trait_name: String,
         method_name: String,
         slot: u32,
@@ -2001,6 +2055,10 @@ pub enum HirExprKind {
     )]
     CallTraitMethodStatic {
         receiver: Box<HirExpr>,
+        /// Checker-selected static-trait method identity. The receiver
+        /// substitution may choose an impl later, but no phase may recover the
+        /// declaring method by leaf-name retry.
+        target: hew_types::CallTarget,
         /// Type-parameter name that carries the bound (e.g. "T").
         receiver_type_param: String,
         /// The bound trait through which the method was reached.
@@ -2025,6 +2083,8 @@ pub enum HirExprKind {
     /// closed `ResolvedImplCall` arm.
     VarSelfMethodCall {
         receiver: Box<HirExpr>,
+        /// Structured direct or static-trait target carried from checking.
+        call_target: hew_types::CallTarget,
         target: HirVarSelfMethodTarget,
         args: Vec<HirExpr>,
         ret_ty: ResolvedTy,
@@ -2057,6 +2117,9 @@ pub enum HirExprKind {
     /// come straight from the resolver's verdict; HIR never re-derives them.
     ResolvedImplCall {
         receiver: Box<HirExpr>,
+        /// Checker-selected structured target. `target_symbol` is retained as
+        /// a derived linker label for the current MIR boundary only.
+        target: hew_types::CallTarget,
         /// Opaque identity of the satisfying impl in the checker's
         /// `ImplRegistry`. Carried for downstream attribution (diagnostics,
         /// drop-plan keying when Stage E lands); not consumed by today's
@@ -2605,7 +2668,7 @@ impl HirProducedValueProducer {
 #[cfg(test)]
 mod produced_value_tests {
     use super::*;
-    use hew_types::{FnSig, VecMethod};
+    use hew_types::{CallTarget, FnSig, VecMethod};
 
     fn value() -> HirExpr {
         HirExpr {
@@ -2658,6 +2721,9 @@ mod produced_value_tests {
         let cases = [
             (
                 HirExprKind::Call {
+                    target: CallTarget::Unsupported {
+                        reason: "classification-only fixture".to_string(),
+                    },
                     callee: closure_callee(),
                     args: vec![],
                 },
@@ -2666,6 +2732,9 @@ mod produced_value_tests {
             (
                 HirExprKind::ResolvedImplCall {
                     receiver: receiver(),
+                    target: CallTarget::Unsupported {
+                        reason: "classification-only fixture".to_string(),
+                    },
                     impl_id: ImplId(0),
                     method_name: "len".to_string(),
                     target_symbol: "linker_only".to_string(),
@@ -2679,6 +2748,9 @@ mod produced_value_tests {
             (
                 HirExprKind::CallTraitMethodStatic {
                     receiver: receiver(),
+                    target: CallTarget::Unsupported {
+                        reason: "classification-only fixture".to_string(),
+                    },
                     receiver_type_param: "T".to_string(),
                     bound_trait: "Display".to_string(),
                     declaring_trait: "Display".to_string(),
@@ -2691,6 +2763,9 @@ mod produced_value_tests {
             (
                 HirExprKind::CallDynMethod {
                     receiver: receiver(),
+                    target: CallTarget::Unsupported {
+                        reason: "classification-only fixture".to_string(),
+                    },
                     trait_name: "Display".to_string(),
                     method_name: "show".to_string(),
                     slot: 3,
@@ -2703,9 +2778,10 @@ mod produced_value_tests {
             (
                 HirExprKind::VarSelfMethodCall {
                     receiver: receiver(),
-                    target: HirVarSelfMethodTarget::Direct {
-                        callee: "consume".to_string(),
+                    call_target: CallTarget::Unsupported {
+                        reason: "classification-only fixture".to_string(),
                     },
+                    target: HirVarSelfMethodTarget::Direct,
                     args: vec![],
                     ret_ty: ResolvedTy::Unit,
                     receiver_ty: ResolvedTy::Unit,

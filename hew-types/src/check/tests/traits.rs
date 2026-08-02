@@ -1994,7 +1994,7 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
 }
 
 #[test]
-fn module_qualified_named_type_method_rewrite_uses_unqualified_method_symbol() {
+fn module_qualified_named_type_method_rejects_leaf_method_retry() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.type_defs.insert(
         "Thing".to_string(),
@@ -2020,22 +2020,10 @@ fn module_qualified_named_type_method_rewrite_uses_unqualified_method_symbol() {
     let receiver = (Expr::Identifier("thing".to_string()), 0..5);
     let ty = checker.check_method_call(&receiver, "label", &[], &(0..13));
 
-    assert_eq!(ty, Ty::String);
+    assert_eq!(ty, Ty::Error);
     assert!(
-        checker.errors.is_empty(),
-        "expected clean module-qualified method dispatch, got: {:?}",
-        checker.errors
-    );
-    assert!(
-        checker
-            .method_call_rewrites
-            .values()
-            .any(|rewrite| matches!(
-                rewrite,
-                MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Thing::label"
-            )),
-        "module-qualified receiver must rewrite via unqualified method key, got: {:?}",
-        checker.method_call_rewrites
+        !checker.errors.is_empty(),
+        "a missing canonical widgets.Thing::label declaration must fail closed"
     );
     assert!(
         !checker
@@ -2043,11 +2031,27 @@ fn module_qualified_named_type_method_rewrite_uses_unqualified_method_symbol() {
             .values()
             .any(|rewrite| matches!(
                 rewrite,
-                MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                    if c_symbol == "widgets.Thing::label"
+                MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Thing::label"
             )),
-        "qualified type prefix must not leak into method rewrite symbol: {:?}",
-        checker.method_call_rewrites
+        "the bare Thing::label key must not become a fallback authority"
+    );
+    assert!(
+        !checker
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| matches!(
+                rewrite,
+                MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "widgets.Thing::label"
+            )),
+        "no synthetic qualified linker label may conceal the missing declaration"
+    );
+    assert!(
+        checker
+            .errors
+            .iter()
+            .any(|error| error.message.contains("label")),
+        "expected method-resolution diagnostic, got: {:?}",
+        checker.errors
     );
 }
 

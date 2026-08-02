@@ -67,7 +67,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
 use hew_hir::stdlib_catalog::PrintKind;
-use hew_hir::{mangle, mangle_dotted_name, ItemId};
+use hew_hir::{mangle_dotted_name, ItemId};
 use hew_mir::{
     instr_source_places, is_string_const_ty, terminator_source_places, validate_context_markers,
     ActorHandlerKind, ActorLayout, ActorStateLoadMode, CheckedMirFunction, CmpPred, CooperateKind,
@@ -2423,14 +2423,10 @@ pub(crate) fn collect_named_enum_deps(
     let ResolvedTy::Named { name, args, .. } = field_ty else {
         return;
     };
-    // Compute the mangled lookup key the same way `resolve_ty` does: the
-    // registration side keys a generic enum on the bare-normalised spine, so
-    // shorten the type-arg spine before mangling (a nested qualified payload
-    // otherwise misses).
     let key: String = if args.is_empty() {
         name.clone()
     } else {
-        mangle_with_shortened_args(short_name(name), args)
+        mangle_with_shortened_args(name, args)
     };
     if names.contains(key.as_str()) {
         if let Some(idx) = enum_layouts.iter().position(|l| l.name == key) {
@@ -2767,24 +2763,24 @@ fn emit_const_globals<'ctx>(
     Ok(globals)
 }
 
-/// True when `ty` names a machine (short-name match against the machine
-/// layout set) directly or through generic args / tuples / arrays / slices.
+/// True when `ty` names a machine in the exact machine-layout set directly or
+/// through generic args / tuples / arrays / slices.
 /// Drives the deferred (post-machine) enum-registration pass: an enum
 /// instantiation whose payload embeds a machine value must be sized after
 /// the machine's named struct has a body.
-fn resolved_ty_references_machine(ty: &ResolvedTy, machine_short_names: &HashSet<&str>) -> bool {
+fn resolved_ty_references_machine(ty: &ResolvedTy, machine_names: &HashSet<&str>) -> bool {
     match ty {
         ResolvedTy::Named { name, args, .. } => {
-            machine_short_names.contains(short_name(name))
+            machine_names.contains(name.as_str())
                 || args
                     .iter()
-                    .any(|a| resolved_ty_references_machine(a, machine_short_names))
+                    .any(|a| resolved_ty_references_machine(a, machine_names))
         }
         ResolvedTy::Tuple(elems) => elems
             .iter()
-            .any(|e| resolved_ty_references_machine(e, machine_short_names)),
+            .any(|e| resolved_ty_references_machine(e, machine_names)),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            resolved_ty_references_machine(inner, machine_short_names)
+            resolved_ty_references_machine(inner, machine_names)
         }
         _ => false,
     }
@@ -2896,68 +2892,12 @@ fn resolved_ty_contains_stream_handle(ty: &ResolvedTy) -> bool {
     }
 }
 
-/// Recursively replace every `Named { name, .. }` anywhere in `ty` with its
-/// short (unqualified) name, stripping any leading `"module."` prefix.
-///
-/// This normalises the type-arg spine of a generic instantiation so
-/// `Result<I64, fs.IoError>` and `Result<I64, IoError>` produce the same
-/// mangle key.  The layout-registration path uses the bare name (from
-/// inside the declaring module), but the MIR at import-use sites carries
-/// the qualified form. Without normalisation the mangled lookup key
-/// diverges and `resolve_ty` falls through to D10 for the generic type.
-///
-/// Thin wrapper over the single canonical `hew_hir::shorten_named_arg_qualifiers`
-/// so the codegen lookup spine and the HIR/MIR registration spine are shortened
-/// by ONE function and cannot drift — including for a NESTED qualified payload
-/// (`Result<Vec<fs.Foo>, _>`) that a `Named`-only shortener would miss.
-fn shorten_named_args(ty: ResolvedTy) -> ResolvedTy {
-    hew_hir::shorten_named_arg_qualifiers(ty)
-}
-
-/// Mangle `name` with `args` after shortening the WHOLE type-arg spine to bare
-/// (unqualified) names. This is the layout-key form every codegen consumer must
-/// use: the enum/record layout-registration side keys on the bare-normalised
-/// spine (`hew_hir::shorten_named_arg_qualifiers` via `EnumLayoutRegistry::insert`
-/// and `hew-mir::lower::user_record_layout_key`), so every codegen lookup /
-/// drop-seed / codec-seed key MUST shorten the spine identically or the keys
-/// diverge and the layout lookup falls through to the D10 fail-closed gate.
-/// Nested qualified payloads are shortened at every depth.
+/// Build the canonical layout key used by codegen lookup and helper synthesis.
+/// This legacy function name remains at local call sites, but all semantics
+/// live in HIR's shared authority: dotted declaration owners and every nested
+/// nominal payload retain their full identity.
 pub(crate) fn mangle_with_shortened_args(name: &str, args: &[ResolvedTy]) -> String {
-    if args.iter().any(needs_normalization) {
-        let short_args: Vec<ResolvedTy> = args.iter().cloned().map(shorten_named_args).collect();
-        mangle(name, &short_args)
-    } else {
-        mangle(name, args)
-    }
-}
-
-/// Returns `true` when `ty` or any nested compound carries a module-qualified
-/// `Named` name (i.e. `short_name(name) != name`).  Used as a fast pre-check
-/// before the allocation in `shorten_named_args` / `mangle_with_shortened_args`
-/// so the common unqualified path stays alloc-free. Recurses every compound
-/// shape `shorten_named_arg_qualifiers` rewrites so a qualified payload nested
-/// in a Tuple/Array/Slice/Function/etc. is not missed by the pre-check.
-fn needs_normalization(ty: &ResolvedTy) -> bool {
-    match ty {
-        ResolvedTy::Named { name, args, .. } => {
-            short_name(name) != name.as_str() || args.iter().any(needs_normalization)
-        }
-        ResolvedTy::Tuple(items) => items.iter().any(needs_normalization),
-        ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => needs_normalization(elem),
-        ResolvedTy::Function { params, ret } | ResolvedTy::Closure { params, ret, .. } => {
-            params.iter().any(needs_normalization) || needs_normalization(ret)
-        }
-        ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
-            needs_normalization(pointee)
-        }
-        ResolvedTy::TraitObject { traits } => traits.iter().any(|b| {
-            short_name(&b.trait_name) != b.trait_name.as_str()
-                || b.args.iter().any(needs_normalization)
-                || b.assoc_bindings.iter().any(|(_, t)| needs_normalization(t))
-        }),
-        ResolvedTy::Task(inner) => needs_normalization(inner),
-        _ => false,
-    }
+    hew_hir::mangle_layout_key(name, args)
 }
 
 /// True when a function return type is a SINGLE heap-owning leaf (`bytes`) that
@@ -3028,26 +2968,17 @@ fn is_heap_owning_record_composite_return(
     // it must not be rejected as an opaque handle. Only names absent from the
     // struct map fall through to the opaque exclusion. Mirrors the
     // `record_layouts`-first invariant in `resolve_ty` and the MIR classifier.
-    let short = short_name(name);
     let is_record = if args.is_empty() {
         record_layouts.contains_key(name.as_str())
-            || record_layouts.contains_key(short)
-            || record_layouts
-                .keys()
-                .any(|k| short_name(k) == short || k == name)
     } else {
-        // Generic instantiation: resolve by the mangled registry key. Both
-        // candidates shorten the type-arg spine (registration keys on bare args).
-        let full_mangled = mangle_with_shortened_args(name, args);
-        let short_mangled = mangle_with_shortened_args(short, args);
-        record_layouts.contains_key(full_mangled.as_str())
-            || record_layouts.contains_key(short_mangled.as_str())
+        let key = mangle_with_shortened_args(name, args);
+        record_layouts.contains_key(key.as_str())
     };
     if !is_record {
         // Exclude opaque pointer-backed handles (Stream/Sink/Connection/etc.):
         // they carry no record struct layout, so they have no per-field
         // `RecordInPlace` drop. A bare opaque handle return is handled elsewhere.
-        if record_layouts.opaque.contains(name.as_str()) || record_layouts.opaque.contains(short) {
+        if record_layouts.opaque.contains(name.as_str()) {
             return false;
         }
         return false; // unknown type — not a registered user record
@@ -3118,6 +3049,19 @@ fn resolve_machine_base_ptr<'ctx>(
     }
 }
 
+/// Return the type arguments carried by an exact checker-stamped builtin.
+/// Presentation names are intentionally ignored.
+pub(crate) fn builtin_named_args(ty: &ResolvedTy, expected: BuiltinType) -> Option<&[ResolvedTy]> {
+    match ty {
+        ResolvedTy::Named {
+            args,
+            builtin: Some(actual),
+            ..
+        } if *actual == expected => Some(args),
+        _ => None,
+    }
+}
+
 /// Resolve any `ResolvedTy` to its LLVM `BasicTypeEnum`, consulting the
 /// record-layout map first for named user records. This is the codegen-side
 /// entry point for type lowering — it replaces direct calls to
@@ -3145,9 +3089,9 @@ pub(crate) fn resolve_ty<'ctx>(
     if matches!(
         ty,
         ResolvedTy::Named {
-            builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+            builtin: Some(builtin),
             ..
-        }
+        } if builtin.lowers_as_opaque_pointer_abi()
     ) {
         return Ok(ctx.ptr_type(AddressSpace::default()).into());
     }
@@ -3205,9 +3149,10 @@ pub(crate) fn resolve_ty<'ctx>(
         // check. This mirrors the `record_layouts`-first invariant in the MIR
         // classifier (`hew-mir/src/state_clone.rs` `classify_named`).
         //
-        // WHEN-OBSOLETE: once W4.011 lands and `ResolvedTy::Named` carries a
-        // typed builtin/user discriminator, the name-based opaque set is
-        // replaced by that discriminator and this ordering ceases to matter.
+        // Builtins and explicitly stamped opaque types have already returned
+        // above. This ordering now protects only the legacy module-level
+        // opaque-name registry; remove that fallback once every opaque use
+        // carries `is_opaque` through MIR.
         //
         // Generic-enum instantiations are keyed by mangled name (e.g.
         // `"Option$$i64"`) in the record-layout map — the same key produced
@@ -3236,24 +3181,12 @@ pub(crate) fn resolve_ty<'ctx>(
         if let Some(st) = record_layouts.get(lookup_key.as_ref()) {
             return Ok((*st).into());
         }
-        if args.is_empty() {
-            // Short-name fallback for zero-arg module-qualified types (e.g.
-            // `fs.IoError` → `IoError`).  The layout map is keyed by the
-            // bare (unqualified) name; a use site coming through an
-            // `import std::fs` boundary carries the qualified form.
-            // `is_indirect_enum` already does this fallback unconditionally;
-            // mirror that pattern here so `resolve_ty` agrees.
-            if let Some(st) = record_layouts.get(short_name(name)) {
-                return Ok((*st).into());
-            }
-        } else {
-            let short_key = mangle_with_shortened_args(short_name(name), args);
-            if let Some(st) = record_layouts.get(short_key.as_str()) {
-                return Ok((*st).into());
-            }
-            if let Some(st) = record_layouts.get(short_name(name)) {
-                return Ok((*st).into());
-            }
+        // Machine layouts use the class-tagged machine-mono projection rather
+        // than the record/enum layout projection.  Try that exact key only
+        // after the ordinary nominal lookup, never by a leaf-name fallback.
+        let machine_key = hew_hir::machine_layout_key(name, args);
+        if let Some(st) = record_layouts.get(&machine_key) {
+            return Ok((*st).into());
         }
         // ── Opaque-handle check (after struct-layout lookup) ─────────────
         //
@@ -3262,16 +3195,12 @@ pub(crate) fn resolve_ty<'ctx>(
         // runtime's `*mut T`). Only reached when the name has no registered
         // struct layout (see struct-layout-first comment above).
         //
-        // The opaque-name set is keyed by the **bare** decl name (`Value`),
-        // because MIR collects it from the imported `HirItem::TypeDecl` whose
-        // `name` is unqualified. A use site that came through an
-        // `import std::encoding::json` boundary carries the **qualified** type
-        // name (`json.Value`). Match the short name too so the qualified
-        // import-side name still resolves to `ptr`. Every opaque handle lowers
-        // to the same bare `ptr` regardless of module, so short-name matching
-        // cannot conflate distinct ABIs (there is only one ABI: pointer-width).
-        if record_layouts.opaque.contains(name) || record_layouts.opaque.contains(short_name(name))
-        {
+        // The legacy set is keyed by the presentation emitted alongside the
+        // module's opaque declarations. It is deliberately consulted only
+        // after real record layouts, preventing a same-spelling record from
+        // acquiring pointer representation. New producers carry `is_opaque`
+        // and do not depend on this compatibility registry.
+        if record_layouts.opaque.contains(name) {
             return Ok(ctx.ptr_type(AddressSpace::default()).into());
         }
     }
@@ -3374,113 +3303,26 @@ pub(crate) fn primitive_to_llvm<'ctx>(
         ResolvedTy::Slice(_) => Err(CodegenError::Unsupported(
             "Slice type — composite lowering is Cluster 2",
         )),
-        ResolvedTy::Named { name, .. }
-            if matches!(
-                name.as_str(),
-                "Duplex" | "LambdaPid" | "LocalPid" | "Stream" | "Sink" | "SendHalf" | "RecvHalf"
-            ) =>
-        {
-            // M2 substrate handle. The producer (`hew-mir/src/lower.rs`
-            // `lower_duplex_pair` + `lower_duplex_send`) allocates a
-            // `ResolvedTy::Named { name: "Duplex", .. }` local for every
-            // duplex handle; the lambda-actor producer allocates a
-            // `ResolvedTy::Named { name: "LambdaPid", .. }` local re-tagged as
-            // `Place::LambdaActorHandle`. The half-extract producer
-            // (`lower_duplex_half_extract`) allocates a `SendHalf<S>` /
-            // `RecvHalf<R>` local re-tagged as `Place::SendHalf` /
-            // `Place::RecvHalf`. Codegen materialises every slot as a raw
-            // opaque `ptr` (`*mut HewDuplexHandle` / `*mut
-            // HewLambdaActorHandle` / `*mut HewSendHalfHandle` / `*mut
-            // HewRecvHalfHandle` in the runtime C-ABI). The half-extract call
-            // writes its returned pointer into this alloca; the send/recv/close
-            // ABIs load from it. LESSONS: exhaustive-traversal-and-lowering,
-            // boundary-fail-closed.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
+        // User/source opaque handles carry their representation identity in the
+        // resolved type, not in a presentation-name allowlist. Keep this direct
+        // primitive entry point aligned with `resolve_ty`: reply-drop thunks
+        // call it without a named-layout registry and still need the one-word
+        // ABI. A same-spelling non-opaque user nominal continues to the D10 arm.
         ResolvedTy::Named {
-            builtin: Some(BuiltinType::Sender | BuiltinType::Receiver),
-            ..
-        } => {
-            // Channel endpoints are pointer-width runtime handles. Dispatch
-            // on the typed builtin discriminator so a std declaration
-            // recovered from exact `channel.Sender` / `channel.Receiver`
-            // provenance lowers to `ptr`, while a user `foo.Sender` carrying
-            // `builtin: None` still reaches the D10 fail-closed arm.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named { name, .. } if name == "Vec" => {
-            // C-2 Vec<T> handle. A Vec<T> local is a `*mut HewVec` pointer.
-            // The producer (`lower_vec_index`) allocates the result local
-            // with the element type (i32/i64/f64/ptr); the vec-handle locals
-            // themselves are function parameters at this stage (ptr-sized).
-            // We represent the Vec handle as an opaque `ptr` in the alloca
-            // so `load_ptr_arg` can load the raw pointer from the slot and
-            // pass it to `hew_vec_len` / `hew_vec_get_T`. LESSONS:
-            // exhaustive-traversal-and-lowering, boundary-fail-closed.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named { name, .. } if name == "HashMap" || name == "HashSet" => {
-            // W3.041b layout-backed map/set handle.  A `HashMap<K,V>` or
-            // `HashSet<K>` local holds a `*mut HewLayoutHashMap` /
-            // `*mut HewLayoutHashSet` opaque pointer returned by the
-            // `hew_hashmap_new_with_layout` / `hew_hashset_new_with_layout`
-            // constructor.  Codegen represents the slot as an opaque `ptr`
-            // alloca (same pattern as Vec, Duplex, HewTask) so
-            // `load_duplex_handle` can load the raw pointer and pass it to
-            // the 8 operation ABI entry points.
-            // LESSONS: exhaustive-traversal-and-lowering, boundary-fail-closed.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named { name, .. } if name == "HewTask" => {
-            // Phase 2 task handle. A `HewTask` local holds a `*mut HewTask`
-            // opaque pointer — the Box-allocated task struct returned by
-            // `hew_task_new` and consumed by `hew_task_free`. The MIR
-            // producer for `spawn fn(...)` (inventory row 3) allocates a
-            // `ResolvedTy::Named { name: "HewTask", .. }` local for each
-            // spawned task and uses `Place::DuplexHandle(N)` to reference
-            // it (reusing the duplex-handle tag — the underlying alloca
-            // shape is identical: an opaque ptr slot). Codegen materialises
-            // this as an opaque `ptr` alloca, same as Duplex and Vec handles.
-            // LESSONS: exhaustive-traversal-and-lowering.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named { name, .. } if name == "HewTaskScope" => {
-            // Canonical scope handle (W2.006). A `HewTaskScope` local holds
-            // a `*mut HewTaskScope` opaque pointer — returned by
-            // `hew_task_scope_new` and consumed by `hew_task_scope_destroy`.
-            // The MIR producer for `scope {}` (`hew-mir/src/lower.rs:7577`)
-            // allocates a `ResolvedTy::Named { name: "HewTaskScope", .. }`
-            // local and references it via `Place::DuplexHandle(N)`. Codegen
-            // emits an opaque `ptr` alloca, same as other runtime handles.
-            // LESSONS: exhaustive-traversal-and-lowering.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named {
-            builtin:
-                Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
-            ..
-        } => {
-            // A `Generator<Yield, Return>` value is the heap companion of an
-            // `llvm.coro` switched-resume coroutine — `{ handle, env,
-            // out_drop_thunk, started, pending, out }` — released by
-            // `hew_gen_coro_destroy`. Codegen materialises the slot as a
-            // bare opaque `ptr`, the same representation used for every other
-            // runtime handle (Duplex, Vec, HewTask, CancellationToken). The
-            // construction site stores the companion pointer here; `.next()`
-            // loads it to drive the coroutine (`hew_cont_resume` / `hew_cont_poll`).
-            //
-            // Dispatched on the `builtin` discriminant, NOT the `name` string: a
-            // user-declared `type Generator { ... }` resolves to
-            // `Named { name: "Generator", builtin: None }` and must fall through
-            // to the D10 fail-closed arm below rather than be silently lowered to
-            // an opaque pointer. LESSONS: exhaustive-traversal-and-lowering,
-            // boundary-fail-closed, checker-authority.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named {
-            builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+            builtin: None,
+            is_opaque: true,
             ..
         } => Ok(ctx.ptr_type(AddressSpace::default()).into()),
+        ResolvedTy::Named {
+            builtin: Some(builtin),
+            ..
+        } if builtin.lowers_as_opaque_pointer_abi() => {
+            // Pointer-shaped builtin handles share one checker-owned ABI
+            // discriminator. Presentation names are deliberately irrelevant:
+            // imported/renamed builtins retain the pointer ABI, while a user
+            // nominal with the same spelling reaches the D10 fail-closed arm.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
         // `instant` is a monotonic i64-nanos timestamp. The field-type producer
         // surfaces it as `Named { builtin: Instant }` (not the canonical I64), so
         // a record/actor field typed `instant` reaches the emitter as a Named
@@ -3522,8 +3364,8 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             builtin: Some(hew_types::BuiltinType::CloseError),
             ..
         } => Ok(ctx.i32_type().into()),
-        ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
-            "D10 violation: Named/user type `{name}` reached the LLVM emitter; \
+        ResolvedTy::Named { name, args, .. } => Err(CodegenError::FailClosed(format!(
+            "D10 violation: Named/user type `{name}` with args {args:?} reached the LLVM emitter; \
              the MIR D10 gate should have rejected this earlier"
         ))),
         ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => {
@@ -8369,7 +8211,7 @@ fn classify_enum_drop_variants_raw(
 ) -> CodegenResult<EnumVariantKinds> {
     let layout = enum_layouts
         .iter()
-        .find(|layout| layout.name == enum_key || short_name(&layout.name) == enum_key)
+        .find(|layout| layout.name == enum_key)
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "indirect-enum free synthesis: enum `{enum_key}` has no registered enum layout"
@@ -8411,7 +8253,7 @@ fn classify_record_drop_fields_raw(
 ) -> CodegenResult<Vec<StateFieldCloneKind>> {
     let record = record_layouts
         .iter()
-        .find(|layout| layout.name == record_key || short_name(&layout.name) == record_key)
+        .find(|layout| layout.name == record_key)
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "indirect-enum free synthesis: record `{record_key}` has no registered field layout"
@@ -8438,23 +8280,18 @@ fn classify_record_drop_fields_raw(
         .collect()
 }
 
-/// Resolve a record's LLVM struct type by registration key (full name, then the
-/// short-name fallback that `record_struct_for` uses) from the raw codegen
-/// record-struct map.
+/// Resolve a record's LLVM struct type by its canonical registration key from
+/// the raw codegen record-struct map.
 fn record_struct_raw<'ctx>(
     record_key: &str,
     record_structs: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<StructType<'ctx>> {
-    record_structs
-        .get(record_key)
-        .copied()
-        .or_else(|| record_structs.get(short_name(record_key)).copied())
-        .ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "indirect-enum free synthesis: record `{record_key}` is not in the registered \
+    record_structs.get(record_key).copied().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "indirect-enum free synthesis: record `{record_key}` is not in the registered \
                  record-layout map — cannot synthesise its in-place drop body"
-            ))
-        })
+        ))
+    })
 }
 
 /// Ensure `__hew_enum_drop_inplace_<enum_key>` has a body, synthesising it on
@@ -8472,16 +8309,12 @@ fn ensure_enum_drop_body<'ctx>(
     if f.count_basic_blocks() > 0 {
         return Ok(());
     }
-    let layout = w
-        .machine_layouts
-        .get(enum_key)
-        .or_else(|| w.machine_layouts.get(short_name(enum_key)))
-        .ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "indirect-enum free synthesis: inline enum `{enum_key}` has no registered \
+    let layout = w.machine_layouts.get(enum_key).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "indirect-enum free synthesis: inline enum `{enum_key}` has no registered \
                  tagged-union layout"
-            ))
-        })?;
+        ))
+    })?;
     let variant_kinds =
         classify_enum_drop_variants_raw(enum_key, w.record_layouts, w.enum_layouts)?;
     emit_enum_drop_inplace_body(ctx, llvm_mod, enum_key, layout, &variant_kinds, w)
@@ -8506,7 +8339,7 @@ fn ensure_record_drop_body<'ctx>(
     let resource_close = w
         .resource_record_close
         .iter()
-        .find(|(record, _)| record == record_key || short_name(record) == record_key)
+        .find(|(record, _)| record == record_key)
         .map(|(_, symbol)| symbol.as_str());
     emit_record_drop_inplace_body(
         ctx,
@@ -8743,23 +8576,18 @@ pub(crate) fn get_or_declare_indirect_enum_free<'ctx>(
     llvm_mod.add_function(&sym, fn_ty, Some(Linkage::Internal))
 }
 
-/// Resolve the registered `MachineCodegenLayout` for an enum-layout key,
-/// trying the bare key then the short name (the same fallback
-/// `machine_layout_for_local` uses for module-qualified names).
+/// Resolve the registered `MachineCodegenLayout` for an enum-layout key.
 fn indirect_enum_layout_by_key<'a, 'ctx>(
     machine_layouts: &'a MachineLayoutMap<'ctx>,
     enum_name: &str,
 ) -> CodegenResult<&'a MachineCodegenLayout<'ctx>> {
-    machine_layouts
-        .get(enum_name)
-        .or_else(|| machine_layouts.get(short_name(enum_name)))
-        .ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "indirect-enum free synthesis: enum `{enum_name}` is not in \
+    machine_layouts.get(enum_name).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "indirect-enum free synthesis: enum `{enum_name}` is not in \
                  IrPipeline.machine_layouts — registration mismatch between MIR \
                  producer and codegen"
-            ))
-        })
+        ))
+    })
 }
 
 /// Emit the construction-site heap allocation for an `indirect enum` node and
@@ -14889,27 +14717,12 @@ fn lower_instruction_with_cancel_drops(
                     "Instr::EnumTagLoad src must be a Place::Local; got {src:?}"
                 )));
             };
-            let src_ty = fn_ctx.local_tys.get(src_local).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "Instr::EnumTagLoad src local {src_local} has no resolved type"
-                ))
-            })?;
-            let enum_name = match src_ty {
-                ResolvedTy::Named { name, .. } => name.clone(),
-                other => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "Instr::EnumTagLoad src local {src_local} type {other:?} is not a \
-                         Named enum/event type"
-                    )));
-                }
-            };
-            let layout = fn_ctx.machine_layouts.get(&enum_name).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "Instr::EnumTagLoad src type `{enum_name}` is not in the machine \
-                     layout map — only machine values and their event companions are \
-                     supported by Slice 5"
-                ))
-            })?;
+            // Machine event companions use the same class-qualified key as
+            // their concrete machine instance.  Looking up the bare
+            // `LifecycleEvent` leaf here loses `Lifecycle<i64>`'s identity;
+            // share the exact local-type projection used by MachineTag and
+            // MachineVariant instead.
+            let layout = crate::layout::machine_layout_for_local(fn_ctx, *src_local)?;
             let (src_slot, _src_slot_ty) =
                 fn_ctx.locals.get(src_local).copied().ok_or_else(|| {
                     CodegenError::FailClosed(format!(
@@ -14962,20 +14775,15 @@ fn lower_instruction_with_cancel_drops(
             // 3. GEP into the per-machine `__hew_state_name_table` global
             //    using `[i32 0, i64 tag]`.
             // 4. Load the pointer entry and store it into `dest`.
-            // The MIR carries the use-site spelling, which is
-            // module-qualified for an imported machine (`toggle.Toggle`);
-            // registration uses the bare decl name. Mirror the
-            // short-name fallback the Place::MachineTag lookup applies.
-            let layout = fn_ctx
-                .machine_layouts
-                .get(machine_name)
-                .or_else(|| fn_ctx.machine_layouts.get(short_name(machine_name)))
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "Instr::MachineStateName references machine `{machine_name}` which is \
+            // MIR transports the canonical machine owner, which is also the
+            // registration key. A leaf retry here could select an unrelated
+            // same-leaf machine's state-name table.
+            let layout = fn_ctx.machine_layouts.get(machine_name).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Instr::MachineStateName references machine `{machine_name}` which is \
                      not in the layout map — register_machine_layouts must populate it"
-                    ))
-                })?;
+                ))
+            })?;
             let table_global = layout.state_name_table.ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Instr::MachineStateName: machine `{machine_name}` has no state-name \
@@ -15568,30 +15376,14 @@ pub(crate) fn record_struct_for<'ctx>(
             let lookup_key: std::borrow::Cow<str> = if args.is_empty() {
                 std::borrow::Cow::Borrowed(name.as_str())
             } else {
-                // Shorten the spine: registration keys on bare args, so a raw
-                // `mangle(name, args)` carrying a qualified payload would miss
-                // the primary key and lean entirely on the short-name fallback.
+                // The shared layout-key authority preserves the declaration
+                // owner and every named argument in the generic spine.
                 std::borrow::Cow::Owned(mangle_with_shortened_args(name, args))
             };
             fn_ctx
                 .record_layouts
                 .get(lookup_key.as_ref())
                 .copied()
-                .or_else(|| {
-                    // Fallback: registration keys on the bare (short) outer
-                    // name, so a monomorphic record reached through a
-                    // module-qualified spelling (`shapes.Point`) misses the
-                    // primary key. Retry under the short name. The generic arm
-                    // shortens both the outer name and the type-arg spine.
-                    let short_key: std::borrow::Cow<str> = if args.is_empty() {
-                        std::borrow::Cow::Borrowed(short_name(name))
-                    } else {
-                        std::borrow::Cow::Owned(mangle_with_shortened_args(short_name(name), args))
-                    };
-                    (short_key.as_ref() != lookup_key.as_ref())
-                        .then(|| fn_ctx.record_layouts.get(short_key.as_ref()).copied())
-                        .flatten()
-                })
                 .ok_or_else(|| {
                     CodegenError::FailClosed(format!(
                         "record codegen: type `{lookup_key}` reached RecordInit/RecordFieldLoad \
@@ -16783,14 +16575,10 @@ fn registered_record_layout_key(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Opti
     } else {
         mangle_with_shortened_args(name, args)
     };
-    let short_key = if args.is_empty() {
-        short_name(name).to_string()
-    } else {
-        mangle_with_shortened_args(short_name(name), args)
-    };
-    [full_key, short_key]
-        .into_iter()
-        .find(|key| fn_ctx.record_field_resolved_tys.contains_key(key))
+    fn_ctx
+        .record_field_resolved_tys
+        .contains_key(&full_key)
+        .then_some(full_key)
 }
 
 fn is_unclonable_builtin_record_field(ty: &ResolvedTy) -> bool {
@@ -17557,7 +17345,7 @@ fn emit_field_overwrite_release(
                 && fn_ctx
                     .resource_record_close
                     .iter()
-                    .any(|(record, _)| record == name || short_name(record) == short_name(name))
+                    .any(|(record, _)| record == name)
             {
                 return Ok(());
             }
@@ -20634,28 +20422,10 @@ fn resolve_drop_fn<'ctx>(
             Ok(DropDispatch::RuntimeSymbol(descriptor.c_symbol()))
         }
         hew_mir::DropFnSpec::UserClose(name) => {
-            // Resolve the `<Type>::<method>` close symbol. A module-qualified
-            // receiver (`http_client.Response`) carries its source qualifier into
-            // the drop symbol so same-short-name types from different modules keep
-            // distinct layout/dispatch identities (#2270). A non-colliding
-            // resource's `close` body is registered under the BARE `<Short>::close`
-            // mangling, so on a miss for the qualified spelling retry the bare form
-            // — the same strip-on-miss MIR layout/field lookup uses. A genuinely
-            // colliding type registers a DISTINCT qualified symbol (the #2400
-            // guard forbids two bare `<Short>::close`), so the exact lookup hits
-            // first and this fallback never crosses two distinct bodies; if
-            // neither spelling is registered the drop still fails closed below.
-            let bare_fallback = name.split_once("::").and_then(|(ty, method)| {
-                let short = short_name(ty);
-                (short != ty).then(|| format!("{short}::{method}"))
-            });
-            let resolved: &str = match bare_fallback.as_deref() {
-                Some(bare) if !fn_symbols.contains_key(name) && fn_symbols.contains_key(bare) => {
-                    bare
-                }
-                _ => name.as_str(),
-            };
-            let entry = fn_symbols.get(resolved).ok_or_else(|| {
+            // The MIR authority transports the exact canonical
+            // `<owner>::<method>` identity. Retrying a leaf spelling here would
+            // let same-leaf resources dispatch to each other's close body.
+            let entry = fn_symbols.get(name).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "drop_fn=UserClose({name:?}): no function with that mangled \
                      symbol is registered in the codegen function pre-pass. A \
@@ -20668,7 +20438,7 @@ fn resolve_drop_fn<'ctx>(
                      lifecycle-symmetry)."
                 ))
             })?;
-            let (value, _return_ty, returns_unit) = entry.real(resolved, "drop dispatch")?;
+            let (value, _return_ty, returns_unit) = entry.real(name, "drop dispatch")?;
             if !returns_unit {
                 return Err(CodegenError::FailClosed(format!(
                     "drop_fn=UserClose({name:?}): user-resource `close` must return \
@@ -20681,7 +20451,7 @@ fn resolve_drop_fn<'ctx>(
             }
             Ok(DropDispatch::UserFn {
                 value,
-                symbol: resolved.to_string(),
+                symbol: name.clone(),
             })
         }
         hew_mir::DropFnSpec::Release(symbol) => Err(CodegenError::FailClosed(format!(
@@ -22006,10 +21776,7 @@ fn helper_snapshot_type_contains_trait_object(
                 })
             }) || enum_layouts
                 .iter()
-                .find(|layout| {
-                    layout.name == *name
-                        || hew_types::short_name(&layout.name) == hew_types::short_name(name)
-                })
+                .find(|layout| layout.name == *name)
                 .is_some_and(|layout| {
                     layout.variants.iter().any(|variant| {
                         variant.field_tys.iter().any(|field| {
@@ -23206,12 +22973,7 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
             args,
             builtin: None,
             ..
-        } if args.is_empty() => {
-            // The type checker qualifies imported record names with their module
-            // prefix (e.g. `"process.CommandOutput"`). The synthesized helper is
-            // keyed by the bare type name (`"CommandOutput"`), so strip the prefix.
-            Ok(short_name(name).to_string())
-        }
+        } if args.is_empty() => Ok(name.clone()),
         ResolvedTy::Named {
             name,
             args,
@@ -23224,11 +22986,10 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
             // `user_record_layout_key` admit authority and the `state_clone`
             // `lookup_record_layout` resolver produce, and the same key the
             // synthesis seed (`collect_record_inplace_drop_seeds`) registers — so
-            // the drop call resolves the body that was emitted. Strip the module
-            // prefix from the origin name first (the mangler keys on the short
-            // name) so an imported generic record matches its registered layout.
-            let short = short_name(name);
-            Ok(mangle_with_shortened_args(short, args))
+            // the drop call resolves the body that was emitted. The shared
+            // layout-key encoder preserves the declaration owner and converts
+            // dotted segments only for native symbol safety.
+            Ok(mangle_with_shortened_args(name, args))
         }
         // M-5: a builtin owned-aggregate record (today only `CrashInfo`, which
         // carries an owned `message: string`) is keyed by its bare name — the
@@ -23550,14 +23311,19 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                     df = drop.drop_fn,
                 )));
             }
-            let ResolvedTy::Named { name, args, .. } = &drop.ty else {
+            let ResolvedTy::Named {
+                args,
+                builtin: Some(BuiltinType::VecIter),
+                ..
+            } = &drop.ty
+            else {
                 return Err(CodegenError::FailClosed(format!(
                     "VecIterCursor ElabDrop @ {:?} has non-named type {}",
                     drop.place,
                     drop.ty.user_facing()
                 )));
             };
-            if name.rsplit('.').next() != Some("VecIter") || args.len() != 1 {
+            if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "VecIterCursor ElabDrop @ {:?} has non-VecIter type {}",
                     drop.place,
@@ -23977,17 +23743,20 @@ struct CgHeapLayouts<'a, 'ctx> {
 }
 
 impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
-    fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
-        let short = short_name(name);
-        let key = if args.is_empty() {
-            name.to_string()
-        } else {
-            mangle_with_shortened_args(short, args)
+    fn record_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+        builtin: Option<hew_types::BuiltinType>,
+    ) -> Option<Vec<ResolvedTy>> {
+        let key = match builtin {
+            Some(
+                cursor @ (hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter),
+            ) => hew_hir::synthetic_cursor_layout_key(cursor, args)?,
+            _ if args.is_empty() => name.to_string(),
+            _ => mangle_with_shortened_args(name, args),
         };
-        self.record_field_resolved_tys
-            .get(key.as_str())
-            .or_else(|| self.record_field_resolved_tys.get(short))
-            .cloned()
+        self.record_field_resolved_tys.get(key.as_str()).cloned()
     }
 
     fn enum_variant_field_tys(
@@ -23995,18 +23764,13 @@ impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
         name: &str,
         args: &[ResolvedTy],
     ) -> Option<Vec<Vec<ResolvedTy>>> {
-        let short = short_name(name);
         let key = if args.is_empty() {
             name.to_string()
         } else {
-            mangle_with_shortened_args(short, args)
+            mangle_with_shortened_args(name, args)
         };
         // Enum layouts.
-        if let Some(layout) = self
-            .enum_layouts
-            .iter()
-            .find(|el| el.name == key || el.name == name || short_name(&el.name) == short)
-        {
+        if let Some(layout) = self.enum_layouts.iter().find(|el| el.name == key) {
             return Some(
                 layout
                     .variants
@@ -24018,23 +23782,21 @@ impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
         // Machine state payloads (machines are enums at the value-classification
         // layer; their per-variant field types live in the machine layout
         // registry, not `enum_layouts`).
-        if let Some(machine) = self.machine_layouts.get(short) {
+        if let Some(machine) = self.machine_layouts.get(name) {
             return Some(machine.variant_field_tys.clone());
         }
         None
     }
 
     fn enum_is_indirect(&self, name: &str, args: &[ResolvedTy]) -> bool {
-        let short = short_name(name);
         let key = if args.is_empty() {
             name.to_string()
         } else {
-            mangle_with_shortened_args(short, args)
+            mangle_with_shortened_args(name, args)
         };
-        self.enum_layouts.iter().any(|layout| {
-            (layout.name == key || layout.name == name || short_name(&layout.name) == short)
-                && layout.is_indirect
-        })
+        self.enum_layouts
+            .iter()
+            .any(|layout| layout.name == key && layout.is_indirect)
     }
 }
 
@@ -24230,7 +23992,7 @@ fn classify_record_drop_fields_for_key(
     let record_layouts = codegen_record_layouts(fn_ctx);
     let fields = record_layouts
         .iter()
-        .find(|layout| layout.name == record_key || short_name(&layout.name) == record_key)
+        .find(|layout| layout.name == record_key)
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "aggregate-recursive drop: record leaf `{record_key}` has no registered field layout"
@@ -24267,7 +24029,7 @@ fn classify_enum_drop_variants_for_key(
     let layout = fn_ctx
         .enum_layouts
         .iter()
-        .find(|layout| layout.name == enum_key || short_name(&layout.name) == enum_key)
+        .find(|layout| layout.name == enum_key)
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "aggregate-recursive drop: enum leaf `{enum_key}` has no registered enum layout"
@@ -25946,19 +25708,17 @@ pub(crate) fn remote_ask_dispatch_ptr<'ctx>(
     pid_place: Place,
 ) -> CodegenResult<PointerValue<'ctx>> {
     let pid_ty = place_resolved_ty(fn_ctx, pid_place)?;
-    let actor_name = match pid_ty {
-        ResolvedTy::Named { name, args, .. } if name == "RemotePid" => match args.first() {
-            Some(ResolvedTy::Named { name: t_name, .. }) => t_name.clone(),
-            other => {
-                return Err(CodegenError::FailClosed(format!(
-                    "RemoteAsk pid `RemotePid<T>` inner T must be a named actor type, \
-                     got {other:?}"
-                )));
-            }
-        },
+    let args = builtin_named_args(pid_ty, BuiltinType::RemotePid).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "RemoteAsk pid must have resolved builtin type RemotePid<T>, got {pid_ty:?}"
+        ))
+    })?;
+    let actor_name = match args.first() {
+        Some(ResolvedTy::Named { name: t_name, .. }) => t_name.clone(),
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "RemoteAsk pid must have resolved type RemotePid<T>, got {other:?}"
+                "RemoteAsk pid `RemotePid<T>` inner T must be a named actor type, \
+                 got {other:?}"
             )));
         }
     };
@@ -26028,29 +25788,23 @@ fn emit_remote_pid_send_call<'ctx>(
     // arg's resolved type. The checker has already concretized both types
     // by the time we reach codegen.
     let pid_ty = place_resolved_ty(fn_ctx, *pid_arg)?;
-    let actor_name = match pid_ty {
-        ResolvedTy::Named { name, args, .. } if name == "RemotePid" => {
-            let inner = args.first().ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_remote_pid_send pid arg `RemotePid<T>` is missing its T type \
-                     parameter"
-                        .into(),
-                )
-            })?;
-            match inner {
-                ResolvedTy::Named { name: t_name, .. } => t_name.clone(),
-                other => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "hew_remote_pid_send: RemotePid<T> inner T must be a named actor \
-                         type, got {other:?}"
-                    )));
-                }
-            }
-        }
+    let pid_args = builtin_named_args(pid_ty, BuiltinType::RemotePid).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "hew_remote_pid_send pid arg must have resolved builtin type RemotePid<T>, \
+             got {pid_ty:?}"
+        ))
+    })?;
+    let inner = pid_args.first().ok_or_else(|| {
+        CodegenError::FailClosed(
+            "hew_remote_pid_send pid arg `RemotePid<T>` is missing its T type parameter".into(),
+        )
+    })?;
+    let actor_name = match inner {
+        ResolvedTy::Named { name: t_name, .. } => t_name.clone(),
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_remote_pid_send pid arg must have resolved type \
-                 ResolvedTy::Named {{ name: \"RemotePid\", .. }}, got {other:?}"
+                "hew_remote_pid_send: RemotePid<T> inner T must be a named actor type, \
+                 got {other:?}"
             )));
         }
     };
@@ -26359,27 +26113,23 @@ fn emit_transport_attach_local_call<'ctx>(
 
     // Resolve the concrete actor type behind the handler's `LocalPid<A>`.
     let handler_ty = place_resolved_ty(fn_ctx, *handler_arg)?;
-    let actor_name = match handler_ty {
-        ResolvedTy::Named { name, args, .. } if name == "LocalPid" => {
-            let inner = args.first().ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "{pseudo_callee} handler arg `LocalPid<A>` is missing its A type parameter"
-                ))
-            })?;
-            match inner {
-                ResolvedTy::Named { name: a_name, .. } => a_name.clone(),
-                other => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "{pseudo_callee}: LocalPid<A> inner A must be a named actor type, \
-                         got {other:?}"
-                    )));
-                }
-            }
-        }
+    let handler_args = builtin_named_args(handler_ty, BuiltinType::LocalPid).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "{pseudo_callee} handler arg must have resolved builtin type LocalPid<A>, \
+             got {handler_ty:?}"
+        ))
+    })?;
+    let inner = handler_args.first().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "{pseudo_callee} handler arg `LocalPid<A>` is missing its A type parameter"
+        ))
+    })?;
+    let actor_name = match inner {
+        ResolvedTy::Named { name: a_name, .. } => a_name.clone(),
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "{pseudo_callee} handler arg must have resolved type \
-                 ResolvedTy::Named {{ name: \"LocalPid\", .. }}, got {other:?}"
+                "{pseudo_callee}: LocalPid<A> inner A must be a named actor type, \
+                 got {other:?}"
             )));
         }
     };
@@ -26730,13 +26480,11 @@ fn recv_dest_option_elem_ty(
             "{callee} dest local _{dest_local} has no registered type"
         ))
     })?;
-    match dest_ty {
-        ResolvedTy::Named { name, args, .. } if name == "Option" && args.len() == 1 => {
-            Ok(args[0].clone())
-        }
-        other => Err(CodegenError::FailClosed(format!(
+    match builtin_named_args(dest_ty, BuiltinType::Option) {
+        Some([elem]) => Ok(elem.clone()),
+        _ => Err(CodegenError::FailClosed(format!(
             "{callee} dest local _{dest_local} must be a checker-resolved Option<T> \
-             slot; got {other:?}"
+             slot; got {dest_ty:?}"
         ))),
     }
 }
@@ -31413,10 +31161,7 @@ fn resolve_di_type<'ctx>(
         };
 
         // An enum (in the enum-layout map) — emit the degraded tagged-union DIE.
-        if let Some(enum_layout) = enum_layouts
-            .iter()
-            .find(|e| e.name == key || short_name(&e.name) == short_name(name))
-        {
+        if let Some(enum_layout) = enum_layouts.iter().find(|e| e.name == key) {
             return resolve_enum_di_type(
                 ctx,
                 dctx,
@@ -31430,10 +31175,7 @@ fn resolve_di_type<'ctx>(
         }
 
         // A record (in the LLVM struct-layout map) — emit a struct DIE.
-        let llvm_struct = record_layouts
-            .get(key.as_str())
-            .or_else(|| record_layouts.get(short_name(name)))
-            .copied();
+        let llvm_struct = record_layouts.get(key.as_str()).copied();
         if let Some(llvm_struct) = llvm_struct {
             // Recursion guard: insert a forward struct placeholder under the key
             // BEFORE resolving members, so a self-referential record terminates.
@@ -31466,12 +31208,8 @@ fn resolve_di_type<'ctx>(
 
             // Resolve member types + offsets. Field names come from the MIR
             // record layout; missing names fall back to positional `field_N`.
-            let field_tys = record_field_resolved_tys
-                .get(key.as_str())
-                .or_else(|| record_field_resolved_tys.get(short_name(name)));
-            let field_names = record_field_names
-                .get(key.as_str())
-                .or_else(|| record_field_names.get(short_name(name)));
+            let field_tys = record_field_resolved_tys.get(key.as_str());
+            let field_names = record_field_names.get(key.as_str());
             if let Some(field_tys) = field_tys {
                 let mut members: Vec<DIType<'ctx>> = Vec::with_capacity(field_tys.len());
                 for (i, fty) in field_tys.iter().enumerate() {
@@ -31600,12 +31338,10 @@ fn resolve_enum_di_type<'ctx>(
         return Some(result);
     }
 
-    // The enum's outer LLVM struct `{ tag: iW, payload: [..] }` lives in the
-    // record-layout map under the enum name.
-    let outer_struct = record_layouts
-        .get(enum_layout.name.as_str())
-        .or_else(|| record_layouts.get(enum_name))
-        .copied()?;
+    // The enum's outer LLVM struct `{ tag: iW, payload: [..] }` is keyed by
+    // the exact canonical enum owner. `enum_name` below is display-only: using
+    // it for lookup would attach a same-leaf enum's storage to this DIE.
+    let outer_struct = enum_debug_outer_struct(record_layouts, &enum_layout.name)?;
     let struct_size_bits = target_data.get_bit_size(&outer_struct);
     let struct_align_bits = target_data.get_abi_alignment(&outer_struct) * 8;
 
@@ -31897,6 +31633,16 @@ fn resolve_enum_di_type<'ctx>(
     } else {
         Some(enum_struct)
     }
+}
+
+/// Resolve the LLVM storage type attached to an enum's debug DIE. The full
+/// nominal owner is semantic; the short name is only a DWARF presentation
+/// label and must never participate in this lookup.
+fn enum_debug_outer_struct<'ctx>(
+    record_layouts: &RecordLayoutMap<'ctx>,
+    enum_owner: &str,
+) -> Option<StructType<'ctx>> {
+    record_layouts.get(enum_owner).copied()
 }
 
 /// Insert an `llvm.dbg.declare` record at the end of `block`, binding `storage`
@@ -33963,10 +33709,10 @@ fn build_module_for_target<'ctx>(
     // in their state payloads (pass 1), and the deferred enums may
     // reference machines (pass 3) — the split keeps both directions sized
     // against bodied members.
-    let machine_short_names: HashSet<&str> = pipeline
+    let machine_names: HashSet<&str> = pipeline
         .machine_layouts
         .iter()
-        .map(|m| short_name(&m.name))
+        .map(|m| m.name.as_str())
         .collect();
     let (machine_free_enums, machine_ref_enums): (
         Vec<hew_mir::EnumLayout>,
@@ -33975,7 +33721,7 @@ fn build_module_for_target<'ctx>(
         !layout.variants.iter().any(|v| {
             v.field_tys
                 .iter()
-                .any(|t| resolved_ty_references_machine(t, &machine_short_names))
+                .any(|t| resolved_ty_references_machine(t, &machine_names))
         })
     });
     crate::layout::register_enum_layouts(

@@ -4,11 +4,9 @@
 //!
 //! An importer that opts only the trait into scope (`::{ Closable }`) and leaves
 //! the error type qualified-by-default must spell it `closableerr.CloseError` in
-//! its `impl Closable` method signature. The trait's recorded return type then
-//! carries the bare `CloseError` while the impl's carries the qualified
-//! `closableerr.CloseError`; `check_impl_method_against_trait` must shorten the
-//! module qualifier before comparing the signatures, or it reports a false
-//! `TraitImplSignatureMismatch` for two spellings of the one type.
+//! its `impl Closable` method signature. Both spellings resolve to the same
+//! declaration-owned identity, `hew.closableerr.CloseError`, before conformance
+//! compares nested type arguments; it never compares only their leaf names.
 
 /// Error type returned by `Closable::close`.
 pub type CloseError {

@@ -5,7 +5,7 @@ use hew_hir::{
     HirStmtKind, IntentKind, ScopeId, ValueClass,
 };
 use hew_mir::lower_hir_module;
-use hew_types::{BuiltinType, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
+use hew_types::{BuiltinType, CallTarget, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
@@ -54,6 +54,7 @@ fn vec_resolved_impl_call_wrong_arity_panics_fail_closed() {
         intent: IntentKind::Read,
         kind: HirExprKind::ResolvedImplCall {
             receiver: Box::new(receiver),
+            target: CallTarget::RuntimeCollection(MethodTargetFamily::Vec(VecMethod::Len)),
             impl_id: ImplId(2),
             method_name: "len".to_string(),
             target_symbol: "hew_vec_len".to_string(),
@@ -80,6 +81,7 @@ fn vec_resolved_impl_call_wrong_arity_panics_fail_closed() {
     let module = empty_module(vec![HirItem::Function(HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],

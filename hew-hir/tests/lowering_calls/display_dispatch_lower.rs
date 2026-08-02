@@ -51,7 +51,7 @@ fn lower_checked(source: &str) -> hew_hir::LowerOutput {
 fn walk_expr(expr: &HirExpr, f: &mut impl FnMut(&HirExpr)) {
     f(expr);
     match &expr.kind {
-        HirExprKind::Call { callee, args } => {
+        HirExprKind::Call { callee, args, .. } => {
             walk_expr(callee, f);
             for a in args {
                 walk_expr(a, f);
@@ -288,7 +288,9 @@ fn fstring_named_type_without_impl_is_fail_closed() {
         hew_types::LANG_ITEM_DISPLAY_FMT,
         hew_types::LangItemBinding {
             trait_name: "Display".to_string(),
+            trait_id: hew_types::DefId::new("Display"),
             method_name: Some("fmt".to_string()),
+            method_id: Some(hew_types::DefId::new("Display::fmt")),
         },
     );
     tc.insert_expr_type(

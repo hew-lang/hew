@@ -4096,6 +4096,7 @@ impl Builder {
                         .map(crate::CallAuthority::Runtime)
                         .or_else(|| {
                             hew_hir::stdlib_catalog::trusted_ffi_symbol_for_endpoint(endpoint)
+                                .filter(|symbol| *symbol == callee_symbol)
                                 .map(|_| crate::CallAuthority::Extern)
                         })
                         .unwrap_or_default();

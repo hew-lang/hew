@@ -9,19 +9,22 @@
 //! bounds (the trapping `b[i]` half stays on the dedicated `hew_bytes_index`
 //! getter — `get` is de-aliased from it).
 //!
-//! After HIR lowers the method call the callee becomes
-//! `BindingRef { name, resolved: Unresolved }`, which
-//! `runtime_symbol_for_call_expr` recognises as an allowlisted symbol and
-//! routes to `lower_runtime_call`.
+//! HIR carries the checker-selected runtime family on `CallTarget::Runtime`;
+//! the callee binding is linker presentation only. These hand-built fixtures
+//! therefore provide that semantic target explicitly, matching production HIR
+//! without restoring a callee-spelling fallback.
 
 use std::collections::HashMap;
 
 use hew_hir::{
-    ids::IdGen, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule,
-    HirStmt, HirStmtKind, IntentKind, ResolvedRef, ScopeId, TypeClassTable, ValueClass,
+    ids::IdGen, lower_program, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirItem,
+    HirLiteral, HirModule, HirStmt, HirStmtKind, IntentKind, ResolutionCtx, ResolvedRef, ScopeId,
+    TypeClassTable, ValueClass,
 };
 use hew_mir::{lower_hir_module, Instr, Place, Terminator};
-use hew_types::ResolvedTy;
+use hew_types::{
+    module_registry::ModuleRegistry, runtime_call::RuntimeCallFamily, Checker, ResolvedTy,
+};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
@@ -81,12 +84,10 @@ fn i64_lit(ids: &mut IdGen) -> HirExpr {
     }
 }
 
-/// Build a `BindingRef { name, resolved: Unresolved }` callee expression.
+/// Build the linker-presentation half of a runtime callee expression.
 ///
-/// When `name` is a recognised runtime symbol, `runtime_symbol_for_call_expr`
-/// gates on `is_known_runtime_symbol` before checking `resolved`, so
-/// `Unresolved` here is correct and matches the HIR shape produced by the
-/// method-call rewrite for `bytes.len()` and `bytes.get()`.
+/// The unresolved binding is intentionally insufficient authority on its own;
+/// [`call_expr`] supplies the checker-selected [`RuntimeCallFamily`].
 fn runtime_callee(ids: &mut IdGen, name: &str, ret_ty: ResolvedTy) -> HirExpr {
     HirExpr {
         node: ids.node(),
@@ -102,7 +103,34 @@ fn runtime_callee(ids: &mut IdGen, name: &str, ret_ty: ResolvedTy) -> HirExpr {
     }
 }
 
-fn call_expr(ids: &mut IdGen, callee: HirExpr, args: Vec<HirExpr>, ret_ty: ResolvedTy) -> HirExpr {
+fn call_expr(
+    ids: &mut IdGen,
+    family: RuntimeCallFamily,
+    callee: HirExpr,
+    args: Vec<HirExpr>,
+    ret_ty: ResolvedTy,
+) -> HirExpr {
+    HirExpr {
+        node: ids.node(),
+        site: ids.site(),
+        ty: ret_ty,
+        value_class: ValueClass::BitCopy,
+        intent: IntentKind::Read,
+        kind: HirExprKind::Call {
+            target: hew_types::CallTarget::Runtime(family),
+            callee: Box::new(callee),
+            args,
+        },
+        span: 0..0,
+    }
+}
+
+fn indirect_call_expr(
+    ids: &mut IdGen,
+    callee: HirExpr,
+    args: Vec<HirExpr>,
+    ret_ty: ResolvedTy,
+) -> HirExpr {
     HirExpr {
         node: ids.node(),
         site: ids.site(),
@@ -197,6 +225,106 @@ fn find_terminator_call<'a>(
 // bytes.len() — hew_vec_len producer
 // ---------------------------------------------------------------------------
 
+#[test]
+fn same_spelling_indirect_call_is_not_runtime_authority() {
+    let mut ids = IdGen::default();
+    let callee = runtime_callee(&mut ids, "hew_vec_len", ResolvedTy::I64);
+    let buf = bytes_lit(&mut ids);
+    let call = indirect_call_expr(&mut ids, callee, vec![buf], ResolvedTy::I64);
+    let pipeline = lower_hir_module(&module_with_stmt(&mut ids, call));
+
+    assert!(
+        find_abi_call(find_probe(&pipeline), "hew_vec_len").is_none(),
+        "an indirect call must not acquire runtime authority from linker spelling"
+    );
+}
+
+#[test]
+fn std_io_bytes_calls_preserve_checker_runtime_targets_in_hir() {
+    let parsed = hew_parser::parse(
+        r"
+        import std::io;
+
+        fn main() -> i64 {
+            let b: bytes = bytes::new();
+            let got = b.get(0);
+            return b.len();
+        }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-mir crate must live below repo root")
+        .to_path_buf();
+    let mut checker = Checker::new(ModuleRegistry::new(vec![repo_root]));
+    let checked_program = checker.check_program(&parsed.program);
+    assert!(
+        checked_program.errors.is_empty(),
+        "type errors: {:#?}",
+        checked_program.errors
+    );
+    let checker_targets: Vec<_> = checked_program
+        .method_call_rewrites
+        .values()
+        .filter_map(|rewrite| match rewrite {
+            hew_types::MethodCallRewrite::RewriteToFunction { target, .. } => Some(target),
+            _ => None,
+        })
+        .collect();
+    for family in [RuntimeCallFamily::BytesGet, RuntimeCallFamily::VecLen] {
+        assert!(
+            checker_targets.contains(&&hew_types::CallTarget::Runtime(family)),
+            "checker must publish Runtime({family:?}) for the canonical std/io call; \
+             got {checker_targets:#?}"
+        );
+    }
+
+    let lowered = lower_program(
+        &parsed.program,
+        &checked_program,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        lowered.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        lowered.diagnostics
+    );
+    let main = lowered
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main HIR function");
+    let hir_targets: Vec<_> = main
+        .body
+        .statements
+        .iter()
+        .filter_map(|stmt| match &stmt.kind {
+            HirStmtKind::Let(_, Some(expr)) | HirStmtKind::Return(Some(expr)) => match &expr.kind {
+                HirExprKind::Call { target, .. } => Some(target),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    for family in [RuntimeCallFamily::BytesGet, RuntimeCallFamily::VecLen] {
+        assert!(
+            hir_targets.contains(&&hew_types::CallTarget::Runtime(family)),
+            "HIR must preserve checker Runtime({family:?}); got {hir_targets:#?}"
+        );
+    }
+}
+
 /// `bytes.len()` in statement position (discarded result) must emit
 /// `CallRuntimeAbi { symbol: "hew_vec_len", args: [buf], dest: None }`.
 ///
@@ -207,7 +335,13 @@ fn bytes_len_discarded_emits_call_runtime_abi() {
     let mut ids = IdGen::default();
     let callee = runtime_callee(&mut ids, "hew_vec_len", ResolvedTy::I64);
     let buf = bytes_lit(&mut ids);
-    let call = call_expr(&mut ids, callee, vec![buf], ResolvedTy::I64);
+    let call = call_expr(
+        &mut ids,
+        RuntimeCallFamily::VecLen,
+        callee,
+        vec![buf],
+        ResolvedTy::I64,
+    );
     let module = module_with_stmt(&mut ids, call);
 
     let pipeline = lower_hir_module(&module);
@@ -245,7 +379,13 @@ fn bytes_len_value_needed_emits_i64_dest() {
     let mut ids = IdGen::default();
     let callee = runtime_callee(&mut ids, "hew_vec_len", ResolvedTy::I64);
     let buf = bytes_lit(&mut ids);
-    let rhs = call_expr(&mut ids, callee, vec![buf], ResolvedTy::I64);
+    let rhs = call_expr(
+        &mut ids,
+        RuntimeCallFamily::VecLen,
+        callee,
+        vec![buf],
+        ResolvedTy::I64,
+    );
 
     let binding_id = ids.binding();
     let let_stmt = HirStmt {
@@ -339,7 +479,13 @@ fn bytes_get_emits_terminator_call_to_hew_bytes_get() {
     let callee = runtime_callee(&mut ids, "hew_bytes_get", option_u8_ty());
     let buf = bytes_lit(&mut ids);
     let idx = i64_lit(&mut ids);
-    let call = call_expr(&mut ids, callee, vec![buf, idx], option_u8_ty());
+    let call = call_expr(
+        &mut ids,
+        RuntimeCallFamily::BytesGet,
+        callee,
+        vec![buf, idx],
+        option_u8_ty(),
+    );
     let module = module_with_stmt(&mut ids, call);
 
     let pipeline = lower_hir_module(&module);
@@ -381,7 +527,13 @@ fn bytes_get_value_needed_dest_is_option_u8() {
     let callee = runtime_callee(&mut ids, "hew_bytes_get", option_u8_ty());
     let buf = bytes_lit(&mut ids);
     let idx = i64_lit(&mut ids);
-    let rhs = call_expr(&mut ids, callee, vec![buf, idx], option_u8_ty());
+    let rhs = call_expr(
+        &mut ids,
+        RuntimeCallFamily::BytesGet,
+        callee,
+        vec![buf, idx],
+        option_u8_ty(),
+    );
 
     let binding_id = ids.binding();
     let let_stmt = HirStmt {

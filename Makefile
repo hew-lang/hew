@@ -1408,18 +1408,31 @@ test-sys-lane-closure:
 
 # ── Install / Uninstall ────────────────────────────────────────────────────
 # Installs release-built artifacts to $(DESTDIR)$(PREFIX).
-# Run `make release` first, or this target will build release for you.
+# Run `make release` first; install fails closed if any required artifact is
+# absent or a release binary cannot generate its completion scripts.
 
 # Release-artefact preconditions for `install`. A macro rather than a target:
 # it is only ever meaningful as the first step of `install`'s recipe.
+define require_absolute_install_root
+	@prefix="$(PREFIX)"; destdir="$(DESTDIR)"; \
+	case "$$prefix" in \
+		/*) ;; \
+		*) echo "Error: PREFIX must be an absolute path (got '$$prefix')" >&2; exit 1 ;; \
+	esac; \
+	case "$$destdir" in \
+		""|/*) ;; \
+		*) echo "Error: DESTDIR must be empty or an absolute path (got '$$destdir')" >&2; exit 1 ;; \
+	esac
+endef
+
 define require_release_artifacts
-	@test -f "$(RELEASE_DIR)/hew" \
+	@test -x "$(RELEASE_DIR)/hew" \
 		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
-	@test -f "$(RELEASE_DIR)/adze" \
+	@test -x "$(RELEASE_DIR)/adze" \
 		|| { echo "Error: release adze not built. Run 'make release' first."; exit 1; }
-	@test -f "$(RELEASE_DIR)/hew-lsp" \
+	@test -x "$(RELEASE_DIR)/hew-lsp" \
 		|| { echo "Error: release hew-lsp not built. Run 'make release' first."; exit 1; }
-	@test -f "$(RELEASE_DIR)/hew-observe" \
+	@test -x "$(RELEASE_DIR)/hew-observe" \
 		|| { echo "Error: release hew-observe not built. Run 'make release' first."; exit 1; }
 	@test -f "$(RELEASE_LIB_DIR)/libhew.a" \
 		|| { echo "Error: libhew.a not built. Run 'make release' first."; exit 1; }
@@ -1428,6 +1441,7 @@ define require_release_artifacts
 endef
 
 install:
+	$(call require_absolute_install_root)
 	$(call require_release_artifacts)
 	@echo "==> Installing to $(DESTDIR)$(PREFIX)"
 	install -d "$(DESTDIR)$(PREFIX)/bin"
@@ -1461,20 +1475,40 @@ install:
 		install -d "$(DESTDIR)$(PREFIX)/lib/$$triple"; \
 		install -m 644 "$$lib_path" "$(DESTDIR)$(PREFIX)/lib/$$triple/libhew.a"; \
 	done
-	cp -r std/. $(DESTDIR)$(PREFIX)/std/
-	install -m 644 completions/hew.bash              $(DESTDIR)$(PREFIX)/completions/
-	install -m 644 completions/hew.zsh               $(DESTDIR)$(PREFIX)/completions/
-	install -m 644 completions/hew.fish              $(DESTDIR)$(PREFIX)/completions/
-	install -m 644 completions/adze.bash             $(DESTDIR)$(PREFIX)/completions/
-	install -m 644 completions/adze.zsh              $(DESTDIR)$(PREFIX)/completions/
-	install -m 644 completions/adze.fish             $(DESTDIR)$(PREFIX)/completions/
+	cp -r std/. "$(DESTDIR)$(PREFIX)/std/"
+	@set -e; for shell in bash zsh fish; do \
+		"$(RELEASE_DIR)/hew" completions "$$shell" \
+			> "$(DESTDIR)$(PREFIX)/completions/hew.$$shell"; \
+		"$(RELEASE_DIR)/adze" completions "$$shell" \
+			> "$(DESTDIR)$(PREFIX)/completions/adze.$$shell"; \
+		chmod 644 \
+			"$(DESTDIR)$(PREFIX)/completions/hew.$$shell" \
+			"$(DESTDIR)$(PREFIX)/completions/adze.$$shell"; \
+	done
 	@echo "==> Installed to $(DESTDIR)$(PREFIX)"
 	@echo "    Add $(PREFIX)/bin to your PATH:"
 	@echo "      export PATH=\"$(PREFIX)/bin:\$$PATH\""
 
 
 uninstall:
-	rm -rf $(DESTDIR)$(PREFIX)
+	$(call require_absolute_install_root)
+	@install_root="$(DESTDIR)$(PREFIX)"; \
+	if [ -z "$$install_root" ]; then \
+		echo "Error: refusing to uninstall unsafe path '$$install_root'" >&2; exit 1; \
+	fi; \
+	case "$$install_root" in \
+		*[!/]*) ;; \
+		*) echo "Error: refusing to uninstall unsafe path '$$install_root'" >&2; exit 1 ;; \
+	esac; \
+	if [ -d "$$install_root" ]; then \
+		case "$$install_root" in /*) cd_target="$$install_root" ;; *) cd_target="./$$install_root" ;; esac; \
+		canonical_root=$$(CDPATH= cd -P "$$cd_target" 2>/dev/null && pwd -P) \
+			|| { echo "Error: cannot resolve uninstall path '$$install_root'" >&2; exit 1; }; \
+		if [ "$$canonical_root" = "/" ]; then \
+			echo "Error: refusing to uninstall unsafe path '$$install_root'" >&2; exit 1; \
+		fi; \
+	fi; \
+	rm -rf -- "$$install_root"
 	@echo "==> Removed $(DESTDIR)$(PREFIX)"
 
 # ── Cleanup ─────────────────────────────────────────────────────────────────

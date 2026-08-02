@@ -3,6 +3,7 @@
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -885,11 +886,29 @@ def test_local_release_builds_and_assembles_every_shipped_binary() -> None:
             assembly,
             re.MULTILINE,
         )
-        assert f'@test -f "$(RELEASE_DIR)/{binary}" \\' in install
+        assert f'@test -x "$(RELEASE_DIR)/{binary}" \\' in install
         assert f'install -m 755 "$(RELEASE_DIR)/{binary}"' in install
         assert f'"$(DESTDIR)$(PREFIX)/bin/{binary}"' in install
     assert "cargo build -p hew-lib --profile release-lib" in release
     assert "$(RELEASE_LIB_DIR)/libhew.a" in assembly
+
+
+def test_windows_completion_packaging_fails_closed() -> None:
+    release = workflow()
+    start = release.index("      - name: Package archive (Windows)\n")
+    end = release.index("      # ── macOS code signing", start)
+    package = release[start:end]
+
+    assert "function Write-Completion {" in package
+    assert "$Completion = & $Executable completions $Shell" in package
+    assert "if ($LASTEXITCODE -ne 0) {" in package
+    assert "produced empty output" in package
+    for executable in ("hew.exe", "adze.exe"):
+        assert (
+            f'Write-Completion "${{ArchiveName}}/bin/{executable}" $shell '
+            f'"${{ArchiveName}}/completions/{executable.removesuffix(".exe")}.${{shell}}"'
+            in package
+        )
 
 
 def _make_dry_run(target: str, cargo_target_dir: Path, *make_overrides: str) -> str:
@@ -945,6 +964,160 @@ def test_make_release_surfaces_quote_spacious_cargo_target_dir() -> None:
         cross_release_lib = cargo_target_dir / target_triple / "release-lib"
         assert f'"{cross_release / "hew-lsp"}"' in cross_assembly
         assert f'--archive "{cross_release_lib / "libhew.a"}"' in cross_assembly
+
+
+def _write_install_artifacts(target_dir: Path) -> None:
+    binaries = tuple(
+        target_dir / "release" / name
+        for name in ("hew", "adze", "hew-lsp", "hew-observe")
+    )
+    for binary in binaries:
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text(
+            "#!/bin/sh\n"
+            'if [ "${1:-}" = completions ]; then\n'
+            f"  printf 'completion:{binary.name}:%s\\n' \"${{2:-}}\"\n"
+            "fi\n"
+        )
+        binary.chmod(0o755)
+    for archive in (
+        target_dir / "release-lib" / "libhew.a",
+        target_dir / "wasm32-wasip1" / "release" / "libhew_runtime.a",
+    ):
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        archive.write_bytes(f"fixture:{archive.name}\n".encode())
+
+
+def test_staged_install_and_uninstall_preserve_spacious_path_boundaries() -> None:
+    """The staged prefix is one path, never a shell word list or broad root."""
+    with tempfile.TemporaryDirectory(prefix="hew-staged-install-") as raw:
+        temp = Path(raw)
+        cargo_target_dir = temp / "cargo artifacts"
+        destdir = temp / "stage root"
+        prefix = "/opt/hew rc1"
+        install_root = Path(f"{destdir}{prefix}")
+        neighbour = install_root.with_name("hew rc1-neighbour")
+        neighbour.mkdir(parents=True)
+        sentinel = neighbour / "keep"
+        sentinel.write_text("not owned by uninstall\n")
+        _write_install_artifacts(cargo_target_dir)
+
+        env = os.environ.copy()
+        env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
+        overrides = [f"DESTDIR={destdir}", f"PREFIX={prefix}"]
+        installed = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'umask 077; exec "$@"',
+                "staged-install",
+                "make",
+                "install",
+                *overrides,
+            ],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert installed.returncode == 0, installed.stdout + installed.stderr
+
+        for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+            path = install_root / "bin" / binary
+            assert path.is_file()
+            assert os.access(path, os.X_OK)
+        assert (install_root / "lib" / "libhew.a").is_file()
+        assert (install_root / "lib" / "wasm32-wasip1" / "libhew_runtime.a").is_file()
+        assert (install_root / "std" / "prelude.hew").is_file()
+        for completion in (
+            "hew.bash",
+            "hew.zsh",
+            "hew.fish",
+            "adze.bash",
+            "adze.zsh",
+            "adze.fish",
+        ):
+            path = install_root / "completions" / completion
+            tool, shell = completion.split(".")
+            assert path.read_text() == f"completion:{tool}:{shell}\n"
+            assert stat.S_IMODE(path.stat().st_mode) == 0o644
+
+        removed = subprocess.run(
+            ["make", "uninstall", *overrides],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert removed.returncode == 0, removed.stdout + removed.stderr
+        assert not install_root.exists()
+        assert sentinel.read_text() == "not owned by uninstall\n"
+
+        # Counterfactual: an installed completion is part of the release
+        # surface, so a generator failure must make the staged install red.
+        hew = cargo_target_dir / "release" / "hew"
+        hew.write_text("#!/bin/sh\nexit 17\n")
+        hew.chmod(0o755)
+        completion_failure = subprocess.run(
+            ["make", "install", *overrides],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert completion_failure.returncode != 0
+
+        for unsafe_destdir, unsafe_prefix in (
+            ("", ""),
+            ("", "/"),
+            ("", "/."),
+            ("", "/.."),
+            ("", "//"),
+            ("/.", "/"),
+            ("", "."),
+            ("", ".."),
+            (".", "/"),
+        ):
+            refused = subprocess.run(
+                [
+                    "make",
+                    "uninstall",
+                    f"DESTDIR={unsafe_destdir}",
+                    f"PREFIX={unsafe_prefix}",
+                ],
+                cwd=ROOT,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert refused.returncode != 0
+            assert "Error:" in refused.stderr
+
+        for invalid_destdir, invalid_prefix in (("", "."), (".", "/opt/hew")):
+            refused_install = subprocess.run(
+                [
+                    "make",
+                    "install",
+                    f"DESTDIR={invalid_destdir}",
+                    f"PREFIX={invalid_prefix}",
+                ],
+                cwd=ROOT,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert refused_install.returncode != 0
+            assert "must be" in refused_install.stderr
 
 
 _PACKAGING_CARGO_DOUBLE = """#!/usr/bin/env python3
@@ -1143,7 +1316,9 @@ _TESTS = [
     test_windows_llvm_toolchain_allocator_mutations_are_rejected,
     test_release_binary_smoke_honors_absolute_and_relative_target_dirs,
     test_local_release_builds_and_assembles_every_shipped_binary,
+    test_windows_completion_packaging_fails_closed,
     test_make_release_surfaces_quote_spacious_cargo_target_dir,
+    test_staged_install_and_uninstall_preserve_spacious_path_boundaries,
     test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive,
     test_musl_packaging_uses_explicit_target_release_lib_output,
 ]

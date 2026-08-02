@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # macos-leak-oracle.sh — canonical, ratcheted Darwin memory-oracle corpus.
 #
-# Runs every hew-cli integration-test binary whose name contains `oracle` plus
-# the real `ffi_link_e2e::ffi_borrow_boundary_has_no_drop_or_leak_slope`
-# allocator probe. The pre-run inventory is exact-floored so a renamed or
-# deleted oracle cannot silently turn a smaller corpus green.
+# Runs every hew-cli integration-test binary whose name contains `oracle`, every
+# binary structurally discovered to call the allocator/leak execution helpers,
+# and the exact `ffi_link_e2e` allocator probe. The source-derived edge prevents
+# a real probe in a non-`oracle` file from silently falling outside the runner.
 
 set -euo pipefail
 
@@ -13,7 +13,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck disable=SC1091
 source "${ROOT}/scripts/lib/corpus-floor.sh"
 
+SOURCE_DISCOVERY="${ROOT}/scripts/macos-leak-source-inventory.py"
+SOURCE_TESTS_DIR="${HEW_LEAK_SOURCE_TESTS_DIR:-${ROOT}/hew-cli/tests}"
+# ffi_link_e2e remains an exact single-test authority below; selecting its
+# whole binary would dilute that verdict with unrelated FFI tests.
+SOURCE_BINARIES="$(
+    python3 "${SOURCE_DISCOVERY}" --tests-dir "${SOURCE_TESTS_DIR}" \
+        | grep -Fvx 'ffi_link_e2e'
+)"
 FILTER='binary(~oracle) + test(ffi_borrow_boundary_has_no_drop_or_leak_slope)'
+while IFS= read -r binary; do
+    [[ -n "${binary}" ]] || continue
+    FILTER="${FILTER} + binary(${binary})"
+done <<< "${SOURCE_BINARIES}"
 FFI_VERDICT='hew-cli::ffi_link_e2e ffi_borrow_boundary_has_no_drop_or_leak_slope'
 
 enumerate_inventory() {
@@ -60,14 +72,30 @@ verify_inventory() {
         return 1
     fi
 
-    local unexpected_binaries
-    unexpected_binaries="$(
-        awk '$1 != "hew-cli::ffi_link_e2e" && $1 !~ /oracle/ { print $1 }' "${inventory}" \
-            | LC_ALL=C sort -u
-    )"
+    local source_binary
+    while IFS= read -r source_binary; do
+        [[ -n "${source_binary}" ]] || continue
+        if ! grep -Fq -- "hew-cli::${source_binary} " "${inventory}"; then
+            echo "macos-leak-oracle: source-discovered allocator probe binary is absent:" >&2
+            echo "  hew-cli::${source_binary}" >&2
+            return 1
+        fi
+    done <<< "${SOURCE_BINARIES}"
+
+    local unexpected_binaries="" inventory_binary short_binary
+    while IFS= read -r inventory_binary; do
+        [[ "${inventory_binary}" == "hew-cli::ffi_link_e2e" ]] && continue
+        [[ "${inventory_binary}" == *oracle* ]] && continue
+        short_binary="${inventory_binary#hew-cli::}"
+        if ! grep -Fqx -- "${short_binary}" <<< "${SOURCE_BINARIES}"; then
+            unexpected_binaries="${unexpected_binaries}${inventory_binary}"$'\n'
+        fi
+    done < <(awk '{ print $1 }' "${inventory}" | LC_ALL=C sort -u)
     if [[ -n "${unexpected_binaries}" ]]; then
-        echo "macos-leak-oracle: filter admitted non-oracle binaries besides ffi_link_e2e:" >&2
-        printf '  %s\n' "${unexpected_binaries}" >&2
+        echo "macos-leak-oracle: filter admitted binaries with no source-derived allocator authority:" >&2
+        while IFS= read -r inventory_binary; do
+            [[ -n "${inventory_binary}" ]] && printf '  %s\n' "${inventory_binary}" >&2
+        done <<< "${unexpected_binaries}"
         return 1
     fi
 

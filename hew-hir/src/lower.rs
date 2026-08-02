@@ -2740,6 +2740,7 @@ pub fn lower_program_with_mono_cap(
         // pass can skip the bare-form insertion for those names (preventing
         // the last-write-wins overwrite of the user's registration).
         let mut bare_counts: HashMap<String, usize> = HashMap::new();
+        let mut surface_ctor_counts: HashMap<String, usize> = HashMap::new();
         // Accumulate user-declared variant names from root `program.items` so
         // the builtin registration pass can honour local-shadows-global.
         let mut user_declared_variant_names: std::collections::HashSet<String> =
@@ -2749,11 +2750,17 @@ pub fn lower_program_with_mono_cap(
                 Item::Machine(md) => {
                     for state in &md.states {
                         *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                        *surface_ctor_counts
+                            .entry(format!("{}::{}", md.name, state.name))
+                            .or_insert(0) += 1;
                         // Machine states shadow same-named builtins (local-shadows-global).
                         user_declared_variant_names.insert(state.name.clone());
                     }
                     for event in &md.events {
                         *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                        *surface_ctor_counts
+                            .entry(format!("{}Event::{}", md.name, event.name))
+                            .or_insert(0) += 1;
                         // Machine events shadow same-named builtins (local-shadows-global).
                         user_declared_variant_names.insert(event.name.clone());
                     }
@@ -2766,6 +2773,9 @@ pub fn lower_program_with_mono_cap(
                     for body_item in &td.body {
                         if let TypeBodyItem::Variant(v) = body_item {
                             *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                            *surface_ctor_counts
+                                .entry(format!("{}::{}", td.name, v.name))
+                                .or_insert(0) += 1;
                             // Track root-program user variants for the
                             // local-shadows-global builtin registration guard.
                             user_declared_variant_names.insert(v.name.clone());
@@ -2811,6 +2821,9 @@ pub fn lower_program_with_mono_cap(
                             Item::Machine(md) => {
                                 for state in &md.states {
                                     *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                                    *surface_ctor_counts
+                                        .entry(format!("{}::{}", md.name, state.name))
+                                        .or_insert(0) += 1;
                                     // Machine states (pub or private) shadow same-named
                                     // builtins across the flat global registry, matching
                                     // the checker's global register_machine_decl walk.
@@ -2818,6 +2831,9 @@ pub fn lower_program_with_mono_cap(
                                 }
                                 for event in &md.events {
                                     *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                                    *surface_ctor_counts
+                                        .entry(format!("{}Event::{}", md.name, event.name))
+                                        .or_insert(0) += 1;
                                     // Machine events shadow same-named builtins.
                                     user_declared_variant_names.insert(event.name.clone());
                                 }
@@ -2831,6 +2847,9 @@ pub fn lower_program_with_mono_cap(
                                 for body_item in &td.body {
                                     if let TypeBodyItem::Variant(v) = body_item {
                                         *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                                        *surface_ctor_counts
+                                            .entry(format!("{}::{}", td.name, v.name))
+                                            .or_insert(0) += 1;
                                         user_declared_variant_names.insert(v.name.clone());
                                     }
                                 }
@@ -2957,6 +2976,17 @@ pub fn lower_program_with_mono_cap(
                                         format!("{source_module}.{}::{}", md.name, state.name);
                                     ctx.machine_ctor_registry
                                         .insert(module_qualified, (source_state_type.clone(), idx));
+                                    let surface = format!("{}::{}", md.name, state.name);
+                                    if surface_ctor_counts.get(&surface).copied() == Some(1) {
+                                        ctx.machine_ctor_registry
+                                            .entry(surface)
+                                            .or_insert_with(|| (source_state_type.clone(), idx));
+                                    }
+                                    if bare_counts.get(&state.name).copied() == Some(1) {
+                                        ctx.machine_ctor_registry
+                                            .entry(state.name.clone())
+                                            .or_insert_with(|| (source_state_type.clone(), idx));
+                                    }
                                 }
                                 for (idx, event) in md.events.iter().enumerate() {
                                     let module_qualified = format!(
@@ -2965,6 +2995,17 @@ pub fn lower_program_with_mono_cap(
                                     );
                                     ctx.machine_ctor_registry
                                         .insert(module_qualified, (source_event_type.clone(), idx));
+                                    let surface = format!("{event_type_name}::{}", event.name);
+                                    if surface_ctor_counts.get(&surface).copied() == Some(1) {
+                                        ctx.machine_ctor_registry
+                                            .entry(surface)
+                                            .or_insert_with(|| (source_event_type.clone(), idx));
+                                    }
+                                    if bare_counts.get(&event.name).copied() == Some(1) {
+                                        ctx.machine_ctor_registry
+                                            .entry(event.name.clone())
+                                            .or_insert_with(|| (source_event_type.clone(), idx));
+                                    }
                                 }
                             }
                             Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
@@ -2978,6 +3019,21 @@ pub fn lower_program_with_mono_cap(
                                             module_qualified,
                                             (source_enum_name.clone(), variant_idx),
                                         );
+                                        let surface = format!("{}::{}", td.name, v.name);
+                                        if surface_ctor_counts.get(&surface).copied() == Some(1) {
+                                            ctx.machine_ctor_registry
+                                                .entry(surface)
+                                                .or_insert_with(|| {
+                                                    (source_enum_name.clone(), variant_idx)
+                                                });
+                                        }
+                                        if bare_counts.get(&v.name).copied() == Some(1) {
+                                            ctx.machine_ctor_registry
+                                                .entry(v.name.clone())
+                                                .or_insert_with(|| {
+                                                    (source_enum_name.clone(), variant_idx)
+                                                });
+                                        }
                                         variant_idx += 1;
                                     }
                                 }
@@ -20683,9 +20739,17 @@ impl LowerCtx {
             .lookup_variant_ctor(name, checker_owner.as_ref())
             .map(|(type_name, variant_idx, _)| (type_name, variant_idx));
         if let Some((tagged_union_name, variant_idx)) = registry_hit {
+            let variant_name = name.rsplit_once("::").map_or(name, |(_, variant)| variant);
             let checker_agrees = match checker_owner.as_ref() {
                 None => !self.expr_types.contains_key(&key),
-                Some(ResolvedTy::Named { name, .. }) => name == &tagged_union_name,
+                Some(ResolvedTy::Named { name, .. }) => {
+                    name == &tagged_union_name
+                        || (!name.contains('.')
+                            && self
+                                .machine_ctor_registry
+                                .get(&format!("{name}::{variant_name}"))
+                                .is_some_and(|(owner, _)| owner == &tagged_union_name))
+                }
                 Some(_) => false,
             };
             if checker_agrees {

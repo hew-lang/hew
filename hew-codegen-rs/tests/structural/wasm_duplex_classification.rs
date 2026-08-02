@@ -354,10 +354,15 @@ fn duplex_pair_call_blocks_wasm_emission() {
     };
     let result = emit_module(&pipeline, &options);
     match result {
-        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+        Err(CodegenError::WasmUnsupportedSubstrate { symbol, capability }) => {
             assert!(
                 symbol.starts_with("hew_duplex_"),
                 "WasmUnsupportedSubstrate symbol must be a duplex symbol; got: {symbol}"
+            );
+            assert_eq!(
+                capability,
+                hew_types::wasm_capability_ids::DUPLEX,
+                "duplex codegen rejection must carry manifest identity"
             );
         }
         Ok(_) => panic!(
@@ -386,7 +391,7 @@ fn duplex_close_drop_blocks_wasm_emission() {
     };
     let result = emit_module(&pipeline, &options);
     match result {
-        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+        Err(CodegenError::WasmUnsupportedSubstrate { symbol, .. }) => {
             assert!(
                 symbol.starts_with("hew_duplex_"),
                 "WasmUnsupportedSubstrate symbol must be a duplex symbol; got: {symbol}"
@@ -456,7 +461,7 @@ fn non_duplex_pipeline_does_not_trigger_wasm_substrate_error() {
     let result = emit_module(&pipeline, &options);
     // The result may succeed or fail for other reasons, but must NOT fail with
     // WasmUnsupportedSubstrate — that error is reserved for duplex programs.
-    if let Err(CodegenError::WasmUnsupportedSubstrate { symbol }) = result {
+    if let Err(CodegenError::WasmUnsupportedSubstrate { symbol, .. }) = result {
         panic!(
             "non-duplex pipeline must not trigger WasmUnsupportedSubstrate; \
              got symbol: {symbol}"

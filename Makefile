@@ -31,6 +31,8 @@
 #   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime + wire JSON/YAML/TOML archives
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
+#   make wasm-capability           — regenerate manifest-owned Rust/JSON outputs
+#   make wasm-capability-check     — verify manifest-owned generated outputs
 #   make playground-manifest       — regenerate examples/playground/manifest.json
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
 #   make sandbox-fixtures          — regenerate sandbox VM bytecode fixtures from main.hew
@@ -72,7 +74,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
+.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
 .PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -298,12 +300,20 @@ wasm-runtime: wasm-runtime-debug wasm-std-debug
 wasm:
 	wasm-pack build hew-wasm --target web --release
 
+# Regenerate the typed WASM capability consumers.
+wasm-capability:
+	cargo run -p hew-capability-gen
+
+# Verify the generated checker and playground capability consumers are current.
+wasm-capability-check:
+	cargo run -p hew-capability-gen -- --check
+
 # Regenerate the curated playground manifest consumed by downstream browser tooling.
-playground-manifest:
+playground-manifest: wasm-capability
 	python3 scripts/gen-playground-manifest.py
 
 # Verify the checked-in playground manifest is current.
-playground-manifest-check:
+playground-manifest-check: wasm-capability-check
 	python3 scripts/gen-playground-manifest.py --check
 
 sandbox-fixtures:
@@ -1265,7 +1275,7 @@ runtime-poison-safe-lint-self-test:
 # Validate the repository-owned WASM backlog authority and every actionable
 # WASM-TODO(<stable-backlog-id>): marker. The self-test pins fail-closed
 # behaviour independently of the live corpus.
-lint-wasm-todo: lint-wasm-todo-self-test
+lint-wasm-todo: lint-wasm-todo-self-test wasm-capability-check
 	bash scripts/lint-wasm-todo-issue-ref.sh
 
 lint-wasm-todo-self-test:

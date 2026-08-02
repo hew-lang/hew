@@ -81,7 +81,8 @@ use hew_mir::{
 pub(crate) use hew_types::short_name;
 use hew_types::{
     runtime_call::{MathIntrinsic, RuntimeCapability},
-    BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection, WireLayoutTable, WireTextFormat,
+    wasm_capability_ids, BuiltinType, NumericWidth, ResolvedTy, WasmCapabilityId,
+    WireCodecDirection, WireLayoutTable, WireTextFormat,
 };
 // Single source of truth for the trap discriminants codegen emits. Importing
 // these from the runtime makes a renumber on either side a build error rather
@@ -246,7 +247,10 @@ pub enum CodegenError {
     /// The program uses a runtime substrate symbol that is excluded from, or
     /// deliberately fail-closed on, the wasm32 build. Omit the WASM target to
     /// produce a native binary instead.
-    WasmUnsupportedSubstrate { symbol: String },
+    WasmUnsupportedSubstrate {
+        symbol: String,
+        capability: WasmCapabilityId,
+    },
 }
 
 impl CodegenError {
@@ -314,55 +318,43 @@ impl std::fmt::Display for CodegenError {
             }
             Self::Link(s) => write!(f, "link: {s}"),
             Self::Io(e) => write!(f, "io: {e}"),
-            Self::WasmUnsupportedSubstrate { symbol } => {
-                // Map the offending symbol prefix to a user-facing construct label
-                // and stable backlog note. Defence in depth — typecheck rejects
-                // most cases earlier (see `hew-types/src/check/expressions.rs`),
-                // but this codegen-level diagnostic must still be specific.
-                let (construct, tracking) = if symbol.starts_with("hew_duplex_") {
-                    ("the `Duplex` channel substrate", "WASM-TODO(duplex):")
-                } else if symbol.starts_with("hew_supervisor_") {
-                    (
+            Self::WasmUnsupportedSubstrate { symbol, capability } => {
+                // Map the manifest identity to a user-facing construct label
+                // and backlog note. Symbol is retained as evidence, but it no
+                // longer owns capability classification.
+                let (construct, tracking) = match capability.as_str() {
+                    "duplex" => ("the `Duplex` channel substrate", "WASM-TODO(duplex):"),
+                    "supervision-trees" => (
                         "the supervisor restart machinery",
                         "WASM-TODO(supervision):",
-                    )
-                } else if symbol.starts_with("hew_task_scope_") || symbol.starts_with("hew_task_") {
-                    (
+                    ),
+                    "structured-concurrency" | "tasks" => (
                         "the `scope {}` structured-concurrency substrate",
                         "WASM-TODO(scope):",
-                    )
-                } else if symbol == "hew_tcp_stream_from_conn" {
-                    ("the TCP transport substrate", "WASM-TODO(tcp-networking):")
-                } else if symbol == "hew_channel_poll" || symbol == "hew_channel_await_recv" {
-                    // NEW-4 suspending channel receive: the `select{}` channel-recv
-                    // arm (`hew_channel_poll`) and the worker-free `await rx.recv()`
-                    // carrier (`hew_channel_await_recv`) both back onto the native
-                    // channel core (`cfg(not(target_arch = "wasm32"))`).
-                    (
+                    ),
+                    "tcp-networking" => {
+                        ("the TCP transport substrate", "WASM-TODO(tcp-networking):")
+                    }
+                    "channel-blocking-recv" => (
                         "the suspending channel-receive substrate",
                         "WASM-TODO(channels):",
-                    )
-                } else if symbol.starts_with("hew_stream_") {
-                    ("the stream substrate", "WASM-TODO(streams):")
-                } else if symbol.starts_with("hew_lambda_actor_") {
-                    ("the lambda-actor substrate", "WASM-TODO(lambda-actors):")
-                } else if symbol == "hew_actor_demonitor" {
-                    ("the link/monitor substrate", "WASM-TODO(link-monitor):")
-                } else if symbol == "hew_await_cancel_schedule_deadline_ms" {
-                    (
+                    ),
+                    "streams" => ("the stream substrate", "WASM-TODO(streams):"),
+                    "lambda-actors" => ("the lambda-actor substrate", "WASM-TODO(lambda-actors):"),
+                    "link-monitor" => ("the link/monitor substrate", "WASM-TODO(link-monitor):"),
+                    "suspending-select" | "suspension-deadline" | "timer-suspension" => (
                         "the suspending deadline substrate",
                         "WASM-TODO(suspension-deadline):",
-                    )
-                } else {
-                    (
+                    ),
+                    _ => (
                         "a native-only runtime substrate",
                         "WASM-TODO(runtime-substrate-classification):",
-                    )
+                    ),
                 };
                 write!(
                     f,
-                    "WASM target does not support {construct} (symbol: {symbol}; \
-                     {tracking}); omit the WASM target to produce a native binary instead"
+                    "WASM target does not support {construct} (capability: {capability}; \
+                     symbol: {symbol}; {tracking}); omit the WASM target to produce a native binary instead"
                 )
             }
         }
@@ -686,8 +678,11 @@ fn emit_module_with_options(
     // `boundary-fail-closed` (P0) — name the actual wasm gap, not the
     // collateral missing-declaration symptom.
     if options.wasm {
-        if let Some(symbol) = uses_wasm_excluded_symbol(pipeline) {
-            return Err(CodegenError::WasmUnsupportedSubstrate { symbol });
+        if let Some(exclusion) = uses_wasm_excluded_symbol(pipeline) {
+            return Err(CodegenError::WasmUnsupportedSubstrate {
+                symbol: exclusion.symbol,
+                capability: exclusion.capability,
+            });
         }
     }
     std::fs::create_dir_all(options.out_dir)?;
@@ -847,8 +842,44 @@ fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) ->
     Ok(())
 }
 
-/// Return the first WASM-excluded substrate symbol found in `pipeline`'s
-/// instruction stream, or `None` if none is present.
+/// A native-only substrate use classified by stable manifest identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WasmExclusion {
+    pub(crate) symbol: String,
+    pub(crate) capability: WasmCapabilityId,
+}
+
+impl WasmExclusion {
+    fn new(symbol: impl Into<String>, capability: WasmCapabilityId) -> Self {
+        Self {
+            symbol: symbol.into(),
+            capability,
+        }
+    }
+}
+
+impl std::ops::Deref for WasmExclusion {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.symbol
+    }
+}
+
+impl std::fmt::Display for WasmExclusion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.symbol)
+    }
+}
+
+impl PartialEq<&str> for WasmExclusion {
+    fn eq(&self, other: &&str) -> bool {
+        self.symbol == *other
+    }
+}
+
+/// Return the first WASM-excluded substrate use found in `pipeline`, including
+/// both its evidence symbol and stable manifest capability identity.
 ///
 /// Excluded symbols:
 /// - `hew_duplex_*` — excluded from wasm32 builds via
@@ -888,7 +919,7 @@ fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) ->
 ///   where the resolved C-ABI symbol starts with `"hew_duplex_"`. This covers
 ///   elaborator-produced `"Duplex::close"` strings that resolve to
 ///   `hew_duplex_close` at codegen time.
-pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
+pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<WasmExclusion> {
     for func in &pipeline.raw_mir {
         for block in &func.blocks {
             for instr in &block.instructions {
@@ -910,11 +941,13 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                     // refuses it at construction. std/net's extern-block calls
                     // bypass this scan entirely and rely on the wasm32 runtime
                     // stub. WASM-TODO(tcp-networking): add a WASM TCP transport.
-                    Instr::CallRuntimeAbi(call) => {
-                        wasm_excluded_call_family(call.family()).then(|| call.symbol().to_string())
-                    }
+                    Instr::CallRuntimeAbi(call) => wasm_excluded_call_family(call.family())
+                        .map(|capability| WasmExclusion::new(call.symbol(), capability)),
                     Instr::SpawnTaskDirect { .. } | Instr::SpawnTaskClosure { .. } => {
-                        Some("hew_task_spawn_thread_with_inherited_context".to_string())
+                        Some(WasmExclusion::new(
+                            "hew_task_spawn_thread_with_inherited_context",
+                            wasm_capability_ids::TASKS,
+                        ))
                     }
                     Instr::Drop {
                         drop_fn: Some(spec),
@@ -931,7 +964,10 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                     .iter()
                     .any(|arm| matches!(arm.kind, hew_mir::SelectArmKind::StreamNext { .. }))
                 {
-                    return Some("hew_stream_poll".to_string());
+                    return Some(WasmExclusion::new(
+                        "hew_stream_poll",
+                        wasm_capability_ids::STREAMS,
+                    ));
                 }
                 // NEW-4 channel-recv select arm: the winning/loser dispatch emits
                 // `hew_channel_poll` / `hew_channel_cancel_pending_read`, whose
@@ -945,13 +981,19 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                     .iter()
                     .any(|arm| matches!(arm.kind, hew_mir::SelectArmKind::ChannelRecv { .. }))
                 {
-                    return Some("hew_channel_poll".to_string());
+                    return Some(WasmExclusion::new(
+                        "hew_channel_poll",
+                        wasm_capability_ids::CHANNEL_BLOCKING_RECV,
+                    ));
                 }
                 if arms
                     .iter()
                     .any(|arm| matches!(arm.kind, hew_mir::SelectArmKind::TaskAwait { .. }))
                 {
-                    return Some("hew_task_completion_observe".to_string());
+                    return Some(WasmExclusion::new(
+                        "hew_task_completion_observe",
+                        wasm_capability_ids::TASKS,
+                    ));
                 }
             }
             // cut-select-waitset cooperative `select{}` carrier: the suspending
@@ -967,7 +1009,10 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
             // `Terminator::Select` until the wasm coro substrate lands.
             // WASM-TODO(suspending-select): add a WASM execution-context waitset.
             if let Terminator::SuspendingSelect { .. } = &block.terminator {
-                return Some("hew_await_cancel_schedule_deadline_ms".to_string());
+                return Some(WasmExclusion::new(
+                    "hew_await_cancel_schedule_deadline_ms",
+                    wasm_capability_ids::SUSPENDING_SELECT,
+                ));
             }
             // The ten collapsed suspension carriers fold onto a bare `Suspend`
             // whose kind lives in the `suspend_kinds` side-table. Four of them
@@ -987,9 +1032,9 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                 if let Some(sym) = func
                     .suspend_kinds
                     .get(&block.id)
-                    .and_then(wasm_excluded_suspend_kind_symbol)
+                    .and_then(wasm_excluded_suspend_kind)
                 {
-                    return Some(sym.to_string());
+                    return Some(sym);
                 }
             }
             // cut-task-sleep scope-deadline carrier (staged): the non-empty
@@ -998,7 +1043,10 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
             // MIR producer keeps non-empty after bodies fail-closed, so this is
             // belt-and-braces. WASM-TODO(scope): add cooperative scope deadlines.
             if let Terminator::SuspendingScopeDeadline { .. } = &block.terminator {
-                return Some("hew_await_cancel_schedule_deadline_ms".to_string());
+                return Some(WasmExclusion::new(
+                    "hew_await_cancel_schedule_deadline_ms",
+                    wasm_capability_ids::STRUCTURED_CONCURRENCY,
+                ));
             }
             // Lambda-actor construction emits `hew_lambda_actor_new`. The
             // whole `hew-runtime/src/lambda_actor.rs` module is gated
@@ -1007,7 +1055,10 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
             // dangling reference; surface the same structured native-only
             // diagnostic the MakeGenerator gate above produces.
             if let Terminator::MakeLambdaActor { .. } = &block.terminator {
-                return Some("hew_lambda_actor_new".to_string());
+                return Some(WasmExclusion::new(
+                    "hew_lambda_actor_new",
+                    wasm_capability_ids::LAMBDA_ACTORS,
+                ));
             }
         }
     }
@@ -1046,19 +1097,32 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
 /// dangling reference. The four flagged kinds mirror the dedicated-carrier
 /// checks the side-table replaced; the others (`Ask` / `Read` / `Accept` /
 /// `RemoteAsk` / `StreamSend` / `CallClosure`) were never flagged here.
-fn wasm_excluded_suspend_kind_symbol(kind: &SuspendKind) -> Option<&'static str> {
+fn wasm_excluded_suspend_kind(kind: &SuspendKind) -> Option<WasmExclusion> {
     match kind {
-        SuspendKind::StreamNext { .. } => Some("hew_stream_await_next"),
-        SuspendKind::ChannelRecv { .. } => Some("hew_channel_await_recv"),
-        SuspendKind::TaskAwait { .. } => Some("hew_task_await_suspend"),
+        SuspendKind::StreamNext { .. } => Some(WasmExclusion::new(
+            "hew_stream_await_next",
+            wasm_capability_ids::STREAMS,
+        )),
+        SuspendKind::ChannelRecv { .. } => Some(WasmExclusion::new(
+            "hew_channel_await_recv",
+            wasm_capability_ids::CHANNEL_BLOCKING_RECV,
+        )),
+        SuspendKind::TaskAwait { .. } => Some(WasmExclusion::new(
+            "hew_task_await_suspend",
+            wasm_capability_ids::TASKS,
+        )),
         // `await_restart` parks on the native supervisor restart observer — a
         // cooperative-scheduler primitive with no wasm32 analogue. Fail closed
         // with the structured `WasmUnsupportedSubstrate` rather than a wasm-ld
         // dangling reference.
-        SuspendKind::RestartWait { .. } => Some("hew_supervisor_restart_await_suspend"),
-        SuspendKind::Sleep { .. } | SuspendKind::SleepUntil { .. } => {
-            Some("hew_await_cancel_schedule_deadline_ms")
-        }
+        SuspendKind::RestartWait { .. } => Some(WasmExclusion::new(
+            "hew_supervisor_restart_await_suspend",
+            wasm_capability_ids::SUPERVISION_TREES,
+        )),
+        SuspendKind::Sleep { .. } | SuspendKind::SleepUntil { .. } => Some(WasmExclusion::new(
+            "hew_await_cancel_schedule_deadline_ms",
+            wasm_capability_ids::TIMER_SUSPENSION,
+        )),
         SuspendKind::Ask { .. }
         | SuspendKind::Read { .. }
         | SuspendKind::Accept { .. }
@@ -1077,14 +1141,20 @@ fn wasm_excluded_suspend_kind_symbol(kind: &SuspendKind) -> Option<&'static str>
 /// are pure Hew code; both compile on wasm32.
 ///
 /// [`RuntimeDropDescriptor`]: hew_types::runtime_call::RuntimeDropDescriptor
-fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
+fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<WasmExclusion> {
     use hew_types::runtime_call::RuntimeDropDescriptor as D;
     match spec {
         hew_mir::DropFnSpec::Runtime(d) => match d {
-            D::DuplexClose | D::SendHalfClose | D::RecvHalfClose => Some(d.c_symbol().to_string()),
+            D::DuplexClose | D::SendHalfClose | D::RecvHalfClose => Some(WasmExclusion::new(
+                d.c_symbol(),
+                wasm_capability_ids::DUPLEX,
+            )),
             // `hew_actor_demonitor` is native-only: link/monitor are OS-thread-
             // dependent and not supported on wasm32 (basic actors are).
-            D::MonitorRefClose => Some(d.c_symbol().to_string()),
+            D::MonitorRefClose => Some(WasmExclusion::new(
+                d.c_symbol(),
+                wasm_capability_ids::LINK_MONITOR,
+            )),
             D::StreamClose
             | D::SinkClose
             | D::SenderClose
@@ -1102,10 +1172,8 @@ fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
     }
 }
 
-/// True iff `family` is a wasm32-EXCLUDED runtime-call family: its native
-/// implementation is `cfg(not(target_arch = "wasm32"))` and a wasm build
-/// reaching `wasm-ld` with the symbol would fail with a confusing dangling
-/// reference instead of a structured `WasmUnsupportedSubstrate` diagnostic.
+/// Return the stable manifest capability for a wasm32-excluded runtime-call
+/// family, or `None` when the family is wasm-available.
 ///
 /// Exhaustive over [`RuntimeCallFamily`] — NO wildcard arm. Every future
 /// family addition forces an explicit wasm32 decision here (LESSONS P0
@@ -1113,7 +1181,9 @@ fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
 /// silently stopped firing when a symbol was renamed).
 ///
 /// [`RuntimeCallFamily`]: hew_types::runtime_call::RuntimeCallFamily
-fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily) -> bool {
+fn wasm_excluded_call_family(
+    family: hew_types::runtime_call::RuntimeCallFamily,
+) -> Option<WasmCapabilityId> {
     use hew_types::runtime_call::RuntimeCallFamily as F;
     match family {
         // Duplex dual-queue substrate: hew-runtime/src/duplex.rs:54 is
@@ -1128,22 +1198,22 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::DuplexSend
         | F::DuplexSendHalf
         | F::DuplexTryRecv
-        | F::DuplexTrySend
+        | F::DuplexTrySend => Some(wasm_capability_ids::DUPLEX),
         // Supervisor restart machinery requires the native preemptive
         // scheduler. WASM-TODO(supervision): add cooperative restart machinery.
-        | F::SupervisorDirectId
+        F::SupervisorDirectId
         | F::SupervisorChildGet
         | F::LocalPidSupervisorChildGet
         | F::SupervisorNestedGet
         | F::SupervisorPoolChildGet
         | F::SupervisorPoolLen
         | F::SupervisorStop
-        | F::SupervisorRestartAwaitBlocking
+        | F::SupervisorRestartAwaitBlocking => Some(wasm_capability_ids::SUPERVISION_TREES),
         // Structured-concurrency task scopes and task handles are implemented
         // only by the native thread/condvar runtime. wasm32 has no cooperative
         // task work queue or non-blocking join/wakeup path yet.
         // WASM-TODO(scope): add a cooperative task executor and join path.
-        | F::TaskAwaitBlocking
+        F::TaskAwaitBlocking
         | F::TaskCompleteThreaded
         | F::TaskCompletionObserve
         | F::TaskCompletionUnobserve
@@ -1152,15 +1222,15 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::TaskGetError
         | F::TaskGetResult
         | F::TaskNew
-        | F::TaskScopeCancelAfterNs
+        | F::TaskSetEnv
+        | F::TaskSetResult
+        | F::TaskSpawnThread => Some(wasm_capability_ids::TASKS),
+        F::TaskScopeCancelAfterNs
         | F::TaskScopeDestroy
         | F::TaskScopeJoinAll
         | F::TaskScopeNew
         | F::TaskScopeSetCurrent
-        | F::TaskScopeSpawn
-        | F::TaskSetEnv
-        | F::TaskSetResult
-        | F::TaskSpawnThread => true,
+        | F::TaskScopeSpawn => Some(wasm_capability_ids::STRUCTURED_CONCURRENCY),
         // Everything else links and runs on wasm32 (or is gated earlier by
         // its own structured check). Exhaustively enumerated so a new
         // family cannot land without a wasm32 decision.
@@ -1349,14 +1419,17 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::VecSetOwned
         | F::VecSetOwnedMove
         | F::VecSliceRange(_)
-        | F::VtableDispatchPanicOnOob => false,
+        | F::VtableDispatchPanicOnOob => None,
     }
 }
 
 fn validate_target_substrate(pipeline: &IrPipeline, triple: &str) -> CodegenResult<()> {
     if triple.starts_with("wasm32") {
-        if let Some(symbol) = uses_wasm_excluded_symbol(pipeline) {
-            return Err(CodegenError::WasmUnsupportedSubstrate { symbol });
+        if let Some(exclusion) = uses_wasm_excluded_symbol(pipeline) {
+            return Err(CodegenError::WasmUnsupportedSubstrate {
+                symbol: exclusion.symbol,
+                capability: exclusion.capability,
+            });
         }
     }
     Ok(())

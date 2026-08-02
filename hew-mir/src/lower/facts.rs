@@ -1341,7 +1341,7 @@ fn scan_function_representation_effects(
 
         if let Terminator::Call {
             callee,
-            builtin,
+            authority,
             args,
             ..
         } = &block.terminator
@@ -1363,7 +1363,7 @@ fn scan_function_representation_effects(
                         effects[function][caller_param] = RepresentationEffectState::Unproven;
                     }
                 }
-            } else if builtin.is_none() {
+            } else if matches!(authority, crate::CallAuthority::Direct) {
                 for (arg_index, &arg) in args.iter().enumerate() {
                     if !callee_has_proven_borrowed_string_abi(callee, arg_index) {
                         mark_unproven_param_place(arg, facts, &mut effects[function]);
@@ -1584,7 +1584,7 @@ mod param_boundary_effect_tests {
     fn call_with_args(callee: &str, args: Vec<Place>) -> Terminator {
         Terminator::Call {
             callee: callee.to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args,
             dest: None,
             next: 0,
@@ -1745,6 +1745,102 @@ mod param_boundary_effect_tests {
             ParamBoundaryMode::BorrowReadOnly,
             "an audited catalog string borrow must not manufacture \
              representation-mutation authority"
+        );
+    }
+
+    #[test]
+    fn direct_bytes_abi_contracts_distinguish_borrow_consume_and_absence() {
+        // The representation scan sees concrete emitted ABI symbols. A
+        // runtime receiver-borrow may keep a caller-visible Bytes projection
+        // read-only, while both a generated consuming FFI row and an absent
+        // row remain fail-closed. This guards the per-argument authority
+        // boundary rather than any particular stdlib wrapper spelling.
+        let mut raw = vec![
+            raw_function(
+                "bytes_borrow",
+                FunctionCallConv::Default,
+                vec![],
+                call("hew_vec_len"),
+            ),
+            raw_function(
+                "generated_consume",
+                FunctionCallConv::Default,
+                vec![],
+                call("hew_tcp_listener_close"),
+            ),
+            raw_function(
+                "absent_contract",
+                FunctionCallConv::Default,
+                vec![],
+                call("unclassified_bytes_abi"),
+            ),
+        ];
+        for index in [0, 2] {
+            let Terminator::Call { authority, .. } = &mut raw[index].blocks[0].terminator else {
+                unreachable!("test helper constructs a direct call terminator");
+            };
+            // The first is the real catalog family; the third deliberately
+            // carries that marker with no matching ABI row. The scanner must
+            // consult the emitted symbol and argument, never catalog membership.
+            *authority =
+                crate::CallAuthority::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecLen);
+        }
+
+        finalize(&mut raw);
+
+        assert_eq!(
+            raw.iter().map(mode).collect::<Vec<_>>(),
+            vec![
+                ParamBoundaryMode::BorrowReadOnly,
+                ParamBoundaryMode::RejectUnprovenRepresentationMutation,
+                ParamBoundaryMode::RejectUnprovenRepresentationMutation,
+            ],
+            "only an exact per-parameter borrow authority may retain a caller-visible Bytes projection"
+        );
+    }
+
+    #[test]
+    fn vec_receiver_borrow_contract_covers_all_element_carriers() {
+        // Direct stdlib algorithms reach `hew_vec_len` through a catalog
+        // `Terminator::Call`, regardless of whether their Vec contains plain
+        // values or strings. The receiver contract is independent of the
+        // element carrier, so both retain their caller-visible read-only
+        // boundary instead of being rejected as an unknown representation
+        // mutation.
+        let mut raw = [ResolvedTy::I64, ResolvedTy::String]
+            .into_iter()
+            .map(|element_ty| {
+                let vec_ty = ResolvedTy::Named {
+                    name: "Vec".to_string(),
+                    args: vec![element_ty],
+                    builtin: Some(hew_types::BuiltinType::Vec),
+                    is_opaque: false,
+                };
+                let mut function = raw_function(
+                    "vec_len_reader",
+                    FunctionCallConv::Default,
+                    vec![],
+                    call("hew_vec_len"),
+                );
+                function.params = vec![vec_ty.clone()];
+                function.locals = vec![vec_ty.clone()];
+                function.decisions[0].ty = vec_ty;
+                let Terminator::Call { authority, .. } = &mut function.blocks[0].terminator else {
+                    unreachable!("test helper constructs a direct call terminator");
+                };
+                *authority = crate::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::VecLen,
+                );
+                function
+            })
+            .collect::<Vec<_>>();
+
+        finalize(&mut raw);
+
+        assert!(
+            raw.iter()
+                .all(|function| mode(function) == ParamBoundaryMode::BorrowReadOnly),
+            "the exact Vec receiver borrow contract must be element-agnostic: {raw:#?}"
         );
     }
 

@@ -3943,11 +3943,17 @@ pub(crate) fn lower_call_runtime_abi(
         | F::TaskSetResult
         | F::VecCloneLayout
         | F::VecCloneOwned
+        | F::VecAppend
+        | F::VecClear
+        | F::VecClone
         | F::VecContainsLayout
         | F::VecContainsOwned
+        | F::VecContainsScalar(_)
         // Descriptor-backed clone-out is an intercepted `Terminator::Call`,
         // never an `Instr::CallRuntimeAbi`.
         | F::VecGet(VecGetElem::Clone)
+        | F::VecIsEmpty
+        | F::VecJoinStr
         | F::VecNew
         | F::VecPopBool
         | F::VecPopLayout
@@ -3956,11 +3962,14 @@ pub(crate) fn lower_call_runtime_abi(
         | F::VecPushLayout
         | F::VecPushOwned
         | F::VecPushOwnedMove
+        // Scalar Vec operations are authorized at `Terminator::Call` and
+        // deliberately use the ordinary typed function path. They must never
+        // appear in the runtime-ABI instruction carrier.
+        | F::VecScalar { .. }
         | F::VecRemoveAtBool
         | F::VecRemoveAtLayout
         | F::VecRemoveAtOwned
         | F::VecSetBool
-        | F::VecSetI32
         | F::VecSetLayout
         | F::VecSetOwned
         | F::VecSetOwnedMove

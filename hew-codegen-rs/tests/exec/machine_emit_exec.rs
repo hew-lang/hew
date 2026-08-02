@@ -177,9 +177,11 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
                 instructions: Vec::new(),
                 terminator: Terminator::Call {
                     callee: format!("{machine_name}__step"),
-                    builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                    authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                         "{machine_name}__step",
-                    ),
+                    ))
+                    .map(hew_mir::CallAuthority::Runtime)
+                    .unwrap_or_default(),
                     args: vec![Place::Local(0), Place::Local(1)],
                     dest: Some(Place::Local(2)),
                     next: 1,

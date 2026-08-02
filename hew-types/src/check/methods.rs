@@ -1464,6 +1464,47 @@ impl Checker {
         );
     }
 
+    /// Return the runtime family for a canonical stdlib extern method whose
+    /// ABI is compiler-lowered.
+    ///
+    /// The endpoint spelling is deliberately insufficient here: user impls
+    /// may publish the same `#[extern_symbol]`.  This join requires the exact
+    /// registered method identity, its canonical stdlib provenance, and the
+    /// checked parameter/result shape before a runtime descriptor can cross
+    /// the checker boundary.
+    fn canonical_std_io_runtime_method_family(
+        &self,
+        signature_key: &str,
+        c_symbol: &str,
+        sig: &FnSig,
+    ) -> Option<crate::runtime_call::RuntimeCallFamily> {
+        let declaration = crate::runtime_call::canonical_std_io_extern_signature(
+            signature_key,
+            c_symbol,
+            &sig.params,
+            &sig.return_type,
+        )?;
+        let canonical_stdlib = self.extern_method_origins
+                .get(signature_key)
+                .is_some_and(|(module, trusted)| {
+                    *trusted && module.as_deref() == Some(declaration.module)
+                })
+            // Directly checking a shipped stdlib file has a root module id
+            // unrelated to its dotted import owner. `canonical_std_root_sources`
+            // is populated only for that exact root path (not for an ordinary
+            // user program that merely imports the module), so it is a safe
+            // provenance substitute for the registration origin here.
+            || self.canonical_std_root_sources.contains(declaration.module);
+        if !canonical_stdlib {
+            return None;
+        }
+        let family = declaration.family?;
+        // The descriptor is a three-way join: the source table names the only
+        // signature that may lift this family, and the typed family
+        // independently confirms that it emits the same ABI endpoint.
+        (family.c_symbol() == c_symbol).then_some(family)
+    }
+
     /// Record a rewrite for a **closed-set builtin** runtime-ABI method call.
     ///
     /// Every `c_symbol` reaching this helper is one the checker resolved from
@@ -1476,8 +1517,12 @@ impl Checker {
     /// `checker-output-boundary` guarantee — a user FFI symbol that happens to
     /// collide with a catalog name must never be reclassified into a typed
     /// runtime descriptor.
-    fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
-        let c_symbol = c_symbol.into();
+    fn record_runtime_method_family_rewrite(
+        &mut self,
+        span: &Span,
+        family: crate::runtime_call::RuntimeCallFamily,
+    ) {
+        let c_symbol = family.c_symbol().to_string();
         // The consume verdict is derived once, here, from the resolved runtime
         // symbol — the single rewrite-recording authority for runtime-symbol
         // method calls (close-family handle releases route through this helper).
@@ -1493,28 +1538,42 @@ impl Checker {
         // `None` only for the few builtin symbols the substrate does not yet
         // enumerate (pre-staged families); those keep `descriptor: None` and
         // consumers fall back to `c_symbol`.
-        let descriptor =
-            crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol).map(|family| {
-                crate::runtime_call::RuntimeCallDescriptor::new(family, None)
-                    .expect("substrate variant rejects elem; runtime symbols never carry elem here")
-            });
+        let descriptor = crate::runtime_call::RuntimeCallDescriptor::new(family, None)
+            .expect("substrate variant rejects elem; runtime symbols never carry elem here");
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteToFunction {
-                target: descriptor.as_ref().map_or_else(
-                    || CallTarget::Unsupported {
-                        reason: format!("unregistered runtime method `{c_symbol}`"),
-                    },
-                    |descriptor| CallTarget::Runtime(descriptor.family()),
-                ),
+                target: CallTarget::Runtime(descriptor.family()),
                 c_symbol,
-                descriptor,
+                descriptor: Some(descriptor),
                 extern_identity: None,
                 elem_ty: None,
                 consumes_receiver,
                 returns_receiver_identity: false,
             },
         );
+    }
+
+    fn record_runtime_method_call_rewrite(&mut self, span: &Span, c_symbol: impl Into<String>) {
+        let c_symbol = c_symbol.into();
+        let Some(family) = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol) else {
+            self.record_method_call_rewrite(
+                span,
+                MethodCallRewrite::RewriteToFunction {
+                    target: CallTarget::Unsupported {
+                        reason: format!("unregistered runtime method `{c_symbol}`"),
+                    },
+                    c_symbol,
+                    descriptor: None,
+                    extern_identity: None,
+                    elem_ty: None,
+                    consumes_receiver: false,
+                    returns_receiver_identity: false,
+                },
+            );
+            return;
+        };
+        self.record_runtime_method_family_rewrite(span, family);
     }
 
     /// Record a direct opaque-handle call through the exact source extern
@@ -1653,14 +1712,10 @@ impl Checker {
         let Some(spec) = &sig.extern_symbol else {
             return false;
         };
-        if spec.template.raw == "hew_bytes_clear"
-            && signature_key == "bytes::clear"
-            && self
-                .extern_method_origins
-                .get(signature_key)
-                .is_some_and(|(module, trusted)| *trusted && module.as_deref() == Some("std.io"))
+        if let Some(family) =
+            self.canonical_std_io_runtime_method_family(signature_key, &spec.template.raw, sig)
         {
-            self.record_runtime_method_call_rewrite(span, spec.template.raw.clone());
+            self.record_runtime_method_family_rewrite(span, family);
             return true;
         }
         if !spec.template.is_monomorphic() {
@@ -1695,19 +1750,10 @@ impl Checker {
             return false;
         };
         let signature_key = format!("{receiver_type_name}::{method}");
-        // `bytes::clear` is a closed compiler builtin even though its method
-        // signature is authored in std/io.hew with `#[extern_symbol]`.  Admit
-        // the typed runtime family only for that exact source declaration and
-        // endpoint triple. User-authored extern symbols remain open-set and
-        // continue through the declaration-owned Extern target below.
-        if spec.template.raw == "hew_bytes_clear"
-            && signature_key == "bytes::clear"
-            && self
-                .extern_method_origins
-                .get(&signature_key)
-                .is_some_and(|(module, trusted)| *trusted && module.as_deref() == Some("std.io"))
+        if let Some(family) =
+            self.canonical_std_io_runtime_method_family(&signature_key, &spec.template.raw, sig)
         {
-            self.record_runtime_method_call_rewrite(span, spec.template.raw.clone());
+            self.record_runtime_method_family_rewrite(span, family);
             return true;
         }
         if spec.template.is_monomorphic() {
@@ -8060,7 +8106,10 @@ impl Checker {
                 // actionable one. Reject uniformly here, whether or not
                 // the actor declares `impl ActorMsg` — same diagnostic
                 // as the no-envelope case.
-                if method == "send" && !has_user_send_handler {
+                if method == "send"
+                    && !has_user_send_handler
+                    && !self.checking_canonical_stdlib_source("std.builtins")
+                {
                     for arg in args {
                         let (expr, sp) = arg.expr();
                         self.synthesize(expr, sp);
@@ -8108,7 +8157,9 @@ impl Checker {
                                 },
                                 true,
                             );
-                            if method == "send" {
+                            if method == "send"
+                                && !self.checking_canonical_stdlib_source("std.builtins")
+                            {
                                 self.enforce_actor_method_send_args(args);
                             }
                             return applied_sig.return_type;
@@ -8247,7 +8298,9 @@ impl Checker {
                         } else {
                             applied_sig.return_type.clone()
                         };
-                        if matches!(method, "send" | "ask") {
+                        if matches!(method, "send" | "ask")
+                            && !self.checking_canonical_stdlib_source("std.builtins")
+                        {
                             // `RemotePid<T>::send` / `::ask` route to the native
                             // mesh transport (`hew_remote_pid_send` →
                             // `hew_actor_send_by_id`), which is not compiled for
@@ -10227,6 +10280,54 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
 mod tests {
     use super::*;
     use crate::module_registry::ModuleRegistry;
+
+    #[test]
+    fn canonical_std_io_bytes_push_requires_provenance_and_checked_signature() {
+        let push_signature = FnSig {
+            params: vec![Ty::U8],
+            return_type: Ty::Unit,
+            ..FnSig::default()
+        };
+        let mut canonical = Checker::default();
+        canonical.extern_method_origins.insert(
+            "bytes::push".to_string(),
+            (Some("std.io".to_string()), true),
+        );
+        assert_eq!(
+            canonical.canonical_std_io_runtime_method_family(
+                "bytes::push",
+                "hew_bytes_push",
+                &push_signature,
+            ),
+            Some(crate::runtime_call::RuntimeCallFamily::BytesPush),
+        );
+
+        let lookalike = Checker::default();
+        assert_eq!(
+            lookalike.canonical_std_io_runtime_method_family(
+                "bytes::push",
+                "hew_bytes_push",
+                &push_signature,
+            ),
+            None,
+            "a user extern sharing the runtime spelling must remain an Extern call",
+        );
+
+        let wrong_signature = FnSig {
+            params: vec![Ty::I64],
+            return_type: Ty::Unit,
+            ..FnSig::default()
+        };
+        assert_eq!(
+            canonical.canonical_std_io_runtime_method_family(
+                "bytes::push",
+                "hew_bytes_push",
+                &wrong_signature,
+            ),
+            None,
+            "the runtime ABI family is not admitted by symbol spelling and arity alone",
+        );
+    }
 
     #[test]
     fn wasm_file_stream_function_policy_uses_canonical_std_owner_not_spellings() {

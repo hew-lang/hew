@@ -90,8 +90,8 @@ fn call_builtin(pipeline: &IrPipeline, fn_name: &str, symbol: &str) -> Option<Ru
         .iter()
         .find_map(|block| match &block.terminator {
             Terminator::Call {
-                callee, builtin, ..
-            } if callee == symbol => *builtin,
+                callee, authority, ..
+            } if callee == symbol => authority.runtime_family(),
             _ => None,
         })
 }

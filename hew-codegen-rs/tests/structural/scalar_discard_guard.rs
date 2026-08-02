@@ -55,7 +55,7 @@ fn pipeline_discard_extern_owned(
             instructions: vec![],
             terminator: Terminator::Call {
                 callee: fn_name.to_string(),
-                builtin: None,
+                authority: Default::default(),
                 args,
                 dest: None, // intentional discard — the arm under test
                 next: 1,

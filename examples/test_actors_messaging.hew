@@ -102,7 +102,7 @@ fn test_actor_factory() -> i64 {
     1
 }
 
-fn make_multiplier(factor: i64) -> Duplex<i64, ()> {
+fn make_multiplier(factor: i64) -> LambdaPid<i64, ()> {
     actor |x: i64| {
         println(f"  multiplied: {x * factor}");
     }

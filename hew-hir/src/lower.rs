@@ -11022,6 +11022,17 @@ impl LowerCtx {
             ResolvedTy::Named { name, .. } => self.current_module_name.as_deref().map_or_else(
                 || name.clone(),
                 |module| {
+                    // Runtime carrier presentation may deliberately collapse a
+                    // source-owned builtin to its catalog name (`MonitorRef`),
+                    // but impl metadata participates in declaration/lifecycle
+                    // joins and must retain the exact source owner.  Consult the
+                    // declaration registry rather than rebuilding identity from
+                    // a builtin name, so a same-leaf user carrier cannot inherit
+                    // the standard-library lifecycle.
+                    let declared = format!("{module}.{self_type_name}");
+                    if self.source_type_identities.contains(&declared) {
+                        return declared;
+                    }
                     let module_short = hew_types::short_name(module);
                     name.strip_prefix(&format!("{module_short}."))
                         .map_or_else(|| name.clone(), |local| format!("{module}.{local}"))
@@ -21647,16 +21658,13 @@ impl LowerCtx {
         if !canonical_std_owner {
             return None;
         }
-        if let Some(builtin) = hew_types::lookup_builtin_type(name) {
+        if let Some(builtin) = hew_types::lookup_builtin_type(name)
+            .or_else(|| hew_types::lookup_source_owned_lifecycle_type(name))
+        {
             return Some(builtin);
         }
 
-        match name {
-            "std.failure.CrashInfo" => Some(BuiltinType::CrashInfo),
-            "std.failure.CrashAction" => Some(BuiltinType::CrashAction),
-            "std.link_monitor.MonitorRef" => Some(BuiltinType::MonitorRef),
-            _ => None,
-        }
+        hew_types::lookup_source_owned_lifecycle_type(name)
     }
 
     /// Project a checker-owned implementation declaration onto the one HIR
@@ -29043,21 +29051,31 @@ fn collect_captures_walk_block(
     captures: &mut Vec<HirLambdaCapture>,
     self_id: Option<BindingId>,
 ) {
+    // A lambda captures only bindings from an enclosing frame.  Keep a
+    // lexical exclusion set for this block: each `let` initializer still sees
+    // the outer scope, then its newly declared binding becomes local for the
+    // remaining statements and tail.  Nested blocks receive a clone through
+    // their recursive call, so shadowing never leaks back out.
+    let mut locally_bound = param_ids.clone();
     for stmt in &block.statements {
         match &stmt.kind {
-            HirStmtKind::Let(_, Some(value)) => {
-                collect_captures_walk(value, param_ids, seen, captures, self_id);
+            HirStmtKind::Let(binding, Some(value)) => {
+                collect_captures_walk(value, &locally_bound, seen, captures, self_id);
+                locally_bound.insert(binding.id);
+            }
+            HirStmtKind::Let(binding, None) => {
+                locally_bound.insert(binding.id);
             }
             HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
-                collect_captures_walk(expr, param_ids, seen, captures, self_id);
+                collect_captures_walk(expr, &locally_bound, seen, captures, self_id);
             }
             HirStmtKind::Assign { target, value } => {
-                collect_captures_walk(target, param_ids, seen, captures, self_id);
-                collect_captures_walk(value, param_ids, seen, captures, self_id);
+                collect_captures_walk(target, &locally_bound, seen, captures, self_id);
+                collect_captures_walk(value, &locally_bound, seen, captures, self_id);
             }
-            HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+            HirStmtKind::Return(None) => {}
             HirStmtKind::Defer { body, .. } => {
-                collect_captures_walk(body, param_ids, seen, captures, self_id);
+                collect_captures_walk(body, &locally_bound, seen, captures, self_id);
             }
             HirStmtKind::LetElse {
                 scrutinee,
@@ -29065,18 +29083,19 @@ fn collect_captures_walk_block(
                 else_body,
                 ..
             } => {
-                collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
+                collect_captures_walk(scrutinee, &locally_bound, seen, captures, self_id);
                 for prelude_stmt in success_prelude {
-                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
-                        collect_captures_walk(value, param_ids, seen, captures, self_id);
+                    if let HirStmtKind::Let(binding, Some(value)) = &prelude_stmt.kind {
+                        collect_captures_walk(value, &locally_bound, seen, captures, self_id);
+                        locally_bound.insert(binding.id);
                     }
                 }
-                collect_captures_walk_block(else_body, param_ids, seen, captures, self_id);
+                collect_captures_walk_block(else_body, &locally_bound, seen, captures, self_id);
             }
         }
     }
     if let Some(tail) = &block.tail {
-        collect_captures_walk(tail, param_ids, seen, captures, self_id);
+        collect_captures_walk(tail, &locally_bound, seen, captures, self_id);
     }
 }
 

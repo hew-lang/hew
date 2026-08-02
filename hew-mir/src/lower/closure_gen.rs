@@ -856,7 +856,7 @@ impl Builder {
         let ret_block_id = builder.alloc_block();
         builder.finish_current_block(Terminator::Call {
             callee: fn_symbol.to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: arg_places.clone(),
             dest: Some(Place::ReturnSlot),
             next: ret_block_id,
@@ -2471,7 +2471,7 @@ impl Builder {
         let after_peer_check = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_sink_peer_closed".to_string(),
-            builtin: Some(RuntimeCallFamily::SinkPeerClosed),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::SinkPeerClosed),
             args: vec![sink],
             dest: Some(peer_closed),
             next: after_peer_check,
@@ -2646,7 +2646,7 @@ impl Builder {
         let after_register = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_actor_gen_sink_register".to_string(),
-            builtin: Some(RuntimeCallFamily::ActorGenSinkRegister),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::ActorGenSinkRegister),
             args: vec![actor_self, pump.sink],
             dest: None,
             next: after_register,
@@ -2731,7 +2731,7 @@ impl Builder {
         let close_next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_actor_gen_sink_complete".to_string(),
-            builtin: Some(RuntimeCallFamily::ActorGenSinkComplete),
+            authority: crate::CallAuthority::Runtime(RuntimeCallFamily::ActorGenSinkComplete),
             args: vec![actor_self, pump.sink],
             dest: None,
             next: close_next,

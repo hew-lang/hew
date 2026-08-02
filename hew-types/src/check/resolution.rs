@@ -31,6 +31,18 @@ impl Checker {
         selected_source.then_some(builtin)
     }
 
+    /// Whether the active compilation is checking a particular embedded
+    /// standard-library source module.  This is source provenance, not a
+    /// spelling check: it is true for the bundled module registration pass or
+    /// for an explicit direct check of that shipped source, and false for user
+    /// modules that happen to use a `std.*`-looking name.
+    pub(super) fn checking_canonical_stdlib_source(&self, module: &str) -> bool {
+        self.in_stdlib_registration
+            || (self.current_module.as_deref() == Some(module)
+                && self.canonical_std_module_sources.contains(module))
+            || self.canonical_std_root_sources.contains(module)
+    }
+
     /// Resolve a compiler-known nominal discriminator only after the source
     /// owner has already been selected. Qualified spellings are presentation
     /// aliases unless either the module binding points at a canonical shipped
@@ -42,6 +54,8 @@ impl Checker {
             "std.channel.Sender" => Some(BuiltinType::Sender),
             "std.channel.Receiver" => Some(BuiltinType::Receiver),
             "std.builtins.VecIter" => Some(BuiltinType::VecIter),
+            "std.builtins.LocalPid" => Some(BuiltinType::LocalPid),
+            "std.builtins.RemotePid" => Some(BuiltinType::RemotePid),
             _ => crate::lookup_builtin_type(name),
         }?;
         let Some((surface_owner, _)) = name.rsplit_once('.') else {
@@ -117,6 +131,12 @@ impl Checker {
     pub(super) fn source_lifecycle_identity_is_in_scope(&self, name: &str, binding: &str) -> bool {
         if crate::lookup_source_owned_lifecycle_type(name).is_none() {
             return false;
+        }
+
+        if let Some((owner, _)) = name.rsplit_once('.') {
+            if self.checking_canonical_stdlib_source(owner) {
+                return true;
+            }
         }
 
         // This is deliberately independent of `type_visibility` and the
@@ -292,10 +312,31 @@ impl Checker {
             // already an exact nominal identity.
             return None;
         }
-        // A root-local / current-module declaration keeps its bare identity: it
-        // is a DISTINCT nominal type from any imported `owner.Name` sharing the
-        // bare spelling.
+        // A root-local declaration keeps its bare identity: it is a DISTINCT
+        // nominal type from any imported `owner.Name` sharing the bare spelling.
+        // A non-root module's local declaration, however, must retain that
+        // module owner at cross-module handoff.  Bodies are checked with the
+        // declaration available under its bare source spelling, while HIR/MIR
+        // layout registries key the same declaration as `owner.Name`.
         if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
+            if let Some(module) = self.current_module.as_deref() {
+                let qualified = format!("{module}.{name}");
+                if self.type_defs.contains_key(&qualified)
+                    || self.known_types.contains(&qualified)
+                    || self.modules.contains(module)
+                {
+                    return Some(qualified);
+                }
+            }
+            return None;
+        }
+        // Root expressions may carry a compiler builtin through a bare
+        // source-facing declaration name (notably `LocalPid`).  Its builtin
+        // discriminator is established before lowering; qualifying that
+        // presentation through the general unique-owner fallback would turn
+        // it into a source nominal after the lexical authority has gone away.
+        // Non-root stdlib bodies keep their owner through the branch above.
+        if self.current_module.is_none() && crate::lookup_builtin_type(name).is_some() {
             return None;
         }
         // Exactly one module published this bare name → its owner-qualified
@@ -320,7 +361,13 @@ impl Checker {
             .filter(|qualified| {
                 qualified
                     .rsplit_once('.')
-                    .is_some_and(|(module, short)| short == name && self.modules.contains(module))
+                    // The declaration tables are themselves the ownership
+                    // proof. `self.modules` is an import-facing subset and
+                    // intentionally omits some direct stdlib roots, which
+                    // made their body-local enum arms survive the output
+                    // boundary bare even when there was exactly one declared
+                    // owner.
+                    .is_some_and(|(_, short)| short == name)
             })
             .collect();
         owners.sort_unstable();
@@ -947,9 +994,9 @@ impl Checker {
             params: sig
                 .params
                 .iter()
-                .map(|param| self.subst.resolve(param))
+                .map(|param| self.normalize_for_use(param))
                 .collect(),
-            return_type: self.subst.resolve(&sig.return_type),
+            return_type: self.normalize_for_use(&sig.return_type),
             ..sig.clone()
         }
     }
@@ -960,13 +1007,13 @@ impl Checker {
             VariantDef::Tuple(fields) => VariantDef::Tuple(
                 fields
                     .iter()
-                    .map(|field| self.subst.resolve(field))
+                    .map(|field| self.normalize_for_use(field))
                     .collect(),
             ),
             VariantDef::Struct(fields) => VariantDef::Struct(
                 fields
                     .iter()
-                    .map(|(name, ty)| (name.clone(), self.subst.resolve(ty)))
+                    .map(|(name, ty)| (name.clone(), self.normalize_for_use(ty)))
                     .collect(),
             ),
         }
@@ -977,7 +1024,7 @@ impl Checker {
             fields: type_def
                 .fields
                 .iter()
-                .map(|(name, ty)| (name.clone(), self.subst.resolve(ty)))
+                .map(|(name, ty)| (name.clone(), self.normalize_for_use(ty)))
                 .collect(),
             variants: type_def
                 .variants
@@ -1769,6 +1816,10 @@ impl Checker {
                     // authority. Both registration and the resolved base carry
                     // the full nominal owner, so a miss must remain a miss.
                     let nominal_identity = Self::canonical_primitive_or_builtin_key(&resolved_base)
+                        .or_else(|| {
+                            self.resolved_builtin_type(name)
+                                .map(|builtin| builtin.canonical_name().to_string())
+                        })
                         .unwrap_or_else(|| {
                             self.canonical_nominal_name(name)
                                 .unwrap_or_else(|| name.clone())
@@ -1778,7 +1829,31 @@ impl Checker {
                         trait_key.clone(),
                         assoc_name.to_string(),
                     );
-                    let binding = self.impl_assoc_type_bindings.get(&key);
+                    let binding = self.impl_assoc_type_bindings.get(&key).or_else(|| {
+                        // Earlier registration passes can encounter a trait
+                        // before its imported source owner has populated the
+                        // canonical map, leaving the binding under the trait's
+                        // presentation spelling.  Recover only when the
+                        // *current* canonical trait resolver proves that the
+                        // stored spelling names this exact trait and there is
+                        // exactly one matching owner/association binding.  A
+                        // same-leaf foreign trait or an ambiguous duplicate
+                        // remains unprojected rather than becoming a leaf-name
+                        // fallback.
+                        let mut compatible = self.impl_assoc_type_bindings.iter().filter(
+                            |((owner, stored_trait, stored_assoc), _)| {
+                                owner == &nominal_identity
+                                    && stored_assoc == assoc_name.as_ref()
+                                    && self.trait_ref_lookup_key(stored_trait) == trait_key
+                            },
+                        );
+                        let first = compatible.next();
+                        if compatible.next().is_none() {
+                            first.map(|(_, binding)| binding)
+                        } else {
+                            None
+                        }
+                    });
                     if let Some(binding) = binding {
                         // The binding may itself reference impl-level type
                         // params; substitute them using the impl's declared
@@ -1816,6 +1891,55 @@ impl Checker {
                 }
             }
             _ => ty.map_children_pub(&|child| self.project_assoc_types(child)),
+        }
+    }
+
+    /// Normalize a type at a semantic use boundary.
+    ///
+    /// The order is intentional and shared: inference substitution can make an
+    /// associated projection concrete; that projection can in turn expose a
+    /// nominal spelling which must be mapped to its source-owned identity before
+    /// any comparison, layout lookup, or checker-to-HIR handoff.  Keeping the
+    /// three operations together prevents individual consumers from silently
+    /// accepting one presentation while another preserves a distinct spelling.
+    pub(super) fn normalize_for_use(&self, ty: &Ty) -> Ty {
+        let substituted = self.subst.resolve(ty);
+        let projected = self.project_assoc_types(&substituted);
+        self.canonicalize_nominal_identity(&projected)
+    }
+
+    /// Final checker-output form of a semantic type. Every type-carrying
+    /// ledger that crosses into HIR/MIR uses this one seam rather than
+    /// open-coding substitution, so projections and source identities cannot
+    /// drift from the expression table.
+    pub(super) fn finalize_type_for_handoff(&self, ty: &Ty) -> Ty {
+        self.normalize_for_use(ty).materialize_literal_defaults()
+    }
+
+    /// Recursively replace a proven nominal presentation alias with the
+    /// checker-owned source identity.  This is deliberately narrower than a
+    /// leaf-name rewrite: `canonical_nominal_name` preserves same-leaf user
+    /// declarations and returns `None` when no owner proof exists.
+    fn canonicalize_nominal_identity(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => {
+                let canonical_name = self
+                    .canonical_nominal_name(name)
+                    .unwrap_or_else(|| name.clone());
+                Ty::Named {
+                    builtin: builtin.or_else(|| self.resolved_builtin_type(&canonical_name)),
+                    name: canonical_name,
+                    args: args
+                        .iter()
+                        .map(|arg| self.canonicalize_nominal_identity(arg))
+                        .collect(),
+                }
+            }
+            _ => ty.map_children_pub(&|child| self.canonicalize_nominal_identity(child)),
         }
     }
 

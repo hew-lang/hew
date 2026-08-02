@@ -342,7 +342,7 @@ impl Builder {
                 instructions: vec![],
                 terminator: Terminator::Call {
                     callee: callee_symbol.to_string(),
-                    builtin: None,
+                    authority: crate::model::CallAuthority::default(),
                     args: vec![],
                     dest: call_dest,
                     next: 1,
@@ -902,7 +902,7 @@ impl Builder {
         let ret_block_id = builder.alloc_block();
         builder.finish_current_block(Terminator::Call {
             callee: callee_symbol.to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: arg_places.clone(),
             dest: None,
             next: ret_block_id,
@@ -1977,7 +1977,7 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_tcp_read".to_string(),
-                builtin: None,
+                authority: crate::model::CallAuthority::default(),
                 args: vec![conn_place],
                 dest: Some(bytes_dest),
                 next,
@@ -1993,7 +1993,7 @@ impl Builder {
         let next = self.alloc_block();
         self.finish_current_block(Terminator::Call {
             callee: "hew_bytes_to_string".to_string(),
-            builtin: None,
+            authority: crate::model::CallAuthority::default(),
             args: vec![bytes_dest],
             dest: Some(string_dest),
             next,
@@ -2091,8 +2091,8 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_channel_recv_layout".to_string(),
-                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                    "hew_channel_recv_layout",
+                authority: crate::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::ChannelRecvLayout,
                 ),
                 args: vec![receiver_place],
                 dest: Some(result_dest),
@@ -2193,8 +2193,8 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_stream_next_layout".to_string(),
-                builtin: hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                    "hew_stream_next_layout",
+                authority: crate::CallAuthority::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::StreamNextLayout,
                 ),
                 args: vec![stream_place],
                 dest: Some(result_dest),
@@ -2298,7 +2298,7 @@ impl Builder {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: "hew_tcp_accept".to_string(),
-                builtin: None,
+                authority: crate::model::CallAuthority::default(),
                 args: vec![listener_place],
                 dest: Some(conn_dest),
                 next,

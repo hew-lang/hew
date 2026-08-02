@@ -108,6 +108,31 @@ with tempfile.TemporaryDirectory() as temp:
         "the canonical catalog helper is the green control"
     )
 
+    # A raw linker spelling must never select a codegen-special lowering. The
+    # carrier's derived linkage assertion is the narrowly permitted control.
+    codegen = work / "hew-codegen-rs/src/llvm.rs"
+    codegen.parent.mkdir(parents=True)
+    codegen.write_text('fn lower_terminator() { if callee == "hew_bytes_get" { } }\n')
+    result = run(work)
+    assert result.returncode != 0
+    codegen.write_text("fn lower_terminator() { if family.c_symbol() != callee { } }\n")
+    assert run(work).returncode == 0, "carrier linkage assertion is the green control"
+    codegen.write_text(
+        'fn lower_terminator() { match callee.as_str() { "hew_bytes_get" => {}, _ => {} } }\n'
+    )
+    result = run(work)
+    assert result.returncode != 0, "raw match dispatch must fail the carrier gate"
+    codegen.write_text(
+        'fn lower_terminator() { if matches!(callee, "hew_bytes_get") { } }\n'
+    )
+    result = run(work)
+    assert result.returncode != 0, "raw matches! dispatch must fail the carrier gate"
+    codegen.write_text(
+        "fn lower_terminator() { if kind.expected_callee() == callee { } }\n"
+    )
+    assert run(work).returncode == 0, "compiler carrier linkage assertion is green"
+    codegen.unlink()
+
     enum_authority.write_text(
         "struct BuiltinEnumAbi { name: &'static str }\n"
         "const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[\n"

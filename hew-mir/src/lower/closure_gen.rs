@@ -1708,12 +1708,10 @@ impl Builder {
                 pointee: Box::new(ResolvedTy::Unit),
             });
             let reply_len_slot = self.alloc_local(ResolvedTy::I64);
-            let error_dest = self.alloc_local(ResolvedTy::Named {
-                name: "AskError".to_string(),
-                args: Vec::new(),
-                builtin: Some(BuiltinType::AskError),
-                is_opaque: false,
-            });
+            let error_dest = self.alloc_local(
+                hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("AskError")
+                    .expect("generated builtin enum catalog must contain AskError"),
+            );
             crate::model::RuntimeCall::new(
                 "hew_lambda_actor_ask",
                 vec![

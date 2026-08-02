@@ -73,6 +73,7 @@ pub enum BuiltinType {
     DownNotification,
     SendError,
     AskError,
+    LookupError,
     RecvError,
     LinkError,
     MonitorError,
@@ -209,6 +210,7 @@ builtin_types! {
     DownNotification => "DownNotification",
     SendError => "SendError",
     AskError => "AskError",
+    LookupError => "LookupError",
     RecvError => "RecvError",
     LinkError => "LinkError",
     MonitorError => "MonitorError",
@@ -395,6 +397,7 @@ impl BuiltinType {
             | Self::DownNotification
             | Self::SendError
             | Self::AskError
+            | Self::LookupError
             | Self::RecvError
             | Self::LinkError
             | Self::MonitorError

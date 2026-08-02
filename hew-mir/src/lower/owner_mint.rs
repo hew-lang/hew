@@ -285,22 +285,6 @@ impl Builder {
         OwnerMintWarrant::new(OwnerMintOrigin::ForwardedFromAdmissionGate, foreign)
     }
 
-    /// The call-scrutinee admission token has already proved a fresh
-    /// caller-owned return at the exact consuming boundary.  Preserve that
-    /// proof through the eventual owner mint while still refusing a local
-    /// binding that the foreign-provenance ledger has explicitly tainted.
-    /// This is narrower than the generic temporary query: it is callable only
-    /// after the consumer's `Admit` verdict.
-    pub(crate) fn owner_warrant_for_admitted_call_scrutinee(
-        &self,
-        producer: &HirExpr,
-    ) -> OwnerMintWarrant {
-        OwnerMintWarrant::new(
-            OwnerMintOrigin::ForwardedFromAdmissionGate,
-            self.expr_reads_a_proven_foreign_binding(producer),
-        )
-    }
-
     /// The checker/HIR carrier is the release authority for a newly published
     /// result. The typed fact has already applied the opaque-foreign call
     /// contract; MIR additionally refuses a result expression that reads a

@@ -1381,206 +1381,6 @@ impl Builder {
             && (self.module_fn_names.contains(symbol)
                 || self.module_generic_fn_names.contains(symbol))
     }
-    /// #2648 preflight admission classifier — pure HIR, run at the TOP of every
-    /// call-scrutinee consumer BEFORE `lower_value`/CFG allocation. Returns the
-    /// admission token the from-call owner mint and the #2523 origin consume, or
-    /// an `Err(MirDiagnostic)` reject (ONE diagnostic, no partial MIR) for a
-    /// scrutinee whose callee may hand back a borrowed by-value parameter alias
-    /// (summary contains `PARAM`) or an un-audited heap-returning `extern`.
-    ///
-    /// # Admission behaviour
-    ///
-    /// - A resolved module-fn callee whose precise summary carries `PARAM`
-    ///   REJECTS — the PRIMARY #2648 forwarder double-free fix (`match
-    ///   passthru(h.b)`). Mixed `PARAM|OPAQUE` forwarders reject too, except
-    ///   that a `{PARAM}`-only summary whose every argument is provably fresh is
-    ///   arg-rescued to `Admit`.
-    /// - EVERY other resolved-callee shape — a `∅` (Fresh) summary, an
-    ///   `OPAQUE`-only summary, an unknown/cross-module item, and an
-    ///   indirect/closure/fn-pointer callee — is decided by the ONE authority
-    ///   via [`callee_returns_fresh_owner`]: `Admit` when it proves the callee
-    ///   returns a fresh owner on every path, `NotApplicable` otherwise. There
-    ///   is no permissive arm. The interim `LegacyModuleCall` fail-open that
-    ///   used to serve the `∅`/`OPAQUE`-only and unknown-item cases is deleted:
-    ///   it minted a caller-side release over a heap enum a Hew wrapper had
-    ///   laundered out of an ownership-opaque extern.
-    /// - A declared heap-returning `extern` REJECTS — including a user extern
-    ///   whose NAME spoofs a runtime recv symbol (it resolves to
-    ///   `ResolvedRef::Item`, so it is keyed by id, never the name).
-    /// - Every recv/stream/`Builtin` carve-out stays `NotApplicable`.
-    pub(crate) fn classify_call_scrutinee_admission(
-        &self,
-        scrutinee: &HirExpr,
-    ) -> Result<crate::return_provenance::CallScrutineeAdmission, Box<MirDiagnostic>> {
-        use crate::return_provenance::{is_typed_recv_callee, AliasBits, CallScrutineeAdmission};
-        // `Weak.upgrade` always returns a fresh `Option<Rc<T>>` owner. Admit it
-        // before the general Call gate so a matched `Some` payload is released
-        // when the arm closes.
-        if matches!(
-            &scrutinee.kind,
-            HirExprKind::RcIntrinsic {
-                op: hew_types::RcIntrinsicOp::WeakUpgrade,
-                ..
-            }
-        ) {
-            let ty = self.subst_ty(&scrutinee.ty);
-            return Ok(
-                if ty_is_heap_owning_enum_composite(
-                    &ty,
-                    &self.record_field_orders,
-                    &self.enum_layouts,
-                ) {
-                    CallScrutineeAdmission::Admit
-                } else {
-                    CallScrutineeAdmission::NotApplicable
-                },
-            );
-        }
-
-        // Structural Call-gate: only a direct `Call` rvalue can otherwise mint
-        // the from-call owner. A non-`Call` scrutinee (a `Block`/`If` synthetic
-        // `Vec<_>`-iteration desugar, a `GeneratorNext`, a bare place, an
-        // aggregate) is `NotApplicable` ON KIND — exactly `call_scrutinee_owned_ty`'s
-        // early `None`, before any runtime-identity resolution can be consulted.
-        let HirExprKind::Call { callee, args, .. } = &scrutinee.kind else {
-            return Ok(CallScrutineeAdmission::NotApplicable);
-        };
-        if let HirExprKind::BindingRef { name, resolved } = &callee.kind {
-            // Typed carve-outs, keyed on the compiler-minted identity (NOT the
-            // display name): a recv/stream family or any `ResolvedRef::Builtin`
-            // callee carries its own per-iteration `BodyEndReleased` release, so
-            // no synthetic owner is minted. A user extern SPOOFING one of those
-            // names resolves to `ResolvedRef::Item` → does NOT match here → falls
-            // through to the reject arms below (closes the name-forgeable bypass).
-            if is_typed_recv_callee(callee) || matches!(resolved, ResolvedRef::Builtin(_)) {
-                return Ok(CallScrutineeAdmission::NotApplicable);
-            }
-            // Only a heap-owning-enum-composite return mints an owner; anything
-            // else is `NotApplicable`, exactly as `call_scrutinee_owned_ty`
-            // returns `None`.
-            let ty = self.subst_ty(&scrutinee.ty);
-            if !ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts)
-            {
-                return Ok(CallScrutineeAdmission::NotApplicable);
-            }
-            let prov = &self.call_scrutinee_provenance;
-            // A declared user extern — even one whose name spoofs a runtime
-            // symbol — reaching the heap-enum ty-gate is an un-audited heap
-            // extern. A call to an extern dispatches by NAME (its call-site
-            // `ResolvedRef::Item` carries a placeholder id, not the declaration's),
-            // so extern detection keys on the name, BEFORE the runtime-symbol
-            // carve-out (closes the name-forgeable bypass). No heap extern is
-            // trusted-Fresh in the interim (the marker-backed jwt/encrypt rows
-            // land at S4b).
-            if prov.extern_names.contains(name) {
-                // OWN-0b carriage: the machine-checked per-symbol ownership
-                // fact is consultable at exactly this extern-callee position.
-                // Nothing is enforced from it yet (S1/V1 consume it); the
-                // conservative reject below stays authoritative, and an
-                // unclassified symbol is an explicit `Absent`, never a
-                // fabricated contract.
-                debug_assert!(
-                    crate::ffi_contracts::extern_ownership_contract("hew_string_drop")
-                        .contract()
-                        .is_some_and(|contract| contract.params
-                            == [crate::ffi_contracts::ExternParamOwnership::Consume]),
-                    "FFI ownership carriage table unreadable at the extern-call \
-                     lowering position"
-                );
-                return Err(Box::new(Self::call_scrutinee_reject(
-                    scrutinee,
-                    "an un-audited heap-returning `extern` may hand back an interior pointer \
-                     the caller still owns",
-                )));
-            }
-            if let ResolvedRef::Item(id) = resolved {
-                // A resolved module fn with an analysable body: consult its
-                // precise summary ONLY for the interim `PARAM`-present reject.
-                if let Some(bits) = prov.provenance.get(id) {
-                    if bits.contains(AliasBits::PARAM) {
-                        // S2b — the ParamsOnly caller arg-scan. A `{PARAM}`-only
-                        // summary means the return can alias ONLY the callee's
-                        // by-value heap parameters, so when EVERY argument is
-                        // provably fresh at this call site the returned value
-                        // derives exclusively from fresh inputs — a fresh sole
-                        // owner: ADMIT (the template/semver stdlib shape). A
-                        // mixed `PARAM|OPAQUE` summary stays an unconditional
-                        // reject — the `OPAQUE` component is never
-                        // arg-rescuable.
-                        if bits.is_params_only() && self.params_only_args_provably_fresh(args) {
-                            return Ok(CallScrutineeAdmission::Admit);
-                        }
-                        return Err(Box::new(Self::call_scrutinee_reject(
-                            scrutinee,
-                            "the called function may return one of its by-value heap parameters \
-                             (a borrow the caller still owns), so minting a second owner over \
-                             the scrutinee would double-free",
-                        )));
-                    }
-                    // Neither `PARAM`-carrying nor rescuable by fresh arguments:
-                    // the AUTHORITY decides, exactly as at every other
-                    // "may I drop this call result" consumer. This used to be an
-                    // interim legacy fail-open mint, and that is what let a
-                    // `{OPAQUE}`-only summary through — a Hew wrapper whose
-                    // return crossed an ownership-opaque extern
-                    // (`fn wrap() -> Option<Holder> { Some(unsafe { host() }) }`)
-                    // carries no `PARAM` bit, so it fell into the permissive arm
-                    // and `match wrap()` minted a caller-side owner whose
-                    // scope-exit drop released the host's handle.
-                    //
-                    // `callee_returns_fresh_owner` applies BOTH of the
-                    // authority's row-keyed vetoes: the taint row (transitively,
-                    // through any number of Hew frames) and the direct-extern
-                    // NAME veto. A callee it cannot prove fresh mints nothing —
-                    // a leak, never a caller-side double release.
-                    return Ok(
-                        if callee_returns_fresh_owner(callee, &prov.fresh_owner_verdicts) {
-                            CallScrutineeAdmission::Admit
-                        } else {
-                            CallScrutineeAdmission::NotApplicable
-                        },
-                    );
-                }
-            }
-            // A genuine runtime-symbol callee that resolves to neither a user
-            // extern nor an analysable module fn keeps today's name-based skip.
-            if crate::runtime_symbols::is_known_runtime_symbol(name) {
-                return Ok(CallScrutineeAdmission::NotApplicable);
-            }
-        }
-        // An unknown/missing/cross-module item, or a non-`BindingRef` (indirect /
-        // closure / fn-pointer) callee. This was the second interim fail-open —
-        // today's mint for a callee nobody analysed. It now asks the same single
-        // authority: an unresolvable callee is not a freshness proof, so it mints
-        // nothing.
-        Ok(
-            if callee_returns_fresh_owner(
-                callee,
-                &self.call_scrutinee_provenance.fresh_owner_verdicts,
-            ) {
-                CallScrutineeAdmission::Admit
-            } else {
-                CallScrutineeAdmission::NotApplicable
-            },
-        )
-    }
-    /// Build the single #2648 reject diagnostic (a clean NYI — no partial
-    /// codegen). `why` names the specific unsound shape. Boxed to keep the
-    /// preflight's `Result` `Err` variant small.
-    pub(crate) fn call_scrutinee_reject(scrutinee: &HirExpr, why: &str) -> MirDiagnostic {
-        MirDiagnostic {
-            kind: MirDiagnosticKind::NotYetImplemented {
-                construct: "call-scrutinee returning a borrowed parameter or un-audited heap \
-                            extern"
-                    .to_string(),
-                site: scrutinee.site,
-            },
-            note: format!(
-                "#2648: {why}. Bind the call result to a `let` and match on the binding, or \
-                 return a freshly-constructed value from the callee."
-            ),
-        }
-    }
     /// #2648 S2b — the caller-side argument scan for a `ParamsOnly` callee
     /// (plan Fix-design (2), pulled forward from S4b by the ratchet evidence:
     /// the interim PARAM-present reject falsely rejected genuine `ParamsOnly`
@@ -1672,49 +1472,84 @@ impl Builder {
     }
     pub(crate) fn register_from_call_scrutinee_owner(
         &mut self,
-        admission: crate::return_provenance::CallScrutineeAdmission,
         scrutinee: &HirExpr,
         scrutinee_local: u32,
     ) -> Option<(BindingId, ResolvedTy)> {
-        use crate::return_provenance::CallScrutineeAdmission;
-        // The non-optional admission token gates the mint [F4]: `NotApplicable`
-        // mints nothing (the scrutinee's own release runs); `Admit` proceeds to
-        // the existing owner gate. A `Reject` never reaches here — the preflight
-        // returned early at the consumer.
-        match admission {
-            CallScrutineeAdmission::NotApplicable => return None,
-            CallScrutineeAdmission::Admit => {}
-        }
-        let ty = self.call_scrutinee_owned_ty(scrutinee)?;
-        // The admission token above says the CALLEE is a proven fresh owner;
-        // this asks the remaining half — whether the value that callee hands
-        // back, or any value the ledger already refused an owner for, reaches
-        // the temp. A withheld warrant means no owner at all, so the caller
-        // must see `None` rather than a bindable-but-ownerless temp.
-        // The admission gate established that this call result is a fresh
-        // caller-owned composite. Preserve that exact admission through the
-        // mint; the generic recursive temporary query is intentionally
-        // stricter for unmodelled calls and would otherwise erase the
-        // already-proven caller ownership.
-        let warrant = self.owner_warrant_for_admitted_call_scrutinee(scrutinee);
-        if warrant.withholds_mint() {
-            return None;
-        }
-        let binding = self.adopt_synthetic_owned_local(
+        self.finalize_typed_produced_value_owner(
             SYNTHETIC_CALL_SCRUTINEE_NAME,
             scrutinee.site,
-            scrutinee_local,
-            ty.clone(),
-            warrant,
-        );
-        // A typed publication owner is provisional only until a structural
-        // sink decides what owns the result.  Pattern control-flow is that
-        // sink for a call scrutinee: the anonymous enum local itself remains
-        // the recursive owner across the selected payload projection and must
-        // participate in ordinary scope/back-edge cleanup.  Finalise the
-        // generation here so `owned_locals_exit_candidates` does not mistake
-        // this real owner for an unclaimed producer temporary.
+            Place::Local(scrutinee_local),
+        )
+    }
+
+    /// Reject an ownership-demanding sink whose total HIR row is unresolved.
+    /// This check runs before the sink emits CFG or storage, keeping unknown
+    /// ownership out of checked MIR and codegen.
+    pub(crate) fn typed_produced_value_demand_is_resolved(
+        &mut self,
+        expr: &HirExpr,
+        construct: &'static str,
+    ) -> bool {
+        let ty = self.subst_ty(&expr.ty);
+        if !ty_is_heap_owning_enum_composite(&ty, &self.record_field_orders, &self.enum_layouts) {
+            return true;
+        }
+        let ownership = self
+            .param_ownership
+            .produced_value_facts
+            .get(&expr.site)
+            .map_or(ProducedValueOwnership::Unknown, |fact| fact.ownership);
+        if !matches!(ownership, ProducedValueOwnership::Unknown) {
+            return true;
+        }
+        self.diagnostics.push(MirDiagnostic {
+            kind: MirDiagnosticKind::NotYetImplemented {
+                construct: construct.to_string(),
+                site: expr.site,
+            },
+            note: format!(
+                "HIR produced-value ownership for site {} is Unknown; an owning enum value must \
+                 be resolved before this sink can transfer or release it",
+                expr.site
+            ),
+        });
+        false
+    }
+
+    /// Complete a provisional publication generation when a structural sink
+    /// takes responsibility for its cleanup shape. The site and exact MIR
+    /// place must both match the typed publication; neither type nor display
+    /// name can select an owner.
+    pub(crate) fn finalize_typed_produced_value_owner(
+        &mut self,
+        name: &'static str,
+        site: SiteId,
+        place: Place,
+    ) -> Option<(BindingId, ResolvedTy)> {
+        let index = self.owned_locals.iter().position(|entry| {
+            self.binding_locals.get(&entry.binding) == Some(&place)
+                && self.synthetic_owner_publication_sites.get(&entry.binding) == Some(&site)
+                && self
+                    .typed_produced_value_owner_bindings
+                    .contains(&entry.binding)
+        })?;
+        let binding = self.owned_locals[index].binding;
+        self.owned_locals[index].name = name.to_string();
+        let ty = self.owned_locals[index].ty.clone();
+        for statement in &mut self.statements {
+            if let MirStatement::Bind {
+                binding: statement_binding,
+                name: statement_name,
+                ..
+            } = statement
+            {
+                if *statement_binding == binding {
+                    *statement_name = name.to_string();
+                }
+            }
+        }
         self.synthetic_owner_publication_sites.remove(&binding);
+        self.typed_produced_value_owner_bindings.remove(&binding);
         Some((binding, ty))
     }
     pub(crate) fn register_while_let_iteration_owner(
@@ -1775,6 +1610,38 @@ impl Builder {
             .then_some(ty)
     }
     pub(crate) fn register_discarded_call_result_owner(&mut self, expr: &HirExpr, place: Place) {
+        let typed_ty = self.subst_ty(&expr.ty);
+        let typed_owner = ty_is_heap_owning_enum_composite(
+            &typed_ty,
+            &self.record_field_orders,
+            &self.enum_layouts,
+        )
+        .then(|| {
+            self.finalize_typed_produced_value_owner(
+                SYNTHETIC_DISCARDED_CALL_RESULT_NAME,
+                expr.site,
+                place,
+            )
+        })
+        .flatten();
+        if let Some((binding, ty)) = typed_owner {
+            self.statements.push(MirStatement::Use {
+                binding,
+                name: SYNTHETIC_DISCARDED_CALL_RESULT_NAME.to_string(),
+                site: expr.site,
+                ty: ty.clone(),
+                intent: IntentKind::Consume,
+            });
+            self.push_instr(Instr::Drop {
+                place,
+                ty,
+                drop_fn: Some(crate::model::DropFnSpec::InPlace(
+                    crate::ownership::InPlaceReleaseKind::Enum,
+                )),
+            });
+            self.set_owned_local_disposition(binding, Disposition::ScopeReleased);
+            return;
+        }
         let Some(ty) = self.discarded_call_result_owned_ty(expr) else {
             return;
         };

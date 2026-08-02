@@ -3883,17 +3883,12 @@ impl Builder {
         arms: &[hew_hir::HirMatchArm],
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
-        // #2648 preflight — run BEFORE any `lower_value`/CFG allocation. A reject
-        // (forwarded borrowed parameter, un-audited heap extern) pushes exactly
-        // one diagnostic and returns with NO partial MIR: no scrutinee call, no
-        // owner mint, no `NeutralizePayloadSlot`.
-        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
-            Ok(admission) => admission,
-            Err(diag) => {
-                self.diagnostics.push(*diag);
-                return None;
-            }
-        };
+        if !self.typed_produced_value_demand_is_resolved(
+            scrutinee,
+            "match scrutinee has unresolved ownership",
+        ) {
+            return None;
+        }
         // Result local first so every arm's Move dominates it.
         let result_place = self.alloc_local(result_ty.clone());
 
@@ -4087,11 +4082,8 @@ impl Builder {
         // (#2429). No-op for binding-ref scrutinees, runtime-symbol
         // producers, and the recv/iter-next shapes that carry their own
         // release discipline.
-        let call_scrutinee_owner = self.register_from_call_scrutinee_owner(
-            scrutinee_admission,
-            scrutinee,
-            scrutinee_local,
-        );
+        let call_scrutinee_owner =
+            self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
         let weak_upgrade_owner_ty = matches!(
             &scrutinee.kind,
             HirExprKind::RcIntrinsic {

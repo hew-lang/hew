@@ -81,16 +81,12 @@ impl Builder {
         payload_variant_predicates: &[hew_hir::HirPayloadVariantPredicate],
         else_body: &hew_hir::HirBlock,
     ) {
-        // #2648 preflight — run BEFORE any allocation or scrutinee lowering. A
-        // reject pushes one diagnostic and returns with no partial MIR; the
-        // admission token also gates the #2429 from-call owner mint below.
-        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
-            Ok(admission) => admission,
-            Err(diag) => {
-                self.diagnostics.push(*diag);
-                return;
-            }
-        };
+        if !self.typed_produced_value_demand_is_resolved(
+            scrutinee,
+            "let-else scrutinee has unresolved ownership",
+        ) {
+            return;
+        }
         // Entry: evaluate scrutinee, load tag, branch.
         let Some(scrutinee_place) = self.lower_value(scrutinee) else {
             return;
@@ -123,7 +119,7 @@ impl Builder {
         // elaboration frees it on whichever edge leaves the enclosing scope,
         // including the divergent-else edges. No-op for the non-Call / carrier
         // shapes per `register_from_call_scrutinee_owner`.
-        self.register_from_call_scrutinee_owner(scrutinee_admission, scrutinee, scrutinee_local);
+        self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
 
         let tag_local = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::Move {
@@ -457,15 +453,12 @@ impl Builder {
                       the algorithm is one coherent unit and factoring it would obscure \
                       the loop CFG"
         )]
-        // #2648 preflight — run BEFORE any block allocation or scrutinee lowering.
-        // A reject leaves no half-built loop CFG.
-        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
-            Ok(admission) => admission,
-            Err(diag) => {
-                self.diagnostics.push(*diag);
-                return None;
-            }
-        };
+        if !self.typed_produced_value_demand_is_resolved(
+            scrutinee,
+            "while-let scrutinee has unresolved ownership",
+        ) {
+            return None;
+        }
         let binding_iteration_owner_ty =
             match self.classify_while_let_binding_iteration_owner(label, scrutinee, body) {
                 Ok(owner_ty) => owner_ty,
@@ -539,11 +532,7 @@ impl Builder {
                 return None;
             }
         };
-        let scrutinee_owner = self.register_from_call_scrutinee_owner(
-            scrutinee_admission,
-            scrutinee,
-            scrutinee_local,
-        );
+        let scrutinee_owner = self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
         let binding_iteration_owner = binding_iteration_owner_ty.map(|ty| {
             let snapshot_place = self.alloc_local(ty.clone());
             let Place::Local(snapshot_local) = snapshot_place else {
@@ -926,11 +915,13 @@ impl Builder {
     fn while_let_reassignment_provably_fresh(&self, value: &HirExpr) -> bool {
         if matches!(value.kind, HirExprKind::Call { .. }) {
             return self
-                .classify_call_scrutinee_admission(value)
-                .is_ok_and(|admission| {
-                    !matches!(
-                        admission,
-                        crate::return_provenance::CallScrutineeAdmission::NotApplicable
+                .param_ownership
+                .produced_value_facts
+                .get(&value.site)
+                .is_some_and(|fact| {
+                    matches!(
+                        fact.ownership,
+                        hew_types::ProducedValueOwnership::Owned { .. }
                     )
                 });
         }
@@ -1374,18 +1365,12 @@ impl Builder {
         else_body: Option<&hew_hir::HirBlock>,
         result_ty: &ResolvedTy,
     ) -> Option<Place> {
-        // #2648 preflight — run BEFORE any allocation or scrutinee lowering. A
-        // reject short-circuits with no partial MIR; the admission token also
-        // gates the #2429 from-call owner mint below (symmetric with
-        // `lower_match_enum_tag`/`lower_while_let`), so it is threaded through
-        // rather than discarded.
-        let scrutinee_admission = match self.classify_call_scrutinee_admission(scrutinee) {
-            Ok(admission) => admission,
-            Err(diag) => {
-                self.diagnostics.push(*diag);
-                return None;
-            }
-        };
+        if !self.typed_produced_value_demand_is_resolved(
+            scrutinee,
+            "if-let scrutinee has unresolved ownership",
+        ) {
+            return None;
+        }
         let result_place = self.alloc_local(self.subst_ty(result_ty));
 
         // Entry: evaluate scrutinee, load tag, branch.
@@ -1422,7 +1407,7 @@ impl Builder {
         // the scope-exit machinery handles every edge, so no explicit
         // per-iteration owner-drop plumbing is needed (that is `lower_while_let`'s
         // loop-only concern).
-        self.register_from_call_scrutinee_owner(scrutinee_admission, scrutinee, scrutinee_local);
+        self.register_from_call_scrutinee_owner(scrutinee, scrutinee_local);
 
         let tag_local = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::Move {

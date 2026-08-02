@@ -17,7 +17,10 @@ use crate::node::{
     HirBlock, HirExpr, HirExprKind, HirGenCaptureSource, HirItem, HirLiteral, HirMatchArmPredicate,
     HirModule, HirProducedValueRelation, HirProducedValueSourceAnchor, HirStmtKind,
 };
-use hew_types::{BuiltinType, ProducedValueOwnership, RcIntrinsicOp, ResolvedTy};
+use hew_types::{
+    BuiltinType, DefId, HashMapMethod, HashSetMethod, MethodTargetFamily, ProducedValueAcquisition,
+    ProducedValueOwnership, RcIntrinsicOp, ResolvedTy, RuntimeCallFamily, VecMethod,
+};
 
 #[must_use]
 pub fn verify_hir(module: &HirModule) -> Vec<HirDiagnostic> {
@@ -65,7 +68,7 @@ pub fn complete_produced_value_facts(
     let mut verifier = Verifier::default();
     verifier.module(module);
     let mut facts = module.produced_value_facts.clone();
-    for (site, producer) in verifier.observed_producers {
+    for (&site, &producer) in &verifier.observed_producers {
         facts
             .entry(site)
             .or_insert(crate::node::HirProducedValueFact {
@@ -77,7 +80,181 @@ pub fn complete_produced_value_facts(
                 arguments: Vec::new(),
             });
     }
+    finalize_resolved_produced_value_facts(&verifier, &mut facts);
     facts
+}
+
+/// Close the checker-authored graph after HIR has attached exact declaration
+/// and collection-family identities to every executable call. Generic method
+/// bodies can remain abstract while checking, and a direct user call cannot
+/// know its callee's result disposition until every body is available. This
+/// fixed point fills only those `Unknown` leaves; it never revises a concrete
+/// checker verdict or reconstructs authority from a symbol spelling.
+fn resolved_producer_ownership(
+    producer: crate::node::HirProducedValueProducer,
+) -> ProducedValueOwnership {
+    match producer {
+        crate::node::HirProducedValueProducer::GeneratorNext
+        | crate::node::HirProducedValueProducer::ChannelRecvAwait
+        | crate::node::HirProducedValueProducer::StreamRecvAwait => {
+            ProducedValueOwnership::owned(ProducedValueAcquisition::Delivery)
+        }
+        _ => ProducedValueOwnership::Unknown,
+    }
+}
+
+fn resolved_runtime_call_ownership(family: RuntimeCallFamily) -> ProducedValueOwnership {
+    match family {
+        RuntimeCallFamily::ChannelRecvLayout
+        | RuntimeCallFamily::ChannelTryRecvLayout
+        | RuntimeCallFamily::StreamNextLayout
+        | RuntimeCallFamily::StreamTryNextLayout
+        | RuntimeCallFamily::DuplexRecv
+        | RuntimeCallFamily::DuplexRecvHalf
+        | RuntimeCallFamily::DuplexTryRecv => {
+            ProducedValueOwnership::owned(ProducedValueAcquisition::Delivery)
+        }
+        _ => ProducedValueOwnership::Unknown,
+    }
+}
+
+fn finalize_resolved_produced_value_facts(
+    verifier: &Verifier,
+    facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
+) {
+    use ProducedValueOwnership as Ownership;
+
+    for fact in facts.values_mut() {
+        if matches!(fact.ownership, Ownership::Unknown) {
+            fact.ownership = resolved_producer_ownership(fact.producer);
+        }
+    }
+
+    for (site, family) in &verifier.resolved_collection_calls {
+        let Some(fact) = facts.get_mut(site) else {
+            continue;
+        };
+        if !matches!(fact.ownership, Ownership::Unknown) {
+            continue;
+        }
+        fact.ownership = match family {
+            MethodTargetFamily::HashMap(HashMapMethod::Remove)
+            | MethodTargetFamily::Vec(VecMethod::Pop | VecMethod::Remove) => {
+                Ownership::owned(ProducedValueAcquisition::MoveOut)
+            }
+            MethodTargetFamily::HashMap(
+                HashMapMethod::Clone
+                | HashMapMethod::Get
+                | HashMapMethod::Keys
+                | HashMapMethod::Values,
+            )
+            | MethodTargetFamily::HashSet(HashSetMethod::Clone | HashSetMethod::ToVec)
+            | MethodTargetFamily::Vec(VecMethod::Clone | VecMethod::Get) => {
+                Ownership::owned(ProducedValueAcquisition::Clone)
+            }
+            MethodTargetFamily::HashMap(_)
+            | MethodTargetFamily::HashSet(_)
+            | MethodTargetFamily::Vec(_) => Ownership::Unknown,
+        };
+    }
+    for (site, family) in &verifier.runtime_call_targets {
+        let Some(fact) = facts.get_mut(site) else {
+            continue;
+        };
+        if !matches!(fact.ownership, Ownership::Unknown) {
+            continue;
+        }
+        fact.ownership = resolved_runtime_call_ownership(*family);
+    }
+
+    let limit = verifier
+        .function_return_sites
+        .len()
+        .saturating_add(verifier.user_call_targets.len())
+        .saturating_add(1);
+    for _ in 0..limit {
+        propagate_produced_value_relations(facts);
+        let summaries: HashMap<DefId, Ownership> = verifier
+            .function_return_sites
+            .iter()
+            .map(|(declaration, sites)| {
+                let mut ownership = sites
+                    .iter()
+                    .filter_map(|site| facts.get(site))
+                    .map(|fact| fact.ownership);
+                let summary = ownership.next().map_or(Ownership::Unknown, |first| {
+                    if ownership.all(|next| next == first) {
+                        first
+                    } else {
+                        Ownership::Unknown
+                    }
+                });
+                (declaration.clone(), summary)
+            })
+            .collect();
+        let mut changed = false;
+        for (site, target) in &verifier.user_call_targets {
+            let Some(summary) = summaries.get(target).copied() else {
+                continue;
+            };
+            let Some(fact) = facts.get_mut(site) else {
+                continue;
+            };
+            if matches!(fact.ownership, Ownership::Unknown)
+                && !matches!(summary, Ownership::Unknown)
+            {
+                fact.ownership = summary;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    propagate_produced_value_relations(facts);
+}
+
+fn propagate_produced_value_relations(
+    facts: &mut HashMap<SiteId, crate::node::HirProducedValueFact>,
+) {
+    use ProducedValueOwnership as Ownership;
+
+    let snapshot: HashMap<SiteId, Ownership> = facts
+        .iter()
+        .map(|(site, fact)| (*site, fact.ownership))
+        .collect();
+    for fact in facts.values_mut() {
+        if !matches!(fact.ownership, Ownership::Unknown) {
+            continue;
+        }
+        fact.ownership = match &fact.relation {
+            HirProducedValueRelation::Identity(source)
+            | HirProducedValueRelation::Subsumes(source) => {
+                snapshot.get(source).copied().unwrap_or(Ownership::Unknown)
+            }
+            HirProducedValueRelation::MoveOut(source)
+            | HirProducedValueRelation::Projection(source) => match snapshot.get(source) {
+                Some(Ownership::Owned { .. }) => {
+                    Ownership::owned(ProducedValueAcquisition::MoveOut)
+                }
+                Some(Ownership::Borrowed | Ownership::ReceiverIdentity) => Ownership::Borrowed,
+                Some(Ownership::NoOwner | Ownership::Unknown) | None => Ownership::Unknown,
+            },
+            HirProducedValueRelation::Join(sources) => {
+                let mut ownership = sources
+                    .iter()
+                    .map(|site| snapshot.get(site).copied().unwrap_or(Ownership::Unknown));
+                ownership.next().map_or(Ownership::Unknown, |first| {
+                    if ownership.all(|next| next == first) {
+                        first
+                    } else {
+                        Ownership::Unknown
+                    }
+                })
+            }
+            HirProducedValueRelation::Leaf => Ownership::Unknown,
+        };
+    }
 }
 
 #[derive(Debug, Default)]
@@ -93,6 +270,11 @@ struct Verifier {
     site_types: HashMap<SiteId, ResolvedTy>,
     current_expr_parent: Option<SiteId>,
     site_parents: HashMap<SiteId, Option<SiteId>>,
+    current_function: Option<DefId>,
+    function_return_sites: HashMap<DefId, Vec<SiteId>>,
+    user_call_targets: HashMap<SiteId, DefId>,
+    resolved_collection_calls: HashMap<SiteId, MethodTargetFamily>,
+    runtime_call_targets: HashMap<SiteId, RuntimeCallFamily>,
 }
 
 impl Verifier {
@@ -107,11 +289,19 @@ impl Verifier {
             self.current_source_module = Self::item_source_module(module, item);
             match item {
                 HirItem::Function(func) => {
+                    let prior_function = self.current_function.replace(func.declaration.clone());
                     self.node(func.node, func.span.clone());
                     for param in &func.params {
                         self.binding(param.id, param.span.clone());
                     }
                     self.block(&func.body);
+                    if let Some(tail) = &func.body.tail {
+                        self.function_return_sites
+                            .entry(func.declaration.clone())
+                            .or_default()
+                            .push(tail.site);
+                    }
+                    self.current_function = prior_function;
                 }
                 HirItem::TypeDecl(decl) => {
                     // Type declarations contribute only their HirNodeId
@@ -549,7 +739,16 @@ impl Verifier {
                     self.expr(target);
                     self.expr(value);
                 }
-                HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => self.expr(expr),
+                HirStmtKind::Expr(expr) => self.expr(expr),
+                HirStmtKind::Return(Some(expr)) => {
+                    if let Some(function) = self.current_function.clone() {
+                        self.function_return_sites
+                            .entry(function)
+                            .or_default()
+                            .push(expr.site);
+                    }
+                    self.expr(expr);
+                }
                 HirStmtKind::Return(None) => {}
                 HirStmtKind::Defer { body, .. } => self.expr(body),
                 HirStmtKind::LetElse {
@@ -861,6 +1060,13 @@ impl Verifier {
                 args,
             } => {
                 self.executable_call_target(target, expr);
+                if let hew_types::CallTarget::User(declaration) = target {
+                    self.user_call_targets
+                        .insert(expr.site, declaration.clone());
+                }
+                if let hew_types::CallTarget::Runtime(family) = target {
+                    self.runtime_call_targets.insert(expr.site, *family);
+                }
                 self.expr(callee);
                 for arg in args {
                     self.expr(arg);
@@ -916,6 +1122,10 @@ impl Verifier {
                 ..
             } => {
                 self.executable_call_target(target, expr);
+                if let HirExprKind::ResolvedImplCall { target_family, .. } = &expr.kind {
+                    self.resolved_collection_calls
+                        .insert(expr.site, *target_family);
+                }
                 self.expr(receiver);
                 for arg in args {
                     self.expr(arg);

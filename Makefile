@@ -76,7 +76,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh licenses licenses-check
-.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
+.PHONY: test test-rust test-parser test-types test-cli macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-net test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest preflight-parity-selftest test-stdlib-ratchet test-stdlib-execution-proofs test-ux-examples test-surface-examples test-example-expectations-selftest test-release-binary test-release-lib-link test-release-workflow-contract check-sanitizer-gate asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-structural-authority-audit test-ast-grep-contract test-structural-lint-bootstrap runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo lint-wasm-todo-self-test leak-scan hew-fmt-check check-gate-reachability test-check-gate-reachability sandbox-parity-coverage-check test-sandbox-parity-coverage-check doc-ratchet-selftest freebsd-workflow-contract-check verify-sys-lane-closure test-sys-lane-closure corpus-floor-check
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-python310-toml-compat
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -1094,7 +1094,7 @@ asan:
 # clone leak were only caught by the macOS `leaks` oracle before this gate).
 #
 # Passes LLVM_VERSION through to the script if set (e.g. LLVM_VERSION=22).
-asan-fixtures:
+asan-fixtures: test-asan-fixture-selftest
 ifeq ($(shell uname -s),Darwin)
 	@echo "asan-fixtures: skipped on macOS — use the leaks oracle in hew-cli/tests/*_leak_oracle.rs"
 else
@@ -1102,6 +1102,12 @@ else
 	SANITIZER_RUST_TARGET=$(SANITIZER_RUST_TARGET) \
 	scripts/asan-fixture-check.sh
 endif
+
+# Platform-independent counterfactuals for the ASan/LSan sentinel: a genuine
+# sanitizer diagnostic must be accepted, while a bare non-zero probe exit must
+# stay red instead of certifying instrumentation that never reported a leak.
+test-asan-fixture-selftest:
+	scripts/asan-fixture-check.sh --selftest
 
 # Nightly rust-runtime TSan command (Linux/nightly toolchain required).
 #

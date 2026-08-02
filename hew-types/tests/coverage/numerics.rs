@@ -266,3 +266,35 @@ fn resolved_numeric_cast_matrix_matches_checker_admission() {
     assert!(!ResolvedTy::String.can_explicitly_numeric_cast_to(&ResolvedTy::I64));
     assert!(!ResolvedTy::I64.can_explicitly_numeric_cast_to(&ResolvedTy::String));
 }
+
+#[test]
+fn resolved_implicit_numeric_normalization_is_widening_only() {
+    for (source, target) in [
+        (ResolvedTy::I8, ResolvedTy::I64),
+        (ResolvedTy::U16, ResolvedTy::U64),
+        (ResolvedTy::F32, ResolvedTy::F64),
+        (ResolvedTy::I32, ResolvedTy::F64),
+    ] {
+        assert!(
+            source.can_implicitly_numeric_normalize_to(&target),
+            "checker common type must normalize {source:?} -> {target:?}"
+        );
+        assert!(
+            !target.can_implicitly_numeric_normalize_to(&source),
+            "implicit normalization must not narrow {target:?} -> {source:?}"
+        );
+    }
+
+    for (source, target) in [
+        (ResolvedTy::I32, ResolvedTy::U64),
+        (ResolvedTy::U32, ResolvedTy::I64),
+        (ResolvedTy::Isize, ResolvedTy::I64),
+        (ResolvedTy::Usize, ResolvedTy::U64),
+        (ResolvedTy::F64, ResolvedTy::I64),
+    ] {
+        assert!(
+            !source.can_implicitly_numeric_normalize_to(&target),
+            "implicit normalization must reject {source:?} -> {target:?}"
+        );
+    }
+}

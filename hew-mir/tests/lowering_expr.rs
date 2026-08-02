@@ -81,6 +81,8 @@ mod plain_vec_local_drop;
 mod polymorphic_mir_typeparam;
 #[path = "lowering_expr/quic_string_temp_drop_canary.rs"]
 mod quic_string_temp_drop_canary;
+#[path = "lowering_expr/range_integer_normalization.rs"]
+mod range_integer_normalization;
 #[path = "lowering_expr/rc_weak_lowering.rs"]
 mod rc_weak_lowering;
 #[path = "lowering_expr/regex_predicate_lowering.rs"]

@@ -12054,6 +12054,17 @@ fn main() {
 #[test]
 fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
     let pipeline = pipeline_from_helper_snapshot_raw_trap_source();
+    let helper_raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "helper_trap")
+        .expect("helper_trap raw MIR");
+    assert!(
+        matches!(helper_raw.locals.get(9), Some(ResolvedTy::Bytes))
+            && helper_raw.local_names.get(9).and_then(Option::as_deref)
+                == Some("__hew_produced_value"),
+        "local 9 is the produced bytes owner transferred into Bundle.data"
+    );
     let helper_elab = pipeline
         .elaborated_mir
         .iter()
@@ -12072,7 +12083,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
     owner_locals.dedup();
     assert_eq!(
         owner_locals,
-        [2, 5, 11, 14, 17, 19, 21],
+        [2, 5, 9, 11, 14, 17, 19, 21],
         "grounded helper owner topology drifted"
     );
 
@@ -12103,7 +12114,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
                     line.contains("%helper_crash_cleanup_token_") && line.contains(" = alloca i64")
                 })
                 .count(),
-            7,
+            8,
             "{triple}: every exact owner needs one stable token alloca:\n{helper}"
         );
         let arms = helper
@@ -12112,7 +12123,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
             .collect::<Vec<_>>();
         assert_eq!(
             arms.len(),
-            7,
+            8,
             "{triple}: every grounded Move/Call owner must arm once:\n{helper}"
         );
         assert!(
@@ -12123,7 +12134,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
             helper
                 .matches("call i1 @hew_cont_crash_cleanup_deactivate")
                 .count(),
-            7,
+            8,
             "{triple}: every destination write must gate stale authority before replacement"
         );
         assert!(

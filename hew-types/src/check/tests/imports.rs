@@ -412,6 +412,67 @@ fn same_leaf_impl_methods_publish_distinct_full_declaration_ids() {
 }
 
 #[test]
+fn user_channel_lookalike_retains_nested_sender_and_receiver_identity() {
+    let user_module = hew_parser::parse(
+        r"
+        pub type Sender { marker: i64; }
+        pub type Receiver { marker: i64; }
+        ",
+    );
+    assert!(
+        user_module.errors.is_empty(),
+        "parse: {:#?}",
+        user_module.errors
+    );
+
+    let mut root = hew_parser::parse(
+        r"
+        import std::channel::channel as ch;
+        fn probe(tx: ch.Sender, rx: ch.Receiver) {}
+        ",
+    );
+    assert!(root.errors.is_empty(), "parse: {:#?}", root.errors);
+    let user_source = std::path::PathBuf::from("/user/project/std/channel/channel.hew");
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("fixture import");
+    import.resolved_items = Some(user_module.program.items);
+    import.resolved_source_paths = vec![user_source.clone()];
+    import.resolved_item_source_paths = vec![user_source; 2];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&root.program);
+    assert!(
+        output.errors.is_empty(),
+        "type errors: {:#?}",
+        output.errors
+    );
+    let params = &output.fn_sigs["probe"].params;
+    assert!(matches!(
+        &params[0],
+        Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } if name == "std.channel.channel.Sender" && args.is_empty()
+    ));
+    assert!(matches!(
+        &params[1],
+        Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } if name == "std.channel.channel.Receiver" && args.is_empty()
+    ));
+}
+
+#[test]
 fn should_import_name_glob_returns_true() {
     assert!(Checker::should_import_name(
         "helper",

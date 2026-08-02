@@ -9085,15 +9085,13 @@ impl Checker {
 
         // These codegen-intercepted signatures are part of the standard
         // channel source implementation, not a name-based ambient builtin.
-        // A user module may define `channel.Receiver` or even use the full
-        // `std.channel.channel` path; grant the builtin discriminator only
-        // when the module graph proved this exact owner came from the shipped
-        // stdlib source. The body annotations then share the same nominal
-        // identity as these synthetic signatures.
+        // A user module may define `channel.Receiver`; grant the builtin
+        // discriminator only when the module graph proved the canonical
+        // `std.channel` owner came from the shipped stdlib source. The body
+        // annotations then share the same nominal identity as these synthetic
+        // signatures.
         let canonical_channel_source = self.current_module.as_deref().is_some_and(|module| {
-            matches!(module, "std.channel" | "std.channel.channel")
-                && (self.canonical_std_module_sources.contains(module)
-                    || self.canonical_std_module_sources.contains("std.channel"))
+            module == "std.channel" && self.canonical_std_module_sources.contains(module)
         });
         let receiver_ty = if canonical_channel_source {
             Ty::Named {
@@ -9194,12 +9192,21 @@ impl Checker {
                     let resolved_source_path = info.source_path.clone();
                     let registry_source_items = info.source_items.clone();
 
-                    let canonical_short = module_path
-                        .rsplit("::")
+                    let requested_owner = module_path.replace("::", ".");
+                    let canonical_owner = resolved_source_path.as_ref().map_or_else(
+                        || requested_owner.clone(),
+                        |source_path| {
+                            crate::module_registry::canonical_source_module_identity(
+                                &requested_owner,
+                                std::slice::from_ref(source_path),
+                            )
+                        },
+                    );
+                    let canonical_short = canonical_owner
+                        .rsplit('.')
                         .next()
-                        .unwrap_or(&module_path)
+                        .unwrap_or(&canonical_owner)
                         .to_string();
-                    let canonical_owner = module_path.replace("::", ".");
                     if let Some(source_path) = resolved_source_path {
                         self.record_canonical_std_module_source(
                             &canonical_owner,
@@ -9439,7 +9446,11 @@ impl Checker {
                     .module_alias
                     .clone()
                     .unwrap_or_else(|| decl.path.last().expect("import path is non-empty").clone());
-                let full_dot_path = decl.path.join(".");
+                let requested_owner = decl.path.join(".");
+                let full_dot_path = crate::module_registry::canonical_source_module_identity(
+                    &requested_owner,
+                    &decl.resolved_source_paths,
+                );
                 // `resolved_items` can be supplied directly by a module
                 // loader without a separately traversed graph node. Preserve
                 // the same source-derived authority before publishing its
@@ -9458,7 +9469,7 @@ impl Checker {
                 // owner; it never grants a short-name fallback.
                 self.module_import_bindings.insert(
                     (self.current_module.clone(), short.clone()),
-                    decl.path.join("."),
+                    full_dot_path.clone(),
                 );
                 if let Some(span) = import_span {
                     self.import_spans.insert(
@@ -11675,18 +11686,17 @@ mod channel_recv_builtin_provenance_tests {
 
     fn checker_with_channel_surface(canonical_source: bool) -> Checker {
         let mut checker = Checker {
-            current_module: Some("std.channel.channel".to_string()),
+            current_module: Some("std.channel".to_string()),
             ..Checker::default()
         };
         checker.local_type_defs.insert("Receiver".to_string());
-        checker.fn_sigs.insert(
-            "std.channel.channel.hew_channel_new".to_string(),
-            FnSig::default(),
-        );
+        checker
+            .fn_sigs
+            .insert("std.channel.hew_channel_new".to_string(), FnSig::default());
         if canonical_source {
             checker
                 .canonical_std_module_sources
-                .insert("std.channel.channel".to_string());
+                .insert("std.channel".to_string());
         }
         checker
     }
@@ -11696,7 +11706,7 @@ mod channel_recv_builtin_provenance_tests {
         let mut canonical = checker_with_channel_surface(true);
         canonical.register_channel_recv_builtins();
         assert!(matches!(
-            canonical.fn_sigs["std.channel.channel.hew_channel_recv_layout"]
+            canonical.fn_sigs["std.channel.hew_channel_recv_layout"]
                 .params
                 .as_slice(),
             [Ty::Named {
@@ -11711,7 +11721,7 @@ mod channel_recv_builtin_provenance_tests {
         let mut user_channel = checker_with_channel_surface(false);
         user_channel.register_channel_recv_builtins();
         assert!(matches!(
-            user_channel.fn_sigs["std.channel.channel.hew_channel_recv_layout"].params.as_slice(),
+            user_channel.fn_sigs["std.channel.hew_channel_recv_layout"].params.as_slice(),
             [Ty::Named {
                 builtin: None,
                 name,

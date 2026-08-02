@@ -7380,7 +7380,7 @@ impl Checker {
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are
                     // linked through unification.
-                    if canonical_owner == "std.channel.channel" && method == "new" {
+                    if canonical_owner == "std.channel" && method == "new" {
                         let t = Ty::Var(TypeVar::fresh());
                         return Ty::Tuple(vec![Ty::sender(t.clone()), Ty::receiver(t)]);
                     }

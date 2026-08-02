@@ -2223,6 +2223,14 @@ impl Checker {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpClient);
             }
             "smtp.Conn" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Smtp),
+            "websocket.Conn"
+            | "websocket.Server"
+            | "websocket.Message"
+            | "std.net.websocket.Conn"
+            | "std.net.websocket.Server"
+            | "std.net.websocket.Message" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::WebSocket);
+            }
             "process.Child" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::ProcessExecution);
             }

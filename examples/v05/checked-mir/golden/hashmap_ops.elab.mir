@@ -16,6 +16,7 @@ fn main -> ()
     use BindingId(2) has site=SiteId(32) ty=bool intent=Read
     use BindingId(3) removed site=SiteId(36) ty=bool intent=Read
     use BindingId(0) m site=SiteId(41) ty=HashMap<string, i64> intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(30) ty=string
     eval site=SiteId(29) ty=()
     bind BindingId(4) flags site=SiteId(55) ty=HashMap<string, bool>
     use BindingId(4) flags site=SiteId(58) ty=HashMap<string, bool> intent=Read
@@ -31,10 +32,12 @@ fn main -> ()
     use BindingId(6) labels site=SiteId(78) ty=HashMap<string, string> intent=Read
     eval site=SiteId(77) ty=()
     use BindingId(6) labels site=SiteId(83) ty=HashMap<string, string> intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(82) ty=Option<string>
     return site=Some(SiteId(81)) ty=()
     bind BindingId(7) s site=SiteId(85) ty=string
     use BindingId(7) s site=SiteId(86) ty=string intent=Read
     drop BindingId(7) s ty=string
+    drop BindingId(4294967230) __hew_produced_value ty=Option<string>
     drop BindingId(6) labels ty=HashMap<string, string>
     drop BindingId(5) ratios ty=HashMap<string, f64>
     drop BindingId(4) flags ty=HashMap<string, bool>
@@ -74,7 +77,7 @@ fn main -> ()
       (none)
     branch[bb13: bb15/bb18] ->
       (none)
-    call[bb14 to_string_bool -> bb19] ->
+    call[bb14 hew_bool_to_string -> bb19] ->
       (none)
     goto[bb15->bb14] ->
       (none)
@@ -88,74 +91,64 @@ fn main -> ()
       drop _1 ty=HashMap<string, i64> kind=cow_heap(hew_hashmap_free_layout)
     branch[bb18: bb16/bb17] ->
       (none)
-    call[bb19 string_concat -> bb20] ->
+    call[bb19 hew_bool_to_string -> bb20] ->
       (none)
-    call[bb20 string_concat -> bb21] ->
+    call[bb20 hew_hashmap_len_layout -> bb21] ->
       (none)
-    call[bb21 to_string_bool -> bb22] ->
+    call[bb21 hew_i64_to_string -> bb22] ->
       (none)
-    call[bb22 string_concat -> bb23] ->
+    call[bb22 println_str -> bb23] ->
       (none)
-    call[bb23 string_concat -> bb24] ->
+    call[bb23 HashMap::new -> bb24] ->
       (none)
-    call[bb24 hew_hashmap_len_layout -> bb25] ->
+    call[bb24 hew_hashmap_insert_layout -> bb25] ->
       (none)
-    call[bb25 to_string_i64 -> bb26] ->
+    call[bb25 hew_hashmap_len_layout -> bb26] ->
       (none)
-    call[bb26 string_concat -> bb27] ->
+    call[bb26 println_i64 -> bb27] ->
       (none)
-    call[bb27 println_str -> bb28] ->
+    call[bb27 HashMap::new -> bb28] ->
       (none)
-    call[bb28 HashMap::new -> bb29] ->
+    call[bb28 hew_hashmap_insert_layout -> bb29] ->
       (none)
-    call[bb29 hew_hashmap_insert_layout -> bb30] ->
+    call[bb29 hew_hashmap_len_layout -> bb30] ->
       (none)
-    call[bb30 hew_hashmap_len_layout -> bb31] ->
+    call[bb30 println_i64 -> bb31] ->
       (none)
-    call[bb31 println_i64 -> bb32] ->
+    call[bb31 HashMap::new -> bb32] ->
       (none)
-    call[bb32 HashMap::new -> bb33] ->
+    call[bb32 hew_hashmap_insert_layout -> bb33] ->
       (none)
-    call[bb33 hew_hashmap_insert_layout -> bb34] ->
+    call[bb33 hew_hashmap_get_layout -> bb34] ->
       (none)
-    call[bb34 hew_hashmap_len_layout -> bb35] ->
+    branch[bb34: bb36/bb39] ->
       (none)
-    call[bb35 println_i64 -> bb36] ->
-      (none)
-    call[bb36 HashMap::new -> bb37] ->
-      (none)
-    call[bb37 hew_hashmap_insert_layout -> bb38] ->
-      (none)
-    call[bb38 hew_hashmap_get_layout -> bb39] ->
-      (none)
-    branch[bb39: bb41/bb44] ->
-      (none)
-    return[bb40] ->
+    return[bb35] ->
       drop _53 ty=HashMap<string, string> kind=cow_heap(hew_hashmap_free_layout)
       drop _48 ty=HashMap<string, f64> kind=cow_heap(hew_hashmap_free_layout)
       drop _43 ty=HashMap<string, bool> kind=cow_heap(hew_hashmap_free_layout)
       drop _1 ty=HashMap<string, i64> kind=cow_heap(hew_hashmap_free_layout)
-    call[bb41 println_str -> bb45] ->
+    call[bb36 println_str -> bb40] ->
       (none)
-    call[bb42 println_str -> bb46] ->
+    call[bb37 println_str -> bb41] ->
       (none)
-    panic[bb43] ->
+    panic[bb38] ->
       drop _53 ty=HashMap<string, string> kind=cow_heap(hew_hashmap_free_layout)
       drop _48 ty=HashMap<string, f64> kind=cow_heap(hew_hashmap_free_layout)
       drop _43 ty=HashMap<string, bool> kind=cow_heap(hew_hashmap_free_layout)
       drop _1 ty=HashMap<string, i64> kind=cow_heap(hew_hashmap_free_layout)
-    branch[bb44: bb42/bb43] ->
+    branch[bb39: bb37/bb38] ->
       (none)
-    goto[bb45->bb40] ->
+    goto[bb40->bb35] ->
       (none)
-    cancel[bb45] ->
+    cancel[bb40] ->
       drop _53 ty=HashMap<string, string> kind=cow_heap(hew_hashmap_free_layout)
       drop _48 ty=HashMap<string, f64> kind=cow_heap(hew_hashmap_free_layout)
       drop _43 ty=HashMap<string, bool> kind=cow_heap(hew_hashmap_free_layout)
       drop _1 ty=HashMap<string, i64> kind=cow_heap(hew_hashmap_free_layout)
-    goto[bb46->bb40] ->
+    goto[bb41->bb35] ->
       (none)
-    cancel[bb46] ->
+    cancel[bb41] ->
       drop _53 ty=HashMap<string, string> kind=cow_heap(hew_hashmap_free_layout)
       drop _48 ty=HashMap<string, f64> kind=cow_heap(hew_hashmap_free_layout)
       drop _43 ty=HashMap<string, bool> kind=cow_heap(hew_hashmap_free_layout)
@@ -166,7 +159,7 @@ fn i8::fmt -> string
     use BindingId(16) val site=SiteId(161) ty=i8 intent=Read
     return site=Some(SiteId(159)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -178,7 +171,7 @@ fn i16::fmt -> string
     use BindingId(17) val site=SiteId(165) ty=i16 intent=Read
     return site=Some(SiteId(163)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -190,7 +183,7 @@ fn i32::fmt -> string
     use BindingId(18) val site=SiteId(168) ty=i32 intent=Read
     return site=Some(SiteId(167)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -202,7 +195,7 @@ fn i64::fmt -> string
     use BindingId(19) val site=SiteId(171) ty=i64 intent=Read
     return site=Some(SiteId(170)) ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_i64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -214,7 +207,7 @@ fn u8::fmt -> string
     use BindingId(20) val site=SiteId(174) ty=u8 intent=Read
     return site=Some(SiteId(173)) ty=string
   drop_plans:
-    call[bb0 to_string_u8 -> bb1] ->
+    call[bb0 hew_u8_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -226,7 +219,7 @@ fn u16::fmt -> string
     use BindingId(21) val site=SiteId(177) ty=u16 intent=Read
     return site=Some(SiteId(176)) ty=string
   drop_plans:
-    call[bb0 to_string_u16 -> bb1] ->
+    call[bb0 hew_uint_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -238,7 +231,7 @@ fn u32::fmt -> string
     use BindingId(22) val site=SiteId(180) ty=u32 intent=Read
     return site=Some(SiteId(179)) ty=string
   drop_plans:
-    call[bb0 to_string_u32 -> bb1] ->
+    call[bb0 hew_uint_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -250,7 +243,7 @@ fn u64::fmt -> string
     use BindingId(23) val site=SiteId(183) ty=u64 intent=Read
     return site=Some(SiteId(182)) ty=string
   drop_plans:
-    call[bb0 to_string_u64 -> bb1] ->
+    call[bb0 hew_u64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -262,7 +255,7 @@ fn isize::fmt -> string
     use BindingId(24) val site=SiteId(187) ty=isize intent=Read
     return site=Some(SiteId(185)) ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_i64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -274,7 +267,7 @@ fn usize::fmt -> string
     use BindingId(25) val site=SiteId(191) ty=usize intent=Read
     return site=Some(SiteId(189)) ty=string
   drop_plans:
-    call[bb0 to_string_u64 -> bb1] ->
+    call[bb0 hew_u64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -286,7 +279,7 @@ fn bool::fmt -> string
     use BindingId(26) val site=SiteId(194) ty=bool intent=Read
     return site=Some(SiteId(193)) ty=string
   drop_plans:
-    call[bb0 to_string_bool -> bb1] ->
+    call[bb0 hew_bool_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -298,7 +291,7 @@ fn char::fmt -> string
     use BindingId(27) val site=SiteId(197) ty=char intent=Read
     return site=Some(SiteId(196)) ty=string
   drop_plans:
-    call[bb0 to_string_char -> bb1] ->
+    call[bb0 hew_char_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -310,7 +303,7 @@ fn f64::fmt -> string
     use BindingId(28) val site=SiteId(200) ty=f64 intent=Read
     return site=Some(SiteId(199)) ty=string
   drop_plans:
-    call[bb0 to_string_f64 -> bb1] ->
+    call[bb0 hew_float_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -322,7 +315,7 @@ fn f32::fmt -> string
     use BindingId(29) val site=SiteId(204) ty=f32 intent=Read
     return site=Some(SiteId(202)) ty=string
   drop_plans:
-    call[bb0 to_string_f64 -> bb1] ->
+    call[bb0 hew_float_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -388,12 +381,16 @@ fn duration::from_secs -> duration
 fn duration::fmt -> string
   statements:
     use BindingId(35) val site=SiteId(222) ty=duration intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(219) ty=string
     return site=Some(SiteId(219)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_duration_nanos -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
-    return[bb1] ->
+    call[bb1 hew_i64_to_string -> bb2] ->
+      (none)
+    return[bb2] ->
       (none)
 

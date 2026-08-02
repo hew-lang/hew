@@ -59,8 +59,8 @@ pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> H
     // discriminator as checker-authored source values.  A source spelling is
     // presentation only here; using a user nominal would cross D10 and erase
     // the crash-hook value-class authority.
-    let crash_kind_ty =
-        ResolvedTy::named_builtin("CrashKind", hew_types::BuiltinType::CrashKind, Vec::new());
+    let crash_kind_ty = hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("CrashKind")
+        .expect("generated builtin enum catalog must contain CrashKind");
 
     let actor_id_ref = || HirExpr {
         node: SENTINEL_CRASH_CODE_NODE,

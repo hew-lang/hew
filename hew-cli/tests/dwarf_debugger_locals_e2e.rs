@@ -11,8 +11,8 @@
 //!
 //! # Platform scope
 //!
-//! This suite is compiled and run on **Linux and macOS only** — the platforms
-//! where gdb/lldb consume DWARF from ELF and Mach-O objects respectively.
+//! This suite is compiled and run on **Linux, macOS, and FreeBSD** — the
+//! platforms where gdb/lldb consume DWARF from ELF and Mach-O objects.
 //!
 //! `hew build -g` emits DWARF debug info on all platforms (ELF on Linux, Mach-O
 //! on macOS, PE/COFF on Windows). gdb and lldb read DWARF from ELF and Mach-O
@@ -24,25 +24,23 @@
 //! `dwarf_emitted_object` suite (using dwarfdump/llvm-dwarfdump on the object
 //! file directly) — those tests continue to run on all platforms.
 //!
-//! Windows-native debuggability (CodeView/PDB or a DWARF-in-PE path that
-//! lldb-on-Windows fully reads) is tracked as a follow-up; see the linked issue.
+//! Windows-native debuggability is covered separately by the Windows PDB CI
+//! check because lldb-on-Windows does not fully read DWARF-in-PE.
 
 mod support;
 
 // The live-debugger helpers and test only compile on the DWARF-debugger platforms
-// (Linux / macOS). On Windows, `hew build -g` emits DWARF into PE/COFF but
+// (Linux / macOS / FreeBSD). On Windows, `hew build -g` emits DWARF into PE/COFF but
 // lldb-on-Windows does not fully read DWARF-in-PE — the local reads return empty.
-// Windows-native debuggability (CodeView/PDB) is a tracked follow-up.
-// See: https://github.com/hew-lang/hew/issues/2117
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::path::Path;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use std::process::Command;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use support::{hew_binary, require_codegen, run_bounded_command, tempdir};
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 const SHADOW_SRC: &str = "\
 fn probe(selector: i32) -> i32 {
     let first = selector + 1;
@@ -58,16 +56,22 @@ fn main() {
 }
 ";
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn workspace() -> tempfile::TempDir {
     tempdir()
 }
 
 /// First available batch debugger. `lldb -b -o ...` and `gdb --batch -ex ...`
 /// both run a script non-interactively.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn debugger() -> Option<&'static str> {
-    ["lldb", "gdb"].into_iter().find(|d| {
+    #[cfg(target_os = "linux")]
+    let candidates = ["gdb"];
+    #[cfg(target_os = "freebsd")]
+    let candidates = ["gdb", "lldb"];
+    #[cfg(target_os = "macos")]
+    let candidates = ["lldb", "gdb"];
+    candidates.into_iter().find(|d| {
         Command::new(d)
             .arg("--version")
             .output()
@@ -75,7 +79,7 @@ fn debugger() -> Option<&'static str> {
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn debugger_quote(path: &str) -> String {
     let mut quoted = String::with_capacity(path.len() + 2);
     quoted.push('"');
@@ -92,7 +96,7 @@ fn debugger_quote(path: &str) -> String {
 
 /// Run the debugger to a breakpoint on `line` and return its stdout. Reads the
 /// local `first` at that stop.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn read_first_at_line(debugger: &str, binary: &Path, src: &Path, line: u32) -> String {
     let src = src.to_str().expect("src path utf8");
     let quoted_src = debugger_quote(src);
@@ -135,14 +139,26 @@ fn read_first_at_line(debugger: &str, binary: &Path, src: &Path, line: u32) -> S
     text
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 #[test]
 fn debugger_reads_shadowed_local_by_innermost_binding() {
     require_codegen();
-    let Some(dbg) = debugger() else {
-        eprintln!("skip: no lldb/gdb on host");
+    let dbg = debugger().unwrap_or_else(|| {
+        #[cfg(target_os = "linux")]
+        panic!("no gdb found on Linux CI; install the gdb package");
+        #[cfg(target_os = "freebsd")]
+        panic!(
+            "no gdb or lldb found on FreeBSD CI; install the gdb package or LLVM's lldb package"
+        );
+        #[cfg(target_os = "macos")]
+        {
+            eprintln!("skip: no lldb/gdb on host");
+            ""
+        }
+    });
+    if dbg.is_empty() {
         return;
-    };
+    }
 
     let dir = workspace();
     let src = dir.path().join("shadow.hew");

@@ -6356,6 +6356,17 @@ impl Builder {
                 .copied()
                 == Some(true);
             let owned_ty = self.subst_ty(&param.ty);
+            // The authored `#[resource] close(self)` receiver is a consuming
+            // ABI boundary even though its body is the close ritual itself and
+            // therefore must not register a recursive callee-side scope drop.
+            // Carry that distinction in the typed parameter mode so callers
+            // transfer dynamic crash-cleanup authority before entry.
+            let param_is_close_receiver = i == 0
+                && matches!(
+                    resource_drop_fn(&owned_ty, &self.type_classes),
+                    Some(crate::model::DropFnSpec::UserClose(ref symbol))
+                        if symbol == &self.current_function_symbol
+                );
             // A generic Iterator parameter can specialise to the compiler's
             // first-class `VecIter<T>` cursor.  Its sole release authority is
             // the guarded cursor-field protocol (`scope_vec_iter_bindings`),
@@ -6417,6 +6428,7 @@ impl Builder {
                 )
                 && !self.ty_is_machine(&self.subst_ty(&param.ty));
             let mut callee_owns_param = param_is_consumed
+                || param_is_close_receiver
                 || param_is_owned_carrier
                 || param_summary_owned
                 || self.current_function_call_conv == crate::model::FunctionCallConv::ActorHandler;
@@ -6540,7 +6552,7 @@ impl Builder {
                     .is_some_and(|pump| pump.sink == slot)
             {
                 ParamBoundaryMode::OwnedMessage
-            } else if param_is_consumed {
+            } else if param_is_consumed || param_is_close_receiver {
                 ParamBoundaryMode::TransferResource
             } else if param_is_owned_carrier
                 || ((param_summary_owned || callee_owns_param)

@@ -35,7 +35,7 @@ ci-parity-marked-steps	exact	33	-	steps inside the CI-PARITY-STEPS blocks of .gi
 ci-required-checks	exact	36	-	entries returned by scripts/ci-preflight-dispatcher.sh --ci-required
 corpus-floor-registry	exact	25	-	rows in this registry, asserted by scripts/check-corpus-floors.sh
 coverage-e2e-programs	exact	70	-	curated examples/*.hew programs the runtime coverage execution proof builds and runs
-runtime-e2e-covered-functions	min	800	100	runtime/stdlib functions covered by the compiled Hew execution corpus
+runtime-e2e-covered-functions	min	1010	100	runtime/stdlib functions covered by the compiled Hew execution corpus
 doc-hew-fences	min	297	60	hew fences extracted from the language guide and the spec
 ffi-arity-checked-contracts	min	469	80	FFI ownership contracts whose declared arity was checked against the Rust signature
 fuzz-oracle-candidates	min	646	120	ratcheted candidates collected by the fuzz-to-run oracle

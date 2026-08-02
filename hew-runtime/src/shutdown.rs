@@ -287,9 +287,14 @@ fn shutdown_initiate(drain_timeout_ms: i64, cancel_parked_waits: bool) {
         Err(_) => {
             // Spawn failed — run shutdown synchronously on current thread.
             // This ensures shutdown completes even if thread spawning fails.
-            let _ = run_shutdown_with_panic_handling(|| {
+            if let Err(panic_payload) = run_shutdown_with_panic_handling(|| {
                 shutdown_orchestrate_mode(timeout, cancel_parked_waits);
-            });
+            }) {
+                // The synchronous fallback is reached from an extern "C"
+                // entry point, so unlike the worker-thread path it cannot
+                // deliberately resume the unwind across its caller.
+                crate::util::quarantine_panic_payload(panic_payload);
+            }
         }
     }
 }

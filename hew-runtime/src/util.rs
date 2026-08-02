@@ -3,6 +3,7 @@
 //! The Hew runtime recovers from poisoned locks rather than panicking,
 //! because a panicked thread should not cascade-crash independent actors.
 
+use std::io::Write as _;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Condvar, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -86,7 +87,11 @@ pub(crate) fn quarantine_panic_payload(mut payload: Box<dyn std::any::Any + Send
         }
     }
 
-    eprintln!("fatal: recursively panicking runtime panic-payload destructor");
+    // Do not use `eprintln!` on this terminal path: its internal write is
+    // unwrapped and can panic when stderr is unavailable, which would let a
+    // third unwind escape the containment boundary instead of aborting.
+    let _ = std::io::stderr()
+        .write_all(b"fatal: recursively panicking runtime panic-payload destructor\n");
     std::process::abort();
 }
 

@@ -1004,6 +1004,42 @@ fn main() {
     }
 
     #[test]
+    fn user_regex_name_cannot_mint_regex_method_authority() {
+        set_test_hewpath();
+        let source = r#"
+type Regex {
+    value: string;
+}
+
+impl Regex {
+    fn find(self, input: string) -> string {
+        input
+    }
+}
+
+fn main() {
+    let pattern = Regex { value: "user" };
+    println(pattern.find("input"));
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "a user-defined Regex must not emit regex bytecode"
+        );
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.phase == "profile"
+                    && diagnostic.kind == "unknown_method_symbol"
+                    && diagnostic.message.contains("method `find`")
+            }),
+            "a user-defined Regex must not gain regex method authority: {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
     fn panic_fixture_emits_panic_opcode() {
         let output =
             compile_to_sandbox_bytecode(&fixture("11-runtime-panic"), Some("sandbox-vm-export"))

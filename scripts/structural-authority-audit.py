@@ -151,9 +151,17 @@ def is_source_path(path: str) -> bool:
 
 
 def query_command(
-    ast_grep: Path, *, pattern: str | None, kind: str | None
+    ast_grep: Path,
+    *,
+    pattern: str | None,
+    kind: str | None,
+    lang: str = "rust",
+    config: Path | None = None,
 ) -> list[str]:
-    command = [str(ast_grep), "run", "--lang", "rust", "--json=stream"]
+    command = [str(ast_grep), "run"]
+    if config is not None:
+        command.extend(("--config", str(config)))
+    command.extend(("--lang", lang, "--json=stream"))
     if pattern is not None:
         command.extend(("--pattern", pattern))
     elif kind is not None:
@@ -192,6 +200,44 @@ def parser_sentinel(ast_grep: Path) -> None:
         raise SystemExit("pinned ast-grep parser/query sentinel failed closed")
 
 
+def hew_parser_sentinel(ast_grep: Path, root: Path) -> None:
+    """Prove the pinned custom Hew grammar is live, not just installed."""
+    config = root / "sgconfig.yml"
+    if not config.is_file():
+        raise SystemExit("pinned ast-grep Hew config is absent")
+    command = query_command(
+        ast_grep,
+        pattern="fn $F($$$ARGS) { $$$BODY }",
+        kind=None,
+        lang="hew",
+        config=config,
+    )
+    command.append("--stdin")
+    result = subprocess.run(
+        command,
+        cwd=root,
+        input="fn opaque_resource_sentinel(value: i64) { value; }\n",
+        text=True,
+        capture_output=True,
+    )
+    try:
+        rows = [json.loads(line) for line in result.stdout.splitlines() if line]
+    except json.JSONDecodeError as error:
+        raise SystemExit(
+            f"pinned ast-grep Hew sentinel returned invalid JSON: {error}"
+        ) from error
+    valid = (
+        result.returncode == 0
+        and len(rows) == 1
+        and rows[0].get("metaVariables", {}).get("single", {}).get("F", {}).get("text")
+        == "opaque_resource_sentinel"
+    )
+    if not valid:
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="")
+        raise SystemExit("pinned ast-grep Hew parser/query sentinel failed closed")
+
+
 def run_query(
     ast_grep: Path,
     root: Path,
@@ -214,6 +260,33 @@ def run_query(
         return [json.loads(line) for line in result.stdout.splitlines() if line]
     except json.JSONDecodeError as error:
         raise SystemExit(f"pinned ast-grep returned invalid JSON: {error}") from error
+
+
+def run_hew_query(
+    ast_grep: Path, root: Path, *, pattern: str | None = None, kind: str | None = None
+) -> list[dict[str, object]]:
+    """Run a Hew query through the pinned grammar, scoped to shipped stdlib."""
+    std = root / "std"
+    if not std.is_dir():
+        return []
+    command = query_command(
+        ast_grep,
+        pattern=pattern,
+        kind=kind,
+        lang="hew",
+        config=root / "sgconfig.yml",
+    )
+    command.append("std")
+    result = subprocess.run(command, cwd=root, text=True, capture_output=True)
+    if result.returncode not in (0, 1) or (result.returncode == 1 and result.stderr):
+        print(result.stderr, file=sys.stderr, end="")
+        raise SystemExit("pinned ast-grep Hew query failed")
+    try:
+        return [json.loads(line) for line in result.stdout.splitlines() if line]
+    except json.JSONDecodeError as error:
+        raise SystemExit(
+            f"pinned ast-grep Hew query returned invalid JSON: {error}"
+        ) from error
 
 
 def node_range(match: dict[str, object]) -> SyntaxRange:
@@ -1279,6 +1352,219 @@ def load_inventory(path: Path) -> dict[tuple[str, str, str], int]:
     return expected
 
 
+@dataclass(frozen=True, order=True)
+class OpaqueResourceFact:
+    """AST-derived, qualified lifecycle fact for one shipped empty handle.
+
+    `carrier_key` is intentionally a presentation-key adapter.  The checker/HIR
+    foundation currently publishes this same qualified spelling; a DefId union
+    can replace this one field without teaching the source/evidence layers
+    about compiler identity internals.
+    """
+
+    carrier_key: str
+    module: str
+    resource: str
+    source_path: str
+    close_body_range: tuple[int, int]
+    release_symbol: str
+    producer_symbols: tuple[str, ...]
+
+
+def _match_path(match: dict[str, object]) -> str:
+    return str(match["file"])
+
+
+def _match_offsets(match: dict[str, object]) -> tuple[int, int]:
+    offsets = match["range"]["byteOffset"]  # type: ignore[index]
+    return int(offsets["start"]), int(offsets["end"])
+
+
+def _contained(outer: dict[str, object], inner: dict[str, object]) -> bool:
+    if _match_path(outer) != _match_path(inner):
+        return False
+    outer_start, outer_end = _match_offsets(outer)
+    inner_start, inner_end = _match_offsets(inner)
+    return outer_start <= inner_start and inner_end <= outer_end
+
+
+def _module_for_std_path(path: str) -> str:
+    relative = Path(path).relative_to("std")
+    parts = ["std", *relative.parent.parts]
+    stem = relative.stem
+    if parts[-1] != stem:
+        parts.append(stem)
+    return ".".join(parts)
+
+
+def _meta_many(match: dict[str, object], name: str) -> list[str]:
+    meta = match.get("metaVariables", {})
+    values = meta.get("multi", {}).get(name, [])  # type: ignore[union-attr]
+    return [str(value.get("text", "")) for value in values if isinstance(value, dict)]
+
+
+def discover_opaque_resource_facts(
+    ast_grep: Path, root: Path
+) -> list[OpaqueResourceFact]:
+    """Join Hew AST siblings/ranges into source lifecycle facts.
+
+    There is deliberately no resource-name table here.  Declarations, their
+    adjacent marker siblings, inherent consuming close bodies, direct release
+    calls, and source extern producer/release signatures are independently
+    parsed before being joined by source range and nominal identity.
+    """
+    declarations = run_hew_query(ast_grep, root, pattern="type $NAME { }")
+    attributes = run_hew_query(ast_grep, root, kind="attribute")
+    impls = run_hew_query(ast_grep, root, pattern="impl $TYPE { $$$BODY }")
+    closes = run_hew_query(
+        ast_grep, root, pattern="fn close(consuming self) { $$$BODY }"
+    )
+    calls = run_hew_query(ast_grep, root, pattern="$F($$$ARGS)")
+    extern_blocks = run_hew_query(ast_grep, root, pattern='extern "C" { $$$BODY }')
+    parser_error_nodes = run_hew_query(ast_grep, root, kind="ERROR")
+    facts: list[OpaqueResourceFact] = []
+    for declaration in declarations:
+        path = _match_path(declaration)
+        start, _ = _match_offsets(declaration)
+        # Attribute nodes are siblings of the declaration in the program item;
+        # constrain their adjacency with byte ranges so a distant marker cannot
+        # authorize a different type.
+        sibling_attrs = [
+            attr
+            for attr in attributes
+            if _match_path(attr) == path
+            and start - _match_offsets(attr)[1] < 96
+            and _match_offsets(attr)[1] <= start
+        ]
+        marker_texts = {str(attr["text"]).strip() for attr in sibling_attrs}
+        if marker_texts.isdisjoint({"#[resource]"}) or marker_texts.isdisjoint(
+            {"#[opaque]"}
+        ):
+            continue
+        resource = single_meta(declaration, "NAME")
+        if not resource:
+            raise SystemExit(f"opaque resource declaration has no AST name at {path}")
+        module = _module_for_std_path(path)
+        inherent_impls = [
+            implementation
+            for implementation in impls
+            if _match_path(implementation) == path
+            and single_meta(implementation, "TYPE") == resource
+        ]
+        close_matches = [
+            close
+            for close in closes
+            if any(
+                _contained(implementation, close) for implementation in inherent_impls
+            )
+        ]
+        if len(close_matches) != 1:
+            raise SystemExit(
+                f"{module}.{resource}: expected exactly one inherent consuming close body, found {len(close_matches)}"
+            )
+        close = close_matches[0]
+        close_calls = [call for call in calls if _contained(close, call)]
+        release_calls = [
+            call
+            for call in close_calls
+            if "self" in _meta_many(call, "ARGS") and single_meta(call, "F")
+        ]
+        if len(release_calls) != 1:
+            raise SystemExit(
+                f"{module}.{resource}: consuming close must have exactly one direct self release call, found {len(release_calls)}"
+            )
+        release_symbol = single_meta(release_calls[0], "F")
+        module_externs = [
+            block for block in extern_blocks if _match_path(block) == path
+        ]
+        # Some current grammar revisions retain a malformed extern declaration
+        # as one ERROR sibling when an older stdlib spelling uses `consume`.
+        # Use the parsed extern-block child text (never a file-wide text scan)
+        # as the fallback token stream, preserving the block/range join above.
+        # Well-formed declarations are also represented here, so one path
+        # handles both grammar shapes without a per-resource exception list.
+        signatures: list[tuple[str, str, str]] = []
+        for block in module_externs:
+            children = _meta_many(block, "BODY") + [
+                str(error["text"])
+                for error in parser_error_nodes
+                if _contained(block, error)
+                or (
+                    _match_path(block) == _match_path(error)
+                    and 0 <= _match_offsets(error)[0] - _match_offsets(block)[1] <= 16
+                )
+            ]
+            for child in children:
+                for symbol, params, returned in re.findall(
+                    r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(?:->\s*([A-Za-z_][A-Za-z0-9_.<>]*))?\s*;",
+                    child,
+                ):
+                    signatures.append((symbol, params, returned))
+        release_declarations = [
+            signature
+            for signature in signatures
+            if signature[0] == release_symbol
+            and any(
+                parameter.strip().startswith("consume ")
+                and parameter.strip().endswith(f": {resource}")
+                for parameter in signature[1].split(",")
+            )
+        ]
+        if len(release_declarations) != 1:
+            raise SystemExit(
+                f"{module}.{resource}: close release {release_symbol!r} lacks one consuming extern declaration"
+            )
+        producers = sorted(
+            {
+                symbol
+                for symbol, _params, returned in signatures
+                if returned == resource and symbol != release_symbol
+            }
+        )
+        if not producers:
+            raise SystemExit(
+                f"{module}.{resource}: no source extern producer returns the handle"
+            )
+        facts.append(
+            OpaqueResourceFact(
+                carrier_key=f"{module}.{resource}",
+                module=module,
+                resource=resource,
+                source_path=path,
+                close_body_range=_match_offsets(close),
+                release_symbol=release_symbol,
+                producer_symbols=tuple(producers),
+            )
+        )
+    keys = [fact.carrier_key for fact in facts]
+    if not keys:
+        raise SystemExit("opaque resource source discovery corpus is empty")
+    if len(keys) != len(set(keys)):
+        raise SystemExit(
+            "opaque resource source discovery found duplicate qualified candidates"
+        )
+    return sorted(facts)
+
+
+def opaque_fact_json(facts: list[OpaqueResourceFact]) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "carrier_adapter": "qualified-presentation-key; replace with DefId union at canonical integration",
+        "candidates": [
+            {
+                "carrier_key": fact.carrier_key,
+                "module": fact.module,
+                "resource": fact.resource,
+                "source_path": fact.source_path,
+                "close_body_range": list(fact.close_body_range),
+                "release_symbol": fact.release_symbol,
+                "producer_symbols": list(fact.producer_symbols),
+            }
+            for fact in facts
+        ],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1287,6 +1573,11 @@ def main() -> int:
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--presentation-baseline", type=Path)
     parser.add_argument("--ast-grep", type=Path)
+    parser.add_argument(
+        "--opaque-resource-facts",
+        type=Path,
+        help="write AST-derived shipped opaque resource facts (use - for stdout)",
+    )
     args = parser.parse_args()
     root = args.root.resolve()
     repo_root = Path(__file__).resolve().parents[1]
@@ -1294,6 +1585,19 @@ def main() -> int:
     if not ast_grep.is_file():
         raise SystemExit(f"pinned ast-grep is absent: {ast_grep}")
     parser_sentinel(ast_grep)
+    opaque_facts: list[OpaqueResourceFact] = []
+    if (root / "std").is_dir():
+        hew_parser_sentinel(ast_grep, root)
+        opaque_facts = discover_opaque_resource_facts(ast_grep, root)
+        if args.opaque_resource_facts:
+            rendered = (
+                json.dumps(opaque_fact_json(opaque_facts), indent=2, sort_keys=True)
+                + "\n"
+            )
+            if str(args.opaque_resource_facts) == "-":
+                print(rendered, end="")
+            else:
+                args.opaque_resource_facts.write_text(rendered)
 
     inventory = args.inventory or root / "scripts/structural-authority-inventory.tsv"
     presentation_path = (
@@ -1354,6 +1658,26 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    if opaque_facts:
+        opaque_floor = next(
+            (
+                line.split("\t")[2]
+                for line in floor_rows
+                if line.startswith("opaque-resource-lifecycle-facts\t")
+            ),
+            None,
+        )
+        if (
+            opaque_floor is None
+            or not opaque_floor.isdigit()
+            or int(opaque_floor) != len(opaque_facts)
+        ):
+            print(
+                "opaque-resource-lifecycle-facts corpus floor is stale or missing "
+                f"(expected {len(opaque_facts)})",
+                file=sys.stderr,
+            )
+            return 1
     semantic_leaf_count = sum(
         count
         for (group, _, _), count in actual.items()
@@ -1366,6 +1690,7 @@ def main() -> int:
         f"{len(presentation)} exact presentation AST contexts; "
         f"{len(expected)} authority form/path rows; "
         f"{len(test_ranges)} parsed test-only item ranges; "
+        f"{len(opaque_facts)} AST-derived opaque resource lifecycle candidates; "
         "0 scalar SpanKey -> SiteId authorities"
     )
     return 0

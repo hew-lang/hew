@@ -864,6 +864,45 @@ jobs:
         # because the upstream LLVM tarball is provisioned above.
         run: cargo build -p adze-cli -p hew-runtime -p hew-lsp -p hew-cli --release
 
+      - name: Build Hew runtime library for PDB e2e
+        if: env.RUN_CODE_PATH == 'true'
+        run: cargo build -p hew-lib --release
+
+      - name: Verify Windows CodeView PDB emission
+        if: env.RUN_CODE_PATH == 'true'
+        shell: pwsh
+        run: |
+          $pdbutil = Get-Command llvm-pdbutil -ErrorAction SilentlyContinue
+          if (-not $pdbutil) {
+            throw "llvm-pdbutil not found on PATH; the LLVM toolchain must provide the PDB inspection tool"
+          }
+          & $pdbutil.Source --version
+          if ($LASTEXITCODE -ne 0) { throw "llvm-pdbutil --version failed with exit code $LASTEXITCODE" }
+
+          $dir = Join-Path $env:RUNNER_TEMP "hew-pdb-e2e"
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $source = Join-Path $dir "pdb-e2e.hew"
+          $binary = Join-Path $dir "pdb-e2e.exe"
+          @"
+          fn main() {
+              println(2235)
+          }
+          "@ | Set-Content -Path $source -Encoding utf8
+
+          & .\target\release\hew.exe build -g $source -o $binary
+          if ($LASTEXITCODE -ne 0) { throw "hew build -g failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path -LiteralPath $binary)) { throw "hew build -g did not produce $binary" }
+
+          $pdb = Join-Path $dir "pdb-e2e.pdb"
+          if (-not (Test-Path -LiteralPath $pdb)) { throw "hew build -g did not produce the expected PDB at $pdb" }
+
+          $dump = & $pdbutil.Source dump -summary -modules -symbols -lines $pdb 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "llvm-pdbutil could not inspect $pdb`n$dump" }
+          $dumpText = $dump -join "`n"
+          if ($dumpText -notmatch "pdb-e2e\.hew") { throw "PDB dump has no source module record for pdb-e2e.hew`n$dumpText" }
+          if ($dumpText -notmatch "(?i)main") { throw "PDB dump has no main symbol`n$dumpText" }
+          if ($dumpText -notmatch "(?i)line") { throw "PDB dump has no line information`n$dumpText" }
+
       - name: Install WASI runner prerequisites
         # Windows had no equivalent of the Linux tarball / macOS brew install,
         # so `wasmtime` was absent here and every WASI-dependent hew-cli test

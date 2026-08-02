@@ -787,6 +787,14 @@ impl Checker {
             return;
         }
         let actual = binding.ty.clone();
+        // Keep the binding variable intact for unification. `expect_type`
+        // normalizes first, which resolves this `Var` to `IntLiteral` and
+        // loses the root that `unify` must promote to the concrete contextual
+        // width. This is the use-site inference path for `let n = 7; f(n)`.
+        if self.subst.resolve(&actual).is_numeric_literal() && expected.is_numeric() {
+            let _ = crate::unify::unify(&mut self.subst, expected, &actual);
+            return;
+        }
         self.expect_type(expected, &actual, span);
     }
 

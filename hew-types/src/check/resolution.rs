@@ -2007,9 +2007,12 @@ impl Checker {
                     // builtin discriminator merely because the final handoff
                     // revisits that presentation name.
                     builtin: builtin.or_else(|| {
-                        let source_nominal = self.local_type_defs.contains(&canonical_name)
-                            || self.source_type_defs.contains(&canonical_name)
-                            || self.type_defs.contains_key(&canonical_name);
+                        let trusted_qualified_builtin = canonical_name.contains('.')
+                            && self.resolved_builtin_type(&canonical_name).is_some();
+                        let source_nominal = !trusted_qualified_builtin
+                            && (self.local_type_defs.contains(&canonical_name)
+                                || self.source_type_defs.contains(&canonical_name)
+                                || self.type_defs.contains_key(&canonical_name));
                         (!source_nominal)
                             .then(|| self.resolved_builtin_type(&canonical_name))
                             .flatten()

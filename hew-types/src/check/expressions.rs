@@ -791,8 +791,10 @@ impl Checker {
         // normalizes first, which resolves this `Var` to `IntLiteral` and
         // loses the root that `unify` must promote to the concrete contextual
         // width. This is the use-site inference path for `let n = 7; f(n)`.
-        if self.subst.resolve(&actual).is_numeric_literal() && expected.is_numeric() {
-            let _ = crate::unify::unify(&mut self.subst, expected, &actual);
+        if self.subst.resolve(&actual).is_numeric_literal()
+            && expected.is_numeric()
+            && self.try_unify_inference_with_owner_identity(expected, &actual)
+        {
             return;
         }
         self.expect_type(expected, &actual, span);

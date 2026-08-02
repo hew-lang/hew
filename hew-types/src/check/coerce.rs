@@ -381,6 +381,29 @@ impl Checker {
         unify(&mut self.subst, &expected_resolved, &actual_resolved).is_ok()
     }
 
+    /// Commit an inference unification without losing the source inference
+    /// variable that owns a literal-backed binding.
+    ///
+    /// `normalize_for_use` deliberately resolves substitutions before a normal
+    /// type boundary. That is correct for nominal identity, but it turns a
+    /// `Var -> IntLiteral` binding into `IntLiteral` and leaves no variable for
+    /// `unify` to promote when its first concrete use is discovered. Preserve
+    /// the raw carrier here while applying the same owner-aware guard first.
+    /// Callers must use this only when their syntax has already established an
+    /// inference variable is the intended authority (rather than a general
+    /// coercion path).
+    pub(super) fn try_unify_inference_with_owner_identity(
+        &mut self,
+        expected: &Ty,
+        actual: &Ty,
+    ) -> bool {
+        let expected_resolved = self.normalize_for_use(expected);
+        if self.nominal_owner_conflict(&expected_resolved, actual) {
+            return false;
+        }
+        unify(&mut self.subst, &expected_resolved, actual).is_ok()
+    }
+
     pub(super) fn expect_type(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
         // Re-project any `Ty::AssocType` carriers whose `base` has become
         // concrete via prior substitution. Carriers with still-abstract

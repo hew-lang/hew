@@ -541,6 +541,29 @@ fn let_bound_literal_unifies_to_i32_width_when_compared_against_i32_fn() {
     }
 }
 
+#[test]
+fn literal_backed_binding_keeps_numeric_mismatch_diagnostic() {
+    let output = check_source(
+        r"
+        fn take_i32(value: i32) {}
+
+        fn main() {
+            let decimal = 1.5;
+            take_i32(decimal);
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "a literal-backed float local must not bypass the i32 argument boundary: {:#?}",
+        output.errors
+    );
+}
+
 /// `var` bindings with an untyped integer literal remain inferable (not
 /// immediately materialised to I64) so that use-site context can narrow them.
 /// Regression: if `var passed = 0` materialises to I64 before `passed +

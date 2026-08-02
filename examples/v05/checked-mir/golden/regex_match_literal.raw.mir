@@ -76,15 +76,15 @@ fn main() -> i64 [conv=default]
     ret = move _6
     return
 
-fn Pattern::is_match(Pattern, string) -> bool [conv=default]
+fn std.text.regex.Pattern::is_match(std.text.regex.Pattern, string) -> bool [conv=default]
   locals:
-    _0: Pattern
+    _0: std.text.regex.Pattern
     _1: string
-    _2: regex.PatternHandle
+    _2: std.text.regex.PatternHandle
     _3: bool
     _4: bool
   bb0:
-    stmt: use BindingId(1) pat site=SiteId(24) ty=Pattern intent=Read
+    stmt: use BindingId(1) pat site=SiteId(24) ty=std.text.regex.Pattern intent=Read
     stmt: use BindingId(2) input site=SiteId(25) ty=string intent=Read
     _2 = _0.field[0]
     _3 = call hew_regex_is_match(_2, _1) -> bb1
@@ -94,15 +94,15 @@ fn Pattern::is_match(Pattern, string) -> bool [conv=default]
     ret = move _4
     return
 
-fn Pattern::matches(Pattern, string) -> bool [conv=default]
+fn std.text.regex.Pattern::matches(std.text.regex.Pattern, string) -> bool [conv=default]
   locals:
-    _0: Pattern
+    _0: std.text.regex.Pattern
     _1: string
-    _2: regex.PatternHandle
+    _2: std.text.regex.PatternHandle
     _3: bool
     _4: bool
   bb0:
-    stmt: use BindingId(3) pat site=SiteId(30) ty=Pattern intent=Read
+    stmt: use BindingId(3) pat site=SiteId(30) ty=std.text.regex.Pattern intent=Read
     stmt: use BindingId(4) input site=SiteId(31) ty=string intent=Read
     _2 = _0.field[0]
     _3 = call hew_regex_is_match(_2, _1) -> bb1
@@ -112,15 +112,15 @@ fn Pattern::matches(Pattern, string) -> bool [conv=default]
     ret = move _4
     return
 
-fn Pattern::find(Pattern, string) -> string [conv=default]
+fn std.text.regex.Pattern::find(std.text.regex.Pattern, string) -> string [conv=default]
   locals:
-    _0: Pattern
+    _0: std.text.regex.Pattern
     _1: string
-    _2: regex.PatternHandle
+    _2: std.text.regex.PatternHandle
     _3: string
     _4: string
   bb0:
-    stmt: use BindingId(5) pat site=SiteId(36) ty=Pattern intent=Read
+    stmt: use BindingId(5) pat site=SiteId(36) ty=std.text.regex.Pattern intent=Read
     stmt: use BindingId(6) input site=SiteId(37) ty=string intent=Read
     _2 = _0.field[0]
     _3 = call hew_regex_find(_2, _1) -> bb1
@@ -130,16 +130,16 @@ fn Pattern::find(Pattern, string) -> string [conv=default]
     ret = move _4
     return
 
-fn Pattern::replace(Pattern, string, string) -> string [conv=default]
+fn std.text.regex.Pattern::replace(std.text.regex.Pattern, string, string) -> string [conv=default]
   locals:
-    _0: Pattern
+    _0: std.text.regex.Pattern
     _1: string
     _2: string
-    _3: regex.PatternHandle
+    _3: std.text.regex.PatternHandle
     _4: string
     _5: string
   bb0:
-    stmt: use BindingId(7) pat site=SiteId(42) ty=Pattern intent=Read
+    stmt: use BindingId(7) pat site=SiteId(42) ty=std.text.regex.Pattern intent=Read
     stmt: use BindingId(8) input site=SiteId(43) ty=string intent=Read
     stmt: use BindingId(9) replacement site=SiteId(44) ty=string intent=Read
     _3 = _0.field[0]
@@ -150,15 +150,15 @@ fn Pattern::replace(Pattern, string, string) -> string [conv=default]
     ret = move _5
     return
 
-fn Pattern::find_all(Pattern, string) -> Vec<string> [conv=default]
+fn std.text.regex.Pattern::find_all(std.text.regex.Pattern, string) -> Vec<string> [conv=default]
   locals:
-    _0: Pattern
+    _0: std.text.regex.Pattern
     _1: string
-    _2: regex.PatternHandle
+    _2: std.text.regex.PatternHandle
     _3: Vec<string>
     _4: Vec<string>
   bb0:
-    stmt: use BindingId(10) pat site=SiteId(49) ty=Pattern intent=Read
+    stmt: use BindingId(10) pat site=SiteId(49) ty=std.text.regex.Pattern intent=Read
     stmt: use BindingId(11) input site=SiteId(50) ty=string intent=Read
     _2 = _0.field[0]
     _3 = call hew_regex_find_all(_2, _1) -> bb1
@@ -168,12 +168,12 @@ fn Pattern::find_all(Pattern, string) -> Vec<string> [conv=default]
     ret = move _4
     return
 
-fn Pattern::capture(Pattern, string, i64) -> Option<string> [conv=default]
+fn std.text.regex.Pattern::capture(std.text.regex.Pattern, string, i64) -> Option<string> [conv=default]
   locals:
-    _0: Pattern
+    _0: std.text.regex.Pattern
     _1: string
     _2: i64
-    _3: regex.PatternHandle
+    _3: std.text.regex.PatternHandle
     _4: Vec<string>
     _5: Vec<string>
     _6: Vec<string>
@@ -192,7 +192,7 @@ fn Pattern::capture(Pattern, string, i64) -> Option<string> [conv=default]
     _19: string
     _20: Option<string>
   bb0:
-    stmt: use BindingId(12) pat site=SiteId(55) ty=Pattern intent=Read
+    stmt: use BindingId(12) pat site=SiteId(55) ty=std.text.regex.Pattern intent=Read
     stmt: use BindingId(13) input site=SiteId(56) ty=string intent=Read
     stmt: use BindingId(14) group site=SiteId(57) ty=i64 intent=Read
     _3 = _0.field[0]
@@ -202,7 +202,7 @@ fn Pattern::capture(Pattern, string, i64) -> Option<string> [conv=default]
     stmt: use BindingId(15) values site=SiteId(62) ty=Vec<string> intent=Read
     _5 = move _4
     _6 = move _5
-    _8 = call hew_vec_len(_6) [builtin=VecLen] -> bb2
+    _8 = call hew_vec_len(_6) [authority=Runtime(VecLen)] -> bb2
   bb2:
     _9 = const.i64 0
     _10 = icmp.eq _8 _9
@@ -234,12 +234,12 @@ fn Pattern::capture(Pattern, string, i64) -> Option<string> [conv=default]
     _7 = move _20
     goto bb5
 
-fn Pattern::capture_named(Pattern, string, string) -> Option<string> [conv=default]
+fn std.text.regex.Pattern::capture_named(std.text.regex.Pattern, string, string) -> Option<string> [conv=default]
   locals:
-    _0: Pattern
+    _0: std.text.regex.Pattern
     _1: string
     _2: string
-    _3: regex.PatternHandle
+    _3: std.text.regex.PatternHandle
     _4: Vec<string>
     _5: Vec<string>
     _6: Vec<string>
@@ -258,7 +258,7 @@ fn Pattern::capture_named(Pattern, string, string) -> Option<string> [conv=defau
     _19: string
     _20: Option<string>
   bb0:
-    stmt: use BindingId(16) pat site=SiteId(74) ty=Pattern intent=Read
+    stmt: use BindingId(16) pat site=SiteId(74) ty=std.text.regex.Pattern intent=Read
     stmt: use BindingId(17) input site=SiteId(75) ty=string intent=Read
     stmt: use BindingId(18) name site=SiteId(76) ty=string intent=Read
     _3 = _0.field[0]
@@ -268,7 +268,7 @@ fn Pattern::capture_named(Pattern, string, string) -> Option<string> [conv=defau
     stmt: use BindingId(19) values site=SiteId(81) ty=Vec<string> intent=Read
     _5 = move _4
     _6 = move _5
-    _8 = call hew_vec_len(_6) [builtin=VecLen] -> bb2
+    _8 = call hew_vec_len(_6) [authority=Runtime(VecLen)] -> bb2
   bb2:
     _9 = const.i64 0
     _10 = icmp.eq _8 _9
@@ -300,27 +300,27 @@ fn Pattern::capture_named(Pattern, string, string) -> Option<string> [conv=defau
     _7 = move _20
     goto bb5
 
-fn Pattern::captures(Pattern, string) -> CaptureMatches [conv=default]
+fn std.text.regex.Pattern::captures(std.text.regex.Pattern, string) -> std.text.regex.CaptureMatches [conv=default]
   locals:
-    _0: Pattern
+    _0: std.text.regex.Pattern
     _1: string
-    _2: regex.PatternHandle
+    _2: std.text.regex.PatternHandle
     _3: Vec<string>
     _4: Vec<string>
     _5: Vec<string>
-    _6: regex.PatternHandle
+    _6: std.text.regex.PatternHandle
     _7: i64
     _8: i64
     _9: i64
-    _10: CaptureMatches
+    _10: std.text.regex.CaptureMatches
   bb0:
-    stmt: use BindingId(20) pat site=SiteId(93) ty=Pattern intent=Read
+    stmt: use BindingId(20) pat site=SiteId(93) ty=std.text.regex.Pattern intent=Read
     stmt: use BindingId(21) input site=SiteId(94) ty=string intent=Read
     _2 = _0.field[0]
     _3 = call hew_regex_captures_flat(_2, _1) -> bb1
   bb1:
     stmt: bind BindingId(22) groups site=SiteId(90) ty=Vec<string>
-    stmt: use BindingId(20) pat site=SiteId(99) ty=Pattern intent=Read
+    stmt: use BindingId(20) pat site=SiteId(99) ty=std.text.regex.Pattern intent=Read
     _4 = move _3
     _5 = move _4
     _6 = _0.field[0]
@@ -330,34 +330,35 @@ fn Pattern::captures(Pattern, string) -> CaptureMatches [conv=default]
     stmt: use BindingId(22) groups site=SiteId(102) ty=Vec<string> intent=Read
     stmt: use BindingId(23) group_count site=SiteId(103) ty=i64 intent=Read
     stmt: agg_alias BindingId(22) groups site=SiteId(102) ty=Vec<string>
-    stmt: return site=Some(SiteId(101)) ty=CaptureMatches
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(101) ty=std.text.regex.CaptureMatches
+    stmt: return site=Some(SiteId(101)) ty=std.text.regex.CaptureMatches
     _8 = move _7
     _9 = move _8
-    _10 = record_init CaptureMatches { .0=_5, .1=_9 }
+    _10 = record_init std.text.regex.CaptureMatches { .0=_5, .1=_9 }
     ret = move _10
     return
 
-fn Pattern::find_all_submatch(Pattern, string) -> CaptureMatches [conv=default]
+fn std.text.regex.Pattern::find_all_submatch(std.text.regex.Pattern, string) -> std.text.regex.CaptureMatches [conv=default]
   locals:
-    _0: Pattern
+    _0: std.text.regex.Pattern
     _1: string
-    _2: regex.PatternHandle
+    _2: std.text.regex.PatternHandle
     _3: Vec<string>
     _4: Vec<string>
     _5: Vec<string>
-    _6: regex.PatternHandle
+    _6: std.text.regex.PatternHandle
     _7: i64
     _8: i64
     _9: i64
-    _10: CaptureMatches
+    _10: std.text.regex.CaptureMatches
   bb0:
-    stmt: use BindingId(24) pat site=SiteId(107) ty=Pattern intent=Read
+    stmt: use BindingId(24) pat site=SiteId(107) ty=std.text.regex.Pattern intent=Read
     stmt: use BindingId(25) input site=SiteId(108) ty=string intent=Read
     _2 = _0.field[0]
     _3 = call hew_regex_find_all_submatch_flat(_2, _1) -> bb1
   bb1:
     stmt: bind BindingId(26) groups site=SiteId(104) ty=Vec<string>
-    stmt: use BindingId(24) pat site=SiteId(113) ty=Pattern intent=Read
+    stmt: use BindingId(24) pat site=SiteId(113) ty=std.text.regex.Pattern intent=Read
     _4 = move _3
     _5 = move _4
     _6 = _0.field[0]
@@ -367,46 +368,47 @@ fn Pattern::find_all_submatch(Pattern, string) -> CaptureMatches [conv=default]
     stmt: use BindingId(26) groups site=SiteId(116) ty=Vec<string> intent=Read
     stmt: use BindingId(27) group_count site=SiteId(117) ty=i64 intent=Read
     stmt: agg_alias BindingId(26) groups site=SiteId(116) ty=Vec<string>
-    stmt: return site=Some(SiteId(115)) ty=CaptureMatches
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(115) ty=std.text.regex.CaptureMatches
+    stmt: return site=Some(SiteId(115)) ty=std.text.regex.CaptureMatches
     _8 = move _7
     _9 = move _8
-    _10 = record_init CaptureMatches { .0=_5, .1=_9 }
+    _10 = record_init std.text.regex.CaptureMatches { .0=_5, .1=_9 }
     ret = move _10
     return
 
-fn Pattern::clone(Pattern) -> Pattern [conv=default]
+fn std.text.regex.Pattern::clone(std.text.regex.Pattern) -> std.text.regex.Pattern [conv=default]
   locals:
-    _0: Pattern
-    _1: regex.PatternHandle
-    _2: regex.PatternHandle
-    _3: Pattern
-    _4: Pattern
+    _0: std.text.regex.Pattern
+    _1: std.text.regex.PatternHandle
+    _2: std.text.regex.PatternHandle
+    _3: std.text.regex.Pattern
+    _4: std.text.regex.Pattern
   bb0:
-    stmt: use BindingId(28) pat site=SiteId(122) ty=Pattern intent=Read
+    stmt: use BindingId(28) pat site=SiteId(122) ty=std.text.regex.Pattern intent=Read
     _1 = _0.field[0]
     _2 = call hew_regex_clone(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(118)) ty=Pattern
-    _3 = record_init Pattern { .0=_2 }
+    stmt: return site=Some(SiteId(118)) ty=std.text.regex.Pattern
+    _3 = record_init std.text.regex.Pattern { .0=_2 }
     _4 = move _3
     ret = move _4
     return
 
-fn Pattern::close(Pattern) -> () [conv=default]
+fn std.text.regex.Pattern::close(std.text.regex.Pattern) -> () [conv=default]
   locals:
-    _0: Pattern
-    _1: regex.PatternHandle
+    _0: std.text.regex.Pattern
+    _1: std.text.regex.PatternHandle
   bb0:
-    stmt: use BindingId(29) pat site=SiteId(127) ty=Pattern intent=Read
+    stmt: use BindingId(29) pat site=SiteId(127) ty=std.text.regex.Pattern intent=Read
     _1 = _0.field[0]
     call hew_regex_free(_1) -> bb1
   bb1:
     stmt: eval site=SiteId(124) ty=()
     return
 
-fn CaptureMatches::len(CaptureMatches) -> i64 [conv=default]
+fn std.text.regex.CaptureMatches::len(std.text.regex.CaptureMatches) -> i64 [conv=default]
   locals:
-    _0: CaptureMatches
+    _0: std.text.regex.CaptureMatches
     _1: ()
     _2: i64
     _3: i64
@@ -423,7 +425,7 @@ fn CaptureMatches::len(CaptureMatches) -> i64 [conv=default]
     _14: i64
     _15: bool
   bb0:
-    stmt: use BindingId(30) rows site=SiteId(131) ty=CaptureMatches intent=Read
+    stmt: use BindingId(30) rows site=SiteId(131) ty=std.text.regex.CaptureMatches intent=Read
     _2 = _0.field[1]
     _3 = const.i64 0
     _4 = icmp.sle _2 _3
@@ -437,13 +439,13 @@ fn CaptureMatches::len(CaptureMatches) -> i64 [conv=default]
     goto bb3
   bb3:
     stmt: eval site=SiteId(135) ty=()
-    stmt: use BindingId(30) rows site=SiteId(139) ty=CaptureMatches intent=Read
+    stmt: use BindingId(30) rows site=SiteId(139) ty=std.text.regex.CaptureMatches intent=Read
     _6 = _0.field[0]
-    _7 = call hew_vec_len(_6) [builtin=VecLen] -> bb5
+    _7 = call hew_vec_len(_6) [authority=Runtime(VecLen)] -> bb5
   bb4:
     goto bb3
   bb5:
-    stmt: use BindingId(30) rows site=SiteId(141) ty=CaptureMatches intent=Read
+    stmt: use BindingId(30) rows site=SiteId(141) ty=std.text.regex.CaptureMatches intent=Read
     _8 = _0.field[1]
     _10 = const.i64 0
     _11 = icmp.eq _8 _10
@@ -466,15 +468,15 @@ fn CaptureMatches::len(CaptureMatches) -> i64 [conv=default]
   bb10:
     trap(SignedMinDivNegOne)
 
-fn CaptureMatches::is_empty(CaptureMatches) -> bool [conv=default]
+fn std.text.regex.CaptureMatches::is_empty(std.text.regex.CaptureMatches) -> bool [conv=default]
   locals:
-    _0: CaptureMatches
+    _0: std.text.regex.CaptureMatches
     _1: i64
     _2: i64
     _3: bool
   bb0:
-    stmt: use BindingId(31) rows site=SiteId(144) ty=CaptureMatches intent=Read
-    _1 = call CaptureMatches::len(_0) -> bb1
+    stmt: use BindingId(31) rows site=SiteId(144) ty=std.text.regex.CaptureMatches intent=Read
+    _1 = call std.text.regex.CaptureMatches::len(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(142)) ty=bool
     _2 = const.i64 0
@@ -482,20 +484,20 @@ fn CaptureMatches::is_empty(CaptureMatches) -> bool [conv=default]
     ret = move _3
     return
 
-fn CaptureMatches::width(CaptureMatches) -> i64 [conv=default]
+fn std.text.regex.CaptureMatches::width(std.text.regex.CaptureMatches) -> i64 [conv=default]
   locals:
-    _0: CaptureMatches
+    _0: std.text.regex.CaptureMatches
     _1: i64
   bb0:
-    stmt: use BindingId(32) rows site=SiteId(148) ty=CaptureMatches intent=Read
+    stmt: use BindingId(32) rows site=SiteId(148) ty=std.text.regex.CaptureMatches intent=Read
     stmt: return site=Some(SiteId(147)) ty=i64
     _1 = _0.field[1]
     ret = move _1
     return
 
-fn CaptureMatches::group(CaptureMatches, i64, i64) -> Option<string> [conv=default]
+fn std.text.regex.CaptureMatches::group(std.text.regex.CaptureMatches, i64, i64) -> Option<string> [conv=default]
   locals:
-    _0: CaptureMatches
+    _0: std.text.regex.CaptureMatches
     _1: i64
     _2: i64
     _3: ()
@@ -543,7 +545,7 @@ fn CaptureMatches::group(CaptureMatches, i64, i64) -> Option<string> [conv=defau
     branch _5 ? bb4 : bb3
   bb3:
     stmt: use BindingId(35) group_index site=SiteId(158) ty=i64 intent=Read
-    stmt: use BindingId(33) rows site=SiteId(160) ty=CaptureMatches intent=Read
+    stmt: use BindingId(33) rows site=SiteId(160) ty=std.text.regex.CaptureMatches intent=Read
     _10 = _0.field[1]
     _11 = icmp.sge _2 _10
     _4 = move _11
@@ -560,8 +562,8 @@ fn CaptureMatches::group(CaptureMatches, i64, i64) -> Option<string> [conv=defau
     goto bb7
   bb7:
     stmt: eval site=SiteId(163) ty=()
-    stmt: use BindingId(33) rows site=SiteId(165) ty=CaptureMatches intent=Read
-    _14 = call CaptureMatches::len(_0) -> bb9
+    stmt: use BindingId(33) rows site=SiteId(165) ty=std.text.regex.CaptureMatches intent=Read
+    _14 = call std.text.regex.CaptureMatches::len(_0) -> bb9
   bb8:
     goto bb7
   bb9:
@@ -581,9 +583,9 @@ fn CaptureMatches::group(CaptureMatches, i64, i64) -> Option<string> [conv=defau
     goto bb12
   bb12:
     stmt: eval site=SiteId(172) ty=()
-    stmt: use BindingId(33) rows site=SiteId(176) ty=CaptureMatches intent=Read
+    stmt: use BindingId(33) rows site=SiteId(176) ty=std.text.regex.CaptureMatches intent=Read
     stmt: use BindingId(34) match_index site=SiteId(179) ty=i64 intent=Read
-    stmt: use BindingId(33) rows site=SiteId(181) ty=CaptureMatches intent=Read
+    stmt: use BindingId(33) rows site=SiteId(181) ty=std.text.regex.CaptureMatches intent=Read
     _21 = const.i64 0
     mtag20 = move _21
     _22 = _0.field[0]
@@ -613,48 +615,48 @@ fn CaptureMatches::group(CaptureMatches, i64, i64) -> Option<string> [conv=defau
     ret = move _20
     return
 
-fn CaptureMatches::whole(CaptureMatches, i64) -> Option<string> [conv=default]
+fn std.text.regex.CaptureMatches::whole(std.text.regex.CaptureMatches, i64) -> Option<string> [conv=default]
   locals:
-    _0: CaptureMatches
+    _0: std.text.regex.CaptureMatches
     _1: i64
     _2: i64
     _3: Option<string>
   bb0:
-    stmt: use BindingId(37) rows site=SiteId(184) ty=CaptureMatches intent=Read
+    stmt: use BindingId(37) rows site=SiteId(184) ty=std.text.regex.CaptureMatches intent=Read
     stmt: use BindingId(38) match_index site=SiteId(185) ty=i64 intent=Read
     _2 = const.i64 0
-    _3 = call CaptureMatches::group(_0, _1, _2) -> bb1
+    _3 = call std.text.regex.CaptureMatches::group(_0, _1, _2) -> bb1
   bb1:
     stmt: return site=Some(SiteId(183)) ty=Option<string>
     ret = move _3
     return
 
-fn regex$new(string) -> Pattern [conv=default]
+fn std$text$regex$new(string) -> std.text.regex.Pattern [conv=default]
   locals:
     _0: string
-    _1: regex.PatternHandle
-    _2: regex.PatternHandle
-    _3: Pattern
-    _4: Pattern
+    _1: std.text.regex.PatternHandle
+    _2: std.text.regex.PatternHandle
+    _3: std.text.regex.Pattern
+    _4: std.text.regex.Pattern
     _5: i64
     _6: ()
-    _7: regex.PatternHandle
+    _7: std.text.regex.PatternHandle
     _8: bool
     _9: bool
     _10: string
     _11: string
     _12: string
-    _13: Pattern
+    _13: std.text.regex.Pattern
   bb0:
     stmt: use BindingId(39) pattern site=SiteId(190) ty=string intent=Read
     _1 = call hew_regex_new(_0) -> bb1
   bb1:
-    stmt: bind BindingId(40) handle site=SiteId(189) ty=regex.PatternHandle
-    stmt: use BindingId(40) handle site=SiteId(193) ty=regex.PatternHandle intent=Read
-    stmt: bind BindingId(41) re site=SiteId(192) ty=Pattern
-    stmt: use BindingId(41) re site=SiteId(197) ty=Pattern intent=Read
+    stmt: bind BindingId(40) handle site=SiteId(189) ty=std.text.regex.PatternHandle
+    stmt: use BindingId(40) handle site=SiteId(193) ty=std.text.regex.PatternHandle intent=Read
+    stmt: bind BindingId(41) re site=SiteId(192) ty=std.text.regex.Pattern
+    stmt: use BindingId(41) re site=SiteId(197) ty=std.text.regex.Pattern intent=Read
     _2 = move _1
-    _3 = record_init Pattern { .0=_2 }
+    _3 = record_init std.text.regex.Pattern { .0=_2 }
     _4 = move _3
     _5 = const.i64 0
     _7 = _4.field[0]
@@ -665,23 +667,21 @@ fn regex$new(string) -> Pattern [conv=default]
   bb3:
     stmt: use BindingId(39) pattern site=SiteId(202) ty=string intent=Read
     _10 = string_lit "regex.new: invalid pattern: "
-    _11 = call string::fmt(_0) -> bb6
+    _11 = call to_string_str(_0) -> bb6
   bb4:
     goto bb5
   bb5:
     stmt: eval site=SiteId(209) ty=()
-    stmt: use BindingId(41) re site=SiteId(210) ty=Pattern intent=Read
-    stmt: return site=Some(SiteId(188)) ty=Pattern
+    stmt: use BindingId(41) re site=SiteId(210) ty=std.text.regex.Pattern intent=Read
+    stmt: return site=Some(SiteId(188)) ty=std.text.regex.Pattern
     _13 = move _4
     ret = move _13
     return
   bb6:
-    _12 = call string_concat(_10, _11) -> bb7
-  bb7:
     stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(200) ty=string
-    drop _11 ty=string fn=release(hew_string_drop)
-    call panic(_12) -> bb8
-  bb8:
+    _12 = call_rt hew_string_concat(_10, _11)
+    call hew_panic_msg(_12) -> bb7
+  bb7:
     stmt: eval site=SiteId(199) ty=!
     goto bb5
 
@@ -693,7 +693,7 @@ fn i8::fmt(i8) -> string [conv=default]
   bb0:
     stmt: use BindingId(50) val site=SiteId(281) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(279)) ty=string
     ret = move _2
@@ -707,7 +707,7 @@ fn i16::fmt(i16) -> string [conv=default]
   bb0:
     stmt: use BindingId(51) val site=SiteId(285) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(283)) ty=string
     ret = move _2
@@ -719,7 +719,7 @@ fn i32::fmt(i32) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(52) val site=SiteId(288) ty=i32 intent=Read
-    _1 = call to_string_i32(_0) -> bb1
+    _1 = call hew_int_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(287)) ty=string
     ret = move _1
@@ -731,7 +731,7 @@ fn i64::fmt(i64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(53) val site=SiteId(291) ty=i64 intent=Read
-    _1 = call to_string_i64(_0) -> bb1
+    _1 = call hew_i64_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(290)) ty=string
     ret = move _1
@@ -743,7 +743,7 @@ fn u8::fmt(u8) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(54) val site=SiteId(294) ty=u8 intent=Read
-    _1 = call to_string_u8(_0) -> bb1
+    _1 = call hew_u8_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(293)) ty=string
     ret = move _1
@@ -755,7 +755,7 @@ fn u16::fmt(u16) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(55) val site=SiteId(297) ty=u16 intent=Read
-    _1 = call to_string_u16(_0) -> bb1
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(296)) ty=string
     ret = move _1
@@ -767,7 +767,7 @@ fn u32::fmt(u32) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(56) val site=SiteId(300) ty=u32 intent=Read
-    _1 = call to_string_u32(_0) -> bb1
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(299)) ty=string
     ret = move _1
@@ -779,7 +779,7 @@ fn u64::fmt(u64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(57) val site=SiteId(303) ty=u64 intent=Read
-    _1 = call to_string_u64(_0) -> bb1
+    _1 = call hew_u64_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(302)) ty=string
     ret = move _1
@@ -793,7 +793,7 @@ fn isize::fmt(isize) -> string [conv=default]
   bb0:
     stmt: use BindingId(58) val site=SiteId(307) ty=isize intent=Read
     _1 = cast _0 isize -> i64
-    _2 = call to_string_i64(_1) -> bb1
+    _2 = call hew_i64_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(305)) ty=string
     ret = move _2
@@ -807,7 +807,7 @@ fn usize::fmt(usize) -> string [conv=default]
   bb0:
     stmt: use BindingId(59) val site=SiteId(311) ty=usize intent=Read
     _1 = cast _0 usize -> u64
-    _2 = call to_string_u64(_1) -> bb1
+    _2 = call hew_u64_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(309)) ty=string
     ret = move _2
@@ -819,7 +819,7 @@ fn bool::fmt(bool) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(60) val site=SiteId(314) ty=bool intent=Read
-    _1 = call to_string_bool(_0) -> bb1
+    _1 = call hew_bool_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(313)) ty=string
     ret = move _1
@@ -831,7 +831,7 @@ fn char::fmt(char) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(61) val site=SiteId(317) ty=char intent=Read
-    _1 = call to_string_char(_0) -> bb1
+    _1 = call hew_char_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(316)) ty=string
     ret = move _1
@@ -843,7 +843,7 @@ fn f64::fmt(f64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(62) val site=SiteId(320) ty=f64 intent=Read
-    _1 = call to_string_f64(_0) -> bb1
+    _1 = call hew_float_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(319)) ty=string
     ret = move _1
@@ -857,7 +857,7 @@ fn f32::fmt(f32) -> string [conv=default]
   bb0:
     stmt: use BindingId(63) val site=SiteId(324) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
-    _2 = call to_string_f64(_1) -> bb1
+    _2 = call hew_float_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(322)) ty=string
     ret = move _2
@@ -954,9 +954,11 @@ fn duration::fmt(duration) -> string [conv=default]
     _4: string
   bb0:
     stmt: use BindingId(69) val site=SiteId(342) ty=duration intent=Read
-    _1 = call_rt hew_duration_nanos(_0)
-    _2 = call to_string_i64(_1) -> bb1
+    _1 = call hew_duration_nanos(_0) -> bb1
   bb1:
+    _2 = call hew_i64_to_string(_1) -> bb2
+  bb2:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(339) ty=string
     stmt: return site=Some(SiteId(339)) ty=string
     _3 = string_lit "ns"
     _4 = call_rt hew_string_concat(_2, _3)

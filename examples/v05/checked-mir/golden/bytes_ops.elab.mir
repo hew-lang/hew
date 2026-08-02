@@ -1,5 +1,6 @@
 fn main -> i64
   statements:
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(0) ty=bytes
     bind BindingId(0) b site=SiteId(0) ty=bytes
     use BindingId(0) b site=SiteId(5) ty=bytes intent=Read
     eval site=SiteId(3) ty=()
@@ -16,6 +17,7 @@ fn main -> i64
     use BindingId(3) slice site=SiteId(26) ty=bytes intent=Read
     eval site=SiteId(24) ty=()
     use BindingId(3) slice site=SiteId(31) ty=bytes intent=Read
+    bind BindingId(4294967230) __hew_produced_value site=SiteId(30) ty=string
     eval site=SiteId(29) ty=()
     use BindingId(0) b site=SiteId(35) ty=bytes intent=Read
     bind BindingId(4) popped site=SiteId(34) ty=u8
@@ -29,6 +31,7 @@ fn main -> i64
     eval site=SiteId(50) ty=()
     eval site=SiteId(62) ty=()
     eval site=SiteId(58) ty=()
+    bind BindingId(4294967229) __hew_produced_value site=SiteId(63) ty=bytes
     bind BindingId(5) extra site=SiteId(63) ty=bytes
     use BindingId(0) b site=SiteId(67) ty=bytes intent=Read
     use BindingId(5) extra site=SiteId(68) ty=bytes intent=Read
@@ -85,7 +88,7 @@ fn main -> i64
     call[bb16 println_i64 -> bb17] ->
       (none)
     return[bb17] ->
-      drop _30 ty=bytes kind=cow_heap(hew_bytes_drop)
+      drop _31 ty=bytes kind=cow_heap(hew_bytes_drop)
       drop _13 ty=bytes kind=cow_heap(hew_bytes_drop)
       drop _2 ty=bytes kind=cow_heap(hew_bytes_drop)
 
@@ -94,7 +97,7 @@ fn i8::fmt -> string
     use BindingId(14) val site=SiteId(149) ty=i8 intent=Read
     return site=Some(SiteId(147)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -106,7 +109,7 @@ fn i16::fmt -> string
     use BindingId(15) val site=SiteId(153) ty=i16 intent=Read
     return site=Some(SiteId(151)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -118,7 +121,7 @@ fn i32::fmt -> string
     use BindingId(16) val site=SiteId(156) ty=i32 intent=Read
     return site=Some(SiteId(155)) ty=string
   drop_plans:
-    call[bb0 to_string_i32 -> bb1] ->
+    call[bb0 hew_int_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -130,7 +133,7 @@ fn i64::fmt -> string
     use BindingId(17) val site=SiteId(159) ty=i64 intent=Read
     return site=Some(SiteId(158)) ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_i64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -142,7 +145,7 @@ fn u8::fmt -> string
     use BindingId(18) val site=SiteId(162) ty=u8 intent=Read
     return site=Some(SiteId(161)) ty=string
   drop_plans:
-    call[bb0 to_string_u8 -> bb1] ->
+    call[bb0 hew_u8_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -154,7 +157,7 @@ fn u16::fmt -> string
     use BindingId(19) val site=SiteId(165) ty=u16 intent=Read
     return site=Some(SiteId(164)) ty=string
   drop_plans:
-    call[bb0 to_string_u16 -> bb1] ->
+    call[bb0 hew_uint_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -166,7 +169,7 @@ fn u32::fmt -> string
     use BindingId(20) val site=SiteId(168) ty=u32 intent=Read
     return site=Some(SiteId(167)) ty=string
   drop_plans:
-    call[bb0 to_string_u32 -> bb1] ->
+    call[bb0 hew_uint_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -178,7 +181,7 @@ fn u64::fmt -> string
     use BindingId(21) val site=SiteId(171) ty=u64 intent=Read
     return site=Some(SiteId(170)) ty=string
   drop_plans:
-    call[bb0 to_string_u64 -> bb1] ->
+    call[bb0 hew_u64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -190,7 +193,7 @@ fn isize::fmt -> string
     use BindingId(22) val site=SiteId(175) ty=isize intent=Read
     return site=Some(SiteId(173)) ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_i64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -202,7 +205,7 @@ fn usize::fmt -> string
     use BindingId(23) val site=SiteId(179) ty=usize intent=Read
     return site=Some(SiteId(177)) ty=string
   drop_plans:
-    call[bb0 to_string_u64 -> bb1] ->
+    call[bb0 hew_u64_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -214,7 +217,7 @@ fn bool::fmt -> string
     use BindingId(24) val site=SiteId(182) ty=bool intent=Read
     return site=Some(SiteId(181)) ty=string
   drop_plans:
-    call[bb0 to_string_bool -> bb1] ->
+    call[bb0 hew_bool_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -226,7 +229,7 @@ fn char::fmt -> string
     use BindingId(25) val site=SiteId(185) ty=char intent=Read
     return site=Some(SiteId(184)) ty=string
   drop_plans:
-    call[bb0 to_string_char -> bb1] ->
+    call[bb0 hew_char_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -238,7 +241,7 @@ fn f64::fmt -> string
     use BindingId(26) val site=SiteId(188) ty=f64 intent=Read
     return site=Some(SiteId(187)) ty=string
   drop_plans:
-    call[bb0 to_string_f64 -> bb1] ->
+    call[bb0 hew_float_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -250,7 +253,7 @@ fn f32::fmt -> string
     use BindingId(27) val site=SiteId(192) ty=f32 intent=Read
     return site=Some(SiteId(190)) ty=string
   drop_plans:
-    call[bb0 to_string_f64 -> bb1] ->
+    call[bb0 hew_float_to_string -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
@@ -316,12 +319,16 @@ fn duration::from_secs -> duration
 fn duration::fmt -> string
   statements:
     use BindingId(33) val site=SiteId(210) ty=duration intent=Read
+    bind BindingId(4294967231) __hew_produced_value site=SiteId(207) ty=string
     return site=Some(SiteId(207)) ty=string
+    drop BindingId(4294967231) __hew_produced_value ty=string
   drop_plans:
-    call[bb0 to_string_i64 -> bb1] ->
+    call[bb0 hew_duration_nanos -> bb1] ->
       (none)
     cancel[bb0] ->
       (none)
-    return[bb1] ->
+    call[bb1 hew_i64_to_string -> bb2] ->
+      (none)
+    return[bb2] ->
       (none)
 

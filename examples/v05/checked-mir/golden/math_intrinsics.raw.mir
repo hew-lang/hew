@@ -38,104 +38,104 @@ fn main() -> () [conv=default]
     _35: f64
   bb0:
     _0 = const.f64 0x4030000000000000
-    _1 = call sqrt(_0) [builtin=MathIntrinsic(Sqrt)] -> bb1
+    _1 = call sqrt(_0) [authority=Runtime(MathIntrinsic(Sqrt))] -> bb1
   bb1:
     call println_f64(_1) -> bb2
   bb2:
     stmt: eval site=SiteId(0) ty=()
     _2 = const.f64 0x4000000000000000
     _3 = const.f64 0x4024000000000000
-    _4 = call pow(_2, _3) [builtin=MathIntrinsic(Pow)] -> bb3
+    _4 = call pow(_2, _3) [authority=Runtime(MathIntrinsic(Pow))] -> bb3
   bb3:
     call println_f64(_4) -> bb4
   bb4:
     stmt: eval site=SiteId(5) ty=()
     _5 = const.f64 0x400d99999999999a
-    _6 = call floor(_5) [builtin=MathIntrinsic(Floor)] -> bb5
+    _6 = call floor(_5) [authority=Runtime(MathIntrinsic(Floor))] -> bb5
   bb5:
     call println_f64(_6) -> bb6
   bb6:
     stmt: eval site=SiteId(11) ty=()
     _7 = const.f64 0x400999999999999a
-    _8 = call ceil(_7) [builtin=MathIntrinsic(Ceil)] -> bb7
+    _8 = call ceil(_7) [authority=Runtime(MathIntrinsic(Ceil))] -> bb7
   bb7:
     call println_f64(_8) -> bb8
   bb8:
     stmt: eval site=SiteId(16) ty=()
     _9 = const.f64 0x400c000000000000
-    _10 = call round(_9) [builtin=MathIntrinsic(Round)] -> bb9
+    _10 = call round(_9) [authority=Runtime(MathIntrinsic(Round))] -> bb9
   bb9:
     call println_f64(_10) -> bb10
   bb10:
     stmt: eval site=SiteId(21) ty=()
     _11 = const.f64 0x4014000000000000
     _12 = fneg.f64 _11
-    _13 = call abs_f(_12) [builtin=MathIntrinsic(AbsF64)] -> bb11
+    _13 = call abs_f(_12) [authority=Runtime(MathIntrinsic(AbsF64))] -> bb11
   bb11:
     call println_f64(_13) -> bb12
   bb12:
     stmt: eval site=SiteId(26) ty=()
     _14 = const.f64 0x4008000000000000
     _15 = const.f64 0x401c000000000000
-    _16 = call min_f(_14, _15) [builtin=MathIntrinsic(MinF64)] -> bb13
+    _16 = call min_f(_14, _15) [authority=Runtime(MathIntrinsic(MinF64))] -> bb13
   bb13:
     call println_f64(_16) -> bb14
   bb14:
     stmt: eval site=SiteId(32) ty=()
     _17 = const.f64 0x4008000000000000
     _18 = const.f64 0x401c000000000000
-    _19 = call max_f(_17, _18) [builtin=MathIntrinsic(MaxF64)] -> bb15
+    _19 = call max_f(_17, _18) [authority=Runtime(MathIntrinsic(MaxF64))] -> bb15
   bb15:
     call println_f64(_19) -> bb16
   bb16:
     stmt: eval site=SiteId(38) ty=()
     _20 = const.i64 -5
-    _21 = call abs(_20) [builtin=MathIntrinsic(AbsI64)] -> bb17
+    _21 = call abs(_20) [authority=Runtime(MathIntrinsic(AbsI64))] -> bb17
   bb17:
     call println_i64(_21) -> bb18
   bb18:
     stmt: eval site=SiteId(44) ty=()
     _22 = const.i64 3
     _23 = const.i64 7
-    _24 = call min(_22, _23) [builtin=MathIntrinsic(MinI64)] -> bb19
+    _24 = call min(_22, _23) [authority=Runtime(MathIntrinsic(MinI64))] -> bb19
   bb19:
     call println_i64(_24) -> bb20
   bb20:
     stmt: eval site=SiteId(49) ty=()
     _25 = const.i64 3
     _26 = const.i64 7
-    _27 = call max(_25, _26) [builtin=MathIntrinsic(MaxI64)] -> bb21
+    _27 = call max(_25, _26) [authority=Runtime(MathIntrinsic(MaxI64))] -> bb21
   bb21:
     call println_i64(_27) -> bb22
   bb22:
     stmt: eval site=SiteId(55) ty=()
     _28 = const.f64 0x0000000000000000
-    _29 = call sin(_28) [builtin=MathIntrinsic(Sin)] -> bb23
+    _29 = call sin(_28) [authority=Runtime(MathIntrinsic(Sin))] -> bb23
   bb23:
     call println_f64(_29) -> bb24
   bb24:
     stmt: eval site=SiteId(61) ty=()
     _30 = const.f64 0x0000000000000000
-    _31 = call cos(_30) [builtin=MathIntrinsic(Cos)] -> bb25
+    _31 = call cos(_30) [authority=Runtime(MathIntrinsic(Cos))] -> bb25
   bb25:
     call println_f64(_31) -> bb26
   bb26:
     stmt: eval site=SiteId(66) ty=()
     _32 = const.f64 0x3ff0000000000000
-    _33 = call exp(_32) [builtin=MathIntrinsic(Exp)] -> bb27
+    _33 = call exp(_32) [authority=Runtime(MathIntrinsic(Exp))] -> bb27
   bb27:
     call println_f64(_33) -> bb28
   bb28:
     stmt: eval site=SiteId(71) ty=()
     _34 = const.f64 0x3ff0000000000000
-    _35 = call log(_34) [builtin=MathIntrinsic(Log)] -> bb29
+    _35 = call log(_34) [authority=Runtime(MathIntrinsic(Log))] -> bb29
   bb29:
     call println_f64(_35) -> bb30
   bb30:
     stmt: eval site=SiteId(76) ty=()
     return
 
-fn math$pi() -> f64 [conv=default]
+fn std$math$pi() -> f64 [conv=default]
   locals:
     _0: f64
   bb0:
@@ -144,7 +144,7 @@ fn math$pi() -> f64 [conv=default]
     ret = move _0
     return
 
-fn math$e() -> f64 [conv=default]
+fn std$math$e() -> f64 [conv=default]
   locals:
     _0: f64
   bb0:
@@ -153,7 +153,7 @@ fn math$e() -> f64 [conv=default]
     ret = move _0
     return
 
-fn math$clamp(i64, i64, i64) -> i64 [conv=default]
+fn std$math$clamp(i64, i64, i64) -> i64 [conv=default]
   locals:
     _0: i64
     _1: i64
@@ -179,7 +179,7 @@ fn math$clamp(i64, i64, i64) -> i64 [conv=default]
   bb1:
     stmt: use BindingId(6) lo site=SiteId(89) ty=i64 intent=Read
     _5 = string_lit "math.clamp: lower bound "
-    _6 = call to_string_i64(_1) -> bb4
+    _6 = call hew_i64_to_string(_1) -> bb4
   bb2:
     goto bb3
   bb3:
@@ -187,59 +187,56 @@ fn math$clamp(i64, i64, i64) -> i64 [conv=default]
     stmt: use BindingId(5) x site=SiteId(106) ty=i64 intent=Read
     stmt: use BindingId(6) lo site=SiteId(107) ty=i64 intent=Read
     _13 = icmp.slt _0 _1
-    branch _13 ? bb10 : bb11
+    branch _13 ? bb7 : bb8
   bb4:
-    _7 = call string_concat(_5, _6) -> bb5
-  bb5:
+    stmt: use BindingId(7) hi site=SiteId(93) ty=i64 intent=Read
+    _7 = call_rt hew_string_concat(_5, _6)
     drop _6 ty=string fn=release(hew_string_drop)
     _8 = string_lit " exceeds upper bound "
-    _9 = call string_concat(_7, _8) -> bb6
-  bb6:
-    stmt: use BindingId(7) hi site=SiteId(93) ty=i64 intent=Read
+    _9 = call_rt hew_string_concat(_7, _8)
     drop _7 ty=string fn=release(hew_string_drop)
-    _10 = call to_string_i64(_2) -> bb7
-  bb7:
-    _11 = call string_concat(_9, _10) -> bb8
-  bb8:
+    _10 = call hew_i64_to_string(_2) -> bb5
+  bb5:
     stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(87) ty=string
+    _11 = call_rt hew_string_concat(_9, _10)
     drop _10 ty=string fn=release(hew_string_drop)
     drop _9 ty=string fn=release(hew_string_drop)
-    call panic(_11) -> bb9
-  bb9:
+    call hew_panic_msg(_11) -> bb6
+  bb6:
     stmt: eval site=SiteId(86) ty=!
     goto bb3
-  bb10:
+  bb7:
     stmt: use BindingId(6) lo site=SiteId(108) ty=i64 intent=Consume
     stmt: return site=Some(SiteId(108)) ty=i64
     ret = move _1
     return
-  bb11:
-    goto bb12
-  bb12:
+  bb8:
+    goto bb9
+  bb9:
     stmt: eval site=SiteId(110) ty=()
     stmt: use BindingId(5) x site=SiteId(112) ty=i64 intent=Read
     stmt: use BindingId(7) hi site=SiteId(113) ty=i64 intent=Read
     _15 = icmp.sgt _0 _2
-    branch _15 ? bb14 : bb15
-  bb13:
-    goto bb12
-  bb14:
+    branch _15 ? bb11 : bb12
+  bb10:
+    goto bb9
+  bb11:
     stmt: use BindingId(7) hi site=SiteId(114) ty=i64 intent=Consume
     stmt: return site=Some(SiteId(114)) ty=i64
     ret = move _2
     return
-  bb15:
-    goto bb16
-  bb16:
+  bb12:
+    goto bb13
+  bb13:
     stmt: eval site=SiteId(116) ty=()
     stmt: use BindingId(5) x site=SiteId(117) ty=i64 intent=Read
     stmt: return site=Some(SiteId(117)) ty=i64
     ret = move _0
     return
-  bb17:
-    goto bb16
+  bb14:
+    goto bb13
 
-fn math$sign(i64) -> i64 [conv=default]
+fn std$math$sign(i64) -> i64 [conv=default]
   locals:
     _0: i64
     _1: ()
@@ -287,47 +284,6 @@ fn math$sign(i64) -> i64 [conv=default]
   bb8:
     goto bb7
 
-fn math$pow(f64, f64) -> f64 [conv=default]
-  locals:
-    _0: f64
-    _1: f64
-    _2: f64
-  bb0:
-    stmt: return site=Some(SiteId(131)) ty=f64
-    _2 = const.f64 0x0000000000000000
-    ret = move _2
-    return
-
-fn math$floor(f64) -> f64 [conv=default]
-  locals:
-    _0: f64
-    _1: f64
-  bb0:
-    stmt: return site=Some(SiteId(132)) ty=f64
-    _1 = const.f64 0x0000000000000000
-    ret = move _1
-    return
-
-fn math$ceil(f64) -> f64 [conv=default]
-  locals:
-    _0: f64
-    _1: f64
-  bb0:
-    stmt: return site=Some(SiteId(133)) ty=f64
-    _1 = const.f64 0x0000000000000000
-    ret = move _1
-    return
-
-fn math$round(f64) -> f64 [conv=default]
-  locals:
-    _0: f64
-    _1: f64
-  bb0:
-    stmt: return site=Some(SiteId(134)) ty=f64
-    _1 = const.f64 0x0000000000000000
-    ret = move _1
-    return
-
 fn i8::fmt(i8) -> string [conv=default]
   locals:
     _0: i8
@@ -336,7 +292,7 @@ fn i8::fmt(i8) -> string [conv=default]
   bb0:
     stmt: use BindingId(27) val site=SiteId(205) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(203)) ty=string
     ret = move _2
@@ -350,7 +306,7 @@ fn i16::fmt(i16) -> string [conv=default]
   bb0:
     stmt: use BindingId(28) val site=SiteId(209) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(207)) ty=string
     ret = move _2
@@ -362,7 +318,7 @@ fn i32::fmt(i32) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(29) val site=SiteId(212) ty=i32 intent=Read
-    _1 = call to_string_i32(_0) -> bb1
+    _1 = call hew_int_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(211)) ty=string
     ret = move _1
@@ -374,7 +330,7 @@ fn i64::fmt(i64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(30) val site=SiteId(215) ty=i64 intent=Read
-    _1 = call to_string_i64(_0) -> bb1
+    _1 = call hew_i64_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(214)) ty=string
     ret = move _1
@@ -386,7 +342,7 @@ fn u8::fmt(u8) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(31) val site=SiteId(218) ty=u8 intent=Read
-    _1 = call to_string_u8(_0) -> bb1
+    _1 = call hew_u8_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(217)) ty=string
     ret = move _1
@@ -398,7 +354,7 @@ fn u16::fmt(u16) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(32) val site=SiteId(221) ty=u16 intent=Read
-    _1 = call to_string_u16(_0) -> bb1
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(220)) ty=string
     ret = move _1
@@ -410,7 +366,7 @@ fn u32::fmt(u32) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(33) val site=SiteId(224) ty=u32 intent=Read
-    _1 = call to_string_u32(_0) -> bb1
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(223)) ty=string
     ret = move _1
@@ -422,7 +378,7 @@ fn u64::fmt(u64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(34) val site=SiteId(227) ty=u64 intent=Read
-    _1 = call to_string_u64(_0) -> bb1
+    _1 = call hew_u64_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(226)) ty=string
     ret = move _1
@@ -436,7 +392,7 @@ fn isize::fmt(isize) -> string [conv=default]
   bb0:
     stmt: use BindingId(35) val site=SiteId(231) ty=isize intent=Read
     _1 = cast _0 isize -> i64
-    _2 = call to_string_i64(_1) -> bb1
+    _2 = call hew_i64_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(229)) ty=string
     ret = move _2
@@ -450,7 +406,7 @@ fn usize::fmt(usize) -> string [conv=default]
   bb0:
     stmt: use BindingId(36) val site=SiteId(235) ty=usize intent=Read
     _1 = cast _0 usize -> u64
-    _2 = call to_string_u64(_1) -> bb1
+    _2 = call hew_u64_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(233)) ty=string
     ret = move _2
@@ -462,7 +418,7 @@ fn bool::fmt(bool) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(37) val site=SiteId(238) ty=bool intent=Read
-    _1 = call to_string_bool(_0) -> bb1
+    _1 = call hew_bool_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(237)) ty=string
     ret = move _1
@@ -474,7 +430,7 @@ fn char::fmt(char) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(38) val site=SiteId(241) ty=char intent=Read
-    _1 = call to_string_char(_0) -> bb1
+    _1 = call hew_char_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(240)) ty=string
     ret = move _1
@@ -486,7 +442,7 @@ fn f64::fmt(f64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(39) val site=SiteId(244) ty=f64 intent=Read
-    _1 = call to_string_f64(_0) -> bb1
+    _1 = call hew_float_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(243)) ty=string
     ret = move _1
@@ -500,7 +456,7 @@ fn f32::fmt(f32) -> string [conv=default]
   bb0:
     stmt: use BindingId(40) val site=SiteId(248) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
-    _2 = call to_string_f64(_1) -> bb1
+    _2 = call hew_float_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(246)) ty=string
     ret = move _2
@@ -597,9 +553,11 @@ fn duration::fmt(duration) -> string [conv=default]
     _4: string
   bb0:
     stmt: use BindingId(46) val site=SiteId(266) ty=duration intent=Read
-    _1 = call_rt hew_duration_nanos(_0)
-    _2 = call to_string_i64(_1) -> bb1
+    _1 = call hew_duration_nanos(_0) -> bb1
   bb1:
+    _2 = call hew_i64_to_string(_1) -> bb2
+  bb2:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(263) ty=string
     stmt: return site=Some(SiteId(263)) ty=string
     _3 = string_lit "ns"
     _4 = call_rt hew_string_concat(_2, _3)

@@ -1,154 +1,161 @@
 fn main() -> () [conv=default]
   locals:
     _0: string
-    _1: metrics.Counter
-    _2: metrics.Counter
+    _1: std.metrics.Counter
+    _2: std.metrics.Counter
     _3: i64
     _4: string
-    _5: metrics.Gauge
-    _6: metrics.Gauge
+    _5: std.metrics.Gauge
+    _6: std.metrics.Gauge
     _7: i64
     _8: i64
     _9: string
-    _10: metrics.Histogram
-    _11: metrics.Histogram
+    _10: std.metrics.Histogram
+    _11: std.metrics.Histogram
     _12: f64
   bb0:
     _0 = string_lit "app.cache_hits"
-    _1 = call metrics$counter(_0) -> bb1
+    _1 = call std$metrics$counter(_0) -> bb1
   bb1:
-    stmt: bind BindingId(0) hits site=SiteId(0) ty=metrics.Counter
-    stmt: use BindingId(0) hits site=SiteId(4) ty=metrics.Counter intent=Read
+    stmt: bind BindingId(0) hits site=SiteId(0) ty=std.metrics.Counter
+    stmt: use BindingId(0) hits site=SiteId(4) ty=std.metrics.Counter intent=Read
     _2 = move _1
-    call Counter::inc(_2) -> bb2
+    call std.metrics.Counter::inc(_2) -> bb2
   bb2:
     stmt: eval site=SiteId(3) ty=()
-    stmt: use BindingId(0) hits site=SiteId(7) ty=metrics.Counter intent=Read
+    stmt: use BindingId(0) hits site=SiteId(7) ty=std.metrics.Counter intent=Read
     _3 = const.i64 4
-    call Counter::add(_2, _3) -> bb3
+    call std.metrics.Counter::add(_2, _3) -> bb3
   bb3:
     stmt: eval site=SiteId(6) ty=()
     _4 = string_lit "app.active_connections"
-    _5 = call metrics$gauge(_4) -> bb4
+    _5 = call std$metrics$gauge(_4) -> bb4
   bb4:
-    stmt: bind BindingId(1) active site=SiteId(10) ty=metrics.Gauge
-    stmt: use BindingId(1) active site=SiteId(14) ty=metrics.Gauge intent=Read
+    stmt: bind BindingId(1) active site=SiteId(10) ty=std.metrics.Gauge
+    stmt: use BindingId(1) active site=SiteId(14) ty=std.metrics.Gauge intent=Read
     _6 = move _5
-    call Gauge::inc(_6) -> bb5
+    call std.metrics.Gauge::inc(_6) -> bb5
   bb5:
     stmt: eval site=SiteId(13) ty=()
-    stmt: use BindingId(1) active site=SiteId(17) ty=metrics.Gauge intent=Read
-    call Gauge::dec(_6) -> bb6
+    stmt: use BindingId(1) active site=SiteId(17) ty=std.metrics.Gauge intent=Read
+    call std.metrics.Gauge::dec(_6) -> bb6
   bb6:
     stmt: eval site=SiteId(16) ty=()
-    stmt: use BindingId(1) active site=SiteId(20) ty=metrics.Gauge intent=Read
+    stmt: use BindingId(1) active site=SiteId(20) ty=std.metrics.Gauge intent=Read
     _7 = const.i64 3
-    call Gauge::set(_6, _7) -> bb7
+    call std.metrics.Gauge::set(_6, _7) -> bb7
   bb7:
     stmt: eval site=SiteId(19) ty=()
-    stmt: use BindingId(1) active site=SiteId(24) ty=metrics.Gauge intent=Read
+    stmt: use BindingId(1) active site=SiteId(24) ty=std.metrics.Gauge intent=Read
     _8 = const.i64 2
-    call Gauge::add(_6, _8) -> bb8
+    call std.metrics.Gauge::add(_6, _8) -> bb8
   bb8:
     stmt: eval site=SiteId(23) ty=()
     _9 = string_lit "app.request_latency"
-    _10 = call metrics$histogram(_9) -> bb9
+    _10 = call std$metrics$histogram(_9) -> bb9
   bb9:
-    stmt: bind BindingId(2) latency site=SiteId(27) ty=metrics.Histogram
-    stmt: use BindingId(2) latency site=SiteId(31) ty=metrics.Histogram intent=Read
+    stmt: bind BindingId(2) latency site=SiteId(27) ty=std.metrics.Histogram
+    stmt: use BindingId(2) latency site=SiteId(31) ty=std.metrics.Histogram intent=Read
     _11 = move _10
     _12 = const.f64 0x4029000000000000
-    call Histogram::observe(_11, _12) -> bb10
+    call std.metrics.Histogram::observe(_11, _12) -> bb10
   bb10:
     stmt: eval site=SiteId(30) ty=()
     return
 
-fn Counter::inc(Counter) -> () [conv=default]
+fn std.metrics.Counter::inc(std.metrics.Counter) -> () [conv=default]
   locals:
-    _0: Counter
+    _0: std.metrics.Counter
     _1: i64
   bb0:
-    stmt: use BindingId(3) c site=SiteId(37) ty=Counter intent=Read
+    stmt: use BindingId(3) c site=SiteId(37) ty=std.metrics.Counter intent=Read
+    _1 = _0.field[0]
+    call hew_metric_counter_inc(_1) -> bb1
+  bb1:
     stmt: eval site=SiteId(34) ty=()
-    _1 = _0.field[0]
-    call_rt hew_metric_counter_inc(_1)
     return
 
-fn Counter::add(Counter, i64) -> () [conv=default]
+fn std.metrics.Counter::add(std.metrics.Counter, i64) -> () [conv=default]
   locals:
-    _0: Counter
+    _0: std.metrics.Counter
     _1: i64
     _2: i64
   bb0:
-    stmt: use BindingId(4) c site=SiteId(42) ty=Counter intent=Read
+    stmt: use BindingId(4) c site=SiteId(42) ty=std.metrics.Counter intent=Read
     stmt: use BindingId(5) n site=SiteId(43) ty=i64 intent=Read
+    _2 = _0.field[0]
+    call hew_metric_counter_add(_2, _1) -> bb1
+  bb1:
     stmt: eval site=SiteId(39) ty=()
-    _2 = _0.field[0]
-    call_rt hew_metric_counter_add(_2, _1)
     return
 
-fn Gauge::inc(Gauge) -> () [conv=default]
+fn std.metrics.Gauge::inc(std.metrics.Gauge) -> () [conv=default]
   locals:
-    _0: Gauge
+    _0: std.metrics.Gauge
     _1: i64
   bb0:
-    stmt: use BindingId(6) g site=SiteId(48) ty=Gauge intent=Read
+    stmt: use BindingId(6) g site=SiteId(48) ty=std.metrics.Gauge intent=Read
+    _1 = _0.field[0]
+    call hew_metric_gauge_inc(_1) -> bb1
+  bb1:
     stmt: eval site=SiteId(45) ty=()
-    _1 = _0.field[0]
-    call_rt hew_metric_gauge_inc(_1)
     return
 
-fn Gauge::dec(Gauge) -> () [conv=default]
+fn std.metrics.Gauge::dec(std.metrics.Gauge) -> () [conv=default]
   locals:
-    _0: Gauge
+    _0: std.metrics.Gauge
     _1: i64
   bb0:
-    stmt: use BindingId(7) g site=SiteId(53) ty=Gauge intent=Read
+    stmt: use BindingId(7) g site=SiteId(53) ty=std.metrics.Gauge intent=Read
+    _1 = _0.field[0]
+    call hew_metric_gauge_dec(_1) -> bb1
+  bb1:
     stmt: eval site=SiteId(50) ty=()
-    _1 = _0.field[0]
-    call_rt hew_metric_gauge_dec(_1)
     return
 
-fn Gauge::set(Gauge, i64) -> () [conv=default]
+fn std.metrics.Gauge::set(std.metrics.Gauge, i64) -> () [conv=default]
   locals:
-    _0: Gauge
+    _0: std.metrics.Gauge
     _1: i64
     _2: i64
   bb0:
-    stmt: use BindingId(8) g site=SiteId(58) ty=Gauge intent=Read
+    stmt: use BindingId(8) g site=SiteId(58) ty=std.metrics.Gauge intent=Read
     stmt: use BindingId(9) n site=SiteId(59) ty=i64 intent=Read
-    stmt: eval site=SiteId(55) ty=()
     _2 = _0.field[0]
-    call_rt hew_metric_gauge_set(_2, _1)
+    call hew_metric_gauge_set(_2, _1) -> bb1
+  bb1:
+    stmt: eval site=SiteId(55) ty=()
     return
 
-fn Gauge::add(Gauge, i64) -> () [conv=default]
+fn std.metrics.Gauge::add(std.metrics.Gauge, i64) -> () [conv=default]
   locals:
-    _0: Gauge
+    _0: std.metrics.Gauge
     _1: i64
     _2: i64
   bb0:
-    stmt: use BindingId(10) g site=SiteId(64) ty=Gauge intent=Read
+    stmt: use BindingId(10) g site=SiteId(64) ty=std.metrics.Gauge intent=Read
     stmt: use BindingId(11) n site=SiteId(65) ty=i64 intent=Read
-    stmt: eval site=SiteId(61) ty=()
     _2 = _0.field[0]
-    call_rt hew_metric_gauge_add(_2, _1)
+    call hew_metric_gauge_add(_2, _1) -> bb1
+  bb1:
+    stmt: eval site=SiteId(61) ty=()
     return
 
-fn Histogram::observe(Histogram, f64) -> () [conv=default]
+fn std.metrics.Histogram::observe(std.metrics.Histogram, f64) -> () [conv=default]
   locals:
-    _0: Histogram
+    _0: std.metrics.Histogram
     _1: f64
     _2: i64
   bb0:
-    stmt: use BindingId(12) h site=SiteId(70) ty=Histogram intent=Read
+    stmt: use BindingId(12) h site=SiteId(70) ty=std.metrics.Histogram intent=Read
     stmt: use BindingId(13) v site=SiteId(71) ty=f64 intent=Read
-    stmt: eval site=SiteId(67) ty=()
     _2 = _0.field[0]
-    call_rt hew_metric_histogram_record(_2, _1)
+    call hew_metric_histogram_record(_2, _1) -> bb1
+  bb1:
+    stmt: eval site=SiteId(67) ty=()
     return
 
-fn metrics$counter(string) -> Counter [conv=default]
+fn std$metrics$counter(string) -> std.metrics.Counter [conv=default]
   locals:
     _0: string
     _1: i64
@@ -162,73 +169,72 @@ fn metrics$counter(string) -> Counter [conv=default]
     _9: string
     _10: string
     _11: string
-    _12: metrics.Counter
+    _12: std.metrics.Counter
   bb0:
     stmt: use BindingId(14) name site=SiteId(75) ty=string intent=Read
+    _1 = call hew_metric_counter_register(_0) -> bb1
+  bb1:
     stmt: bind BindingId(15) id site=SiteId(73) ty=i64
     stmt: use BindingId(15) id site=SiteId(78) ty=i64 intent=Read
-    _1 = call_rt hew_metric_counter_register(_0)
     _2 = move _1
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
-    branch _6 ? bb1 : bb2
-  bb1:
+    branch _6 ? bb2 : bb3
+  bb2:
     stmt: use BindingId(14) name site=SiteId(83) ty=string intent=Read
     _7 = string_lit "metrics.counter: registration rejected for `"
-    _8 = call string::fmt(_0) -> bb4
-  bb2:
-    goto bb3
+    _8 = call to_string_str(_0) -> bb5
   bb3:
+    goto bb4
+  bb4:
     stmt: eval site=SiteId(93) ty=()
     stmt: use BindingId(15) id site=SiteId(95) ty=i64 intent=Read
-    stmt: return site=Some(SiteId(94)) ty=metrics.Counter
-    _12 = record_init metrics.Counter { .0=_3 }
+    stmt: return site=Some(SiteId(94)) ty=std.metrics.Counter
+    _12 = record_init std.metrics.Counter { .0=_3 }
     ret = move _12
     return
-  bb4:
-    _9 = call string_concat(_7, _8) -> bb5
   bb5:
-    drop _8 ty=string fn=release(hew_string_drop)
-    _10 = string_lit "`"
-    _11 = call string_concat(_9, _10) -> bb6
-  bb6:
     stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(81) ty=string
+    _9 = call_rt hew_string_concat(_7, _8)
+    _10 = string_lit "`"
+    _11 = call_rt hew_string_concat(_9, _10)
     drop _9 ty=string fn=release(hew_string_drop)
-    call panic(_11) -> bb7
-  bb7:
+    call hew_panic_msg(_11) -> bb6
+  bb6:
     stmt: eval site=SiteId(80) ty=!
-    goto bb3
+    goto bb4
 
-fn metrics$try_counter(string) -> Result<Counter, MetricsError> [conv=default]
+fn std$metrics$try_counter(string) -> Result<std.metrics.Counter, std.metrics.MetricsError> [conv=default]
   locals:
     _0: string
     _1: i64
     _2: i64
     _3: i64
-    _4: Result<metrics.Counter, metrics.MetricsError>
+    _4: Result<std.metrics.Counter, std.metrics.MetricsError>
     _5: i64
     _6: bool
-    _7: Result<metrics.Counter, metrics.MetricsError>
+    _7: Result<std.metrics.Counter, std.metrics.MetricsError>
     _8: i64
-    _9: MetricsError
+    _9: std.metrics.MetricsError
     _10: i64
-    _11: Result<metrics.Counter, metrics.MetricsError>
-    _12: Result<metrics.Counter, metrics.MetricsError>
+    _11: Result<std.metrics.Counter, std.metrics.MetricsError>
+    _12: Result<std.metrics.Counter, std.metrics.MetricsError>
     _13: i64
-    _14: metrics.Counter
-    _15: Result<metrics.Counter, metrics.MetricsError>
+    _14: std.metrics.Counter
+    _15: Result<std.metrics.Counter, std.metrics.MetricsError>
   bb0:
     stmt: use BindingId(16) name site=SiteId(98) ty=string intent=Read
+    _1 = call hew_metric_counter_register(_0) -> bb1
+  bb1:
     stmt: bind BindingId(17) id site=SiteId(96) ty=i64
     stmt: use BindingId(17) id site=SiteId(102) ty=i64 intent=Read
-    _1 = call_rt hew_metric_counter_register(_0)
     _2 = move _1
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
-    branch _6 ? bb1 : bb2
-  bb1:
+    branch _6 ? bb2 : bb3
+  bb2:
     stmt: use BindingId(16) name site=SiteId(107) ty=string intent=Read
     _8 = const.i64 1
     mtag7 = move _8
@@ -239,22 +245,22 @@ fn metrics$try_counter(string) -> Result<Counter, MetricsError> [conv=default]
     mvar7.1.0 = move _9
     _11 = move _7
     _4 = move _11
-    goto bb3
-  bb2:
+    goto bb4
+  bb3:
     stmt: use BindingId(17) id site=SiteId(111) ty=i64 intent=Read
     _13 = const.i64 0
     mtag12 = move _13
-    _14 = record_init metrics.Counter { .0=_3 }
+    _14 = record_init std.metrics.Counter { .0=_3 }
     mvar12.0.0 = move _14
     _15 = move _12
     _4 = move _15
-    goto bb3
-  bb3:
-    stmt: return site=Some(SiteId(100)) ty=Result<metrics.Counter, metrics.MetricsError>
+    goto bb4
+  bb4:
+    stmt: return site=Some(SiteId(100)) ty=Result<std.metrics.Counter, std.metrics.MetricsError>
     ret = move _4
     return
 
-fn metrics$gauge(string) -> Gauge [conv=default]
+fn std$metrics$gauge(string) -> std.metrics.Gauge [conv=default]
   locals:
     _0: string
     _1: i64
@@ -268,73 +274,72 @@ fn metrics$gauge(string) -> Gauge [conv=default]
     _9: string
     _10: string
     _11: string
-    _12: metrics.Gauge
+    _12: std.metrics.Gauge
   bb0:
     stmt: use BindingId(18) name site=SiteId(114) ty=string intent=Read
+    _1 = call hew_metric_gauge_register(_0) -> bb1
+  bb1:
     stmt: bind BindingId(19) id site=SiteId(112) ty=i64
     stmt: use BindingId(19) id site=SiteId(117) ty=i64 intent=Read
-    _1 = call_rt hew_metric_gauge_register(_0)
     _2 = move _1
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
-    branch _6 ? bb1 : bb2
-  bb1:
+    branch _6 ? bb2 : bb3
+  bb2:
     stmt: use BindingId(18) name site=SiteId(122) ty=string intent=Read
     _7 = string_lit "metrics.gauge: registration rejected for `"
-    _8 = call string::fmt(_0) -> bb4
-  bb2:
-    goto bb3
+    _8 = call to_string_str(_0) -> bb5
   bb3:
+    goto bb4
+  bb4:
     stmt: eval site=SiteId(132) ty=()
     stmt: use BindingId(19) id site=SiteId(134) ty=i64 intent=Read
-    stmt: return site=Some(SiteId(133)) ty=metrics.Gauge
-    _12 = record_init metrics.Gauge { .0=_3 }
+    stmt: return site=Some(SiteId(133)) ty=std.metrics.Gauge
+    _12 = record_init std.metrics.Gauge { .0=_3 }
     ret = move _12
     return
-  bb4:
-    _9 = call string_concat(_7, _8) -> bb5
   bb5:
-    drop _8 ty=string fn=release(hew_string_drop)
-    _10 = string_lit "`"
-    _11 = call string_concat(_9, _10) -> bb6
-  bb6:
     stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(120) ty=string
+    _9 = call_rt hew_string_concat(_7, _8)
+    _10 = string_lit "`"
+    _11 = call_rt hew_string_concat(_9, _10)
     drop _9 ty=string fn=release(hew_string_drop)
-    call panic(_11) -> bb7
-  bb7:
+    call hew_panic_msg(_11) -> bb6
+  bb6:
     stmt: eval site=SiteId(119) ty=!
-    goto bb3
+    goto bb4
 
-fn metrics$try_gauge(string) -> Result<Gauge, MetricsError> [conv=default]
+fn std$metrics$try_gauge(string) -> Result<std.metrics.Gauge, std.metrics.MetricsError> [conv=default]
   locals:
     _0: string
     _1: i64
     _2: i64
     _3: i64
-    _4: Result<metrics.Gauge, metrics.MetricsError>
+    _4: Result<std.metrics.Gauge, std.metrics.MetricsError>
     _5: i64
     _6: bool
-    _7: Result<metrics.Gauge, metrics.MetricsError>
+    _7: Result<std.metrics.Gauge, std.metrics.MetricsError>
     _8: i64
-    _9: MetricsError
+    _9: std.metrics.MetricsError
     _10: i64
-    _11: Result<metrics.Gauge, metrics.MetricsError>
-    _12: Result<metrics.Gauge, metrics.MetricsError>
+    _11: Result<std.metrics.Gauge, std.metrics.MetricsError>
+    _12: Result<std.metrics.Gauge, std.metrics.MetricsError>
     _13: i64
-    _14: metrics.Gauge
-    _15: Result<metrics.Gauge, metrics.MetricsError>
+    _14: std.metrics.Gauge
+    _15: Result<std.metrics.Gauge, std.metrics.MetricsError>
   bb0:
     stmt: use BindingId(20) name site=SiteId(137) ty=string intent=Read
+    _1 = call hew_metric_gauge_register(_0) -> bb1
+  bb1:
     stmt: bind BindingId(21) id site=SiteId(135) ty=i64
     stmt: use BindingId(21) id site=SiteId(141) ty=i64 intent=Read
-    _1 = call_rt hew_metric_gauge_register(_0)
     _2 = move _1
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
-    branch _6 ? bb1 : bb2
-  bb1:
+    branch _6 ? bb2 : bb3
+  bb2:
     stmt: use BindingId(20) name site=SiteId(146) ty=string intent=Read
     _8 = const.i64 1
     mtag7 = move _8
@@ -345,22 +350,22 @@ fn metrics$try_gauge(string) -> Result<Gauge, MetricsError> [conv=default]
     mvar7.1.0 = move _9
     _11 = move _7
     _4 = move _11
-    goto bb3
-  bb2:
+    goto bb4
+  bb3:
     stmt: use BindingId(21) id site=SiteId(150) ty=i64 intent=Read
     _13 = const.i64 0
     mtag12 = move _13
-    _14 = record_init metrics.Gauge { .0=_3 }
+    _14 = record_init std.metrics.Gauge { .0=_3 }
     mvar12.0.0 = move _14
     _15 = move _12
     _4 = move _15
-    goto bb3
-  bb3:
-    stmt: return site=Some(SiteId(139)) ty=Result<metrics.Gauge, metrics.MetricsError>
+    goto bb4
+  bb4:
+    stmt: return site=Some(SiteId(139)) ty=Result<std.metrics.Gauge, std.metrics.MetricsError>
     ret = move _4
     return
 
-fn metrics$histogram(string) -> Histogram [conv=default]
+fn std$metrics$histogram(string) -> std.metrics.Histogram [conv=default]
   locals:
     _0: string
     _1: i64
@@ -374,73 +379,72 @@ fn metrics$histogram(string) -> Histogram [conv=default]
     _9: string
     _10: string
     _11: string
-    _12: metrics.Histogram
+    _12: std.metrics.Histogram
   bb0:
     stmt: use BindingId(22) name site=SiteId(153) ty=string intent=Read
+    _1 = call hew_metric_histogram_register_simple(_0) -> bb1
+  bb1:
     stmt: bind BindingId(23) id site=SiteId(151) ty=i64
     stmt: use BindingId(23) id site=SiteId(156) ty=i64 intent=Read
-    _1 = call_rt hew_metric_histogram_register_simple(_0)
     _2 = move _1
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
-    branch _6 ? bb1 : bb2
-  bb1:
+    branch _6 ? bb2 : bb3
+  bb2:
     stmt: use BindingId(22) name site=SiteId(161) ty=string intent=Read
     _7 = string_lit "metrics.histogram: registration rejected for `"
-    _8 = call string::fmt(_0) -> bb4
-  bb2:
-    goto bb3
+    _8 = call to_string_str(_0) -> bb5
   bb3:
+    goto bb4
+  bb4:
     stmt: eval site=SiteId(171) ty=()
     stmt: use BindingId(23) id site=SiteId(173) ty=i64 intent=Read
-    stmt: return site=Some(SiteId(172)) ty=metrics.Histogram
-    _12 = record_init metrics.Histogram { .0=_3 }
+    stmt: return site=Some(SiteId(172)) ty=std.metrics.Histogram
+    _12 = record_init std.metrics.Histogram { .0=_3 }
     ret = move _12
     return
-  bb4:
-    _9 = call string_concat(_7, _8) -> bb5
   bb5:
-    drop _8 ty=string fn=release(hew_string_drop)
-    _10 = string_lit "`"
-    _11 = call string_concat(_9, _10) -> bb6
-  bb6:
     stmt: bind BindingId(4294967231) __hew_temp_arg site=SiteId(159) ty=string
+    _9 = call_rt hew_string_concat(_7, _8)
+    _10 = string_lit "`"
+    _11 = call_rt hew_string_concat(_9, _10)
     drop _9 ty=string fn=release(hew_string_drop)
-    call panic(_11) -> bb7
-  bb7:
+    call hew_panic_msg(_11) -> bb6
+  bb6:
     stmt: eval site=SiteId(158) ty=!
-    goto bb3
+    goto bb4
 
-fn metrics$try_histogram(string) -> Result<Histogram, MetricsError> [conv=default]
+fn std$metrics$try_histogram(string) -> Result<std.metrics.Histogram, std.metrics.MetricsError> [conv=default]
   locals:
     _0: string
     _1: i64
     _2: i64
     _3: i64
-    _4: Result<metrics.Histogram, metrics.MetricsError>
+    _4: Result<std.metrics.Histogram, std.metrics.MetricsError>
     _5: i64
     _6: bool
-    _7: Result<metrics.Histogram, metrics.MetricsError>
+    _7: Result<std.metrics.Histogram, std.metrics.MetricsError>
     _8: i64
-    _9: MetricsError
+    _9: std.metrics.MetricsError
     _10: i64
-    _11: Result<metrics.Histogram, metrics.MetricsError>
-    _12: Result<metrics.Histogram, metrics.MetricsError>
+    _11: Result<std.metrics.Histogram, std.metrics.MetricsError>
+    _12: Result<std.metrics.Histogram, std.metrics.MetricsError>
     _13: i64
-    _14: metrics.Histogram
-    _15: Result<metrics.Histogram, metrics.MetricsError>
+    _14: std.metrics.Histogram
+    _15: Result<std.metrics.Histogram, std.metrics.MetricsError>
   bb0:
     stmt: use BindingId(24) name site=SiteId(176) ty=string intent=Read
+    _1 = call hew_metric_histogram_register_simple(_0) -> bb1
+  bb1:
     stmt: bind BindingId(25) id site=SiteId(174) ty=i64
     stmt: use BindingId(25) id site=SiteId(180) ty=i64 intent=Read
-    _1 = call_rt hew_metric_histogram_register_simple(_0)
     _2 = move _1
     _3 = move _2
     _5 = const.i64 0
     _6 = icmp.slt _3 _5
-    branch _6 ? bb1 : bb2
-  bb1:
+    branch _6 ? bb2 : bb3
+  bb2:
     stmt: use BindingId(24) name site=SiteId(185) ty=string intent=Read
     _8 = const.i64 1
     mtag7 = move _8
@@ -451,18 +455,18 @@ fn metrics$try_histogram(string) -> Result<Histogram, MetricsError> [conv=defaul
     mvar7.1.0 = move _9
     _11 = move _7
     _4 = move _11
-    goto bb3
-  bb2:
+    goto bb4
+  bb3:
     stmt: use BindingId(25) id site=SiteId(189) ty=i64 intent=Read
     _13 = const.i64 0
     mtag12 = move _13
-    _14 = record_init metrics.Histogram { .0=_3 }
+    _14 = record_init std.metrics.Histogram { .0=_3 }
     mvar12.0.0 = move _14
     _15 = move _12
     _4 = move _15
-    goto bb3
-  bb3:
-    stmt: return site=Some(SiteId(178)) ty=Result<metrics.Histogram, metrics.MetricsError>
+    goto bb4
+  bb4:
+    stmt: return site=Some(SiteId(178)) ty=Result<std.metrics.Histogram, std.metrics.MetricsError>
     ret = move _4
     return
 
@@ -474,7 +478,7 @@ fn i8::fmt(i8) -> string [conv=default]
   bb0:
     stmt: use BindingId(34) val site=SiteId(260) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(258)) ty=string
     ret = move _2
@@ -488,7 +492,7 @@ fn i16::fmt(i16) -> string [conv=default]
   bb0:
     stmt: use BindingId(35) val site=SiteId(264) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
-    _2 = call to_string_i32(_1) -> bb1
+    _2 = call hew_int_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(262)) ty=string
     ret = move _2
@@ -500,7 +504,7 @@ fn i32::fmt(i32) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(36) val site=SiteId(267) ty=i32 intent=Read
-    _1 = call to_string_i32(_0) -> bb1
+    _1 = call hew_int_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(266)) ty=string
     ret = move _1
@@ -512,7 +516,7 @@ fn i64::fmt(i64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(37) val site=SiteId(270) ty=i64 intent=Read
-    _1 = call to_string_i64(_0) -> bb1
+    _1 = call hew_i64_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(269)) ty=string
     ret = move _1
@@ -524,7 +528,7 @@ fn u8::fmt(u8) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(38) val site=SiteId(273) ty=u8 intent=Read
-    _1 = call to_string_u8(_0) -> bb1
+    _1 = call hew_u8_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(272)) ty=string
     ret = move _1
@@ -536,7 +540,7 @@ fn u16::fmt(u16) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(39) val site=SiteId(276) ty=u16 intent=Read
-    _1 = call to_string_u16(_0) -> bb1
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(275)) ty=string
     ret = move _1
@@ -548,7 +552,7 @@ fn u32::fmt(u32) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(40) val site=SiteId(279) ty=u32 intent=Read
-    _1 = call to_string_u32(_0) -> bb1
+    _1 = call hew_uint_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(278)) ty=string
     ret = move _1
@@ -560,7 +564,7 @@ fn u64::fmt(u64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(41) val site=SiteId(282) ty=u64 intent=Read
-    _1 = call to_string_u64(_0) -> bb1
+    _1 = call hew_u64_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(281)) ty=string
     ret = move _1
@@ -574,7 +578,7 @@ fn isize::fmt(isize) -> string [conv=default]
   bb0:
     stmt: use BindingId(42) val site=SiteId(286) ty=isize intent=Read
     _1 = cast _0 isize -> i64
-    _2 = call to_string_i64(_1) -> bb1
+    _2 = call hew_i64_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(284)) ty=string
     ret = move _2
@@ -588,7 +592,7 @@ fn usize::fmt(usize) -> string [conv=default]
   bb0:
     stmt: use BindingId(43) val site=SiteId(290) ty=usize intent=Read
     _1 = cast _0 usize -> u64
-    _2 = call to_string_u64(_1) -> bb1
+    _2 = call hew_u64_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(288)) ty=string
     ret = move _2
@@ -600,7 +604,7 @@ fn bool::fmt(bool) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(44) val site=SiteId(293) ty=bool intent=Read
-    _1 = call to_string_bool(_0) -> bb1
+    _1 = call hew_bool_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(292)) ty=string
     ret = move _1
@@ -612,7 +616,7 @@ fn char::fmt(char) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(45) val site=SiteId(296) ty=char intent=Read
-    _1 = call to_string_char(_0) -> bb1
+    _1 = call hew_char_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(295)) ty=string
     ret = move _1
@@ -624,7 +628,7 @@ fn f64::fmt(f64) -> string [conv=default]
     _1: string
   bb0:
     stmt: use BindingId(46) val site=SiteId(299) ty=f64 intent=Read
-    _1 = call to_string_f64(_0) -> bb1
+    _1 = call hew_float_to_string(_0) -> bb1
   bb1:
     stmt: return site=Some(SiteId(298)) ty=string
     ret = move _1
@@ -638,7 +642,7 @@ fn f32::fmt(f32) -> string [conv=default]
   bb0:
     stmt: use BindingId(47) val site=SiteId(303) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
-    _2 = call to_string_f64(_1) -> bb1
+    _2 = call hew_float_to_string(_1) -> bb1
   bb1:
     stmt: return site=Some(SiteId(301)) ty=string
     ret = move _2
@@ -735,9 +739,11 @@ fn duration::fmt(duration) -> string [conv=default]
     _4: string
   bb0:
     stmt: use BindingId(53) val site=SiteId(321) ty=duration intent=Read
-    _1 = call_rt hew_duration_nanos(_0)
-    _2 = call to_string_i64(_1) -> bb1
+    _1 = call hew_duration_nanos(_0) -> bb1
   bb1:
+    _2 = call hew_i64_to_string(_1) -> bb2
+  bb2:
+    stmt: bind BindingId(4294967231) __hew_produced_value site=SiteId(318) ty=string
     stmt: return site=Some(SiteId(318)) ty=string
     _3 = string_lit "ns"
     _4 = call_rt hew_string_concat(_2, _3)

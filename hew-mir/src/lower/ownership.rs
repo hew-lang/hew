@@ -1707,6 +1707,14 @@ impl Builder {
             ty.clone(),
             warrant,
         );
+        // A typed publication owner is provisional only until a structural
+        // sink decides what owns the result.  Pattern control-flow is that
+        // sink for a call scrutinee: the anonymous enum local itself remains
+        // the recursive owner across the selected payload projection and must
+        // participate in ordinary scope/back-edge cleanup.  Finalise the
+        // generation here so `owned_locals_exit_candidates` does not mistake
+        // this real owner for an unclaimed producer temporary.
+        self.synthetic_owner_publication_sites.remove(&binding);
         Some((binding, ty))
     }
     pub(crate) fn register_while_let_iteration_owner(

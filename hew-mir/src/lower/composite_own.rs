@@ -5,7 +5,9 @@ use super::temp_drop::{
 mod aggregate_borrowed_ingress_clone;
 mod builtin_handle_record_field_overwrite;
 mod bytes_payload_handoff;
+mod foundation;
 mod predicate_string_temp_drop;
+mod retained_string_aliases;
 #[cfg(test)]
 use super::*;
 #[cfg(not(test))]
@@ -37,132 +39,13 @@ pub(super) use builtin_handle_record_field_overwrite::detect_builtin_handle_reco
 use bytes_payload_handoff::provable_bytes_payload_handoff_sites;
 #[cfg(test)]
 use bytes_payload_handoff::BytesPayloadHandoff;
+use foundation::{
+    generator_env_snapshot_init_locals, initializes_generator_env_snapshot, scope_is_same_or_nested,
+};
 use predicate_string_temp_drop::predicate_string_temp_drop_proof;
-
-fn generator_env_snapshot_init_locals(blocks: &[BasicBlock]) -> HashSet<u32> {
-    blocks
-        .iter()
-        .filter_map(|block| match &block.terminator {
-            Terminator::MakeGenerator { env: Some(env), .. } => base_local(env.place),
-            _ => None,
-        })
-        .collect()
-}
-
-fn initializes_generator_env_snapshot(instr: &Instr, env_locals: &HashSet<u32>) -> bool {
-    matches!(
-        instr,
-        Instr::RecordInit { dest, .. }
-            if base_local(*dest).is_some_and(|local| env_locals.contains(&local))
-    )
-}
-
-/// Whether `destination` closes no later than `source`.
-///
-/// Scope ids are opaque identities, so lexical containment must follow the
-/// builder's parent graph. Missing or cyclic ancestry fails closed.
-fn scope_is_same_or_nested(
-    destination: ScopeId,
-    source: ScopeId,
-    scope_info: &HashMap<ScopeId, ScopeInfoEntry>,
-) -> bool {
-    let mut current = destination;
-    let mut visited = HashSet::new();
-    let mut contains_source = false;
-    loop {
-        if !visited.insert(current) {
-            return false;
-        }
-        contains_source |= current == source;
-        let Some(entry) = scope_info.get(&current) else {
-            return false;
-        };
-        let Some(parent) = entry.parent else {
-            return contains_source;
-        };
-        current = parent;
-    }
-}
-
-/// String field loads are emitted with an independent `+1` retain. Follow
-/// their Move aliases so the aggregate sole-owner provers do not mistake that
-/// independently owned share for an extraction of the source aggregate's
-/// original field ownership.
-fn retained_string_field_load_aliases(
-    blocks: &[BasicBlock],
-    local_tys: &[ResolvedTy],
-) -> HashSet<u32> {
-    let seeds = blocks
-        .iter()
-        .flat_map(|block| block.instructions.iter())
-        .filter_map(|instr| string_field_load_producer_dest(instr, local_tys))
-        .filter_map(base_local);
-    propagate_whole_value_alias_roots(blocks, seeds)
-        .into_keys()
-        .collect()
-}
-
-/// The generation-safe subset of retained string field-load aliases.
-///
-/// The aggregate provers key payload ownership by MIR local, while a local may
-/// be reused for multiple generations.  Removing payload-binder taint is sound
-/// only when the field load and every onward alias each uniquely define their
-/// destination.  This keeps a retained string clone from masking a different
-/// payload generation that later reuses the same local.
-fn uniquely_defined_retained_string_field_load_aliases(
-    blocks: &[BasicBlock],
-    local_tys: &[ResolvedTy],
-) -> HashSet<u32> {
-    let dominators = block_dominators(blocks);
-    let mut proven_defs: HashMap<u32, InstrSite> = HashMap::new();
-    for block in blocks {
-        for (index, instr) in block.instructions.iter().enumerate() {
-            let Some(dest) = string_field_load_producer_dest(instr, local_tys).and_then(base_local)
-            else {
-                continue;
-            };
-            let site = InstrSite {
-                block: block.id,
-                index,
-            };
-            if single_dominating_local_generation(blocks, &dominators, dest, site) {
-                proven_defs.insert(dest, site);
-            }
-        }
-    }
-
-    loop {
-        let mut changed = false;
-        for block in blocks {
-            for (index, instr) in block.instructions.iter().enumerate() {
-                let Instr::Move {
-                    dest: Place::Local(dest),
-                    src: Place::Local(src),
-                } = instr
-                else {
-                    continue;
-                };
-                let site = InstrSite {
-                    block: block.id,
-                    index,
-                };
-                let Some(&src_def) = proven_defs.get(src) else {
-                    continue;
-                };
-                if single_dominating_local_generation(blocks, &dominators, *dest, site)
-                    && instr_site_dominates(&dominators, src_def, site)
-                    && proven_defs.insert(*dest, site).is_none()
-                {
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    proven_defs.into_keys().collect()
-}
+use retained_string_aliases::{
+    retained_string_field_load_aliases, uniquely_defined_retained_string_field_load_aliases,
+};
 
 /// #2212 — discharge the non-escaped owned sibling fields of a record whose
 /// composite drop the sole-owner prover excludes because ONE of its fields

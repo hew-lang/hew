@@ -2413,7 +2413,7 @@ fn eval_json_manifest_message_diagnostic_stays_in_json() {
         "expected manifest diagnostic in JSON payload: {diagnostics:?}"
     );
     assert!(
-        diagnostics.contains("adze add math"),
+        diagnostics.contains("hew add math"),
         "expected manifest hint in JSON payload: {diagnostics:?}"
     );
 }

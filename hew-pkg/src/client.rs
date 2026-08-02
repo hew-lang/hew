@@ -30,7 +30,7 @@ impl fmt::Display for ApiError {
             Self::Http(msg) => write!(f, "HTTP error: {msg}"),
             Self::Server { status, message } => write!(f, "registry error ({status}): {message}"),
             Self::Parse(msg) => write!(f, "parse error: {msg}"),
-            Self::NotAuthenticated => write!(f, "not authenticated; run `adze login`"),
+            Self::NotAuthenticated => write!(f, "not authenticated; run `hew login`"),
         }
     }
 }
@@ -174,7 +174,7 @@ impl RegistryClient {
     #[must_use]
     pub fn new() -> Self {
         let cfg = config::load_config().unwrap_or_else(|error| {
-            eprintln!("adze: {error}");
+            eprintln!("hew: {error}");
             std::process::exit(1);
         });
         Self::new_with_config(&cfg)

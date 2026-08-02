@@ -87,17 +87,8 @@ pub enum Command {
     ///   hew lsp
     ///   hew lsp --version
     Lsp(LspArgs),
-    /// Manage packages and dependencies (delegates to the bundled package manager).
-    ///
-    /// Forwards all arguments to the in-process `adze-cli` package-manager
-    /// library. No sibling `adze` binary is invoked.
-    ///
-    /// Examples:
-    ///   hew package init
-    ///   hew package add `hew::db::sqlite`
-    ///   hew package install
-    ///   hew package build
-    Package(PackageArgs),
+    #[command(flatten)]
+    Pkg(hew_pkg::cli::PkgCommand),
 }
 
 #[derive(Debug, Args)]
@@ -802,15 +793,6 @@ pub struct PlaygroundVerifyArgs {
 #[command(disable_help_flag = true)]
 pub struct ObserveArgs {
     /// Arguments passed through to `hew-observe`.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<String>,
-}
-
-/// Arguments forwarded verbatim to the bundled package manager.
-#[derive(Debug, Args)]
-#[command(disable_help_flag = true)]
-pub struct PackageArgs {
-    /// Subcommand + arguments for the package manager (e.g. `install`, `build`, `add <pkg>`).
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 }

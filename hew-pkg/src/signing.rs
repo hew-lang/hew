@@ -1,6 +1,6 @@
 //! Ed25519 signing key management for package publishing.
 //!
-//! Supports generating adze-managed keypairs and computing fingerprints.
+//! Supports generating hew-managed keypairs and computing fingerprints.
 //! Keys are stored in `~/.adze/keys/`.
 
 use std::fmt;
@@ -29,7 +29,7 @@ impl fmt::Display for SignError {
             Self::Io(e) => write!(f, "signing I/O error: {e}"),
             Self::InvalidKey(msg) => write!(f, "invalid key: {msg}"),
             Self::BadSignature => write!(f, "signature verification failed"),
-            Self::NoKey => write!(f, "no signing key found; run `adze key generate`"),
+            Self::NoKey => write!(f, "no signing key found; run `hew key generate`"),
         }
     }
 }

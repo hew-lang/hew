@@ -2043,18 +2043,6 @@ fn cmd_lsp(a: &args::LspArgs) {
     exec_sibling_binary("hew-lsp", &a.args);
 }
 
-/// Run the bundled package manager in-process as `hew package …`.
-///
-/// `hew` ships a single binary: the package-manager command surface lives in
-/// the `hew-pkg` library and is invoked directly here (no sibling package
-/// process). The leading argument is the display name used in usage/help text.
-fn cmd_package(a: &args::PackageArgs) {
-    let mut argv: Vec<String> = Vec::with_capacity(a.args.len() + 1);
-    argv.push("hew package".to_string());
-    argv.extend(a.args.iter().cloned());
-    hew_pkg::cli::run_from_args(argv);
-}
-
 /// Replace the current process with `binary_name [extra_args]`.
 ///
 /// Resolution order:

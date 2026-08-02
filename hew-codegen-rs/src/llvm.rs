@@ -15469,8 +15469,8 @@ pub(crate) fn record_struct_for<'ctx>(
             let lookup_key =
                 hew_hir::layout_key_for_named(name, args, *builtin).ok_or_else(|| {
                     CodegenError::FailClosed(format!(
-                    "synthetic cursor `{builtin:?}` has an invalid type-argument shape {args:?}"
-                ))
+                        "synthetic cursor `{builtin:?}` has an invalid type-argument shape {args:?}"
+                    ))
                 })?;
             fn_ctx
                 .record_layouts
@@ -28935,6 +28935,29 @@ fn lower_terminator<'ctx>(
                          follow specialized call intercept `{callee}` until that \
                          intercept provides a post-write rearm hook"
                     )));
+                }
+            }
+            // Runtime families marked `consumes_receiver` take ownership even
+            // when the source-level binding needs no path guard. Retire its
+            // dynamic crash-cleanup token before the call: otherwise a normal
+            // handler/coroutine exit runs the same close ritual again (channel,
+            // stream and sink handles all manifested as post-output SIGSEGVs).
+            // This reads typed runtime-family authority, never symbol spelling.
+            if let hew_mir::CallAuthority::Runtime(family) = authority {
+                if family.consumes_receiver() {
+                    if let Some(receiver) = args.first() {
+                        emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, *receiver)?;
+                    }
+                }
+            }
+            if let Some(modes) = fn_ctx.param_boundary_modes.get(callee) {
+                for (arg, mode) in args.iter().zip(modes) {
+                    if matches!(
+                        mode,
+                        Some(ParamBoundaryMode::TransferResource | ParamBoundaryMode::OwnedCarrier)
+                    ) {
+                        emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, *arg)?;
+                    }
                 }
             }
             emit_helper_crash_cleanup_deactivate_consumed_owners(fn_ctx, args)?;

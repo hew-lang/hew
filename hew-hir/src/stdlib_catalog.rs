@@ -161,6 +161,28 @@ pub enum LayoutDescriptorRole {
 }
 
 impl BuiltinLinkage {
+    /// Return the concrete ABI symbol only when this catalog row is a direct
+    /// compiled-runtime FFI shim.
+    ///
+    /// This is deliberately narrower than [`Self::runtime_symbol`]: several
+    /// transitional catalog linkages have a runtime-adjacent implementation
+    /// detail but do not establish an ordinary audited FFI boundary.  Consumers
+    /// use this exact classification to retain checker-proven `Extern`
+    /// authority without inferring it from a linker spelling.
+    #[must_use]
+    pub const fn trusted_ffi_symbol(self) -> Option<&'static str> {
+        match self {
+            Self::RuntimeFfiShim { symbol } => Some(symbol),
+            Self::PrintIntercept { .. }
+            | Self::ToStringShim { .. }
+            | Self::StringCloneShim { .. }
+            | Self::CompilerIntrinsic { .. }
+            | Self::CalleeNameDispatchOnly
+            | Self::NodeRegisterByPid { .. }
+            | Self::LayoutDescriptorSymbol { .. } => None,
+        }
+    }
+
     #[must_use]
     pub const fn runtime_symbol(self) -> Option<&'static str> {
         match self {
@@ -174,6 +196,19 @@ impl BuiltinLinkage {
             | Self::LayoutDescriptorSymbol { .. } => None,
         }
     }
+}
+
+/// Return the audited ABI symbol for one exact catalog endpoint.
+///
+/// The endpoint is a checker-selected closed catalog identity.  This lookup is
+/// therefore an identity join, not a callee-name classification: a user
+/// declaration sharing an ABI symbol never reaches this function.
+#[must_use]
+pub fn trusted_ffi_symbol_for_endpoint(endpoint: &str) -> Option<&'static str> {
+    CATALOG
+        .iter()
+        .find(|entry| entry.name == endpoint)
+        .and_then(|entry| entry.linkage.trusted_ffi_symbol())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

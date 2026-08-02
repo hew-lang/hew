@@ -3730,16 +3730,33 @@ impl Builder {
                             });
                             return None;
                         }
-                        let builtin = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
+                        // Catalog linkage is the authority for a compiled FFI
+                        // boundary.  Some concrete ABI shims intentionally sit
+                        // outside `RuntimeCallFamily` (for example
+                        // `hew_string_length`), so treating a missing runtime
+                        // family as an ordinary direct call loses the checked
+                        // borrowing contract in imported bodies.  Join the
+                        // endpoint to its catalog linkage and require the
+                        // ItemId-projected symbol to agree; this never grants
+                        // `Extern` authority based on a user-controlled symbol
+                        // spelling.
+                        let authority = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
                             callee_symbol,
-                        );
-                        return self.lower_direct_call(
+                        )
+                        .map(crate::CallAuthority::Runtime)
+                        .or_else(|| {
+                            hew_hir::stdlib_catalog::trusted_ffi_symbol_for_endpoint(endpoint)
+                                .filter(|symbol| *symbol == callee_symbol)
+                                .map(|_| crate::CallAuthority::Extern)
+                        })
+                        .unwrap_or_default();
+                        return self.lower_direct_call_with_authority(
                             callee_symbol,
-                            builtin,
                             callee_item,
                             args,
                             &expr.ty,
                             expr.site,
+                            authority,
                         );
                     }
                     hew_types::CallTarget::ImplMethod(declaration) => {

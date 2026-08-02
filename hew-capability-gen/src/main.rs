@@ -46,6 +46,6 @@ fn run() -> Result<(), String> {
     }
 
     hew_capability_gen::write_outputs(root, &manifest)?;
-    println!("Generated WASM capability Rust, playground, and matrix outputs.");
+    println!("Generated WASM capability Rust, playground, and matrix tables.");
     Ok(())
 }

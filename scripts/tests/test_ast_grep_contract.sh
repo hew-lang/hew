@@ -44,6 +44,40 @@ if HEW_AST_GREP_SHA256_BACKEND=unverified "$tmp/scripts/build-ast-grep-lang.sh" 
     exit 1
 fi
 
+# The pinned custom dialect must parse the Hew ownership/arithmetic syntax
+# that motivated the current upstream revision.  Check the library rebuilt in
+# this isolated fixture, not the repository's already-built copy.
+cat > "$tmp/sgconfig.yml" <<EOF
+customLanguages:
+  hew:
+    libraryPath: $tmp/.ast-grep/hew-lang.so
+    extensions: [hew]
+    expandoChar: _
+EOF
+cat > "$tmp/dialect.hew" <<'EOF'
+fn dialect(a: int, b: int) {
+    let owned = clone a;
+    let add = a &+ b;
+    let sub = a &- b;
+    let mul = a &* b;
+}
+EOF
+ast_grep="$ROOT/.ast-grep/tool/bin/ast-grep"
+[[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --kind clone_expression --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
+    echo "pinned Hew grammar did not parse exactly one clone-prefix expression" >&2
+    exit 1
+}
+for operator in '&+' '&-' '&*'; do
+    [[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --pattern "\$A $operator \$B" --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
+        echo "pinned Hew grammar did not parse wrapping operator $operator" >&2
+        exit 1
+    }
+done
+if "$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --kind ERROR "$tmp/dialect.hew" >/dev/null 2>&1; then
+    echo "pinned Hew dialect corpus contains parser ERROR nodes" >&2
+    exit 1
+fi
+
 # A stale grammar dialect/ABI lock must refuse otherwise-good bytes.
 sed -i.bak 's/TREE_SITTER_HEW_LANGUAGE_ABI=15/TREE_SITTER_HEW_LANGUAGE_ABI=999/' "$tmp/tools/ast-grep.lock"
 if "$tmp/scripts/build-ast-grep-lang.sh" >/dev/null 2>&1; then

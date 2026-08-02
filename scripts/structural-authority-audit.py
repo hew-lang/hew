@@ -12,6 +12,7 @@ import argparse
 import bisect
 import csv
 import json
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -28,10 +29,54 @@ COMPILER_ROOTS = (
 PRESENTATION_CATEGORIES = {"debug-metadata"}
 ALL_GROUPS = {
     "semantic-leaf-name",
+    "semantic-owner-shortening-sink",
     "string-method-identity",
     "legacy-heap-reader",
     "checker-hir-publication",
     "mir-ownership-sink",
+    # RC1 authority carriers.  These inventories deliberately name parsed
+    # syntax nodes rather than comments, strings, or a hand-maintained list of
+    # source lines.  A new carrier/variant is therefore a failing addition,
+    # even before a reviewer decides which retirement stage owns it.
+    "checker-hir-fact-relation",
+    "call-target-authority",
+    "suspend-authority",
+    "owner-retirement-path",
+}
+SEMANTIC_KEY_BUILDERS = {
+    "scoped_module_item_name",
+    "module_item_name",
+    "qualified_item_name",
+    "qualified_name",
+}
+RUNTIME_RESOLUTION_SINKS = {
+    "resolve_runtime_symbol",
+    "runtime_symbol_for_call_expr",
+    "runtime_symbol_for_method",
+}
+CANONICAL_OWNER_NAMES = re.compile(
+    r"^(?:canonical_owner|declaring_module|module_full_path|module_identity|resolved_module|source_module)$"
+)
+SEMANTIC_MAP_NAMES = {
+    "by_module",
+    "call_targets",
+    "const_registry",
+    "declarations",
+    "direct_call_targets",
+    "fn_registry",
+    "fn_sigs",
+    "import_spans",
+    "machine_ctor_registry",
+    "methods",
+    "module_import_bindings",
+    "modules",
+    "nominal_ids",
+    "opaque",
+    "record_registry",
+    "resolved_calls",
+    "supers",
+    "type_defs",
+    "user_modules",
 }
 ITEM_KINDS = (
     "mod_item",
@@ -207,6 +252,331 @@ def single_meta_range(match: dict[str, object], name: str) -> SyntaxRange | None
     return SyntaxRange(str(match["file"]), int(offsets["start"]), int(offsets["end"]))
 
 
+def range_contains(outer: SyntaxRange, inner: SyntaxRange) -> bool:
+    return (
+        outer.path == inner.path
+        and outer.byte_start <= inner.byte_start
+        and inner.byte_end <= outer.byte_end
+    )
+
+
+def semantic_map_receiver(receiver: str) -> bool:
+    leaf = receiver.split(".")[-1].strip()
+    return (
+        leaf in SEMANTIC_MAP_NAMES
+        or leaf.endswith("_registry")
+        or leaf.endswith("_registries")
+        or leaf.endswith("_layouts")
+        or leaf.endswith("_definitions")
+        or leaf.endswith("_declarations")
+    ) and leaf not in {"diagnostics", "errors", "messages"}
+
+
+def leaf_path_receiver(receiver: str) -> bool:
+    compact = "".join(receiver.split())
+    return bool(
+        re.search(
+            r"(?:^|[.])(?:path|segments|module_path|module_id|mod_id|owner)(?:$|[.])",
+            compact,
+        )
+    )
+
+
+def separator_is_qualification(separator: str) -> bool:
+    return separator.strip() in {'"::"', "'::'", '"."', "'.'"}
+
+
+def implicit_format_names(text: str) -> set[str]:
+    """Return Rust captured-format identifiers, excluding escaped braces."""
+    return set(re.findall(r"(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)[^{}]*\}(?!\})", text))
+
+
+def semantic_owner_shortening_findings(
+    ast_grep: Path, root: Path, test_ranges: list[SyntaxRange]
+) -> set[Finding]:
+    """Find leaf module spellings that flow into executable identity sinks.
+
+    This is deliberately an intraprocedural parsed-AST taint pass.  It catches
+    the common two-step escape from a direct ast-grep rule (`module_short`, then
+    `key`, then `registry.insert(key, ...)`) without treating formatting,
+    diagnostics, or ordinary collection `.last()` calls as identity authority.
+    """
+    identifiers = run_query(ast_grep, root, kind="identifier")
+    literals = []
+    for literal_kind in ("string_literal", "raw_string_literal"):
+        literals.extend(run_query(ast_grep, root, kind=literal_kind))
+
+    source_ranges: list[SyntaxRange] = []
+    for match in run_query(ast_grep, root, pattern="short_name($X)"):
+        source_ranges.append(node_range(match))
+    for pattern in (
+        "current_module_short()",
+        "$X.current_module_short()",
+        "module_short_name($X)",
+        "$X.module_short_name()",
+    ):
+        source_ranges.extend(
+            node_range(match) for match in run_query(ast_grep, root, pattern=pattern)
+        )
+    for match in run_query(ast_grep, root, pattern="$X.last()"):
+        if leaf_path_receiver(single_meta(match, "X")):
+            source_ranges.append(node_range(match))
+    for pattern in ("$X.rsplit($SEP).next()", "$X.split($SEP).last()"):
+        for match in run_query(ast_grep, root, pattern=pattern):
+            if separator_is_qualification(single_meta(match, "SEP")):
+                source_ranges.append(node_range(match))
+    for match in run_query(ast_grep, root, pattern="$X.module_alias"):
+        source_ranges.append(node_range(match))
+
+    bindings: list[tuple[str, SyntaxRange]] = []
+    for pattern in (
+        "let $V = $E;",
+        "let mut $V = $E;",
+        "let $V: $T = $E;",
+        "let mut $V: $T = $E;",
+        "if let Some($V) = $E { $$$BODY }",
+        "let Some($V) = $E else { $$$BODY };",
+        "$V = $E",
+    ):
+        for match in run_query(ast_grep, root, pattern=pattern):
+            name = single_meta(match, "V")
+            expression = single_meta_range(match, "E")
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and expression:
+                bindings.append((name, expression))
+
+    sink_matches: list[tuple[str, dict[str, object], SyntaxRange]] = []
+    identifier_index: defaultdict[str, list[tuple[int, str, SyntaxRange]]] = (
+        defaultdict(list)
+    )
+    for identifier in identifiers:
+        identifier_range = node_range(identifier)
+        identifier_index[identifier_range.path].append(
+            (identifier_range.byte_start, str(identifier["text"]), identifier_range)
+        )
+    for items in identifier_index.values():
+        items.sort(key=lambda item: item[0])
+    identifier_starts = {
+        path: [item[0] for item in items] for path, items in identifier_index.items()
+    }
+    for method in ("insert", "entry", "get", "get_mut", "contains_key", "remove"):
+        for pattern in (
+            f"$R.{method}($KEY)",
+            f"$R.{method}($KEY, $$$REST)",
+        ):
+            for match in run_query(ast_grep, root, pattern=pattern):
+                if semantic_map_receiver(single_meta(match, "R")):
+                    key = single_meta_range(match, "KEY")
+                    if key:
+                        sink_matches.append(("registry-key", match, key))
+    for pattern in ("$F($KEY)", "$F($KEY, $$$REST)"):
+        for match in run_query(ast_grep, root, pattern=pattern):
+            callee = "".join(single_meta(match, "F").split())
+            leaf = callee.split("::")[-1]
+            if callee.endswith("DefId::new"):
+                form = "def-id"
+            elif callee.endswith("NominalId::new"):
+                form = "nominal-id"
+            elif "CallTarget::" in callee:
+                form = "call-target"
+            elif leaf in RUNTIME_RESOLUTION_SINKS:
+                form = "runtime-resolution"
+            elif leaf in SEMANTIC_KEY_BUILDERS:
+                form = "registry-key"
+            else:
+                continue
+            key = single_meta_range(match, "KEY")
+            if key:
+                sink_matches.append((form, match, key))
+    # A shortening source can cross one helper boundary before the actual map
+    # operation (`visit_items(..., module_short, ..., methods)`). Treat a call
+    # that also carries an explicitly named semantic registry/map as the sink;
+    # diagnostic/display helpers do not carry one of these authorities.
+    for match in run_query(ast_grep, root, pattern="$F($$$ARGS)"):
+        call_range = node_range(match)
+        callee = "".join(single_meta(match, "F").split())
+        callee_leaf = callee.split("::")[-1]
+        if "." in callee or not callee_leaf.startswith(
+            (
+                "build_",
+                "collect_",
+                "lower_",
+                "register_",
+                "resolve_",
+                "scan_",
+                "seed_",
+                "visit_",
+            )
+        ):
+            continue
+        path_identifiers = identifier_index.get(call_range.path, [])
+        start = bisect.bisect_left(
+            identifier_starts.get(call_range.path, []), call_range.byte_start
+        )
+        if any(
+            range_contains(call_range, identifier_range) and semantic_map_receiver(name)
+            for _, name, identifier_range in path_identifiers[start:]
+            if identifier_range.byte_start < call_range.byte_end
+        ):
+            sink_matches.append(("registry-key", match, call_range))
+
+    function_ranges = [
+        node_range(match) for match in run_query(ast_grep, root, kind="function_item")
+    ]
+    # Include a file-wide fallback for const/static initializers and future
+    # generated authorities outside functions.
+    paths = {str(match["file"]) for match in identifiers}
+    file_scopes = {path: SyntaxRange(path, 0, 1 << 62) for path in paths}
+    functions_by_path: defaultdict[str, list[SyntaxRange]] = defaultdict(list)
+    for item in function_ranges:
+        functions_by_path[item.path].append(item)
+    function_starts: dict[str, list[int]] = {}
+    for path, items in functions_by_path.items():
+        items.sort(key=lambda item: item.byte_start)
+        function_starts[path] = [item.byte_start for item in items]
+
+    def enclosing_scope(item: SyntaxRange) -> SyntaxRange | None:
+        candidates = functions_by_path.get(item.path, [])
+        index = bisect.bisect_right(function_starts.get(item.path, []), item.byte_start)
+        # The latest-starting enclosing function is the narrowest scope. Rust
+        # permits nested function items, so walk backwards until containment.
+        for candidate in reversed(candidates[:index]):
+            if range_contains(candidate, item):
+                return candidate
+        return file_scopes.get(item.path)
+
+    sink_scopes: list[tuple[str, dict[str, object], SyntaxRange, SyntaxRange]] = []
+    for form, sink_match, key_range in sink_matches:
+        scope = enclosing_scope(key_range)
+        if scope is not None:
+            sink_scopes.append((form, sink_match, key_range, scope))
+
+    sources_by_scope: defaultdict[SyntaxRange, list[SyntaxRange]] = defaultdict(list)
+    for item in source_ranges:
+        if scope := enclosing_scope(item):
+            sources_by_scope[scope].append(item)
+    identifiers_by_scope: defaultdict[SyntaxRange, list[tuple[str, SyntaxRange]]] = (
+        defaultdict(list)
+    )
+    for match in identifiers:
+        item_range = node_range(match)
+        if scope := enclosing_scope(item_range):
+            identifiers_by_scope[scope].append((str(match["text"]), item_range))
+    literals_by_scope: defaultdict[SyntaxRange, list[tuple[str, SyntaxRange]]] = (
+        defaultdict(list)
+    )
+    for match in literals:
+        item_range = node_range(match)
+        if scope := enclosing_scope(item_range):
+            literals_by_scope[scope].append((str(match["text"]), item_range))
+    bindings_by_scope: defaultdict[SyntaxRange, list[tuple[str, SyntaxRange]]] = (
+        defaultdict(list)
+    )
+    for name, expression in bindings:
+        if scope := enclosing_scope(expression):
+            bindings_by_scope[scope].append((name, expression))
+
+    scope_inputs: dict[
+        SyntaxRange,
+        tuple[
+            list[SyntaxRange],
+            list[tuple[str, SyntaxRange]],
+            list[tuple[str, SyntaxRange]],
+            dict[str, list[SyntaxRange]],
+        ],
+    ] = {}
+    for scope in {item[3] for item in sink_scopes}:
+        scoped_sources = sources_by_scope[scope]
+        scoped_bindings = bindings_by_scope[scope]
+        scoped_identifiers = identifiers_by_scope[scope]
+        scoped_literals = literals_by_scope[scope]
+        bindings_by_name: defaultdict[str, list[SyntaxRange]] = defaultdict(list)
+        for name, expression in scoped_bindings:
+            bindings_by_name[name].append(expression)
+        for expressions in bindings_by_name.values():
+            expressions.sort(key=lambda item: item.byte_end)
+        scope_inputs[scope] = (
+            scoped_sources,
+            scoped_identifiers,
+            scoped_literals,
+            dict(bindings_by_name),
+        )
+
+    results: set[Finding] = set()
+    for form, sink_match, key_range, scope in sink_scopes:
+        sink = finding("semantic-owner-shortening-sink", form, sink_match)
+        if excluded(sink, test_ranges):
+            continue
+        (
+            scoped_sources,
+            scoped_identifiers,
+            scoped_literals,
+            scoped_bindings,
+        ) = scope_inputs[scope]
+
+        def name_is_tainted(
+            name: str, before: int, visiting: set[tuple[str, int]]
+        ) -> bool:
+            candidates = [
+                expression
+                for expression in scoped_bindings.get(name, [])
+                if expression.byte_end <= before
+            ]
+            if not candidates:
+                return False
+            expression = candidates[-1]
+            marker = (name, expression.byte_end)
+            if marker in visiting:
+                return False
+            return expression_is_tainted(expression, visiting | {marker})
+
+        def expression_is_tainted(
+            expression: SyntaxRange, visiting: set[tuple[str, int]]
+        ) -> bool:
+            if (
+                form in {"def-id", "call-target", "nominal-id"}
+                and any(
+                    CANONICAL_OWNER_NAMES.fullmatch(name)
+                    and range_contains(expression, item_range)
+                    for name, item_range in scoped_identifiers
+                )
+                or (
+                    form in {"def-id", "call-target", "nominal-id"}
+                    and any(
+                        range_contains(expression, literal_range)
+                        and any(
+                            CANONICAL_OWNER_NAMES.fullmatch(name)
+                            for name in implicit_format_names(text)
+                        )
+                        for text, literal_range in scoped_literals
+                    )
+                )
+            ):
+                # Re-attaching an item leaf to a checker-resolved full owner is
+                # canonicalization, not owner shortening. The full owner is the
+                # authority consumed by the resulting structured ID.
+                return False
+            if any(range_contains(expression, item) for item in scoped_sources):
+                return True
+            for name, item_range in scoped_identifiers:
+                if range_contains(expression, item_range) and name_is_tainted(
+                    name, item_range.byte_start, visiting
+                ):
+                    return True
+            for text, literal_range in scoped_literals:
+                if not range_contains(expression, literal_range):
+                    continue
+                if any(
+                    name_is_tainted(name, literal_range.byte_start, visiting)
+                    for name in implicit_format_names(text)
+                ):
+                    return True
+            return False
+
+        if expression_is_tainted(key_range, set()):
+            results.add(sink)
+    return results
+
+
 class CfgPredicateParser:
     """Balanced parser for the small cfg predicate language we rely on."""
 
@@ -334,6 +704,239 @@ def excluded(finding: Finding, test_ranges: list[SyntaxRange]) -> bool:
     )
 
 
+def contained_nodes(
+    ast_grep: Path, root: Path, *, enum_name: str, node_kind: str
+) -> list[dict[str, object]]:
+    """Return parsed nodes physically declared by one named enum.
+
+    ast-grep's JSON stream exposes byte ranges for every syntax node.  Joining
+    those ranges lets this audit count enum variants without source-text
+    searches and without accidentally treating a same-named variant elsewhere
+    as part of the authority carrier.
+    """
+    enum_ranges = [
+        node_range(match)
+        for match in run_query(
+            ast_grep, root, pattern=f"enum {enum_name} {{ $$$BODY }}"
+        )
+    ]
+    enum_ranges.extend(
+        node_range(match)
+        for match in run_query(
+            ast_grep, root, pattern=f"pub enum {enum_name} {{ $$$BODY }}"
+        )
+    )
+    return [
+        match
+        for match in run_query(ast_grep, root, kind=node_kind)
+        if any(
+            range_contains(enum_range, node_range(match)) for enum_range in enum_ranges
+        )
+    ]
+
+
+def enum_variant_name(match: dict[str, object]) -> str:
+    """Extract the identifier prefix of an already-parsed enum-variant node."""
+    return str(match["text"]).lstrip().split("{", 1)[0].split("(", 1)[0].strip()
+
+
+def rc1_structural_authority_findings(
+    ast_grep: Path, root: Path, test_ranges: list[SyntaxRange]
+) -> set[Finding]:
+    """Enumerate RC1 cross-phase/lifecycle authority syntax nodes.
+
+    This is intentionally a structural inventory, not a heuristic semantic
+    analysis.  Each marker is an executable Rust node and the inventory is
+    exact by `(group, form, path)`, so additions (including a new enum variant
+    or writer) cannot silently bypass review.
+    """
+    results: set[Finding] = set()
+
+    # The checker owns these TypeCheckOutput facts/relations; HIR reads are the
+    # publication boundary.  Count all declared fields so adding a new
+    # checker-produced fact fails even if its first consumer has not landed.
+    output_ranges = [
+        node_range(match)
+        for match in run_query(
+            ast_grep, root, pattern="pub struct TypeCheckOutput { $$$BODY }"
+        )
+    ]
+    output_fields = {
+        str(match["text"]).split(":", 1)[0].removeprefix("pub ").strip()
+        for match in run_query(ast_grep, root, kind="field_declaration")
+        if any(range_contains(item, node_range(match)) for item in output_ranges)
+    }
+    for match in run_query(ast_grep, root, kind="field_declaration"):
+        if any(range_contains(item, node_range(match)) for item in output_ranges):
+            results.add(
+                finding("checker-hir-fact-relation", "produced-fact-field", match)
+            )
+    for match in run_query(ast_grep, root, kind="field_identifier"):
+        item = finding("checker-hir-fact-relation", "hir-publication-consumer", match)
+        if item.path.startswith("hew-hir/") and str(match["text"]) in output_fields:
+            results.add(item)
+
+    # ProducedValue is planned as a closed checker fact that distinguishes a
+    # `Subsumes` relation from an actually materialized value.  Older release
+    # worktrees do not have the carrier; deriving the variant set from the
+    # parsed enum keeps that zero baseline honest while the mutation contract
+    # exercises a nonempty composed carrier below.
+    produced_value_variants = contained_nodes(
+        ast_grep, root, enum_name="ProducedValue", node_kind="enum_variant"
+    )
+    declared_fields = run_query(ast_grep, root, kind="field_declaration")
+    for match in produced_value_variants:
+        variant = enum_variant_name(match)
+        results.add(
+            finding(
+                "checker-hir-fact-relation",
+                f"produced-value-variant-{variant}",
+                match,
+            )
+        )
+        anchors = [
+            field
+            for field in declared_fields
+            if range_contains(node_range(match), node_range(field))
+            and str(field["text"]).split(":", 1)[0].removeprefix("pub ").strip()
+            == "ordered_anchor"
+        ]
+        if anchors:
+            for anchor in anchors:
+                results.add(
+                    finding(
+                        "checker-hir-fact-relation",
+                        f"produced-value-ordered-anchor-{variant}",
+                        anchor,
+                    )
+                )
+        else:
+            results.add(
+                finding(
+                    "checker-hir-fact-relation",
+                    f"produced-value-missing-ordered-anchor-{variant}",
+                    match,
+                )
+            )
+    for variant in {enum_variant_name(match) for match in produced_value_variants}:
+        for match in run_query(
+            ast_grep, root, pattern=f"ProducedValue::{variant} {{ $$$FIELDS }}"
+        ):
+            results.add(
+                finding(
+                    "checker-hir-fact-relation",
+                    f"produced-value-use-{variant}",
+                    match,
+                )
+            )
+        for match in run_query(ast_grep, root, kind="match_pattern"):
+            if str(match["text"]).lstrip().startswith(f"ProducedValue::{variant}"):
+                results.add(
+                    finding(
+                        "checker-hir-fact-relation",
+                        f"produced-value-consumer-{variant}",
+                        match,
+                    )
+                )
+
+    # CallTarget is not presently a production carrier in this checkout.  The
+    # empty exact baseline is purposeful: introduction of either a declaration
+    # variant or executable use fails closed and must acquire an explicit row.
+    call_target_variants = contained_nodes(
+        ast_grep, root, enum_name="CallTarget", node_kind="enum_variant"
+    )
+    for match in call_target_variants:
+        results.add(finding("call-target-authority", "call-target-variant", match))
+    for variant in {enum_variant_name(match) for match in call_target_variants}:
+        for match in run_query(
+            ast_grep, root, pattern=f"CallTarget::{variant} {{ $$$FIELDS }}"
+        ):
+            results.add(finding("call-target-authority", "call-target-use", match))
+        for match in run_query(ast_grep, root, kind="match_pattern"):
+            if str(match["text"]).lstrip().startswith(f"CallTarget::{variant}"):
+                results.add(
+                    finding("call-target-authority", "call-target-consumer", match)
+                )
+
+    # SuspendKind has a real side-table carrier.  Count declaration variants,
+    # every executable path use (producer or consumer), and the canonical
+    # side-table writer separately.  New variants and unpaired writers thus
+    # cannot hide behind an existing broad match arm.
+    suspend_variants = contained_nodes(
+        ast_grep, root, enum_name="SuspendKind", node_kind="enum_variant"
+    )
+    for match in suspend_variants:
+        results.add(finding("suspend-authority", "suspend-kind-variant", match))
+    for variant in {enum_variant_name(match) for match in suspend_variants}:
+        for match in run_query(
+            ast_grep, root, pattern=f"SuspendKind::{variant} {{ $$$FIELDS }}"
+        ):
+            results.add(finding("suspend-authority", "suspend-kind-use", match))
+        for match in run_query(ast_grep, root, kind="match_pattern"):
+            if str(match["text"]).lstrip().startswith(f"SuspendKind::{variant}"):
+                results.add(
+                    finding("suspend-authority", "suspend-kind-consumer", match)
+                )
+    for match in run_query(ast_grep, root, pattern="$R.record_suspend_kind($K)"):
+        results.add(finding("suspend-authority", "suspend-kind-writer", match))
+
+    # Terminator variants serve the same lifecycle boundary.  The enum-node
+    # join catches a newly declared suspending terminator; path uses catch all
+    # result/source handling sites; finish_current_block is the source writer.
+    terminator_variants = contained_nodes(
+        ast_grep, root, enum_name="Terminator", node_kind="enum_variant"
+    )
+    suspending_terminator_names = set()
+    for match in terminator_variants:
+        name = enum_variant_name(match)
+        if name == "Suspend" or name.startswith("Suspending"):
+            suspending_terminator_names.add(name)
+            results.add(
+                finding("suspend-authority", "suspending-terminator-variant", match)
+            )
+    for variant in suspending_terminator_names:
+        for match in run_query(
+            ast_grep, root, pattern=f"Terminator::{variant} {{ $$$FIELDS }}"
+        ):
+            results.add(
+                finding("suspend-authority", "suspending-terminator-use", match)
+            )
+        for match in run_query(ast_grep, root, kind="match_pattern"):
+            if str(match["text"]).lstrip().startswith(f"Terminator::{variant}"):
+                results.add(
+                    finding(
+                        "suspend-authority", "suspending-terminator-consumer", match
+                    )
+                )
+        for match in run_query(
+            ast_grep,
+            root,
+            pattern=f"$R.finish_current_block(Terminator::{variant} {{ $$$FIELDS }})",
+        ):
+            results.add(
+                finding("suspend-authority", "suspending-terminator-writer", match)
+            )
+
+    # Owner retirement has three independent exit authorities.  These precise
+    # executable markers avoid comment-driven matches while retaining Join,
+    # abandon, and crash cleanup as separately reviewable classes.
+    for match in run_query(ast_grep, root, pattern="Terminator::Join { $$$FIELDS }"):
+        results.add(finding("owner-retirement-path", "join-owner-path", match))
+    for match in run_query(ast_grep, root, kind="match_pattern"):
+        if str(match["text"]).lstrip().startswith("Terminator::Join"):
+            results.add(finding("owner-retirement-path", "join-owner-consumer", match))
+    for kind in ("identifier", "field_identifier"):
+        for match in run_query(ast_grep, root, kind=kind):
+            if str(match["text"]) == "suspend_abandon_extra_drops":
+                results.add(
+                    finding("owner-retirement-path", "abandonment-owner-path", match)
+                )
+    for match in run_query(ast_grep, root, pattern="ActorHandlerKind::Crash"):
+        results.add(finding("owner-retirement-path", "crash-cleanup-owner-path", match))
+
+    return {item for item in results if not excluded(item, test_ranges)}
+
+
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
     test_ranges = test_only_ranges(ast_grep, root)
     findings: set[Finding] = set()
@@ -409,6 +1012,8 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
                 finding("string-method-identity", "qualified-format-macro", match)
             )
 
+    findings.update(semantic_owner_shortening_findings(ast_grep, root, test_ranges))
+    findings.update(rc1_structural_authority_findings(ast_grep, root, test_ranges))
     return {item for item in findings if not excluded(item, test_ranges)}, test_ranges
 
 
@@ -552,8 +1157,28 @@ def scalar_span_site_findings(
 
 def canonical_stage(group: str, form: str, path: str) -> str:
     """Return the stage at which the plan can actually retire this seam."""
+    if group == "semantic-owner-shortening-sink" and form in {
+        "registry-key",
+        "def-id",
+        "nominal-id",
+        "call-target",
+        "runtime-resolution",
+    }:
+        if path.startswith(("hew-types/", "hew-hir/", "hew-analysis/")):
+            return "stage-1"
+        if path.startswith("hew-codegen-rs/"):
+            return "stage-5"
+        if path.endswith(("lower/drop_plan.rs", "lower/mod.rs")):
+            return "stage-3"
+        return "stage-4"
     if group == "checker-hir-publication":
         return "stage-2"
+    if group == "checker-hir-fact-relation":
+        return "stage-2"
+    if group == "call-target-authority":
+        return "stage-4"
+    if group in {"suspend-authority", "owner-retirement-path"}:
+        return "stage-3"
     if group == "mir-ownership-sink":
         return "stage-4"
     if group == "legacy-heap-reader":

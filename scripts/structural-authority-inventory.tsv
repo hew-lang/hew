@@ -6,11 +6,25 @@ checker-hir-publication	checker-insert-call	hew-types/src/check/expressions.rs	1
 checker-hir-publication	checker-insert-call	hew-types/src/check/methods.rs	2	stage-2	checker publication awaits SourceOccurrence projection
 checker-hir-publication	checker-insert-call	hew-types/src/check/resolution.rs	2	stage-2	checker publication awaits SourceOccurrence projection
 checker-hir-publication	checker-insert-call	hew-types/src/check/types.rs	1	stage-2	checker publication awaits SourceOccurrence projection
+checker-hir-fact-relation	produced-fact-field	hew-types/src/check/types.rs	50	stage-2	RC1 syntax-node authority inventory
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/lower.rs	259	stage-2	RC1 syntax-node authority inventory
+checker-hir-fact-relation	hir-publication-consumer	hew-hir/src/node.rs	4	stage-2	RC1 syntax-node authority inventory
 legacy-heap-reader	heap-reader-call	hew-codegen-rs/src/llvm.rs	2	stage-5	codegen type walk awaits carried lifecycle authority
 legacy-heap-reader	heap-reader-call	hew-mir/src/model.rs	2	stage-5	downstream layout projection awaits canonical nominal authority
 legacy-heap-reader	heap-reader-call	hew-mir/src/ownership.rs	6	stage-4	ownership type walk awaits the one MIR authority adapter
 mir-ownership-sink	ownership-classify-call	hew-mir/src/lower/ownership.rs	3	stage-4	MIR classification awaits checker-authored flow projection
 mir-ownership-sink	ownership-classify-call	hew-mir/src/ownership.rs	1	stage-4	MIR classification awaits checker-authored flow projection
+owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/closure_gen.rs	2	stage-3	RC1 syntax-node authority inventory
+owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/drop_plan.rs	1	stage-3	RC1 syntax-node authority inventory
+owner-retirement-path	abandonment-owner-path	hew-mir/src/lower/mod.rs	1	stage-3	RC1 syntax-node authority inventory
+owner-retirement-path	crash-cleanup-owner-path	hew-mir/src/lower/machine_synth.rs	1	stage-3	RC1 syntax-node authority inventory
+owner-retirement-path	join-owner-consumer	hew-codegen-rs/src/llvm.rs	2	stage-3	RC1 syntax-node authority inventory
+owner-retirement-path	join-owner-consumer	hew-mir/src/dataflow.rs	1	stage-3	RC1 syntax-node authority inventory
+owner-retirement-path	join-owner-consumer	hew-mir/src/dump.rs	1	stage-3	RC1 syntax-node authority inventory
+owner-retirement-path	join-owner-consumer	hew-mir/src/lower/drop_plan.rs	2	stage-3	RC1 syntax-node authority inventory
+owner-retirement-path	join-owner-consumer	hew-mir/src/lower/mod.rs	1	stage-3	RC1 syntax-node authority inventory
+owner-retirement-path	join-owner-consumer	hew-mir/src/lower/suspend_places.rs	3	stage-3	RC1 syntax-node authority inventory
+owner-retirement-path	join-owner-path	hew-mir/src/lower/task.rs	1	stage-3	RC1 syntax-node authority inventory
 semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/hover.rs	2	stage-1	hover variant display lookup extracts a leaf spelling
 semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/inlay_hints.rs	1	stage-1	inlay display adapter extracts a leaf spelling
 semantic-leaf-name	leaf-rsplit-field	hew-analysis/src/signature_help.rs	2	stage-1	signature display adapter extracts a leaf spelling
@@ -64,6 +78,41 @@ semantic-leaf-name	short-name-identifier	hew-types/src/method_resolution.rs	4	st
 semantic-leaf-name	short-name-identifier	hew-types/src/module_registry.rs	1	stage-1	module registry resolves qualified names through leaf identity
 semantic-leaf-name	short-name-identifier	hew-types/src/stdlib_loader.rs	5	stage-1	stdlib declaration matching uses leaf identity
 semantic-leaf-name	short-name-identifier	hew-types/src/traits.rs	5	stage-1	trait membership and lookup use leaf identity
+semantic-owner-shortening-sink	registry-key	hew-codegen-rs/src/layout.rs	5	stage-5	layout registry compatibility lookups still consume shortened nominal spellings
+semantic-owner-shortening-sink	registry-key	hew-codegen-rs/src/llvm.rs	13	stage-5	LLVM layout registries still accept shortened nominal lookup keys
+semantic-owner-shortening-sink	registry-key	hew-codegen-rs/src/thunks.rs	1	stage-5	thunk layout lookup still consumes a shortened nominal key
+semantic-owner-shortening-sink	registry-key	hew-hir/src/lower.rs	17	stage-1	HIR registries still publish or resolve module-leaf compatibility keys
+semantic-owner-shortening-sink	registry-key	hew-types/src/check/methods.rs	2	stage-1	checker type lookup still accepts a shortened current-module key
+semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	10	stage-1	checker registration still publishes module-leaf compatibility keys
+semantic-owner-shortening-sink	registry-key	hew-types/src/check/resolution.rs	1	stage-1	checker resolution still queries a registry with a shortened owner key
+suspend-authority	suspend-kind-consumer	hew-codegen-rs/src/llvm.rs	18	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-consumer	hew-mir/src/dump.rs	12	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-consumer	hew-mir/src/lower/mod.rs	1	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-consumer	hew-mir/src/lower/suspend_places.rs	17	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-use	hew-mir/src/lower/actor.rs	3	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-use	hew-mir/src/lower/closure_gen.rs	1	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-use	hew-mir/src/lower/expr.rs	6	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-use	hew-mir/src/lower/task.rs	5	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-variant	hew-mir/src/model.rs	12	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-writer	hew-mir/src/lower/actor.rs	3	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-writer	hew-mir/src/lower/closure_gen.rs	1	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-writer	hew-mir/src/lower/expr.rs	6	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspend-kind-writer	hew-mir/src/lower/task.rs	5	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-consumer	hew-codegen-rs/src/llvm.rs	4	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-consumer	hew-mir/src/dump.rs	4	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/drop_plan.rs	2	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/mod.rs	4	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-consumer	hew-mir/src/lower/suspend_places.rs	6	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-consumer	hew-mir/src/model.rs	5	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-use	hew-mir/src/lower/actor.rs	3	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-use	hew-mir/src/lower/closure_gen.rs	1	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-use	hew-mir/src/lower/expr.rs	6	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-use	hew-mir/src/lower/task.rs	7	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-variant	hew-mir/src/model.rs	3	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-writer	hew-mir/src/lower/actor.rs	3	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-writer	hew-mir/src/lower/closure_gen.rs	1	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-writer	hew-mir/src/lower/expr.rs	6	stage-3	RC1 syntax-node authority inventory
+suspend-authority	suspending-terminator-writer	hew-mir/src/lower/task.rs	7	stage-3	RC1 syntax-node authority inventory
 string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	5	stage-1	parsed format macro constructs a qualified string
 string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	5	stage-1	parsed format macro constructs a qualified string
 string-method-identity	qualified-format-macro	hew-analysis/src/signature_help.rs	1	stage-1	parsed format macro constructs a qualified string

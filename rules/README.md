@@ -21,6 +21,7 @@ error-severity rules and the authority inventory remain fail-closed. `warning`/
 | Path | Domain | Invariant |
 |------|--------|-----------|
 | `rules/rust/fail-closed/` | codegen + checker fail-closed | CLAUDE.md §2 (Fail-Closed Codegen), §3 (Type Inference Boundary) |
+| `scripts/structural-authority-audit.py` | cross-stage semantic authority | Parsed AST inventory plus intraprocedural owner-shortening flow into registry/ID/call-target keys. |
 | `rules/rust/panics-nyi/` | panic / NYI hygiene | no new NYI; `unreachable!("desc")`; propagate errors |
 | `rules/rust/concurrency-drop/` | concurrency + drop safety | CLAUDE.md §1 (Drop Safety), §9 (Concurrency Safety) |
 | `rules/rust/hygiene/` | unsafe / debug hygiene | `// SAFETY:` justification, `transmute` audit, no `dbg!` |
@@ -43,6 +44,7 @@ Counts are findings on the tree when written; `0` rules are regression guards.
 |------|------|---------|
 | `ok-question-in-lowering` | 6 | `$E.ok()?` in codegen/mir/hir — silently returns `None`, swallowing the error (CLAUDE.md §2). |
 | `ty-var-constructed-post-inference` | 0 | Building `Ty::Var(..)` in post-inference crates (CLAUDE.md §3). |
+| `semantic-owner-shortening-sink` (authority audit) | inventory-ratcheted | `short_name(owner)`, qualified-path leaf extraction, or a module alias flowing through local bindings into registry, `DefId`, `NominalId`, or `CallTarget` keys. Display/diagnostic formatting and ordinary collection `.last()` calls are controls. |
 
 ### Rust — panics / NYI (`warning`)
 | Rule | Hits | Catches |

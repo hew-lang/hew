@@ -3945,6 +3945,9 @@ pub(crate) fn lower_call_runtime_abi(
         | F::VecCloneOwned
         | F::VecContainsLayout
         | F::VecContainsOwned
+        // Descriptor-backed clone-out is an intercepted `Terminator::Call`,
+        // never an `Instr::CallRuntimeAbi`.
+        | F::VecGet(VecGetElem::Clone)
         | F::VecNew
         | F::VecPopBool
         | F::VecPopLayout

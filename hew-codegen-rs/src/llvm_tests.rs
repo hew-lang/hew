@@ -437,6 +437,31 @@ fn empty_pipeline_with_const_42() -> IrPipeline {
     }
 }
 
+#[test]
+fn wasm_wasi_main_adapter_normalizes_source_integer_width() {
+    let ctx = Context::create();
+    let pipeline = empty_pipeline_with_const_42();
+    let machine =
+        target_machine_for_triple("wasm32-unknown-unknown").expect("wasm32 target machine");
+    let module =
+        build_module_for_target(&ctx, &pipeline, "wasi_main_adapter", Some(&machine), None)
+            .expect("WASI main adapter module must build");
+    let ir = module.print_to_string().to_string();
+
+    assert!(
+        ir.contains("define i32 @__hew_wasi_main()"),
+        "WASI runtime entry adapter must have the canonical () -> i32 ABI:\n{ir}"
+    );
+    assert!(
+        ir.contains("call i64 @__original_main()"),
+        "adapter must call the source-shaped i64 main implementation:\n{ir}"
+    );
+    assert!(
+        ir.contains("trunc i64") && ir.contains("to i32"),
+        "adapter must normalize the source exit value to the WASI status width:\n{ir}"
+    );
+}
+
 /// Build `empty_pipeline_with_const_42` for `triple` with a `-g` debug input
 /// and return the printed module IR. Threading a `DebugInput` is what makes
 /// `build_module_for_target` construct the `DICompileUnit` and add the

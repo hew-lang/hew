@@ -248,6 +248,18 @@ thread_local! {
 
 struct CrashCleanupDrainGuard;
 
+#[inline]
+fn publish_crash_cleanup_drain_to_signal_handler(active: bool) {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::signal::set_crash_cleanup_drain_active(active);
+
+    // wasm32 has no native signal module or hardware-fault longjmp boundary.
+    // The thread-local drain-depth guard remains authoritative for cooperative
+    // trap rejection without claiming native signal containment.
+    #[cfg(target_arch = "wasm32")]
+    let _ = active;
+}
+
 impl CrashCleanupDrainGuard {
     fn enter() -> Option<Self> {
         CRASH_CLEANUP_DRAIN_DEPTH.with(|depth| {
@@ -255,7 +267,7 @@ impl CrashCleanupDrainGuard {
             let next = current.checked_add(1)?;
             depth.set(next);
             if current == 0 {
-                crate::signal::set_crash_cleanup_drain_active(true);
+                publish_crash_cleanup_drain_to_signal_handler(true);
             }
             Some(Self)
         })
@@ -268,7 +280,7 @@ impl Drop for CrashCleanupDrainGuard {
             let next = depth.get().saturating_sub(1);
             depth.set(next);
             if next == 0 {
-                crate::signal::set_crash_cleanup_drain_active(false);
+                publish_crash_cleanup_drain_to_signal_handler(false);
             }
         });
     }

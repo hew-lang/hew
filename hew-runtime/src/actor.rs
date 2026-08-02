@@ -4052,6 +4052,41 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     HewError::ErrActorStopped as i32
 }
 
+/// Cooperative-WASM implementation of by-ID local actor delivery.
+///
+/// The single-threaded runtime still publishes actors in `live_actors`; pin the
+/// exact ID for the complete mailbox copy, then wake the target on successful
+/// delivery. Distributed routing is checker-rejected on wasm32, so a missing
+/// local actor is always the explicit stopped-actor failure.
+///
+/// # Safety
+///
+/// `data` must point to at least `size` readable bytes, or be null when `size`
+/// is zero. `dispatch` is an opaque type key and is not dereferenced.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_by_id(
+    actor_id: u64,
+    _dispatch: *const c_void,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> c_int {
+    live_actors::with_actor_send_by_id(actor_id, |actor| {
+        // SAFETY: the live-actor pin keeps `actor` and its cooperative mailbox
+        // valid; the caller supplies the readable payload range.
+        let result = unsafe {
+            crate::mailbox_wasm::hew_mailbox_send((*actor).mailbox.cast(), msg_type, data, size)
+        };
+        if result == HewError::Ok as i32 {
+            // SAFETY: successful delivery targets the same pinned live actor.
+            unsafe { wake_wasm_actor(actor) };
+        }
+        result
+    })
+    .unwrap_or(HewError::ErrActorStopped as i32)
+}
+
 /// Resolve the exact actor incarnation behind a stable local handle.
 ///
 /// # Safety

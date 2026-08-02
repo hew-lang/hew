@@ -31154,7 +31154,7 @@ fn emit_wasm_main_export_wrapper<'ctx>(
     let Some(symbol) = fn_symbols.get("main").copied() else {
         return Ok(());
     };
-    let (original, _return_ty, _returns_unit) =
+    let (original, _return_ty, returns_unit) =
         symbol.real("main", "emit_wasm_main_export_wrapper")?;
     let fn_ty = original.get_type();
     let params = fn_ty.get_param_types();
@@ -31184,6 +31184,50 @@ fn emit_wasm_main_export_wrapper<'ctx>(
             .build_return(None)
             .llvm_ctx("WASM main wrapper return void")?;
     }
+
+    // The WASI runtime owns `_start` and therefore needs one stable C ABI
+    // regardless of the Hew source-level `main` return width. Keep the
+    // freestanding `main` export above source-shaped, but publish a dedicated
+    // `() -> i32` adapter for `_start`: unit maps to success and integer exit
+    // values use the platform status width. This prevents wasm-ld from
+    // synthesizing a signature-mismatch trap for the common `main() -> i64`
+    // spelling.
+    let wasi_ty = ctx.i32_type().fn_type(&[], false);
+    let wasi_entry = llvm_mod.add_function("__hew_wasi_main", wasi_ty, Some(Linkage::External));
+    let wasi_block = ctx.append_basic_block(wasi_entry, "entry");
+    let wasi_builder = ctx.create_builder();
+    wasi_builder.position_at_end(wasi_block);
+    let wasi_call = wasi_builder
+        .build_call(original, &[], "hew_source_main_call")
+        .llvm_ctx("WASI source main adapter call")?;
+    let exit_code = if returns_unit {
+        ctx.i32_type().const_zero()
+    } else {
+        let value = wasi_call
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("WASI source main returned no value".into()))?;
+        let integer = match value {
+            BasicValueEnum::IntValue(integer) => integer,
+            _ => {
+                return Err(CodegenError::FailClosed(
+                    "WASI source main must return unit or an integer exit status".into(),
+                ));
+            }
+        };
+        match integer.get_type().get_bit_width().cmp(&32) {
+            std::cmp::Ordering::Greater => wasi_builder
+                .build_int_truncate(integer, ctx.i32_type(), "wasi_exit_trunc")
+                .llvm_ctx("truncate WASI exit status")?,
+            std::cmp::Ordering::Less => wasi_builder
+                .build_int_s_extend(integer, ctx.i32_type(), "wasi_exit_extend")
+                .llvm_ctx("extend WASI exit status")?,
+            std::cmp::Ordering::Equal => integer,
+        }
+    };
+    wasi_builder
+        .build_return(Some(&exit_code))
+        .llvm_ctx("WASI source main adapter return")?;
 
     Ok(())
 }

@@ -5947,6 +5947,44 @@ pub(super) fn derive_spawn_consumed_handle_bindings(
     }
     result
 }
+/// Bindings whose typed builtin handle is a non-owning projection of a live
+/// aggregate owner.
+///
+/// `compute_projection_alias_taint` is the physical value-flow authority: it
+/// seeds no-retain record/tuple/actor-state field loads and enum payload moves,
+/// propagates them through whole-value moves, and deliberately excludes a
+/// destination whose source projection was neutralized during an ownership
+/// transfer. This adapter intersects that physical fact with the exact builtin
+/// handle type classifier. The result is therefore narrow in both directions:
+///
+/// - a borrowed `Result::Ok(monitor_ref)`/`Option::Some(handle)` binder remains
+///   owned by its parent aggregate and must not acquire a second close;
+/// - a consumed binder whose source slot was neutralized is not tainted and
+///   remains the sole close authority;
+/// - a user resource or a same-leaf user shadow never enters this set because
+///   it has no builtin discriminator.
+///
+/// The drop planner and W3.053 gate consume this same set so legality cannot say
+/// "borrow" while elaboration still emits a second affine-resource drop.
+#[must_use]
+pub(super) fn derive_borrowed_builtin_handle_projection_alias_bindings(
+    binding_locals: &HashMap<BindingId, Place>,
+    local_tys: &[ResolvedTy],
+    projection_alias_tainted: &HashSet<u32>,
+) -> HashSet<BindingId> {
+    binding_locals
+        .iter()
+        .filter_map(|(binding, place)| {
+            let local = base_local(*place)?;
+            (projection_alias_tainted.contains(&local)
+                && local_tys
+                    .get(local as usize)
+                    .is_some_and(ty_is_owned_handle_leaf))
+            .then_some(*binding)
+        })
+        .collect()
+}
+
 /// W3.053 catch-all FAIL-CLOSED gate for the combinatorial owned-handle
 /// aggregate-extraction double-free class.
 ///
@@ -8807,6 +8845,63 @@ mod w3053_aggregate_handle_double_free_gate {
         )
     }
 
+    fn monitor_ref_ty() -> ResolvedTy {
+        ResolvedTy::named_builtin(
+            "std.link_monitor.MonitorRef",
+            BuiltinType::MonitorRef,
+            vec![],
+        )
+    }
+
+    #[test]
+    fn borrowed_builtin_handle_projection_aliases_are_exactly_typed() {
+        let monitor = BindingId(1);
+        let stream = BindingId(2);
+        let cancellation = BindingId(3);
+        let shadow = BindingId(4);
+        let user_resource = BindingId(5);
+        let transferred = BindingId(6);
+        let binding_locals = HashMap::from([
+            (monitor, Place::Local(1)),
+            (stream, Place::Local(2)),
+            (cancellation, Place::Local(3)),
+            (shadow, Place::Local(4)),
+            (user_resource, Place::Local(5)),
+            (transferred, Place::Local(6)),
+        ]);
+        let local_tys = vec![
+            ResolvedTy::Unit,
+            monitor_ref_ty(),
+            ResolvedTy::named_builtin("std.io.Stream", BuiltinType::Stream, vec![ResolvedTy::I64]),
+            ResolvedTy::CancellationToken,
+            ResolvedTy::named_user("MonitorRef", vec![]),
+            ResolvedTy::named_user("UserResource", vec![]),
+            monitor_ref_ty(),
+        ];
+        // Locals 1-5 are no-retain aggregate projections. Local 6 models a
+        // real move-out: its source slot was neutralized, so the taint engine
+        // deliberately did not mark the destination.
+        let tainted = HashSet::from([1, 2, 3, 4, 5]);
+        let aliases = derive_borrowed_builtin_handle_projection_alias_bindings(
+            &binding_locals,
+            &local_tys,
+            &tainted,
+        );
+        assert_eq!(
+            aliases,
+            HashSet::from([monitor, stream, cancellation]),
+            "only exact builtin handles projected without transfer are borrowed aliases"
+        );
+        assert!(
+            !aliases.contains(&shadow) && !aliases.contains(&user_resource),
+            "same-leaf user types and user resources must not acquire builtin alias policy"
+        );
+        assert!(
+            !aliases.contains(&transferred),
+            "a neutralized projection move-out must retain its destination close authority"
+        );
+    }
+
     fn block(instructions: Vec<Instr>) -> BasicBlock {
         BasicBlock {
             id: 0,
@@ -8814,6 +8909,87 @@ mod w3053_aggregate_handle_double_free_gate {
             instructions,
             terminator: Terminator::Return,
         }
+    }
+
+    #[test]
+    fn result_option_tuple_and_record_handle_projections_share_one_alias_authority() {
+        let result_payload = Place::EnumVariant {
+            local: 10,
+            variant_idx: 0,
+            field_idx: 0,
+        };
+        let option_payload = Place::EnumVariant {
+            local: 11,
+            variant_idx: 1,
+            field_idx: 0,
+        };
+        let transferred_payload = Place::EnumVariant {
+            local: 12,
+            variant_idx: 0,
+            field_idx: 0,
+        };
+        let blocks = vec![block(vec![
+            Instr::Move {
+                dest: Place::Local(1),
+                src: result_payload,
+            },
+            Instr::Move {
+                dest: Place::Local(2),
+                src: option_payload,
+            },
+            Instr::TupleFieldLoad {
+                tuple: Place::Local(13),
+                field_index: 0,
+                dest: Place::Local(3),
+            },
+            Instr::RecordFieldLoad {
+                record: Place::Local(14),
+                field_offset: FieldOffset(0),
+                dest: Place::Local(4),
+            },
+            Instr::Move {
+                dest: Place::Local(5),
+                src: transferred_payload,
+            },
+            Instr::NeutralizePayloadSlot {
+                place: transferred_payload,
+                transferee: None,
+                authority: crate::model::NeutralizeAuthority::EphemeralTempConsume,
+            },
+        ])];
+        let mut local_tys = vec![ResolvedTy::Unit; 15];
+        for ty in local_tys.iter_mut().take(6).skip(1) {
+            *ty = monitor_ref_ty();
+        }
+        local_tys[10] = ResolvedTy::named_user("ResultCarrier", vec![]);
+        local_tys[11] = ResolvedTy::named_user("OptionCarrier", vec![]);
+        local_tys[12] = ResolvedTy::named_user("TransferCarrier", vec![]);
+        local_tys[13] = ResolvedTy::Tuple(vec![monitor_ref_ty(), ResolvedTy::I64]);
+        local_tys[14] = ResolvedTy::named_user("MonitorHolder", vec![]);
+        let binding_locals = HashMap::from([
+            (BindingId(1), Place::Local(1)),
+            (BindingId(2), Place::Local(2)),
+            (BindingId(3), Place::Local(3)),
+            (BindingId(4), Place::Local(4)),
+            (BindingId(5), Place::Local(5)),
+        ]);
+
+        let tainted =
+            compute_projection_alias_taint(&blocks, &HashSet::new(), &HashSet::new(), &local_tys);
+        let aliases = derive_borrowed_builtin_handle_projection_alias_bindings(
+            &binding_locals,
+            &local_tys,
+            &tainted,
+        );
+        assert_eq!(
+            aliases,
+            HashSet::from([BindingId(1), BindingId(2), BindingId(3), BindingId(4)]),
+            "Result, Option, tuple, and record borrows must all stay parent-owned"
+        );
+        assert!(
+            !aliases.contains(&BindingId(5)),
+            "neutralizing a variant slot transfers sole close authority to the destination"
+        );
     }
 
     fn is_refused(findings: &[MirCheck], binding: BindingId) -> bool {

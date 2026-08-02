@@ -4,14 +4,15 @@ use super::*;
 use super::{
     base_local, blocks_reachable_from, check_duplex_split_state,
     compute_collection_interior_alias_taint, compute_projection_alias_taint, dataflow,
-    derive_bytes_actor_transfer_blocks, derive_consumed_local_aggregate_member_bindings,
-    derive_cow_fresh_borrowed_owner, derive_cow_sole_owner, derive_enum_composite_drop_allowed,
-    derive_local_bytes_drop_allowed, derive_local_collection_drop_allowed,
-    derive_owned_record_drop_allowed, derive_returned_aggregate_member_bindings,
-    derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
-    derive_tuple_composite_drop_allowed, instr_source_places, place_is_interior_projection,
-    place_refs_local, propagate_whole_value_alias_roots, retained_string_terminator_drop_safe,
-    short_name, string_call_borrows, terminator_source_places, user_record_layout_key,
+    derive_borrowed_builtin_handle_projection_alias_bindings, derive_bytes_actor_transfer_blocks,
+    derive_consumed_local_aggregate_member_bindings, derive_cow_fresh_borrowed_owner,
+    derive_cow_sole_owner, derive_enum_composite_drop_allowed, derive_local_bytes_drop_allowed,
+    derive_local_collection_drop_allowed, derive_owned_record_drop_allowed,
+    derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
+    derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
+    instr_source_places, place_is_interior_projection, place_refs_local,
+    propagate_whole_value_alias_roots, retained_string_terminator_drop_safe, short_name,
+    string_call_borrows, terminator_source_places, user_record_layout_key,
     vec_iter_record_init_vec_source, BTreeMap, BasicBlock, BindingId, BlockKind, Builder,
     BuiltinType, CheckedMirFunction, ClosureEnvFieldOwnership, ClosurePairRhs, Disposition,
     DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet,
@@ -1337,6 +1338,12 @@ pub(super) fn elaborate(
                     == Some(*local)
             })
     });
+    let borrowed_builtin_handle_projection_aliases =
+        derive_borrowed_builtin_handle_projection_alias_bindings(
+            &builder.binding_locals,
+            &builder.locals,
+            &projection_alias_tainted,
+        );
     // A `ConsumedAt` disposition proves the value is absent only AFTER its
     // consuming instruction.  It can still be live at an earlier Return or a
     // coroutine-abandon edge, so the LIFO template must retain it and let the
@@ -1371,6 +1378,7 @@ pub(super) fn elaborate(
         &builder.conditional_record_drop_flags,
         &builder.projected_payload_overwrite_flags,
         &projection_alias_tainted,
+        &borrowed_builtin_handle_projection_aliases,
     );
     let ordinary_lifo_drops: Vec<ElabDrop> = lifo_drops
         .iter()
@@ -1666,6 +1674,12 @@ pub(super) fn elaborate(
             let Some(ty) = owned_ty_by_binding.get(binding).copied() else {
                 continue;
             };
+            // A borrowed builtin-handle projection never owns an independent
+            // close, including on an early exit before a later return handoff.
+            // Its parent aggregate remains the sole release authority.
+            if borrowed_builtin_handle_projection_aliases.contains(binding) {
+                continue;
+            }
             let Some(&place) = builder.binding_locals.get(binding) else {
                 continue;
             };
@@ -2931,11 +2945,19 @@ fn apply_balance_instr(
             // neutralize anywhere — see `collect_payload_alias_map`) or paid
             // by the `NeutralizePayloadSlot` that follows it; no event here.
         }
-        Instr::BytesRetain { value } | Instr::StringRetain { value, .. } => {
+        Instr::BytesRetain { value }
+        | Instr::StringRetain {
+            value,
+            condition: crate::model::StringRetainCondition::Always,
+        } => {
             // An exact retain+move pair mints the destination generation; do
             // not also charge the source with a second anonymous owner. Every
-            // other retain creates a co-owner that an owning sink must consume
-            // independently of the original local's terminal drop.
+            // other whole-value retain creates a co-owner that an owning sink
+            // must consume independently of the original local's terminal
+            // drop. Conditional string retains are leaf-layout operations:
+            // they retain only nested strings before a borrowed aggregate or
+            // actor-state field copy, so they do not mint another owner of a
+            // tracked non-string root (for example a Generator).
             let paired_move = cx
                 .retained_move_sites
                 .contains(&(block, instr_index.saturating_add(1)));
@@ -5807,6 +5829,7 @@ fn build_lifo_drops(
     conditional_record_drop_flags: &HashMap<BindingId, Place>,
     projected_payload_overwrite_flags: &HashMap<BindingId, Place>,
     projection_alias_tainted: &HashSet<u32>,
+    borrowed_builtin_handle_projection_aliases: &HashSet<BindingId>,
 ) -> Vec<ElabDrop> {
     let mut drops = Vec::new();
     for (binding, _name, ty) in owned_locals.iter().rev() {
@@ -5842,6 +5865,16 @@ fn build_lifo_drops(
         // re-admit it. LESSONS: raii-null-after-move, cleanup-all-exits,
         // boundary-fail-closed.
         if spawn_consumed_handle_members.contains(binding) {
+            continue;
+        }
+        // A typed builtin handle projected without retain from a live
+        // aggregate remains owned by that aggregate. The projection-alias
+        // derivation excludes neutralized move-outs, so this skip applies only
+        // to borrow aliases; a transferred payload keeps its destination drop.
+        // Place this before every drop-class arm because field-bearing handles
+        // such as MonitorRef may otherwise route through the recursive record
+        // arm before reaching the scalar affine-resource arm.
+        if borrowed_builtin_handle_projection_aliases.contains(binding) {
             continue;
         }
         // W5.016 — owned-element `Vec<T>` local (an element that owns heap:
@@ -9586,6 +9619,40 @@ mod obligation_balance_validator {
             ),
             "one terminal drop cannot pay two owner mints after an explicit retain: {findings:?}"
         );
+    }
+
+    #[test]
+    fn conditional_string_leaf_retain_does_not_mint_whole_root_owner() {
+        for condition in [
+            crate::model::StringRetainCondition::AggregateBorrowedIngress,
+            crate::model::StringRetainCondition::ActorStateRecordBorrowedIngress {
+                state_field: crate::model::FieldOffset(0),
+                record_path: vec![crate::model::FieldOffset(1)],
+            },
+        ] {
+            let blocks = vec![block(
+                0,
+                vec![
+                    mint(1),
+                    Instr::StringRetain {
+                        value: Place::Local(1),
+                        condition,
+                    },
+                ],
+                Terminator::Return,
+            )];
+            let plans = vec![(
+                ExitPath::Return { block: 0 },
+                DropPlan {
+                    drops: vec![plain_drop(Place::Local(1))],
+                },
+            )];
+            let findings = run(blocks, plans, &[(1, "aggregate")]);
+            assert!(
+                findings.is_empty(),
+                "a leaf-layout retain must not create a second whole-root owner: {findings:?}"
+            );
+        }
     }
 
     #[test]

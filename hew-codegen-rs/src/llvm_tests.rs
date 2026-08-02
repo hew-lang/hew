@@ -14757,6 +14757,24 @@ fn record_inplace_drop_name_mangles_generic_instantiation() {
         record_inplace_drop_name(&ResolvedTy::named_user("HashMapIter", cursor_args)).unwrap(),
         cursor_expected,
     );
+    // Fixed-shape compiler records share the same disjoint namespace. A user
+    // record with the source-facing leaf `CrashInfo` keeps its own ordinary
+    // helper key and therefore cannot inherit the builtin message-field drop.
+    let crash_info_expected =
+        hew_hir::compiler_record_layout_key(hew_types::BuiltinType::CrashInfo, &[]).unwrap();
+    assert_eq!(
+        record_inplace_drop_name(&ResolvedTy::named_builtin(
+            "CrashInfo",
+            hew_types::BuiltinType::CrashInfo,
+            vec![],
+        ))
+        .unwrap(),
+        crash_info_expected,
+    );
+    assert_eq!(
+        record_inplace_drop_name(&ResolvedTy::named_user("CrashInfo", vec![])).unwrap(),
+        "CrashInfo",
+    );
     // A non-record type fails closed (never a dangling helper name).
     assert!(matches!(
         record_inplace_drop_name(&ResolvedTy::I64),

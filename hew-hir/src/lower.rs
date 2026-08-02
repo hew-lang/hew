@@ -2241,6 +2241,26 @@ pub fn lower_program_with_mono_cap(
 ) -> LowerOutput {
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
     let file_import_module_idx = file_import_item_module_indices(program);
+    // Source items flattened from a file import still belong to that file's
+    // declaration namespace.  Compute the checker-aligned module-name carrier
+    // once and use it in every HIR pass that creates declaration identity,
+    // not only while lowering executable bodies in the third pass.
+    let module_idx_to_name: HashMap<u32, String> = {
+        let mut names = HashMap::new();
+        if let Some(module_graph) = &program.module_graph {
+            let mut module_idx = 0_u32;
+            for module_id in &module_graph.topo_order {
+                if *module_id == module_graph.root {
+                    continue;
+                }
+                if module_graph.modules.contains_key(module_id) {
+                    module_idx += 1;
+                    names.insert(module_idx, module_id.path.join("."));
+                }
+            }
+        }
+        names
+    };
     ctx.seed_stdlib_fn_registry();
     let builtin_receiver_impl_program = builtin_receiver_impl_program();
     let builtin_receiver_impl_output = builtin_receiver_impl_program
@@ -2351,7 +2371,9 @@ pub fn lower_program_with_mono_cap(
     // references in call expressions resolve to the correct return type.
     // Diagnostics from this pass are discarded — the same types are re-lowered
     // in the second pass, which is where canonical diagnostics are emitted.
-    for (item, _) in &program.items {
+    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+        ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
+        ctx.current_module_name = module_idx_to_name.get(&ctx.current_module_idx).cloned();
         match item {
             Item::Function(func) => {
                 ctx.register_fn_entry(&func.name, func);
@@ -2452,6 +2474,8 @@ pub fn lower_program_with_mono_cap(
             | Item::Supervisor(_) => {}
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     // Pre-pass: register user-module pub fn signatures under their qualified,
     // native-symbol-safe key (e.g. `greeting$hello`) so that HIR's
     // `RewriteModuleQualifiedToFunction` arm can resolve the callee `ItemId`
@@ -3305,9 +3329,15 @@ pub fn lower_program_with_mono_cap(
     let mut type_decl_cache: HashMap<*const hew_parser::ast::TypeDecl, HirTypeDecl> =
         HashMap::new();
     let mut diagnostic_source_modules: HashMap<ItemId, String> = HashMap::new();
-    for (item, span) in &program.items {
+    for (item_idx, (item, span)) in program.items.iter().enumerate() {
         if let Item::TypeDecl(decl) = item {
-            let hir_decl = ctx.lower_type_decl(decl, span.clone());
+            ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
+            ctx.current_module_name = module_idx_to_name.get(&ctx.current_module_idx).cloned();
+            let hir_decl = if let Some(module) = ctx.current_module_name.clone() {
+                ctx.lower_imported_type_decl(decl, span.clone(), &module)
+            } else {
+                ctx.lower_type_decl(decl, span.clone())
+            };
             let marker = hir_decl.marker;
             let close_method = if marker == ResourceMarker::Resource {
                 hir_decl
@@ -3331,8 +3361,13 @@ pub fn lower_program_with_mono_cap(
             } else {
                 None
             };
+            let class_entry = (marker, close_method);
             ctx.type_classes
-                .insert(hir_decl.name.clone(), (marker, close_method));
+                .insert(hir_decl.name.clone(), class_entry.clone());
+            if hir_decl.defining_module.is_some() {
+                ctx.type_classes
+                    .insert(hir_decl.qualified_name(), class_entry);
+            }
             // Snapshot the enum's variant descriptors so call/struct-init
             // lowering can resolve payload ctors to `MachineVariantCtor`
             // without re-walking the parser AST.
@@ -3357,6 +3392,8 @@ pub fn lower_program_with_mono_cap(
             type_decl_cache.insert(decl as *const _, hir_decl);
         }
     }
+    ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
     for (item, _) in &program.items {
         if let Item::Machine(machine) = item {
             ctx.register_machine_ctor_variant_metadata(None, machine);
@@ -3796,22 +3833,6 @@ pub fn lower_program_with_mono_cap(
     // the full path — not the short last segment — is what lets HIR's
     // `import_type_name_aliases` lookups hit the keys the checker wrote for
     // depth-≥2 importers.
-    let module_idx_to_name: HashMap<u32, String> = {
-        let mut m = HashMap::new();
-        if let Some(mg) = &program.module_graph {
-            let mut idx: u32 = 0;
-            for mod_id in &mg.topo_order {
-                if *mod_id == mg.root {
-                    continue;
-                }
-                if mg.modules.contains_key(mod_id) {
-                    idx += 1;
-                    m.insert(idx, mod_id.path.join("."));
-                }
-            }
-        }
-        m
-    };
     let mut items: Vec<HirItem> = Vec::new();
     let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
@@ -3895,7 +3916,12 @@ pub fn lower_program_with_mono_cap(
                         ),
                     ));
                 }
-                items.push(HirItem::Actor(ctx.lower_actor(actor, span.clone(), None)));
+                let defining_module = ctx.current_module_name.clone();
+                items.push(HirItem::Actor(ctx.lower_actor(
+                    actor,
+                    span.clone(),
+                    defining_module.as_deref(),
+                )));
             }
             Item::Record(decl) => {
                 items.push(HirItem::Record(ctx.lower_record_decl(decl, span.clone())));
@@ -4768,7 +4794,12 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.type_classes,
         &mut ctx.diagnostics,
     );
-    admit_declared_opaque_resource_lifecycles(&items, &mut ctx.type_classes, &mut ctx.diagnostics);
+    admit_declared_opaque_resource_lifecycles(
+        &items,
+        &ctx.opaque_resource_candidates,
+        &mut ctx.type_classes,
+        &mut ctx.diagnostics,
+    );
     admit_resource_record_lifecycles(&items, &mut ctx.type_classes, &mut ctx.diagnostics);
 
     let mut module = HirModule {
@@ -5101,6 +5132,7 @@ fn admit_opaque_resource_lifecycles(
 )]
 fn admit_declared_opaque_resource_lifecycles(
     items: &[HirItem],
+    graph: &hew_types::OpaqueResourceCandidateGraph,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -5114,6 +5146,19 @@ fn admit_declared_opaque_resource_lifecycles(
         }
         _ => None,
     }) {
+        // The authored fallback exists only when the checker discovered no
+        // producer/release contract for this exact declaration. Once a
+        // candidate or conflict exists, the checker graph owns the lifecycle
+        // decision; a failed validation must not be converted into an
+        // automatic close by this less-informed fallback.
+        let checker_owns_lifecycle_decision = graph.candidates.contains_key(&decl.declaration)
+            || graph
+                .conflicts
+                .iter()
+                .any(|conflict| conflict.resource_type == decl.declaration.full_path());
+        if checker_owns_lifecycle_decision {
+            continue;
+        }
         if type_classes
             .lifecycle_registry()
             .opaque_resource(&decl.declaration)
@@ -13369,10 +13414,12 @@ impl LowerCtx {
             id: self.ids.item(),
             node: self.ids.node(),
             name: decl.name.clone(),
-            // Root-program identity. Package-module actors get their
-            // defining module stamped by `lower_imported_actor`; file-import
-            // spliced actors lower through this path and stay root-identical.
-            defining_module: None,
+            // File-import items are flattened for source-order lowering, but
+            // flattening does not erase declaration ownership.  The third
+            // pass supplies their checker-aligned module identity here; a
+            // genuine root actor still carries `None`. Package-module actors
+            // use the same identity through `lower_imported_actor`.
+            defining_module: decl_module.map(str::to_string),
             state_fields,
             init,
             receive_handlers,
@@ -21349,17 +21396,17 @@ impl LowerCtx {
             .current_module_name
             .as_deref()
             .is_some_and(|module| self.file_import_module_names.contains(module));
-        // Root-visible source declarations (including flattened file imports)
-        // outrank the builtin catalog. A user `#[opaque] type Receiver {}` is a
+        // Root-visible source declarations outrank the builtin catalog. A user
+        // `#[opaque] type Receiver {}` is a
         // distinct nominal resource, not the std channel endpoint merely
         // because the short spelling collides.
-        if (self.current_module_name.is_none() || current_module_is_file_import)
+        if self.current_module_name.is_none()
             && !name.contains('.')
             && self.root_opaque_type_short_names.contains(name)
         {
             return ResolvedTy::named_opaque(name.to_string(), args);
         }
-        if !name.contains('.') && !current_module_is_file_import {
+        if !name.contains('.') {
             if let Some(module_owner) = self.current_module_name.as_deref() {
                 let qualified = format!("{module_owner}.{name}");
                 // Several compiler carriers (notably Stream/Sink and lifecycle
@@ -21558,11 +21605,7 @@ impl LowerCtx {
             return Some(self.resolve_named_type_ref(canonical, args));
         }
 
-        let current_module_is_file_import = self
-            .current_module_name
-            .as_deref()
-            .is_some_and(|module| self.file_import_module_names.contains(module));
-        if (self.current_module_name.is_none() || current_module_is_file_import)
+        if self.current_module_name.is_none()
             && self.root_visible_source_type_short_names.contains(name)
         {
             return Some(if self.root_opaque_type_short_names.contains(name) {
@@ -21572,23 +21615,21 @@ impl LowerCtx {
             });
         }
 
-        if !current_module_is_file_import {
-            if let Some(module_owner) = self.current_module_name.as_deref() {
-                let qualified = format!("{module_owner}.{name}");
-                if self.source_type_identities.contains(&qualified) {
-                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
-                        return Some(ResolvedTy::named_builtin(
-                            builtin.canonical_name(),
-                            builtin,
-                            args,
-                        ));
-                    }
-                    return Some(if self.resolves_to_opaque_handle(&qualified, name) {
-                        ResolvedTy::named_opaque(qualified, args)
-                    } else {
-                        ResolvedTy::named_user(qualified, args)
-                    });
+        if let Some(module_owner) = self.current_module_name.as_deref() {
+            let qualified = format!("{module_owner}.{name}");
+            if self.source_type_identities.contains(&qualified) {
+                if let Some(builtin) = self.qualified_source_builtin(&qualified) {
+                    return Some(ResolvedTy::named_builtin(
+                        builtin.canonical_name(),
+                        builtin,
+                        args,
+                    ));
                 }
+                return Some(if self.resolves_to_opaque_handle(&qualified, name) {
+                    ResolvedTy::named_opaque(qualified, args)
+                } else {
+                    ResolvedTy::named_user(qualified, args)
+                });
             }
         }
 
@@ -21748,12 +21789,12 @@ impl LowerCtx {
             };
         }
         if !name.contains('.')
-            && (self.current_module_name.is_none() || current_module_is_file_import)
+            && self.current_module_name.is_none()
             && self.root_opaque_type_short_names.contains(&name)
         {
             return ResolvedTy::named_opaque(name, args);
         }
-        if !name.contains('.') && !current_module_is_file_import {
+        if !name.contains('.') {
             if let Some(module_owner) = self.current_module_name.as_deref() {
                 let qualified = format!("{module_owner}.{name}");
                 if self
@@ -21958,36 +21999,20 @@ impl LowerCtx {
         // module has no `{module_short}.{name}` entry and stays unqualified,
         // and a root item (`current_module_name` unset) is never rewritten.
         //
-        // A FILE-import module is excluded: `flatten_file_import_items`
-        // splices its types into the ROOT namespace, where they are
-        // constructed and dispatched with BARE identity. Owner-qualifying a
-        // file-import self-record ref (`{module}.Result`) would diverge from
-        // root's bare `%Result` construction and break same-type dispatch.
-        // Only genuine package modules — whose types are referenced qualified
-        // — take the owner identity.
-        //
         // Gated on a genuine cross-module bare-name collision: a record unique
         // to its module (e.g. stdlib `xml.Node`) is never rewritten, so the
         // qualification is inert for every non-colliding type and only fires
         // for the same-bare-name shape the actor-ask identity coupling needs.
-        let current_module_is_file_import = self
-            .current_module_name
-            .as_deref()
-            .is_some_and(|module| self.file_import_module_names.contains(module));
-        if !current_module_is_file_import {
-            if let Some(module_full_path) = self.current_module_name.as_deref() {
-                let qualified = format!("{module_full_path}.{name}");
-                // The checker can carry a bare `Ty::Named` for either a
-                // record or an opaque source declaration. Both must recover
-                // the exact full module owner here: the record registry is
-                // layout metadata and deliberately does not contain opaque
-                // handles, while `source_type_identities` is the declaration
-                // authority for every source type.
-                if self.record_registry.contains_key(&qualified)
-                    || self.source_type_identities.contains(&qualified)
-                {
-                    return qualified;
-                }
+        if let Some(module_full_path) = self.current_module_name.as_deref() {
+            let qualified = format!("{module_full_path}.{name}");
+            // The checker can carry a bare `Ty::Named` for either a record or
+            // an opaque source declaration. Both recover their exact full
+            // module owner here. File-import flattening controls emission
+            // order only; it is not declaration-identity authority.
+            if self.record_registry.contains_key(&qualified)
+                || self.source_type_identities.contains(&qualified)
+            {
+                return qualified;
             }
         }
         name.to_string()
@@ -21995,16 +22020,16 @@ impl LowerCtx {
 
     /// Whether bare `name` is authored by the scope currently being lowered.
     ///
-    /// Root and flattened file-import declarations share the root namespace.
-    /// Genuine package modules use the exact declaration identities harvested
-    /// from the module graph. This is deliberately narrower than
+    /// Root declarations use the root namespace. Every imported module,
+    /// including a flattened file import, uses the exact declaration
+    /// identities harvested from the module graph. This is deliberately narrower than
     /// `record_registry`, which is a global layout index containing imports.
     fn current_scope_declares_source_type(
         &self,
         name: &str,
-        current_module_is_file_import: bool,
+        _current_module_is_file_import: bool,
     ) -> bool {
-        if self.current_module_name.is_none() || current_module_is_file_import {
+        if self.current_module_name.is_none() {
             return self.root_visible_source_type_short_names.contains(name);
         }
         self.current_module_name

@@ -22096,6 +22096,13 @@ fn collect_helper_crash_cleanup_descriptors(
             Terminator::Join { .. } => {
                 supported_producers.extend(terminator_writes);
             }
+            Terminator::MakeGenerator { .. } | Terminator::MakeLambdaActor { .. } => {
+                // Compiler-owned handle constructors publish a complete owned
+                // carrier into their destination before following `next`.
+                // Their lowering arms bracket that publication with the same
+                // deactivate/arm lifecycle used by instruction writes.
+                supported_producers.extend(terminator_writes);
+            }
             Terminator::Suspend { .. } => {
                 if let Some(kind) = func.suspend_kinds.get(&block.id) {
                     supported_producers.extend(hew_mir::dataflow::suspend_kind_write_places(kind));
@@ -22119,8 +22126,9 @@ fn collect_helper_crash_cleanup_descriptors(
                     "typed crash cleanup for {:?} (`{}`) has no lifecycle hook \
                      for its producer; supported producers are parameters, \
                      whole-slot instruction writes, collapsed-suspend ready \
-                     destinations, select/join bindings, generic Real-call \
-                     destinations, and Vec clone destinations",
+                     destinations, select/join bindings, compiler-owned handle \
+                     constructors, generic Real-call destinations, and Vec clone \
+                     destinations",
                     drop.place, drop.ty
                 )));
             }
@@ -23456,28 +23464,17 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
             // dotted segments only for native symbol safety.
             Ok(mangle_with_shortened_args(name, args))
         }
-        // M-5: a builtin owned-aggregate record (today only `CrashInfo`, which
-        // carries an owned `message: string`) is keyed by its bare name — the
-        // same key the MIR `user_record_layout_key` admit authority produces and
-        // the clone/drop synthesis seed registers, so the drop call resolves the
-        // synthesised `__hew_record_drop_inplace_CrashInfo` body.
-        ResolvedTy::Named {
-            name,
-            args,
-            builtin: Some(_),
-            ..
-        } if args.is_empty() => Ok(name.clone()),
+        // Compiler-owned records use the discriminator-selected synthetic
+        // record namespace. This is the same key used by MIR admission and
+        // layout registration, and cannot collide with a user record that has
+        // the same source-facing leaf.
         ResolvedTy::Named {
             args,
-            builtin:
-                Some(
-                    builtin @ (hew_types::BuiltinType::VecIter
-                    | hew_types::BuiltinType::HashMapIter),
-                ),
+            builtin: Some(builtin),
             ..
-        } => hew_hir::synthetic_cursor_layout_key(*builtin, args).ok_or_else(|| {
+        } => hew_hir::compiler_record_layout_key(*builtin, args).ok_or_else(|| {
             CodegenError::FailClosed(format!(
-                "RecordInPlace drop has no synthetic cursor layout key for {ty:?}"
+                "RecordInPlace drop has no compiler record layout key for {ty:?}"
             ))
         }),
         other => Err(CodegenError::FailClosed(format!(
@@ -29795,6 +29792,7 @@ fn lower_terminator<'ctx>(
             next,
             env,
         } => {
+            emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, *dest)?;
             // Generator construction on the `llvm.coro.*` continuation
             // substrate. The MIR producer (`lower_gen_block`) emitted this
             // terminator with the deterministic `__hew_gen_body_*` body-fn name;
@@ -30147,6 +30145,7 @@ fn lower_terminator<'ctx>(
                 .builder
                 .build_store(dest_slot, companion)
                 .llvm_ctx("generator companion ptr store")?;
+            emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest)?;
             let _ = ptr_ty;
             let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
                 CodegenError::FailClosed(format!("MakeGenerator next bb{next} missing"))
@@ -30166,6 +30165,7 @@ fn lower_terminator<'ctx>(
             env,
             env_field_drops,
         } => {
+            emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, *dest)?;
             // Lambda-actor construction (`hew-runtime/src/lambda_actor.rs`).
             // The MIR producer (`lower_spawn_lambda_actor`) emitted this
             // terminator with the deterministic `__hew_lambda_body_*` body-fn
@@ -30437,6 +30437,11 @@ fn lower_terminator<'ctx>(
                 .builder
                 .build_store(dest_slot, handle)
                 .llvm_ctx("hew_lambda_actor_new handle store")?;
+            // The handle owns the heap environment from this point. Publish
+            // cleanup authority before weak-self back-fill, whose runtime
+            // downgrade call may crash while the otherwise valid handle is
+            // still only reachable through `dest`.
+            emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest)?;
 
             // ── Weak self back-fill (step 3, second half) ──
             if let Some((env_struct, heap_env)) = &env_struct_and_heap {

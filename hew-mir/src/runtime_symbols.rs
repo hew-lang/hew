@@ -682,11 +682,16 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_string_to_uppercase"
         | "hew_string_trim"
         | "string_concat"
-        // Scalar and catalog display producers allocate a fresh string result.
+        | "to_string_str" => CalleeOwnershipContract::new(Escapes, BorrowingUse, FreshOwnedString),
+
+        // Scalar and catalog display producers allocate a fresh string result
+        // without borrowing a string operand. Keeping this separate from the
+        // string-transform arm matters to temporary-drop planning: a fresh
+        // result is not evidence that any argument carries a string lifetime.
         // The `to_string_*` catalog spellings are the MIR presentation for
         // f-string display dispatch and map to the `hew_*_to_string` runtime
         // allocation entries.
-        | "hew_bool_to_string"
+        "hew_bool_to_string"
         | "hew_char_to_string"
         | "hew_float_to_string"
         | "hew_i64_to_string"
@@ -700,11 +705,10 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "to_string_f64"
         | "to_string_i32"
         | "to_string_i64"
-        | "to_string_str"
         | "to_string_u16"
         | "to_string_u32"
         | "to_string_u64"
-        | "to_string_u8" => CalleeOwnershipContract::new(Escapes, BorrowingUse, FreshOwnedString),
+        | "to_string_u8" => CalleeOwnershipContract::new(Escapes, Escaping, FreshOwnedString),
 
         // String inspectors and container producers borrow their string input
         // without handing back a tracked string result. Scalar/bytes/Vec

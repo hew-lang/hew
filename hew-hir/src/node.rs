@@ -452,12 +452,11 @@ pub struct HirActorDecl {
     pub name: String,
     /// Defining-module identity of this actor declaration.
     ///
-    /// `None` means the actor's identity is the root program namespace: actors
-    /// declared in the root file, and actors spliced into the root item list
-    /// by a file-path import (`import "x.hew";`) — file-import splicing keeps
-    /// those root-identical, mirroring the module-origin provenance discipline
-    /// used for file-import impl dedup. `Some(module_short)` means the actor
-    /// is exported by a package module (`import bank;` → `Some("bank")`),
+    /// `None` means the actor is declared in the root file. `Some(module)`
+    /// identifies every imported declaration, including actors whose items
+    /// were flattened for a file-path import (`import "x.hew";`): flattening
+    /// controls emission order and never erases nominal ownership. Package
+    /// imports use the same carrier (`import bank;` → `Some("bank")`),
     /// extending the `(defining-module, name)` identity model that
     /// per-module type identity established for `pub type`s to actors.
     ///
@@ -999,11 +998,10 @@ pub struct HirTypeDecl {
     pub name: String,
     /// Defining-module identity of this type declaration.
     ///
-    /// `None` means the type's identity is the root program namespace: types
-    /// declared in the root file, and types spliced into the root item list by
-    /// a file-path import (`import "x.hew";`) — file-import splicing keeps
-    /// those root-identical. `Some(module_short)` means the type is exported by
-    /// a package module (`import bank;` → `Some("bank")`).
+    /// `None` means the type is declared in the root file. `Some(module)`
+    /// identifies every imported declaration, including types flattened for
+    /// a file-path import (`import "x.hew";`). Package imports use the same
+    /// carrier (`import bank;` → `Some("bank")`).
     ///
     /// Carried so MIR layout keys and codegen symbol synthesis can tell two
     /// same-named types from different modules apart — the same

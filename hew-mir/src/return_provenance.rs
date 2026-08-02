@@ -5184,6 +5184,17 @@ pub(crate) mod tests {
 
     /// Front-end-lower a `.hew` source string to a `HirModule`.
     pub(crate) fn lower_source(source: &str) -> hew_hir::HirModule {
+        lower_source_with_opaque_candidate(source, None)
+    }
+
+    /// Front-end-lower a source string while supplying the exact checker-owned
+    /// opaque lifecycle that an isolated unit fixture cannot derive from the
+    /// real stdlib module graph.
+    pub(crate) fn lower_source_with_opaque_candidate(
+        source: &str,
+        candidate: Option<hew_types::OpaqueResourceLifecycleCandidate>,
+    ) -> hew_hir::HirModule {
+        let expects_candidate = candidate.is_some();
         let parsed = hew_parser::parse(source);
         assert!(
             parsed.errors.is_empty(),
@@ -5192,13 +5203,34 @@ pub(crate) mod tests {
         );
         let mut checker =
             hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let tc_output = checker.check_program(&parsed.program);
+        let mut tc_output = checker.check_program(&parsed.program);
+        if let Some(mut candidate) = candidate {
+            let close_dispatch_key = format!("{}::close", candidate.resource_type);
+            candidate.close_declaration = tc_output
+                .impl_method_declaration_ids
+                .get(&close_dispatch_key)
+                .unwrap_or_else(|| {
+                    panic!("missing checker close identity for {close_dispatch_key}")
+                })
+                .clone();
+            tc_output
+                .opaque_resource_candidates
+                .candidates
+                .insert(candidate.resource_declaration.clone(), candidate);
+        }
         let output = hew_hir::lower_program(
             &parsed.program,
             &tc_output,
             &hew_hir::ResolutionCtx,
             hew_hir::TargetArch::host(),
         );
+        if expects_candidate {
+            assert!(
+                output.diagnostics.is_empty(),
+                "candidate lowering diagnostics: {:#?}",
+                output.diagnostics
+            );
+        }
         output.module
     }
 
@@ -6691,23 +6723,32 @@ mod measured_extern_result_transfer {
     }
 
     fn table_for_tcp_lifecycle(source: &str, release_symbol: &str) -> ExternContractTable {
-        let mut module = tests::lower_source(source);
-        module
-            .type_classes
-            .admit_opaque_resource_lifecycle(hew_hir::OpaqueResourceLifecycle {
+        let module = tests::lower_source_with_opaque_candidate(
+            source,
+            Some(hew_types::OpaqueResourceLifecycleCandidate {
                 resource_declaration: hew_types::DefId::new("Connection"),
+                resource_type: "Connection".to_string(),
+                owner_module: String::new(),
                 close_declaration: hew_types::DefId::new("Connection::close"),
-                release_declaration: hew_types::DefId::new("hew_tcp_connection_close"),
-                close_symbol: "Connection::close".to_string(),
+                release_declaration: hew_types::DefId::new(release_symbol),
                 release_symbol: release_symbol.to_string(),
+                release_param_index: 0,
                 discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Shallow,
+                result_ownership: crate::ffi_contracts::ExternResultOwnership::Fresh,
+                result_retention: crate::ffi_contracts::ExternResultRetention::Transferred,
+                producer_symbols: ["hew_tcp_connect".to_string()].into_iter().collect(),
                 producer_declarations: [hew_types::DefId::new("hew_tcp_connect")]
                     .into_iter()
                     .collect(),
-                producer_symbols: ["hew_tcp_connect".to_string()].into_iter().collect(),
                 producer_modules: ["std.net".to_string()].into_iter().collect(),
-            })
-            .expect("test lifecycle must be unique");
+            }),
+        );
+        let lifecycle = module
+            .type_classes
+            .opaque_resource_lifecycle_for_type_name("Connection")
+            .expect("lowering must admit the exact Connection lifecycle");
+        assert_eq!(lifecycle.release_symbol, release_symbol);
+        assert_eq!(lifecycle.close_symbol, "Connection::close");
         build_extern_contract_table(&module)
     }
 
@@ -6795,23 +6836,35 @@ extern "C" {
 }
 fn main() {}
 "#;
-        let mut module = tests::lower_source(SOURCE);
-        module
-            .type_classes
-            .admit_opaque_resource_lifecycle(hew_hir::OpaqueResourceLifecycle {
+        let module = tests::lower_source_with_opaque_candidate(
+            SOURCE,
+            Some(hew_types::OpaqueResourceLifecycleCandidate {
                 resource_declaration: hew_types::DefId::new("Value"),
+                resource_type: "Value".to_string(),
+                owner_module: String::new(),
                 close_declaration: hew_types::DefId::new("Value::close"),
                 release_declaration: hew_types::DefId::new("hew_json_free"),
-                close_symbol: "Value::close".to_string(),
                 release_symbol: "hew_json_free".to_string(),
+                release_param_index: 0,
                 discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Deep,
+                result_ownership: crate::ffi_contracts::ExternResultOwnership::Fresh,
+                result_retention: crate::ffi_contracts::ExternResultRetention::Transferred,
+                producer_symbols: ["hew_json_array_new".to_string()].into_iter().collect(),
                 producer_declarations: [hew_types::DefId::new("hew_json_array_new")]
                     .into_iter()
                     .collect(),
-                producer_symbols: ["hew_json_array_new".to_string()].into_iter().collect(),
                 producer_modules: ["std.encoding.json".to_string()].into_iter().collect(),
-            })
-            .expect("test lifecycle must be unique");
+            }),
+        );
+        let lifecycle = module
+            .type_classes
+            .opaque_resource_lifecycle_for_type_name("Value")
+            .expect("lowering must admit the exact Value lifecycle");
+        assert_eq!(lifecycle.release_symbol, "hew_json_free");
+        assert_eq!(
+            lifecycle.discharge_depth,
+            crate::ffi_contracts::ReleaseDischargeDepth::Deep
+        );
         let table = build_extern_contract_table(&module);
         assert!(
             table.extern_return_is_audited_fresh_owner("hew_json_array_new"),

@@ -2080,9 +2080,13 @@ impl Builder {
                 matches!(
                     entry.disposition,
                     Disposition::ScopeExit | Disposition::ConsumedAt { .. }
-                ) && !self
+                ) && (!self
                     .synthetic_owner_publication_sites
                     .contains_key(&entry.binding)
+                    || self
+                        .iteration_owner_drop_blocks
+                        .values()
+                        .any(|bindings| bindings.contains(&entry.binding)))
             })
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()

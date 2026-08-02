@@ -6908,6 +6908,50 @@ fn owned_vec_resource_descriptor_is_drop_only_and_uses_exact_close() {
     );
 }
 
+#[test]
+fn owned_vec_resource_descriptor_rejects_non_unit_close_abi() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("resource_vec_wrong_close_abi");
+    let mut harness = build_harness(&ctx, &[], &[]);
+    let resource_ty = ResolvedTy::named_opaque("std.net.Connection", vec![]);
+    let lifecycle = hew_hir::OpaqueResourceLifecycle {
+        resource_declaration: hew_types::DefId::new("std.net.Connection"),
+        close_declaration: hew_types::DefId::new("std.net.Connection::close"),
+        release_declaration: hew_types::DefId::new("std.net.hew_tcp_close"),
+        close_symbol: "std__net__Connection::close".to_string(),
+        release_symbol: "hew_tcp_close".to_string(),
+        discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+        producer_declarations: std::collections::BTreeSet::new(),
+        producer_symbols: std::collections::BTreeSet::new(),
+        producer_modules: std::collections::BTreeSet::new(),
+    };
+    harness
+        .lifecycle_registry
+        .admit_opaque_resource(lifecycle.clone())
+        .unwrap();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &lifecycle.close_symbol,
+        ctx.i64_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "wrong_close_abi_probe");
+    let error = crate::layout::owned_elem_layout_descriptor_ptr(
+        &ctx,
+        &llvm_mod,
+        fn_ctx.target_data,
+        fn_ctx.owned_elem_registries(),
+        &resource_ty,
+        ptr_ty.into(),
+        "resource_vec",
+    )
+    .expect_err("non-Unit close return must fail closed");
+    assert!(
+        error.to_string().contains("Hew Unit i8(ptr)"),
+        "unexpected wrong-close-ABI diagnostic: {error}"
+    );
+}
+
 /// DIV-1 at the codegen layer: the unified `resolved_ty_contains_heap_leaf`
 /// consults record fields through the `CgHeapLayouts` adapter, so a record
 /// carrying a heap field (`Boxed { payload: Vec<i64> }`) is classified

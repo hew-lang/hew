@@ -42,7 +42,7 @@ Counts are findings on the tree when written; `0` rules are regression guards.
 ### Rust — fail-closed (`error`, gates CI)
 | Rule | Hits | Catches |
 |------|------|---------|
-| `ok-question-in-lowering` | 6 | `$E.ok()?` in codegen/mir/hir — silently returns `None`, swallowing the error (CLAUDE.md §2). |
+| `ok-question-in-lowering` | 0 | `$E.ok()?` in codegen/mir/hir — silently returns `None`, swallowing the error (CLAUDE.md §2). |
 | `ty-var-constructed-post-inference` | 0 | Building `Ty::Var(..)` in post-inference crates (CLAUDE.md §3). |
 | `semantic-owner-shortening-sink` (authority audit) | inventory-ratcheted | `short_name(owner)`, qualified-path leaf extraction, or a module alias flowing through local bindings into registry, `DefId`, `NominalId`, or `CallTarget` keys. Display/diagnostic formatting and ordinary collection `.last()` calls are controls. |
 

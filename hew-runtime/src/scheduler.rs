@@ -840,9 +840,7 @@ fn teardown_workers(
             }
         }
         if let Some(h) = handle.take() {
-            if h.join().is_err() {
-                eprintln!("hew: scheduler worker thread panicked during shutdown");
-            }
+            crate::util::report_join_panic("scheduler worker thread", h.join());
         }
     }
 
@@ -3380,7 +3378,7 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     // never deposited (it unwound), so the unwind releases both the
                     // retained sender ref and the creator ref, matching the codegen
                     // abandon path.
-                    if dispatch_result.is_err() {
+                    if let Err(panic_payload) = dispatch_result {
                         crate::execution_context::reply_channel_swap_unwind();
                         // A Rust unwind can also bypass the normal ramp handoff.
                         // Typed swap obligations drain first; then raw-free only
@@ -3411,6 +3409,7 @@ fn activate_queued_actor(actor: *mut HewActor) {
                             // SAFETY: this activation exclusively owns actor.
                             unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
                         }
+                        crate::util::quarantine_panic_payload(panic_payload);
                     }
 
                     let reply_consumed = current_reply_channel_consumed_on(ec_ptr);

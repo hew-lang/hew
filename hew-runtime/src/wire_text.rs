@@ -576,7 +576,11 @@ pub unsafe extern "C" fn hew_wire_cbor_to_text(
             // SAFETY: bytes is valid for its length; malloc_cstring copies it.
             unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
         }
-        _ => core::ptr::null_mut(),
+        Ok(None) => core::ptr::null_mut(),
+        Err(panic_payload) => {
+            crate::util::quarantine_panic_payload(panic_payload);
+            core::ptr::null_mut()
+        }
     }
 }
 
@@ -641,8 +645,9 @@ pub unsafe extern "C" fn hew_wire_text_to_cbor(
             write_err(out_err, &msg);
             return core::ptr::null_mut();
         }
-        Err(_) => {
+        Err(panic_payload) => {
             write_err(out_err, "internal: text codec panicked");
+            crate::util::quarantine_panic_payload(panic_payload);
             return core::ptr::null_mut();
         }
     };

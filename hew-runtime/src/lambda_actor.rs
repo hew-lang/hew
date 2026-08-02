@@ -492,13 +492,7 @@ impl Drop for LambdaActorInner {
             unsafe { state_drop(state) };
         }));
         if let Err(panic_payload) = result {
-            let msg: String = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "non-string panic payload".to_string()
-            };
+            let msg = crate::util::take_panic_payload_message(panic_payload);
             let error_msg = format!("LambdaActorInner::drop user state_drop panicked: {msg}");
             crate::set_last_error(error_msg.clone());
             #[cfg(test)]
@@ -554,11 +548,11 @@ impl Drop for LambdaActorLifecycle {
             if handle.thread().id() == std::thread::current().id() {
                 return;
             }
-            if handle.join().is_err() {
-                crate::set_last_error(
-                    "hew_lambda_actor_release: dispatch thread panicked during teardown"
-                        .to_string(),
-                );
+            if let Err(panic_payload) = handle.join() {
+                crate::set_last_error(format!(
+                    "hew_lambda_actor_release: dispatch thread panicked during teardown: {}",
+                    crate::util::take_panic_payload_message(panic_payload)
+                ));
             }
         }
     }
@@ -829,9 +823,10 @@ fn dispatch_tell(inner: &LambdaActorInner, msg: &[u8]) {
             // Non-zero return: mark stopped.
             inner.mark_stopped();
         }
-        Err(_) => {
+        Err(panic_payload) => {
             // Panic: mark stopped.
             inner.mark_stopped();
+            crate::util::quarantine_panic_payload(panic_payload);
         }
     }
 }
@@ -926,7 +921,7 @@ fn dispatch_ask(inner: &LambdaActorInner, envelope: &[u8]) {
             }
             inner.mark_stopped();
         }
-        Err(_) => {
+        Err(panic_payload) => {
             // Panic: actor stopped. Reclaim any partial reply the body wrote
             // before panicking (hoisted reply_out captures it), then orphan
             // the reply channel so the waiter unblocks.
@@ -940,6 +935,7 @@ fn dispatch_ask(inner: &LambdaActorInner, envelope: &[u8]) {
                 hew_reply_channel_retire_orphaned_ask_sender_ref(reply_ch);
             }
             inner.mark_stopped();
+            crate::util::quarantine_panic_payload(panic_payload);
         }
     }
 }
@@ -2763,6 +2759,45 @@ mod tests {
             "error must contain the original panic message; got: {err_msg}"
         );
         // Reaching here means catch_unwind prevented a process abort.
+    }
+
+    #[test]
+    fn hostile_state_drop_payload_is_quarantined_during_lambda_teardown() {
+        static PAYLOAD_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        struct HostilePayload;
+        impl Drop for HostilePayload {
+            fn drop(&mut self) {
+                PAYLOAD_DROPS.fetch_add(1, Ord::SeqCst);
+                panic!("hostile lambda-state payload destructor");
+            }
+        }
+
+        unsafe extern "C-unwind" fn hostile_state_drop(_state: *mut core::ffi::c_void) {
+            std::panic::panic_any(HostilePayload);
+        }
+
+        PAYLOAD_DROPS.store(0, Ord::SeqCst);
+        let _guard = crate::runtime_test_guard();
+        let actor = HewLambdaActor::new(
+            1,
+            LambdaShape::Tell,
+            noop_tell_body,
+            ptr::null_mut(),
+            hostile_state_drop,
+        )
+        .expect("spawn");
+        drop(actor);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while PAYLOAD_DROPS.load(Ord::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "state drop did not run"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(PAYLOAD_DROPS.load(Ord::SeqCst), 1);
     }
 
     #[test]

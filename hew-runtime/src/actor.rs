@@ -2809,7 +2809,7 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
             // being dispatched.
             unsafe { terminate_fn(state) };
         }));
-        if result.is_err() {
+        if let Err(panic_payload) = result {
             // Release a lock the trampoline may have acquired before the panic.
             // This is a no-op when no terminate_fn was set or the lock was
             // already released normally.
@@ -2818,6 +2818,7 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
             unsafe {
                 let _ = hew_actor_state_lock_release_after_panic(actor);
             }
+            crate::util::quarantine_panic_payload(panic_payload);
         }
         if !jmp_buf_ptr.is_null() {
             crate::signal::clear_dispatch_recovery();
@@ -2872,12 +2873,13 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         unsafe { terminate_fn(state) };
     }));
-    if result.is_err() {
+    if let Err(panic_payload) = result {
         // Release any lock the trampoline acquired before the panic.
         // SAFETY: actor is valid; the release helper tolerates an unheld lock.
         unsafe {
             let _ = hew_actor_state_lock_release_after_panic(actor);
         }
+        crate::util::quarantine_panic_payload(panic_payload);
     }
     a.terminate_finished.store(true, Ordering::Release);
 }

@@ -294,12 +294,16 @@ impl Clone for WasmChannelSender {
     }
 }
 
-fn send_bytes(
+/// Enqueue an ABI envelope, releasing a rejected layout-managed envelope
+/// before reporting why it could not be accepted. This separates ownership
+/// cleanup from the void ABI's trap translation so aborting WASI tests can
+/// prove the same error-path cleanup as native unwind tests.
+fn try_send_bytes(
     sender: &HewWasmChannelSender,
     bytes: Vec<u8>,
     layout: Option<&HewVecElemLayout>,
     api_name: &str,
-) {
+) -> Result<(), TrySendError> {
     if let Some(layout) = layout.filter(|l| l.ownership_kind == HewTypeOwnershipKind::LayoutManaged)
     {
         let mut inner = sender.inner.inner.borrow_mut();
@@ -321,16 +325,29 @@ fn send_bytes(
     }
 
     match sender.inner.try_send_envelope(bytes) {
-        Ok(()) => {}
-        Err((TrySendError::Full, bytes)) => {
+        Ok(()) => Ok(()),
+        Err((error, bytes)) => {
             drop_elem_envelope(layout, bytes, api_name);
+            Err(error)
+        }
+    }
+}
+
+fn send_bytes(
+    sender: &HewWasmChannelSender,
+    bytes: Vec<u8>,
+    layout: Option<&HewVecElemLayout>,
+    api_name: &str,
+) {
+    match try_send_bytes(sender, bytes, layout, api_name) {
+        Ok(()) => {}
+        Err(TrySendError::Full) => {
             panic!(
                 "{api_name}: channel is full; blocking send is not available on wasm32 \
                  (cooperative scheduler does not yet support yield/resume for send parks)"
             );
         }
-        Err((TrySendError::Closed, bytes)) => {
-            drop_elem_envelope(layout, bytes, api_name);
+        Err(TrySendError::Closed) => {
             panic!("{api_name}: channel receiver is closed; message was not sent");
         }
     }
@@ -937,18 +954,21 @@ mod tests {
             }
         };
 
-        send_bytes(&tx, make_envelope(1), Some(&layout), "test send");
-        let full = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            send_bytes(&tx, make_envelope(2), Some(&layout), "test send");
-        }));
-        assert!(full.is_err());
+        assert_eq!(
+            try_send_bytes(&tx, make_envelope(1), Some(&layout), "test send"),
+            Ok(())
+        );
+        assert_eq!(
+            try_send_bytes(&tx, make_envelope(2), Some(&layout), "test send"),
+            Err(TrySendError::Full)
+        );
         assert_eq!(WASM_OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 1);
 
         drop(rx);
-        let closed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            send_bytes(&tx, make_envelope(3), Some(&layout), "test send");
-        }));
-        assert!(closed.is_err());
+        assert_eq!(
+            try_send_bytes(&tx, make_envelope(3), Some(&layout), "test send"),
+            Err(TrySendError::Closed)
+        );
         assert_eq!(WASM_OWNED_DROPS.load(Ordering::SeqCst) - drops_before, 2);
 
         drop(tx);
@@ -1078,6 +1098,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     #[should_panic(expected = "channel is full; blocking send is not available on wasm32")]
     fn send_bytes_full_traps() {
@@ -1093,6 +1114,7 @@ mod tests {
         send_bytes(&tx, vec![2], None, "hew_channel_send_layout");
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     #[should_panic(expected = "channel receiver is closed; message was not sent")]
     fn send_bytes_closed_traps() {

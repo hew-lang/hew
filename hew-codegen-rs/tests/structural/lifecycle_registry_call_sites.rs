@@ -63,6 +63,7 @@ fn carries_registry_context(call: &str) -> bool {
         || call.contains("resource_close")
         || call.contains("LifecycleRegistry")
         || call.contains("&registry")
+        || call.contains("&lifecycle,")
 }
 
 #[test]

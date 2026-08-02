@@ -197,8 +197,17 @@ pub fn try_new(capacity: i64) -> Result<(Sender, Receiver), string> {
 
 // ── FFI bindings ─────────────────────────────────────────────────────
 /// Internal paired channel handle.
+#[resource]
 #[opaque]
 pub type ChannelPair {
+}
+
+impl ChannelPair {
+    fn close(consuming self) {
+        unsafe {
+            hew_channel_pair_free(self)
+        };
+    }
 }
 
 extern "C" {
@@ -206,7 +215,7 @@ extern "C" {
     fn hew_channel_pair_is_valid(pair: ChannelPair) -> bool;
     fn hew_channel_pair_sender(pair: ChannelPair) -> Sender;
     fn hew_channel_pair_receiver(pair: ChannelPair) -> Receiver;
-    fn hew_channel_pair_free(pair: ChannelPair);
+    fn hew_channel_pair_free(consume pair: ChannelPair);
     fn hew_stream_last_error() -> string;
     // hew_channel_send_layout, hew_channel_recv_layout, and
     // hew_channel_try_recv_layout use an out-parameter + element-layout

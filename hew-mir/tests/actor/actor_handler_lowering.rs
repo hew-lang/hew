@@ -4,7 +4,7 @@ use hew_hir::{
     ids::IdGen, HirActorDecl, HirActorReceiveFn, HirActorStateGuard, HirBinding, HirBlock, HirExpr,
     HirExprKind, HirField, HirFn, HirGenCapture, HirGenCaptureSource, HirItem, HirLifecycleHook,
     HirLifecycleHookKind, HirLiteral, HirModule, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId, ValueClass,
+    HirSupervisorDecl, IntentKind, ResolvedRef, ScopeId, TypeClassTable, ValueClass,
 };
 use hew_mir::{
     lower_hir_module, ActorHandlerKind, FunctionCallConv, Instr, MirDiagnosticKind, MirStatement,
@@ -22,7 +22,7 @@ fn empty_module(items: Vec<HirItem>) -> HirModule {
         root_item_ids: std::collections::HashSet::new(),
         caller_visible_param_projections: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(HashMap::default()),
-        type_classes: HashMap::default(),
+        type_classes: TypeClassTable::default(),
         monomorphisations: vec![],
         call_site_type_args: HashMap::default(),
         vec_generic_element_abi: HashMap::default(),

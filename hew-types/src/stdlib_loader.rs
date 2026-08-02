@@ -1866,8 +1866,8 @@ mod tests {
         );
 
         assert!(
-            !info.drop_types.contains(&"http.Server".to_string()),
-            "http.Server should not be a drop type, got: {:?}",
+            info.drop_types.contains(&"http.Server".to_string()),
+            "http.Server should be a closeable opaque drop type: {:?}",
             info.drop_types
         );
     }
@@ -1884,9 +1884,13 @@ mod tests {
         );
 
         let server_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Server");
-        assert!(
-            server_drop.is_none(),
-            "http.Server should not have a drop func, got: {:?}",
+        assert_eq!(
+            server_drop,
+            Some(&(
+                "http.Server".to_string(),
+                "hew_http_server_close".to_string()
+            )),
+            "http.Server should register its exact raw disposer: {:?}",
             info.drop_funcs
         );
     }

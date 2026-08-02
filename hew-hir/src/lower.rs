@@ -165,23 +165,22 @@ fn collect_match_payload_predicates(
                     field_tys.len()
                 ));
             }
-            Ok(patterns
-                .iter()
-                .zip(field_tys)
-                .enumerate()
-                .filter_map(|(field_idx, ((sub_pat, _), ty))| {
-                    let Pattern::Literal(lit) = sub_pat else {
-                        return None;
-                    };
-                    let field_idx = u32::try_from(field_idx).ok()?;
-                    let (literal, _) = literal_to_hir(lit);
-                    Some(HirPayloadPredicate {
-                        field_idx,
-                        literal,
-                        ty: ty.clone(),
-                    })
-                })
-                .collect())
+            let mut predicates = Vec::new();
+            for (field_idx, ((sub_pat, _), ty)) in patterns.iter().zip(field_tys).enumerate() {
+                let Pattern::Literal(lit) = sub_pat else {
+                    continue;
+                };
+                let field_idx = u32::try_from(field_idx).map_err(|_| {
+                    "tuple literal predicate field index exceeds the HIR u32 carrier".to_string()
+                })?;
+                let (literal, _) = literal_to_hir(lit);
+                predicates.push(HirPayloadPredicate {
+                    field_idx,
+                    literal,
+                    ty: ty.clone(),
+                });
+            }
+            Ok(predicates)
         }
         Pattern::Wildcard
         | Pattern::Identifier(_)
@@ -3109,6 +3108,8 @@ pub fn lower_program_with_mono_cap(
     for (item, span) in &program.items {
         if let Item::TypeDecl(decl) = item {
             let hir_decl = ctx.lower_type_decl(decl, span.clone());
+            ctx.opaque_resource_decl_identities
+                .insert(hir_decl.id, hir_decl.name.clone());
             let marker = hir_decl.marker;
             let close_method = if marker == ResourceMarker::Resource {
                 hir_decl
@@ -3271,6 +3272,8 @@ pub fn lower_program_with_mono_cap(
                         {
                             let hir_decl =
                                 ctx.lower_imported_type_decl(decl, span.clone(), &source_module);
+                            ctx.opaque_resource_decl_identities
+                                .insert(hir_decl.id, format!("{source_module}.{}", hir_decl.name));
                             let close_method = if hir_decl.marker == ResourceMarker::Resource {
                                 hir_decl
                                     .consuming_methods
@@ -3419,6 +3422,8 @@ pub fn lower_program_with_mono_cap(
                         Item::TypeDecl(decl) => {
                             let hir_decl =
                                 ctx.lower_imported_type_decl(decl, span.clone(), &source_module);
+                            ctx.opaque_resource_decl_identities
+                                .insert(hir_decl.id, format!("{source_module}.{}", hir_decl.name));
                             let entry_fields: Vec<(String, ResolvedTy)> = hir_decl
                                 .fields
                                 .iter()
@@ -4034,15 +4039,16 @@ pub fn lower_program_with_mono_cap(
                             // of the enum from the emitted decl. Non-enum
                             // TypeDecls (records) were not cached above — fall
                             // back to lowering them inline.
-                            if let Some(hir_decl) = type_decl_cache.remove(&(decl as *const _)) {
-                                items.push(HirItem::TypeDecl(hir_decl));
+                            let hir_decl = if let Some(hir_decl) =
+                                type_decl_cache.remove(&(decl as *const _))
+                            {
+                                hir_decl
                             } else {
-                                items.push(HirItem::TypeDecl(ctx.lower_imported_type_decl(
-                                    decl,
-                                    span.clone(),
-                                    &source_module,
-                                )));
-                            }
+                                ctx.lower_imported_type_decl(decl, span.clone(), &source_module)
+                            };
+                            ctx.opaque_resource_decl_identities
+                                .insert(hir_decl.id, format!("{source_module}.{}", hir_decl.name));
+                            items.push(HirItem::TypeDecl(hir_decl));
                         }
                         // Emit `HirItem::Machine` entries for imported pub
                         // machines so MIR's `machine_layout_names` set (built
@@ -4533,6 +4539,15 @@ pub fn lower_program_with_mono_cap(
         crate::machine_mono::run_machine_mono_pass(&items, &monomorphisations, mono_cap);
     ctx.diagnostics.extend(machine_mono_diagnostics);
 
+    admit_opaque_resource_lifecycles(
+        &items,
+        &diagnostic_source_modules,
+        &ctx.opaque_resource_candidates,
+        &ctx.opaque_resource_decl_identities,
+        &mut ctx.type_classes,
+        &mut ctx.diagnostics,
+    );
+
     let mut module = HirModule {
         items,
         produced_value_facts: HashMap::new(),
@@ -4559,6 +4574,257 @@ pub fn lower_program_with_mono_cap(
     LowerOutput {
         module,
         diagnostics: ctx.diagnostics,
+    }
+}
+
+/// Admit checker-derived opaque lifecycles only after every declaration,
+/// extern, and inherent close body has a resolved HIR identity.
+fn validate_opaque_resource_close(
+    items: &[HirItem],
+    diagnostic_source_modules: &HashMap<ItemId, String>,
+    candidate: &hew_types::OpaqueResourceLifecycleCandidate,
+    decl: &HirTypeDecl,
+) -> Result<String, String> {
+    // Temporary pre-canonical adapter: foundation composition replaces this
+    // suffix match with the close method's canonical CallTarget/DefId identity.
+    let close_suffix = format!("{}::close", decl.name);
+    let close_functions: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Function(function)
+                if diagnostic_source_modules.get(&function.id) == Some(&candidate.owner_module)
+                    && (function.name == close_suffix
+                        || function.name.ends_with(&format!(".{close_suffix}"))) =>
+            {
+                Some(function)
+            }
+            _ => None,
+        })
+        .collect();
+    let release_externs: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::ExternFn(extern_fn)
+                if extern_fn.name == candidate.release_symbol
+                    && matches!(
+                        &extern_fn.provenance,
+                        ExternProvenance::Module(module) if module == &candidate.owner_module
+                    ) =>
+            {
+                Some(extern_fn)
+            }
+            _ => None,
+        })
+        .collect();
+
+    match (close_functions.as_slice(), release_externs.as_slice()) {
+        ([close], [release]) if close.return_ty == ResolvedTy::Unit && close.params.len() == 1 => {
+            let receiver = close.params[0].id;
+            let forwarding_calls = count_direct_release_forwards(
+                &close.body,
+                release.id,
+                &candidate.release_symbol,
+                candidate.release_param_index,
+                receiver,
+            );
+            (forwarding_calls == 1)
+                .then(|| close.name.clone())
+                .ok_or_else(|| {
+                    format!(
+                        "canonical close must forward its receiver exactly once; found {forwarding_calls} exact calls"
+                    )
+                })
+        }
+        (closes, releases) => Err(format!(
+            "expected one unit close and one owner-module release declaration; found {} close(s), {} release declaration(s)",
+            closes.len(),
+            releases.len()
+        )),
+    }
+}
+
+fn admit_opaque_resource_lifecycles(
+    items: &[HirItem],
+    diagnostic_source_modules: &HashMap<ItemId, String>,
+    graph: &hew_types::OpaqueResourceCandidateGraph,
+    decl_identities: &HashMap<ItemId, String>,
+    type_classes: &mut crate::value_class::TypeClassTable,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for conflict in &graph.conflicts {
+        diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::OpaqueResourceLifecycleConflict {
+                resource_type: conflict.resource_type.clone(),
+                producer: conflict.producer_symbol.clone(),
+                release: conflict.release_symbol.clone(),
+                detail: format!("{:?}", conflict.kind),
+            },
+            0..0,
+            "conflicting generated/source lifecycle facts leave no automatic close authority",
+        ));
+    }
+
+    for candidate in graph.candidates.values() {
+        let matching_decls: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::TypeDecl(decl)
+                    if decl_identities.get(&decl.id) == Some(&candidate.resource_type) =>
+                {
+                    Some(decl)
+                }
+                _ => None,
+            })
+            .collect();
+        let [decl] = matching_decls.as_slice() else {
+            diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::OpaqueResourceCloseMismatch {
+                    resource_type: candidate.resource_type.clone(),
+                    expected_release: candidate.release_symbol.clone(),
+                    detail: format!(
+                        "expected one exact HIR declaration, found {}",
+                        matching_decls.len()
+                    ),
+                },
+                0..0,
+                "checker lifecycle identity did not survive HIR declaration lowering",
+            ));
+            continue;
+        };
+
+        if !decl.is_opaque || decl.marker != ResourceMarker::Resource {
+            diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CloseableOpaqueMustBeResource {
+                    resource_type: candidate.resource_type.clone(),
+                    producer: candidate
+                        .producer_symbols
+                        .iter()
+                        .next()
+                        .cloned()
+                        .unwrap_or_default(),
+                    release: candidate.release_symbol.clone(),
+                },
+                decl.span.clone(),
+                "an independently owned opaque result must declare `#[resource]` and one inherent `close`",
+            ));
+            continue;
+        }
+
+        let detail =
+            validate_opaque_resource_close(items, diagnostic_source_modules, candidate, decl);
+
+        match detail {
+            Ok(close_symbol) => {
+                let lifecycle = crate::OpaqueResourceLifecycle {
+                    resource_type: candidate.resource_type.clone(),
+                    lowered_type_name: decl.qualified_name(),
+                    close_symbol,
+                    release_symbol: candidate.release_symbol.clone(),
+                    discharge_depth: candidate.discharge_depth,
+                    producer_symbols: candidate.producer_symbols.clone(),
+                    producer_modules: candidate.producer_modules.clone(),
+                };
+                if type_classes
+                    .admit_opaque_resource_lifecycle(lifecycle)
+                    .is_err()
+                {
+                    diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::OpaqueResourceCloseMismatch {
+                            resource_type: candidate.resource_type.clone(),
+                            expected_release: candidate.release_symbol.clone(),
+                            detail: "duplicate exact lifecycle admission".to_string(),
+                        },
+                        decl.span.clone(),
+                        "one qualified resource may have exactly one automatic lifecycle authority",
+                    ));
+                }
+            }
+            Err(detail) => diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::OpaqueResourceCloseMismatch {
+                    resource_type: candidate.resource_type.clone(),
+                    expected_release: candidate.release_symbol.clone(),
+                    detail,
+                },
+                decl.span.clone(),
+                "the canonical close does not match the checker-admitted consuming release",
+            )),
+        }
+    }
+}
+
+fn count_direct_release_forwards(
+    block: &HirBlock,
+    release_item: ItemId,
+    release_symbol: &str,
+    release_param_index: usize,
+    receiver: BindingId,
+) -> usize {
+    block
+        .statements
+        .iter()
+        .map(|statement| match &statement.kind {
+            HirStmtKind::Expr(expr) => count_direct_release_forwards_expr(
+                expr,
+                release_item,
+                release_symbol,
+                release_param_index,
+                receiver,
+            ),
+            _ => 0,
+        })
+        .sum::<usize>()
+        + block.tail.as_deref().map_or(0, |tail| {
+            count_direct_release_forwards_expr(
+                tail,
+                release_item,
+                release_symbol,
+                release_param_index,
+                receiver,
+            )
+        })
+}
+
+fn count_direct_release_forwards_expr(
+    expr: &HirExpr,
+    release_item: ItemId,
+    release_symbol: &str,
+    release_param_index: usize,
+    receiver: BindingId,
+) -> usize {
+    match &expr.kind {
+        HirExprKind::Call { callee, args, .. }
+            if matches!(
+                &callee.kind,
+                HirExprKind::BindingRef { name, resolved }
+                    if matches!(resolved, ResolvedRef::Item(item) if *item == release_item)
+                        // Pre-canonical HIR currently remints the emitted
+                        // `HirExternFn` id after function-registry resolution.
+                        // Require the exact admitted endpoint plus a resolved
+                        // item until the shared CallTarget/DefId carrier makes
+                        // both sides use one identity.
+                        || (name == release_symbol && matches!(resolved, ResolvedRef::Item(_)))
+                        || matches!(resolved, ResolvedRef::Builtin(family)
+                            if family.c_symbol() == release_symbol)
+            ) && args.get(release_param_index).is_some_and(|arg| {
+                matches!(
+                    arg.kind,
+                    HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(binding),
+                        ..
+                    } if binding == receiver
+                )
+            }) =>
+        {
+            1
+        }
+        HirExprKind::Block(block) => count_direct_release_forwards(
+            block,
+            release_item,
+            release_symbol,
+            release_param_index,
+            receiver,
+        ),
+        _ => 0,
     }
 }
 
@@ -5478,6 +5744,13 @@ struct LowerCtx {
     /// Also seeded with M2 substrate types (Duplex, Sink, Stream, etc.) via
     /// `builtin_type_classes::seed_builtin_type_classes` before the `TypeDecl` loop.
     type_classes: crate::value_class::TypeClassTable,
+    /// Checker-derived closeable-opaque candidates awaiting resolved HIR
+    /// close-body admission.
+    opaque_resource_candidates: hew_types::OpaqueResourceCandidateGraph,
+    /// Narrow pre-canonical adapter from HIR declaration id to the exact full
+    /// module-graph identity used by the checker. Lifecycle consumers never
+    /// retry a short key.
+    opaque_resource_decl_identities: HashMap<ItemId, String>,
     /// Pre-collected inherent-impl `close` method signatures, keyed by the
     /// self-type name. Populated in `lower_program` before the type-decl
     /// pre-pass so `lower_type_decl` can:
@@ -6424,6 +6697,8 @@ impl LowerCtx {
             imported_fn_rewrites: None,
             imported_module_consts: None,
             type_classes,
+            opaque_resource_candidates: tc_output.opaque_resource_candidates.clone(),
+            opaque_resource_decl_identities: HashMap::new(),
             impl_close_methods: HashMap::new(),
             impl_consuming_methods: HashSet::new(),
             diagnostics: Vec::new(),
@@ -33091,6 +33366,79 @@ fn main() {}
 
         let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
         (parsed.program, tco, lowered)
+    }
+
+    #[test]
+    fn checker_admitted_opaque_lifecycle_survives_into_exact_hir_authority() {
+        use hew_parser::ast::Program;
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        let parsed = hew_parser::parse(
+            r#"
+            #[resource]
+            #[opaque]
+            pub type FileReadStream {}
+
+            impl FileReadStream {
+                fn close(consuming self) {
+                    unsafe { hew_file_read_stream_close(self) };
+                }
+            }
+
+            extern "C" {
+                fn hew_file_read_stream_open(path: string) -> FileReadStream;
+                fn hew_file_read_stream_close(consume stream: FileReadStream);
+            }
+            "#,
+        );
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+
+        let module_id = ModuleId::new(vec!["std".to_string(), "fs".to_string()]);
+        let root_id = ModuleId::root();
+        let mut graph = ModuleGraph::new(root_id.clone());
+        graph
+            .add_module(Module {
+                id: module_id.clone(),
+                items: parsed.program.items,
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .expect("add std.fs test module");
+        graph.topo_order = vec![module_id, root_id];
+        let program = Program {
+            module_graph: Some(graph),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        assert!(
+            output
+                .opaque_resource_candidates
+                .candidates
+                .contains_key("std.fs.FileReadStream"),
+            "checker must admit the exact generated lifecycle"
+        );
+
+        let lowered = lower_program(&program, &output, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "HIR diagnostics: {:#?}\nitems: {:#?}",
+            lowered.diagnostics,
+            lowered.module.items
+        );
+        let lifecycle = lowered
+            .module
+            .type_classes
+            .opaque_resource_lifecycle("std.fs.FileReadStream")
+            .expect("HIR must carry the checker-admitted lifecycle");
+        assert_eq!(lifecycle.resource_type, "std.fs.FileReadStream");
+        assert_eq!(lifecycle.lowered_type_name, "fs.FileReadStream");
+        assert_eq!(lifecycle.release_symbol, "hew_file_read_stream_close");
+        assert!(lifecycle.close_symbol.ends_with("FileReadStream::close"));
     }
 
     #[test]

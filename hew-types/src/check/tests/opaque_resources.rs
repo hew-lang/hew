@@ -7,6 +7,10 @@ use crate::ffi_contracts::{
     ExternOwnershipContract, ExternParamOwnership, ExternResultOwnership, ExternResultRetention,
     ReleaseDischargeDepth,
 };
+use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 const TCP_CONNECTION_SOURCE: &str = r#"
 #[opaque]
@@ -48,6 +52,381 @@ fn tcp_like_owned_results_join_one_qualified_lifecycle() {
         "{:#?}",
         output.opaque_resource_candidates.conflicts
     );
+}
+
+fn collect_hew_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(directory).expect("read stdlib directory") {
+        let path = entry.expect("read stdlib entry").path();
+        if path.is_dir() {
+            collect_hew_sources(&path, sources);
+        } else if path.extension().is_some_and(|extension| extension == "hew") {
+            sources.push(path);
+        }
+    }
+}
+
+fn canonical_std_module(std_root: &Path, source: &Path) -> Vec<String> {
+    let relative = source.strip_prefix(std_root).expect("source is below std/");
+    let mut module = vec!["std".to_string()];
+    if let Some(parent) = relative.parent() {
+        module.extend(parent.components().map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .expect("stdlib paths are UTF-8")
+                .to_string()
+        }));
+    }
+    let stem = relative
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .expect("stdlib source has a UTF-8 stem");
+    if module.last().is_none_or(|last| last != stem) {
+        module.push(stem.to_string());
+    }
+    module
+}
+
+type ParsedStdModules = BTreeMap<Vec<String>, Vec<hew_parser::ast::Spanned<Item>>>;
+
+fn parse_shipped_std_sources(std_root: &Path) -> (ParsedStdModules, BTreeSet<String>) {
+    let mut sources = Vec::new();
+    collect_hew_sources(std_root, &mut sources);
+    sources.sort();
+
+    let mut parsed_modules = BTreeMap::new();
+    let mut resource_types = BTreeSet::new();
+    for source in sources {
+        let text = fs::read_to_string(&source).expect("read stdlib source");
+        let parsed = hew_parser::parse(&text);
+        assert!(
+            parsed.errors.is_empty(),
+            "{} must parse: {:#?}",
+            source.display(),
+            parsed.errors
+        );
+        let module_path = canonical_std_module(std_root, &source);
+        let inherent_closes: BTreeSet<_> = parsed
+            .program
+            .items
+            .iter()
+            .filter_map(|(item, _)| {
+                let Item::Impl(implementation) = item else {
+                    return None;
+                };
+                let TypeExpr::Named { name, .. } = &implementation.target_type.0 else {
+                    return None;
+                };
+                implementation
+                    .methods
+                    .iter()
+                    .any(|method| method.name == "close" && method.consumes_self)
+                    .then(|| name.clone())
+            })
+            .collect();
+        for (item, _) in &parsed.program.items {
+            let Item::TypeDecl(declaration) = item else {
+                continue;
+            };
+            if declaration.resource_marker != hew_parser::ast::ResourceMarker::Resource
+                || !declaration.is_opaque
+            {
+                continue;
+            }
+            assert!(
+                declaration
+                    .consuming_methods
+                    .iter()
+                    .any(|method| method == "close")
+                    || inherent_closes.contains(&declaration.name),
+                "{}.{} must expose one consuming close method",
+                module_path.join("."),
+                declaration.name
+            );
+            resource_types.insert(format!("{}.{}", module_path.join("."), declaration.name));
+        }
+        assert!(
+            parsed_modules
+                .insert(module_path, parsed.program.items)
+                .is_none(),
+            "canonical std module identity must be unique"
+        );
+    }
+
+    (parsed_modules, resource_types)
+}
+
+fn shipped_std_module_graph(parsed_modules: &ParsedStdModules) -> ModuleGraph {
+    let mut module_graph = ModuleGraph::new(ModuleId::root());
+    for (module_path, source_items) in parsed_modules {
+        let mut items = source_items.clone();
+        let mut imports = Vec::new();
+        for (item, span) in &mut items {
+            let Item::Import(declaration) = item else {
+                continue;
+            };
+            let resolved = parsed_modules.get(&declaration.path).unwrap_or_else(|| {
+                panic!(
+                    "{} imports missing shipped module {}",
+                    module_path.join("."),
+                    declaration.path.join(".")
+                )
+            });
+            declaration.resolved_items = Some(resolved.clone());
+            imports.push(hew_parser::module::ModuleImport {
+                target: ModuleId::new(declaration.path.clone()),
+                spec: declaration.spec.clone(),
+                span: span.clone(),
+            });
+        }
+        module_graph
+            .add_module(Module {
+                id: ModuleId::new(module_path.clone()),
+                items,
+                imports,
+                source_paths: vec![],
+                doc: None,
+            })
+            .expect("add shipped std module");
+    }
+    module_graph
+        .compute_topo_order()
+        .expect("shipped std module graph must be acyclic");
+    module_graph
+}
+
+fn shipped_std_candidate_inventory() -> (BTreeSet<String>, OpaqueResourceCandidateGraph) {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-types is below repository root")
+        .to_path_buf();
+    let (resource_types, parsed_modules) = {
+        let (modules, resources) = parse_shipped_std_sources(&repo_root.join("std"));
+        (resources, modules)
+    };
+    let program = Program {
+        module_graph: Some(shipped_std_module_graph(&parsed_modules)),
+        items: vec![],
+        module_doc: None,
+    };
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.register_builtins();
+    checker.collect_types(&program);
+    checker.collect_declared_type_param_names(&program);
+    checker.type_decls_registered = true;
+    checker.collect_functions(&program);
+    let graph = checker.derive_opaque_resource_candidate_graph(&checker.fn_sigs);
+    (resource_types, graph)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LifecycleEvidenceMatrix {
+    schema_version: u32,
+    resources: BTreeMap<String, LifecycleEvidence>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LifecycleEvidence {
+    teardown_family: String,
+    runtime: TestEvidence,
+    scope_exit: TestEvidence,
+    explicit_close: TestEvidence,
+    wasm: WasmEvidence,
+    status: String,
+    composition_requirement: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestEvidence {
+    path: String,
+    test: String,
+    valid_handle: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WasmEvidence {
+    profile: String,
+    disposition: String,
+    path: String,
+    test: String,
+}
+
+fn assert_nonempty(value: &str, field: &str, resource: &str) {
+    assert!(
+        !value.trim().is_empty(),
+        "{resource} has empty lifecycle evidence field {field}"
+    );
+}
+
+fn assert_test_anchor(repo_root: &Path, evidence: &TestEvidence, field: &str, resource: &str) {
+    assert_nonempty(&evidence.path, &format!("{field}.path"), resource);
+    assert_nonempty(&evidence.test, &format!("{field}.test"), resource);
+    assert!(
+        evidence.valid_handle,
+        "{resource} {field} evidence must exercise a real compiled value or valid handle"
+    );
+    let path = repo_root.join(&evidence.path);
+    let source = fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "{resource} {field} evidence file {} is missing: {error}",
+            path.display()
+        )
+    });
+    assert!(
+        source.contains(&format!("fn {}(", evidence.test)),
+        "{resource} {field} evidence test {} is missing from {}",
+        evidence.test,
+        path.display()
+    );
+}
+
+fn assert_wasm_anchor(repo_root: &Path, evidence: &WasmEvidence, resource: &str) {
+    assert_nonempty(&evidence.profile, "wasm.profile", resource);
+    assert_eq!(
+        evidence.disposition, "rejected",
+        "closeable opaque resources are not yet admitted by the sandbox profile"
+    );
+    assert_nonempty(&evidence.path, "wasm.path", resource);
+    assert_nonempty(&evidence.test, "wasm.test", resource);
+    let path = repo_root.join(&evidence.path);
+    let source = fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "{resource} Wasm evidence file {} is missing: {error}",
+            path.display()
+        )
+    });
+    assert!(
+        source.contains(&format!("fn {}(", evidence.test)),
+        "{resource} Wasm rejection test {} is missing from {}",
+        evidence.test,
+        path.display()
+    );
+}
+
+#[test]
+fn shipped_source_and_checker_lifecycle_inventories_are_a_bijection() {
+    let (source_resources, graph) = shipped_std_candidate_inventory();
+    assert!(
+        !source_resources.is_empty(),
+        "the source inventory must have teeth"
+    );
+    assert!(
+        graph.conflicts.is_empty(),
+        "source-derived lifecycle conflicts: {:#?}",
+        graph.conflicts
+    );
+    let candidate_resources: BTreeSet<_> = graph.candidates.keys().cloned().collect();
+    assert_eq!(
+        candidate_resources, source_resources,
+        "every shipped closeable opaque declaration must reach exactly one checker candidate, and no contract-only candidate may survive source removal"
+    );
+    for candidate in graph.candidates.values() {
+        assert!(!candidate.producer_symbols.is_empty());
+        assert!(!candidate.release_symbol.is_empty());
+    }
+
+    let json = serde_json::to_value(&graph).expect("candidate graph is machine-readable");
+    assert_eq!(
+        json["candidates"]
+            .as_object()
+            .expect("JSON candidate map")
+            .len(),
+        source_resources.len()
+    );
+}
+
+#[test]
+fn shipped_lifecycle_evidence_is_complete_for_the_structural_inventory() {
+    let (source_resources, _) = shipped_std_candidate_inventory();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-types is below repository root")
+        .to_path_buf();
+    let matrix_path = repo_root.join("scripts/opaque-resource-lifecycle-evidence.json");
+    let matrix: LifecycleEvidenceMatrix = serde_json::from_str(
+        &fs::read_to_string(&matrix_path).expect("read lifecycle evidence matrix"),
+    )
+    .expect("lifecycle evidence matrix must match its strict schema");
+    assert_eq!(matrix.schema_version, 1);
+
+    let matrix_resources: BTreeSet<_> = matrix.resources.keys().cloned().collect();
+    assert_eq!(
+        matrix_resources, source_resources,
+        "the evidence matrix must have exactly one row for every structurally discovered closeable opaque resource"
+    );
+
+    let mut teardown_families = BTreeSet::new();
+    for (resource, evidence) in &matrix.resources {
+        assert_nonempty(&evidence.teardown_family, "teardown_family", resource);
+        assert!(
+            teardown_families.insert(&evidence.teardown_family),
+            "{resource} reuses teardown family {}; use one row per distinct runtime release authority",
+            evidence.teardown_family
+        );
+        assert_test_anchor(&repo_root, &evidence.runtime, "runtime", resource);
+        assert_test_anchor(&repo_root, &evidence.scope_exit, "scope_exit", resource);
+        assert_test_anchor(
+            &repo_root,
+            &evidence.explicit_close,
+            "explicit_close",
+            resource,
+        );
+        assert_wasm_anchor(&repo_root, &evidence.wasm, resource);
+
+        match evidence.status.as_str() {
+            "green" => assert!(
+                evidence.composition_requirement.is_none(),
+                "{resource} is green but still names a composition requirement"
+            ),
+            "composition-required" => assert_nonempty(
+                evidence
+                    .composition_requirement
+                    .as_deref()
+                    .unwrap_or_default(),
+                "composition_requirement",
+                resource,
+            ),
+            status => panic!("{resource} has unknown lifecycle evidence status {status}"),
+        }
+    }
+}
+
+#[test]
+fn generated_contract_without_source_or_unknown_source_family_never_enters_inventory() {
+    let missing_source =
+        check_source_in_module("fn main() {}", vec!["std".to_string(), "fs".to_string()]);
+    assert!(missing_source
+        .opaque_resource_candidates
+        .candidates
+        .is_empty());
+
+    let unknown_family = check_source_in_module(
+        r#"
+        #[resource]
+        #[opaque]
+        type Unknown {}
+        impl Unknown {
+            fn close(consuming self) { unsafe { unknown_free(self) }; }
+        }
+        extern "C" {
+            fn unknown_new() -> Unknown;
+            fn unknown_free(consume value: Unknown);
+        }
+        "#,
+        vec!["std".to_string(), "unknown".to_string()],
+    );
+    assert!(unknown_family
+        .opaque_resource_candidates
+        .candidates
+        .is_empty());
+    assert!(unknown_family
+        .opaque_resource_candidates
+        .conflicts
+        .is_empty());
 }
 
 #[test]

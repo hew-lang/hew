@@ -17,7 +17,7 @@ pub enum ExternParamOwnership {
 }
 
 /// Ownership disposition of a C-ABI result.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum ExternResultOwnership {
     Fresh,
     Retained,
@@ -26,7 +26,7 @@ pub enum ExternResultOwnership {
 }
 
 /// Recursive depth of a result's balancing release.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum ReleaseDischargeDepth {
     Shallow,
     Deep,
@@ -34,7 +34,7 @@ pub enum ReleaseDischargeDepth {
 }
 
 /// Whether the foreign callee retained a pointer into an owned result.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum ExternResultRetention {
     Transferred,
     Unspecified,

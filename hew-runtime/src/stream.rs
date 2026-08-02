@@ -76,6 +76,12 @@ pub extern "C" fn hew_stream_is_valid(stream: *const HewStream) -> i32 {
     i32::from(!stream.is_null())
 }
 
+/// Nominally typed validity probe for the `std.fs.FileReadStream` adapter.
+#[no_mangle]
+pub extern "C" fn hew_file_read_stream_is_valid(stream: *const HewStream) -> i32 {
+    hew_stream_is_valid(stream)
+}
+
 /// Returns 1 if the sink pointer is non-null (valid), 0 otherwise.
 #[no_mangle]
 pub extern "C" fn hew_sink_is_valid(sink: *const HewSink) -> i32 {
@@ -1200,6 +1206,20 @@ pub unsafe extern "C" fn hew_stream_from_file_read(path: *const c_char) -> *mut 
     }
 }
 
+/// Nominally typed file-read handle constructor used by `std.fs`.
+///
+/// The generic stream API retains `hew_stream_from_file_read`; this distinct
+/// endpoint gives generated ownership contracts one unambiguous source type.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_stream_from_file_read`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_file_read_stream_open(path: *const c_char) -> *mut HewStream {
+    // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
+    unsafe { hew_stream_from_file_read(path) }
+}
+
 /// Open a file for streaming writes.
 ///
 /// Returns a `*mut HewSink`, or null on error.  On failure, the error
@@ -1795,6 +1815,17 @@ pub unsafe extern "C" fn hew_stream_close(stream: *mut HewStream) {
         // Drop impl calls close() on the backing.
         unsafe { drop(Box::from_raw(stream)) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
+}
+
+/// Nominally typed file-read handle release used by `std.fs`.
+///
+/// # Safety
+///
+/// Same preconditions as [`hew_stream_close`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_file_read_stream_close(stream: *mut HewStream) {
+    // SAFETY: This nominal adapter has exactly the delegated ABI and preconditions.
+    unsafe { hew_stream_close(stream) };
 }
 
 /// Write one item to a sink.
@@ -3535,6 +3566,27 @@ mod tests {
             let all: Vec<u8> = items.into_iter().flatten().collect();
             assert_eq!(all, content);
             hew_stream_close(stream);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn nominal_file_read_resource_endpoints_share_one_live_handle() {
+        let path = temp_path("nominal_file_read_resource");
+        let content = b"one nominal owner";
+        std::fs::write(&path, content).unwrap();
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: c_path names an existing file, and the returned handle is
+        // released exactly once through its nominal close endpoint.
+        unsafe {
+            let stream = hew_file_read_stream_open(c_path.as_ptr());
+            assert_eq!(hew_file_read_stream_is_valid(stream), 1);
+            assert_eq!(hew_file_read_stream_is_valid(ptr::null()), 0);
+            let items = drain_stream(stream);
+            let all: Vec<u8> = items.into_iter().flatten().collect();
+            assert_eq!(all, content);
+            hew_file_read_stream_close(stream);
         }
         let _ = std::fs::remove_file(&path);
     }

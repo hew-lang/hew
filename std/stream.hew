@@ -244,8 +244,17 @@ pub fn forward(source: Stream<string>, dest: Sink<string>) {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 /// Internal paired channel handle.
+#[resource]
 #[opaque]
 pub type StreamPair {
+}
+
+impl StreamPair {
+    fn close(consuming self) {
+        unsafe {
+            hew_stream_pair_free(self)
+        };
+    }
 }
 
 extern "C" {
@@ -253,7 +262,7 @@ extern "C" {
     fn hew_stream_pair_is_valid(pair: StreamPair) -> bool;
     fn hew_stream_pair_sink(pair: StreamPair) -> Sink<string>;
     fn hew_stream_pair_stream(pair: StreamPair) -> Stream<string>;
-    fn hew_stream_pair_free(pair: StreamPair);
+    fn hew_stream_pair_free(consume pair: StreamPair);
     fn hew_stream_from_file_read(path: string) -> Stream<string>;
     fn hew_stream_from_file_write(path: string) -> Sink<string>;
     fn hew_stream_is_valid(stream: Stream<string>) -> bool;

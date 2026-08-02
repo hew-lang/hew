@@ -312,8 +312,9 @@ fn imported_source_result_matches(
 
 fn lifecycle_description(candidate: &OpaqueResourceLifecycleCandidate) -> String {
     format!(
-        "release={}, depth={:?}, result={:?}, retention={:?}",
+        "release={}@{}, depth={:?}, result={:?}, retention={:?}",
         candidate.release_symbol,
+        candidate.release_param_index,
         candidate.discharge_depth,
         candidate.result_ownership,
         candidate.result_retention
@@ -325,6 +326,7 @@ fn lifecycle_matches(
     candidate: &OpaqueResourceLifecycleCandidate,
 ) -> bool {
     established.release_symbol == candidate.release_symbol
+        && established.release_param_index == candidate.release_param_index
         && established.discharge_depth == candidate.discharge_depth
         && established.result_ownership == candidate.result_ownership
         && established.result_retention == candidate.result_retention
@@ -355,17 +357,20 @@ fn release_signature_mismatch(
         ));
     }
 
-    let matching_positions = release_contract
+    let matching_positions: Vec<_> = release_contract
         .params
         .iter()
         .zip(release_contract.resource_param_types)
-        .filter(|(mode, nominal)| {
+        .enumerate()
+        .filter(|(_, (mode, nominal))| {
             **mode == ExternParamOwnership::Consume && **nominal == resource_type
         })
-        .count();
-    if matching_positions != 1 {
+        .map(|(index, _)| index)
+        .collect();
+    if matching_positions.len() != 1 {
         return Some(format!(
-            "release contract must consume exactly one {resource_type}, found {matching_positions}"
+            "release contract must consume exactly one {resource_type}, found {}",
+            matching_positions.len()
         ));
     }
 
@@ -401,6 +406,37 @@ enum SourceCandidateOutcome {
         release_symbol: String,
         kind: OpaqueResourceLifecycleConflictKind,
     },
+}
+
+fn validated_resource_candidate(
+    typed_result: crate::ffi_contracts::ExternOwnedResourceResult,
+    release_contract: &crate::ffi_contracts::ExternOwnershipContract,
+    producer_declaration: &SourceExternDeclaration,
+    producer_symbol: &str,
+) -> OpaqueResourceLifecycleCandidate {
+    OpaqueResourceLifecycleCandidate {
+        resource_type: typed_result.resource_type.to_string(),
+        owner_module: typed_result.owner_module.to_string(),
+        release_symbol: typed_result.release_symbol.to_string(),
+        release_param_index: release_contract
+            .params
+            .iter()
+            .zip(release_contract.resource_param_types)
+            .position(|(mode, nominal)| {
+                *mode == crate::ffi_contracts::ExternParamOwnership::Consume
+                    && *nominal == typed_result.resource_type
+            })
+            .expect("validated release contract has one consuming resource position"),
+        discharge_depth: typed_result.discharge_depth,
+        result_ownership: typed_result.result,
+        result_retention: typed_result.result_retention,
+        producer_symbols: [producer_symbol.to_string()].into_iter().collect(),
+        producer_modules: producer_declaration
+            .declaring_module
+            .iter()
+            .cloned()
+            .collect(),
+    }
 }
 
 #[expect(
@@ -508,20 +544,12 @@ fn derive_source_resource_candidate(
         return failure(OpaqueResourceLifecycleConflictKind::ReleaseSignatureMismatch { detail });
     }
 
-    SourceCandidateOutcome::Candidate(OpaqueResourceLifecycleCandidate {
-        resource_type: typed_result.resource_type.to_string(),
-        owner_module: typed_result.owner_module.to_string(),
-        release_symbol: typed_result.release_symbol.to_string(),
-        discharge_depth: typed_result.discharge_depth,
-        result_ownership: typed_result.result,
-        result_retention: typed_result.result_retention,
-        producer_symbols: [producer_symbol.to_string()].into_iter().collect(),
-        producer_modules: producer_declaration
-            .declaring_module
-            .iter()
-            .cloned()
-            .collect(),
-    })
+    SourceCandidateOutcome::Candidate(validated_resource_candidate(
+        typed_result,
+        release_contract,
+        producer_declaration,
+        producer_symbol,
+    ))
 }
 
 fn source_declaration_matches_endpoint(

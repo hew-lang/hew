@@ -631,6 +631,47 @@ mod wasm_rejects {
     }
 
     #[test]
+    fn wasm_rejects_native_rc1_resource_modules() {
+        let cases = [
+            (
+                "std::net::http",
+                "http.listen(\"127.0.0.1:0\")",
+                "HTTP server operations",
+            ),
+            (
+                "std::process",
+                "process.run(\"echo hew\")",
+                "Process execution operations",
+            ),
+            (
+                "std::net::smtp",
+                "smtp.connect(\"127.0.0.1\", 25, \"\", \"\")",
+                "std::net::smtp operations",
+            ),
+        ];
+
+        for (module, expression, diagnostic_name) in cases {
+            let short_name = module.rsplit("::").next().expect("module short name");
+            let source =
+                format!("import {module};\nfn main() {{ let _resource = {expression}; }}\n");
+            let output = check_wasm_with_registry(&source);
+            let precise_rejections = output
+                .errors
+                .iter()
+                .filter(|error| {
+                    error.kind == TypeErrorKind::PlatformLimitation
+                        && error.message.contains(diagnostic_name)
+                })
+                .count();
+            assert_eq!(
+                precise_rejections, 1,
+                "{short_name} resource construction must have one precise Wasm rejection: {:#?}",
+                output.errors
+            );
+        }
+    }
+
+    #[test]
     fn wasm_rejects_tls_module_call() {
         let source = concat!(
             "import std::net::tls;\n",
@@ -666,6 +707,43 @@ mod wasm_rejects {
             "error message should mention QUIC feature; got: {:?}",
             output.errors
         );
+    }
+
+    #[test]
+    fn wasm_rejects_websocket_module_calls_and_values() {
+        let source = concat!(
+            "import std::net::websocket;\n",
+            "fn main() {\n",
+            "    websocket.connect(\"ws://127.0.0.1:9001/\");\n",
+            "    websocket.listen(\"127.0.0.1:9002\");\n",
+            "    let _connect = websocket.connect;\n",
+            "    let _listen = websocket.listen;\n",
+            "}\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "websocket calls and values should fail closed on WASM: {:?}",
+            output.errors
+        );
+        assert!(platform_error_contains(&output, "std::net::websocket"));
+    }
+
+    #[test]
+    fn wasm_rejects_websocket_handle_methods() {
+        let source = concat!(
+            "import std::net::websocket;\n",
+            "fn use_conn(conn: websocket.Conn) { conn.send_text(\"payload\"); }\n",
+            "fn use_server(server: websocket.Server) { server.port(); }\n",
+            "fn use_message(message: websocket.Message) { message.msg_type(); }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "websocket handle methods should fail closed on WASM: {:?}",
+            output.errors
+        );
+        assert!(platform_error_contains(&output, "std::net::websocket"));
     }
 
     #[test]

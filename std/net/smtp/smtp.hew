@@ -29,6 +29,7 @@
 /// probe the server before returning `Ok` and report an unreachable or
 /// non-SMTP endpoint as `Err`.
 /// Use `send()` or `send_html()` to deliver messages.
+#[resource]
 #[opaque]
 pub type Conn {
 }
@@ -47,9 +48,6 @@ trait ConnMethods {
 
     /// Send an HTML email.
     fn try_send_html(self, from: string, to: string, subject: string, html: string) -> Result<(), string>;
-
-    /// Close the SMTP connection.
-    fn close(self);
 }
 
 impl ConnMethods for Conn {
@@ -87,10 +85,13 @@ impl ConnMethods for Conn {
             Ok(())
         }
     }
-    /// Close the SMTP connection.
-    fn close(conn: Conn) {
+}
+
+impl Conn {
+    /// Release this SMTP connection early. Scope exit performs the same release.
+    fn close(consuming self) {
         unsafe {
-            hew_smtp_close(conn)
+            hew_smtp_close(self)
         };
     }
 }
@@ -235,5 +236,5 @@ extern "C" {
     fn hew_smtp_send_html(conn: Conn, from: string, to: string, subject: string, html: string) -> i32;
     fn hew_smtp_send_once(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, body: string) -> i32;
     fn hew_smtp_send_html_once(host: string, port: i64, username: string, password: string, from: string, to: string, subject: string, html: string) -> i32;
-    fn hew_smtp_close(conn: Conn);
+    fn hew_smtp_close(consume conn: Conn);
 }

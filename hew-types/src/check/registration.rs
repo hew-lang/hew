@@ -162,15 +162,6 @@ const MONITOR_REF_HEW: &str = include_str!(concat!(env!("OUT_DIR"), "/monitor_re
 ///
 const FAILURE_HEW: &str = include_str!("../../../std/failure.hew");
 
-/// Embedded source for the built-in `LookupError` enum used as the `Err`
-/// variant of `Node::lookup<T>(name) -> Result<RemotePid<T>, LookupError>`.
-///
-/// Inline tests do not flow through the import resolver, so this stdlib
-/// surface is registered directly into the checker via
-/// `register_stdlib_hew_items` the same way `LinkError` / `CrashAction`
-/// are bootstrapped from `MONITOR_REF_HEW` / `FAILURE_HEW`.
-const LOOKUP_ERROR_HEW: &str = include_str!("../../../std/builtins.hew");
-
 /// Stdlib-floor modules permitted to DECLARE `#[intrinsic("…")]` functions.
 ///
 /// A605 (ratified): the `#[intrinsic]` surface is compiler-internal-only — no
@@ -708,9 +699,9 @@ fn derive_opaque_resource_candidate_graph(
 }
 
 impl Checker {
-    fn canonicalize_registry_signature_ty(ty: &Ty, canonical_owner: &str) -> Ty {
+    fn canonicalize_registry_signature_ty(&self, ty: &Ty, canonical_owner: &str) -> Ty {
         let mapped = ty.map_children_pub(&|child| {
-            Self::canonicalize_registry_signature_ty(child, canonical_owner)
+            self.canonicalize_registry_signature_ty(child, canonical_owner)
         });
         let Ty::Named {
             name,
@@ -720,13 +711,10 @@ impl Checker {
         else {
             return mapped;
         };
-        let extracted_owner = canonical_owner
-            .rsplit_once('.')
-            .map_or(canonical_owner, |(_, leaf)| leaf);
-        let prefix = format!("{extracted_owner}.");
-        let canonical_name = name
-            .strip_prefix(&prefix)
-            .map_or(name.clone(), |leaf| format!("{canonical_owner}.{leaf}"));
+        let canonical_name = self
+            .module_registry
+            .canonical_registry_signature_type_identity(&name, canonical_owner)
+            .unwrap_or(name);
         Ty::Named {
             name: canonical_name,
             args,
@@ -1427,11 +1415,11 @@ impl Checker {
         // from `std/builtins.hew`, plus declarative string/bytes FFI receiver
         // methods from `std/string.hew` and `std/io.hew`.
         self.register_builtins_hew_impls();
+        self.register_builtin_error_prelude_bindings();
         if !self.module_registry.has_search_paths() {
             self.register_builtin_closable_surface();
             self.register_builtin_failure_surface();
             self.register_builtin_monitor_ref_surface();
-            self.register_builtin_lookup_error_surface();
         }
     }
 
@@ -1548,10 +1536,10 @@ impl Checker {
                     // Compiler-carrier builtins (`LocalPid`, `NodeId`, ...)
                     // retain the catalog's canonical identity; this source file
                     // supplies their declarative surface but does not turn them
-                    // into `std.builtins.*` user nominals. `LookupError` is also
-                    // reused by the dedicated `std.lookup_error` bootstrap,
-                    // which alone owns its prelude publication.
-                    if td.name != "LookupError" && crate::lookup_builtin_type(&td.name).is_none() {
+                    // into `std.builtins.*` user nominals. Builtin error enums
+                    // that need an explicit bare prelude binding are published
+                    // separately after every declaration has its true owner.
+                    if crate::lookup_builtin_type(&td.name).is_none() {
                         self.record_published_bare_type(
                             &td.name,
                             &format!("std.builtins.{}", td.name),
@@ -1694,7 +1682,19 @@ impl Checker {
             parsed.errors
         );
         if parsed.errors.is_empty() {
-            let items: Vec<_> = parsed.program.items.into_iter().collect();
+            // The generated projection carries LinkError's declaration so its
+            // ABI surface is source-derived, but that declaration is owned by
+            // std/builtins.hew and was already registered by
+            // register_builtins_hew_impls. Never re-register it under the
+            // std.link_monitor owner used by the rest of this projection.
+            let items: Vec<_> = parsed
+                .program
+                .items
+                .into_iter()
+                .filter(
+                    |(item, _)| !matches!(item, Item::TypeDecl(decl) if decl.name == "LinkError"),
+                )
+                .collect();
             self.register_stdlib_hew_items(
                 "link_monitor",
                 "std.link_monitor",
@@ -1746,39 +1746,22 @@ impl Checker {
         }
     }
 
-    /// Register the built-in `LookupError` enum so `Node::lookup<T>` callers
-    /// can pattern-match `Err(LookupError::NotFound)` without an explicit
-    /// import (inline-test parity with `LinkError` / `CrashAction`).
-    fn register_builtin_lookup_error_surface(&mut self) {
-        let identity = "module:std::lookup_error";
-        if self.registered_stdlib_hew_sources.contains(identity) {
-            return;
-        }
-        self.registered_stdlib_hew_sources
-            .insert(identity.to_string());
-        let parsed = hew_parser::parse(LOOKUP_ERROR_HEW);
-        debug_assert!(
-            parsed.errors.is_empty(),
-            "std/builtins.hew::LookupError failed to parse: {:?}",
-            parsed.errors
-        );
-        if parsed.errors.is_empty() {
-            let items: Vec<_> = parsed
-                .program
-                .items
-                .into_iter()
-                .filter(|(item, _)| {
-                    matches!(
-                        item,
-                        hew_parser::ast::Item::TypeDecl(decl) if decl.name == "LookupError"
-                    )
-                })
-                .collect();
-            self.register_stdlib_hew_items(
-                "lookup_error",
-                "std.lookup_error",
-                &items,
-                StdlibBarePublication::Prelude,
+    /// Publish the import-free spellings of std.builtins-owned error enums.
+    /// Their declarations were already registered by
+    /// `register_builtins_hew_impls`; this adds only lexical prelude bindings
+    /// and must never mint a second synthetic source owner.
+    fn register_builtin_error_prelude_bindings(&mut self) {
+        for name in ["LinkError", "LookupError"] {
+            let canonical = format!("std.builtins.{name}");
+            debug_assert!(
+                self.type_defs.contains_key(&canonical),
+                "builtins prelude binding requires its source declaration: {canonical}"
+            );
+            self.known_types.insert(name.to_string());
+            self.record_published_bare_type(name, &canonical);
+            self.unqualified_to_module.insert(
+                (self.current_module.clone(), name.to_string()),
+                "std.builtins".to_string(),
             );
         }
     }
@@ -9279,10 +9262,10 @@ impl Checker {
                                 .params
                                 .iter()
                                 .map(|ty| {
-                                    Self::canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                    self.canonicalize_registry_signature_ty(ty, &canonical_owner)
                                 })
                                 .collect(),
-                            return_type: Self::canonicalize_registry_signature_ty(
+                            return_type: self.canonicalize_registry_signature_ty(
                                 &func.return_type,
                                 &canonical_owner,
                             ),
@@ -9304,10 +9287,10 @@ impl Checker {
                                 .params
                                 .iter()
                                 .map(|ty| {
-                                    Self::canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                    self.canonicalize_registry_signature_ty(ty, &canonical_owner)
                                 })
                                 .collect(),
-                            return_type: Self::canonicalize_registry_signature_ty(
+                            return_type: self.canonicalize_registry_signature_ty(
                                 &wfn.return_type,
                                 &canonical_owner,
                             ),

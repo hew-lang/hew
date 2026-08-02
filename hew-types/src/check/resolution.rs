@@ -41,9 +41,7 @@ impl Checker {
             .module_import_bindings
             .get(&(self.current_module.clone(), surface_owner.to_string()))
             .map_or(surface_owner, String::as_str);
-        let canonical_source = self.canonical_std_module_sources.contains(canonical_owner)
-            || (canonical_owner == "std.channel.channel"
-                && self.canonical_std_module_sources.contains("std.channel"));
+        let canonical_source = self.canonical_std_module_sources.contains(canonical_owner);
         let lifecycle_authorized =
             crate::lookup_source_owned_lifecycle_type(name).is_some()
                 && self.canonical_lifecycle_import_authority.iter().any(

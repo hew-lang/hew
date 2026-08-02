@@ -309,9 +309,10 @@ impl Checker {
         self.root_value_bindings.clear();
         // Record concrete stdlib source provenance once, before registration
         // manufactures any compiler-recognised carrier signatures. Module
-        // spelling is not authority: a user package may be called
-        // `std.channel.channel`, but only the source selected by the stdlib
-        // search-path resolver may receive Sender/Receiver runtime identity.
+        // spelling is not authority: a user package may imitate the legacy
+        // repeated-basename channel path, but only the source selected by the
+        // stdlib search-path resolver may receive Sender/Receiver runtime
+        // identity.
         self.canonical_std_module_sources.clear();
         if let Some(module_graph) = &program.module_graph {
             for (module_id, module) in &module_graph.modules {

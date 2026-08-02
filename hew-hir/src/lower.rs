@@ -21442,8 +21442,8 @@ impl LowerCtx {
             .and(match name {
                 "stream.Stream" => Some(("std.stream.Stream", BuiltinType::Stream)),
                 "stream.Sink" => Some(("std.stream.Sink", BuiltinType::Sink)),
-                "channel.Sender" => Some(("std.channel.channel.Sender", BuiltinType::Sender)),
-                "channel.Receiver" => Some(("std.channel.channel.Receiver", BuiltinType::Receiver)),
+                "channel.Sender" => Some(("std.channel.Sender", BuiltinType::Sender)),
+                "channel.Receiver" => Some(("std.channel.Receiver", BuiltinType::Receiver)),
                 _ => None,
             });
         if let Some((canonical, builtin)) = canonical_compat {
@@ -33093,13 +33093,13 @@ fn main() {}
         }
 
         ctx.canonical_std_source_type_identities.extend([
-            "std.channel.channel.Receiver".to_string(),
+            "std.channel.Receiver".to_string(),
             "std.stream.Stream".to_string(),
             "std.stream.Sink".to_string(),
             "std.link_monitor.MonitorRef".to_string(),
         ]);
         for (qualified, builtin) in [
-            ("std.channel.channel.Receiver", BuiltinType::Receiver),
+            ("std.channel.Receiver", BuiltinType::Receiver),
             ("std.stream.Stream", BuiltinType::Stream),
             ("std.stream.Sink", BuiltinType::Sink),
             ("std.link_monitor.MonitorRef", BuiltinType::MonitorRef),
@@ -33144,7 +33144,7 @@ fn main() {}
         );
 
         ctx.root_opaque_type_short_names.clear();
-        ctx.current_module_name = Some("std.channel.channel".to_string());
+        ctx.current_module_name = Some("std.channel".to_string());
         assert_eq!(
             ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
                 "Receiver".to_string(),

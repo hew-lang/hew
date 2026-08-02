@@ -236,6 +236,29 @@ pub fn is_canonical_stdlib_module_source(
         })
 }
 
+/// Return the declaration owner selected by an import's resolved source.
+///
+/// `std::channel::channel` is the legacy filesystem spelling for
+/// `std/channel/channel.hew`; the repeated basename does not introduce a
+/// second source module. Collapse it only when the resolved path is the exact
+/// shipped channel source, so an identically-spelled user package retains its
+/// own nominal owner.
+#[must_use]
+pub fn canonical_source_module_identity(
+    requested_dotted: &str,
+    source_paths: &[PathBuf],
+) -> String {
+    if requested_dotted == "std.channel.channel"
+        && source_paths
+            .iter()
+            .any(|source| is_canonical_stdlib_module_source(source, "std.channel"))
+    {
+        "std.channel".to_string()
+    } else {
+        requested_dotted.to_string()
+    }
+}
+
 #[derive(Debug)]
 pub enum ModuleError {
     NotFound {
@@ -387,7 +410,6 @@ impl ModuleRegistry {
         if self.modules.contains_key(&id) {
             return Ok(&self.modules[&id]);
         }
-
         // Try each search path in order.
         for search_path in &self.search_paths {
             if let Some(info) = load_module_checked(&loader_path, search_path)? {
@@ -428,8 +450,12 @@ impl ModuleRegistry {
                     );
                 }
 
-                self.modules.insert(id.clone(), info);
-                return Ok(&self.modules[&id]);
+                let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
+                let canonical_owner =
+                    canonical_source_module_identity(&id.path.join("."), &source_paths);
+                let canonical_id = module_id_from_identity(&canonical_owner);
+                self.modules.insert(canonical_id.clone(), info);
+                return Ok(&self.modules[&canonical_id]);
             }
         }
 
@@ -579,6 +605,71 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn channel_repeated_basename_maps_only_exact_shipped_source_to_canonical_owner() {
+        let shipped = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("std/channel/channel.hew");
+        assert_eq!(
+            canonical_source_module_identity("std.channel.channel", &[shipped]),
+            "std.channel"
+        );
+
+        let user_lookalike = std::env::temp_dir().join("user/std/channel/channel.hew");
+        assert_eq!(
+            canonical_source_module_identity("std.channel.channel", &[user_lookalike]),
+            "std.channel.channel",
+            "a same-spelled user module must retain its own nominal owner"
+        );
+        assert_eq!(
+            canonical_source_module_identity("std.channel", &[]),
+            "std.channel",
+            "the canonical owner is already stable"
+        );
+    }
+
+    #[test]
+    fn channel_legacy_request_resolves_source_before_consulting_canonical_cache() {
+        let mut reg = registry();
+        reg.load("std::channel")
+            .expect("prime the canonical shipped channel owner");
+        let shipped = reg
+            .get("std::channel")
+            .and_then(|info| info.source_path.clone())
+            .expect("canonical cache entry has a source path");
+
+        let user_dir = TestDir::new("module-registry-user-channel-lookalike");
+        let user_channel_dir = user_dir.root.join("std/channel");
+        fs::create_dir_all(&user_channel_dir).expect("create user channel module directory");
+        let user_source = user_channel_dir.join("channel.hew");
+        fs::write(
+            &user_source,
+            "pub type Sender { marker: i64; }\npub type Receiver { marker: i64; }\n",
+        )
+        .expect("write user channel lookalike");
+
+        // Model a new importer resolution context while preserving the cache.
+        // The legacy request must resolve this source before deciding whether
+        // its repeated basename denotes the canonical shipped owner.
+        reg.search_paths = vec![user_dir.root.clone()];
+        let loaded = reg
+            .load("std::channel::channel")
+            .expect("load the user lookalike through the legacy spelling");
+        assert_eq!(loaded.source_path.as_deref(), Some(user_source.as_path()));
+        assert_eq!(
+            reg.get("std::channel::channel")
+                .and_then(|info| info.source_path.as_deref()),
+            Some(user_source.as_path()),
+            "the user source keeps the nested nominal owner"
+        );
+        assert_eq!(
+            reg.get("std::channel")
+                .and_then(|info| info.source_path.as_deref()),
+            Some(shipped.as_path()),
+            "resolving a lookalike must not replace the proven shipped owner"
+        );
+    }
 
     fn test_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))

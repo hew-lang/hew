@@ -1184,17 +1184,10 @@ impl Checker {
         // the runtime catalogue is keyed by the ABI symbol alone. Bridge that
         // representation boundary only after the module graph has proved the
         // exact stdlib source owner; a user package named `channel` (or a
-        // spoofed `std.channel.channel` module) must not acquire a runtime
+        // spoofed `std.channel` module) must not acquire a runtime
         // call target merely by sharing these leaves.
-        if self
-            .canonical_std_module_sources
-            .contains("std.channel.channel")
-            || self.canonical_std_module_sources.contains("std.channel")
-        {
-            if let Some(c_symbol) = signature_key
-                .strip_prefix("std.channel.channel.")
-                .or_else(|| signature_key.strip_prefix("std.channel."))
-            {
+        if self.canonical_std_module_sources.contains("std.channel") {
+            if let Some(c_symbol) = signature_key.strip_prefix("std.channel.") {
                 if let Some(family) =
                     crate::runtime_call::RuntimeCallFamily::from_c_symbol(c_symbol)
                 {
@@ -2450,12 +2443,12 @@ mod channel_layout_target_tests {
 
     #[test]
     fn channel_layout_runtime_target_requires_canonical_source_provenance() {
-        let signature = "std.channel.channel.hew_channel_recv_layout";
+        let signature = "std.channel.hew_channel_recv_layout";
 
         let mut canonical = Checker::default();
         canonical
             .canonical_std_module_sources
-            .insert("std.channel.channel".to_string());
+            .insert("std.channel".to_string());
         assert_eq!(
             canonical.call_target_for_signature(signature),
             CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout)

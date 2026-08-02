@@ -4703,9 +4703,8 @@ pub fn is_builtin_fresh_ctor(name: &str) -> bool {
 /// fail-closed answer.
 #[must_use]
 pub fn stdlib_shim_emitted_symbol(name: &str, id: hew_hir::ItemId) -> Option<&'static str> {
-    let Ok(index) = usize::try_from(u32::MAX - id.0) else {
-        return None;
-    };
+    // JUSTIFIED: unsupported sub-32-bit targets cannot decode this id; None is fail-closed.
+    let index = usize::try_from(u32::MAX - id.0).ok()?;
     let entry = hew_hir::stdlib_catalog::entries().get(index)?;
     let symbol = entry.linkage.runtime_symbol()?;
     (entry.name == name || symbol == name).then_some(symbol)

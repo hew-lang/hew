@@ -56,15 +56,15 @@ impl Builder {
             return Some(GeneratorEnvFieldPlan::TrivialCopy);
         }
         let record_layouts = self.record_layouts_for_classification();
-        let Ok(plan) = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+        let classified = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             ty,
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
             &self.lifecycle_registry,
-        ) else {
-            return None;
-        };
+        );
+        // JUSTIFIED: `None` feeds the caller's fail-closed capture diagnostic; it admits nothing.
+        let plan = classified.ok()?;
         if matches!(
             plan.root(),
             crate::state_clone::StateFieldCloneKind::BitCopy { .. }

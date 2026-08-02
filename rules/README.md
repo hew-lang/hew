@@ -11,10 +11,10 @@ make structural-lint            # later: cache-only pinned scan + authority ratc
 .ast-grep/tool/bin/ast-grep scan --rule rules/rust/fail-closed/ok-question-in-lowering.yml  # one pinned rule
 ```
 
-Bootstrap is explicit so ordinary local lint never downloads dependencies. The
-complete scan reports the two tracked baseline error rules as warnings; all other
-error-severity rules and the authority inventory remain fail-closed. `warning`/
-`info`/`hint` rules report without failing.
+Bootstrap is explicit so ordinary local lint never downloads dependencies. Every
+error-severity rule is fail-closed; a deliberate local exception must carry the
+rule's explicit source annotation and rationale. `warning`/`info`/`hint` rules
+report without failing.
 
 ## Layout
 

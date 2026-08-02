@@ -4580,7 +4580,9 @@ impl Builder {
                             .flatten()
                             .enumerate()
                             .filter_map(|(field_idx, ty)| {
-                                let field_idx = u32::try_from(field_idx).ok()?;
+                                let field_idx = u32::try_from(field_idx).expect(
+                                    "checked enum field index must fit the MIR u32 carrier",
+                                );
                                 (!bound_fields.contains(&field_idx)
                                     && !predicate_fields.contains(&field_idx))
                                 .then(|| (field_idx, self.subst_ty(&ty)))

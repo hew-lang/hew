@@ -1858,7 +1858,8 @@ impl Builder {
             }
             HirExprKind::TupleIndex { tuple, index } => {
                 let root = binding_ref_target(tuple)?;
-                let ordinal = u32::try_from(*index).ok()?;
+                let ordinal = u32::try_from(*index)
+                    .expect("checked tuple projection index must fit the MIR u32 carrier");
                 (root, Projection::Field(ordinal))
             }
             _ => return None,

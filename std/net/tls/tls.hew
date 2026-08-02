@@ -30,6 +30,7 @@ import std::net;
 /// An established TLS connection to a remote host.
 ///
 /// Created by `tls.connect(host, port)`. Must be released with `close()`.
+#[resource]
 #[opaque]
 pub type TlsStream {
 }
@@ -140,9 +141,6 @@ trait TlsStreamMethods {
     /// The compiler synthesises both protocol message IDs from the concrete
     /// actor type behind the `LocalPid`.
     fn attach(self, handler: LocalPid<TlsHandler>);
-
-    /// Close the TLS connection and release resources.
-    fn close(self);
 }
 
 impl TlsStreamMethods for TlsStream {
@@ -173,9 +171,13 @@ impl TlsStreamMethods for TlsStream {
     /// the concrete actor's `on_data` / `on_close` protocol IDs and emits the
     /// four-argument runtime ABI. This stub is never lowered.
     fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>) {}
-    fn close(stream: TlsStream) {
+}
+
+impl TlsStream {
+    /// Release this TLS stream early. Scope exit performs the same release.
+    fn close(consuming self) {
         unsafe {
-            hew_tls_close(stream)
+            hew_tls_close(self)
         };
     }
 }
@@ -235,7 +237,7 @@ pub fn read(stream: TlsStream, size: i64) -> Result<bytes, net.NetError> {
 }
 
 /// Close a TLS connection and release resources.
-pub fn close(stream: TlsStream) {
+pub fn close(consume stream: TlsStream) {
     unsafe {
         hew_tls_close(stream)
     };
@@ -247,7 +249,7 @@ extern "C" {
     fn hew_tls_last_error() -> string;
     fn hew_tls_write_result(stream: TlsStream, data: bytes) -> TlsWriteFfiResult;
     fn hew_tls_read_result(stream: TlsStream, size: i32) -> TlsReadFfiResult;
-    fn hew_tls_close(stream: TlsStream);
+    fn hew_tls_close(consume stream: TlsStream);
 }
 
 // ── Status-code parity tests ──────────────────────────────────────────

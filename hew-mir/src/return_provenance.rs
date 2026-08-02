@@ -2043,7 +2043,6 @@ fn extern_result_is_measured_transfer(
         .contract()
         .is_some_and(|contract| {
             if contract.result_retention != crate::ffi_contracts::ExternResultRetention::Transferred
-                || contract.discharge_depth != crate::ffi_contracts::ReleaseDischargeDepth::Shallow
             {
                 return false;
             }
@@ -2051,7 +2050,10 @@ fn extern_result_is_measured_transfer(
                 // Heap values whose compiler-derived release is a direct C ABI
                 // symbol (string, bytes, and a structurally homogeneous
                 // record) keep the existing exact-symbol proof.
-                ReturnRelease::One(planned) => contract.release_symbol == planned,
+                ReturnRelease::One(planned) => {
+                    contract.discharge_depth == crate::ffi_contracts::ReleaseDischargeDepth::Shallow
+                        && contract.release_symbol == planned
+                }
                 // An opaque `#[resource]` discharges through its inherent
                 // `<Type>::close` function rather than a raw C symbol.  It is
                 // still an exactly-one release, but only when that particular
@@ -2064,6 +2066,7 @@ fn extern_result_is_measured_transfer(
                     &decl.return_ty,
                     module,
                     contract.release_symbol,
+                    contract.discharge_depth,
                 ),
                 ReturnRelease::Nothing => false,
             }
@@ -2072,16 +2075,15 @@ fn extern_result_is_measured_transfer(
 
 /// Whether an opaque resource return is discharged by exactly `release_symbol`.
 ///
-/// The resource drop plan emits the close method recorded in
-/// `module.type_classes`; this admission reads that same entry, then insists
-/// that its body has a direct call to the producer row's close symbol.  We do
-/// not follow wrappers here: a transitive analysis could be sound, but a missed
-/// edge in it would turn an ownership proof into a guess.  Refusing the wrapper
-/// is the safe (leak) direction until it has its own complete proof.
+/// The resource drop plan and this mint admission read the same checker-admitted
+/// lifecycle. Exact release and discharge depth must both agree; `deep` is
+/// valid for a single opaque close whose runtime disposer recursively releases
+/// its owned tree.
 fn resource_opaque_return_releases_through(
     ty: &ResolvedTy,
     module: &hew_hir::HirModule,
     release_symbol: &str,
+    discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth,
 ) -> bool {
     let ResolvedTy::Named {
         name,
@@ -2095,56 +2097,14 @@ fn resource_opaque_return_releases_through(
     if !*is_opaque || !args.is_empty() {
         return false;
     }
-    let short = hew_types::short_name(name);
-    let Some((class_name, (marker, Some(close_method)))) = module
+    module
         .type_classes
-        .get_key_value(name.as_str())
-        .or_else(|| module.type_classes.get_key_value(short))
-    else {
-        return false;
-    };
-    if *marker != hew_hir::ResourceMarker::Resource {
-        return false;
-    }
-
-    let qualified_close = format!("{class_name}::{close_method}");
-    let short_close = format!("{short}::{close_method}");
-    module.items.iter().any(|item| {
-        let hew_hir::HirItem::Function(function) = item else {
-            return false;
-        };
-        (function.name == qualified_close || function.name == short_close)
-            && block_directly_calls_symbol(&function.body, release_symbol)
-    })
-}
-
-/// The intentionally tiny authority walk used by
-/// [`resource_opaque_return_releases_through`]. `unsafe { ... }` becomes a HIR
-/// block, so a direct FFI close is either a statement or a tail below one or
-/// more such blocks. Any other expression form is not a proof.
-fn block_directly_calls_symbol(block: &HirBlock, symbol: &str) -> bool {
-    block
-        .statements
-        .iter()
-        .any(|statement| match &statement.kind {
-            HirStmtKind::Expr(expr) => expr_directly_calls_symbol(expr, symbol),
-            _ => false,
+        .opaque_resource_lifecycle_for_lowered_type(name)
+        .is_some_and(|lifecycle| {
+            discharge_depth != crate::ffi_contracts::ReleaseDischargeDepth::None
+                && lifecycle.release_symbol == release_symbol
+                && lifecycle.discharge_depth == discharge_depth
         })
-        || block
-            .tail
-            .as_deref()
-            .is_some_and(|tail| expr_directly_calls_symbol(tail, symbol))
-}
-
-fn expr_directly_calls_symbol(expr: &HirExpr, symbol: &str) -> bool {
-    match &expr.kind {
-        HirExprKind::Call { callee, .. } => matches!(
-            &callee.kind,
-            HirExprKind::BindingRef { name, .. } if name == symbol
-        ),
-        HirExprKind::Block(block) => block_directly_calls_symbol(block, symbol),
-        _ => false,
-    }
 }
 
 /// What the compiler's type-directed drop plan will emit for a declared type.
@@ -4749,6 +4709,7 @@ pub fn is_builtin_fresh_ctor(name: &str) -> bool {
 /// fail-closed answer.
 #[must_use]
 pub fn stdlib_shim_emitted_symbol(name: &str, id: hew_hir::ItemId) -> Option<&'static str> {
+    // JUSTIFIED: unsupported sub-32-bit targets cannot decode this id; None is fail-closed.
     let index = usize::try_from(u32::MAX - id.0).ok()?;
     let entry = hew_hir::stdlib_catalog::entries().get(index)?;
     let symbol = entry.linkage.runtime_symbol()?;
@@ -6725,6 +6686,23 @@ mod measured_extern_result_transfer {
         build_extern_contract_table(&tests::lower_source(source))
     }
 
+    fn table_for_tcp_lifecycle(source: &str, release_symbol: &str) -> ExternContractTable {
+        let mut module = tests::lower_source(source);
+        module
+            .type_classes
+            .admit_opaque_resource_lifecycle(hew_hir::OpaqueResourceLifecycle {
+                resource_type: "std.net.Connection".to_string(),
+                lowered_type_name: "Connection".to_string(),
+                close_symbol: "Connection::close".to_string(),
+                release_symbol: release_symbol.to_string(),
+                discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Shallow,
+                producer_symbols: ["hew_tcp_connect".to_string()].into_iter().collect(),
+                producer_modules: ["std.net".to_string()].into_iter().collect(),
+            })
+            .expect("test lifecycle must be unique");
+        build_extern_contract_table(&module)
+    }
+
     #[test]
     fn a_measured_transfer_is_minted() {
         const SOURCE: &str = r#"extern "C" {
@@ -6775,7 +6753,7 @@ extern "C" {
 fn main() {}
 "#;
 
-        let matching = table_for(MATCHING_CLOSE);
+        let matching = table_for_tcp_lifecycle(MATCHING_CLOSE, "hew_tcp_close");
         assert!(
             matching.extern_return_is_audited_fresh_owner("hew_tcp_connect"),
             "the row's transferred result and `Connection::close -> hew_tcp_close` \
@@ -6787,9 +6765,45 @@ fn main() {}
         );
 
         assert!(
-            !table_for(WRONG_CLOSE).extern_return_is_audited_fresh_owner("hew_tcp_connect"),
-            "a resource marker alone is not authority: the emitted close must \
-             be the exact release symbol audited for this producer"
+            !table_for_tcp_lifecycle(WRONG_CLOSE, "hew_tcp_listener_close")
+                .extern_return_is_audited_fresh_owner("hew_tcp_connect"),
+            "a resource marker alone is not authority: the carried lifecycle must \
+             select the exact release symbol audited for this producer"
+        );
+    }
+
+    #[test]
+    fn deep_opaque_value_tree_mints_through_the_same_typed_lifecycle() {
+        const SOURCE: &str = r#"
+#[resource]
+#[opaque]
+type Value {}
+impl Value {
+    fn close(consuming self) { unsafe { hew_json_free(self) }; }
+}
+extern "C" {
+    fn hew_json_array_new() -> Value;
+    fn hew_json_free(consume value: Value);
+}
+fn main() {}
+"#;
+        let mut module = tests::lower_source(SOURCE);
+        module
+            .type_classes
+            .admit_opaque_resource_lifecycle(hew_hir::OpaqueResourceLifecycle {
+                resource_type: "std.encoding.json.Value".to_string(),
+                lowered_type_name: "Value".to_string(),
+                close_symbol: "Value::close".to_string(),
+                release_symbol: "hew_json_free".to_string(),
+                discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth::Deep,
+                producer_symbols: ["hew_json_array_new".to_string()].into_iter().collect(),
+                producer_modules: ["std.encoding.json".to_string()].into_iter().collect(),
+            })
+            .expect("test lifecycle must be unique");
+        let table = build_extern_contract_table(&module);
+        assert!(
+            table.extern_return_is_audited_fresh_owner("hew_json_array_new"),
+            "deep runtime teardown is still one typed opaque close obligation"
         );
     }
 

@@ -50,6 +50,8 @@
 
 import std::string;
 
+import std::stream;
+
 // ── Network error type ────────────────────────────────────────────────
 /// Structured error type for network operations.
 ///
@@ -438,7 +440,6 @@ trait ListenerMethods {
     /// chosen by `listen("...:0")`. This is a borrowing inspection; it does
     /// not alter the listener's close authority.
     fn local_port(self) -> i64;
-
 }
 
 impl ListenerMethods for Listener {
@@ -448,13 +449,11 @@ impl ListenerMethods for Listener {
             hew_tcp_accept(ln)
         }
     }
-
     fn local_port(ln: Listener) -> i64 {
         unsafe {
             hew_tcp_listener_local_port(ln) as i64
         }
     }
-
 }
 
 // `Listener` owns a TCP table entry.  Keep its close ritual inherent so the
@@ -462,9 +461,9 @@ impl ListenerMethods for Listener {
 // authority; the trait above remains intentionally borrowing-only.
 impl Listener {
     /// Close the listener and release the listening socket.
-    fn close(ln: Listener) {
+    fn close(consuming self) {
         unsafe {
-            hew_tcp_listener_close(ln)
+            hew_tcp_listener_close(self)
         };
     }
 }
@@ -533,8 +532,6 @@ trait ConnectionMethods {
     /// Send a UTF-8 string to the connection (active-mode-paired name for
     /// `write_string`).
     fn send_string(self, data: string) -> Result<(), WriteError>;
-
-
 }
 
 // ── Connection handler trait (active mode) ────────────────────────────
@@ -654,7 +651,6 @@ impl ConnectionMethods for Connection {
             })
         })
     }
-
 }
 
 // `Connection` owns a TCP table entry.  This must be an inherent consuming
@@ -663,9 +659,9 @@ impl ConnectionMethods for Connection {
 // cancellation, and suspended-frame exits.
 impl Connection {
     /// Close the connection and release resources.
-    fn close(conn: Connection) {
+    fn close(consuming self) {
         unsafe {
-            hew_tcp_close(conn)
+            hew_tcp_close(self)
         };
     }
     /// Attach this connection to an actor for active-mode delivery.
@@ -885,13 +881,6 @@ pub fn try_broadcast_except(sender: Connection, message: bytes) -> Result<i64, N
     }
 }
 
-/// Opaque paired stream/sink handle returned by `hew_tcp_stream_from_conn`.
-/// Extract the two halves with `hew_stream_pair_stream_bytes` /
-/// `hew_stream_pair_sink_bytes`, then free with `hew_stream_pair_free`.
-#[opaque]
-pub type StreamPair {
-}
-
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_tcp_listen(addr: string) -> Listener;
@@ -934,8 +923,8 @@ extern "C" {
     // (check with is_valid); the last-error errno is EBADF for an unknown
     // handle, otherwise the real dup(2) errno.  Not available on wasm32;
     // WASM-TODO(tcp-networking): add the TCP-to-stream bridge to the WASM transport.
-    fn hew_tcp_stream_from_conn(consume conn: Connection) -> StreamPair;
-    fn hew_stream_pair_stream_bytes(pair: StreamPair) -> Stream<bytes>;
-    fn hew_stream_pair_sink_bytes(pair: StreamPair) -> Sink<bytes>;
-    fn hew_stream_pair_free(pair: StreamPair);
+    fn hew_tcp_stream_from_conn(consume conn: Connection) -> stream.StreamPair;
+    fn hew_stream_pair_stream_bytes(pair: stream.StreamPair) -> Stream<bytes>;
+    fn hew_stream_pair_sink_bytes(pair: stream.StreamPair) -> Sink<bytes>;
+    fn hew_stream_pair_free(consume pair: stream.StreamPair);
 }

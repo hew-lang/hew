@@ -17,9 +17,10 @@ use super::{
     DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet,
     HirExpr, HirExprKind, Instr, IntentKind, LambdaCapture, MirCheck, MirDiagnostic,
     MirDiagnosticKind, MirStatement, ParamCrashCleanupKind, Place, RawMirFunction, ResolvedRef,
-    ResolvedTy, ResourceMarker, ScopeId, SuspendKind, Terminator, TraitObjectStorage, ValueClass,
-    ENTRY_BLOCK_ID,
+    ResolvedTy, ScopeId, SuspendKind, Terminator, TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
 };
+#[cfg(test)]
+use hew_hir::ResourceMarker;
 
 /// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
 /// rejection surface. `CheckedMirFunction::checks` is the single
@@ -4638,19 +4639,18 @@ pub(super) fn resource_opaque_close_registry(
     opaque_handle_names: &[String],
     type_classes: &hew_hir::TypeClassTable,
 ) -> Vec<(String, String)> {
-    opaque_handle_names
-        .iter()
-        .filter_map(|name| {
-            let short = short_name(name);
-            let (class_name, (marker, close)) = type_classes
-                .get_key_value(name.as_str())
-                .or_else(|| type_classes.get_key_value(short))?;
-            if *marker != ResourceMarker::Resource {
-                return None;
-            }
-            let close_method = close.as_ref()?;
-            let symbol = format!("{class_name}::{close_method}");
-            Some((name.clone(), symbol))
+    type_classes
+        .opaque_resource_lifecycles()
+        .filter(|lifecycle| {
+            opaque_handle_names
+                .iter()
+                .any(|name| name == &lifecycle.lowered_type_name)
+        })
+        .map(|lifecycle| {
+            (
+                lifecycle.lowered_type_name.clone(),
+                lifecycle.close_symbol.clone(),
+            )
         })
         .collect()
 }
@@ -4694,6 +4694,11 @@ pub(super) fn resource_drop_fn(
             builtin: None,
             ..
         } => {
+            if let Some(lifecycle) = type_classes.opaque_resource_lifecycle_for_lowered_type(name) {
+                return Some(crate::model::DropFnSpec::UserClose(
+                    lifecycle.close_symbol.clone(),
+                ));
+            }
             let short = short_name(name);
             let class_entry = type_classes
                 .get_key_value(name)
@@ -4711,7 +4716,24 @@ pub(super) fn resource_drop_fn(
 #[cfg(test)]
 mod typed_resource_close_authority {
     use super::*;
+    use hew_hir::OpaqueResourceLifecycle;
+    use hew_types::ffi_contracts::ReleaseDischargeDepth;
     use hew_types::runtime_call::RuntimeDropDescriptor;
+    use std::collections::BTreeSet;
+
+    fn admit_lifecycle(classes: &mut hew_hir::TypeClassTable, ty: &str, close: &str) {
+        classes
+            .admit_opaque_resource_lifecycle(OpaqueResourceLifecycle {
+                resource_type: ty.to_string(),
+                lowered_type_name: ty.to_string(),
+                close_symbol: close.to_string(),
+                release_symbol: format!("hew_release_{}", ty.replace('.', "_")),
+                discharge_depth: ReleaseDischargeDepth::Shallow,
+                producer_symbols: BTreeSet::default(),
+                producer_modules: BTreeSet::default(),
+            })
+            .expect("test lifecycle is unique");
+    }
 
     #[test]
     fn builtin_identity_selects_runtime_close_without_type_class_spelling() {
@@ -4750,7 +4772,7 @@ mod typed_resource_close_authority {
     }
 
     #[test]
-    fn descriptor_shaped_user_resources_remain_user_closes_and_registry_entries() {
+    fn legacy_user_resources_remain_explicit_closes_but_not_opaque_registry_entries() {
         let collisions = [
             ("Duplex", "close"),
             ("Stream", "close"),
@@ -4775,12 +4797,12 @@ mod typed_resource_close_authority {
             .map(|(name, _)| (*name).to_string())
             .collect();
         let registry = resource_opaque_close_registry(&opaque_names, &classes);
+        assert!(
+            registry.is_empty(),
+            "the opaque registry must contain only checker-admitted lifecycle facts"
+        );
         for (name, method) in collisions {
             let symbol = format!("{name}::{method}");
-            assert!(
-                registry.contains(&(name.to_string(), symbol.clone())),
-                "user resource `{name}` must not be filtered by builtin-like spelling"
-            );
             assert_eq!(
                 resource_drop_fn(&ResolvedTy::named_user(name, vec![]), &classes),
                 Some(crate::model::DropFnSpec::UserClose(symbol)),
@@ -4800,6 +4822,11 @@ mod typed_resource_close_authority {
             "foo.Receiver".to_string(),
             (ResourceMarker::Resource, Some("close".to_string())),
         );
+        classes.insert(
+            "bar.Receiver".to_string(),
+            (ResourceMarker::Resource, Some("close".to_string())),
+        );
+        admit_lifecycle(&mut classes, "foo.Receiver", "foo.Receiver::close");
         let registry = resource_opaque_close_registry(&["foo.Receiver".to_string()], &classes);
         assert_eq!(
             registry,

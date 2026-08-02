@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use hew_hir::{
     ids::IdGen, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmt,
-    HirStmtKind, IntentKind, ScopeId, ValueClass,
+    HirStmtKind, IntentKind, ScopeId, TypeClassTable, ValueClass,
 };
 use hew_mir::lower_hir_module;
 use hew_types::{BuiltinType, CallTarget, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
@@ -16,7 +16,7 @@ fn empty_module(items: Vec<HirItem>) -> HirModule {
         root_item_ids: std::collections::HashSet::new(),
         caller_visible_param_projections: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(HashMap::default()),
-        type_classes: HashMap::default(),
+        type_classes: TypeClassTable::default(),
         monomorphisations: vec![],
         call_site_type_args: HashMap::default(),
         vec_generic_element_abi: HashMap::default(),

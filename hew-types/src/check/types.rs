@@ -88,11 +88,15 @@ pub(super) struct ActorInitParamInfo {
 /// The fact is derived exclusively by joining generated producer contracts to
 /// exact source extern declarations and their consuming release declaration.
 /// Downstream stages may consume it; they must not rebuild it from names.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OpaqueResourceLifecycleCandidate {
     pub resource_type: String,
     pub owner_module: String,
     pub release_symbol: String,
+    /// Exact source/contract parameter position consumed by the release.
+    /// HIR validates receiver forwarding from this fact rather than searching
+    /// a signature by nominal spelling.
+    pub release_param_index: usize,
     pub discharge_depth: crate::ffi_contracts::ReleaseDischargeDepth,
     pub result_ownership: crate::ffi_contracts::ExternResultOwnership,
     pub result_retention: crate::ffi_contracts::ExternResultRetention,
@@ -105,7 +109,7 @@ pub struct OpaqueResourceLifecycleCandidate {
 }
 
 /// Why an otherwise provenance-matched producer failed lifecycle admission.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum OpaqueResourceLifecycleConflictKind {
     ProducerResultMismatch {
         actual: String,
@@ -121,7 +125,7 @@ pub enum OpaqueResourceLifecycleConflictKind {
 }
 
 /// Structured conflict retained for source diagnostics in the next stage.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OpaqueResourceLifecycleConflict {
     pub resource_type: String,
     pub producer_symbol: String,
@@ -130,7 +134,7 @@ pub struct OpaqueResourceLifecycleConflict {
 }
 
 /// Checker-authoritative candidate graph for closeable opaque lifecycles.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct OpaqueResourceCandidateGraph {
     pub candidates: BTreeMap<String, OpaqueResourceLifecycleCandidate>,
     pub conflicts: Vec<OpaqueResourceLifecycleConflict>,

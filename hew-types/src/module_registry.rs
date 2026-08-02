@@ -738,8 +738,8 @@ mod tests {
             "process.Child should be a drop type"
         );
         assert!(
-            !reg.is_drop_type("http.Server"),
-            "http.Server should not be a drop type"
+            reg.is_drop_type("http.Server"),
+            "http.Server is now a closeable opaque resource"
         );
         reg.load("std::text::regex").unwrap();
         assert!(
@@ -790,8 +790,8 @@ mod tests {
         );
         assert_eq!(
             reg.drop_func_for("http.Server"),
-            None,
-            "http.Server should not have a drop func"
+            Some("hew_http_server_close"),
+            "http.Server must use its sole raw disposer"
         );
         reg.load("std::text::regex").unwrap();
         assert_eq!(
@@ -800,12 +800,22 @@ mod tests {
             "regex.Pattern should not have a drop func"
         );
         let all = reg.all_drop_funcs();
-        assert_eq!(
-            all,
-            vec![("json.Value".to_string(), "hew_json_free".to_string())],
-            "JSON is the only loaded direct opaque-handle disposer; fielded \
-             resources dispatch through their source-level close methods"
-        );
+        for expected in [
+            ("json.Value".to_string(), "hew_json_free".to_string()),
+            (
+                "http.Server".to_string(),
+                "hew_http_server_close".to_string(),
+            ),
+            (
+                "process.ProcessResultHandle".to_string(),
+                "hew_process_result_free".to_string(),
+            ),
+        ] {
+            assert!(
+                all.contains(&expected),
+                "missing direct disposer {expected:?}: {all:?}"
+            );
+        }
     }
 
     #[test]

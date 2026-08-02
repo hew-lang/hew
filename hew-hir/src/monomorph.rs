@@ -1091,6 +1091,7 @@ mod tests {
         for builtin in [
             hew_types::BuiltinType::MonitorRef,
             hew_types::BuiltinType::CrashInfo,
+            hew_types::BuiltinType::CrashNotification,
             hew_types::BuiltinType::NodeId,
         ] {
             let compiler = compiler_record_layout_key(builtin, &[])

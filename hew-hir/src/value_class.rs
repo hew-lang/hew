@@ -286,21 +286,30 @@ pub fn lookup_type_marker_for_ty(
         {
             return Some(registration.marker);
         }
-        // Some lifecycle payload builtins (`CrashNotification`, `CrashKind`,
-        // `MonitorId`, `DownTarget`, `DownReason`, `DownNotification`, ...)
-        // are "source-layout-backed": they carry the compiler discriminator
-        // for identity purposes (so a same-spelling user record can never be
-        // mistaken for the ABI payload), but — unlike `Vec`/`Sender`/
-        // `CrashInfo`/`MonitorRef` — they have no entry in
-        // `BUILTIN_TYPE_REGISTRATIONS` because their shape (enum payload
-        // variants, nested named fields) does not fit that compiler-hardcoded
-        // scalar table. Their real marker lives in `type_classes`, populated
-        // from the actual `.hew` declaration by
-        // `finalize_user_record_value_classes` / the stdlib prelude
-        // registration. Fall through to the bare-name lookup below instead of
-        // forcing every one of these to `Unknown` (W_B3: this used to make
-        // `note.actor_id` / `note.kind` field reads on a `#[on(exit)]` hook
-        // permanently unresolvable, even with `import std::failure;`).
+        // Source-layout-backed lifecycle values retain an exact builtin
+        // discriminator even though their record/enum shape comes from the
+        // imported `.hew` declaration rather than `BUILTIN_TYPE_REGISTRATIONS`.
+        // A non-`None` marker on that discriminator is already the checker-
+        // admitted value-semantic authority: consume it directly instead of
+        // trying to rediscover the class through a leaf-name table row. This
+        // keeps `DownNotification` and its nested `DownTarget`/`DownReason`
+        // values total at every HIR/MIR decision site while a user declaration
+        // with the same spelling (which carries `builtin: None`) remains
+        // completely distinct. Builtins whose marker is `None` still fall
+        // through to the source-derived table so aggregate payload ownership
+        // such as `CrashInfo { message: string }` is classified structurally.
+        match builtin.marker() {
+            hew_types::builtin_type::BuiltinTypeMarker::BitCopy => {
+                return Some(ResourceMarker::BitCopy);
+            }
+            hew_types::builtin_type::BuiltinTypeMarker::Resource => {
+                return Some(ResourceMarker::Resource);
+            }
+            hew_types::builtin_type::BuiltinTypeMarker::Linear => {
+                return Some(ResourceMarker::Linear);
+            }
+            hew_types::builtin_type::BuiltinTypeMarker::None => {}
+        }
     }
 
     if !args.is_empty() {
@@ -632,6 +641,47 @@ mod tests {
         assert_eq!(components[1].name, "Foo");
         assert_eq!(components[1].builtin, None);
         assert!(!components[1].has_args);
+    }
+
+    #[test]
+    fn source_layout_lifecycle_discriminators_are_total_without_leaf_rows() {
+        use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable, ValueClass};
+
+        let table = TypeClassTable::default();
+        for builtin in [
+            BuiltinType::MonitorId,
+            BuiltinType::DownTarget,
+            BuiltinType::DownReason,
+            BuiltinType::DownNotification,
+        ] {
+            let ty = ResolvedTy::named_builtin(
+                format!("std.link_monitor.{}", builtin.canonical_name()),
+                builtin,
+                Vec::new(),
+            );
+            assert_eq!(
+                lookup_type_marker_for_ty(&ty, &table),
+                Some(ResourceMarker::BitCopy),
+                "the exact {builtin:?} discriminator must carry its compiler-admitted marker"
+            );
+            assert_eq!(
+                ValueClass::of_ty(&ty, &table),
+                ValueClass::BitCopy,
+                "the exact {builtin:?} discriminator must produce a concrete decision"
+            );
+        }
+    }
+
+    #[test]
+    fn source_layout_lifecycle_marker_does_not_cross_user_nominal_identity() {
+        use super::{lookup_type_marker_for_ty, TypeClassTable, ValueClass};
+
+        let table = TypeClassTable::default();
+        for name in ["DownNotification", "user.DownNotification"] {
+            let ty = ResolvedTy::named_user(name, Vec::new());
+            assert_eq!(lookup_type_marker_for_ty(&ty, &table), None);
+            assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::Unknown);
+        }
     }
 
     // ── Canonical qualified-payload concrete-key identity ───────────────────

@@ -28,6 +28,12 @@ pub enum BuiltinFieldTy {
     I64,
     U64,
     U32,
+    /// The fixed-width crash-class tag carried by an exit notification.
+    ///
+    /// This remains a named builtin in the IR so lifecycle identity is not
+    /// inferred from its integer representation.  LLVM lowers the canonical
+    /// enum to its `i32` tag at the ABI boundary.
+    CrashKind,
     /// An owned heap `string` field (`*mut c_char`). A builtin record carrying
     /// one (e.g. `CrashInfo.message`) is heap-owning, so it is no longer a
     /// `BitCopy` aggregate — it routes through the owned-aggregate record
@@ -42,6 +48,11 @@ impl BuiltinFieldTy {
             Self::I64 => ResolvedTy::I64,
             Self::U64 => ResolvedTy::U64,
             Self::U32 => ResolvedTy::U32,
+            Self::CrashKind => ResolvedTy::named_builtin(
+                "std.failure.CrashKind",
+                BuiltinType::CrashKind,
+                Vec::new(),
+            ),
             Self::String => ResolvedTy::String,
         }
     }
@@ -93,6 +104,21 @@ const CRASH_INFO_FIELDS: &[BuiltinTypeField] = &[
     BuiltinTypeField {
         name: "message",
         ty: BuiltinFieldTy::String,
+    },
+];
+
+/// `CrashNotification { actor_id: u64, kind: CrashKind }` is rebuilt by the
+/// synthetic `#[on(exit)]` prologue from the runtime's two-field mailbox ABI.
+/// Its source declaration remains import-authoritative; this catalog entry is
+/// the fixed representation authority shared by that prologue, MIR and LLVM.
+const CRASH_NOTIFICATION_FIELDS: &[BuiltinTypeField] = &[
+    BuiltinTypeField {
+        name: "actor_id",
+        ty: BuiltinFieldTy::U64,
+    },
+    BuiltinTypeField {
+        name: "kind",
+        ty: BuiltinFieldTy::CrashKind,
     },
 ];
 
@@ -197,6 +223,10 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(RecvHalf, BuiltinTypeShape::Opaque),
     registration!(CrashInfo, BuiltinTypeShape::Struct(CRASH_INFO_FIELDS)),
     registration!(CrashAction, BuiltinTypeShape::Enum(CRASH_ACTION_VARIANTS)),
+    registration!(
+        CrashNotification,
+        BuiltinTypeShape::Struct(CRASH_NOTIFICATION_FIELDS)
+    ),
     registration!(MonitorRef, BuiltinTypeShape::Struct(MONITOR_REF_FIELDS)),
 ];
 
@@ -465,6 +495,29 @@ mod tests {
                     ty: BuiltinFieldTy::String,
                 },
             ])
+        );
+    }
+
+    #[test]
+    fn crash_notification_shape_carries_the_canonical_crash_kind_enum() {
+        let registration = builtin_type_registration("CrashNotification")
+            .expect("CrashNotification must have a compiler-owned layout");
+        assert_eq!(
+            registration.shape,
+            BuiltinTypeShape::Struct(&[
+                BuiltinTypeField {
+                    name: "actor_id",
+                    ty: BuiltinFieldTy::U64,
+                },
+                BuiltinTypeField {
+                    name: "kind",
+                    ty: BuiltinFieldTy::CrashKind,
+                },
+            ])
+        );
+        assert_eq!(
+            BuiltinFieldTy::CrashKind.to_resolved_ty(),
+            ResolvedTy::named_builtin("std.failure.CrashKind", BuiltinType::CrashKind, Vec::new(),)
         );
     }
 

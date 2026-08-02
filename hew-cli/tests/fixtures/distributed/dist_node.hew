@@ -28,7 +28,14 @@ import std::os;
 
 import std::fs;
 
-import std::link_monitor::{DownNotification, DownReason, DownTarget, MonitorError};
+import std::link_monitor::{
+    DownNotification,
+    DownReason,
+    DownTarget,
+    MonitorError,
+    MonitorRef,
+    PartitionPolicy,
+};
 
 // Self-stop FFI: the cross-node clean-exit scenario drives the remote actor to
 // the Stopped terminal state from within its own handler. `stop(self)` is not a

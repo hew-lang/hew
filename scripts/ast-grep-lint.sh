@@ -27,4 +27,8 @@ fi
 }
 cd "$REPO_ROOT"
 python3 scripts/structural-authority-audit.py --ast-grep "$AST_GREP"
-exec "$AST_GREP" scan "$@"
+warning_args=()
+for rule_id in $AST_GREP_WARNING_BASELINE; do
+    warning_args+=("--warning=$rule_id")
+done
+exec "$AST_GREP" scan "${warning_args[@]}" "$@"

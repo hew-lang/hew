@@ -60,17 +60,18 @@ impl Checker {
             _ => crate::lookup_builtin_type(name),
         }?;
         let Some((surface_owner, _)) = name.rsplit_once('.') else {
-            // Synthetic cursor discriminants are compiler-produced. The
-            // shipped stdlib registration may type its private cursor
-            // declarations both during the dedicated harness and while its
-            // exact canonical module is the active source. An ordinary bare
-            // source name cannot mint this executable identity from the global
-            // catalog.
+            // Synthetic cursor discriminants are compiler-produced, but their
+            // bare public spelling is also the annotation surface for values
+            // returned by `iter()`. Admit that spelling only when the lexical
+            // source has not declared its own same-named type. The shipped
+            // stdlib registration and its exact canonical module remain
+            // authoritative for their private cursor declarations.
             if matches!(candidate, BuiltinType::VecIter | BuiltinType::HashMapIter)
                 && !self.in_stdlib_registration
                 && !self.current_module.as_deref().is_some_and(|module| {
                     module == "std.builtins" && self.canonical_std_module_sources.contains(module)
                 })
+                && (self.local_type_defs.contains(name) || self.source_type_defs.contains(name))
             {
                 return None;
             }

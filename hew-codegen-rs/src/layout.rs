@@ -1326,11 +1326,17 @@ fn opaque_resource_vec_elem_layout_descriptor_ptr<'ctx>(
                 lifecycle.close_symbol
             ))
         })?;
-    if close_fn.count_params() != 1 || close_fn.get_type().get_return_type().is_some() {
+    let return_ty = close_fn.get_type().get_return_type();
+    let unit_return = return_ty.is_none()
+        || return_ty.is_some_and(
+            |ty| matches!(ty, BasicTypeEnum::IntType(int_ty) if int_ty.get_bit_width() == 8),
+        );
+    if close_fn.count_params() != 1 || !unit_return {
         return Err(CodegenError::FailClosed(format!(
-            "opaque resource `{}` Vec close `{}` must have ABI void(ptr)",
+            "opaque resource `{}` Vec close `{}` must have ABI void(ptr) or Hew Unit i8(ptr), got `{}`",
             lifecycle.resource_declaration.full_path(),
-            lifecycle.close_symbol
+            lifecycle.close_symbol,
+            close_fn.get_type().print_to_string().to_string()
         )));
     }
 

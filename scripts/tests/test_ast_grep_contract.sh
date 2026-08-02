@@ -67,6 +67,10 @@ fn dialect(a: int, b: int) {
 
 type Handle {}
 
+fn consume_var(consume var value: Handle) {
+    value;
+}
+
 trait HandleOps {
     fn push(consuming self, consume child: Handle) -> Self;
 }
@@ -99,6 +103,18 @@ done
     echo "pinned Hew grammar did not parse a secondary named consume parameter" >&2
     exit 1
 }
+# shellcheck disable=SC2016
+[[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --pattern 'fn $F(consume var $P: $T) { $$$BODY }' --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
+    echo "pinned Hew grammar did not parse a mutable consuming parameter" >&2
+    exit 1
+}
+cat > "$tmp/invalid-consume-order.hew" <<'EOF'
+fn invalid(var consume handle: Handle) { handle; }
+EOF
+if ! "$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --kind ERROR "$tmp/invalid-consume-order.hew" >/dev/null 2>&1; then
+    echo "pinned Hew grammar accepted invalid var-before-consume order" >&2
+    exit 1
+fi
 if "$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --kind ERROR "$tmp/dialect.hew" >/dev/null 2>&1; then
     echo "pinned Hew dialect corpus contains parser ERROR nodes" >&2
     exit 1

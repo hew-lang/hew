@@ -161,21 +161,20 @@ pub enum LayoutDescriptorRole {
 }
 
 impl BuiltinLinkage {
-    /// Return the concrete ABI symbol only when this catalog row is a direct
-    /// compiled-runtime FFI shim.
+    /// Return the concrete ABI symbol when this catalog row is a
+    /// compiler-selected runtime shim.
     ///
-    /// This is deliberately narrower than [`Self::runtime_symbol`]: several
-    /// transitional catalog linkages have a runtime-adjacent implementation
-    /// detail but do not establish an ordinary audited FFI boundary.  Consumers
-    /// use this exact classification to retain checker-proven `Extern`
-    /// authority without inferring it from a linker spelling.
+    /// The catalog endpoint is an unforgeable compiler identity at the call
+    /// boundary; `ToStringShim` and `StringCloneShim` therefore retain their
+    /// audited FFI authority too. User source cannot reach this result merely
+    /// by reusing an ABI spelling.
     #[must_use]
     pub const fn trusted_ffi_symbol(self) -> Option<&'static str> {
         match self {
-            Self::RuntimeFfiShim { symbol } => Some(symbol),
+            Self::RuntimeFfiShim { symbol }
+            | Self::ToStringShim { symbol }
+            | Self::StringCloneShim { symbol } => Some(symbol),
             Self::PrintIntercept { .. }
-            | Self::ToStringShim { .. }
-            | Self::StringCloneShim { .. }
             | Self::CompilerIntrinsic { .. }
             | Self::CalleeNameDispatchOnly
             | Self::NodeRegisterByPid { .. }

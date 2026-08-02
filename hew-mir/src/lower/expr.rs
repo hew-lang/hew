@@ -71,6 +71,14 @@ fn stdlib_string_display_impl_callee(declaration: &hew_types::DefId) -> Option<&
         .then_some("to_string_str")
 }
 
+/// Catalog display endpoints are compiler-selected ABI shims, not ordinary
+/// source calls. Their catalogue identity authorizes the audited extern edge.
+fn catalog_display_call_authority(callee: &str) -> crate::CallAuthority {
+    hew_hir::stdlib_catalog::trusted_ffi_symbol_for_endpoint(callee)
+        .map(|_| crate::CallAuthority::Extern)
+        .unwrap_or_default()
+}
+
 /// The stdlib's generic `Iterator::next` body reaches MIR as static trait
 /// dispatch after its `I` parameter is monomorphised. `VecIter<T>` is a
 /// compiler-owned cursor, though: its concrete next operation is the same
@@ -4088,7 +4096,6 @@ impl Builder {
                         .map(crate::CallAuthority::Runtime)
                         .or_else(|| {
                             hew_hir::stdlib_catalog::trusted_ffi_symbol_for_endpoint(endpoint)
-                                .filter(|symbol| *symbol == callee_symbol)
                                 .map(|_| crate::CallAuthority::Extern)
                         })
                         .unwrap_or_default();
@@ -4103,8 +4110,14 @@ impl Builder {
                     }
                     hew_types::CallTarget::ImplMethod(declaration) => {
                         if let Some(callee) = stdlib_string_display_impl_callee(declaration) {
-                            return self
-                                .lower_direct_call(callee, None, None, args, &expr.ty, expr.site);
+                            return self.lower_direct_call_with_authority(
+                                callee,
+                                None,
+                                args,
+                                &expr.ty,
+                                expr.site,
+                                catalog_display_call_authority(callee),
+                            );
                         }
                         let Some(symbol) = self.direct_call_symbols.get(declaration).cloned()
                         else {
@@ -6308,13 +6321,13 @@ impl Builder {
                 if let Some(callee) =
                     primitive_display_static_callee(target, &concrete_ty, args.len())
                 {
-                    return self.lower_direct_call(
+                    return self.lower_direct_call_with_authority(
                         callee,
-                        None,
                         None,
                         std::slice::from_ref(receiver),
                         &resolved_ret_ty,
                         expr.site,
+                        catalog_display_call_authority(callee),
                     );
                 }
                 // (3) structured registry lookup by checker-owned IDs. The

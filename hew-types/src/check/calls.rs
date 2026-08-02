@@ -932,6 +932,7 @@ impl Checker {
         if let Some(feature) = self.wasm_native_only_module_feature(module_name) {
             self.reject_wasm_feature(span, feature);
         }
+        self.reject_wasm_native_only_module_function(module_name, method, span);
         if self.is_shipped_crypto_module(module_name) && method == "random_bytes" {
             self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
         }
@@ -1344,6 +1345,13 @@ impl Checker {
 
         self.require_unsafe(&func_name, span);
         self.reject_if_wasm_incompatible_call(&func_name, span);
+        if let Some(source_identity) = self
+            .import_fn_name_aliases
+            .get(&(self.current_module.clone(), func_name.clone()))
+            .cloned()
+        {
+            self.reject_wasm_native_only_function_identity(&source_identity, span);
+        }
 
         // Check if name is a user-defined enum variant constructor first.
         // Separate lookup (immutable borrow) from processing (mutable borrow)

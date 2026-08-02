@@ -672,6 +672,31 @@ mod wasm_rejects {
     }
 
     #[test]
+    fn wasm_rejects_file_stream_owner_through_alias_call_and_function_value() {
+        let source = concat!(
+            "import std::fs as files;\n",
+            "fn main() {\n",
+            "    let _result = files.try_read(\"/dev/null\");\n",
+            "    let _producer = files.try_read;\n",
+            "}\n",
+        );
+        let output = check_wasm_with_registry(source);
+        let rejections = output
+            .errors
+            .iter()
+            .filter(|error| {
+                error.kind == TypeErrorKind::PlatformLimitation
+                    && error.message.contains("File-backed stream operations")
+            })
+            .count();
+        assert_eq!(
+            rejections, 2,
+            "both the aliased call and function value must reject at the capability boundary: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn wasm_rejects_tls_module_call() {
         let source = concat!(
             "import std::net::tls;\n",

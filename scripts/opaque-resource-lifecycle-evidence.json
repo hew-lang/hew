@@ -12,7 +12,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "accepted"
+        "disposition": "accepted",
+        "proof_kind": "internal-transient"
       },
       "release_symbol": "hew_channel_pair_free"
     },
@@ -27,7 +28,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "accepted"
+        "disposition": "accepted",
+        "proof_kind": "public-lifecycle"
       },
       "release_symbol": "hew_json_free"
     },
@@ -42,7 +44,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "accepted"
+        "disposition": "accepted",
+        "proof_kind": "public-lifecycle"
       },
       "release_symbol": "hew_toml_free"
     },
@@ -57,7 +60,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "accepted"
+        "disposition": "accepted",
+        "proof_kind": "public-lifecycle"
       },
       "release_symbol": "hew_yaml_free"
     },
@@ -72,7 +76,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "accepted"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_file_read_stream_close"
     },
@@ -87,7 +92,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_tcp_close"
     },
@@ -102,7 +108,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_tcp_listener_close"
     },
@@ -117,7 +124,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_http_server_close"
     },
@@ -132,7 +140,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_quic_conn_disconnect"
     },
@@ -147,7 +156,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_quic_endpoint_close"
     },
@@ -162,7 +172,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_quic_stream_close"
     },
@@ -177,7 +188,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "accepted"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_smtp_close"
     },
@@ -192,7 +204,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_tls_close"
     },
@@ -207,7 +220,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_ws_close"
     },
@@ -222,7 +236,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "rejected"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_ws_server_close"
     },
@@ -237,7 +252,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "accepted"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_process_result_free"
     },
@@ -252,7 +268,8 @@
       },
       "wasm": {
         "profile": "wasm32-wasi",
-        "disposition": "accepted"
+        "disposition": "rejected",
+        "proof_kind": "rejected-boundary"
       },
       "release_symbol": "hew_stream_pair_free"
     }

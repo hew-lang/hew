@@ -96,8 +96,9 @@ pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;
 pub use vec_authority::VecElementToken;
 pub use wasm_capabilities_generated::{
-    wasm_capability_ids, WasmCapabilityId, WasmFeatureDisposition, WasmModuleRejection,
-    WasmUnsupportedFeature, NATIVE_ONLY_WASM_MODULES, NATIVE_ONLY_WASM_MODULE_REJECTIONS,
+    wasm_capability_ids, WasmCapabilityId, WasmFeatureDisposition, WasmFunctionRejection,
+    WasmModuleRejection, WasmUnsupportedFeature, NATIVE_ONLY_WASM_FUNCTION_REJECTIONS,
+    NATIVE_ONLY_WASM_MODULES, NATIVE_ONLY_WASM_MODULE_REJECTIONS,
 };
 
 /// Canonical identity of one declared definition.

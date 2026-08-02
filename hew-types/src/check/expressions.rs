@@ -1260,6 +1260,13 @@ impl Checker {
             ty
         } else if self.fn_sigs.contains_key(name) {
             // Function name used as a value (e.g., variant constructor)
+            if let Some(source_identity) = self
+                .import_fn_name_aliases
+                .get(&(self.current_module.clone(), name.to_string()))
+                .cloned()
+            {
+                self.reject_wasm_native_only_function_identity(&source_identity, span);
+            }
             if let Some(caller) = &self.current_function {
                 self.call_graph
                     .entry(caller.clone())
@@ -5590,6 +5597,7 @@ impl Checker {
                                 if let Some(feature) = self.wasm_native_only_module_feature(name) {
                                     self.reject_wasm_feature(span, feature);
                                 }
+                                self.reject_wasm_native_only_module_function(name, field, span);
                                 // crypto.random_bytes and its fallible twin depend on a
                                 // native-only secure entropy source absent from the wasm32
                                 // link set.

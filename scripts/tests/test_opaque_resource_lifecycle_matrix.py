@@ -8,27 +8,18 @@ import copy
 import json
 import os
 import re
-import shutil
-import subprocess
+import sys
 import tempfile
 import tomllib
 from pathlib import Path
-
-from bounded_subprocess import run as bounded_run
 
 ROOT = Path(__file__).resolve().parents[2]
 AUDIT = ROOT / "scripts/structural-authority-audit.py"
 AST_GREP = ROOT / ".ast-grep/tool/bin/ast-grep"
 MANIFEST = ROOT / "scripts/opaque-resource-lifecycle-evidence.json"
 HEW = Path(os.environ.get("HEW_BIN", ROOT / "target/debug/hew"))
-AUDIT_TIMEOUT_SECONDS = 60
-COMPILER_TIMEOUT_SECONDS = 90
-WASM_VALIDATION_TIMEOUT_SECONDS = 60
-RUNTIME_TIMEOUT_SECONDS = 300
-# `hew compile` names its emitted-module target by the LLVM freestanding
-# triple. Exact wasm32-wasi availability is checked first; accepted cases then
-# continue through this real Wasm backend target and Wasmtime validation.
-WASM_CODEGEN_TARGET = "wasm32-unknown-unknown"
+sys.path.insert(0, str(ROOT / "scripts"))
+from bounded_subprocess import assert_bounding_contract, run_bounded
 
 
 def fail(message: str) -> None:
@@ -43,6 +34,9 @@ def validate_rows(candidates: list[dict], rows: list[dict]) -> dict[str, dict]:
     candidate_by_source = {source_key(row): row for row in candidates}
     if len(candidate_by_source) != len(candidates):
         fail("AST lifecycle facts contain duplicate source identities")
+    candidate_by_carrier = {str(row["carrier_key"]): row for row in candidates}
+    if len(candidate_by_carrier) != len(candidates):
+        fail("AST lifecycle facts contain duplicate derived carrier identities")
     evidence_by_source = {source_key(row): row for row in rows}
     if len(evidence_by_source) != len(rows):
         fail("lifecycle evidence contains duplicate source identities")
@@ -67,6 +61,7 @@ def validate_rows(candidates: list[dict], rows: list[dict]) -> dict[str, dict]:
             )
         if not runtime.get("path") or not runtime.get("test"):
             fail(f"{candidate['carrier_key']} runtime evidence is incomplete")
+        assert_runtime_anchor(candidate, runtime)
         if runtime.get("execution_profile") not in {"local", "external-network"}:
             fail(f"{candidate['carrier_key']} has an invalid runtime execution profile")
         wasm = evidence.get("wasm", {})
@@ -74,6 +69,18 @@ def validate_rows(candidates: list[dict], rows: list[dict]) -> dict[str, dict]:
             fail(f"{candidate['carrier_key']} has no exact wasm32-wasi evidence")
         if wasm.get("disposition") not in {"accepted", "rejected"}:
             fail(f"{candidate['carrier_key']} has an invalid Wasm disposition")
+        proof_kind = wasm.get("proof_kind")
+        if wasm["disposition"] == "accepted" and proof_kind not in {
+            "public-lifecycle",
+            "internal-transient",
+        }:
+            fail(
+                f"{candidate['carrier_key']} accepted Wasm row lacks lifecycle proof kind"
+            )
+        if wasm["disposition"] == "rejected" and proof_kind != "rejected-boundary":
+            fail(
+                f"{candidate['carrier_key']} rejected Wasm row lacks boundary proof kind"
+            )
         result[str(candidate["carrier_key"])] = evidence
     return result
 
@@ -110,6 +117,24 @@ def run_counterfactuals(candidates: list[dict], rows: list[dict]) -> None:
     invalid_profile[0]["runtime"]["execution_profile"] = "synthetic"
     expect_counterfactual_failure(candidates, invalid_profile)
 
+    duplicate_carrier = copy.deepcopy(candidates)
+    duplicate_carrier[1]["carrier_key"] = duplicate_carrier[0]["carrier_key"]
+    expect_counterfactual_failure(duplicate_carrier, rows)
+
+    substituted_runtime = copy.deepcopy(rows)
+    substituted_runtime[0]["runtime"] = copy.deepcopy(rows[1]["runtime"])
+    expect_counterfactual_failure(candidates, substituted_runtime)
+
+    release_only = (
+        f"fn {rows[0]['runtime']['test']}() {{ {candidates[0]['release_symbol']}(0); }}"
+    )
+    try:
+        assert_runtime_semantics(candidates[0], rows[0]["runtime"], release_only)
+    except AssertionError:
+        pass
+    else:
+        fail("fabricated-handle release-only runtime anchor unexpectedly passed")
+
     try:
         assert_wasm_disposition("counterfactual", "rejected", 0, "")
     except AssertionError:
@@ -117,89 +142,80 @@ def run_counterfactuals(candidates: list[dict], rows: list[dict]) -> None:
     else:
         fail("false Wasm rejection unexpectedly passed")
 
-    # Same-leaf resources remain distinct because identity includes source path.
-    collision_candidates = [
-        {
-            "source_path": "std/left/value.hew",
-            "resource": "Value",
-            "carrier_key": "left.Value",
-            "release_symbol": "left_value_free",
-        },
-        {
-            "source_path": "std/right/value.hew",
-            "resource": "Value",
-            "carrier_key": "right.Value",
-            "release_symbol": "right_value_free",
-        },
-    ]
-    collision_rows = [
-        {
-            "source_path": row["source_path"],
-            "resource": "Value",
-            "release_symbol": row["release_symbol"],
-            "runtime": {
-                "path": "x",
-                "test": "x",
-                "valid_handle": True,
-                "execution_profile": "local",
-            },
-            "wasm": {"profile": "wasm32-wasi", "disposition": "accepted"},
-        }
-        for row in collision_candidates
-    ]
-    assert set(validate_rows(collision_candidates, collision_rows)) == {
-        "left.Value",
-        "right.Value",
+    # The shipped JSON/TOML/YAML rows are a positive control: identical leaf
+    # names remain distinct because the joined identity includes source path.
+    joined = validate_rows(candidates, rows)
+    value_keys = {
+        str(row["carrier_key"]) for row in candidates if row["resource"] == "Value"
     }
+    assert len(value_keys) >= 2 and value_keys <= set(joined)
 
 
-def exact_test_body(anchor: dict[str, object]) -> str:
+def test_body(source: str, name: str) -> str:
+    match = re.search(rf"\bfn\s+{re.escape(name)}\s*(?:<[^>{{}}]*>)?\s*\(", source)
+    if match is None:
+        fail(f"stale runtime test: {name}")
+    start = match.start()
+    brace = source.find("{", start)
+    depth = 0
+    for end in range(brace, len(source)):
+        if source[end] == "{":
+            depth += 1
+        elif source[end] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : end + 1]
+    fail(f"unterminated runtime test: {name}")
+
+
+def assert_runtime_semantics(
+    candidate: dict, anchor: dict[str, object], source: str
+) -> None:
+    body = test_body(source, str(anchor["test"]))
+    release = str(candidate["release_symbol"])
+    if release not in body:
+        fail(
+            f"{candidate['carrier_key']} runtime test does not call exact release {release}"
+        )
+    reachable = body
+    pending = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", body)
+    visited = {str(anchor["test"])}
+    while pending and len(visited) < 256:
+        function = pending.pop()
+        if function in visited:
+            continue
+        visited.add(function)
+        try:
+            helper = test_body(source, function)
+        except AssertionError:
+            continue
+        reachable += helper
+        pending.extend(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", helper))
+    producers = [
+        str(symbol)
+        for symbol in candidate.get("producer_symbols", [])
+        if str(symbol) in reachable
+    ]
+    if not producers:
+        fail(
+            f"{candidate['carrier_key']} runtime test has no reachable exact valid-handle producer"
+        )
+
+
+def assert_runtime_anchor(candidate: dict, anchor: dict[str, object]) -> None:
     path = ROOT / str(anchor["path"])
     if not path.is_file():
         fail(f"stale runtime path: {path.relative_to(ROOT)}")
-    result = bounded_run(
-        [
-            str(AST_GREP),
-            "run",
-            "--lang",
-            "rust",
-            "--kind",
-            "function_item",
-            "--json=stream",
-            str(path),
-        ],
-        cwd=ROOT,
-        timeout_seconds=AUDIT_TIMEOUT_SECONDS,
-    )
-    if result.returncode != 0:
-        fail(
-            f"cannot inspect runtime anchor {path.relative_to(ROOT)}:\n{result.stderr}"
-        )
-    function_name = str(anchor["test"])
-    signature = re.compile(rf"(?:^|\s)fn\s+{re.escape(function_name)}\s*\(")
-    matches = [
-        str(match["text"])
-        for line in result.stdout.splitlines()
-        if line.strip()
-        for match in [json.loads(line)]
-        if signature.search(str(match["text"]))
-    ]
-    if len(matches) != 1:
-        fail(
-            f"runtime test must resolve to one structural function: "
-            f"{function_name} in {path.relative_to(ROOT)} (found {len(matches)})"
-        )
-    return matches[0]
+    assert_runtime_semantics(candidate, anchor, path.read_text())
 
 
-def cargo_test_command(anchor: dict[str, object], release_symbol: str) -> list[str]:
+def cargo_test_command(anchor: dict[str, object]) -> list[str]:
     path = ROOT / str(anchor["path"])
-    body = exact_test_body(anchor)
-    if release_symbol not in body:
-        fail(
-            f"runtime test {anchor['test']} does not exercise exact release authority "
-            f"{release_symbol}"
-        )
+    if not path.is_file():
+        fail(f"stale runtime path: {path.relative_to(ROOT)}")
+    source = path.read_text()
+    if f"fn {anchor['test']}(" not in source:
+        fail(f"stale runtime test: {anchor['test']} in {path.relative_to(ROOT)}")
     cargo_root = path.parent
     while cargo_root != ROOT and not (cargo_root / "Cargo.toml").is_file():
         cargo_root = cargo_root.parent
@@ -221,16 +237,14 @@ def cargo_test_command(anchor: dict[str, object], release_symbol: str) -> list[s
 
 
 def run_runtime_evidence(evidence: dict[str, dict], profile: str) -> None:
-    completed: dict[tuple[str, ...], subprocess.CompletedProcess[str]] = {}
+    completed = {}
     failures = []
     executed = 0
     deferred = 0
     for carrier, row in evidence.items():
-        command = cargo_test_command(row["runtime"], str(row["release_symbol"]))
-        if (
-            profile == "local"
-            and row["runtime"]["execution_profile"] == "external-network"
-        ):
+        command = cargo_test_command(row["runtime"])
+        row_profile = row["runtime"]["execution_profile"]
+        if profile != "composition" and row_profile != profile:
             deferred += 1
             continue
         executed += 1
@@ -238,11 +252,12 @@ def run_runtime_evidence(evidence: dict[str, dict], profile: str) -> None:
         if key not in completed:
             env = os.environ.copy()
             env["RUSTC_WRAPPER"] = ""
-            completed[key] = bounded_run(
+            completed[key] = run_bounded(
                 command,
                 cwd=ROOT,
                 env=env,
-                timeout_seconds=RUNTIME_TIMEOUT_SECONDS,
+                timeout_seconds=600,
+                memory_mb=16384,
             )
         result = completed[key]
         output = result.stdout + result.stderr
@@ -254,102 +269,426 @@ def run_runtime_evidence(evidence: dict[str, dict], profile: str) -> None:
             failures.append(f"{carrier}: {' '.join(command)}\n{output}")
     if failures:
         fail("runtime lifecycle evidence failures:\n" + "\n".join(failures))
-    print(
-        f"runtime lifecycle evidence: {executed} rows executed, "
-        f"{deferred} external-network rows deferred"
-    )
+    if profile == "composition":
+        local = sum(
+            row["runtime"]["execution_profile"] == "local" for row in evidence.values()
+        )
+        external = len(evidence) - local
+        if executed != len(evidence) or deferred:
+            fail("composition profile did not execute every lifecycle row")
+        print(
+            f"runtime lifecycle composition: {executed}/{len(evidence)} rows; "
+            f"local={local}, external-network={external}"
+        )
+    else:
+        print(
+            f"runtime lifecycle {profile} profile: {executed} rows executed, "
+            f"{deferred} rows deferred (profile-only; not composition success)"
+        )
 
 
 def assert_wasm_disposition(
-    carrier: str, expected: str, returncode: int, output: str
+    carrier: str, expected: str, returncode: int, output: str, witness: str = ""
 ) -> None:
-    actual = "accepted" if returncode == 0 else "rejected"
+    diagnostic = output.lower()
+    platform_rejection = (
+        "not supported on wasm32" in diagnostic
+        or "not available on target" in diagnostic
+        or "require the native" in diagnostic
+    )
+    actual = (
+        "accepted"
+        if returncode == 0
+        and (not witness or witness in output)
+        and not platform_rejection
+        else "rejected"
+    )
     if actual != expected:
         fail(f"{carrier}: expected {expected}, got {actual}\n{output}")
     if actual == "rejected":
-        diagnostic = output.lower()
-        if (
-            "not supported on wasm32" not in diagnostic
-            and "not available on target" not in diagnostic
-        ):
+        if not platform_rejection:
             fail(f"{carrier}: rejection was not a platform disposition\n{diagnostic}")
 
 
+def wasm_public_programs(
+    carrier: str, witness: str
+) -> tuple[str, tuple[tuple[str, str], ...]]:
+    """Return executable producer programs, separate from structural codegen.
+
+    The structural cases prove generic consuming-parameter elaboration.  These
+    programs prove the distinct executable claim: a public producer reaches
+    the target boundary, and accepted families actually run rather than merely
+    printing a witness from an otherwise dead `main`.
+    """
+    programs: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+        "std.channel.ChannelPair": (
+            "internal-transient",
+            (
+                (
+                    "internal-wrapper",
+                    "import std::channel;\n"
+                    f'fn main() {{ let (sender, receiver) = channel::new(1); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.encoding.json.Value": (
+            "public-lifecycle",
+            (
+                (
+                    "public-implicit",
+                    "import std::encoding::json;\n"
+                    f'fn main() {{ let value = json::null(); println("{witness}"); }}\n',
+                ),
+                (
+                    "public-explicit",
+                    "import std::encoding::json;\n"
+                    f'fn main() {{ let value = json::null(); value.close(); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.encoding.toml.Value": (
+            "public-lifecycle",
+            (
+                (
+                    "public-implicit",
+                    "import std::encoding::toml;\n"
+                    f'fn main() {{ let value = toml::table(); println("{witness}"); }}\n',
+                ),
+                (
+                    "public-explicit",
+                    "import std::encoding::toml;\n"
+                    f'fn main() {{ let value = toml::table(); value.close(); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.encoding.yaml.Value": (
+            "public-lifecycle",
+            (
+                (
+                    "public-implicit",
+                    "import std::encoding::yaml;\n"
+                    f'fn main() {{ let value = yaml::object(); println("{witness}"); }}\n',
+                ),
+                (
+                    "public-explicit",
+                    "import std::encoding::yaml;\n"
+                    f'fn main() {{ let value = yaml::object(); value.close(); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.fs.FileReadStream": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::fs;\n"
+                    f'fn main() {{ let result = fs::try_read("/dev/null"); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.Connection": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::net;\n"
+                    f'fn main() {{ let connection = net::connect("127.0.0.1:1"); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.Listener": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::net;\n"
+                    f'fn main() {{ let listener = net::listen("127.0.0.1:0"); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.http.Server": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::net::http;\n"
+                    f'fn main() {{ let server = http::listen("127.0.0.1:0"); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.quic.QUICConnection": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::net::quic;\n"
+                    f'fn main() {{ let endpoint = quic::new_client(); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.quic.QUICEndpoint": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::net::quic;\n"
+                    f'fn main() {{ let endpoint = quic::new_client(); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.quic.QUICStream": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::net::quic;\n"
+                    f'fn main() {{ let endpoint = quic::new_client(); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.smtp.Conn": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::net::smtp;\n"
+                    f'fn main() {{ let conn = smtp::connect("127.0.0.1", 1, "", ""); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.tls.TlsStream": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::net::tls;\n"
+                    f'fn main() {{ let stream = tls::connect("127.0.0.1", 1); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.websocket.Conn": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::net::websocket;\n"
+                    f'fn main() {{ let conn = websocket::connect("ws://127.0.0.1:1/"); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.net.websocket.Server": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::net::websocket;\n"
+                    f'fn main() {{ let server = websocket::listen("127.0.0.1:0"); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.process.ProcessResultHandle": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::process;\n"
+                    f'fn main() {{ let result = process::try_run("true"); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+        "std.stream.StreamPair": (
+            "rejected-boundary",
+            (
+                (
+                    "boundary",
+                    "import std::stream;\n"
+                    f'fn main() {{ let (sink, source) = stream::pipe(1); println("{witness}"); }}\n',
+                ),
+            ),
+        ),
+    }
+    try:
+        return programs[carrier]
+    except KeyError as error:
+        raise AssertionError(
+            f"missing public Wasm producer program for {carrier}"
+        ) from error
+
+
+def assert_wasm_program_has_producer(carrier: str, program: str) -> None:
+    main = test_body(program, "main")
+    if not re.search(
+        r"\blet\s+(?:[A-Za-z_][A-Za-z0-9_]*|\([^)]*\))\s*=\s*[^;{}]+\(",
+        main,
+    ):
+        fail(f"{carrier}: Wasm main has no executed producer call")
+
+
+def generic_lifecycle_sources(case: dict) -> tuple[tuple[str, str], tuple[str, str]]:
+    """Keep source-derived implicit/explicit release codegen independent.
+
+    These are compiler-owned generic consuming-parameter cases, not public
+    producer programs. In particular, ChannelPair is an internal wrapper
+    resource: channel::new frees it before exposing Sender/Receiver.
+    """
+    scope = str(case.get("scope_exit_source", ""))
+    explicit = str(case.get("explicit_close_source", ""))
+    if "fn scope_exit_case" not in scope:
+        fail(f"{case['carrier_key']}: missing generated scope-exit lifecycle case")
+    if "fn explicit_close_case" not in explicit:
+        fail(f"{case['carrier_key']}: missing generated explicit-close lifecycle case")
+    # The compiler-owned cases do not have a public constructor. Give the
+    # freestanding Wasm linker an entry point without calling either case:
+    # their generated LLVM remains present for the exact-release assertion.
+    entrypoint = "\nfn main() { }\n"
+    return (
+        ("scope-exit", scope + entrypoint),
+        ("explicit-close", explicit + entrypoint),
+    )
+
+
+def llvm_function_body(llvm: str, function: str) -> str:
+    """Extract one emitted LLVM function, never its imported stdlib neighbours."""
+    header = re.search(
+        rf'^define\b[^@]*@(?:"[^"]*{re.escape(function)}[^"]*"|[^\s(]*{re.escape(function)}[^\s(]*)\([^)]*\)\s*\{{',
+        llvm,
+        re.MULTILINE,
+    )
+    if header is None:
+        fail(f"generated LLVM omitted lifecycle function `{function}`")
+    end = llvm.find("\n}", header.end())
+    if end < 0:
+        fail(f"generated LLVM has unterminated lifecycle function `{function}`")
+    return llvm[header.start() : end + 2]
+
+
+def llvm_calls_symbol(body: str, symbol: str) -> bool:
+    return (
+        re.search(
+            rf'\bcall\b[^@]*@(?:"{re.escape(symbol)}"|{re.escape(symbol)})\(', body
+        )
+        is not None
+    )
+
+
+def assert_exact_llvm_release_chain(
+    carrier: str, llvm: str, function: str, close: str, release: str
+) -> None:
+    body = llvm_function_body(llvm, function)
+    if not llvm_calls_symbol(body, close):
+        fail(f"{carrier}: {function} LLVM omits exact close dispatch {close}")
+    close_body = llvm_function_body(llvm, close)
+    if not llvm_calls_symbol(close_body, release):
+        fail(f"{carrier}: {close} LLVM omits exact release {release}")
+
+
 def run_wasm_evidence(cases: list[dict], evidence: dict[str, dict], temp: Path) -> None:
-    wasmtime = shutil.which("wasmtime")
-    if wasmtime is None:
-        fail("wasmtime is required to validate accepted wasm32-wasi artifacts")
     failures = []
     for index, case in enumerate(cases):
         carrier = str(case["carrier_key"])
-        source = temp / f"{index:02}-wasm.hew"
-        emit_dir = temp / f"{index:02}-emit"
-        emit_dir.mkdir()
-        # The source-derived scope function is the lifecycle subject. A tiny
-        # exported entry point lets the full compile lane link a standalone
-        # module without constructing a synthetic resource value.
-        source.write_text(str(case["scope_exit_source"]) + "\npub fn main() { }\n")
-        disposition = bounded_run(
-            [
-                str(HEW),
-                "compile",
-                "--target",
-                "wasm32-wasi",
-                "--dump-mir",
-                "checked",
-                str(source),
-            ],
-            cwd=ROOT,
-            timeout_seconds=COMPILER_TIMEOUT_SECONDS,
-        )
         expected = evidence[carrier]["wasm"]["disposition"]
         try:
-            assert_wasm_disposition(
-                carrier,
-                expected,
-                disposition.returncode,
-                disposition.stdout + disposition.stderr,
-            )
-            if expected == "accepted":
-                codegen = bounded_run(
+            witness = f"WASM-LIFECYCLE:{carrier}"
+            proof_kind, public_programs = wasm_public_programs(carrier, witness)
+            if proof_kind != evidence[carrier]["wasm"]["proof_kind"]:
+                fail(f"{carrier}: public Wasm program proof kind drifted from evidence")
+            for form, program in public_programs:
+                assert_wasm_program_has_producer(carrier, program)
+                source = temp / f"{index:02}-public-{form}.hew"
+                source.write_text(program)
+                # A successful status without the per-family witness is not
+                # accepted (the CLI can render target diagnostics with status 0).
+                wasi = run_bounded(
+                    [
+                        str(HEW),
+                        "run",
+                        "--target",
+                        "wasm32-wasi",
+                        "--timeout",
+                        "20s",
+                        str(source),
+                    ],
+                    cwd=ROOT,
+                    timeout_seconds=60,
+                    memory_mb=4096,
+                )
+                assert_wasm_disposition(
+                    carrier,
+                    expected,
+                    wasi.returncode,
+                    wasi.stdout + wasi.stderr,
+                    witness,
+                )
+
+            # A rejected public boundary is the target contract for this
+            # family. Its imported implementation may itself be unavailable,
+            # so only accepted families can establish generic LLVM lowering.
+            if expected == "rejected":
+                continue
+
+            # These exact source-derived cases establish compiler implicit and
+            # explicit release lowering, independently of the executable
+            # public producer proof above.
+            for form, program in generic_lifecycle_sources(case):
+                source = temp / f"{index:02}-generic-{form}.hew"
+                source.write_text(program)
+                emit_dir = temp / f"{index:02}-{form}-emit"
+                emit_dir.mkdir()
+                codegen = run_bounded(
                     [
                         str(HEW),
                         "compile",
                         "--target",
-                        WASM_CODEGEN_TARGET,
+                        "wasm32-unknown-unknown",
                         "--emit-dir",
                         str(emit_dir),
                         str(source),
                     ],
                     cwd=ROOT,
-                    timeout_seconds=COMPILER_TIMEOUT_SECONDS,
+                    timeout_seconds=120,
+                    memory_mb=4096,
                 )
+                artifacts = list(emit_dir.iterdir())
                 if codegen.returncode != 0:
                     fail(
-                        f"{carrier}: accepted resource did not reach Wasm codegen\n"
-                        f"{codegen.stdout}{codegen.stderr}"
+                        f"{carrier}: {form} Wasm codegen failed\n"
+                        + codegen.stdout
+                        + codegen.stderr
                     )
-                artifacts = list(emit_dir.glob("*.wasm"))
-                if len(artifacts) != 1:
-                    fail(
-                        f"{carrier}: successful wasm32-wasi codegen produced "
-                        f"{len(artifacts)} .wasm artifacts"
-                    )
-                validation = bounded_run(
+                llvm = next(iter(emit_dir.glob("*.ll")), None)
+                wasm = next(iter(emit_dir.glob("*.wasm")), None)
+                if llvm is None or wasm is None:
+                    fail(f"{carrier}: {form} codegen omitted LLVM/Wasm artifacts")
+                release = str(evidence[carrier]["release_symbol"])
+                function = (
+                    "scope_exit_case" if form == "scope-exit" else "explicit_close_case"
+                )
+                assert_exact_llvm_release_chain(
+                    carrier,
+                    llvm.read_text(),
+                    function,
+                    str(case["close_symbol"]),
+                    release,
+                )
+                if not wasm.read_bytes().startswith(b"\0asm"):
+                    fail(f"{carrier}: {form} artifact lacks Wasm magic")
+                validated = run_bounded(
                     [
-                        wasmtime,
+                        "wasmtime",
                         "compile",
-                        "--output",
+                        str(wasm),
+                        "-o",
                         str(emit_dir / "validated.cwasm"),
-                        str(artifacts[0]),
                     ],
                     cwd=ROOT,
-                    timeout_seconds=WASM_VALIDATION_TIMEOUT_SECONDS,
+                    timeout_seconds=60,
+                    memory_mb=4096,
                 )
-                if validation.returncode != 0:
+                if validated.returncode != 0:
                     fail(
-                        f"{carrier}: wasmtime rejected generated artifact\n"
-                        f"{validation.stdout}{validation.stderr}"
+                        f"{carrier}: {form} artifact failed Wasmtime validation\n"
+                        + validated.stdout
+                        + validated.stderr
                     )
         except AssertionError as error:
             failures.append(str(error))
@@ -361,7 +700,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--runtime-profile",
-        choices=("local", "external-network"),
+        choices=("local", "external-network", "composition"),
         default="local",
     )
     args = parser.parse_args()
@@ -371,7 +710,8 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as directory:
         temp = Path(directory)
         facts_path = temp / "facts.json"
-        audit = bounded_run(
+        assert_bounding_contract(ROOT)
+        audit = run_bounded(
             [
                 "python3",
                 str(AUDIT),
@@ -382,7 +722,8 @@ def main() -> None:
                 "--opaque-resource-facts-only",
             ],
             cwd=ROOT,
-            timeout_seconds=AUDIT_TIMEOUT_SECONDS,
+            timeout_seconds=120,
+            memory_mb=4096,
         )
         assert audit.returncode == 0, audit.stderr
         facts = json.loads(facts_path.read_text())
@@ -390,6 +731,78 @@ def main() -> None:
         assert manifest["schema_version"] == 2
         evidence = validate_rows(facts["candidates"], manifest["resources"])
         run_counterfactuals(facts["candidates"], manifest["resources"])
+        try:
+            assert_wasm_program_has_producer(
+                "counterfactual",
+                'fn main() { println("WASM-LIFECYCLE:counterfactual"); }',
+            )
+        except AssertionError:
+            pass
+        else:
+            fail("print-only Wasm main unexpectedly passed lifecycle evidence")
+        missing_scope_exit = copy.deepcopy(facts["compiler_e2e_cases"][0])
+        missing_scope_exit["scope_exit_source"] = ""
+        try:
+            generic_lifecycle_sources(missing_scope_exit)
+        except AssertionError:
+            pass
+        else:
+            fail(
+                "missing generated scope-exit case unexpectedly passed lifecycle evidence"
+            )
+        release = str(
+            evidence[str(facts["compiler_e2e_cases"][0]["carrier_key"])][
+                "release_symbol"
+            ]
+        )
+        missing_close_dispatch = (
+            "define internal i8 @scope_exit_case(ptr %0) {\n"
+            "entry:\n"
+            "  ret i8 0\n"
+            "}\n"
+            f'declare i8 @"{facts["compiler_e2e_cases"][0]["close_symbol"]}"(ptr)\n'
+            f"declare void @{release}(ptr)\n"
+        )
+        try:
+            assert_exact_llvm_release_chain(
+                str(facts["compiler_e2e_cases"][0]["carrier_key"]),
+                missing_close_dispatch,
+                "scope_exit_case",
+                str(facts["compiler_e2e_cases"][0]["close_symbol"]),
+                release,
+            )
+        except AssertionError:
+            pass
+        else:
+            fail(
+                "scope-exit LLVM without its close/release chain unexpectedly passed lifecycle evidence"
+            )
+        missing_close_release = (
+            "define internal i8 @scope_exit_case(ptr %0) {\n"
+            "entry:\n"
+            f'  call i8 @"{facts["compiler_e2e_cases"][0]["close_symbol"]}"(ptr %0)\n'
+            "  ret i8 0\n"
+            "}\n"
+            f'define internal i8 @"{facts["compiler_e2e_cases"][0]["close_symbol"]}"(ptr %0) {{\n'
+            "entry:\n"
+            "  ret i8 0\n"
+            "}\n"
+            f"declare void @{release}(ptr)\n"
+        )
+        try:
+            assert_exact_llvm_release_chain(
+                str(facts["compiler_e2e_cases"][0]["carrier_key"]),
+                missing_close_release,
+                "scope_exit_case",
+                str(facts["compiler_e2e_cases"][0]["close_symbol"]),
+                release,
+            )
+        except AssertionError:
+            pass
+        else:
+            fail(
+                "close wrapper without its native release unexpectedly passed lifecycle evidence"
+            )
         run_wasm_evidence(facts["compiler_e2e_cases"], evidence, temp)
         run_runtime_evidence(evidence, args.runtime_profile)
 

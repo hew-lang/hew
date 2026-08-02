@@ -9319,6 +9319,10 @@ impl Checker {
                     }
                     for resource in &resource_wrapper_types {
                         self.registry.register_resource_type(resource.clone());
+                        if let Some((_, leaf)) = resource.rsplit_once('.') {
+                            self.registry
+                                .register_resource_type(format!("{canonical_owner}.{leaf}"));
+                        }
                     }
 
                     // A selected named/glob import needs the Hew declaration,

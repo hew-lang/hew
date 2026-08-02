@@ -68,15 +68,15 @@ semantic-leaf-name	leaf-rsplit-field	hew-types/src/stdlib_loader.rs	1	stage-1	re
 semantic-leaf-name	leaf-rsplit-identifier	hew-types/src/check/registration.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	5	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/calls.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/generics.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/methods.rs	7	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/registration.rs	6	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/methods.rs	8	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/resolution.rs	9	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/error.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/ffi_contracts.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/lib.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/module_registry.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/module_registry.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/ty.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-field	hew-types/src/check/resolution.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-field	hew-types/src/check/types.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
@@ -101,7 +101,7 @@ semantic-leaf-name	short-name-identifier	hew-types/src/check/registration.rs	4	s
 semantic-leaf-name	short-name-identifier	hew-types/src/check/resolution.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-types/src/check/types.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-types/src/lib.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/module_registry.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	short-name-identifier	hew-types/src/module_registry.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-types/src/stdlib_loader.rs	5	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-owner-shortening-sink	registry-key	hew-types/src/check/registration.rs	8	stage-1	reviewed remaining owner-shortening sink
 string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	5	stage-1	reviewed qualified string identity construction
@@ -130,7 +130,7 @@ string-method-identity	qualified-format-macro	hew-types/src/actor_protocol.rs	1	
 string-method-identity	qualified-format-macro	hew-types/src/check/admissibility.rs	2	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/calls.rs	3	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/coerce.rs	4	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	4	stage-1	reviewed qualified string identity construction
+string-method-identity	qualified-format-macro	hew-types/src/check/expressions.rs	5	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/items.rs	31	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/lints/mod.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-types/src/check/methods.rs	54	stage-1	reviewed qualified string identity construction

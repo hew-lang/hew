@@ -2277,10 +2277,12 @@ impl Checker {
             return;
         }
         match name.as_str() {
-            "http_client.Response" => {
+            "http_client.Response" | "std.net.http.http_client.Response" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpClient);
             }
-            "smtp.Conn" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Smtp),
+            "smtp.Conn" | "std.net.smtp.Conn" => {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Smtp);
+            }
             "websocket.Conn"
             | "websocket.Server"
             | "websocket.Message"
@@ -2289,19 +2291,26 @@ impl Checker {
             | "std.net.websocket.Message" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::WebSocket);
             }
-            "process.Child" => {
+            "process.Child" | "std.process.Child" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::ProcessExecution);
             }
-            "http.Server" | "http.Request" => {
+            "http.Server" | "http.Request" | "std.net.http.Server" | "std.net.http.Request" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpServer);
             }
             STD_NET_LISTENER | STD_NET_CONNECTION => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking);
             }
-            "tls.TlsStream" => {
+            "tls.TlsStream" | "std.net.tls.TlsStream" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Tls);
             }
-            "quic.QUICEndpoint" | "quic.QUICConnection" | "quic.QUICStream" | "quic.QUICEvent" => {
+            "quic.QUICEndpoint"
+            | "quic.QUICConnection"
+            | "quic.QUICStream"
+            | "quic.QUICEvent"
+            | "std.net.quic.QUICEndpoint"
+            | "std.net.quic.QUICConnection"
+            | "std.net.quic.QUICStream"
+            | "std.net.quic.QUICEvent" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Quic);
             }
             _ => {}
@@ -2628,10 +2637,18 @@ impl Checker {
     /// already-qualified result (including `foo.Connection`) is authoritative
     /// and unchanged, as are builtins and a method on a bare/root receiver.
     fn qualify_method_return_to_receiver_owner(&self, receiver_name: &str, ty: &Ty) -> Ty {
-        let Some((owner, _)) = receiver_name.rsplit_once('.') else {
+        let canonical_registry_receiver = self
+            .module_registry
+            .canonical_method_receiver_identity(receiver_name);
+        let exact_receiver = canonical_registry_receiver
+            .as_deref()
+            .unwrap_or(receiver_name);
+        let Some((owner, _)) = exact_receiver.rsplit_once('.') else {
             return ty.clone();
         };
-        if !self.type_defs.contains_key(receiver_name) {
+        if !self.type_defs.contains_key(receiver_name)
+            && !self.module_registry.is_method_receiver_type(receiver_name)
+        {
             return ty.clone();
         }
 
@@ -2650,6 +2667,19 @@ impl Checker {
             return mapped;
         };
         if name.contains('.') {
+            let leaf = name
+                .rsplit_once('.')
+                .map_or(name.as_str(), |(_, leaf)| leaf);
+            let qualified = format!("{owner}.{leaf}");
+            if self.module_registry.is_method_receiver_type(&name)
+                && self.module_registry.is_method_receiver_type(&qualified)
+            {
+                return Ty::Named {
+                    name: qualified,
+                    args,
+                    builtin: None,
+                };
+            }
             return Ty::Named {
                 name,
                 args,
@@ -2658,7 +2688,9 @@ impl Checker {
         }
         let qualified = format!("{owner}.{name}");
         Ty::Named {
-            name: if self.type_defs.contains_key(&qualified) {
+            name: if self.type_defs.contains_key(&qualified)
+                || self.module_registry.is_method_receiver_type(&qualified)
+            {
                 qualified
             } else {
                 name

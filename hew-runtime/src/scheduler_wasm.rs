@@ -3569,8 +3569,8 @@ mod tests {
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         // Scratch frame: Ready on the 2nd resume.
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(2));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(2);
+        let handle = frame.handle();
 
         // SAFETY: actor owned on this single thread; scratch handle live.
         assert!(unsafe { park_suspended_activation_wasm(actor_ptr, handle) });
@@ -3645,10 +3645,7 @@ mod tests {
         _data_size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        Box::into_raw(Box::new(crate::coro_exec::test_support::ScratchFrame::new(
-            1,
-        )))
-        .cast()
+        crate::coro_exec::test_support::ScratchFrameOwner::new(1).into_handle()
     }
 
     /// Actual-target WASM continuation probe whose destroy outline frees its
@@ -4210,8 +4207,8 @@ mod tests {
         let actor = stub_actor();
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
         let a = as_native_actor(actor_ptr);
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         assert!(crate::coro_exec::begin_park(a).is_ok());
         // SAFETY: the scratch frame remains live for the complete test.
         unsafe { crate::coro_exec::finish_park(a, handle) };
@@ -4325,8 +4322,8 @@ mod tests {
             let a = as_native_actor(actor_ptr);
             // SAFETY: this test creates and exclusively owns the mailbox.
             actor.mailbox = unsafe { crate::mailbox_wasm::hew_mailbox_new() }.cast();
-            let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-            let handle = (&raw mut *frame).cast::<c_void>();
+            let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+            let handle = frame.handle();
             assert!(crate::coro_exec::begin_park(a).is_ok());
             // SAFETY: frame stays live until the successful cleanup below.
             unsafe { crate::coro_exec::finish_park(a, handle) };
@@ -4429,8 +4426,8 @@ mod tests {
         let actor = stub_actor();
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
         let a = as_native_actor(actor_ptr);
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         assert!(crate::coro_exec::begin_park(a).is_ok());
         // SAFETY: the scratch frame remains live for the complete test.
         unsafe { crate::coro_exec::finish_park(a, handle) };
@@ -4546,8 +4543,8 @@ mod tests {
         let waiter_ptr: *mut HewActor = (&raw const waiter_actor).cast_mut();
         let waiter_native = as_native_actor(waiter_ptr);
         let retiring_native = as_native_actor((&raw const retiring_actor).cast_mut());
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         assert!(crate::coro_exec::begin_park(waiter_native).is_ok());
         // SAFETY: scratch frame is live and exclusively owned for the test.
         unsafe { crate::coro_exec::finish_park(waiter_native, handle) };
@@ -4629,8 +4626,8 @@ mod tests {
         let waiter_actor = stub_actor();
         let waiter_ptr: *mut HewActor = (&raw const waiter_actor).cast_mut();
         let waiter_native = as_native_actor(waiter_ptr);
-        let mut waiter_frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let waiter_handle = (&raw mut *waiter_frame).cast::<c_void>();
+        let waiter_frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let waiter_handle = waiter_frame.handle();
         assert!(crate::coro_exec::begin_park(waiter_native).is_ok());
         // SAFETY: waiter_frame is live and exclusively owned for the test.
         unsafe { crate::coro_exec::finish_park(waiter_native, waiter_handle) };
@@ -4737,7 +4734,7 @@ mod tests {
             crate::reply_channel_wasm::hew_reply_channel_free(reply);
             crate::actor::cancel_parked_activation_for_free_wasm(waiter_native);
             crate::mailbox_wasm::hew_mailbox_free(callee_actor.mailbox.cast());
-            drop(Box::from_raw(callee_frame));
+            drop(crate::coro_exec::test_support::ScratchFrameOwner::from_handle(callee_handle));
         }
         assert_eq!(waiter_frame.destroyed.load(Ordering::Acquire), 1);
         assert_eq!(
@@ -6899,7 +6896,7 @@ mod tests {
             crate::actor::cancel_parked_activation_for_free_wasm(&*actor);
             assert_eq!((*frame).destroyed.load(Ordering::Acquire), 1);
             crate::actor::free_actor_resources_wasm(actor);
-            drop(Box::from_raw(frame));
+            drop(crate::coro_exec::test_support::ScratchFrameOwner::from_handle(handle));
         }
         assert_eq!(
             crate::actor_balance::actor_box_counts(),
@@ -6922,10 +6919,9 @@ mod tests {
         // SAFETY: real tracked zero-state actor.
         let actor = unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
         assert!(!actor.is_null());
-        let frame = Box::into_raw(Box::new(crate::coro_exec::test_support::ScratchFrame::new(
-            1,
-        )));
-        let handle = frame.cast::<c_void>();
+        let frame_owner = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame_owner.into_handle();
+        let frame = handle.cast::<crate::coro_exec::test_support::ScratchFrame>();
         // SAFETY: actor and frame are exclusively owned by this test.
         let a = unsafe { &*actor };
         assert!(crate::coro_exec::begin_park(a).is_ok());
@@ -6968,7 +6964,7 @@ mod tests {
         unsafe {
             assert!(crate::coro_exec::destroy_parked(a).is_ok());
             crate::actor::free_actor_resources_wasm(actor);
-            drop(Box::from_raw(frame));
+            drop(crate::coro_exec::test_support::ScratchFrameOwner::from_handle(handle));
         }
         assert_eq!(
             crate::actor_balance::actor_box_counts(),
@@ -7035,8 +7031,8 @@ mod tests {
         // SAFETY: real zero-state tracked actor, owned by runtime cleanup.
         let actor = unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
         assert!(!actor.is_null());
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         // Fabricate the exact refusal state without resuming the handle: the
         // frame remains live but its `Resuming` tag denies destroy ownership.
         // SAFETY: actor is live and exclusively owned on this WASM thread.

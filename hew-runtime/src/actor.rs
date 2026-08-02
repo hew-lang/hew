@@ -10685,8 +10685,8 @@ mod tests {
         // SAFETY: the helper hands over sole ownership; nothing else can see it.
         let a = unsafe { &*actor };
 
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<std::ffi::c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         assert!(crate::coro_exec::begin_park(a).is_ok());
         // SAFETY: `frame` outlives this test body.
         unsafe { crate::coro_exec::finish_park(a, handle) };
@@ -14985,8 +14985,8 @@ mod tests {
         // would: publish Parked + store the handle, then mark the actor
         // Suspended. The scratch frame owns a real heap_guard allocation the
         // destroy outline must free.
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(4));
-        let handle = Box::into_raw(frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(4);
+        let handle = frame.into_handle();
         // SAFETY: actor is live and owned by this test thread.
         unsafe {
             let a = &*actor;
@@ -15010,10 +15010,11 @@ mod tests {
         // Reclaim the scratch frame struct (scratch_destroy freed only its
         // heap_guard, not the frame) and assert the destroy outline ran exactly
         // once on the free path.
-        // SAFETY: `handle` is the scratch frame `Box::into_raw`'d above; its
-        // struct memory is still valid (scratch_destroy frees only heap_guard).
+        // SAFETY: `handle` came from ScratchFrameOwner::into_handle above; its
+        // outer allocation remains live because scratch_destroy frees only the
+        // heap guard.
         let frame =
-            unsafe { Box::from_raw(handle.cast::<crate::coro_exec::test_support::ScratchFrame>()) };
+            unsafe { crate::coro_exec::test_support::ScratchFrameOwner::from_handle(handle) };
         assert_eq!(
             frame.destroyed.load(Ordering::Acquire),
             1,
@@ -15290,8 +15291,8 @@ mod tests {
         let actor = make_tracked_wasm_free_test_actor(HewActorState::Stopped);
         // SAFETY: this test exclusively owns the tracked actor.
         let a = unsafe { &*actor };
-        let mut frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        let handle = (&raw mut *frame).cast::<c_void>();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        let handle = frame.handle();
         assert!(crate::coro_exec::begin_park(a).is_ok());
         // SAFETY: `frame` stays live through both free attempts.
         unsafe { crate::coro_exec::finish_park(a, handle) };

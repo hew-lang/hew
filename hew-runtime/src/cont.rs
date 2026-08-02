@@ -519,6 +519,19 @@ unsafe fn frame_is_tracked(frame: *mut c_void) -> bool {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn frame_has_tracked_header_for_test(frame: *mut c_void) -> bool {
+    // SAFETY: test callers pass a live handle allocated by the continuation
+    // frame allocator; this counterfactual proves synthetic executor frames
+    // carry the private header before cross-worker resume probes it.
+    unsafe { frame_is_tracked(frame) }
+}
+
+#[cfg(test)]
+pub(crate) const fn frame_alignment_for_test() -> usize {
+    FRAME_ALIGN
+}
+
 #[expect(
     clippy::cast_ptr_alignment,
     reason = "the allocator guarantees 16-byte base alignment and the registry word is at offset 16"

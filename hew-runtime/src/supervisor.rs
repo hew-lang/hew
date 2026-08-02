@@ -677,6 +677,10 @@ pub struct HewSupervisor {
     restart_head: usize,
 
     running: AtomicI32,
+    /// Wait-free cancellation observation for public/hot read paths. The
+    /// restart-timer control mirrors this state under its mutex only for timer
+    /// wakeup and raw-borrow exclusion.
+    cancelled: AtomicBool,
     teardown_claimed: AtomicBool,
     /// Shared cancellation and lifetime authority for delayed-restart threads.
     /// A timer holds an `Arc` lease from before spawn until its final raw
@@ -800,10 +804,6 @@ impl RestartTimerControl {
         let mut state = self.state.lock_or_recover();
         state.cancelled = true;
         self.changed.notify_all();
-    }
-
-    fn is_cancelled(&self) -> bool {
-        self.state.lock_or_recover().cancelled
     }
 
     fn wait_for_drain(&self, deadline: Instant) -> bool {
@@ -1510,7 +1510,10 @@ fn schedule_delayed_restart(sup: &HewSupervisor, child_index: usize, delay: Dura
                 // closure can never run.
                 unsafe {
                     let s = &*sup_ptr;
-                    if s.running.load(Ordering::Acquire) != 0 && !s.self_actor.is_null() {
+                    if !s.cancelled.load(Ordering::Acquire)
+                        && s.running.load(Ordering::Acquire) != 0
+                        && !s.self_actor.is_null()
+                    {
                         let event = DelayedRestartEvent { child_index };
                         let _ = actor::send_system_message(
                             s.self_actor,
@@ -1619,7 +1622,7 @@ fn take_child_slot(sup: &mut HewSupervisor, index: usize) -> *mut HewActor {
 
 /// Stop this supervisor, notify waiters, and escalate to the parent if present.
 fn stop_and_maybe_escalate(sup: &mut HewSupervisor) {
-    sup.restart_timers.cancel();
+    publish_supervisor_cancellation(sup);
     sup.running.store(0, Ordering::Release);
     notify_restart(sup);
     if !sup.parent.is_null() {
@@ -1847,9 +1850,17 @@ fn request_supervisor_shutdown(sup: *mut HewSupervisor) {
     // SAFETY: caller guarantees `sup` is a valid live supervisor pointer.
     unsafe {
         let s = &*sup;
-        s.restart_timers.cancel();
+        publish_supervisor_cancellation(s);
         s.running.store(0, Ordering::Release);
     }
+}
+
+fn publish_supervisor_cancellation(sup: &HewSupervisor) {
+    // Publish the wait-free mirror first. Timer callbacks that already own the
+    // control mutex observe this bit and skip their send; acquiring the control
+    // next wakes sleepers and waits out any raw access already in progress.
+    sup.cancelled.store(true, Ordering::Release);
+    sup.restart_timers.cancel();
 }
 
 #[inline]
@@ -2840,8 +2851,14 @@ unsafe fn supervisor_sys_dispatch_impl(
             // Free the old child.
             let child = take_child_slot(sup, idx);
             if !child.is_null() {
-                // SAFETY: child pointer is valid.
-                unsafe { actor::hew_actor_free(child) };
+                // The source incarnation is being replaced from the
+                // supervisor's template. Suppress its state-drop callback:
+                // legacy templates byte-alias owned fields, and crash recovery
+                // may already have consumed typed state-drop authority. The
+                // replacement becomes the sole normal-teardown owner.
+                // SAFETY: child is quiescent and no longer referenced by its
+                // supervisor slot.
+                unsafe { actor::hew_actor_free_for_restart(child) };
             }
 
             // SAFETY: sup is valid; ctx is the supervisor's own dispatch
@@ -2866,16 +2883,21 @@ unsafe fn supervisor_sys_dispatch_impl(
             unsafe { restart_child_supervisor_with_budget(sup, idx) };
         }
         HewSysMsg::SupervisorStop => {
-            sup.restart_timers.cancel();
+            publish_supervisor_cancellation(sup);
             sup.running.store(0, Ordering::Release);
-            // Stop child supervisors recursively.
-            for child_sup in &sup.child_supervisors {
+            // Detach child supervisors before public stop. A bounded child
+            // teardown may fail closed and return itself to canonical cleanup;
+            // it must then register as an independent root rather than retain
+            // a parent pointer into this soon-to-be-cleared tree.
+            for child_sup in std::mem::take(&mut sup.child_supervisors) {
                 if !child_sup.is_null() {
+                    // SAFETY: this dispatch exclusively owns the parent's
+                    // child-supervisor list and child_sup is live.
+                    unsafe { (*child_sup).parent = ptr::null_mut() };
                     // SAFETY: child_sup is a valid supervisor.
-                    unsafe { hew_supervisor_stop(*child_sup) };
+                    unsafe { hew_supervisor_stop(child_sup) };
                 }
             }
-            sup.child_supervisors.clear();
             for i in 0..sup.child_count {
                 if !sup.children[i].is_null() {
                     // SAFETY: child pointer is valid.
@@ -2937,6 +2959,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
         restart_count: 0,
         restart_head: 0,
         running: AtomicI32::new(0),
+        cancelled: AtomicBool::new(false),
         teardown_claimed: AtomicBool::new(false),
         restart_timers: Arc::new(RestartTimerControl::new()),
         self_actor: ptr::null_mut(),
@@ -3403,7 +3426,7 @@ pub extern "C" fn hew_local_pid_supervisor_is_running(
     let supervisor = unsafe { &*sup };
     c_int::from(
         supervisor.running.load(Ordering::Acquire) != 0
-            && !supervisor.restart_timers.is_cancelled(),
+            && !supervisor.cancelled.load(Ordering::Acquire),
     )
 }
 
@@ -3681,6 +3704,49 @@ mod tests {
                 crate::runtime::default_runtime_ptr(Ordering::Acquire).is_null(),
                 "nested timer cancellation must finish in the initial cleanup pass"
             );
+        }
+    }
+
+    #[test]
+    fn supervisor_stop_detaches_timed_out_child_before_cleanup_handoff() {
+        let _rt = crate::runtime_test_guard();
+        // SAFETY: the test owns both fresh supervisors. A deliberately retained
+        // production timer lease forces the nested stop through its bounded
+        // fail-closed handoff; releasing it then lets canonical cleanup reclaim
+        // both independent roots.
+        unsafe {
+            let (parent, _parent_child, _parent_self) = make_supervisor_with_child();
+            let (nested, _nested_child, _nested_self) = make_supervisor_with_child();
+            assert_eq!(hew_supervisor_add_child_supervisor(parent, nested), 0);
+            let timer = (*nested)
+                .restart_timers
+                .begin()
+                .expect("fresh nested supervisor accepts a timer lease");
+
+            supervisor_sys_dispatch_impl(
+                ptr::null_mut(),
+                parent.cast::<c_void>(),
+                HewSysMsg::SupervisorStop as i32,
+                ptr::null_mut(),
+                0,
+            );
+
+            assert!(
+                (*nested).parent.is_null(),
+                "child must detach before a bounded stop can return it to cleanup"
+            );
+            assert!(
+                crate::shutdown::is_supervisor_registered_for_test(nested),
+                "timed-out detached child must become an independent cleanup root"
+            );
+            assert!(
+                (*parent).child_supervisors.is_empty(),
+                "parent must not retain a second ownership edge"
+            );
+
+            drop(timer);
+            crate::scheduler::hew_runtime_cleanup();
+            assert!(crate::runtime::default_runtime_ptr(Ordering::Acquire).is_null());
         }
     }
 
@@ -6433,7 +6499,8 @@ mod tests {
 ///
 /// Returns `false` when a delayed-restart timer still borrows this tree. The
 /// incomplete tree remains registered and its runtime/actors must stay alive
-/// until a later cleanup retry can safely reclaim it.
+/// rather than being freed unsafely. There is no automatic retry; an embedder
+/// may explicitly invoke cleanup again after the borrower drains.
 pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) -> bool {
     // SAFETY: canonical cleanup still owns a live raw supervisor allocation.
     let Some(access) = (unsafe { close_supervisor_access(sup, SUPERVISOR_PIN_DRAIN_TIMEOUT) })
@@ -6448,13 +6515,15 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) -> bool 
     // access until cancellation acquires the control mutex.
     // SAFETY: caller guarantees sup is valid.
     let restart_timers = Arc::clone(unsafe { &(*sup).restart_timers });
-    restart_timers.cancel();
+    // SAFETY: the allocation remains live through the bounded drain below.
+    publish_supervisor_cancellation(unsafe { &*sup });
     let deadline = Instant::now() + SUPERVISOR_CLEANUP_TIMER_DRAIN_TIMEOUT;
     if !wait_for_pending_restart_timers(&restart_timers, deadline) {
         set_last_error("runtime cleanup retained supervisor with pending restart timers");
-        // The timer thread still owns a raw borrow.  Retain this root so a
-        // later cleanup attempt can reclaim it after the borrow drains; freeing
-        // now would be a use-after-free in the delayed-restart thread.
+        // The timer thread still owns a raw borrow. Retain this root; an
+        // explicit later cleanup may reclaim it after the borrow drains, while
+        // a one-shot teardown leaks it fail-closed. Freeing now would be a
+        // use-after-free in the delayed-restart thread.
         // SAFETY: canonical cleanup still owns the live top-level allocation.
         unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
         return false;
@@ -6721,7 +6790,7 @@ pub unsafe extern "C" fn hew_supervisor_get_child_wait(
             return child;
         }
         // If the supervisor was cancelled, don't wait forever.
-        if s.restart_timers.is_cancelled() {
+        if s.cancelled.load(Ordering::Acquire) {
             return ptr::null_mut();
         }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
@@ -6822,7 +6891,7 @@ fn child_get_from_supervisor(
     handle_kind: ChildHandleKind,
 ) -> ChildLookupResult {
     // Fast-path: supervisor-level shutdown check (no lock required — atomics).
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
 
@@ -6846,7 +6915,7 @@ fn child_get_from_supervisor(
     // Re-check shutdown under the lock (the supervisor could have been
     // cancelled or run out of budget between the atomic check above and
     // acquiring the lock).
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
 
@@ -7047,7 +7116,7 @@ fn role_resolve_current_child_id(
     let s = unsafe { &*sup };
 
     // Fast-path shutdown check (atomics, no lock).
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
         return Err(role_ask_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
             key,
@@ -7062,7 +7131,7 @@ fn role_resolve_current_child_id(
 
     // Re-check shutdown under the lock (the supervisor can be cancelled
     // between the atomic check above and acquiring the lock).
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
         return Err(role_ask_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
             key,
@@ -7261,7 +7330,7 @@ pub unsafe extern "C" fn hew_supervisor_nested_get(
     // SAFETY: caller guarantees sup is valid.
     let s = unsafe { &*sup };
 
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
 
@@ -8535,7 +8604,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
     let s = unsafe { &*sup };
 
     // Fast-path: supervisor-level shutdown.
-    if s.restart_timers.is_cancelled() || s.running.load(Ordering::Acquire) == 0 {
+    if s.cancelled.load(Ordering::Acquire) || s.running.load(Ordering::Acquire) == 0 {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
 

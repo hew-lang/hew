@@ -38,6 +38,7 @@ set -euo pipefail
 #   MACOS_TART_VM=macos-build
 #   HEW_MACOS_LLVM_PREFIX=/opt/homebrew/opt/llvm@22
 #   HEW_WINDOWS_LLVM_PREFIX='C:\llvm-22'
+#   HEW_WINDOWS_STAGE_ROOT='P:/hew-pre-release-stages'
 #   HEW_WINDOWS_CC=cl
 #   HEW_WINDOWS_CXX=cl
 #
@@ -59,6 +60,9 @@ MACOS_LLVM_PREFIX="${HEW_MACOS_LLVM_PREFIX:-${MACOS_LLVM_PREFIX:-}}"
 
 WINDOWS_LLVM_PREFIX="${HEW_WINDOWS_LLVM_PREFIX:-C:\\llvm-22}"
 WINDOWS_LLVM_CONFIG="${HEW_WINDOWS_LLVM_CONFIG:-${WINDOWS_LLVM_PREFIX}\\lib\\cmake\\llvm\\LLVMConfig.cmake}"
+WINDOWS_STAGE_ROOT="${HEW_WINDOWS_STAGE_ROOT:-${WINDOWS_STAGE_ROOT:-}}"
+# Normalize the optional root before validating/interpolating it.
+WINDOWS_STAGE_ROOT="${WINDOWS_STAGE_ROOT//\\//}"
 WINDOWS_CC="${HEW_WINDOWS_CC:-cl}"
 WINDOWS_CXX="${HEW_WINDOWS_CXX:-cl}"
 
@@ -76,6 +80,10 @@ RESET='\033[0m'
 
 SSH_CHECK_TIMEOUT="${HEW_TIMEOUT_SSH_CHECK:-15}"
 SYNC_TIMEOUT="${HEW_TIMEOUT_SYNC:-300}"
+# Removing a staged Windows release tree includes Cargo's registry/cache and
+# release/LTO outputs, so size cleanup like transport rather than a reachability
+# probe. Keep this independently tunable for slower Windows filesystems.
+REMOTE_CLEANUP_TIMEOUT="${HEW_TIMEOUT_REMOTE_CLEANUP:-${SYNC_TIMEOUT}}"
 LOCAL_BUILD_TIMEOUT="${HEW_TIMEOUT_LOCAL_BUILD:-1800}"
 REMOTE_BUILD_TIMEOUT="${HEW_TIMEOUT_REMOTE_BUILD:-1800}"
 SMOKE_TIMEOUT="${HEW_TIMEOUT_SMOKE:-120}"
@@ -84,6 +92,9 @@ TEST_TIMEOUT="${HEW_TIMEOUT_TEST:-900}"
 # shellcheck source=scripts/lib/timeout.sh
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/lib/timeout.sh"
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/lib/cargo-output-dir.sh"
 
 # ── State tracking ───────────────────────────────────────────────────────────
 
@@ -163,6 +174,40 @@ run_windows_powershell() {
         "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}"
 }
 
+powershell_utf8_base64() {
+    python3 -c 'import base64, sys; print(base64.b64encode(sys.argv[1].encode()).decode())' "$1"
+}
+
+run_windows_staged_build() {
+    local remote_stage="$1"
+    local llvm_config_b64 llvm_prefix_b64 cc_b64 cxx_b64
+    llvm_config_b64=$(powershell_utf8_base64 "$WINDOWS_LLVM_CONFIG")
+    llvm_prefix_b64=$(powershell_utf8_base64 "$WINDOWS_LLVM_PREFIX")
+    cc_b64=$(powershell_utf8_base64 "$WINDOWS_CC")
+    cxx_b64=$(powershell_utf8_base64 "$WINDOWS_CXX")
+
+    # Keep the OpenSSH/cmd.exe command small. The complete build and consumer
+    # proof live in the staged candidate at scripts/windows-release-build.ps1.
+    run_windows_powershell "${REMOTE_BUILD_TIMEOUT}" "
+\$ErrorActionPreference = 'Stop'
+# Keep every high-volume write on the already space-checked candidate drive.
+# These process-local values deliberately override a full host TEMP/TMP or an
+# inherited Cargo target directory without requiring persistent host changes.
+\$env:TEMP = '${remote_stage}/.tmp'
+\$env:TMP = \$env:TEMP
+\$env:CARGO_TARGET_DIR = '${remote_stage}/target'
+\$env:CARGO_HOME = '${remote_stage}/.cargo-home'
+New-Item -ItemType Directory -Force -Path \$env:TEMP, \$env:CARGO_TARGET_DIR, \$env:CARGO_HOME | Out-Null
+\$Utf8 = [System.Text.Encoding]::UTF8
+\$env:HEW_WINDOWS_LLVM_CONFIG = \$Utf8.GetString([Convert]::FromBase64String('${llvm_config_b64}'))
+\$env:HEW_WINDOWS_LLVM_PREFIX = \$Utf8.GetString([Convert]::FromBase64String('${llvm_prefix_b64}'))
+\$env:HEW_WINDOWS_CC = \$Utf8.GetString([Convert]::FromBase64String('${cc_b64}'))
+\$env:HEW_WINDOWS_CXX = \$Utf8.GetString([Convert]::FromBase64String('${cxx_b64}'))
+& '${remote_stage}/scripts/windows-release-build.ps1'
+if (\$LASTEXITCODE -ne 0) { throw \"staged Windows build failed with exit code \$LASTEXITCODE\" }
+"
+}
+
 create_unix_remote_stage() {
     local host="$1"
     local stage
@@ -188,21 +233,43 @@ remove_unix_remote_stage() {
 }
 
 create_windows_remote_stage() {
-    run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
+    local root_init="\$Root = [System.IO.Path]::GetTempPath()"
+    if [[ -n "$WINDOWS_STAGE_ROOT" ]]; then
+        printf -v root_init "\$Root = '%s'" "$WINDOWS_STAGE_ROOT"
+    fi
+    local stage
+    stage=$(run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
 \$ErrorActionPreference = 'Stop'
-\$Stage = Join-Path ([System.IO.Path]::GetTempPath()) ('hew-pre-release-' + [guid]::NewGuid())
+${root_init}
+\$DriveName = [System.IO.Path]::GetPathRoot(\$Root).Substring(0, 1)
+\$Drive = Get-PSDrive -Name \$DriveName -PSProvider FileSystem
+if (\$Drive.Free -lt 8GB) {
+    throw \"Windows candidate stage \$Root has only \$([math]::Round(\$Drive.Free / 1GB, 2)) GiB free; at least 8 GiB is required\"
+}
+New-Item -ItemType Directory -Path \$Root -Force | Out-Null
+\$Stage = Join-Path \$Root ('hew-pre-release-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path \$Stage | Out-Null
 Write-Output (\$Stage.Replace('\\', '/'))
-"
+")
+    # Windows OpenSSH preserves PowerShell's CRLF line ending. Command
+    # substitution strips the LF but leaves a trailing CR, which must not
+    # become part of the validated/scp'd path.
+    printf '%s' "${stage//$'\r'/}"
 }
 
 remove_windows_remote_stage() {
     local stage="$1"
     if [[ "$stage" =~ ^[A-Za-z]:/[A-Za-z0-9._/\ -]*/hew-pre-release-[0-9A-Fa-f-]+$ ]]; then
-        run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
+        if ! run_windows_powershell "${REMOTE_CLEANUP_TIMEOUT}" "
 \$ErrorActionPreference = 'Stop'
-Remove-Item -LiteralPath '${stage}' -Recurse -Force -ErrorAction SilentlyContinue
-" >/dev/null 2>&1 || true
+if (Test-Path -LiteralPath '${stage}') {
+    Remove-Item -LiteralPath '${stage}' -Recurse -Force -ErrorAction Stop
+}
+" >/dev/null 2>&1; then
+            # Cleanup is best-effort so an EXIT trap cannot replace the build
+            # result, but a stranded multi-GB stage must remain visible.
+            echo "WARNING: Windows remote candidate cleanup timed out or failed after ${REMOTE_CLEANUP_TIMEOUT}s: ${stage}" >&2
+        fi
     else
         echo "refusing to remove unexpected Windows remote path: ${stage}" >&2
     fi
@@ -214,6 +281,9 @@ validate_linux() {
     banner "Linux (local static-link build)"
 
     local log="${LOG_DIR}/linux.log"
+    local release_dir release_lib_dir
+    release_dir=$(cargo_profile_dir "$REPO_ROOT" release)
+    release_lib_dir=$(cargo_profile_dir "$REPO_ROOT" release-lib)
 
     set +e
     (
@@ -226,12 +296,12 @@ validate_linux() {
         run_with_timeout "${LOCAL_BUILD_TIMEOUT}" cargo build -p hew-lib --profile release-lib 2>&1
 
         echo "==> Step 2: Verify binaries exist and run"
-        target/release/hew --version
-        target/release/adze --version
-        target/release/hew-lsp --version
-        target/release/hew-observe --version
-        test -f target/release-lib/libhew.a
-        verify_libhew_external_link target/release/hew target/release-lib/libhew.a
+        "${release_dir}/hew" --version
+        "${release_dir}/adze" --version
+        "${release_dir}/hew-lsp" --version
+        "${release_dir}/hew-observe" --version
+        test -f "${release_lib_dir}/libhew.a"
+        verify_libhew_external_link "${release_dir}/hew" "${release_lib_dir}/libhew.a"
 
         echo "==> Step 3: Smoke test — run a Hew program"
         local smoke_file_base
@@ -240,7 +310,7 @@ validate_linux() {
         mv "$smoke_file_base" "$smoke_file"
         write_smoke_test "$smoke_file"
         local output
-        output=$(run_with_timeout "${SMOKE_TIMEOUT}" target/release/hew run "$smoke_file")
+        output=$(run_with_timeout "${SMOKE_TIMEOUT}" "${release_dir}/hew" run "$smoke_file")
         rm -f "$smoke_file"
 
         if echo "$output" | grep -q "Hello from Hew"; then
@@ -254,7 +324,7 @@ validate_linux() {
         run_with_timeout "${TEST_TIMEOUT}" bash -o pipefail -lc 'cargo test -p hew-runtime --quiet 2>&1 | tail -3'
 
         echo "==> Step 5: Verify no dynamic LLVM/MLIR dependencies"
-        if ldd target/release/hew 2>/dev/null | grep -qi 'llvm\|mlir'; then
+        if ldd "${release_dir}/hew" 2>/dev/null | grep -qi 'llvm\|mlir'; then
             echo "FATAL: Binary dynamically links LLVM/MLIR"
             exit 1
         fi
@@ -272,11 +342,12 @@ validate_linux() {
         mkdir -p "${package_root}/bin" "${package_root}/lib/x86_64-unknown-linux-gnu" \
             "${package_root}/std" "${package_stage}"
 
-        cp target/release/hew target/release/adze target/release/hew-lsp target/release/hew-observe "${package_root}/bin/"
+        cp "${release_dir}/hew" "${release_dir}/adze" "${release_dir}/hew-lsp" \
+            "${release_dir}/hew-observe" "${package_root}/bin/"
         chmod +x "${package_root}/bin/"*
-        verify_libhew_external_link target/release/hew target/release-lib/libhew.a
-        cp target/release-lib/libhew.a "${package_root}/lib/"
-        cp target/release-lib/libhew.a "${package_root}/lib/x86_64-unknown-linux-gnu/"
+        verify_libhew_external_link "${release_dir}/hew" "${release_lib_dir}/libhew.a"
+        cp "${release_lib_dir}/libhew.a" "${package_root}/lib/"
+        cp "${release_lib_dir}/libhew.a" "${package_root}/lib/x86_64-unknown-linux-gnu/"
         cp -r std/. "${package_root}/std/"
 
         tar czf "${package_tarball}" -C "${archive_root}" "${archive_name}"
@@ -331,7 +402,8 @@ validate_macos() {
         trap 'remove_unix_remote_stage "${MACOS_HOST}" "${remote_stage}"' EXIT
         echo "==> Staging local candidate on macOS: ${remote_stage}"
         run_with_timeout "${SYNC_TIMEOUT}" rsync -az \
-            --exclude target --exclude .git --exclude build \
+            --exclude target --exclude .git --exclude build --exclude .tmp \
+            --exclude node_modules \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
             . "${MACOS_HOST}:${remote_stage}/"
 
@@ -386,11 +458,15 @@ validate_macos() {
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
 
-            target/release/hew --version
-            target/release/adze --version
-            target/release/hew-lsp --version
-            target/release/hew-observe --version
-            scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a
+            release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
+            release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
+            \"\$release_dir/hew\" --version
+            \"\$release_dir/adze\" --version
+            \"\$release_dir/hew-lsp\" --version
+            \"\$release_dir/hew-observe\" --version
+            scripts/test-release-lib-link.sh \
+                --hew \"\$release_dir/hew\" \
+                --archive \"\$release_lib_dir/libhew.a\"
 
             echo \"==> Smoke test: hew run (guards against process-exit SIGABRT — issue #1606)\"
             make stdlib
@@ -430,7 +506,8 @@ validate_linux_aarch64() {
         trap 'remove_unix_remote_stage "${LINUX_AARCH64_HOST}" "${remote_stage}"' EXIT
         echo "==> Staging local candidate on Linux aarch64: ${remote_stage}"
         run_with_timeout "${SYNC_TIMEOUT}" rsync -az \
-            --exclude target --exclude .git --exclude build \
+            --exclude target --exclude .git --exclude build --exclude .tmp \
+            --exclude node_modules \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
             . "${LINUX_AARCH64_HOST}:${remote_stage}/"
 
@@ -461,15 +538,19 @@ validate_linux_aarch64() {
             rustup target add wasm32-wasip1
             cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 
-            target/release/hew --version
-            target/release/adze --version
-            target/release/hew-lsp --version
-            target/release/hew-observe --version
-            test -f target/release-lib/libhew.a
-            scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a
+            release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
+            release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
+            \"\$release_dir/hew\" --version
+            \"\$release_dir/adze\" --version
+            \"\$release_dir/hew-lsp\" --version
+            \"\$release_dir/hew-observe\" --version
+            test -f \"\$release_lib_dir/libhew.a\"
+            scripts/test-release-lib-link.sh \
+                --hew \"\$release_dir/hew\" \
+                --archive \"\$release_lib_dir/libhew.a\"
 
             printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
-            target/release/hew build _smoke.hew -o _smoke_bin
+            \"\$release_dir/hew\" build _smoke.hew -o _smoke_bin
             chmod +x _smoke_bin
             ./_smoke_bin | grep -q \"Hello from Hew release test\"
             rm -f _smoke.hew _smoke_bin
@@ -506,7 +587,8 @@ validate_freebsd() {
         trap 'remove_unix_remote_stage "${FREEBSD_HOST}" "${remote_stage}"' EXIT
         echo "==> Staging local candidate on FreeBSD: ${remote_stage}"
         run_with_timeout "${SYNC_TIMEOUT}" rsync -az \
-            --exclude target --exclude .git --exclude build \
+            --exclude target --exclude .git --exclude build --exclude .tmp \
+            --exclude node_modules \
             --exclude '*.o' --exclude '*.a' --exclude '*.d' \
             . "${FREEBSD_HOST}:${remote_stage}/"
 
@@ -529,11 +611,15 @@ validate_freebsd() {
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --profile release-lib
 
-            target/release/hew --version
-            target/release/adze --version
-            target/release/hew-lsp --version
-            target/release/hew-observe --version
-            scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a
+            release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
+            release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
+            \"\$release_dir/hew\" --version
+            \"\$release_dir/adze\" --version
+            \"\$release_dir/hew-lsp\" --version
+            \"\$release_dir/hew-observe\" --version
+            scripts/test-release-lib-link.sh \
+                --hew \"\$release_dir/hew\" \
+                --archive \"\$release_lib_dir/libhew.a\"
 
             echo \"FreeBSD build succeeded\"
         '"
@@ -552,12 +638,20 @@ validate_windows() {
     banner "Windows (via SSH to ${WINDOWS_HOST})"
 
     local log="${LOG_DIR}/windows.log"
+    local llvm_config_b64 llvm_prefix_b64
+    llvm_config_b64=$(powershell_utf8_base64 "$WINDOWS_LLVM_CONFIG")
+    llvm_prefix_b64=$(powershell_utf8_base64 "$WINDOWS_LLVM_PREFIX")
 
     if [[ -z "$WINDOWS_HOST" ]]; then
         fail "windows" "WINDOWS_HOST not configured"
         return 1
     fi
-    if ! run_with_timeout "${SSH_CHECK_TIMEOUT}" ssh -o ConnectTimeout=5 "${WINDOWS_HOST}" true 2>/dev/null; then
+    if [[ -n "$WINDOWS_STAGE_ROOT" && ! "$WINDOWS_STAGE_ROOT" =~ ^[A-Za-z]:/[A-Za-z0-9._/\ -]+$ ]]; then
+        fail "windows" "HEW_WINDOWS_STAGE_ROOT is not a safe absolute Windows path"
+        return 1
+    fi
+    if ! run_windows_powershell "${SSH_CHECK_TIMEOUT}" \
+        "\$ErrorActionPreference = 'Stop'; Write-Output 'reachable'" >/dev/null 2>&1; then
         fail "windows" "${WINDOWS_HOST} unreachable"
         return 1
     fi
@@ -574,7 +668,8 @@ validate_windows() {
         candidate_archive="${LOG_DIR}/windows-candidate.tar.gz"
         echo "==> Staging local candidate on Windows: ${remote_stage}"
         tar -czf "${candidate_archive}" \
-            --exclude='./target' --exclude='./.git' --exclude='./build' \
+            --exclude='./target' --exclude='./.git' --exclude='./build' --exclude='./.tmp' \
+            --exclude='node_modules' \
             --exclude='*.o' --exclude='*.a' --exclude='*.d' .
         run_with_timeout "${SYNC_TIMEOUT}" scp "${candidate_archive}" \
             "${WINDOWS_HOST}:${remote_stage}/candidate.tar.gz"
@@ -588,99 +683,16 @@ Remove-Item -LiteralPath '${remote_stage}/candidate.tar.gz' -Force
         echo "==> Verifying Windows LLVM install"
         run_windows_powershell "${SSH_CHECK_TIMEOUT}" "
 \$ErrorActionPreference = 'Stop'
-if (-not (Test-Path '${WINDOWS_LLVM_CONFIG}')) {
-    throw 'Missing ${WINDOWS_LLVM_CONFIG}. Bootstrap LLVM 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation.'
+\$Utf8 = [System.Text.Encoding]::UTF8
+\$LlvmConfig = \$Utf8.GetString([Convert]::FromBase64String('${llvm_config_b64}'))
+if (-not (Test-Path \$LlvmConfig)) {
+    throw \"Missing \$LlvmConfig. Bootstrap LLVM 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation.\"
 }
-Write-Host 'Found ${WINDOWS_LLVM_CONFIG}'
+Write-Host \"Found \$LlvmConfig\"
 "
 
         echo "==> Building on Windows with the LLVM toolchain"
-        # PowerShell here-strings embed Rust and Hew source. Their quotes are
-        # data for PowerShell, not Bash syntax.
-        # shellcheck disable=SC1078,SC1079,SC2140
-        run_windows_powershell "${REMOTE_BUILD_TIMEOUT}" "
-\$ErrorActionPreference = 'Stop'
-function Assert-NativeSuccess([string]\$Label) {
-    if (\$LASTEXITCODE -ne 0) {
-        throw \"\${Label} failed with exit code \$LASTEXITCODE\"
-    }
-}
-
-Set-Location '${remote_stage}'
-if (-not (Test-Path '${WINDOWS_LLVM_CONFIG}')) {
-    throw 'Missing ${WINDOWS_LLVM_CONFIG}. Bootstrap LLVM 22 at C:\\llvm-22 (see docs/cross-platform-build-guide.md) or set HEW_WINDOWS_LLVM_PREFIX / HEW_WINDOWS_LLVM_CONFIG before running pre-release validation.'
-}
-
-\$env:LLVM_PREFIX = '${WINDOWS_LLVM_PREFIX}'
-\$env:Path = '${WINDOWS_LLVM_PREFIX}\\bin;' + \$env:Path
-\$env:CC = '${WINDOWS_CC}'
-\$env:CXX = '${WINDOWS_CXX}'
-
-cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
-Assert-NativeSuccess 'cargo build release binaries'
-
-cargo build -p hew-lib --profile release-lib
-Assert-NativeSuccess 'cargo build hew-lib'
-
-if (-not (Test-Path '.\\target\\release-lib\\hew.lib')) {
-    throw 'target/release-lib/hew.lib missing after cargo build --profile release-lib'
-}
-& .\\scripts\\test-release-lib-link.ps1 -Hew .\\target\\release\\hew.exe -Archive .\\target\\release-lib\\hew.lib
-Assert-NativeSuccess 'release library consumer proof'
-
-& .\\target\\release\\hew.exe --version
-Assert-NativeSuccess 'hew.exe --version'
-
-& .\\target\\release\\adze.exe --version
-Assert-NativeSuccess 'adze.exe --version'
-
-& .\\target\\release\\hew-lsp.exe --version
-Assert-NativeSuccess 'hew-lsp.exe --version'
-
-& .\\target\\release\\hew-observe.exe --version
-Assert-NativeSuccess 'hew-observe.exe --version'
-"
-
-        echo "==> Smoke test on Windows"
-        run_windows_powershell "${SMOKE_TIMEOUT}" "
-\$ErrorActionPreference = 'Stop'
-function Assert-NativeSuccess([string]\$Label) {
-    if (\$LASTEXITCODE -ne 0) {
-        throw \"\${Label} failed with exit code \$LASTEXITCODE\"
-    }
-}
-
-Set-Location '${remote_stage}'
-\$env:Path = '${WINDOWS_LLVM_PREFIX}\\bin;' + \$env:Path
-\$smokeProgram = 'fn main() { println(\"smoke-ok\") }'
-Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
-
-try {
-    [System.IO.File]::WriteAllText(
-        (Join-Path (Get-Location) '_smoke.hew'),
-        \$smokeProgram,
-        [System.Text.UTF8Encoding]::new(\$false)
-    )
-
-    & .\\target\\release\\hew.exe build .\\_smoke.hew -o .\\_smoke.exe
-    Assert-NativeSuccess 'hew.exe smoke build'
-
-    if (-not (Test-Path .\\_smoke.exe)) {
-        throw 'Smoke build did not produce .\\_smoke.exe'
-    }
-
-    \$output = & .\\_smoke.exe
-    Assert-NativeSuccess '_smoke.exe run'
-
-    if (\$output -notmatch 'smoke-ok') {
-        throw \"Smoke test failed: expected smoke-ok, got \$output\"
-    }
-
-    Write-Host 'Smoke test passed'
-} finally {
-    Remove-Item -Force -ErrorAction SilentlyContinue .\\_smoke.hew, .\\_smoke.exe
-}
-"
+        run_windows_staged_build "${remote_stage}"
     ) > "$log" 2>&1
     local status=$?
     set -e

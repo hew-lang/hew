@@ -60,7 +60,16 @@ fn call_trait_method_static_creation_sites_are_allowlisted() {
     let mut construction_sites: Vec<(String, usize)> = Vec::new();
     walk_rs_files(&src_root, &mut |rel_path: &Path, contents: &str| {
         let lines: Vec<&str> = contents.lines().collect();
+        let cfg_test_ranges = cfg_test_module_ranges(&lines);
         for (idx, line) in lines.iter().enumerate() {
+            // Unit-test fixtures may construct every carrier deliberately to
+            // exercise the verifier. They are not executable production HIR
+            // producers and must neither widen nor trip this producer
+            // allowlist. Production lines in the same source file remain
+            // scanned normally.
+            if cfg_test_ranges.iter().any(|range| range.contains(&idx)) {
+                continue;
+            }
             // The struct-expression marker:
             //     HirExprKind::CallTraitMethodStatic {
             // Walker destructures have `HirExprKind::CallTraitMethodStatic { receiver, args, .. }`
@@ -147,6 +156,50 @@ fn call_trait_method_static_creation_sites_are_allowlisted() {
             .collect::<Vec<_>>()
             .join("\n  "),
     );
+}
+
+/// Return line ranges occupied by `#[cfg(test)] mod ... { ... }` items.
+///
+/// The scanner deliberately excludes only the test module body, not its whole
+/// source file. This keeps production constructors in files such as
+/// `src/verify.rs` subject to the same strict allowlist as every other module.
+fn cfg_test_module_ranges(lines: &[&str]) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim() != "#[cfg(test)]" {
+            index += 1;
+            continue;
+        }
+
+        let Some(module_line) = lines
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .find_map(|(line_index, line)| {
+                (!line.trim().is_empty()).then_some((line_index, line.trim()))
+            })
+            .filter(|(_, line)| line.starts_with("mod ") && line.contains('{'))
+            .map(|(line_index, _)| line_index)
+        else {
+            index += 1;
+            continue;
+        };
+
+        let mut depth = 0isize;
+        let mut end = module_line;
+        for (line_index, line) in lines.iter().enumerate().skip(module_line) {
+            depth += line.chars().filter(|ch| *ch == '{').count().cast_signed();
+            depth -= line.chars().filter(|ch| *ch == '}').count().cast_signed();
+            end = line_index;
+            if depth == 0 {
+                break;
+            }
+        }
+        ranges.push(index..end.saturating_add(1));
+        index = end.saturating_add(1);
+    }
+    ranges
 }
 
 fn walk_rs_files<F>(root: &Path, visit: &mut F)

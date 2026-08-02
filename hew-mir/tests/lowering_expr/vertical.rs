@@ -686,14 +686,12 @@ fn tuple_build_and_return_without_post_move_use_is_accepted() {
 // path; HIR lowers the receiver with `IntentKind::Consume`; MIR transitions the
 // binding to `Consumed` and excludes it from the function-exit drop set.
 
-/// Reading the receiver after a `#[resource]` inherent `close()` is a
-/// use-after-close: the explicit close moved the binding, so the trailing read
-/// must surface `UseAfterConsume`. This is the verified #1295 double-close
-/// safety bug — before the fix the binding stayed live and `hew check` admitted
-/// the read.
+/// Reading the receiver after a `#[resource]` inherent `close()` is rejected at
+/// the earliest ownership boundary: the checker reports `UseAfterMove`, before
+/// invalid source can reach HIR/MIR.
 #[test]
 fn checked_mir_rejects_use_after_resource_close() {
-    let p = lower_source(
+    let parsed = hew_parser::parse(
         r"
         #[resource]
         type Conn { id: i64 }
@@ -705,14 +703,16 @@ fn checked_mir_rejects_use_after_resource_close() {
         }
     ",
     );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&parsed.program);
     assert!(
-        p.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "c"
-        )),
-        "reading `c.id` after `c.close()` on a `#[resource]` type must surface \
-         UseAfterConsume: {:?}",
-        p.diagnostics
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == hew_types::error::TypeErrorKind::UseAfterMove),
+        "reading `c.id` after `c.close()` must fail at checker boundary: {:?}",
+        output.errors
     );
 }
 
@@ -720,7 +720,7 @@ fn checked_mir_rejects_use_after_resource_close() {
 /// consumed the receiver.
 #[test]
 fn checked_mir_rejects_second_resource_close() {
-    let p = lower_source(
+    let parsed = hew_parser::parse(
         r"
         #[resource]
         type Conn { id: i64 }
@@ -732,14 +732,16 @@ fn checked_mir_rejects_second_resource_close() {
         }
     ",
     );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&parsed.program);
     assert!(
-        p.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            MirDiagnosticKind::UseAfterConsume { name, .. } if name == "c"
-        )),
-        "a second `c.close()` on a `#[resource]` type must surface \
-         UseAfterConsume: {:?}",
-        p.diagnostics
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == hew_types::error::TypeErrorKind::UseAfterMove),
+        "a second `c.close()` must fail at checker boundary: {:?}",
+        output.errors
     );
 }
 

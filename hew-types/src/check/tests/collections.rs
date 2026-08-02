@@ -377,7 +377,7 @@ fn hashset_for_in_keeps_real_receiver_type_separate_from_synthetic_vec_result() 
             .unwrap_or_else(|| panic!("missing synthetic to_vec call for `{function_name}`"));
         assert_eq!(resolved_call.method_name, "to_vec");
         assert_eq!(
-            resolved_call.target.symbol_name,
+            resolved_call.method_target.symbol_name,
             "hew_hashset_to_vec_layout"
         );
     }
@@ -891,10 +891,10 @@ fn record_clone_affine_veto_recognizes_qualified_markers() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker
         .registry
-        .register_resource_type("ResourceToken".to_string());
+        .register_resource_type("owner.ResourceToken".to_string());
     checker
         .registry
-        .register_linear_type("LinearTicket".to_string());
+        .register_linear_type("owner.LinearTicket".to_string());
 
     let span = Span::from(0..0);
     assert!(matches!(
@@ -918,10 +918,10 @@ fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker
         .registry
-        .register_resource_type("ResourceToken".to_string());
+        .register_resource_type("owner.ResourceToken".to_string());
     checker
         .registry
-        .register_linear_type("LinearTicket".to_string());
+        .register_linear_type("owner.LinearTicket".to_string());
     checker.type_defs.insert(
         "ResourceWrapper".to_string(),
         record_type_def_with_field(
@@ -1271,7 +1271,8 @@ fn vec_contains_f64_typechecks() {
     // recorded via `resolved_calls`, not the legacy `method_call_rewrites` side table.
     assert!(
         output.resolved_calls.values().any(|call| {
-            call.method_name == "contains" && call.target.symbol_name == "hew_vec_contains_f64"
+            call.method_name == "contains"
+                && call.method_target.symbol_name == "hew_vec_contains_f64"
         }),
         "Vec<f64>::contains must route to hew_vec_contains_f64 via resolved_calls: {:#?}",
         output.resolved_calls
@@ -1352,7 +1353,7 @@ fn vec_owned_record_push_routes_to_owned_abi() {
     );
     assert!(
         output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.target.symbol_name == "hew_vec_push_owned"
+            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_owned"
         }),
         "owned record Vec::push must route to hew_vec_push_owned via resolved_calls: {:#?}",
         output.resolved_calls
@@ -1398,7 +1399,7 @@ fn vec_generic_bitcopy_record_methods_route_to_plain_layout_abi() {
         assert!(
             output.resolved_calls.values().any(|call| {
                 call.method_name == method
-                    && call.target.symbol_name == format!("hew_vec_{method}_layout")
+                    && call.method_target.symbol_name == format!("hew_vec_{method}_layout")
             }),
             "Vec<Wrap<i64>> {method} must route to the Plain layout ABI, got: {:#?}",
             output.resolved_calls
@@ -1408,7 +1409,7 @@ fn vec_generic_bitcopy_record_methods_route_to_plain_layout_abi() {
     // fresh-owner choke point, NOT the per-element `_layout` getter.
     assert!(
         output.resolved_calls.values().any(|call| {
-            call.method_name == "get" && call.target.symbol_name == "hew_vec_get_clone"
+            call.method_name == "get" && call.method_target.symbol_name == "hew_vec_get_clone"
         }),
         "Vec<Wrap<i64>>::get must route to the hew_vec_get_clone intrinsic, got: {:#?}",
         output.resolved_calls
@@ -1417,7 +1418,7 @@ fn vec_generic_bitcopy_record_methods_route_to_plain_layout_abi() {
         output
             .resolved_calls
             .values()
-            .all(|call| !call.target.symbol_name.ends_with("_owned")),
+            .all(|call| !call.method_target.symbol_name.ends_with("_owned")),
         "BitCopy generic records must not route to owned Vec ABI: {:#?}",
         output.resolved_calls
     );
@@ -1454,7 +1455,7 @@ fn vec_local_pid_push_routes_to_pointer_abi() {
     );
     assert!(
         output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.target.symbol_name == "hew_vec_push_ptr"
+            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_ptr"
         }),
         "Vec<LocalPid<Worker>>::push must route to hew_vec_push_ptr via resolved_calls: {:#?}",
         output.resolved_calls
@@ -1495,7 +1496,7 @@ fn vec_self_recursive_enum_push_routes_to_owned_abi() {
     );
     assert!(
         output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.target.symbol_name == "hew_vec_push_owned"
+            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_owned"
         }),
         "self-recursive enum Vec::push must route to hew_vec_push_owned: {:#?}",
         output.resolved_calls
@@ -1531,7 +1532,7 @@ fn vec_record_collection_field_push_routes_to_owned_abi() {
     );
     assert!(
         output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.target.symbol_name == "hew_vec_push_owned"
+            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_owned"
         }),
         "record-with-collection Vec::push must route to hew_vec_push_owned: {:#?}",
         output.resolved_calls
@@ -1973,6 +1974,30 @@ fn vec_iter_clone_totality_defers_genuine_function_type_parameter() {
         output.errors.is_empty(),
         "a genuine generic parameter must be checked after concrete \
          monomorphisation, not rejected as an unregistered nominal: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn user_vec_iter_name_does_not_bypass_into_iterator() {
+    let output = check_source(
+        r"
+        type VecIter<T> { value: T; }
+
+        fn main() {
+            let iter = VecIter { value: 1 };
+            for value in iter {
+                let _ = value;
+            }
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation && error.message == "type is not iterable"
+        }),
+        "a same-spelling user VecIter without IntoIterator must not acquire the builtin loop path: {:#?}",
         output.errors
     );
 }
@@ -2476,6 +2501,146 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
         "no user `Result::is_ok` rewrite must be recorded for a builtin Result \
          receiver; got: {:#?}",
         output.method_call_rewrites
+    );
+}
+
+#[test]
+fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
+    let output = check_source(
+        r"
+        type Option { value: i64; }
+        impl Option {
+            fn is_some(self) -> i64 { self.value }
+        }
+        type Result { value: i64; }
+        impl Result {
+            fn is_ok(self) -> i64 { self.value }
+        }
+        fn main() {
+            let option = Option { value: 1 };
+            let result = Result { value: 2 };
+            let a: i64 = option.is_some();
+            let b: i64 = result.is_ok();
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "same-spelling user Option/Result methods must retain their declared signatures: {:#?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| matches!(rewrite, MethodCallRewrite::BuiltinOptionResult { .. })),
+        "same-spelling user types must not acquire builtin Option/Result lowering: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+#[test]
+fn user_generic_option_variant_constructors_preserve_source_nominal_identity() {
+    let output = check_source(
+        r"
+        enum Option<T> { Some(T); None }
+
+        fn main() -> i64 {
+            let inferred = Option::Some(6);
+            let inner: Option<i64> = Option::Some(5);
+            let outer: Option<Option<i64>> = Option::Some(inner);
+            match outer {
+                Option::Some(v) => match v {
+                    Option::Some(n) => n,
+                    Option::None => 0,
+                },
+                Option::None => -1,
+            }
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "nested constructors for a source-defined Option<T> must typecheck: {:#?}",
+        output.errors
+    );
+    let option_types: Vec<&Ty> = output
+        .expr_types
+        .values()
+        .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "Option"))
+        .collect();
+    assert!(
+        !option_types.is_empty()
+            && option_types
+                .iter()
+                .all(|ty| matches!(ty, Ty::Named { builtin: None, .. })),
+        "every source Option<T> constructor/annotation must retain user nominal identity: {:#?}",
+        output.expr_types
+    );
+}
+
+#[test]
+fn builtin_nested_option_variant_constructors_retain_builtin_identity() {
+    let output = check_source(
+        r"
+        fn main() -> i64 {
+            let inner: Option<i64> = Some(5);
+            let outer: Option<Option<i64>> = Some(inner);
+            match outer {
+                Some(v) => match v {
+                    Some(n) => n,
+                    None => 0,
+                },
+                None => -1,
+            }
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "true builtin Option<T> constructors must remain valid: {:#?}",
+        output.errors
+    );
+    let option_types: Vec<&Ty> = output
+        .expr_types
+        .values()
+        .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "Option"))
+        .collect();
+    assert!(
+        !option_types.is_empty()
+            && option_types.iter().all(|ty| matches!(
+                ty,
+                Ty::Named {
+                    builtin: Some(BuiltinType::Option),
+                    ..
+                }
+            )),
+        "builtin Option<T> must retain its discriminator through nested constructors: {:#?}",
+        output.expr_types
+    );
+}
+
+#[test]
+fn expected_constructor_rebuild_preserves_renamed_builtin_presentation() {
+    let renamed_option = Ty::Named {
+        name: "Maybe".to_string(),
+        args: vec![Ty::Var(TypeVar::fresh())],
+        builtin: Some(BuiltinType::Option),
+    };
+    let rebuilt = Checker::variant_nominal_from_expected(&renamed_option, vec![Ty::I64])
+        .expect("a named expected type must rebuild as a named constructor result");
+    assert_eq!(
+        rebuilt,
+        Ty::Named {
+            name: "Maybe".to_string(),
+            args: vec![Ty::I64],
+            builtin: Some(BuiltinType::Option),
+        },
+        "constructor inference may resolve type arguments, but must retain both the renamed \
+         presentation and builtin Option authority"
     );
 }
 

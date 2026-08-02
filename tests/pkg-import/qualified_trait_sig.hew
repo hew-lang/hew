@@ -7,13 +7,10 @@
 // so its `impl Closable for ClosableHandle` spells the return type
 // `Result<(), closableerr.CloseError>`.
 //
-// The trait's recorded return type carries the bare `CloseError`; the impl's
-// carries the qualified `closableerr.CloseError`. These name the one type, so
-// `check_impl_method_against_trait` must shorten the known-module qualifier
-// before the structural signature comparison. Without the shortening it reports
-// a false `impl method 'ClosableHandle::close' returns 'Result<(), closableerr.CloseError>'
-// but trait 'Closable' requires 'Result<(), CloseError>'` and the impl is
-// rejected at type-check time.
+// The trait's bare `CloseError` and the impl's lexical
+// `closableerr.CloseError` both resolve to the declaration-owned identity
+// `hew.closableerr.CloseError` before structural signature comparison. The
+// comparison never relies on leaf-name equality or diagnostic presentation.
 //
 // The method is invoked through receiver dispatch (`m.close()`) so the proof
 // turns only on trait conformance, not on UFCS-call-arity resolution.

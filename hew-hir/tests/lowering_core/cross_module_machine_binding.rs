@@ -135,7 +135,7 @@ fn cross_module_machine_ctor_resolves_to_machine_variant_ctor() {
                     ref machine_name,
                     state_idx: 0,
                     ..
-                } if machine_name == "Toggle"
+                } if machine_name == "std.machines.toggle.Toggle"
             )
         } else {
             false
@@ -143,7 +143,8 @@ fn cross_module_machine_ctor_resolves_to_machine_variant_ctor() {
     });
     assert!(
         found,
-        "expected `MachineVariantCtor {{ machine_name: \"Toggle\", state_idx: 0, .. }}` \
+        "expected exact imported `MachineVariantCtor {{ machine_name: \
+         \"std.machines.toggle.Toggle\", state_idx: 0, .. }}` \
          binding in `main`; got items: {:#?}",
         main_fn.body.statements
     );

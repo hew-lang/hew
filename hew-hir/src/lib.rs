@@ -32,12 +32,14 @@ pub use lower::{
 };
 pub use machine_mono::run_machine_mono_pass;
 pub use mono::{
-    mangle_instantiation, sanitize_for_symbol, ActorMonoKey, ConstValue as MonoConstValue,
-    FunctionMonoKey, MachineMonoEntry, MachineMonoKey, MonoKind, SymbolClass,
+    machine_layout_key, mangle_instantiation, sanitize_for_symbol, ActorMonoKey,
+    ConstValue as MonoConstValue, FunctionMonoKey, MachineMonoEntry, MachineMonoKey, MonoKind,
+    SymbolClass,
 };
 pub use monomorph::{
-    mangle, mangle_resolved_ty, shorten_named_arg_qualifiers, substitute_type_params, EnumLayout,
-    EnumMonoKey, EnumVariantLayout, MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey,
+    mangle, mangle_layout_key, mangle_resolved_ty, shorten_named_arg_qualifiers,
+    substitute_type_params, synthetic_cursor_layout_key, EnumLayout, EnumMonoKey,
+    EnumVariantLayout, MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey,
     MONOMORPHISATION_REGISTRY_CAP,
 };
 pub use node::{
@@ -47,10 +49,12 @@ pub use node::{
     HirGenCaptureSource, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture, HirLifecycleHook,
     HirLifecycleHookKind, HirLiteral, HirMachineBound, HirMachineDecl, HirMachineEvent,
     HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
-    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
-    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
-    HirVarSelfMethodTarget, HirVariant, HirVariantKind, WhereOrigin,
+    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirProducedValueFact,
+    HirProducedValueProducer, HirProducedValueRelation, HirProducedValueSourceAnchor,
+    HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
+    HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
+    WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,

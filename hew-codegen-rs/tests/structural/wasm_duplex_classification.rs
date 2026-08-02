@@ -18,19 +18,25 @@ use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
     ExitPath, Instr, IrPipeline, Place, RawMirFunction, RuntimeCall, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
+
+#[test]
+fn public_wasm_error_preserves_legacy_symbol_only_shape() {
+    let error = CodegenError::WasmUnsupportedSubstrate {
+        symbol: "hew_duplex_pair".to_string(),
+    };
+    let CodegenError::WasmUnsupportedSubstrate { symbol } = error else {
+        panic!("constructed legacy WASM error changed variant")
+    };
+    assert_eq!(symbol, "hew_duplex_pair");
+}
 
 // ---------------------------------------------------------------------------
 // Pipeline builders
 // ---------------------------------------------------------------------------
 
 fn duplex_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "Duplex".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::named_builtin("renamed.DuplexPresentation", BuiltinType::Duplex, vec![])
 }
 
 /// Minimal pipeline with a `hew_duplex_pair` call — mirrors the shape produced

@@ -1,0 +1,9 @@
+pub machine ClashMachine {
+    events {
+        Tick;
+    }
+    state Idle;
+    state Done;
+    on Tick: Idle => Done { Done }
+    on Tick: Done => Idle { Idle }
+}

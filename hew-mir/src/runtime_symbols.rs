@@ -25,7 +25,7 @@
 //! (it also covers `Terminator::Call` builtin spellings) and is
 //! deliberately not folded into the admission predicate.
 
-use hew_types::runtime_call::{all_runtime_call_families, RuntimeCallFamily};
+use hew_types::runtime_call::{all_runtime_call_families, RuntimeCallFamily, VecGetElem};
 
 /// Runtime-backed MIR symbols not yet represented by a typed family.
 ///
@@ -320,6 +320,42 @@ impl Default for CalleeOwnershipContract {
     }
 }
 
+/// Ownership truth for the complete typed `Vec` getter family.
+///
+/// Keeping this match on [`VecGetElem`] makes result ownership a closed
+/// compiler contract: adding a getter variant is a compile error here until it
+/// states whether the result is independent or aliases the receiver.
+#[must_use]
+pub(crate) const fn vec_getter_ownership_contract(
+    family: RuntimeCallFamily,
+) -> Option<CalleeOwnershipContract> {
+    let RuntimeCallFamily::VecGet(elem) = family else {
+        return None;
+    };
+    let result = match elem {
+        VecGetElem::Str => ResultOwnership::FreshOwnedString,
+        VecGetElem::Owned | VecGetElem::Ptr => ResultOwnership::Borrowed,
+        VecGetElem::Bool
+        | VecGetElem::Clone
+        | VecGetElem::F32
+        | VecGetElem::F64
+        | VecGetElem::I8
+        | VecGetElem::I16
+        | VecGetElem::I32
+        | VecGetElem::I64
+        | VecGetElem::Layout
+        | VecGetElem::U8
+        | VecGetElem::U16 => ResultOwnership::IndependentValue,
+    };
+    Some(CalleeOwnershipContract::new(
+        ReceiverOwnership::BorrowsReceiver {
+            scans: ReceiverScanSet::VEC,
+        },
+        StringArgsOwnership::Escaping,
+        result,
+    ))
+}
+
 /// Project one compiler-synthetic callee through the real runtime ownership
 /// contract it emits.
 ///
@@ -369,15 +405,19 @@ fn compiler_synthetic_ownership_contract(runtime_symbol: &str) -> CalleeOwnershi
 #[must_use]
 pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
     use ReceiverOwnership::{BorrowsReceiver, BytesAllArgsBorrow, Escapes, VecCopyInElementStore};
-    use ResultOwnership::{
-        Borrowed, FreshOwnedBytes, FreshOwnedString, IndependentValue, Untracked,
-    };
+    use ResultOwnership::{FreshOwnedBytes, FreshOwnedString, Untracked};
     use StringArgsOwnership::{BorrowingUse, Escaping, PrintSink};
 
     if let Some(runtime_symbol) =
         hew_hir::stdlib_catalog::compiler_synthetic_runtime_ownership_symbol(callee)
     {
         return compiler_synthetic_ownership_contract(runtime_symbol);
+    }
+
+    if let Some(contract) =
+        RuntimeCallFamily::from_c_symbol(callee).and_then(vec_getter_ownership_contract)
+    {
+        return contract;
     }
 
     match callee {
@@ -495,58 +535,13 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         // or remove's tail shift, so there is no double owner). Both shapes
         // share the identical ownership contract — the caller owes one drop.
         // (Scalar/ptr `pop`/`remove` classes stay `Untracked`: no heap to drop.)
-        "hew_vec_get_str" | "hew_vec_pop_str" | "hew_vec_remove_at_str" => {
-            CalleeOwnershipContract::new(
-                BorrowsReceiver {
-                    scans: ReceiverScanSet::VEC,
-                },
-                Escaping,
-                FreshOwnedString,
-            )
-        }
-
-        // Vec owned-element getters return aliases into the receiver storage.
-        "hew_vec_get_owned" | "hew_vec_get_ptr" => CalleeOwnershipContract::new(
+        "hew_vec_pop_str" | "hew_vec_remove_at_str" => CalleeOwnershipContract::new(
             BorrowsReceiver {
                 scans: ReceiverScanSet::VEC,
             },
             Escaping,
-            Borrowed,
+            FreshOwnedString,
         ),
-
-        // Vec element getters that hand back a SELF-CONTAINED value. Every
-        // spelling `vec_element_get_symbol` can produce is classified — this row
-        // plus `hew_vec_get_str` (fresh owned string) and
-        // `hew_vec_get_owned` / `hew_vec_get_ptr` (receiver-interior aliases)
-        // exhaust the ordinary element-load ABI and let alias/temporary
-        // analyses ask `yields_independent_owner` POSITIVELY.
-        //
-        // - The scalar getters copy a register-width value out of the buffer;
-        //   there is no interior to alias.
-        // - `hew_vec_get_layout` copies a BitCopy record, a tuple, or a DIRECT
-        //   enum out at the layout descriptor's stride. Its arms are only
-        //   reachable for a heap-free element: `vec_element_get_symbol` routes
-        //   every heap-owning aggregate to `hew_vec_get_clone` (value elements)
-        //   or `hew_vec_get_owned` (nested collection handles) BEFORE the
-        //   layout arms, via `is_owned_vec_element`. So the bit-copy copies no
-        //   handle the receiver still owns.
-        // - `hew_vec_get_clone` deep-clones an owned value element
-        //   (`hew-runtime/src/vec.rs`, `hew_vec_get_clone`), which is an
-        //   independent owner by construction.
-        //
-        // The receiver is still borrowed in place and operands still escape —
-        // only the RESULT class is stated more precisely than `Untracked`.
-        "hew_vec_get_bool" | "hew_vec_get_clone" | "hew_vec_get_f32" | "hew_vec_get_f64"
-        | "hew_vec_get_i16" | "hew_vec_get_i32" | "hew_vec_get_i64" | "hew_vec_get_i8"
-        | "hew_vec_get_layout" | "hew_vec_get_u16" | "hew_vec_get_u8" => {
-            CalleeOwnershipContract::new(
-                BorrowsReceiver {
-                    scans: ReceiverScanSet::VEC,
-                },
-                Escaping,
-                IndependentValue,
-            )
-        }
 
         // Vec receivers are borrowed in place; element and range operands keep
         // the default escaping behaviour unless a narrower row above applies.

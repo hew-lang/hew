@@ -217,7 +217,7 @@ fn concrete_specialised_builtin_var_self_preserves_vec_dispatch_authority() {
         output
             .resolved_calls
             .values()
-            .any(|call| call.target.family == MethodTargetFamily::Vec(VecMethod::Set)),
+            .any(|call| call.method_target.family == MethodTargetFamily::Vec(VecMethod::Set)),
         "Vec index assignment inside the specialised var-self impl must publish \
          a checker-authoritative Vec::set call; got: {:?}",
         output.resolved_calls,

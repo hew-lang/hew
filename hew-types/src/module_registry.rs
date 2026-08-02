@@ -32,6 +32,20 @@ pub struct ModuleRegistry {
     drop_funcs: HashMap<String, String>,
 }
 
+/// Parse a module identity at the registry boundary. Source declarations use
+/// canonical dotted owners (`std.math`) while import syntax and the loader use
+/// `::` (`std::math`); both denote the same exact `ModuleId`.
+fn module_id_from_identity(module_path: &str) -> ModuleId {
+    ModuleId::new(
+        module_path
+            .replace("::", ".")
+            .split('.')
+            .filter(|segment| !segment.is_empty())
+            .map(String::from)
+            .collect(),
+    )
+}
+
 /// Walk up the directory tree from `from`, returning the first ancestor directory
 /// that is a Hew repository root (identified by containing `std/builtins.hew`).
 ///
@@ -270,6 +284,61 @@ impl std::fmt::Display for ModuleError {
 }
 
 impl ModuleRegistry {
+    /// Resolve a source-canonical handle identity to the registry's extracted
+    /// spelling. The loader's extracted surfaces retain their historical
+    /// short module owner (`net.Listener`), while Hew source declarations use
+    /// the full module graph owner (`std.net.Listener`).
+    ///
+    /// This is deliberately an exact `(loaded module path, type leaf)` join:
+    /// `std.net.Listener` may project to the `std::net` extraction, but
+    /// `acme.net.Listener` and a bare `Listener` never do. It is a bridge
+    /// between two representations of one loaded declaration, not a
+    /// same-leaf fallback across modules.
+    fn registry_handle_spelling(&self, name: &str) -> Option<String> {
+        if self.handle_types.contains(name) {
+            return Some(name.to_string());
+        }
+        let (owner, leaf) = name.rsplit_once('.')?;
+        self.modules.iter().find_map(|(module_id, info)| {
+            (module_id.path.join(".") == owner).then(|| {
+                info.handle_types.iter().find_map(|registered| {
+                    (crate::short_name(registered) == leaf).then(|| registered.clone())
+                })
+            })?
+        })
+    }
+
+    /// Resolve an exact source-owned receiver type to the registry spelling
+    /// used by extracted method signatures. Unlike `registry_handle_spelling`,
+    /// this also covers fielded resource wrappers: they may publish method
+    /// signatures, but must never be classified as fieldless opaque handles.
+    fn registry_method_receiver_spelling(&self, name: &str) -> Option<String> {
+        self.registry_handle_spelling(name)
+            .or_else(|| {
+                // The extracted registry spelling itself is an exact declaration
+                // key (`process.Child`, `http.Request`), so keep supporting it
+                // directly for registry consumers. This is not a short-name
+                // recovery: the complete extracted owner must match.
+                self.modules.values().find_map(|info| {
+                    info.handle_methods
+                        .iter()
+                        .find(|method| method.type_name == name)
+                        .map(|method| method.type_name.clone())
+                })
+            })
+            .or_else(|| {
+                let (owner, leaf) = name.rsplit_once('.')?;
+                self.modules.iter().find_map(|(module_id, info)| {
+                    (module_id.path.join(".") == owner).then(|| {
+                        info.handle_methods.iter().find_map(|method| {
+                            (crate::short_name(&method.type_name) == leaf)
+                                .then(|| method.type_name.clone())
+                        })
+                    })?
+                })
+            })
+    }
+
     /// Create a new registry with the given search paths.
     ///
     /// Search paths are tried in order during module resolution — first match wins.
@@ -311,7 +380,8 @@ impl ModuleRegistry {
     /// invariant that would otherwise let handle-method dispatch misclassify the
     /// wrapper as an opaque handle. The current stdlib satisfies it.
     pub fn load(&mut self, module_path: &str) -> Result<&ModuleInfo, ModuleError> {
-        let id = ModuleId::new(module_path.split("::").map(String::from).collect());
+        let id = module_id_from_identity(module_path);
+        let loader_path = id.path.join("::");
 
         // Already cached — return it.
         if self.modules.contains_key(&id) {
@@ -320,7 +390,7 @@ impl ModuleRegistry {
 
         // Try each search path in order.
         for search_path in &self.search_paths {
-            if let Some(info) = load_module_checked(module_path, search_path)? {
+            if let Some(info) = load_module_checked(&loader_path, search_path)? {
                 // Accumulate handle types, wrapper types, and drop types.
                 for ht in &info.handle_types {
                     self.handle_types.insert(ht.clone());
@@ -372,14 +442,14 @@ impl ModuleRegistry {
     /// Return cached module info if it has already been loaded.
     #[must_use]
     pub fn get(&self, module_path: &str) -> Option<&ModuleInfo> {
-        let id = ModuleId::new(module_path.split("::").map(String::from).collect());
+        let id = module_id_from_identity(module_path);
         self.modules.get(&id)
     }
 
     /// Check if a fully-qualified name is a handle type across all loaded modules.
     #[must_use]
     pub fn is_handle_type(&self, name: &str) -> bool {
-        self.handle_types.contains(name)
+        self.registry_handle_spelling(name).is_some()
     }
 
     /// Check if a fully-qualified name is a drop type across all loaded modules.
@@ -406,16 +476,13 @@ impl ModuleRegistry {
             .collect()
     }
 
-    /// If an unqualified name matches a handle type, return the fully-qualified form.
+    /// Return a known handle declaration only when its full path is supplied.
     ///
-    /// For example, "Value" -> Some("json.Value") after loading the json module.
-    /// Returns `None` if no match is found.
+    /// A leaf spelling has no authority to select a module declaration.
     #[must_use]
     pub fn qualify_handle_type(&self, name: &str) -> Option<String> {
-        self.handle_types
-            .iter()
-            .find(|ht| crate::short_name(ht) == name)
-            .cloned()
+        self.registry_handle_spelling(name)
+            .map(|_| name.to_string())
     }
 
     /// Return all handle types from all loaded modules.
@@ -426,22 +493,21 @@ impl ModuleRegistry {
 
     /// Resolve a module-qualified call to a C symbol.
     ///
-    /// Given a module short name (e.g. "json") and a method name (e.g. "parse"),
-    /// searches all loaded modules for one whose short name matches, then looks
-    /// up the method in that module's `clean_names`.
+    /// A full module path (e.g. `std::encoding::json`) selects that exact loaded
+    /// module. Import aliases are resolved to that owner by the checker before
+    /// this boundary; a leaf spelling has no authority even when it happens to
+    /// be unique among currently loaded modules.
     #[must_use]
-    pub fn resolve_module_call(&self, module_short: &str, method: &str) -> Option<String> {
-        for (id, info) in &self.modules {
-            let short = id.path.last().map_or("", String::as_str);
-            if short == module_short {
-                for (clean, c_sym) in &info.clean_names {
-                    if clean == method {
-                        return Some(c_sym.clone());
-                    }
-                }
-            }
-        }
-        None
+    pub fn resolve_module_call(&self, module_path: &str, method: &str) -> Option<String> {
+        let symbol_for = |info: &ModuleInfo| {
+            info.clean_names
+                .iter()
+                .find(|(clean, _)| clean == method)
+                .map(|(_, c_sym)| c_sym.clone())
+        };
+
+        let exact_id = module_id_from_identity(module_path);
+        self.modules.get(&exact_id).and_then(symbol_for)
     }
 
     /// Resolve a handle method to its C symbol.
@@ -449,9 +515,7 @@ impl ModuleRegistry {
     /// Searches all loaded modules' `handle_methods` for a match on
     /// `(handle_type, method)`.
     ///
-    /// Accepts either the fully-qualified handle type name (`json.Value`) or
-    /// an unqualified short name (`Value`) that the loaded registry can
-    /// qualify with its existing short-name lookup.
+    /// Requires the fully-qualified handle declaration name (`json.Value`).
     #[must_use]
     pub fn resolve_handle_method(&self, handle_type: &str, method: &str) -> Option<String> {
         self.resolve_handle_method_sig(handle_type, method)
@@ -462,6 +526,9 @@ impl ModuleRegistry {
     /// impl instead of rewriting directly to the extracted C symbol.
     #[must_use]
     pub fn handle_method_dispatches_through_impl(&self, handle_type: &str, method: &str) -> bool {
+        let Some(handle_type) = self.registry_method_receiver_spelling(handle_type) else {
+            return false;
+        };
         for info in self.modules.values() {
             for hm in &info.handle_methods {
                 if hm.type_name == handle_type && hm.method_name == method {
@@ -469,8 +536,7 @@ impl ModuleRegistry {
                 }
             }
         }
-        self.qualify_handle_type(handle_type)
-            .is_some_and(|qualified| self.handle_method_dispatches_through_impl(&qualified, method))
+        false
     }
 
     /// Resolve a handle method to its C symbol and extracted signature.
@@ -483,6 +549,7 @@ impl ModuleRegistry {
         handle_type: &str,
         method: &str,
     ) -> Option<(String, Vec<crate::ty::Ty>, crate::ty::Ty)> {
+        let handle_type = self.registry_method_receiver_spelling(handle_type)?;
         for info in self.modules.values() {
             for hm in &info.handle_methods {
                 if hm.type_name == handle_type && hm.method_name == method {
@@ -494,8 +561,7 @@ impl ModuleRegistry {
                 }
             }
         }
-        self.qualify_handle_type(handle_type)
-            .and_then(|qualified| self.resolve_handle_method_sig(&qualified, method))
+        None
     }
 
     /// Seed a fully-qualified handle type name for unit tests.
@@ -658,8 +724,8 @@ mod tests {
         let mut reg = registry();
         reg.load("std::encoding::json").unwrap();
         assert!(
-            !reg.is_drop_type("json.Value"),
-            "json.Value should not be a drop type"
+            reg.is_drop_type("json.Value"),
+            "json.Value is a `#[resource]` handle, so it is a drop type"
         );
         reg.load("std::net::http").unwrap();
         assert!(
@@ -688,8 +754,8 @@ mod tests {
         reg.load("std::encoding::json").unwrap();
         assert_eq!(
             reg.drop_func_for("json.Value"),
-            None,
-            "json.Value should not have a drop func"
+            Some("hew_json_free"),
+            "json.Value.close directly forwards to its sole raw disposer"
         );
         reg.load("std::net::http").unwrap();
         assert_eq!(
@@ -734,10 +800,11 @@ mod tests {
             "regex.Pattern should not have a drop func"
         );
         let all = reg.all_drop_funcs();
-        assert!(
-            all.is_empty(),
-            "the loaded fielded resource records dispatch through their \
-             source-level close methods, not direct opaque-handle drop funcs: {all:?}"
+        assert_eq!(
+            all,
+            vec![("json.Value".to_string(), "hew_json_free".to_string())],
+            "JSON is the only loaded direct opaque-handle disposer; fielded \
+             resources dispatch through their source-level close methods"
         );
     }
 
@@ -745,8 +812,79 @@ mod tests {
     fn resolve_module_call_json_parse() {
         let mut reg = registry();
         reg.load("std::encoding::json").unwrap();
-        let c_sym = reg.resolve_module_call("json", "parse");
-        assert!(c_sym.is_some(), "should resolve json.parse");
+        let c_sym = reg.resolve_module_call("std::encoding::json", "parse");
+        assert!(
+            c_sym.is_some(),
+            "should resolve the exact json module owner"
+        );
+        assert_eq!(
+            reg.resolve_module_call("json", "parse"),
+            None,
+            "the json leaf must not recover the loaded module owner"
+        );
+    }
+
+    #[test]
+    fn resolve_module_call_uses_exact_paths_and_rejects_all_short_names() {
+        fn module_info(method: &str, c_symbol: &str) -> ModuleInfo {
+            ModuleInfo {
+                source_path: None,
+                source_items: Vec::new(),
+                functions: Vec::new(),
+                clean_names: vec![(method.to_string(), c_symbol.to_string())],
+                handle_types: Vec::new(),
+                handle_methods: Vec::new(),
+                wrapper_fns: Vec::new(),
+                drop_types: Vec::new(),
+                resource_wrapper_types: Vec::new(),
+                drop_funcs: Vec::new(),
+                unsupported_type_signatures: Vec::new(),
+            }
+        }
+
+        let mut reg = ModuleRegistry::new(Vec::new());
+        reg.modules.insert(
+            ModuleId::new(vec!["vendor_a".into(), "nested".into(), "shared".into()]),
+            module_info("run", "vendor_a_shared_run"),
+        );
+        reg.modules.insert(
+            ModuleId::new(vec!["vendor_b".into(), "nested".into(), "shared".into()]),
+            module_info("run", "vendor_b_shared_run"),
+        );
+        reg.modules.insert(
+            ModuleId::new(vec!["vendor_c".into(), "nested".into(), "unique".into()]),
+            module_info("run", "vendor_c_unique_run"),
+        );
+
+        assert_eq!(
+            reg.resolve_module_call("vendor_a::nested::shared", "run"),
+            Some("vendor_a_shared_run".to_string())
+        );
+        assert_eq!(
+            reg.resolve_module_call("vendor_b::nested::shared", "run"),
+            Some("vendor_b_shared_run".to_string())
+        );
+        assert_eq!(
+            reg.resolve_module_call("vendor_a.nested.shared", "run"),
+            Some("vendor_a_shared_run".to_string()),
+            "a canonical dotted owner must select the exact registry module"
+        );
+        assert_eq!(
+            reg.resolve_module_call("shared", "run"),
+            None,
+            "an ambiguous leaf must not select the hash map's first match"
+        );
+        assert_eq!(
+            reg.resolve_module_call("unique", "run"),
+            None,
+            "even an unambiguous leaf has no module-selection authority"
+        );
+        assert_eq!(
+            reg.resolve_module_call("missing::nested::unique", "run"),
+            None,
+            "a qualified miss must not fall back to its unique leaf"
+        );
+        assert_eq!(reg.resolve_module_call("missing", "run"), None);
     }
 
     #[test]
@@ -763,17 +901,16 @@ mod tests {
     }
 
     #[test]
-    fn resolve_handle_method_accepts_short_handle_name() {
+    fn resolve_handle_method_rejects_short_handle_name() {
         let mut reg = registry();
         reg.load("std::encoding::json").unwrap();
         let info = reg.get("std::encoding::json").unwrap();
         if let Some(hm) = info.handle_methods.first() {
             let short = crate::short_name(&hm.type_name);
             let c_sym = reg.resolve_handle_method(short, &hm.method_name);
-            assert_eq!(
-                c_sym.as_deref(),
-                Some(hm.c_symbol.as_str()),
-                "short handle name should resolve to the same C symbol"
+            assert!(
+                c_sym.is_none(),
+                "short handle name must not retry a qualified declaration"
             );
         }
     }
@@ -822,14 +959,18 @@ mod tests {
     }
 
     #[test]
-    fn qualify_handle_type_works() {
+    fn qualify_handle_type_requires_canonical_name() {
         let mut reg = registry();
         reg.load("std::encoding::json").unwrap();
-        let qualified = reg.qualify_handle_type("Value");
         assert_eq!(
-            qualified,
+            reg.qualify_handle_type("Value"),
+            None,
+            "a bare leaf must not select a loaded handle declaration"
+        );
+        assert_eq!(
+            reg.qualify_handle_type("json.Value"),
             Some("json.Value".to_string()),
-            "should qualify 'Value' to 'json.Value'"
+            "an exact canonical handle declaration remains admitted"
         );
         assert_eq!(
             reg.qualify_handle_type("NonExistent"),

@@ -1,7 +1,7 @@
 //! Shared integration-test helpers.
 
 use fd_lock::RwLock;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
@@ -371,29 +371,20 @@ impl BoundedChild {
 
     #[cfg(windows)]
     fn terminate_process_group(&mut self, label: &str) -> Result<bool, BoundedExecError> {
-        match self.job.as_ref() {
-            Some(job) => {
-                job.terminate().map_err(|error| {
-                    BoundedExecError::failed(label, format!("cannot terminate job object: {error}"))
-                })?;
-                self.child.wait().map_err(|error| {
-                    BoundedExecError::failed(
-                        label,
-                        format!("cannot reap child after timeout: {error}"),
-                    )
-                })?;
-                Ok(true)
-            }
-            None => {
-                let tree_killed = windows_kill_taskkill(&mut self.child, label)?;
-                self.child.wait().map_err(|error| {
-                    BoundedExecError::failed(
-                        label,
-                        format!("cannot reap child after timeout: {error}"),
-                    )
-                })?;
-                Ok(tree_killed)
-            }
+        if let Some(job) = self.job.as_ref() {
+            job.terminate().map_err(|error| {
+                BoundedExecError::failed(label, format!("cannot terminate job object: {error}"))
+            })?;
+            self.child.wait().map_err(|error| {
+                BoundedExecError::failed(label, format!("cannot reap child after timeout: {error}"))
+            })?;
+            Ok(true)
+        } else {
+            let tree_killed = windows_kill_taskkill(&mut self.child, label)?;
+            self.child.wait().map_err(|error| {
+                BoundedExecError::failed(label, format!("cannot reap child after timeout: {error}"))
+            })?;
+            Ok(tree_killed)
         }
     }
 
@@ -629,9 +620,14 @@ pub fn ensure_hew_lib_built() -> Result<PathBuf, String> {
     let repo_root = workspace_root()?;
     let (target_dir, profile) = target_dir_and_profile(&repo_root);
     let lib_path = target_dir.join(&profile).join(hew_lib_name());
-    ensure_built_serialized(&target_dir, &profile, &lib_path, |td, prof| {
-        run_cargo_build_hew_lib(&repo_root, td, prof)
-    })?;
+    let certificate = target_dir.join(&profile).join(".hew-libhew-freshness-v1");
+    ensure_built_serialized(
+        &target_dir,
+        &profile,
+        &lib_path,
+        || profile != "debug" || certificate.is_file(),
+        |td, prof| run_cargo_build_hew_lib(&repo_root, td, prof),
+    )?;
     Ok(lib_path)
 }
 
@@ -665,9 +661,13 @@ pub fn ensure_hew_bin_built() -> Result<PathBuf, String> {
     let repo_root = workspace_root()?;
     let (target_dir, profile) = target_dir_and_profile(&repo_root);
     let bin_path = target_dir.join(&profile).join(hew_bin_name());
-    ensure_built_serialized(&target_dir, &profile, &bin_path, |td, prof| {
-        run_cargo_build_hew_bin(&repo_root, td, prof)
-    })?;
+    ensure_built_serialized(
+        &target_dir,
+        &profile,
+        &bin_path,
+        || true,
+        |td, prof| run_cargo_build_hew_bin(&repo_root, td, prof),
+    )?;
     Ok(bin_path)
 }
 
@@ -729,6 +729,8 @@ fn run_cargo_build_hew_bin(
 }
 
 /// Testable core: `build_fn` is injected so the unit test can stub `cargo`.
+/// `extra_fresh` lets the debug archive require its companion certificate
+/// without making binary and release-profile bootstraps pay that authority.
 ///
 /// The stamp read, the build, the artifact presence check, and the stamp
 /// write all happen inside the `fd_lock` write guard — no TOCTOU window
@@ -740,6 +742,7 @@ fn ensure_built_serialized(
     target_dir: &Path,
     profile: &str,
     artifact: &Path,
+    extra_fresh: impl Fn() -> bool,
     build_fn: impl FnOnce(&Path, &str) -> Result<(), String>,
 ) -> Result<(), String> {
     fs::create_dir_all(target_dir).map_err(|e| format!("mkdir {}: {e}", target_dir.display()))?;
@@ -747,7 +750,11 @@ fn ensure_built_serialized(
         std::env::var("NEXTEST_RUN_ID").unwrap_or_else(|_| format!("pid:{}", std::process::id()));
     let lock_path = target_dir.join("hew-lib-bootstrap.lock");
     let stamp_path = target_dir.join(format!("hew-lib-bootstrap-{profile}.stamp"));
-    let fresh = || fs::read_to_string(&stamp_path).is_ok_and(|s| s == run_id) && artifact.is_file();
+    let fresh = || {
+        fs::read_to_string(&stamp_path).is_ok_and(|s| s == run_id)
+            && artifact.is_file()
+            && extra_fresh()
+    };
     if fresh() {
         return Ok(()); // pre-lock fast path
     }
@@ -830,20 +837,53 @@ fn run_cargo_build_hew_lib(
     target_dir: &Path,
     profile: &str,
 ) -> Result<(), String> {
-    let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    cmd.args(["build", "-q", "-p", "hew-lib"])
-        .env("CARGO_TARGET_DIR", target_dir)
-        .current_dir(repo_root);
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut cargo_args = vec![
+        OsString::from("build"),
+        OsString::from("-q"),
+        OsString::from("-p"),
+        OsString::from("hew-lib"),
+    ];
     match profile {
         // dev/test both land in target/debug
         "debug" => {}
         "release" => {
-            cmd.arg("--release");
+            cargo_args.push(OsString::from("--release"));
         }
         other => {
-            cmd.args(["--profile", other]); // e.g. CI release-lib
+            cargo_args.extend([OsString::from("--profile"), OsString::from(other)]);
+            // e.g. CI release-lib
         }
     }
+
+    // The debug archive is consumed by the Make freshness gate.  Publish its
+    // certificate under the same fd_lock that serializes the Cargo uplift, so
+    // test helpers cannot leave a freshly built archive uncoupled from that
+    // gate.  Keep non-debug profiles on their own artifact authority.
+    let mut cmd = if profile == "debug" {
+        let python = std::env::var_os("PYTHON").unwrap_or_else(|| {
+            if cfg!(windows) {
+                OsString::from("python")
+            } else {
+                OsString::from("python3")
+            }
+        });
+        let mut helper = Command::new(python);
+        helper
+            .arg(repo_root.join("scripts/libhew-freshness.py"))
+            .args(["build", "--debug-dir"])
+            .arg(target_dir.join(profile))
+            .arg("--")
+            .arg(cargo)
+            .args(&cargo_args);
+        helper
+    } else {
+        let mut cargo_command = Command::new(cargo);
+        cargo_command.args(&cargo_args);
+        cargo_command
+    };
+    cmd.env("CARGO_TARGET_DIR", target_dir)
+        .current_dir(repo_root);
     #[cfg(target_os = "macos")]
     {
         // port verbatim from build_codegen_artifacts
@@ -1023,11 +1063,17 @@ mod hew_lib_bootstrap_tests {
                     let artifact = &artifact;
                     let build_count = &build_count;
                     scope.spawn(move || {
-                        ensure_built_serialized(target_dir, "debug", artifact, |_td, _prof| {
-                            build_count.fetch_add(1, Ordering::SeqCst);
-                            fs::write(artifact, b"stub archive")
-                                .map_err(|e| format!("write stub artifact: {e}"))
-                        })
+                        ensure_built_serialized(
+                            target_dir,
+                            "debug",
+                            artifact,
+                            || true,
+                            |_td, _prof| {
+                                build_count.fetch_add(1, Ordering::SeqCst);
+                                fs::write(artifact, b"stub archive")
+                                    .map_err(|e| format!("write stub artifact: {e}"))
+                            },
+                        )
                     })
                 })
                 .collect();
@@ -1068,11 +1114,17 @@ mod hew_lib_bootstrap_tests {
                     let artifact = &artifact;
                     let build_count = &build_count;
                     scope.spawn(move || {
-                        ensure_built_serialized(target_dir, "debug", artifact, |_td, _prof| {
-                            build_count.fetch_add(1, Ordering::SeqCst);
-                            fs::write(artifact, b"stub hew binary")
-                                .map_err(|e| format!("write stub binary: {e}"))
-                        })
+                        ensure_built_serialized(
+                            target_dir,
+                            "debug",
+                            artifact,
+                            || true,
+                            |_td, _prof| {
+                                build_count.fetch_add(1, Ordering::SeqCst);
+                                fs::write(artifact, b"stub hew binary")
+                                    .map_err(|e| format!("write stub binary: {e}"))
+                            },
+                        )
                     })
                 })
                 .collect();
@@ -1092,10 +1144,16 @@ mod hew_lib_bootstrap_tests {
         assert!(artifact.is_file(), "stub bin artifact should be present");
 
         // A fresh caller after the winner stamped must not rebuild.
-        ensure_built_serialized(&target_dir, "debug", &artifact, |_td, _prof| {
-            build_count.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        })
+        ensure_built_serialized(
+            &target_dir,
+            "debug",
+            &artifact,
+            || true,
+            |_td, _prof| {
+                build_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
         .expect("post-stamp caller should short-circuit");
         assert_eq!(
             build_count.load(Ordering::SeqCst),

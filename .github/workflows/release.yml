@@ -131,8 +131,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $toolchainTag = "toolchain/llvm-22.1.0-windows-msvc-v3"
-          $asset        = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
+          $toolchainTag = "toolchain/llvm-22.1.0-windows-msvc-v4"
+          $asset        = "hew-llvm-22.1.0-windows-msvc-v4.tar.gz"
 
           # Fail fast if the toolchain release is not published yet.
           # Run prebuild-llvm.yml to publish it before retrying the release.
@@ -169,7 +169,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $asset = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
+          $asset = "hew-llvm-22.1.0-windows-msvc-v4.tar.gz"
           gh attestation verify $asset --repo "$env:GITHUB_REPOSITORY"
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Provenance attestation verification failed for $asset"
@@ -181,7 +181,7 @@ jobs:
         if: startsWith(matrix.target, 'windows')
         shell: pwsh
         run: |
-          $asset = "hew-llvm-22.1.0-windows-msvc-v3.tar.gz"
+          $asset = "hew-llvm-22.1.0-windows-msvc-v4.tar.gz"
           # Archive root is llvm-22/; extracting to C:\ gives C:\llvm-22.
           tar -xzf $asset -C C:\
           Remove-Item -Force $asset, "$asset.sha256"
@@ -395,10 +395,27 @@ jobs:
           # Standard library sources (all .hew files, including subdirectories)
           Copy-Item "std" "${ArchiveName}/std" -Recurse
 
-          # Generate shell completions from built binaries
+          # Generate shell completions from built binaries. Native-command
+          # failures are not terminating errors in every PowerShell version,
+          # so capture the output and check both status and content explicitly.
+          function Write-Completion {
+            param(
+              [string]$Executable,
+              [string]$Shell,
+              [string]$Destination
+            )
+            $Completion = & $Executable completions $Shell
+            if ($LASTEXITCODE -ne 0) {
+              throw "$Executable completions $Shell exited $LASTEXITCODE"
+            }
+            if ([string]::IsNullOrWhiteSpace(($Completion -join "`n"))) {
+              throw "$Executable completions $Shell produced empty output"
+            }
+            $Completion | Out-File -Encoding utf8NoBOM $Destination
+          }
           foreach ($shell in @("bash", "zsh", "fish", "powershell")) {
-            & "${ArchiveName}/bin/hew.exe" completions $shell | Out-File -Encoding utf8NoBOM "${ArchiveName}/completions/hew.${shell}"
-            & "${ArchiveName}/bin/adze.exe" completions $shell | Out-File -Encoding utf8NoBOM "${ArchiveName}/completions/adze.${shell}"
+            Write-Completion "${ArchiveName}/bin/hew.exe" $shell "${ArchiveName}/completions/hew.${shell}"
+            Write-Completion "${ArchiveName}/bin/adze.exe" $shell "${ArchiveName}/completions/adze.${shell}"
           }
 
           # Licenses and docs

@@ -2234,11 +2234,22 @@ unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewEx
         let _ = crate::actor::hew_actor_state_lock_release_after_panic(actor);
     }
 
+    // The actor slot remains the sole raw-allocation owner of the resumed
+    // handler root. Exclude it while raw-reclaiming nested synchronous child
+    // ramps; `abandon_resuming_after_crash` below removes/frees that root exactly
+    // once. Its typed field obligations are independent and run in swap unwind.
+    let scheduler_root = a.suspended_cont.load(Ordering::Acquire);
     // A child suspending-closure call that trapped/longjmped inside the resume
     // bypassed the driver's swap-pop and driver-channel teardown. Restore the
-    // outer reply routing and tear those channels down BEFORE reading the reply
-    // channel below (mirrors the fresh-dispatch crash branch).
+    // outer reply routing, tear those channels down, and typed-drop abandoned
+    // frame slots before raw reclamation. Root field drops run here exactly
+    // once; only its raw frame allocation remains reserved for the actor-slot
+    // authority below.
     crate::execution_context::reply_channel_swap_unwind();
+    // SAFETY: the recovery longjmp killed the active resume stack. The drain
+    // frees only positively tracked nested frames and preserves
+    // `scheduler_root` for the actor-slot authority.
+    let _ = unsafe { crate::cont::reclaim_active_coroutine_frames_excluding(scheduler_root) };
 
     // Capture the crashed resume's reply-channel state from the still-installed
     // resume context (carrying the handler's stashed reply channel) before
@@ -2282,8 +2293,10 @@ unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewEx
     // stays alive. Frees the frame block WITHOUT running the `coro.destroy`
     // cleanup outline — the coroutine was RUNNING (between suspend points) when
     // it trapped, so re-running the last suspend's cleanup would double-free the
-    // registrations its resume edge already released. Frame-owned Hew heap values
-    // are arena-backed and reclaimed by the arena reset below.
+    // registrations its resume edge already released. The frame-registry drain
+    // above already ran the root's registered typed field drops while reserving
+    // this raw allocation; arena reset below reclaims the remaining
+    // arena-backed state.
     // SAFETY: the longjmp killed the resume, so no concurrent resume/destroy can
     // run; this worker owns the actor exclusively.
     let _ = unsafe { crate::coro_exec::abandon_resuming_after_crash(a) };
@@ -3249,6 +3262,17 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     // abandon path.
                     if dispatch_result.is_err() {
                         crate::execution_context::reply_channel_swap_unwind();
+                        // A Rust unwind can also bypass the normal ramp handoff.
+                        // Typed swap obligations drain first; then raw-free only
+                        // positively tracked running coroutine frames. Initial
+                        // dispatch has no scheduler-owned root to exclude.
+                        // SAFETY: catch_unwind proves the synchronous ramp stack
+                        // is dead on this worker.
+                        let _ = unsafe {
+                            crate::cont::reclaim_active_coroutine_frames_excluding(
+                                std::ptr::null_mut(),
+                            )
+                        };
                     }
 
                     let reply_consumed = current_reply_channel_consumed_on(ec_ptr);
@@ -3358,6 +3382,16 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     // dispatch reply channel below, so the fallback reply targets
                     // the real outer channel and no channel ref leaks.
                     crate::execution_context::reply_channel_swap_unwind();
+                    // The signal longjmp killed every synchronously running
+                    // ramp before it could hand its frame to a caller. Drain
+                    // their positively tracked allocations in LIFO order only
+                    // after the typed reply-swap obligations above. An initial
+                    // dispatch has no scheduler-owned root to exclude.
+                    // SAFETY: recovery proves these active native stacks can no
+                    // longer resume on this worker.
+                    let _ = unsafe {
+                        crate::cont::reclaim_active_coroutine_frames_excluding(std::ptr::null_mut())
+                    };
                     // Capture the crashed dispatch's reply-channel state from
                     // the still-installed ctx before restoring `prev_context`.
                     // The ctx pointer becomes stale after the restore, so we
@@ -5908,8 +5942,7 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        Box::into_raw(frame).cast::<c_void>()
+        crate::coro_exec::test_support::ScratchFrame::into_executor_owned_handle(1)
     }
 
     /// PRODUCTION SUSPEND EDGE (D-A.2, commit 4): a handler that returns a
@@ -6062,8 +6095,7 @@ mod tests {
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(2));
-        Box::into_raw(frame).cast::<c_void>()
+        crate::coro_exec::test_support::ScratchFrame::into_executor_owned_handle(2)
     }
 
     /// FULL PRODUCTION ROUND-TRIP (D-4 Pending-then-resume): a suspendable

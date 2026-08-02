@@ -509,7 +509,7 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
 }
 
 #[test]
-fn test_qualified_builtin_type_names_canonicalize_in_signatures() {
+fn test_qualified_builtin_type_names_retain_presentation_and_builtin_identity() {
     let source = concat!(
         "import std::stream;\n",
         "import std::channel::channel;\n",
@@ -529,8 +529,19 @@ fn test_qualified_builtin_type_names_canonicalize_in_signatures() {
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&result.program);
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
-    assert_eq!(output.fn_sigs["stream_id"].params[0], Ty::stream(Ty::I64));
-    assert_eq!(output.fn_sigs["stream_id"].return_type, Ty::stream(Ty::I64));
+    for ty in [
+        &output.fn_sigs["stream_id"].params[0],
+        &output.fn_sigs["stream_id"].return_type,
+    ] {
+        assert!(matches!(
+            ty,
+            Ty::Named {
+                name,
+                args,
+                builtin: Some(crate::BuiltinType::Stream),
+            } if name == "std.stream.Stream" && args == &[Ty::I64]
+        ));
+    }
     assert!(matches!(
         &output.fn_sigs["close_sender"].params[0],
         Ty::Named {

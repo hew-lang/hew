@@ -47,39 +47,49 @@ pub trait CanonicalValueMethods {
     /// Return the element at the given index in an array-like value.
     fn array_get(self, index: i64) -> Self;
 
-    /// Release the value resources.
-    fn free(self);
+    /// Release the value resources through the canonical inherent `close`.
+    fn free(consuming self);
 
     // ── Fluent builders shared across JSON/TOML/YAML ───────────────────────
     /// Set a string field on an object-like value. Returns the object for chaining.
-    fn with_string(self, key: string, val: string) -> Self;
+    #[returns_receiver]
+    fn with_string(consuming self, key: string, val: string) -> Self;
 
     /// Set an integer field. Returns the object for chaining.
-    fn with_int(self, key: string, val: i64) -> Self;
+    #[returns_receiver]
+    fn with_int(consuming self, key: string, val: i64) -> Self;
 
     /// Set a float field. Returns the object for chaining.
-    fn with_float(self, key: string, val: f64) -> Self;
+    #[returns_receiver]
+    fn with_float(consuming self, key: string, val: f64) -> Self;
 
     /// Set a boolean field. Returns the object for chaining.
-    fn with_bool(self, key: string, val: bool) -> Self;
+    #[returns_receiver]
+    fn with_bool(consuming self, key: string, val: bool) -> Self;
 
     /// Set a child value on an object-like value. The child is consumed.
-    fn with(self, key: string, child: Self) -> Self;
+    #[returns_receiver]
+    fn with(consuming self, key: string, consume child: Self) -> Self;
 
     /// Push a child value onto an array-like value. The child is consumed.
-    fn push(self, child: Self) -> Self;
+    #[returns_receiver]
+    fn push(consuming self, consume child: Self) -> Self;
 
     /// Push an integer onto an array-like value.
-    fn push_int(self, val: i64) -> Self;
+    #[returns_receiver]
+    fn push_int(consuming self, val: i64) -> Self;
 
     /// Push a string onto an array-like value.
-    fn push_string(self, val: string) -> Self;
+    #[returns_receiver]
+    fn push_string(consuming self, val: string) -> Self;
 
     /// Push a float onto an array-like value.
-    fn push_float(self, val: f64) -> Self;
+    #[returns_receiver]
+    fn push_float(consuming self, val: f64) -> Self;
 
     /// Push a boolean onto an array-like value.
-    fn push_bool(self, val: bool) -> Self;
+    #[returns_receiver]
+    fn push_bool(consuming self, val: bool) -> Self;
 }
 
 // Future: fn view(val: Self) -> WireView;

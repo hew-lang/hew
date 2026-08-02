@@ -1,15 +1,16 @@
 use super::{
-    dataflow, is_unsupported_user_record_value_class_ty, BasicBlock, BindingId, Builder, CmpPred,
-    ExecutionContextReader, FloatWidth, HashMap, HashSet, HirBinding, HirBlock, HirConstValue,
-    HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmt, HirStmtKind, Instr,
-    IntArithOp, IntSignedness, IntentKind, MirCheck, MirConst, MirConstValue, MirDiagnostic,
-    MirDiagnosticKind, NumericMethodOp, NumericSignedness, PointerWidth, ResolvedRef, ResolvedTy,
-    ResourceMarker, Strategy, UnaryOp, ValueClass, CRASH_KIND_VARIANTS, HEW_CTX_OFFSET_ACTOR_ID,
-    HEW_CTX_OFFSET_PARENT_SUPERVISOR, HEW_CTX_OFFSET_TRACE_SPAN, SENTINEL_CRASH_CODE_NODE,
-    SENTINEL_CRASH_CODE_SITE, SENTINEL_DOWN_CRASH_KIND_BINDING, SENTINEL_DOWN_LOCAL_SLOT_BINDING,
-    SENTINEL_DOWN_LOCATION_BINDING, SENTINEL_DOWN_MONITOR_ID_BINDING,
-    SENTINEL_DOWN_REASON_KIND_BINDING, SENTINEL_DOWN_TARGET_KIND_BINDING,
-    SENTINEL_EXIT_ACTOR_ID_BINDING, SENTINEL_EXIT_KIND_TAG_BINDING,
+    dataflow, is_unsupported_user_record_value_class_ty, BasicBlock, BindingId, Builder,
+    BuiltinType, CmpPred, ExecutionContextReader, FloatWidth, HashMap, HashSet, HirBinding,
+    HirBlock, HirConstValue, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule, HirStmt,
+    HirStmtKind, Instr, IntArithOp, IntSignedness, IntentKind, MirCheck, MirConst, MirConstValue,
+    MirDiagnostic, MirDiagnosticKind, NumericMethodOp, NumericSignedness, PointerWidth,
+    ResolvedRef, ResolvedTy, ResourceMarker, Strategy, UnaryOp, ValueClass, CRASH_KIND_VARIANTS,
+    HEW_CTX_OFFSET_ACTOR_ID, HEW_CTX_OFFSET_PARENT_SUPERVISOR, HEW_CTX_OFFSET_TRACE_SPAN,
+    SENTINEL_CRASH_CODE_NODE, SENTINEL_CRASH_CODE_SITE, SENTINEL_DOWN_CRASH_KIND_BINDING,
+    SENTINEL_DOWN_LOCAL_SLOT_BINDING, SENTINEL_DOWN_LOCATION_BINDING,
+    SENTINEL_DOWN_MONITOR_ID_BINDING, SENTINEL_DOWN_REASON_KIND_BINDING,
+    SENTINEL_DOWN_TARGET_KIND_BINDING, SENTINEL_EXIT_ACTOR_ID_BINDING,
+    SENTINEL_EXIT_KIND_TAG_BINDING,
 };
 
 /// The synthetic `#[on(crash)]` handler's logical return type — `CrashAction`.
@@ -612,23 +613,27 @@ pub(super) fn signed_min_value(ty: &ResolvedTy, ptr_width: PointerWidth) -> Opti
 }
 pub(super) fn actor_name_from_handle_ty(ty: &ResolvedTy) -> Option<&str> {
     match ty {
-        ResolvedTy::Named { name, args, .. } if name.as_str() == "LocalPid" && args.len() == 1 => {
-            match &args[0] {
-                ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
-                _ => None,
-            }
-        }
+        ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::LocalPid),
+            ..
+        } if args.len() == 1 => match &args[0] {
+            ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
+            _ => None,
+        },
         _ => None,
     }
 }
 pub(super) fn actor_name_from_remote_pid_ty(ty: &ResolvedTy) -> Option<&str> {
     match ty {
-        ResolvedTy::Named { name, args, .. } if name == "RemotePid" && args.len() == 1 => {
-            match &args[0] {
-                ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
-                _ => None,
-            }
-        }
+        ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::RemotePid),
+            ..
+        } if args.len() == 1 => match &args[0] {
+            ResolvedTy::Named { name, args, .. } if args.is_empty() => Some(name.as_str()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -683,8 +688,11 @@ pub(super) fn is_crash_info_payload_ty(
     // M-5: `CrashInfo` now carries an owned `message: string`, so it is no
     // longer marker-`BitCopy`. The authoritative discriminant is the
     // `CrashInfo` role on the builtin registration, not the marker.
-    if !is_canonical_lifecycle_named_ty(ty, hew_types::BuiltinType::CrashInfo, "failure.CrashInfo")
-    {
+    if !is_canonical_lifecycle_named_ty(
+        ty,
+        hew_types::BuiltinType::CrashInfo,
+        "std.failure.CrashInfo",
+    ) {
         return false;
     }
 
@@ -704,7 +712,7 @@ pub(super) fn is_crash_info_payload_ty(
     };
     record_field_orders
         .get(name)
-        .or_else(|| record_field_orders.get("failure.CrashInfo"))
+        .or_else(|| record_field_orders.get("std.failure.CrashInfo"))
         .or_else(|| record_field_orders.get(canonical_name))
         .is_some_and(|actual_fields| {
             builtin_registration_fields_match(actual_fields, expected_fields)
@@ -1244,34 +1252,65 @@ pub(super) fn recv_result_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 pub(super) fn runtime_symbol_for_call_expr(
     expr: &HirExpr,
 ) -> Option<(String, &[hew_hir::HirExpr], hew_hir::SiteId)> {
-    let HirExprKind::Call { callee, args } = &expr.kind else {
+    let HirExprKind::Call { target, args, .. } = &expr.kind else {
         return None;
     };
-    let HirExprKind::BindingRef { name, resolved } = &callee.kind else {
-        return None;
-    };
-    // Typed path: HIR resolved a checker-known runtime builtin (the
-    // no-AST-item builtins and every closed-set method-call rewrite) to
-    // its catalog family. The C symbol is derived from the catalog
-    // bijection — no user-name reverse-mapping. A real user function
-    // that shadows a builtin name resolves to `ResolvedRef::Item` in
-    // HIR and never reaches this arm.
+    // `CallTarget::Runtime` is the sole authority for this edge.  The
+    // callee `BindingRef` is deliberately not inspected here: it is a linker
+    // presentation carried alongside the semantic target, and may legally
+    // have the same leaf spelling as a user declaration.  Re-selecting from
+    // that spelling would turn a mutated/stale target into a silent
+    // misdispatch.
     //
-    // The allowlist gate preserves the producer routing split: families
-    // whose symbol is in `known_runtime_symbols` lower to
-    // `Instr::CallRuntimeAbi`; pre-staged families (codegen
-    // `Terminator::Call` callee-name intercepts such as
-    // `hew_remote_pid_send`) fall through to `module_fn_names` →
-    // `lower_direct_call`, exactly as their name-resolved form did.
-    if let ResolvedRef::Builtin(family) = resolved {
+    // Pre-staged families whose C presentation is not a runtime-ABI symbol
+    // intentionally return `None`; the ordinary Call lowerer consumes the
+    // same typed family and emits its direct terminator path.
+    if let hew_types::CallTarget::Runtime(family) = target {
+        // F-string interpolation is the typed StringConcat family. Its MIR
+        // producer lives in the ordinary Runtime-family branch so this helper
+        // does not turn that semantic identity into a C-symbol dispatch key.
+        if family == &hew_types::runtime_call::RuntimeCallFamily::StringConcat {
+            return None;
+        }
         let symbol = family.c_symbol();
         if crate::runtime_symbols::is_known_runtime_symbol(symbol) {
             return Some((symbol.to_string(), args, expr.site));
         }
-        return None;
-    }
-    if crate::runtime_symbols::is_known_runtime_symbol(name) {
-        return Some((name.clone(), args, expr.site));
     }
     None
+}
+
+#[cfg(test)]
+mod builtin_carrier_tests {
+    use super::*;
+
+    fn actor_ty() -> ResolvedTy {
+        ResolvedTy::named_user("app.Worker", Vec::new())
+    }
+
+    #[test]
+    fn local_pid_actor_name_uses_builtin_identity_not_presentation() {
+        let renamed = ResolvedTy::named_builtin(
+            "presentation.RenamedLocalPid",
+            BuiltinType::LocalPid,
+            vec![actor_ty()],
+        );
+        assert_eq!(actor_name_from_handle_ty(&renamed), Some("app.Worker"));
+
+        let shadow = ResolvedTy::named_user("LocalPid", vec![actor_ty()]);
+        assert_eq!(actor_name_from_handle_ty(&shadow), None);
+    }
+
+    #[test]
+    fn remote_pid_actor_name_uses_builtin_identity_not_presentation() {
+        let renamed = ResolvedTy::named_builtin(
+            "presentation.RenamedRemotePid",
+            BuiltinType::RemotePid,
+            vec![actor_ty()],
+        );
+        assert_eq!(actor_name_from_remote_pid_ty(&renamed), Some("app.Worker"));
+
+        let shadow = ResolvedTy::named_user("RemotePid", vec![actor_ty()]);
+        assert_eq!(actor_name_from_remote_pid_ty(&shadow), None);
+    }
 }

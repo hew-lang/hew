@@ -16,9 +16,34 @@ pub struct HewTomlValue {
     inner: toml::Value,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Test-only oracle for live outer `HewTomlValue` boxes. Nested TOML
+    /// values move into their parent tree and carry no second wrapper.
+    static LIVE_TOML_VALUE_BOXES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Wrap a [`toml::Value`] into a heap-allocated [`HewTomlValue`].
 fn boxed_value(v: toml::Value) -> *mut HewTomlValue {
+    #[cfg(test)]
+    LIVE_TOML_VALUE_BOXES.with(|live| live.set(live.get() + 1));
     Box::into_raw(Box::new(HewTomlValue { inner: v }))
+}
+
+#[cfg(test)]
+fn live_value_boxes() -> usize {
+    LIVE_TOML_VALUE_BOXES.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn record_value_box_consumed() {
+    LIVE_TOML_VALUE_BOXES.with(|live| {
+        live.set(
+            live.get()
+                .checked_sub(1)
+                .expect("TOML value box counter underflow"),
+        );
+    });
 }
 
 std::thread_local! {
@@ -88,9 +113,7 @@ pub unsafe extern "C" fn hew_toml_parse(s: *const c_char) -> *mut HewTomlValue {
     match rust_str.parse::<toml::Table>() {
         Ok(table) => {
             clear_parse_last_error();
-            Box::into_raw(Box::new(HewTomlValue {
-                inner: toml::Value::Table(table),
-            }))
+            boxed_value(toml::Value::Table(table))
         }
         Err(err) => {
             set_parse_last_error(err.to_string());
@@ -236,7 +259,7 @@ pub unsafe extern "C" fn hew_toml_get_field(
         return std::ptr::null_mut();
     };
     match table.get(key_str) {
-        Some(v) => Box::into_raw(Box::new(HewTomlValue { inner: v.clone() })),
+        Some(v) => boxed_value(v.clone()),
         None => std::ptr::null_mut(),
     }
 }
@@ -287,7 +310,7 @@ pub unsafe extern "C" fn hew_toml_array_get(
         reason = "C ABI: negative values checked before cast"
     )]
     match arr.get(index as usize) {
-        Some(v) => Box::into_raw(Box::new(HewTomlValue { inner: v.clone() })),
+        Some(v) => boxed_value(v.clone()),
         None => std::ptr::null_mut(),
     }
 }
@@ -468,7 +491,8 @@ pub unsafe extern "C" fn hew_toml_table_set_string(
 /// Set a [`HewTomlValue`] child on a TOML table, taking ownership.
 ///
 /// The `val` pointer is consumed and must not be used or freed after this call.
-/// Does nothing if `tbl` is null, not a table, `key` is null, or `val` is null.
+/// A non-null `val` is consumed on every return path, including when `tbl` is
+/// null or not a table, or `key` is null. A null `val` is a no-op.
 ///
 /// # Safety
 ///
@@ -482,7 +506,15 @@ pub unsafe extern "C" fn hew_toml_table_set(
     key: *const c_char,
     val: *mut HewTomlValue,
 ) {
-    if tbl.is_null() || key.is_null() || val.is_null() {
+    if val.is_null() {
+        return;
+    }
+    // SAFETY: val was allocated with Box::into_raw and has not been freed.
+    // Ownership transfers at the ABI boundary even if insertion is rejected.
+    let child = unsafe { Box::from_raw(val) };
+    #[cfg(test)]
+    record_value_box_consumed();
+    if tbl.is_null() || key.is_null() {
         return;
     }
     // SAFETY: caller guarantees key is a valid NUL-terminated string.
@@ -490,8 +522,6 @@ pub unsafe extern "C" fn hew_toml_table_set(
         .to_str()
         .unwrap_or("")
         .to_owned();
-    // SAFETY: val was allocated with Box::into_raw and has not been freed.
-    let child = unsafe { Box::from_raw(val) };
     // SAFETY: tbl is non-null (checked above) and valid per caller contract.
     if let toml::Value::Table(map) = &mut unsafe { &mut *tbl }.inner {
         map.insert(key, child.inner);
@@ -563,7 +593,7 @@ pub unsafe extern "C" fn hew_toml_array_push_float(arr: *mut HewTomlValue, val: 
 
 /// Push a string onto a TOML array. The string value is copied.
 ///
-/// Does nothing if `arr` is null, not an array, or `val` is null.
+/// Does nothing if `arr` or `val` is null, or `arr` is not an array.
 ///
 /// # Safety
 ///
@@ -587,8 +617,9 @@ pub unsafe extern "C" fn hew_toml_array_push_string(arr: *mut HewTomlValue, val:
 
 /// Push a [`HewTomlValue`] child onto a TOML array, taking ownership.
 ///
-/// The `val` pointer is consumed and must not be used or freed after this call.
-/// Does nothing if `arr` is null, not an array, or `val` is null.
+/// A non-null `val` is consumed on every return path and must not be used or
+/// freed after this call, including when `arr` is null or not an array. A null
+/// `val` is a no-op.
 ///
 /// # Safety
 ///
@@ -597,11 +628,17 @@ pub unsafe extern "C" fn hew_toml_array_push_string(arr: *mut HewTomlValue, val:
 /// and must not have been freed already (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_toml_array_push(arr: *mut HewTomlValue, val: *mut HewTomlValue) {
-    if arr.is_null() || val.is_null() {
+    if val.is_null() {
         return;
     }
     // SAFETY: val was allocated with Box::into_raw and has not been freed.
+    // Ownership transfers at the ABI boundary even if insertion is rejected.
     let child = unsafe { Box::from_raw(val) };
+    #[cfg(test)]
+    record_value_box_consumed();
+    if arr.is_null() {
+        return;
+    }
     // SAFETY: arr is non-null (checked above) and valid per caller contract.
     if let toml::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
         vec.push(child.inner);
@@ -673,6 +710,8 @@ pub unsafe extern "C" fn hew_toml_free(val: *mut HewTomlValue) {
     }
     // SAFETY: val was allocated with Box::into_raw and has not been freed.
     let _ = unsafe { Box::from_raw(val) };
+    #[cfg(test)]
+    record_value_box_consumed();
 }
 
 #[cfg(test)]
@@ -683,6 +722,57 @@ pub unsafe extern "C" fn hew_toml_free(val: *mut HewTomlValue) {
 mod tests {
     use super::*;
     use std::ffi::CString;
+
+    #[test]
+    fn child_transfer_is_unconditional_and_deep_clone_is_independent() {
+        let baseline = live_value_boxes();
+        let key = CString::new("child").unwrap();
+
+        // Null/invalid parents and invalid keys still consume a non-null child.
+        // SAFETY: every non-null handle below is freshly allocated and freed or
+        // transferred exactly once; null pointers exercise the documented no-op path.
+        unsafe {
+            hew_toml_table_set(std::ptr::null_mut(), key.as_ptr(), hew_toml_from_int(1));
+            assert_eq!(live_value_boxes(), baseline);
+
+            let scalar_parent = hew_toml_from_int(2);
+            hew_toml_table_set(scalar_parent, std::ptr::null(), hew_toml_from_int(3));
+            assert_eq!(live_value_boxes(), baseline + 1);
+            hew_toml_table_set(scalar_parent, key.as_ptr(), hew_toml_from_int(4));
+            assert_eq!(live_value_boxes(), baseline + 1);
+            hew_toml_free(scalar_parent);
+
+            hew_toml_array_push(std::ptr::null_mut(), hew_toml_from_int(5));
+            assert_eq!(live_value_boxes(), baseline);
+            let table_parent = hew_toml_table_new();
+            hew_toml_array_push(table_parent, hew_toml_from_int(6));
+            assert_eq!(live_value_boxes(), baseline + 1);
+            hew_toml_free(table_parent);
+        }
+
+        // A high nested tree has one outer wrapper after every successful
+        // transfer. A cloned getter is a separate deep owner and remains valid
+        // after the original root is released.
+        let mut root = hew_toml_array_new();
+        for _ in 0..128 {
+            let parent = hew_toml_array_new();
+            // SAFETY: parent and root are distinct live handles; ownership of root transfers.
+            unsafe { hew_toml_array_push(parent, root) };
+            root = parent;
+            assert_eq!(live_value_boxes(), baseline + 1);
+        }
+        // SAFETY: root is a live nested array and index zero exists.
+        let clone = unsafe { hew_toml_array_get(root, 0) };
+        assert!(!clone.is_null());
+        assert_eq!(live_value_boxes(), baseline + 2);
+        // SAFETY: root remains live and has not otherwise been released.
+        unsafe { hew_toml_free(root) };
+        // SAFETY: clone is an independently allocated live value.
+        assert_eq!(unsafe { hew_toml_type(clone) }, 5);
+        // SAFETY: clone remains live and has not otherwise been released.
+        unsafe { hew_toml_free(clone) };
+        assert_eq!(live_value_boxes(), baseline);
+    }
 
     #[test]
     fn stringify_allocation_failure_is_reported_instead_of_empty_success() {

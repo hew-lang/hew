@@ -30,12 +30,11 @@
 
 use std::collections::HashSet;
 
-use hew_types::{short_name, BuiltinType, ResolvedTy};
+use hew_types::{BuiltinType, ResolvedTy};
 
-use crate::lower::mangle_layout_key;
 use crate::model::{
-    is_indirect_enum, machine_enum_views, EnumLayout, IrPipeline, RawMirFunction, RecordLayout,
-    SupervisorLayout,
+    find_enum_layout, find_record_layout_for_ty, is_indirect_enum, machine_enum_views, EnumLayout,
+    IrPipeline, RawMirFunction, RecordLayout, SupervisorLayout,
 };
 use crate::{Instr, Place, StateFieldCloneKind, Terminator};
 
@@ -202,19 +201,7 @@ fn collect_enum_inplace_drop_seeds(
                 let ResolvedTy::Named { name, args, .. } = &drop.ty else {
                     continue;
                 };
-                let short = short_name(name);
-                let key = if args.is_empty() {
-                    enum_layouts
-                        .iter()
-                        .find(|el| el.name == *name || short_name(&el.name) == short)
-                        .map(|el| el.name.clone())
-                } else {
-                    let mangled = mangle_layout_key(short, args);
-                    enum_layouts
-                        .iter()
-                        .find(|el| el.name == mangled || el.name == *name)
-                        .map(|el| el.name.clone())
-                };
+                let key = enum_layout_key(name, args, enum_layouts);
                 if let Some(key) = key {
                     if seen.insert(key.clone()) {
                         seeds.push(key);
@@ -258,34 +245,16 @@ fn collect_record_inplace_drop_seeds(
                 // it. A non-record ty here is a producer invariant violation the
                 // consumer already rejects, so skip it (the consumer's
                 // fail-closed arm is the diagnostic surface, not this seed).
-                let ResolvedTy::Named { name, args, .. } = &drop.ty else {
+                let ResolvedTy::Named { .. } = &drop.ty else {
                     continue;
                 };
                 // Confirm the record actually has a registered layout before
                 // seeding — a seed for an unregistered key would itself fail
                 // closed in the synthesis pass with a less specific message. For
-                // a generic instantiation the registered key is the mangled name
-                // (`Pair$$i64$string`); for a bare record it is the (short) name.
-                // Resolve against `record_layouts` trying the full name, the
-                // short name, and — for generics — both full- and short-mangled
-                // forms, mirroring `lookup_record_layout` (state_clone) and
-                // `enum_layout_key_for_ty`. The resolved registry key is what
-                // both this seed and `record_inplace_drop_name` use, so they can
-                // never drift.
-                let short = short_name(name);
-                let key = if args.is_empty() {
-                    record_layouts
-                        .iter()
-                        .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                        .map(|rl| rl.name.clone())
-                } else {
-                    let full_mangled = mangle_layout_key(name, args);
-                    let short_mangled = mangle_layout_key(short, args);
-                    record_layouts
-                        .iter()
-                        .find(|rl| rl.name == full_mangled || rl.name == short_mangled)
-                        .map(|rl| rl.name.clone())
-                };
+                // The resolved full-owner registry key is shared with the drop
+                // consumer; no leaf retry may redirect a seed to another module.
+                let key = find_record_layout_for_ty(&drop.ty, record_layouts)
+                    .map(|layout| layout.name.clone());
                 if let Some(key) = key {
                     if seen.insert(key.clone()) {
                         seeds.push(key);
@@ -371,40 +340,17 @@ fn collect_tuple_member_inplace_drop_seeds(
                 );
             }
             ResolvedTy::Named { name, args, .. } => {
-                let short = short_name(name);
                 // Enum-first (machine views are folded into the enum slice by
                 // the caller), mirroring owned_elem_thunk_key resolution order.
-                let enum_key = if args.is_empty() {
-                    enum_layouts
-                        .iter()
-                        .find(|el| el.name == *name || short_name(&el.name) == short)
-                        .map(|el| el.name.clone())
-                } else {
-                    let mangled = mangle_layout_key(short, args);
-                    enum_layouts
-                        .iter()
-                        .find(|el| el.name == mangled || el.name == *name)
-                        .map(|el| el.name.clone())
-                };
+                let enum_key = enum_layout_key(name, args, enum_layouts);
                 if let Some(key) = enum_key {
                     if enum_seen.insert(key.clone()) {
                         enum_seeds.push(key);
                     }
                     return;
                 }
-                let rec_key = if args.is_empty() {
-                    record_layouts
-                        .iter()
-                        .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                        .map(|rl| rl.name.clone())
-                } else {
-                    let full_mangled = mangle_layout_key(name, args);
-                    let short_mangled = mangle_layout_key(short, args);
-                    record_layouts
-                        .iter()
-                        .find(|rl| rl.name == full_mangled || rl.name == short_mangled)
-                        .map(|rl| rl.name.clone())
-                };
+                let rec_key =
+                    find_record_layout_for_ty(ty, record_layouts).map(|layout| layout.name.clone());
                 if let Some(key) = rec_key {
                     if rec_seen.insert(key.clone()) {
                         record_seeds.push(key);
@@ -555,43 +501,16 @@ fn record_layout_for_ty<'a>(
     record_layouts: &'a [RecordLayout],
 ) -> Option<&'a RecordLayout> {
     let ResolvedTy::Named {
-        name,
-        args,
-        builtin: None,
-        is_opaque: false,
+        is_opaque: false, ..
     } = ty
     else {
         return None;
     };
-    let short = short_name(name);
-    if args.is_empty() {
-        record_layouts
-            .iter()
-            .find(|layout| layout.name == *name || short_name(&layout.name) == short)
-    } else {
-        let full_mangled = mangle_layout_key(name, args);
-        let short_mangled = mangle_layout_key(short, args);
-        record_layouts
-            .iter()
-            .find(|layout| layout.name == full_mangled || layout.name == short_mangled)
-    }
+    find_record_layout_for_ty(ty, record_layouts)
 }
 
 fn enum_layout_key(name: &str, args: &[ResolvedTy], enum_layouts: &[EnumLayout]) -> Option<String> {
-    let short = short_name(name);
-    if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|layout| layout.name == name || short_name(&layout.name) == short)
-            .map(|layout| layout.name.clone())
-    } else {
-        let full_mangled = mangle_layout_key(name, args);
-        let short_mangled = mangle_layout_key(short, args);
-        enum_layouts
-            .iter()
-            .find(|layout| layout.name == full_mangled || layout.name == short_mangled)
-            .map(|layout| layout.name.clone())
-    }
+    find_enum_layout(name, args, enum_layouts).map(|layout| layout.name.clone())
 }
 
 fn collect_record_field_store_overwrite_seeds(
@@ -627,17 +546,18 @@ fn collect_record_field_store_overwrite_seeds(
                 let ResolvedTy::Named {
                     name,
                     args,
-                    builtin: None,
                     is_opaque: false,
+                    ..
                 } = field_ty
                 else {
                     continue;
                 };
                 if let Some(layout) = record_layout_for_ty(field_ty, record_layouts) {
                     let key = layout.name.clone();
-                    if !resource_record_close.iter().any(|(resource, _)| {
-                        resource == &key || short_name(resource) == short_name(&key)
-                    }) && record_seen.insert(key.clone())
+                    if !resource_record_close
+                        .iter()
+                        .any(|(resource, _)| resource == &key)
+                        && record_seen.insert(key.clone())
                     {
                         record_seeds.push(key);
                     }
@@ -913,8 +833,8 @@ fn collect_generator_env_clone_seeds(raw_mir: &[RawMirFunction]) -> (Vec<String>
 /// resolvable even for a shape whose witness emission is skipped or
 /// reordered, at the cost of one raw-MIR walk. Resolution mirrors
 /// `collect_record_inplace_drop_seeds` / `collect_enum_inplace_drop_seeds`
-/// (full name, short name, and mangled generic forms against the registered
-/// layouts) so seed and consumer resolve the same key.
+/// through the same exact full-owner layout authority as the consumer, so seed
+/// and use resolve one key.
 fn collect_inline_inplace_drop_seeds(
     raw_mir: &[RawMirFunction],
     record_layouts: &[RecordLayout],
@@ -937,38 +857,14 @@ fn collect_inline_inplace_drop_seeds(
                 let ResolvedTy::Named { name, args, .. } = ty else {
                     continue;
                 };
-                let short = short_name(name);
                 let (is_enum, key) = match kind {
-                    crate::InPlaceReleaseKind::Record => {
-                        let key = if args.is_empty() {
-                            record_layouts
-                                .iter()
-                                .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                                .map(|rl| rl.name.clone())
-                        } else {
-                            let full_mangled = mangle_layout_key(name, args);
-                            let short_mangled = mangle_layout_key(short, args);
-                            record_layouts
-                                .iter()
-                                .find(|rl| rl.name == full_mangled || rl.name == short_mangled)
-                                .map(|rl| rl.name.clone())
-                        };
-                        (false, key)
-                    }
+                    crate::InPlaceReleaseKind::Record => (
+                        false,
+                        find_record_layout_for_ty(ty, record_layouts)
+                            .map(|layout| layout.name.clone()),
+                    ),
                     crate::InPlaceReleaseKind::Enum => {
-                        let key = if args.is_empty() {
-                            enum_layouts
-                                .iter()
-                                .find(|el| el.name == *name || short_name(&el.name) == short)
-                                .map(|el| el.name.clone())
-                        } else {
-                            let mangled = mangle_layout_key(short, args);
-                            enum_layouts
-                                .iter()
-                                .find(|el| el.name == mangled || el.name == *name)
-                                .map(|el| el.name.clone())
-                        };
-                        (true, key)
+                        (true, enum_layout_key(name, args, enum_layouts))
                     }
                     crate::InPlaceReleaseKind::AggregateRecursive => (false, None),
                 };
@@ -1087,70 +983,15 @@ fn collect_xnode_codec_drop_seeds(
         let ResolvedTy::Named { name, args, .. } = ty else {
             return;
         };
-        let short = short_name(name);
-        // Mirror `xnode_registry_key`'s resolution ORDER byte-for-byte, not just
-        // its mangling: it probes the FULL-qualified key across BOTH records AND
-        // enums first (`records.any(full) || enums.any(full)`), and only then
-        // falls back to the SHORT name across both. Probing enum-full → enum-short
-        // and returning before ever checking record-full is wrong: a generic like
-        // `pkg.Foo<i64>` that resolves to a full RECORD key (`pkg.Foo$$i64`) can
-        // collide on its short enum key (`Foo$$i64`), so the enum-first collector
-        // seeded the wrong (short enum) key and left the decoder-referenced record
-        // drop helper declared without a body — LLVM rejects the dangling
-        // declaration (#2208). The full-across-both / short-across-both order below
-        // guarantees the seed lands under the exact key the decoder resolves.
-        //
-        // Records are probed before enums at each qualification level to match the
-        // `||` short-circuit in `xnode_registry_key` (records first). Each level
-        // returns as soon as it hits, so a full-qualified match never falls through
-        // to the short fallback.
-        // For the empty-args case the full candidate is the bare name and the
-        // short fallback matches any layout whose short name equals `short`. For a
-        // generic the full candidate mangles the qualified name (`pkg.E$$i64`) and
-        // the short fallback is the exact bare-name mangling (`E$$i64`) — the two
-        // candidates `xnode_registry_key` tries in that order.
-        let full_key = if args.is_empty() {
-            name.clone()
-        } else {
-            mangle_layout_key(name, args)
-        };
-        // Full-qualified, records first (mirrors `records.any(full)`).
-        if let Some(rl) = record_layouts.iter().find(|rl| rl.name == full_key) {
+        // The decoder resolves a single exact full-owner layout key. Preserve
+        // its record-before-enum precedence, but never retry a same-leaf key.
+        if let Some(rl) = find_record_layout_for_ty(ty, record_layouts) {
             if rec_seen.insert(rl.name.clone()) {
                 rec_seeds.push(rl.name.clone());
             }
             return;
         }
-        // Full-qualified, enums next (mirrors `|| enums.any(full)`).
-        if let Some(el) = enum_layouts.iter().find(|el| el.name == full_key) {
-            if enum_seen.insert(el.name.clone()) {
-                enum_seeds.push(el.name.clone());
-            }
-            return;
-        }
-        // Short fallback, records first (mirrors the trailing `short` return).
-        let rec_short = if args.is_empty() {
-            record_layouts
-                .iter()
-                .find(|rl| short_name(&rl.name) == short)
-        } else {
-            let short_mangled = mangle_layout_key(short, args);
-            record_layouts.iter().find(|rl| rl.name == short_mangled)
-        };
-        if let Some(rl) = rec_short {
-            if rec_seen.insert(rl.name.clone()) {
-                rec_seeds.push(rl.name.clone());
-            }
-            return;
-        }
-        // Short fallback, enums last.
-        let enum_short = if args.is_empty() {
-            enum_layouts.iter().find(|el| short_name(&el.name) == short)
-        } else {
-            let short_mangled = mangle_layout_key(short, args);
-            enum_layouts.iter().find(|el| el.name == short_mangled)
-        };
-        if let Some(el) = enum_short {
+        if let Some(el) = find_enum_layout(name, args, enum_layouts) {
             if enum_seen.insert(el.name.clone()) {
                 enum_seeds.push(el.name.clone());
             }
@@ -1259,38 +1100,16 @@ fn collect_vec_owned_element_seeds(
             let ResolvedTy::Named { name, args, .. } = elem else {
                 return;
             };
-            let short = short_name(name);
             // Enum-first (mirrors owned_elem_thunk_key resolution order).
-            let enum_key = if args.is_empty() {
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == *name || short_name(&el.name) == short)
-                    .map(|el| el.name.clone())
-            } else {
-                let mangled = mangle_layout_key(short, args);
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == mangled || el.name == *name)
-                    .map(|el| el.name.clone())
-            };
+            let enum_key = enum_layout_key(name, args, enum_layouts);
             if let Some(key) = enum_key {
                 if enum_seen.insert(key.clone()) {
                     enum_seeds.push(key);
                 }
                 return;
             }
-            let rec_key = if args.is_empty() {
-                record_layouts
-                    .iter()
-                    .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                    .map(|rl| rl.name.clone())
-            } else {
-                let mangled = mangle_layout_key(short, args);
-                record_layouts
-                    .iter()
-                    .find(|rl| rl.name == mangled || rl.name == *name)
-                    .map(|rl| rl.name.clone())
-            };
+            let rec_key =
+                find_record_layout_for_ty(elem, record_layouts).map(|layout| layout.name.clone());
             if let Some(key) = rec_key {
                 if rec_seen.insert(key.clone()) {
                     record_seeds.push(key);
@@ -1321,10 +1140,13 @@ fn collect_vec_owned_element_seeds(
                 // witness's thunk pointers dangle at llvm-verify for any
                 // heap-payload enum element reachable only through a
                 // channel (string-bearing records were masked by the
-                // direct-string record seed). Carrier names may be
-                // module-qualified (`channel.Receiver`) — compare short.
+                // direct-string record seed). The checker stamps their
+                // `BuiltinType`, so user declarations with the same leaf do
+                // not enter this builtin-only branch.
                 if ty.is_builtin(BuiltinType::Vec)
-                    || matches!(short_name(name), "Sender" | "Receiver" | "Stream")
+                    || ty.is_builtin(BuiltinType::Sender)
+                    || ty.is_builtin(BuiltinType::Receiver)
+                    || ty.is_builtin(BuiltinType::Stream)
                 {
                     if let Some(elem) = args.first() {
                         on_vec_elem(elem);
@@ -1419,37 +1241,15 @@ fn collect_wire_value_owned_vec_element_seeds(
             let ResolvedTy::Named { name, args, .. } = elem else {
                 return;
             };
-            let short = short_name(name);
-            let enum_key = if args.is_empty() {
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == *name || short_name(&el.name) == short)
-                    .map(|el| el.name.clone())
-            } else {
-                let mangled = mangle_layout_key(short, args);
-                enum_layouts
-                    .iter()
-                    .find(|el| el.name == mangled || el.name == *name)
-                    .map(|el| el.name.clone())
-            };
+            let enum_key = enum_layout_key(name, args, enum_layouts);
             if let Some(key) = enum_key {
                 if enum_seen.insert(key.clone()) {
                     enum_seeds.push(key);
                 }
                 return;
             }
-            let rec_key = if args.is_empty() {
-                record_layouts
-                    .iter()
-                    .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                    .map(|rl| rl.name.clone())
-            } else {
-                let mangled = mangle_layout_key(short, args);
-                record_layouts
-                    .iter()
-                    .find(|rl| rl.name == mangled || rl.name == *name)
-                    .map(|rl| rl.name.clone())
-            };
+            let rec_key =
+                find_record_layout_for_ty(elem, record_layouts).map(|layout| layout.name.clone());
             if let Some(key) = rec_key {
                 if rec_seen.insert(key.clone()) {
                     record_seeds.push(key);
@@ -1466,9 +1266,10 @@ fn collect_wire_value_owned_vec_element_seeds(
     while let Some(ty) = stack.pop() {
         match &ty {
             ResolvedTy::Named { name, args, .. } => {
-                let short = short_name(name);
                 if ty.is_builtin(BuiltinType::Vec)
-                    || matches!(short, "Sender" | "Receiver" | "Stream")
+                    || ty.is_builtin(BuiltinType::Sender)
+                    || ty.is_builtin(BuiltinType::Receiver)
+                    || ty.is_builtin(BuiltinType::Stream)
                 {
                     if let Some(elem) = args.first() {
                         consider_elem(elem, &mut record_seeds, &mut enum_seeds);
@@ -1482,7 +1283,10 @@ fn collect_wire_value_owned_vec_element_seeds(
                     }
                     continue;
                 }
-                if ty.is_builtin(BuiltinType::Option) || matches!(short, "Result" | "Range") {
+                if ty.is_builtin(BuiltinType::Option)
+                    || ty.is_builtin(BuiltinType::Result)
+                    || ty.is_builtin(BuiltinType::Range)
+                {
                     for a in args {
                         stack.push(a.clone());
                     }
@@ -1492,19 +1296,13 @@ fn collect_wire_value_owned_vec_element_seeds(
                 if !visited.insert(name.clone()) {
                     continue;
                 }
-                if let Some(el) = enum_layouts
-                    .iter()
-                    .find(|el| el.name == *name || short_name(&el.name) == short)
-                {
+                if let Some(el) = find_enum_layout(name, args, enum_layouts) {
                     for v in &el.variants {
                         for ft in &v.field_tys {
                             stack.push(ft.clone());
                         }
                     }
-                } else if let Some(rl) = record_layouts
-                    .iter()
-                    .find(|rl| rl.name == *name || short_name(&rl.name) == short)
-                {
+                } else if let Some(rl) = find_record_layout_for_ty(&ty, record_layouts) {
                     for ft in &rl.field_tys {
                         stack.push(ft.clone());
                     }
@@ -1565,13 +1363,22 @@ mod record_field_store_overwrite_tests {
     }
 
     #[test]
-    fn generic_record_field_store_seeds_monomorphised_helper() {
-        let key = mangle_layout_key("VecIter", &[ResolvedTy::String]);
+    fn synthetic_cursor_field_store_seeds_classed_monomorphised_helper() {
+        let key = hew_hir::synthetic_cursor_layout_key(BuiltinType::VecIter, &[ResolvedTy::String])
+            .expect("VecIter is a synthetic cursor");
+        let user_key = hew_hir::mangle_layout_key("VecIter", &[ResolvedTy::String]);
+        let vec_iter_string =
+            ResolvedTy::named_builtin("VecIter", BuiltinType::VecIter, vec![ResolvedTy::String]);
         let layouts = vec![
             RecordLayout {
                 name: "Holder".to_string(),
-                field_tys: vec![ResolvedTy::named_user("VecIter", vec![ResolvedTy::String])],
+                field_tys: vec![vec_iter_string.clone()],
                 field_names: vec!["iter".to_string()],
+            },
+            RecordLayout {
+                name: user_key,
+                field_tys: vec![ResolvedTy::I64],
+                field_names: vec!["user_field".to_string()],
             },
             RecordLayout {
                 name: key.clone(),
@@ -1582,7 +1389,46 @@ mod record_field_store_overwrite_tests {
         let funcs = vec![store_function(
             "store_vec_iter",
             ResolvedTy::named_user("Holder", vec![]),
-            ResolvedTy::named_user("VecIter", vec![ResolvedTy::String]),
+            vec_iter_string,
+        )];
+
+        let (record_seeds, enum_seeds) =
+            collect_record_field_store_overwrite_seeds(&funcs, &layouts, &[], &[]);
+        assert_eq!(record_seeds, [key]);
+        assert!(enum_seeds.is_empty());
+    }
+
+    #[test]
+    fn hashmap_cursor_field_store_rejects_same_leaf_user_layout() {
+        let args = [ResolvedTy::String, ResolvedTy::I64];
+        let key = hew_hir::synthetic_cursor_layout_key(BuiltinType::HashMapIter, &args)
+            .expect("HashMapIter is a synthetic cursor");
+        let user_key = hew_hir::mangle_layout_key("HashMapIter", &args);
+        let cursor =
+            ResolvedTy::named_builtin("HashMapIter", BuiltinType::HashMapIter, args.to_vec());
+        let layouts = vec![
+            RecordLayout {
+                name: "Holder".to_string(),
+                field_tys: vec![cursor.clone()],
+                field_names: vec!["iter".to_string()],
+            },
+            // Put the colliding user layout before the synthetic row so a
+            // leaf-based lookup would deterministically select the wrong one.
+            RecordLayout {
+                name: user_key,
+                field_tys: vec![ResolvedTy::I64],
+                field_names: vec!["user_field".to_string()],
+            },
+            RecordLayout {
+                name: key.clone(),
+                field_tys: vec![ResolvedTy::String, ResolvedTy::I64],
+                field_names: vec!["key".to_string(), "value".to_string()],
+            },
+        ];
+        let funcs = vec![store_function(
+            "store_hashmap_iter",
+            ResolvedTy::named_user("Holder", vec![]),
+            cursor,
         )];
 
         let (record_seeds, enum_seeds) =
@@ -1593,7 +1439,7 @@ mod record_field_store_overwrite_tests {
 
     #[test]
     fn generic_enum_field_store_seeds_monomorphised_helper() {
-        let key = mangle_layout_key("Maybe", &[ResolvedTy::String]);
+        let key = hew_hir::mangle_layout_key("Maybe", &[ResolvedTy::String]);
         let records = vec![RecordLayout {
             name: "Holder".to_string(),
             field_tys: vec![ResolvedTy::named_user("Maybe", vec![ResolvedTy::String])],

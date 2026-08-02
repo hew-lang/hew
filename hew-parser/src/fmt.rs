@@ -780,19 +780,39 @@ impl<'a> Formatter<'a> {
 
     fn format_trait_method(&mut self, m: &TraitMethod) {
         self.write_outer_doc(m.doc_comment.as_ref());
-        if let Some(key) = &m.lang_item {
-            self.write_indent();
-            self.write(&format!("#[lang_item(\"{key}\")]\n"));
+        if m.attributes.is_empty() {
+            if let Some(key) = &m.lang_item {
+                self.write_indent();
+                self.write(&format!("#[lang_item(\"{key}\")]\n"));
+            }
+        } else {
+            self.format_attributes(&m.attributes);
         }
         self.write_indent();
         self.write("fn ");
         self.write(&m.name);
-        self.format_fn_signature(
-            m.type_params.as_ref(),
-            &m.params,
-            m.return_type.as_ref(),
-            m.where_clause.as_ref(),
-        );
+        if m.consumes_self {
+            self.format_opt_type_params(m.type_params.as_ref());
+            self.write("(consuming self");
+            let rest = m.params.get(1..).unwrap_or(&[]);
+            if !rest.is_empty() {
+                self.write(", ");
+            }
+            self.format_params(rest);
+            self.write(")");
+            if let Some(ret) = m.return_type.as_ref() {
+                self.write(" -> ");
+                self.format_type_expr(&ret.0);
+            }
+            self.format_opt_where_clause(m.where_clause.as_ref());
+        } else {
+            self.format_fn_signature(
+                m.type_params.as_ref(),
+                &m.params,
+                m.return_type.as_ref(),
+                m.where_clause.as_ref(),
+            );
+        }
         if let Some(body) = &m.body {
             self.write(" ");
             self.format_block(body, self.source.len());
@@ -3979,6 +3999,18 @@ extern \"C\" {
         let src = "\
 fn drain(consume var c: Conn) -> i32 {
     0
+}
+";
+        let formatted = roundtrip(src);
+        assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn preserves_trait_receiver_identity_and_consuming_self() {
+        let src = "\
+trait Fluent {
+    #[returns_receiver]
+    fn with(consuming self, consume child: Child) -> Self;
 }
 ";
         let formatted = roundtrip(src);

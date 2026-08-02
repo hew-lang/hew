@@ -1,0 +1,33 @@
+// The select winner edge deposits a fresh owned string directly into its
+// binding. A later actor panic must find that binding armed and reclaim it;
+// loser/timeout teardown must retain its existing ownership behavior.
+actor FastText {
+    receive fn text() -> string {
+        "selected-value"
+    }
+}
+
+actor Selector {
+    let fast: LocalPid<FastText>;
+
+    receive fn run(trigger: i64) -> i64 {
+        let selected = select {
+            reply from fast.text() => reply,
+            after 500ms => "timed-out",
+        };
+        println(f"selected={selected}");
+        if trigger != 0 {
+            panic("handled crash after select string use");
+        }
+        0
+    }
+}
+
+fn main() {
+    let fast = spawn FastText;
+    let selector = spawn Selector(fast: fast);
+    match await selector.run(1) {
+        Ok(_) => println("unexpected"),
+        Err(_) => println("select-handled-crash"),
+    }
+}

@@ -91,11 +91,11 @@ fn layout_key_hashmap_methods_dual_emit_resolved_calls() {
             "ResolvedCall type args should mirror HashMap<K, V> receiver binding"
         );
         assert_eq!(
-            call.target.call_hint,
+            call.method_target.call_hint,
             hew_types::check::dispatch::CallAbiHint::RuntimeShim
         );
         assert!(
-            !call.target.consumes_receiver,
+            !call.method_target.consumes_receiver,
             "HashMap runtime methods do not consume the receiver"
         );
     }

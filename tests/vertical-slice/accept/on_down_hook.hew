@@ -1,5 +1,4 @@
-import std::failure;
-import std::link_monitor;
+import std::link_monitor::{DownNotification, DownReason, DownTarget};
 
 actor Watcher {
     #[on(down)]

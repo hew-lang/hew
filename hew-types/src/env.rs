@@ -274,6 +274,20 @@ impl TypeEnv {
         false
     }
 
+    /// Restore a binding after a validated receiver-identity method result is
+    /// discarded in place. The method temporarily transfers the one owner
+    /// through `consuming self` and returns that exact owner to this binding.
+    pub fn unmark_moved(&mut self, name: &str) -> bool {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(name) {
+                binding.is_moved = false;
+                binding.moved_at = None;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Mark a variable as written (reassigned after definition).
     pub fn mark_written(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {
@@ -339,6 +353,20 @@ impl TypeEnv {
             }
         }
         None
+    }
+
+    /// Read-only lookup with the defining lexical-scope index.
+    ///
+    /// Import bindings live in the persistent outer scope (index zero), while
+    /// locals and parameters live in a body scope. Callers that validate an
+    /// imported namespace must preserve that ordinary local-shadowing rule.
+    #[must_use]
+    pub fn lookup_ref_with_depth(&self, name: &str) -> Option<(usize, &Binding)> {
+        self.scopes
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(depth, scope)| scope.get(name).map(|binding| (depth, binding)))
     }
 
     /// Look up a variable by name, returning the scope depth where it was found. Marks as used.

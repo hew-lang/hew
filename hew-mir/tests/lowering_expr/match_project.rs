@@ -1,7 +1,7 @@
 use hew_hir::{lower_program, IntentKind, ResolutionCtx};
 use hew_mir::{
     lower_hir_module, DropKind, ElabDrop, ExitPath, FieldOffset, Instr, IrPipeline,
-    MirDiagnosticKind, MirStatement,
+    MirDiagnosticKind, MirStatement, Place,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -1237,6 +1237,10 @@ fn main() -> i64 {
 /// of that exactly-once split. Removing the delayed exit release leaks on
 /// panic/cancel; duplicating it competes with itself on the same exit.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the regression audits every exit of one generation-aware projection pipeline"
+)]
 fn vec_string_projection_forward_has_one_release_per_exit() {
     let pipeline = pipeline_with_tc(
         r#"
@@ -1274,15 +1278,42 @@ fn main() -> i64 {
             })
         })
         .collect::<Vec<_>>();
+    let raw = pipeline
+        .raw_mir
+        .iter()
+        .find(|raw| raw.name == "join_like")
+        .expect("join_like raw MIR");
+    let result_local = raw
+        .local_names
+        .iter()
+        .position(|name| name.as_deref() == Some("result"))
+        .expect("result binding local");
+    let owner = Place::Local(u32::try_from(result_local).expect("local index fits u32"));
+    let destination_drops = delayed
+        .iter()
+        .filter(|(_, drop)| drop.place == owner)
+        .collect::<Vec<_>>();
     assert_eq!(
-        delayed.len(),
+        destination_drops.len(),
         5,
-        "the projected result must release on each of the five panic/cancel exits"
+        "the destination generation must release on each of the five panic/cancel exits"
     );
-    let owner = delayed[0].1.place;
-    assert!(
-        delayed.iter().all(|(_, drop)| drop.place == owner),
-        "all exceptional exits must release the same projected result owner"
+    let intermediate_drops = delayed
+        .iter()
+        .filter(|(_, drop)| drop.place != owner)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        intermediate_drops.len(),
+        4,
+        "the first concat generation stays live across the projected RHS and must release once on each later exit"
+    );
+    let intermediate_owner = intermediate_drops[0].1.place;
+    assert!(intermediate_drops
+        .iter()
+        .all(|(_, drop)| drop.place == intermediate_owner));
+    assert_ne!(
+        owner, intermediate_owner,
+        "destination and first-concat generations must never alias one cleanup authority"
     );
     for (exit, plan) in &function.drop_plans {
         let releases = plan

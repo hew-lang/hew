@@ -489,6 +489,11 @@ pub extern "C" fn hew_context_reply_channel_swap_pop() {
 ///
 /// The child never deposited (it trapped/unwound), so both the retained sender
 /// ref and the creator ref are released, matching the codegen abandon path.
+/// Reply routing and every driver channel are restored/torn down before the
+/// scheduler's subsequent frame-registry drain invokes typed cleanup in stable
+/// LIFO order before raw reclamation. Resumed-root typed entries run in that
+/// drain even though its raw allocation remains excluded until
+/// `abandon_resuming_after_crash`.
 ///
 /// No-double-free: the normal-return edge already popped its own frames via the
 /// codegen swap-pop, so the swap stack is empty there and neither sibling edge
@@ -500,10 +505,12 @@ pub extern "C" fn hew_context_reply_channel_swap_pop() {
 /// suspending-closure swap.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn reply_channel_swap_unwind() {
-    loop {
-        let swap = REPLY_CHANNEL_SWAP_STACK.with(|stack| stack.borrow_mut().pop());
-        let Some(swap) = swap else { break };
-        restore_reply_channel_swap(&swap);
+    let swaps = REPLY_CHANNEL_SWAP_STACK.with(|stack| std::mem::take(&mut *stack.borrow_mut()));
+
+    // Restore all routing and tear down every driver-owned channel. Typed
+    // destruction is owned by the tracked-frame registry and runs afterward.
+    for swap in swaps.iter().rev() {
+        restore_reply_channel_swap(swap);
         if !swap.driver_channel.is_null() {
             // SAFETY: `driver_channel` is a live `HewReplyChannel` created by the
             // driver via `hew_reply_channel_new` and retained once; teardown
@@ -1033,6 +1040,40 @@ mod tests {
             "the swap stack is drained after a balanced push/pop"
         );
 
+        let _ = set_current_context(prev);
+    }
+
+    #[test]
+    fn nested_swap_pop_restores_reply_channels_in_lifo_order() {
+        let _runtime_guard = crate::runtime_test_guard();
+        let _context_guard = ContextResetGuard::new();
+        let ambient = 0x0A0A_0A0A_usize as *mut c_void;
+        let outer = 0x0B0B_0B0B_usize as *mut c_void;
+        let inner = 0x0C0C_0C0C_usize as *mut c_void;
+        let mut ctx = HewExecutionContext {
+            reply_channel: ambient,
+            ..HewExecutionContext::default()
+        };
+        let prev = set_current_context(&raw mut ctx);
+
+        hew_context_reply_channel_swap_push(outer);
+        hew_context_reply_channel_swap_push(inner);
+        assert_eq!(ctx.reply_channel, inner);
+        assert_eq!(reply_channel_swap_stack_depth(), 2);
+
+        hew_context_reply_channel_swap_pop();
+        assert_eq!(
+            ctx.reply_channel, outer,
+            "popping the inner swap must restore the enclosing driver channel"
+        );
+        assert_eq!(reply_channel_swap_stack_depth(), 1);
+
+        hew_context_reply_channel_swap_pop();
+        assert_eq!(
+            ctx.reply_channel, ambient,
+            "popping the outer swap must restore the ambient dispatch channel"
+        );
+        assert_eq!(reply_channel_swap_stack_depth(), 0);
         let _ = set_current_context(prev);
     }
 

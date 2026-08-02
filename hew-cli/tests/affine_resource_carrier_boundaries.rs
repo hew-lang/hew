@@ -144,6 +144,87 @@ fn main() -> i64 {
 }
 ";
 
+/// Receiver slots have no clone thunk: this is the sole accepted construction
+/// shape, which moves `rx` into the descriptor-backed Vec then lets the Vec
+/// close it at scope exit.
+const CHANNEL_RECEIVER_MOVE_BODY: &str = r"
+import std::channel::channel;
+
+fn main() -> i64 {
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    println(receivers.len());
+    0
+}
+";
+
+const CHANNEL_RECEIVER_GET_BODY: &str = r"
+import std::channel::channel;
+
+fn main() -> i64 {
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    let _item = receivers.get(0);
+    0
+}
+";
+
+const CHANNEL_RECEIVER_INDEX_BODY: &str = r"
+import std::channel::channel;
+
+fn main() -> i64 {
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    let _item = receivers[0];
+    0
+}
+";
+
+const CHANNEL_RECEIVER_SLICE_BODY: &str = r"
+import std::channel::channel;
+
+fn main() -> i64 {
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    let _slice = receivers[0..1];
+    0
+}
+";
+
+const CHANNEL_RECEIVER_ITER_BODY: &str = r"
+import std::channel::channel;
+
+fn main() -> i64 {
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    let _iter = receivers.iter();
+    0
+}
+";
+
+const CHANNEL_RECEIVER_COPY_PUSH_BODY: &str = r"
+import std::channel::channel;
+
+fn main() -> i64 {
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    var receivers: Vec<channel.Receiver<Token>> = Vec::new();
+    receivers.push(rx);
+    0
+}
+";
+
+const CHANNEL_RECEIVER_COPY_SET_BODY: &str = r"
+import std::channel::channel;
+
+fn main() -> i64 {
+    let (_tx1, rx1): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx2, rx2): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    var receivers: Vec<channel.Receiver<Token>> = [rx1];
+    receivers.set(0, rx2);
+    0
+}
+";
+
 fn source(body: &str) -> String {
     format!("{TOKEN}\n{body}")
 }
@@ -200,6 +281,28 @@ fn raw_mir(name: &str, body: &str) -> String {
         describe_output(&output)
     );
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn compile_rejected(name: &str, body: &str) -> String {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("affine-resource-reject-{name}-"))
+        .tempdir()
+        .expect("tempdir");
+    let input = dir.path().join(format!("{name}.hew"));
+    std::fs::write(&input, source(body)).expect("write rejection fixture");
+    let output = Command::new(hew_binary())
+        .arg("compile")
+        .arg(&input)
+        .current_dir(repo_root())
+        .output()
+        .expect("invoke rejection compile");
+    assert!(
+        !output.status.success(),
+        "{name} must be rejected before native code generation:\n{}",
+        describe_output(&output)
+    );
+    strip_ansi(&String::from_utf8_lossy(&output.stderr))
 }
 
 fn function<'a>(dump: &'a str, header: &str) -> &'a str {
@@ -363,8 +466,15 @@ fn channel_handle_clone_terminals_match_runtime_semantics() {
     let sender_mir = raw_mir("channel_sender_clone", CHANNEL_SENDER_CLONE_BODY);
     assert!(
         sender_mir.contains("call hew_vec_clone_owned(")
-            && !sender_mir.contains("call hew_vec_clone_layout("),
-        "Vec<Sender<AffineT>> must use the thunk-bearing owned descriptor lane:\n{sender_mir}"
+            && sender_mir.contains("call hew_vec_push_owned_move(")
+            && sender_mir.lines().any(|line| {
+                line.contains(" tx ")
+                    && line.contains("ty=Sender<Token>")
+                    && line.contains("intent=Consume")
+            })
+            && !sender_mir.contains("call hew_vec_clone_layout(")
+            && !sender_mir.contains("call hew_vec_push_ptr("),
+        "Vec<Sender<AffineT>> must consume its source into, and clone through, the thunk-bearing owned descriptor lane:\n{sender_mir}"
     );
 
     let dir = tempfile::Builder::new()
@@ -388,6 +498,75 @@ fn channel_handle_clone_terminals_match_runtime_semantics() {
             && stderr.contains("affine close contract"),
         "Receiver has no dup helper and must be rejected by the shared affine-clone authority:\n{stderr}"
     );
+}
+
+#[test]
+fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
+    require_codegen();
+    let dir = tempfile::Builder::new()
+        .prefix("affine-resource-channel-receiver-move-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        &source(CHANNEL_RECEIVER_MOVE_BODY),
+        dir.path(),
+        "receiver_move",
+    );
+    let output = Command::new(&bin)
+        .current_dir(repo_root())
+        .output()
+        .expect("run receiver Vec move fixture");
+    assert!(
+        output.status.success(),
+        "drop-only Receiver Vec move must run cleanly:\n{}",
+        describe_output(&output)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+
+    let mir = raw_mir("receiver_move", CHANNEL_RECEIVER_MOVE_BODY);
+    assert!(
+        mir.contains("call hew_vec_push_owned_move(")
+            && mir.lines().any(|line| {
+                line.contains(" rx ")
+                    && line.contains("ty=Receiver<Token>")
+                    && line.contains("intent=Consume")
+            })
+            && !mir.contains("call hew_vec_push_ptr("),
+        "array construction must consume Receiver into the owned move lane:\n{mir}"
+    );
+
+    let ir = std::fs::read_to_string(dir.path().join("receiver_move.ll"))
+        .expect("read drop-only Receiver Vec LLVM IR");
+    assert!(
+        ir.contains("@__hew_vec_elem_layout_channel_receiver_drop_only")
+            && ir.contains("call ptr @hew_vec_new_with_elem_layout")
+            && ir.contains("call void @hew_vec_push_owned_move")
+            && ir.contains("call void @hew_vec_free_owned")
+            && ir.contains("define internal void @__hew_vec_channel_receiver_drop_inplace")
+            && ir.contains("call void @hew_channel_receiver_close")
+            && ir.contains("ptr null, ptr @__hew_vec_channel_receiver_drop_inplace"),
+        "Receiver Vec must emit clone-null descriptor, move ingress, and one close-on-free wrapper:\n{ir}"
+    );
+
+    for (name, body) in [
+        ("receiver_get", CHANNEL_RECEIVER_GET_BODY),
+        ("receiver_index", CHANNEL_RECEIVER_INDEX_BODY),
+        ("receiver_slice", CHANNEL_RECEIVER_SLICE_BODY),
+        ("receiver_iter", CHANNEL_RECEIVER_ITER_BODY),
+        ("receiver_copy_push", CHANNEL_RECEIVER_COPY_PUSH_BODY),
+        ("receiver_copy_set", CHANNEL_RECEIVER_COPY_SET_BODY),
+    ] {
+        let stderr = compile_rejected(name, body);
+        assert!(
+            stderr.contains("Receiver")
+                && (stderr.contains("drop-only")
+                    || stderr.contains("cannot be cloned")
+                    || stderr.contains("affine close contract")
+                    || stderr.contains("semantic clone")
+                    || stderr.contains("owned handle")),
+            "{name} must reject the copy/read surface through the affine Receiver contract:\n{stderr}"
+        );
+    }
 }
 
 fn contains_native_artifact(dir: &Path) -> bool {

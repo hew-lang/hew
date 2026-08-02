@@ -21,15 +21,10 @@ use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropKind, DropPlan, ElabBlock, ElabDrop,
     ElaboratedMirFunction, ExitPath, Instr, IrPipeline, Place, RawMirFunction, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 fn duplex_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "Duplex".to_string(),
-        args: vec![],
-        builtin: None,
-        is_opaque: false,
-    }
+    ResolvedTy::named_builtin("renamed.DuplexPresentation", BuiltinType::Duplex, vec![])
 }
 
 /// Build a pipeline whose close calls arrive exclusively via

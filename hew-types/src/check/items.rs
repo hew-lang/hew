@@ -1113,14 +1113,14 @@ impl Checker {
     }
 
     pub(super) fn check_actor(&mut self, ad: &ActorDecl) {
-        // The actor's checker identity: dotted `{module_short}.{name}` for a
+        // The actor's checker identity: dotted `{module_path}.{name}` for a
         // module actor (the body is checked with `current_module` set), bare
         // for root/flat actors. All signature lookups during body checking
         // (`fn_sigs["{identity}::{rf}"]`), the `this` receiver type, and the
         // max-heap table key must use the same identity the registration
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
-        let identity = Self::actor_identity(self.current_module_short(), &ad.name);
+        let identity = Self::actor_identity(self.current_module.as_deref(), &ad.name);
         let actor_ty = Ty::Named {
             builtin: None,
             name: identity.clone(),
@@ -1581,7 +1581,7 @@ impl Checker {
                 let is_crash_info = is_canonical_std_named_type(
                     &pty,
                     crate::BuiltinType::CrashInfo,
-                    "failure.CrashInfo",
+                    "std.failure.CrashInfo",
                 );
                 if !is_crash_info {
                     self.errors.push(TypeError::new(
@@ -1625,7 +1625,7 @@ impl Checker {
             if !is_canonical_std_named_type(
                 &ty,
                 crate::BuiltinType::CrashAction,
-                "failure.CrashAction",
+                "std.failure.CrashAction",
             ) {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
@@ -1724,17 +1724,14 @@ impl Checker {
         // Param: exactly one canonical `note: CrashNotification`. Match either
         // the compiler discriminator or the exact source-owned std identity:
         // the module graph resolves the declaration to
-        // `failure.CrashNotification` without a builtin marker, while an
+        // `std.failure.CrashNotification` without a builtin marker, while an
         // unrelated user type can share the short name.
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_crash_notification = is_canonical_std_named_type(
-                    &pty,
-                    crate::BuiltinType::CrashNotification,
-                    "failure.CrashNotification",
-                );
-                if !is_crash_notification {
+                let is_crash_notification =
+                    is_canonical_lifecycle_source_type(&pty, "std.failure.CrashNotification");
+                if !is_crash_notification && !matches!(pty, Ty::Error) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         p.ty.1.clone(),
@@ -1814,12 +1811,9 @@ impl Checker {
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
-                let is_down_notification = is_canonical_std_named_type(
-                    &pty,
-                    crate::BuiltinType::DownNotification,
-                    "link_monitor.DownNotification",
-                );
-                if !is_down_notification {
+                let is_down_notification =
+                    is_canonical_lifecycle_source_type(&pty, "std.link_monitor.DownNotification");
+                if !is_down_notification && !matches!(pty, Ty::Error) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         p.ty.1.clone(),
@@ -1959,7 +1953,7 @@ impl Checker {
         }
 
         if valid_every_duration {
-            self.warn_wasm_limitation(&attr.span, WasmUnsupportedFeature::Timers);
+            self.warn_wasm_limitation(&attr.span, WasmUnsupportedFeature::PeriodicTimers);
         }
 
         // Periodic handlers must not have parameters (they receive no message payload).
@@ -2428,6 +2422,10 @@ impl Checker {
         is_receiver: bool,
     ) {
         let resolved_param_ty = self.subst.resolve(ty);
+        if !is_receiver && self.param_ty_has_caller_visible_projection(&resolved_param_ty) {
+            self.caller_visible_param_projections
+                .insert(SpanKey::in_module(&param.ty.1, self.current_module_idx));
+        }
         if !param.is_mutable
             || is_receiver
             || !self.param_var_has_no_caller_visible_effect(&resolved_param_ty)
@@ -2517,6 +2515,11 @@ impl Checker {
         visiting_nominals: &mut std::collections::HashSet<String>,
     ) -> bool {
         match self.subst.resolve(ty) {
+            // Hew's CoW descriptor values are borrowed across an ordinary
+            // function boundary. A bytes mutator can replace the descriptor's
+            // backing representation, so the positive checker fact must
+            // survive even though String/Bytes are not `BuiltinType` handles.
+            Ty::String | Ty::Bytes => true,
             Ty::Named {
                 builtin: Some(builtin),
                 args: _,
@@ -2616,6 +2619,21 @@ fn is_canonical_std_named_type(
         } if args.is_empty()
             && (*resolved_builtin == Some(builtin)
                 || (resolved_builtin.is_none() && name == source_identity))
+    )
+}
+
+/// Lifecycle payload records are source-owned: after resolution, only their
+/// canonical owner-qualified source identity proves the hook ABI.  Unlike
+/// compiler-intrinsic carriers, a bare builtin discriminator is not authority
+/// for these records because it has no accompanying source layout.
+fn is_canonical_lifecycle_source_type(ty: &Ty, source_identity: &str) -> bool {
+    matches!(
+        ty,
+        Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } if args.is_empty() && name == source_identity
     )
 }
 

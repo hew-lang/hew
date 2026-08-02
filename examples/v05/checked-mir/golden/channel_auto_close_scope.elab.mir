@@ -11,6 +11,8 @@ fn main -> ()
     return site=Some(SiteId(11)) ty=()
     bind BindingId(4) msg site=SiteId(15) ty=string
     use BindingId(4) msg site=SiteId(16) ty=string intent=Read
+    drop BindingId(3) rx ty=Receiver<string>
+    drop BindingId(2) tx ty=Sender<string>
     drop BindingId(1) __tuple_0 ty=(Sender<string>, Receiver<string>)
   drop_plans:
     call[bb0 channel$new -> bb1] ->
@@ -24,23 +26,31 @@ fn main -> ()
     branch[bb3: bb5/bb8] ->
       (none)
     return[bb4] ->
-      (none)
+      drop _6 ty=Receiver<string> kind=resource fn=rt(ReceiverClose)
+      drop _4 ty=Sender<string> kind=resource fn=rt(SenderClose)
+      drop _2 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     call[bb5 println_str -> bb9] ->
       (none)
     call[bb6 println_str -> bb10] ->
       (none)
     panic[bb7] ->
-      (none)
+      drop _6 ty=Receiver<string> kind=resource fn=rt(ReceiverClose)
+      drop _4 ty=Sender<string> kind=resource fn=rt(SenderClose)
+      drop _2 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     branch[bb8: bb6/bb7] ->
       (none)
     goto[bb9->bb4] ->
       (none)
     cancel[bb9] ->
-      (none)
+      drop _6 ty=Receiver<string> kind=resource fn=rt(ReceiverClose)
+      drop _4 ty=Sender<string> kind=resource fn=rt(SenderClose)
+      drop _2 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     goto[bb10->bb4] ->
       (none)
     cancel[bb10] ->
-      (none)
+      drop _6 ty=Receiver<string> kind=resource fn=rt(ReceiverClose)
+      drop _4 ty=Sender<string> kind=resource fn=rt(SenderClose)
+      drop _2 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
 
 fn Sender::send -> ()
   statements:
@@ -173,6 +183,8 @@ fn channel$try_new -> Result<(Sender, Receiver), string>
     eval site=SiteId(98) ty=()
     use BindingId(18) tx site=SiteId(103) ty=Sender intent=Consume
     use BindingId(19) rx site=SiteId(104) ty=Receiver intent=Consume
+    agg_alias BindingId(18) tx site=SiteId(103) ty=Sender
+    agg_alias BindingId(19) rx site=SiteId(104) ty=Receiver
     return site=Some(SiteId(70)) ty=Result<(Sender, Receiver), string>
     drop BindingId(17) detail ty=string
   drop_plans:

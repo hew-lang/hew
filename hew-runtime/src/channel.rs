@@ -53,19 +53,93 @@ impl Drop for HewChannelSender {
 
 /// Opaque receiver handle. Only one receiver per channel.
 ///
-/// `pending_read` / `pending_state` back the `select{}` channel-recv arm
-/// (NEW-4), mirroring `HewStream`'s poll registration: `hew_channel_poll`
-/// parks a foreign thread that waits for readiness and fires the select
-/// readiness callback; `hew_channel_cancel_pending_read` withdraws a losing
-/// arm's registration.
+/// `poll_registration` backs the `select{}` channel-recv arm (NEW-4), mirroring
+/// `HewStream`'s poll registration: `hew_channel_poll` parks a foreign thread
+/// that waits for readiness and fires the select readiness callback;
+/// `hew_channel_cancel_pending_read` withdraws a losing arm's registration.
 #[derive(Debug)]
 pub struct HewChannelReceiver {
     core: Arc<ChannelCore>,
+    /// Select-poll registration state. The poll thread owns an `Arc` clone, so
+    /// receiver teardown can race a completed poll without leaving the thread
+    /// a raw pointer back into the freed receiver allocation.
+    poll_registration: Arc<ChannelPollRegistration>,
+}
+
+impl Drop for HewChannelReceiver {
+    fn drop(&mut self) {
+        self.poll_registration.cancel_active(&self.core);
+        self.core.close_stream();
+    }
+}
+
+/// Receiver-independent state shared with the select-poll thread.
+///
+/// Keeping this state in an `Arc` is the teardown boundary: a late poll wake
+/// can clear its own registration and consume its retained observer without
+/// dereferencing the receiver after its affine owner has dropped it.
+#[derive(Debug)]
+struct ChannelPollRegistration {
     /// Active pending-read id, or 0 if none. The "at most one pending poll per
     /// receiver" invariant is enforced by CAS on this field.
     pending_read: AtomicU64,
     /// Shared cancel flag + park-state for the active poll, `None` when idle.
     pending_state: Mutex<Option<Arc<ChannelPoll>>>,
+}
+
+impl ChannelPollRegistration {
+    fn new() -> Self {
+        Self {
+            pending_read: AtomicU64::new(0),
+            pending_state: Mutex::new(None),
+        }
+    }
+
+    fn cancel(&self, core: &ChannelCore, id: u64) {
+        if id == 0 || self.pending_read.load(Ordering::Acquire) != id {
+            return;
+        }
+        let poll = {
+            let mut slot = self
+                .pending_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Re-check under the state lock. The prior poll may have completed
+            // and admitted a new id between the fast-path load above and this
+            // lock acquisition; an old cancellation must never take the new
+            // poll's state.
+            if self.pending_read.load(Ordering::Acquire) == id {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some(poll) = poll {
+            let won = {
+                let mut state = poll
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if *state == ChannelPollState::Pending {
+                    *state = ChannelPollState::Cancelled;
+                    true
+                } else {
+                    false
+                }
+            };
+            let _ = self
+                .pending_read
+                .compare_exchange(id, 0, Ordering::AcqRel, Ordering::Acquire);
+            core.cancel_wait(&poll.cancelled);
+            if won {
+                (poll.release)(poll.observer as *mut c_void);
+            }
+        }
+    }
+
+    fn cancel_active(&self, core: &ChannelCore) {
+        self.cancel(core, self.pending_read.load(Ordering::Acquire));
+    }
 }
 
 /// Park-thread state for a `select{}` channel-recv poll (NEW-4). Mirrors the
@@ -153,8 +227,7 @@ pub extern "C" fn hew_channel_new(capacity: i64) -> *mut HewChannelPair {
     })); // ALLOCATOR-PAIRING: GlobalAlloc
     let receiver = Box::into_raw(Box::new(HewChannelReceiver {
         core,
-        pending_read: AtomicU64::new(0),
-        pending_state: Mutex::new(None),
+        poll_registration: Arc::new(ChannelPollRegistration::new()),
     })); // ALLOCATOR-PAIRING: GlobalAlloc
 
     Box::into_raw(Box::new(HewChannelPair { sender, receiver })) // ALLOCATOR-PAIRING: GlobalAlloc
@@ -371,9 +444,9 @@ pub unsafe extern "C" fn hew_channel_sender_close(sender: *mut HewChannelSender)
 
 /// Close and free a receiver handle.
 ///
-/// Closes the consumer side of the core (waking any parked producer so its
-/// `send` resolves as a no-op) before releasing the handle. Receive must never
-/// double-close: only this consuming `close` tears the consumer side down.
+/// Dropping [`HewChannelReceiver`] is the single protocol authority: it
+/// cancels any active select poll and closes the consumer side of the core,
+/// waking parked producers so their sends resolve as no-ops.
 ///
 /// # Safety
 ///
@@ -384,10 +457,9 @@ pub unsafe extern "C" fn hew_channel_receiver_close(receiver: *mut HewChannelRec
     if receiver.is_null() {
         return;
     }
-    // SAFETY: caller guarantees receiver was Box-allocated and is exclusively owned.
-    let receiver = unsafe { Box::from_raw(receiver) }; // ALLOCATOR-PAIRING: GlobalAlloc
-    receiver.core.close_stream();
-    drop(receiver);
+    // SAFETY: caller guarantees receiver was Box-allocated and is exclusively
+    // owned. Dropping the box runs the receiver's sole teardown protocol.
+    unsafe { drop(Box::from_raw(receiver)) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 // ── Suspending receive (NEW-4) ───────────────────────────────────────────────
@@ -490,8 +562,9 @@ pub unsafe extern "C" fn hew_channel_detach_recv(
 ///
 /// # Safety
 ///
-/// `receiver` is a live receiver handle that outlives the park thread (the
-/// caller cancels every losing arm before the select site returns).
+/// `receiver` is a live receiver handle for the duration of this call. The
+/// spawned poll owns receiver-independent registration/core references, so
+/// receiver teardown can safely cancel or race its completion.
 /// `callback` and `userdata` are a `hew_reply_channel_signal_ready` fn pointer
 /// and its `*mut HewReplyChannel`; `release` releases exactly one reference of
 /// that same `userdata` (e.g. `hew_reply_channel_free`).
@@ -507,13 +580,13 @@ pub unsafe extern "C" fn hew_channel_poll(
     }
     let id = NEXT_CHANNEL_POLL_ID.fetch_add(1, Ordering::Relaxed);
 
-    // SAFETY: receiver is valid per caller contract; pending_read is an
-    // AtomicU64 designed for concurrent access.
-    let prev = unsafe {
-        (*receiver)
+    // SAFETY: receiver is valid per caller contract. The poll thread owns a
+    // clone of this registration and never retains the raw receiver pointer.
+    let registration = unsafe { Arc::clone(&(*receiver).poll_registration) };
+    let prev =
+        registration
             .pending_read
-            .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire)
-    };
+            .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire);
     if let Err(existing) = prev {
         eprintln!(
             "hew_channel_poll: at most one pending poll per receiver \
@@ -528,19 +601,16 @@ pub unsafe extern "C" fn hew_channel_poll(
         observer: userdata as usize,
         release,
     });
-    // SAFETY: receiver is valid; pending_state is a Mutex.
-    unsafe {
-        let mut slot = (*receiver)
-            .pending_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *slot = Some(Arc::clone(&poll));
-    }
+    let mut slot = registration
+        .pending_state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *slot = Some(Arc::clone(&poll));
+    drop(slot);
 
     // SAFETY: the core is alive (the receiver holds an Arc clone); clone the Arc
     // so the park thread keeps the core alive independent of a racing close.
     let core = unsafe { Arc::clone(&(*receiver).core) };
-    let receiver_addr = receiver as usize;
     let userdata_addr = userdata as usize;
     std::thread::spawn(move || {
         // Wait for readiness without consuming; returns false if cancelled.
@@ -554,18 +624,23 @@ pub unsafe extern "C" fn hew_channel_poll(
             ChannelPollState::Pending if ready => {
                 *state = ChannelPollState::Done;
                 drop(state);
-                // Clear the registration before firing so the receiver can be
-                // re-polled (no recursion within the callback).
-                let receiver = receiver_addr as *mut HewChannelReceiver;
-                // SAFETY: the receiver outlives the park thread per the caller
-                // contract; pending_read / pending_state are the sync fields.
-                unsafe {
-                    (*receiver).pending_read.store(0, Ordering::Release);
-                    let mut s = (*receiver)
+                // Clear only this registration before firing. A cancellation
+                // racing this completed poll may already have admitted a new
+                // registration, which this thread must not erase.
+                let _ = registration.pending_read.compare_exchange(
+                    id,
+                    0,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                {
+                    let mut s = registration
                         .pending_state
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    *s = None;
+                    if s.as_ref().is_some_and(|active| Arc::ptr_eq(active, &poll)) {
+                        *s = None;
+                    }
                 }
                 callback(userdata_addr as *mut c_void);
             }
@@ -596,44 +671,7 @@ pub unsafe extern "C" fn hew_channel_cancel_pending_read(
     }
     // SAFETY: receiver is valid per caller contract.
     let receiver = unsafe { &*receiver };
-    // Only cancel if THIS id is the active one.
-    if receiver.pending_read.load(Ordering::Acquire) != id {
-        return;
-    }
-    let poll = {
-        let mut slot = receiver
-            .pending_state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        slot.take()
-    };
-    if let Some(poll) = poll {
-        let won = {
-            let mut state = poll
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if *state == ChannelPollState::Pending {
-                *state = ChannelPollState::Cancelled;
-                true
-            } else {
-                // The park thread already fired (Done) — it owns and consumed
-                // the observer reference. Nothing to release here.
-                false
-            }
-        };
-        receiver.pending_read.store(0, Ordering::Release);
-        // H2: set the cancel predicate AND wake the park thread under the core's
-        // mutex so the store cannot slip between `wait_ready`'s predicate check
-        // and its park — the cancel wake can never be lost.
-        receiver.core.cancel_wait(&poll.cancelled);
-        // H1: this cancel won the `Pending → Cancelled` transition, so the
-        // readiness callback will NOT fire. Ownership of the retained observer
-        // reference handed to this path — release it exactly once.
-        if won {
-            (poll.release)(poll.observer as *mut c_void);
-        }
-    }
+    receiver.poll_registration.cancel(&receiver.core, id);
 }
 
 // ── Deadline-cancel cleanup callback (NEW-6b) ───────────────────────────────
@@ -782,6 +820,120 @@ mod tests {
             assert!(!rx.is_null());
             hew_channel_pair_free(pair);
             hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn abi_pair_state_matrix_repeats_exactly() {
+        for _ in 0..128 {
+            // Neither child extracted: pair teardown owns both endpoints.
+            let pair = hew_channel_new(2);
+            // SAFETY: pair and both child pointers are fresh and live.
+            unsafe {
+                let core = Arc::clone(&(*(*pair).receiver).core);
+                let senders = Arc::clone(&(*(*pair).sender).senders);
+                assert_eq!(senders.load(Ordering::Acquire), 1);
+                assert!(!core.is_stream_closed());
+                hew_channel_pair_free(pair);
+                assert_eq!(senders.load(Ordering::Acquire), 0);
+                assert!(core.is_stream_closed());
+            }
+
+            // Sender only extracted: pair teardown closes the retained
+            // receiver, while the extracted sender remains one live owner.
+            let pair = hew_channel_new(2);
+            // SAFETY: pair is fresh; sender moves out once and is closed once.
+            unsafe {
+                let tx = hew_channel_pair_sender(pair);
+                assert!(hew_channel_pair_sender(pair).is_null());
+                let core = Arc::clone(&(*tx).core);
+                let senders = Arc::clone(&(*tx).senders);
+                hew_channel_pair_free(pair);
+                assert_eq!(senders.load(Ordering::Acquire), 1);
+                assert!(core.is_stream_closed());
+                hew_channel_sender_close(tx);
+                assert_eq!(senders.load(Ordering::Acquire), 0);
+            }
+
+            // Receiver only extracted: pair teardown drops the retained last
+            // sender, so the receiver observes EOF.
+            let pair = hew_channel_new(2);
+            // SAFETY: pair is fresh; receiver moves out once and is closed once.
+            unsafe {
+                let rx = hew_channel_pair_receiver(pair);
+                assert!(hew_channel_pair_receiver(pair).is_null());
+                hew_channel_pair_free(pair);
+                assert!(recv_str(rx).is_null());
+                hew_channel_receiver_close(rx);
+            }
+
+            // Both extracted: pair teardown owns only its shell.
+            let pair = hew_channel_new(2);
+            // SAFETY: pair is fresh; each child moves out and closes once.
+            unsafe {
+                let tx = hew_channel_pair_sender(pair);
+                let rx = hew_channel_pair_receiver(pair);
+                assert!(hew_channel_pair_sender(pair).is_null());
+                assert!(hew_channel_pair_receiver(pair).is_null());
+                let senders = Arc::clone(&(*tx).senders);
+                hew_channel_pair_free(pair);
+                assert_eq!(senders.load(Ordering::Acquire), 1);
+                assert!(!(*tx).core.is_stream_closed());
+                send_str(tx, c"both");
+                let got = recv_str(rx);
+                assert_eq!(CStr::from_ptr(got).to_bytes(), b"both");
+                crate::cabi::free_cstring(got);
+                hew_channel_sender_close(tx);
+                assert_eq!(senders.load(Ordering::Acquire), 0);
+                hew_channel_receiver_close(rx);
+            }
+        }
+    }
+
+    #[test]
+    fn receiver_explicit_close_and_pair_drop_share_protocol_authority() {
+        let pair = hew_channel_new(2);
+        // SAFETY: pair owns both fresh children.
+        let pair_core = unsafe { Arc::clone(&(*(*pair).receiver).core) };
+        // SAFETY: pair remains exclusively owned.
+        unsafe { hew_channel_pair_free(pair) };
+        assert!(pair_core.is_stream_closed());
+
+        let pair = hew_channel_new(2);
+        // SAFETY: extract each fresh child exactly once.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            let explicit_core = Arc::clone(&(*rx).core);
+            hew_channel_pair_free(pair);
+            assert!(!explicit_core.is_stream_closed());
+            hew_channel_receiver_close(rx);
+            assert!(explicit_core.is_stream_closed());
+            hew_channel_sender_close(tx);
+        }
+    }
+
+    #[test]
+    fn sender_clone_count_tracks_each_handle_exactly() {
+        let pair = hew_channel_new(2);
+        // SAFETY: pair and handles remain exclusively owned by this test.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+            let count = Arc::clone(&(*tx).senders);
+            assert_eq!(count.load(Ordering::Acquire), 1);
+            let tx2 = hew_channel_sender_clone(tx);
+            assert_eq!(count.load(Ordering::Acquire), 2);
+            hew_channel_sender_close(tx);
+            assert_eq!(count.load(Ordering::Acquire), 1);
+            send_str(tx2, c"clone");
+            let got = recv_str(rx);
+            assert_eq!(CStr::from_ptr(got).to_bytes(), b"clone");
+            crate::cabi::free_cstring(got);
+            hew_channel_sender_close(tx2);
+            assert_eq!(count.load(Ordering::Acquire), 0);
             hew_channel_receiver_close(rx);
         }
     }
@@ -1066,6 +1218,129 @@ mod tests {
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn receiver_drop_cancels_pending_poll_without_late_receiver_access() {
+        let pair = hew_channel_new(2);
+        let obs = PollObserver {
+            fired: AtomicUsize::new(0),
+            released: AtomicUsize::new(0),
+        };
+        // SAFETY: pair and extracted handles are fresh and exclusively owned.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+            let registration = Arc::clone(&(*rx).poll_registration);
+
+            let id = hew_channel_poll(
+                rx,
+                test_select_signal,
+                std::ptr::addr_of!(obs) as *mut c_void,
+                test_select_release,
+            );
+            assert_ne!(id, 0);
+
+            // Receiver Drop owns cancellation. It releases the retained
+            // observer and the poll thread retains no receiver address.
+            hew_channel_receiver_close(rx);
+            assert_eq!(obs.released.load(Ordering::SeqCst), 1);
+            assert_eq!(obs.fired.load(Ordering::SeqCst), 0);
+
+            let mut spins = 0;
+            while Arc::strong_count(&registration) != 1 {
+                std::thread::yield_now();
+                spins += 1;
+                assert!(spins < 1_000_000, "cancelled poll thread did not exit");
+            }
+
+            // A producer action after the poll thread exits cannot resurrect
+            // the callback or touch the freed receiver.
+            send_str(tx, c"late");
+            assert_eq!(obs.fired.load(Ordering::SeqCst), 0);
+            assert_eq!(obs.released.load(Ordering::SeqCst), 1);
+            hew_channel_sender_close(tx);
+        }
+    }
+
+    #[test]
+    fn stale_poll_cancel_cannot_withdraw_a_new_registration() {
+        let pair = hew_channel_new(2);
+        let obs = PollObserver {
+            fired: AtomicUsize::new(0),
+            released: AtomicUsize::new(0),
+        };
+        // SAFETY: pair and extracted handles are fresh and exclusively owned.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            send_str(tx, c"first");
+            let first_id = hew_channel_poll(
+                rx,
+                test_select_signal,
+                std::ptr::addr_of!(obs) as *mut c_void,
+                test_select_release,
+            );
+            let mut spins = 0;
+            while obs.fired.load(Ordering::SeqCst) != 1 {
+                std::thread::yield_now();
+                spins += 1;
+                assert!(spins < 1_000_000, "first poll callback never fired");
+            }
+            let first = try_recv_str(rx);
+            crate::cabi::free_cstring(first);
+
+            let second_id = hew_channel_poll(
+                rx,
+                test_select_signal,
+                std::ptr::addr_of!(obs) as *mut c_void,
+                test_select_release,
+            );
+            assert_ne!(first_id, second_id);
+            hew_channel_cancel_pending_read(rx, first_id);
+            assert_eq!(obs.released.load(Ordering::SeqCst), 0);
+
+            send_str(tx, c"second");
+            let mut spins = 0;
+            while obs.fired.load(Ordering::SeqCst) != 2 {
+                std::thread::yield_now();
+                spins += 1;
+                assert!(spins < 1_000_000, "new poll was withdrawn by stale id");
+            }
+            let second = try_recv_str(rx);
+            crate::cabi::free_cstring(second);
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn detached_await_stays_detached_across_receiver_drop_and_late_send() {
+        let pair = hew_channel_new(2);
+        // SAFETY: pair and extracted handles are fresh and exclusively owned.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+            let slot = hew_read_slot_new();
+            assert_eq!(
+                hew_channel_await_recv(rx, ptr::null_mut(), slot),
+                crate::channel_core::STREAM_AWAIT_SUSPEND
+            );
+
+            crate::read_slot::hew_read_slot_cancel(slot);
+            hew_channel_detach_recv(rx, slot);
+            hew_read_slot_free(slot);
+            hew_channel_receiver_close(rx);
+
+            // The abandoned slot is already detached. The post-close send is
+            // a no-op and has no slot or receiver address left to wake.
+            send_str(tx, c"late");
+            hew_channel_sender_close(tx);
         }
     }
 
@@ -1388,6 +1663,35 @@ mod tests {
             CH_OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
             2,
             "queue teardown must release each unconsumed owned element once"
+        );
+    }
+
+    #[test]
+    fn pair_held_receiver_releases_queued_owned_elements() {
+        let _g = CH_OWNED_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let drops_before = CH_OWNED_DROPS.load(Ordering::SeqCst);
+
+        let pair = hew_channel_new(8);
+        // SAFETY: only the sender is extracted. Pair teardown remains the sole
+        // owner of the receiver and drops it after the sender closes.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let layout = ch_owned_layout();
+            for tag in 0..2u64 {
+                let heap = libc::malloc(8).cast::<u8>();
+                let value = ChOwnedElem { tag, heap };
+                hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const layout);
+                libc::free(value.heap.cast());
+            }
+            hew_channel_sender_close(tx);
+            hew_channel_pair_free(pair);
+        }
+        assert_eq!(
+            CH_OWNED_DROPS.load(Ordering::SeqCst) - drops_before,
+            2,
+            "pair-held receiver teardown drops every queued owner once"
         );
     }
 }

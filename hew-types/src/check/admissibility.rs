@@ -2873,6 +2873,7 @@ mod tests {
                 extern_symbol: None,
                 requires_mutable_receiver: false,
                 consumes_receiver: false,
+                returns_receiver_identity: false,
                 is_builtin_variant: false,
             },
         )]);

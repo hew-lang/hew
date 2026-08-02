@@ -38,7 +38,7 @@ fn Inbox__recv__run -> ()
     call[bb2 hew_channel_sender_close -> bb3] ->
       (none)
     suspend[bb3 resume=bb4 cleanup=bb4] ->
-      (none)
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     branch[bb4: bb6/bb9] ->
       (none)
     call[bb5 hew_channel_try_recv_layout -> bb12] ->
@@ -48,37 +48,37 @@ fn Inbox__recv__run -> ()
     call[bb7 println_str -> bb11] ->
       (none)
     panic[bb8] ->
-      (none)
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     branch[bb9: bb7/bb8] ->
       (none)
     goto[bb10->bb5] ->
       (none)
     cancel[bb10] ->
-      (none)
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     goto[bb11->bb5] ->
       (none)
     cancel[bb11] ->
-      (none)
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     branch[bb12: bb14/bb17] ->
       (none)
     suspend[bb13 resume=bb22 cleanup=bb22] ->
-      (none)
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     call[bb14 println_str -> bb18] ->
       (none)
     call[bb15 println_str -> bb19] ->
       (none)
     panic[bb16] ->
-      (none)
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     branch[bb17: bb15/bb16] ->
       (none)
     goto[bb18->bb13] ->
       (none)
     cancel[bb18] ->
-      (none)
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     goto[bb19->bb13] ->
       (none)
     cancel[bb19] ->
-      (none)
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     branch[bb20: bb24/bb27] ->
       (none)
     call[bb21 println_str -> bb30] ->
@@ -89,28 +89,32 @@ fn Inbox__recv__run -> ()
       drop _28 ty=Option<string> kind=enum_in_place
     cancel[bb23] ->
       drop _28 ty=Option<string> kind=enum_in_place
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     call[bb24 println_str -> bb28] ->
       (none)
     call[bb25 println_str -> bb29] ->
       (none)
     panic[bb26] ->
       drop _28 ty=Option<string> kind=enum_in_place
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     branch[bb27: bb25/bb26] ->
       (none)
     goto[bb28->bb23] ->
       (none)
     cancel[bb28] ->
       drop _28 ty=Option<string> kind=enum_in_place
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     goto[bb29->bb23] ->
       (none)
     cancel[bb29] ->
       drop _28 ty=Option<string> kind=enum_in_place
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     goto[bb30->bb22] ->
       (none)
     cancel[bb30] ->
-      (none)
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
     return[bb31] ->
-      (none)
+      drop _3 ty=(Sender<string>, Receiver<string>) kind=tuple_in_place
 
 fn main -> ()
   statements:
@@ -258,6 +262,8 @@ fn channel$try_new -> Result<(Sender, Receiver), string>
     eval site=SiteId(137) ty=()
     use BindingId(23) tx site=SiteId(142) ty=Sender intent=Consume
     use BindingId(24) rx site=SiteId(143) ty=Receiver intent=Consume
+    agg_alias BindingId(23) tx site=SiteId(142) ty=Sender
+    agg_alias BindingId(24) rx site=SiteId(143) ty=Receiver
     return site=Some(SiteId(109)) ty=Result<(Sender, Receiver), string>
     drop BindingId(22) detail ty=string
   drop_plans:

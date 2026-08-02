@@ -40,8 +40,12 @@ fn main() -> Option<i64> {
     );
     let dump = dump_hir(&output.module);
     assert!(
-        dump.contains("var-self-call Countdown::next"),
-        "concrete next() must lower through the write-back node; dump:\n{dump}"
+        dump.contains("var-self-call Countdown::<impl Stepper for Countdown>::next"),
+        "concrete next() must retain its full source impl identity through the write-back node; dump:\n{dump}"
+    );
+    assert!(
+        !dump.contains("var-self-call Countdown::next"),
+        "write-back dispatch must not regress to the ambiguous leaf method identity; dump:\n{dump}"
     );
     assert!(
         !dump.contains("resolved-impl-call"),

@@ -1,0 +1,64 @@
+//! Right owner in the same-final-component canonical-identity runtime fixture.
+
+pub trait Render {
+    fn render(value: Self) -> string;
+
+    fn provided(value: Self) -> string {
+        "right-default"
+    }
+}
+
+pub type Box<T> {
+    value: T;
+}
+
+// Deliberately shares both its leaf name and generic shape with
+// `left::render::Parcel`.  Its payload has a distinct owned shape.
+pub enum Parcel<T> {
+    Filled(T);
+    Empty;
+}
+
+pub fn identity() -> string {
+    "right-free"
+}
+
+pub fn render_value<T: Render>(value: T) -> string {
+    value.render()
+}
+
+pub fn default_value<T: Render>(value: T) -> string {
+    value.provided()
+}
+
+pub fn specialized_box() -> Box<string> {
+    Box { value: "x" }
+}
+
+pub fn generic_box() -> Box<bool> {
+    Box { value: false }
+}
+
+pub fn make_parcel() -> Parcel<Box<string>> {
+    Parcel::Filled(Box { value: "right-parcel" })
+}
+
+pub fn clone_and_consume_parcel(value: Parcel<Box<string>>) -> string {
+    let cloned = value.clone();
+    match cloned {
+        Parcel::Filled(boxed) => boxed.value,
+        Parcel::Empty => "right-empty",
+    }
+}
+
+impl<T> Render for Box<T> {
+    fn render(value: Box<T>) -> string {
+        "right-generic"
+    }
+}
+
+impl Render for Box<string> {
+    fn render(value: Box<string>) -> string {
+        "right-specialized"
+    }
+}

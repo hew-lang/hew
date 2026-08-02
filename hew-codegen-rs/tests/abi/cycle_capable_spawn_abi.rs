@@ -4,20 +4,19 @@ use hew_codegen_rs::{emit_module, EmitOptions};
 use hew_mir::{
     ActorLayout, BasicBlock, FunctionCallConv, Instr, IrPipeline, Place, RawMirFunction, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 fn local_pid_of(actor: &str) -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "LocalPid".to_string(),
-        args: vec![ResolvedTy::Named {
+    ResolvedTy::named_builtin(
+        "renamed.LocalPidPresentation",
+        BuiltinType::LocalPid,
+        vec![ResolvedTy::Named {
             name: actor.to_string(),
             args: vec![],
             builtin: None,
             is_opaque: false,
         }],
-        builtin: None,
-        is_opaque: false,
-    }
+    )
 }
 
 fn spawn_pipeline(

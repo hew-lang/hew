@@ -15,11 +15,25 @@ resolve_timeout() {
 TIMEOUT="$(resolve_timeout)"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HEW="${HEW_BIN:-${ROOT}/target/debug/hew}"
+# Keep direct runs aligned with Cargo's target-dir and build-target resolution.
+# RC1 gates use an isolated target tree, and falling back to the repository's
+# default target would silently exercise an older compiler binary than the one
+# built below.
+# shellcheck source=scripts/lib/cargo-output-dir.sh
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/lib/cargo-output-dir.sh"
+cargo_debug_dir="$(cargo_debug_dir "${ROOT}")"
+HEW="${HEW_BIN:-${cargo_debug_dir}/hew}"
 
 # libhew.a is the combined runtime+stdlib static library linked into native outputs.
 cargo build -q -p hew-lib
 cargo build -q -p hew-cli
+
+if [[ ! -x "${HEW}" ]]; then
+  echo "error: Hew compiler binary not found at ${HEW}" >&2
+  echo "       set HEW_BIN or check Cargo's resolved debug output directory" >&2
+  exit 1
+fi
 
 mkdir -p "${ROOT}/.tmp"
 accept_output="${ROOT}/.tmp/vertical-slice-accept-output.txt"
@@ -831,18 +845,11 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/managed_record_or_enum_eq.hew" \
   "owned or heap-backed" \
   "managed_record_or_enum_eq"
-# #2509: user type name colliding with a loaded stdlib opaque handle name must
-# fail closed at codegen with an actionable rename diagnostic, not a raw LLVM
-# non-pointer-type dump.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/opaque_handle_name_collision.hew" \
-  "collides with the built-in opaque handle type of the same name" \
-  "opaque_handle_name_collision"
-if grep -qF 'resolves to non-pointer type' "${reject_output}"; then
-  echo "opaque_handle_name_collision leaked the raw LLVM non-pointer dump" >&2
-  cat "${reject_output}" >&2
-  exit 1
-fi
+# A user actor may share a short name with an imported opaque runtime handle.
+# The names are distinct nominals: `Listener` is the actor while
+# `net.Listener` remains the pointer-backed TCP handle.  Exercise both
+# codegen representations and the handle's real close ownership path.
+run_accept_expect_stdout "opaque_handle_user_shadow"
 # Declaration-level generic bounds are authority at nominal instantiation sites:
 # valid arguments compile, invalid arguments fail closed at the reference site.
 compile_accept "generic_decl_bound_satisfied"
@@ -1437,6 +1444,19 @@ run_accept_expect_status "f01_actor_spawn_owned_vec_drop_segv" 0
 # reply is consumed correctly while the abandoned owned reply is reclaimed.
 run_accept_expect_status "ask_reply_owned_select_loser" 18
 
+# A fresh owned string produced by an await is moved into its lexical binding
+# before the later handled actor panic. The crash cleanup must drop it exactly
+# once, and the actor balance oracle must remain exact.
+run_accept_expect_status "await_owned_string_crash_cleanup" 0 HEW_ACTOR_LEAK_CHECK=1
+grep -qF -- "used=fresh-value" "${stdout_output}"
+grep -qF -- "handled-crash" "${stdout_output}"
+
+# The select winner writes an owned string directly into its binding. Prove the
+# shared winner tail arms that slot before a later handled actor panic.
+run_accept_expect_status "select_owned_string_crash_cleanup" 0 HEW_ACTOR_LEAK_CHECK=1
+grep -qF -- "selected=selected-value" "${stdout_output}"
+grep -qF -- "select-handled-crash" "${stdout_output}"
+
 # Owned-string ask reply + `after` timeout (#1739/#1735): SlowWorker's owned
 # reply always arrives after the 10 ms deadline, so the after-arm wins and the
 # late owned reply lands on the cancelled channel (the hew_reply false leg),
@@ -1742,10 +1762,34 @@ run_accept_expect_status "on_crash_escalate_root" 0
 # Watcher__on_exit; codegen routes HewSysMsg::Exit to it in the dispatch
 # trampoline; the supervisor boots; main exits 42.
 run_accept_expect_status "on_exit_hook" 42
+# A real linked-peer crash traverses the EXIT sys-dispatch path and invokes the
+# hook, not merely its compile-time declaration.
+run_accept_expect_stdout "on_exit_hook_delivery"
 
 # Typed monitor terminal hook: checker/HIR/MIR/codegen reconstruct the canonical
 # DownNotification payload and route HewSysMsg::Down through actor dispatch.
 run_accept_expect_status "on_down_hook" 42
+
+# Diagnostic-honesty counterfactuals (W_B3): lifecycle payload records are
+# source-owned. Their bare spelling requires a named/glob/aliased publication;
+# an omitted import must fail during checker resolution, never as an
+# internal-looking HIR/MIR layout failure. The two accept fixtures above pin
+# the imported form; the checker unit matrix pins unused-import accounting.
+echo "RUN on_exit_hook_missing_import (reject)"
+expect_check_fail_contains_without \
+  "${ROOT}/tests/vertical-slice/reject/on_exit_hook_missing_import.hew" \
+  "unknown type \`CrashNotification\`" \
+  "CheckerBoundaryViolation" \
+  "on_exit_hook_missing_import"
+echo "PASS on_exit_hook_missing_import (reject)"
+
+echo "RUN on_down_hook_missing_import (reject)"
+expect_check_fail_contains_without \
+  "${ROOT}/tests/vertical-slice/reject/on_down_hook_missing_import.hew" \
+  "unknown type \`DownNotification\`" \
+  "CheckerBoundaryViolation" \
+  "on_down_hook_missing_import"
+echo "PASS on_down_hook_missing_import (reject)"
 
 # `#[max_heap(N)]` wire-through — direct spawn path:
 #   1. MIR dump confirms SpawnActor carries max_heap=65536,
@@ -3152,6 +3196,60 @@ grep -qF 'use of moved value `pat`' "${reject_output}"
 # `close(self)` through its wrapper impl, including the same-short-name Message
 # wrappers that must be compiled in separate importer fixtures.
 compile_accept "safe_handle_resources_close"
+run_accept_expect_stdout "json_value_resource_exactly_once"
+run_accept_expect_stdout "toml_value_resource_exactly_once"
+run_accept_expect_stdout "yaml_value_resource_exactly_once"
+
+# The value-tree fixtures also carry dormant early-return/panic probes and a
+# loop-back-edge cancellation probe. Their elaborated MIR must close exactly
+# the live independent owners on every exit: the child handed to `with` is no
+# longer a caller-owned root, while getter results are.
+assert_value_tree_exit_plans() {
+  local fixture="$1"
+  local module="$2"
+  local main_close_count="$3"
+  "${HEW}" compile --dump-mir elab \
+    "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" \
+    >"${accept_output}" 2>&1
+
+  local function_body
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="early_exit" "${accept_output}")"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq 4
+  test "$(grep -cF "return[" <<<"${function_body}")" -eq 2
+
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="_panic_exit" "${accept_output}")"
+  grep -qF "call[bb4 panic" <<<"${function_body}"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq 2
+
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="cancel_exit" "${accept_output}")"
+  grep -qF "panic[" <<<"${function_body}"
+  grep -qF "cancel[" <<<"${function_body}"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq 6
+
+  function_body="$(awk '
+    $0 ~ "^fn " target " ->" { active = 1 }
+    active && seen && $0 ~ "^fn " { exit }
+    active { print; seen = 1 }
+  ' target="main" "${accept_output}")"
+  test "$(grep -cF "fn=user_close(${module}.Value::close)" <<<"${function_body}")" -eq "${main_close_count}"
+}
+
+assert_value_tree_exit_plans "json_value_resource_exactly_once" "json" 2
+assert_value_tree_exit_plans "toml_value_resource_exactly_once" "toml" 1
+assert_value_tree_exit_plans "yaml_value_resource_exactly_once" "yaml" 1
+
 compile_accept "http_client_response_resource_close"
 compile_accept "websocket_message_resource_close"
 compile_accept "protobuf_message_resource_close"
@@ -3169,6 +3267,20 @@ fi
 safe_handle_use_after_close_count="$(grep -c 'use of moved value `value`' "${reject_output}")"
 if [[ "${safe_handle_use_after_close_count}" -ne 11 ]]; then
   echo "expected 11 safe-handle use-after-close diagnostics, got ${safe_handle_use_after_close_count}" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/value_tree_resources_use_after_close.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected value_tree_resources_use_after_close fixture to fail" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016  # backticks are literal diagnostic punctuation.
+value_tree_use_after_close_count="$(grep -c 'use of moved value `value`' "${reject_output}")"
+if [[ "${value_tree_use_after_close_count}" -ne 3 ]]; then
+  echo "expected 3 value-tree use-after-close diagnostics, got ${value_tree_use_after_close_count}" >&2
   cat "${reject_output}" >&2
   exit 1
 fi

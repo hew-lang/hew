@@ -219,6 +219,10 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      # Explicit acquisition is cacheable but never implicit in local lint.
+      - name: Bootstrap pinned structural lint toolchain
+        run: make structural-lint-bootstrap
+
       # >>> CI-PARITY-STEPS
       # This job is an active required status check on main. Keep the workflow
       # contract here unconditionally so nightly/release-gate drift cannot merge
@@ -234,6 +238,9 @@ jobs:
 
       - name: Verify every corpus floor has a live call site
         run: make corpus-floor-check
+
+      - name: Run structural authority lint
+        run: make structural-lint
       # <<< CI-PARITY-STEPS
 
       # Format-check std/ and examples/ .hew sources with the in-tree hew
@@ -264,7 +271,7 @@ jobs:
             | sarif-fmt
 
       - name: Verify JIT host ABI classification
-        run: make verify-ffi test-verify-ffi
+        run: make verify-ffi test-verify-ffi test-python310-toml-compat
 
       - name: Upload Clippy SARIF
         if: always() && hashFiles('clippy-results.sarif') != ''
@@ -551,18 +558,10 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
           CARGO_INCREMENTAL: "0"
-        run: |
-          # `make test-rust` carries `$(LIBHEW_READY)` and asserts the archive
-          # exists before running. This step invokes nextest directly, so it
-          # must build the archive itself — the workspace build used to produce
-          # it as a side effect, which is not a guarantee.
-          cargo build -p hew-lib
-          test -f target/debug/libhew.a
-          # parity-cmd: make test
-          cargo nextest run --workspace \
-            --exclude hew-wasm \
-            --exclude hew-cabi \
-            --profile ci
+        # `make test` owns the complete native/WASI/libhew prerequisite graph
+        # and the workspace nextest policy. Keeping that edge real makes the
+        # hosted suite exercise the same fresh artifacts as local preflight.
+        run: make test
 
       - name: Run C-ABI crate tests
         if: env.RUN_CODE_PATH == 'true'
@@ -823,6 +822,12 @@ jobs:
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
+
+      - name: Setup MSVC environment
+        # lld-link needs the MSVC and UCRT library paths exported by vcvarsall;
+        # the LLVM prefix is configured in the following setup-llvm step.
+        if: env.RUN_CODE_PATH == 'true'
+        uses: ./.github/actions/setup-msvc
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
         if: env.RUN_CODE_PATH == 'true'

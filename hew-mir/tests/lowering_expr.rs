@@ -69,6 +69,8 @@ mod match_project;
 mod monomorph_lowering_test;
 #[path = "lowering_expr/numeric_cast_lowering.rs"]
 mod numeric_cast_lowering;
+#[path = "lowering_expr/observe_string_temp_drop_canary.rs"]
+mod observe_string_temp_drop_canary;
 #[path = "lowering_expr/owned_string_temp_drop_canary.rs"]
 mod owned_string_temp_drop_canary;
 #[path = "lowering_expr/owner_mint_warrant_seams.rs"]

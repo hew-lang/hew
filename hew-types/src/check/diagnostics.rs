@@ -72,6 +72,12 @@ impl Checker {
     }
 
     pub(super) fn warn_wasm_limitation(&mut self, span: &Span, feature: WasmUnsupportedFeature) {
+        assert_eq!(
+            feature.disposition(),
+            WasmFeatureDisposition::Warn,
+            "manifest disposition mismatch: reject feature {} reached the warning emitter",
+            feature.capability_id()
+        );
         if !self.wasm_target {
             return;
         }
@@ -106,6 +112,12 @@ impl Checker {
     ///
     /// See `docs/wasm-capability-matrix.md` for the full disposition table.
     pub(super) fn reject_wasm_feature(&mut self, span: &Span, feature: WasmUnsupportedFeature) {
+        assert_eq!(
+            feature.disposition(),
+            WasmFeatureDisposition::Reject,
+            "manifest disposition mismatch: warning feature {} reached the reject emitter",
+            feature.capability_id()
+        );
         if !self.wasm_target {
             return;
         }
@@ -410,7 +422,9 @@ impl Checker {
                 };
                 let missing: Vec<String> = variants
                     .iter()
-                    .filter(|(name, shape)| !self.variant_covered(&leaves, name, shape))
+                    .filter(|(name, shape)| {
+                        !self.variant_covered(&leaves, scrutinee_ty, name, shape)
+                    })
                     .map(|(name, _)| name.clone())
                     .collect();
                 if !missing.is_empty() {
@@ -455,7 +469,9 @@ impl Checker {
                         };
                         let mut missing_names: Vec<String> = variants
                             .iter()
-                            .filter(|(vname, shape)| !self.variant_covered(&leaves, vname, shape))
+                            .filter(|(vname, shape)| {
+                                !self.variant_covered(&leaves, scrutinee_ty, vname, shape)
+                            })
                             .map(|(vname, _)| vname.clone())
                             .collect();
                         if !missing_names.is_empty() {

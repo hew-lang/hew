@@ -152,6 +152,164 @@ fn extern_symbol_on_extern_c_fn_populates_fn_sig_spec() {
     );
 }
 
+/// A generic declarative runtime method must retain its concrete, expanded
+/// linker endpoint at the call site.  The ownership graph is keyed by the same
+/// resolved call span, so downstream passes never have to recover either the
+/// endpoint or move-out semantics from the source spelling `pop`.
+#[test]
+fn generic_extern_symbol_call_keeps_exact_endpoint_and_move_out_fact() {
+    let parsed = hew_parser::parse(
+        r"
+        fn take_last(values: Vec<string>) -> string {
+            values.pop()
+        }
+        ",
+    );
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let (call_span, call) = output
+        .resolved_calls
+        .iter()
+        .find(|(_, call)| call.method_target.symbol_name == "hew_vec_pop_str")
+        .expect("Vec<string>::pop must preserve its exact expanded extern endpoint");
+    assert!(matches!(
+        call.method_target.family,
+        crate::check::dispatch::MethodTargetFamily::Vec(crate::check::dispatch::VecMethod::Pop)
+    ));
+
+    let fact = output
+        .produced_value_ownership
+        .get(call_span)
+        .expect("resolved generic extern call must publish one ownership fact");
+    assert_eq!(
+        fact.ownership,
+        crate::runtime_call::ProducedValueOwnership::owned(
+            crate::runtime_call::ProducedValueAcquisition::MoveOut,
+        )
+    );
+    assert_eq!(
+        fact.receiver_boundary,
+        Some(crate::runtime_call::ProducedArgumentBoundary::Borrow)
+    );
+    assert!(fact.arguments.is_empty());
+}
+
+#[test]
+fn open_extern_method_keeps_signature_modes_separate_from_endpoint() {
+    let output = check_source(
+        r#"
+        type Router {}
+
+        impl Router {
+            #[extern_symbol(hew_test_router_route)]
+            fn route(self, consume payload: string, note: string) -> i64 {
+                0
+            }
+        }
+
+        fn route_named(router: Router) -> i64 {
+            router.route(note: "trace", payload: "body")
+        }
+
+        fn route_positional(router: Router) -> i64 {
+            router.route("body", "trace")
+        }
+        "#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let mut facts: Vec<_> = output
+        .method_call_rewrites
+        .iter()
+        .filter_map(|(span, rewrite)| match rewrite {
+            MethodCallRewrite::RewriteToFunction {
+                c_symbol,
+                extern_identity: Some(identity),
+                ..
+            } if c_symbol == "hew_test_router_route" => {
+                assert_eq!(identity.endpoint, "hew_test_router_route");
+                assert_eq!(identity.signature_key, "Router::route");
+                Some(
+                    output
+                        .produced_value_ownership
+                        .get(span)
+                        .expect("open extern call must publish boundary modes"),
+                )
+            }
+            _ => None,
+        })
+        .collect();
+    facts.sort_by_key(|fact| {
+        fact.arguments[0] == crate::runtime_call::ProducedArgumentBoundary::Borrow
+    });
+    assert_eq!(facts.len(), 2);
+    assert!(facts.iter().any(|fact| {
+        fact.arguments
+            == [
+                crate::runtime_call::ProducedArgumentBoundary::Borrow,
+                crate::runtime_call::ProducedArgumentBoundary::Transfer,
+            ]
+    }));
+    assert!(facts.iter().any(|fact| {
+        fact.arguments
+            == [
+                crate::runtime_call::ProducedArgumentBoundary::Transfer,
+                crate::runtime_call::ProducedArgumentBoundary::Borrow,
+            ]
+    }));
+}
+
+#[test]
+fn compiled_stdlib_extern_method_uses_exact_contract_for_fresh_result() {
+    let parsed = hew_parser::parse(
+        r"
+        fn encode(value: string) -> bytes {
+            value.to_bytes()
+        }
+        ",
+    );
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let (span, identity) = output
+        .method_call_rewrites
+        .iter()
+        .find_map(|(span, rewrite)| match rewrite {
+            MethodCallRewrite::RewriteToFunction {
+                c_symbol,
+                extern_identity: Some(identity),
+                ..
+            } if c_symbol == "hew_string_to_bytes" => Some((span, identity)),
+            _ => None,
+        })
+        .expect("string.to_bytes must carry its exact extern identity");
+    assert_eq!(identity.endpoint, "hew_string_to_bytes");
+    assert_eq!(identity.signature_key, "string::to_bytes");
+    assert_eq!(identity.declaring_module.as_deref(), Some("std.string"));
+    assert!(identity.trusted_compiled_stdlib);
+
+    let fact = output
+        .produced_value_ownership
+        .get(span)
+        .expect("string.to_bytes must publish a result ownership fact");
+    assert_eq!(
+        fact.ownership,
+        crate::runtime_call::ProducedValueOwnership::owned(
+            crate::runtime_call::ProducedValueAcquisition::Fresh,
+        )
+    );
+    assert_eq!(
+        fact.receiver_boundary,
+        Some(crate::runtime_call::ProducedArgumentBoundary::Borrow)
+    );
+    assert!(fact.arguments.is_empty());
+}
+
 /// Extern fns without `#[extern_symbol]` carry `None` (regression
 /// guard: the field must remain opt-in and not default to a synthetic
 /// template derived from the fn name).

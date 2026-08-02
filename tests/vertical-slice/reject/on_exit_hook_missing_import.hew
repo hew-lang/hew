@@ -1,0 +1,21 @@
+// Reject: source-owned lifecycle types require a published import binding.
+// Omitting one must fail in checker resolution, never in HIR/MIR layout.
+actor Watcher {
+    #[on(exit)]
+    fn on_peer_exit(note: CrashNotification) {
+        let _id = note.actor_id;
+        let _kind = note.kind;
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child c: Watcher;
+}
+
+fn main() -> i64 {
+    spawn AppSupervisor;
+    42
+}

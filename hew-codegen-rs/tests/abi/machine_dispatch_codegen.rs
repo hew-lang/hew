@@ -83,8 +83,12 @@ fn traffic_light_step_emits_dispatch_shape_with_state_tag_load() {
 
     // The synthesised step fn must be present.
     assert!(
-        ll.contains("define") && ll.contains("@TrafficLight__step("),
-        "traffic_light .ll missing TrafficLight__step definition; got:\n{ll}"
+        ll.contains("define") && ll.contains("@\"mc$$TrafficLight$$__step\"("),
+        "traffic_light .ll missing canonical machine-class step definition; got:\n{ll}"
+    );
+    assert!(
+        !ll.contains("@TrafficLight__step("),
+        "traffic_light .ll must not emit the legacy bare machine step symbol; got:\n{ll}"
     );
 
     // Outer-struct field-0 GEP for the state tag. inkwell labels the
@@ -129,8 +133,12 @@ fn counter_machine_step_emits_variant_payload_access() {
     let ll = emit_ll_text(&pipeline, "counter_machine");
 
     assert!(
-        ll.contains("define") && ll.contains("@Counter__step("),
-        "counter_machine .ll missing Counter__step definition; got:\n{ll}"
+        ll.contains("define") && ll.contains("@\"mc$$Counter$$__step\"("),
+        "counter_machine .ll missing canonical machine-class step definition; got:\n{ll}"
+    );
+    assert!(
+        !ll.contains("@Counter__step("),
+        "counter_machine .ll must not emit the legacy bare machine step symbol; got:\n{ll}"
     );
 
     // Tag projection for self's state — same as zero-payload case.
@@ -241,8 +249,13 @@ fn padded_payload_machine_uses_abi_correct_payload_size() {
     // Module::verify() is exercised by emit_module succeeding above.
     // Confirm step fn is present and the two-field variant access lowers.
     assert!(
-        ll.contains("@PaddedPayload__step("),
-        "padded_payload_machine .ll missing PaddedPayload__step definition; \
+        ll.contains("@\"mc$$PaddedPayload$$__step\"("),
+        "padded_payload_machine .ll missing canonical machine-class step definition; \
+         got:\n{ll}"
+    );
+    assert!(
+        !ll.contains("@PaddedPayload__step("),
+        "padded_payload_machine .ll must not emit the legacy bare machine step symbol; \
          got:\n{ll}"
     );
     assert!(

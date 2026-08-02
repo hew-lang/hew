@@ -92,6 +92,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         .collect::<Vec<_>>();
     let machine_layout = MachineLayout {
         name: machine_name.clone(),
+        event_name: format!("{machine_name}Event"),
         tag_width: 1,
         variants,
         events,

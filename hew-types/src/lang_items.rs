@@ -23,6 +23,8 @@
 
 use std::collections::HashMap;
 
+use crate::DefId;
+
 use strum::{EnumIter, IntoEnumIterator};
 
 /// Closed compiler-recognised lang-item key vocabulary.
@@ -131,9 +133,16 @@ pub struct LangItemBinding {
     /// Surface name of the trait carrying the tag (or owning the tagged
     /// method).
     pub trait_name: String,
+    /// Canonical declaration identity of `trait_name`, allocated by checker
+    /// registration. Downstream consumers must use this rather than rebuild it
+    /// from the display spelling.
+    pub trait_id: DefId,
     /// `Some(method_name)` for method-level entries; `None` for trait-level
     /// entries.
     pub method_name: Option<String>,
+    /// Canonical identity of the tagged method, when this is a method-level
+    /// lang item. Kept separate from its linker/display spelling.
+    pub method_id: Option<DefId>,
 }
 
 /// Lang-item lookup table populated during trait registration and surfaced
@@ -195,6 +204,13 @@ impl LangItemRegistry {
         self.entries
             .get(LANG_ITEM_DISPLAY_FMT)
             .and_then(|b| b.method_name.as_deref())
+    }
+
+    /// Exact declaration identities for the registered Display method.
+    #[must_use]
+    pub fn display_method_identity(&self) -> Option<(DefId, DefId)> {
+        let binding = self.entries.get(LANG_ITEM_DISPLAY_FMT)?;
+        Some((binding.trait_id.clone(), binding.method_id.clone()?))
     }
 
     /// Iterate registered (key, binding) pairs in arbitrary order.

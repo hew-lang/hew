@@ -2734,15 +2734,17 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
         inferred,
         &vec![Ty::Named {
             builtin: None,
-            name: "Label".to_string(),
+            name: "std.string.Label".to_string(),
             args: vec![],
         }]
     );
     assert!(
-        checker
-            .trait_impls_set
-            .contains(&("Label".to_string(), "Describable".to_string())),
-        "stdlib Hew items should register trait impls for downstream generic bound checks"
+        checker.trait_impls_set.contains(&(
+            "std.string.Label".to_string(),
+            "std.string.Describable".to_string()
+        )),
+        "stdlib Hew items should register trait impls under their exact source owners for downstream generic bound checks: {:?}",
+        checker.trait_impls_set
     );
 }
 
@@ -3389,7 +3391,7 @@ fn primitive_trait_dispatch_builtins_blanket_no_redeclare() {
             }
         ",
         "i64",
-        "Display",
+        "std.builtins.Display",
     );
 }
 
@@ -3451,7 +3453,11 @@ fn primitive_trait_dispatch_builtins_blanket_each_kind() {
                 }}
             "
         );
-        assert_primitive_trait_dispatch_records_metadata(&source, canonical, "Display");
+        assert_primitive_trait_dispatch_records_metadata(
+            &source,
+            canonical,
+            "std.builtins.Display",
+        );
     }
 }
 
@@ -3581,7 +3587,7 @@ fn primitive_trait_dispatch_builtins_blanket_populates_side_table_at_register_bu
     for key in expected_canonical_keys {
         let entry = checker
             .primitive_trait_impls
-            .get(&(key.to_string(), "Display".to_string()))
+            .get(&(key.to_string(), "std.builtins.Display".to_string()))
             .unwrap_or_else(|| {
                 panic!(
                     "missing builtins-blanket Display impl for primitive `{key}`; \
@@ -3659,7 +3665,7 @@ fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items()
         "stdlib Hew items should still register public types"
     );
     assert!(
-        output.fn_sigs.contains_key("bench.suite"),
+        output.fn_sigs.contains_key("std.bench.suite"),
         "stdlib Hew items should still register qualified functions"
     );
     assert!(

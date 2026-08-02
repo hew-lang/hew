@@ -9,11 +9,7 @@
 //
 // Exit-code contract: timeout Err(TimedOut) -> 7; unexpected Ok -> 42;
 // wrong NetError variant -> 8; no actor exit -> main fallback 99.
-import std::net::{Listener};
-
-extern "C" {
-    fn hew_tcp_listener_local_port(listener: Listener) -> i32;
-}
+import std::net;
 
 actor Reader {
     let port: i32;
@@ -35,9 +31,9 @@ actor Reader {
 
 fn main() {
     let listener = net.listen("127.0.0.1:0");
-    let port = unsafe {
-        hew_tcp_listener_local_port(listener)
-    };
+    // Keep the resource boundary inside std.net's audited implementation;
+    // the public method borrows the listener and exposes the scalar port.
+    let port = listener.local_port() as i32;
     let reader = spawn Reader(port: port);
     reader.go();
     let client = listener.accept();

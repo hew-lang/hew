@@ -67,7 +67,7 @@ fn index_trait_user_impl_lowers_to_at_call() {
     );
 
     let tail = function_tail(&output, "f");
-    let HirExprKind::Call { callee, args } = &tail.kind else {
+    let HirExprKind::Call { callee, args, .. } = &tail.kind else {
         panic!(
             "g[2] should lower to an Index::at call; got {:?}",
             tail.kind

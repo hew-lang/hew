@@ -1262,22 +1262,7 @@ impl Parser<'_> {
         let doc_comment = self.collect_doc_comments();
         let attrs = self.parse_attributes();
         self.reject_resource_marker_attributes(&attrs);
-
-        // `#[extern_symbol]` belongs on `extern "C"` fns and `impl`
-        // methods — not on trait-item declarations. Trait items describe
-        // an abstract surface; the C-ABI binding lives on the concrete
-        // `impl` method.
-        for attr in &attrs {
-            if attr.name == "extern_symbol" {
-                self.error_at(
-                    "`#[extern_symbol]` is only valid on `fn` declarations inside an \
-                     `extern \"C\"` block or an `impl` block; bind the symbol on the \
-                     concrete `impl` method instead"
-                        .to_string(),
-                    attr.span.clone(),
-                );
-            }
-        }
+        self.reject_extern_symbol_on_trait_item(&attrs);
 
         match self.peek() {
             Some(Token::Fn) => {
@@ -1287,7 +1272,26 @@ impl Parser<'_> {
                 let type_params = self.parse_opt_type_params()?;
 
                 self.expect(&Token::LeftParen)?;
-                let params = self.parse_params_with_implicit_self(true);
+                let consuming_self_span = self.peek_span();
+                let consumes_self = self.eat_consuming_self_receiver();
+                let mut params = self.parse_params_with_implicit_self(true);
+                if consumes_self {
+                    params.insert(
+                        0,
+                        Param {
+                            name: "self".to_string(),
+                            ty: (
+                                TypeExpr::Named {
+                                    name: "Self".to_string(),
+                                    type_args: None,
+                                },
+                                consuming_self_span,
+                            ),
+                            is_mutable: false,
+                            is_consume: false,
+                        },
+                    );
+                }
                 self.expect(&Token::RightParen)?;
 
                 let return_type = self.parse_opt_return_type()?;
@@ -1307,6 +1311,7 @@ impl Parser<'_> {
                     .and_then(|a| a.args.first().map(|arg| arg.as_str().to_string()));
 
                 Some(TraitItem::Method(TraitMethod {
+                    attributes: attrs,
                     name,
                     type_params,
                     params,
@@ -1316,6 +1321,7 @@ impl Parser<'_> {
                     span: fn_start..fn_end,
                     doc_comment,
                     lang_item,
+                    consumes_self,
                 }))
             }
             Some(Token::Type) => {
@@ -1353,6 +1359,22 @@ impl Parser<'_> {
                     "trait items must be 'fn' signatures or 'type' declarations",
                 );
                 None
+            }
+        }
+    }
+
+    fn reject_extern_symbol_on_trait_item(&mut self, attrs: &[Attribute]) {
+        // Trait items describe an abstract surface; bind the C ABI symbol on
+        // the concrete implementation method instead.
+        for attr in attrs {
+            if attr.name == "extern_symbol" {
+                self.error_at(
+                    "`#[extern_symbol]` is only valid on `fn` declarations inside an \
+                     `extern \"C\"` block or an `impl` block; bind the symbol on the \
+                     concrete `impl` method instead"
+                        .to_string(),
+                    attr.span.clone(),
+                );
             }
         }
     }

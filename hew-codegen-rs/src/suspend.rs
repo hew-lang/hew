@@ -1028,6 +1028,7 @@ fn emit_suspending_read_bind<'ctx>(
         bytes_triple_ty,
         &[fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default()).into()],
     )?;
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, term.result_dest)?;
     crate::runtime_abi::store_classified_bytes_return(
         fn_ctx,
         slot_take,
@@ -1036,6 +1037,7 @@ fn emit_suspending_read_bind<'ctx>(
         dest_ptr,
         "hew_read_slot_take",
     )?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, term.result_dest)?;
     if let Some(result_dest) = term.deadline_result_dest {
         if term.to_string {
             // `await conn.read_string() | after d` success path: convert the raw
@@ -1065,6 +1067,7 @@ fn emit_suspending_read_bind<'ctx>(
             // result_dest is Result<string, NetError>; tag=0, Ok variant field 0 = ptr.
             // Write the string pointer directly into the Ok variant field — no
             // intermediate alloca needed since `string_val` is already a ptr value.
+            emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, result_dest)?;
             let dest_local = composite_dest_local(result_dest, "SuspendingRead read_string ok")?;
             store_composite_tag(fn_ctx, dest_local, 0, "SuspendingRead read_string ok")?;
             let (ok_field_ptr, ok_field_ty) = place_pointer(
@@ -1084,6 +1087,7 @@ fn emit_suspending_read_bind<'ctx>(
                 .builder
                 .build_store(ok_field_ptr, string_val)
                 .llvm_ctx("SuspendingRead read_string Ok field store")?;
+            emit_helper_crash_cleanup_arm_after_write(fn_ctx, result_dest)?;
         } else {
             emit_result_ok(fn_ctx, result_dest, Some(term.result_dest))?;
         }
@@ -1801,10 +1805,12 @@ fn emit_suspending_accept_bind<'ctx>(
             "SuspendingAccept result_dest must be a pointer-shaped Connection slot, got {dest_ty:?}"
         )));
     }
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, term.result_dest)?;
     fn_ctx
         .builder
         .build_store(dest_ptr, conn)
         .llvm_ctx("suspending accept connection store")?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, term.result_dest)?;
     if let Some(result_dest) = term.deadline_result_dest {
         // `await ln.accept() | after d` success path: wrap the accepted Connection
         // in `Ok(_)` into the Result<Connection, NetError> destination.
@@ -2451,6 +2457,7 @@ fn emit_suspending_stream_next_bind<'ctx>(
 
         fn_ctx.builder.position_at_end(stream_proceed_bb);
     }
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, term.result_dest)?;
     store_recv_option_via_layout(
         fn_ctx,
         stream_ptr,
@@ -2458,6 +2465,7 @@ fn emit_suspending_stream_next_bind<'ctx>(
         "hew_stream_pop_layout",
         &term.elem_ty,
     )?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, term.result_dest)?;
     fn_ctx
         .builder
         .build_call(
@@ -3119,6 +3127,7 @@ fn emit_suspending_channel_recv_bind<'ctx>(
     // closed), so the bind edge pops via the NON-BLOCKING layout entry — the
     // single consumer's own edge, popping the queued item exactly once
     // (close → rc 0 → None). The element witness decodes any describable T.
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, term.result_dest)?;
     store_recv_option_via_layout(
         fn_ctx,
         rx_ptr,
@@ -3126,6 +3135,7 @@ fn emit_suspending_channel_recv_bind<'ctx>(
         "hew_channel_try_recv_layout",
         &term.elem_ty,
     )?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, term.result_dest)?;
     fn_ctx
         .builder
         .build_call(
@@ -3390,10 +3400,12 @@ pub(crate) fn emit_suspending_task_await_terminator<'ctx>(
                     .builder
                     .build_load(dest_ty, result_buf, "suspending_task_await_result_load")
                     .llvm_ctx("value-task result load")?;
+                emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, result_dest)?;
                 fn_ctx
                     .builder
                     .build_store(dest_ptr, loaded)
                     .llvm_ctx("value-task result store")?;
+                emit_helper_crash_cleanup_arm_after_write(fn_ctx, result_dest)?;
                 fn_ctx
                     .builder
                     .build_unconditional_branch(bind_join_bb)
@@ -5478,10 +5490,12 @@ fn emit_suspending_ask_reply_bind<'ctx>(
         .builder
         .build_load(reply_dest_ty, reply_ptr, "suspending_ask_reply_value")
         .llvm_ctx("suspending ask reply load")?;
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, term.reply_dest)?;
     fn_ctx
         .builder
         .build_store(reply_dest_ptr, reply_val)
         .llvm_ctx("suspending ask reply store")?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, term.reply_dest)?;
     emit_result_ok(fn_ctx, term.result_dest, Some(term.reply_dest))?;
     let free = get_or_declare_free(fn_ctx);
     fn_ctx
@@ -5656,7 +5670,6 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
             term.cleanup
         )));
     }
-
     // Resolve the live execution context (the closure's leading ctx arg — the
     // resume-installed context after a suspend, not the dangling spilled param).
     let ctx_ptr = crate::thunks::closure_call_context(fn_ctx)?;
@@ -5981,10 +5994,12 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
             .builder
             .build_load(dest_ty, reply_ptr, "suspending_closure_reply_value")
             .llvm_ctx("suspending closure reply load")?;
+        emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, dest)?;
         fn_ctx
             .builder
             .build_store(dest_ptr, reply_val)
             .llvm_ctx("suspending closure reply store")?;
+        emit_helper_crash_cleanup_arm_after_write(fn_ctx, dest)?;
         let free = get_or_declare_free(fn_ctx);
         fn_ctx
             .builder
@@ -6088,10 +6103,12 @@ fn emit_suspending_ask_err_with_code<'ctx>(
             .build_int_truncate(err_code, error_tag_int_ty, "suspending_ask_err_trunc")
             .llvm_ctx("suspending ask err trunc")?,
     };
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, error_dest)?;
     fn_ctx
         .builder
         .build_store(error_tag_ptr, err_code)
         .llvm_ctx("store SuspendingAsk AskError tag")?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, error_dest)?;
     emit_result_err(fn_ctx, result_dest, error_dest)
 }
 
@@ -6145,10 +6162,12 @@ fn emit_remote_ask_err_from_last_error<'ctx>(
             .build_int_truncate(err_code, error_tag_int_ty, "remote_ask_err_trunc")
             .llvm_ctx("remote ask err trunc")?,
     };
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, error_dest)?;
     fn_ctx
         .builder
         .build_store(error_tag_ptr, err_code)
         .llvm_ctx("store RemoteAsk AskError tag")?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, error_dest)?;
     emit_result_err(fn_ctx, result_dest, error_dest)
 }
 
@@ -6397,10 +6416,12 @@ pub(crate) fn emit_suspending_remote_actor_ask_terminator<'ctx>(
                         "suspending_remote_ask_reply_value",
                     )
                     .llvm_ctx("suspending remote ask reply load")?;
+                emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, term.reply_dest)?;
                 fn_ctx
                     .builder
                     .build_store(reply_dest_ptr, reply_val)
                     .llvm_ctx("suspending remote ask reply store")?;
+                emit_helper_crash_cleanup_arm_after_write(fn_ctx, term.reply_dest)?;
                 emit_result_ok(fn_ctx, term.result_dest, Some(term.reply_dest))?;
                 let free = get_or_declare_free(fn_ctx);
                 fn_ctx
@@ -6514,10 +6535,12 @@ pub(crate) fn emit_remote_actor_ask_terminator<'ctx>(
             .builder
             .build_load(reply_dest_ty, reply_ptr, "remote_ask_reply_value")
             .llvm_ctx("remote ask reply load")?;
+        emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, term.reply_dest)?;
         fn_ctx
             .builder
             .build_store(reply_dest_ptr, reply_val)
             .llvm_ctx("remote ask reply store")?;
+        emit_helper_crash_cleanup_arm_after_write(fn_ctx, term.reply_dest)?;
         emit_result_ok(fn_ctx, term.result_dest, Some(term.reply_dest))?;
         let free = get_or_declare_free(fn_ctx);
         fn_ctx
@@ -9351,6 +9374,7 @@ fn emit_select_winner_dispatch<'ctx>(
                 )));
             };
             let rx_ptr = load_duplex_handle(fn_ctx, *receiver, "select_channel_winner")?;
+            emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, binding_place)?;
             store_recv_option_via_layout(
                 fn_ctx,
                 rx_ptr,
@@ -9358,6 +9382,7 @@ fn emit_select_winner_dispatch<'ctx>(
                 "hew_channel_try_recv_layout",
                 elem_ty,
             )?;
+            emit_helper_crash_cleanup_arm_after_write(fn_ctx, binding_place)?;
             let _ = dest_ptr;
             let _ = dest_ty;
             // Free the winning channel's caller-side ref (its poll already
@@ -9456,6 +9481,7 @@ fn emit_select_winner_dispatch<'ctx>(
                 .llvm_ctx("select reply null unreachable")?;
             // Ok branch: load + store + frees.
             fn_ctx.builder.position_at_end(ok_bb);
+            emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, binding_place)?;
             let reply_val = fn_ctx
                 .builder
                 .build_load(
@@ -9468,6 +9494,7 @@ fn emit_select_winner_dispatch<'ctx>(
                 .builder
                 .build_store(dest_ptr, reply_val)
                 .llvm_ctx("select reply store")?;
+            emit_helper_crash_cleanup_arm_after_write(fn_ctx, binding_place)?;
 
             if task_result_ptr.is_none() {
                 fn_ctx
@@ -11230,8 +11257,9 @@ pub(crate) fn emit_suspending_select_terminator<'ctx>(
 /// failure frees the channels allocated so far and traps
 /// (`emit_select_setup_failure_trap`). The back half differs: instead of
 /// a `hew_select_first` winner race, we WAIT on EVERY channel in
-/// declaration order (`hew_reply_wait`), materialise each reply into the
-/// `result` tuple's matching element, and free each channel exactly once.
+/// declaration order (`hew_reply_wait`), stage every reply buffer until all
+/// branches have succeeded, then materialise the `result` tuple in one
+/// no-fail publication phase and free each channel exactly once.
 ///
 /// Per HEW-SPEC-2026 §4.11.2, a branch error cancels the remaining
 /// branches and the trap propagates. The substrate surfaces a branch
@@ -11264,13 +11292,20 @@ pub(crate) fn emit_join_terminator<'ctx>(
     let i32_ty = ctx.i32_type();
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
 
-    // Channel array on the stack: [N x ptr]. Branch i stores its freshly
-    // allocated `*mut HewReplyChannel` at `channel_array[i]`.
+    // Channel and staged-reply arrays on the stack. Branch i stores its freshly
+    // allocated `*mut HewReplyChannel` at `channel_array[i]`; a successful wait
+    // stores its detached heap reply buffer at `reply_array[i]`. Keeping replies
+    // out of the final tuple until every wait succeeds prevents a later branch
+    // failure from exposing a partially initialized aggregate owner.
     let arr_ty = ptr_ty.array_type(n_i32 as u32);
     let arr_ptr = fn_ctx
         .builder
         .build_alloca(arr_ty, "join_channels")
         .llvm_ctx("join channel array alloca")?;
+    let reply_arr_ptr = fn_ctx
+        .builder
+        .build_alloca(arr_ty, "join_replies")
+        .llvm_ctx("join reply array alloca")?;
 
     let parent_fn = fn_ctx
         .builder
@@ -11334,6 +11369,25 @@ pub(crate) fn emit_join_terminator<'ctx>(
                 .builder
                 .build_gep(arr_ty, arr_ptr, &[idx0, idx1], &format!("join_ch_slot_{i}"))
                 .llvm_ctx("join ch slot gep")?
+        };
+        Ok(gep)
+    };
+    let reply_slot_ptr = |i: usize| -> CodegenResult<PointerValue<'ctx>> {
+        let i_u32 = u32::try_from(i).map_err(|_| {
+            CodegenError::FailClosed(format!("join branch index {i} exceeds u32::MAX"))
+        })?;
+        let idx0 = i32_ty.const_zero();
+        let idx1 = i32_ty.const_int(u64::from(i_u32), false);
+        let gep = unsafe {
+            fn_ctx
+                .builder
+                .build_gep(
+                    arr_ty,
+                    reply_arr_ptr,
+                    &[idx0, idx1],
+                    &format!("join_reply_slot_{i}"),
+                )
+                .llvm_ctx("join reply slot gep")?
         };
         Ok(gep)
     };
@@ -11510,7 +11564,7 @@ pub(crate) fn emit_join_terminator<'ctx>(
         fn_ctx.builder.position_at_end(setup_ok_bb);
     }
 
-    // ── WAIT-ALL back half: wait every channel, materialise the tuple ─
+    // ── WAIT-ALL back half: wait every channel and stage each reply ──
     let (result_ptr, result_ty) = place_pointer(fn_ctx, result)?;
     // A multi-branch join binds a tuple struct; a single-branch join
     // binds the lone reply type directly (the checker's `Expr::Join`
@@ -11527,7 +11581,7 @@ pub(crate) fn emit_join_terminator<'ctx>(
         }
     };
 
-    for (i, branch) in branches.iter().enumerate() {
+    for (i, _branch) in branches.iter().enumerate() {
         let win_slot_ptr = slot_ptr(i)?;
         let win_ch = fn_ctx
             .builder
@@ -11577,6 +11631,60 @@ pub(crate) fn emit_join_terminator<'ctx>(
                 &format!("join_branch_failed_{i}"),
             )
             .llvm_ctx("hew_join_branch_failed call")?;
+        // Every earlier successful wait detached a heap reply buffer from its
+        // channel. A later null reply must destroy those staged values before
+        // propagating the join trap; the final result has deliberately not
+        // been published or armed yet.
+        for (j, prior_branch) in branches.iter().take(i).enumerate() {
+            let prior_reply_slot = reply_slot_ptr(j)?;
+            let prior_reply = fn_ctx
+                .builder
+                .build_load(
+                    ptr_ty,
+                    prior_reply_slot,
+                    &format!("join_err_prior_reply_load_{i}_{j}"),
+                )
+                .llvm_ctx("join error prior reply load")?
+                .into_pointer_value();
+            let drop_thunk =
+                crate::thunks::ask_reply_drop_thunk_ptr(fn_ctx, &prior_branch.reply_ty)?;
+            let drop_thunk_is_null = fn_ctx
+                .builder
+                .build_is_null(drop_thunk, &format!("join_err_prior_drop_null_{i}_{j}"))
+                .llvm_ctx("join error prior drop-thunk null check")?;
+            let drop_bb =
+                ctx.append_basic_block(parent_fn, &format!("join_err_prior_drop_{i}_{j}"));
+            let free_bb =
+                ctx.append_basic_block(parent_fn, &format!("join_err_prior_free_{i}_{j}"));
+            fn_ctx
+                .builder
+                .build_conditional_branch(drop_thunk_is_null, free_bb, drop_bb)
+                .llvm_ctx("join error prior drop branch")?;
+            fn_ctx.builder.position_at_end(drop_bb);
+            let drop_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+            fn_ctx
+                .builder
+                .build_indirect_call(
+                    drop_ty,
+                    drop_thunk,
+                    &[prior_reply.into()],
+                    &format!("join_err_prior_drop_call_{i}_{j}"),
+                )
+                .llvm_ctx("join error prior reply drop")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(free_bb)
+                .llvm_ctx("join error prior drop -> free")?;
+            fn_ctx.builder.position_at_end(free_bb);
+            fn_ctx
+                .builder
+                .build_call(
+                    libc_free,
+                    &[prior_reply.into()],
+                    &format!("join_err_prior_reply_free_{i}_{j}"),
+                )
+                .llvm_ctx("join error prior reply free")?;
+        }
         // Free the failing channel's caller-side ref (its reply was null).
         fn_ctx
             .builder
@@ -11622,8 +11730,26 @@ pub(crate) fn emit_join_terminator<'ctx>(
             &format!("join_reply_null_trap_{i}"),
         )?;
 
-        // Ok branch: materialise the reply into result tuple element `i`.
+        // Ok branch: stage the detached reply buffer. Do not publish any final
+        // result fields until all branches have succeeded.
         fn_ctx.builder.position_at_end(ok_bb);
+        let reply_slot = reply_slot_ptr(i)?;
+        fn_ctx
+            .builder
+            .build_store(reply_slot, reply_ptr)
+            .llvm_ctx("join staged reply store")?;
+        // The channel no longer owns this detached reply buffer.
+        fn_ctx
+            .builder
+            .build_call(channel_free, &[win_ch.into()], &format!("join_ch_free_{i}"))
+            .llvm_ctx("join channel free")?;
+    }
+
+    // Every wait succeeded. Construct the result using only LLVM loads/stores,
+    // with no fallible runtime edge between the first field write and the
+    // final typed-cleanup arm. The result becomes an owner exactly once.
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, result)?;
+    for (i, _branch) in branches.iter().enumerate() {
         let (elem_ptr, elem_ty) = if let Some(struct_ty) = result_struct_ty {
             let elem_ty = struct_ty.get_field_type_at_index(i as u32).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
@@ -11643,6 +11769,12 @@ pub(crate) fn emit_join_terminator<'ctx>(
         } else {
             (result_ptr, result_ty)
         };
+        let reply_slot = reply_slot_ptr(i)?;
+        let reply_ptr = fn_ctx
+            .builder
+            .build_load(ptr_ty, reply_slot, &format!("join_staged_reply_load_{i}"))
+            .llvm_ctx("join staged reply load")?
+            .into_pointer_value();
         let reply_val = fn_ctx
             .builder
             .build_load(elem_ty, reply_ptr, &format!("join_reply_value_{i}"))
@@ -11651,7 +11783,18 @@ pub(crate) fn emit_join_terminator<'ctx>(
             .builder
             .build_store(elem_ptr, reply_val)
             .llvm_ctx("join reply store")?;
-        // Free the heap reply payload and the caller-side channel ref.
+    }
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, result)?;
+
+    // Ownership is now represented by the armed result slot; free only the
+    // shallow heap buffers that transported each reply.
+    for i in 0..n {
+        let reply_slot = reply_slot_ptr(i)?;
+        let reply_ptr = fn_ctx
+            .builder
+            .build_load(ptr_ty, reply_slot, &format!("join_reply_free_load_{i}"))
+            .llvm_ctx("join reply free load")?
+            .into_pointer_value();
         fn_ctx
             .builder
             .build_call(
@@ -11660,11 +11803,6 @@ pub(crate) fn emit_join_terminator<'ctx>(
                 &format!("join_reply_free_{i}"),
             )
             .llvm_ctx("join reply free")?;
-        fn_ctx
-            .builder
-            .build_call(channel_free, &[win_ch.into()], &format!("join_ch_free_{i}"))
-            .llvm_ctx("join channel free")?;
-        let _ = branch;
     }
 
     // All replies landed and the tuple is bound — continue at `next`.
@@ -11718,4 +11856,120 @@ fn emit_select_no_winner_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<(
         .build_unreachable()
         .llvm_ctx("select no winner unreachable")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod produced_owner_publication_tests {
+    /// Every result-bearing suspend family must deactivate the existing typed
+    /// owner before its ABI write and arm it only after that write succeeds.
+    /// This is source-structural on purpose: adding a new `SuspendKind` result
+    /// emitter cannot silently bypass the one owner/token lifecycle while a
+    /// happy-path integration test happens not to exercise that family.
+    #[test]
+    fn result_bearing_suspend_emitters_use_the_post_write_owner_lifecycle() {
+        let source = include_str!("suspend.rs");
+        // Keep the destination expression alongside each emitter.  This proves
+        // the owner lifecycle surrounds the exact slot the MIR terminator
+        // publishes, rather than merely some cleanup pair elsewhere in the
+        // large emitter.
+        let families = [
+            ("emit_suspending_read_terminator", "term.result_dest"),
+            ("emit_suspending_accept_terminator", "term.result_dest"),
+            ("emit_suspending_stream_next_terminator", "term.result_dest"),
+            (
+                "emit_suspending_channel_recv_terminator",
+                "term.result_dest",
+            ),
+            ("emit_suspending_task_await_terminator", "result_dest"),
+            ("emit_suspending_ask_terminator", "term.reply_dest"),
+            ("emit_suspending_call_closure_terminator", "dest"),
+            (
+                "emit_suspending_remote_actor_ask_terminator",
+                "term.reply_dest",
+            ),
+            ("emit_select_terminator", "binding_place"),
+            ("emit_join_terminator", "result"),
+        ];
+        for (family, destination) in families {
+            let start = source
+                .find(&format!("fn {family}"))
+                .unwrap_or_else(|| panic!("missing result-bearing suspend emitter {family}"));
+            let rest = &source[start..];
+            let end = rest
+                .find("\npub(crate) fn ")
+                .or_else(|| rest.find("\nfn "))
+                .unwrap_or(rest.len());
+            let body = &rest[..end];
+            let deactivate = body
+                .find("emit_helper_crash_cleanup_deactivate_before_write")
+                .unwrap_or_else(|| panic!("{family} must deactivate before result publication"));
+            let arm = body
+                .find("emit_helper_crash_cleanup_arm_after_write")
+                .unwrap_or_else(|| panic!("{family} must arm after result publication"));
+            assert!(
+                deactivate < arm,
+                "{family} armed cleanup before deactivating its result owner"
+            );
+            assert!(
+                body.contains(&format!(
+                    "emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, {destination})"
+                )),
+                "{family} must deactivate the MIR-published destination {destination}"
+            );
+            assert!(
+                body.contains(&format!(
+                    "emit_helper_crash_cleanup_arm_after_write(fn_ctx, {destination})"
+                )),
+                "{family} must arm the MIR-published destination {destination}"
+            );
+        }
+
+        // Keep the collapsed `SuspendKind` dispatch exhaustive for every
+        // variant that directly writes a result. `RestartWait` deliberately
+        // does *not* write here: its MIR resume edge re-fetches the handle, so
+        // it cannot bypass this lifecycle by growing an ABI result write.
+        let dispatcher = include_str!("llvm.rs");
+        let dispatcher = &dispatcher[dispatcher
+            .find("fn dispatch_collapsed_suspend")
+            .expect("missing collapsed SuspendKind dispatcher")..];
+        let routes = [
+            ("Ask", "emit_suspending_ask_terminator"),
+            ("Read", "emit_suspending_read_terminator"),
+            ("Accept", "emit_suspending_accept_terminator"),
+            ("CallClosure", "emit_suspending_call_closure_terminator"),
+            ("StreamNext", "emit_suspending_stream_next_terminator"),
+            ("ChannelRecv", "emit_suspending_channel_recv_terminator"),
+            ("RemoteAsk", "emit_suspending_remote_actor_ask_terminator"),
+            ("TaskAwait", "emit_suspending_task_await_terminator"),
+        ];
+        for (variant, emitter) in routes {
+            let start = dispatcher
+                .find(&format!("SuspendKind::{variant}"))
+                .unwrap_or_else(|| panic!("missing SuspendKind::{variant} dispatch"));
+            let rest = &dispatcher[start..];
+            let end = rest.find("\n        SuspendKind::").unwrap_or(rest.len());
+            assert!(
+                rest[..end].contains(emitter),
+                "SuspendKind::{variant} must route through {emitter}"
+            );
+        }
+        let restart_wait_start = dispatcher
+            .find("SuspendKind::RestartWait")
+            .expect("missing SuspendKind::RestartWait dispatch");
+        let restart_wait = &dispatcher[restart_wait_start..];
+        let restart_wait_end = restart_wait
+            .find("\n        SuspendKind::")
+            .unwrap_or(restart_wait.len());
+        assert!(
+            restart_wait[..restart_wait_end].contains("emit_suspending_restart_wait_terminator")
+        );
+
+        // The coroutine select path delegates result publication to the same
+        // winner setup/bind helper that the blocking select emitter exercises.
+        let suspended_select = source
+            .split("pub(crate) fn emit_suspending_select_terminator")
+            .nth(1)
+            .expect("missing suspending select emitter");
+        assert!(suspended_select.contains("emit_select_arm_setup"));
+    }
 }

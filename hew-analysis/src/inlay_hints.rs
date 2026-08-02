@@ -658,7 +658,10 @@ mod tests {
         );
         TypeCheckOutput {
             expr_types,
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
+            produced_value_ownership: HashMap::new(),
+            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -670,6 +673,8 @@ mod tests {
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
+            method_call_preserves_receiver_identity: HashSet::new(),
+            opaque_resource_candidates: hew_types::check::OpaqueResourceCandidateGraph::default(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -707,6 +712,7 @@ mod tests {
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
             import_type_name_aliases: HashMap::new(),
+            ..TypeCheckOutput::default()
         }
     }
 

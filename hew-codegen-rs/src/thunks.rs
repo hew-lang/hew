@@ -817,6 +817,8 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbol: &str,
     total_size: u64,
+    env_offset: u64,
+    box_align: u64,
     env_struct: StructType<'ctx>,
     field_kinds: &[StateFieldCloneKind],
 ) -> CodegenResult<FunctionValue<'ctx>> {
@@ -827,16 +829,9 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
     let ctx = fn_ctx.ctx;
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
+    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
     let void_ty = ctx.void_type();
-    let box_free_fn = fn_ctx
-        .llvm_mod
-        .get_function("hew_dyn_box_free")
-        .unwrap_or_else(|| {
-            let ty = void_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
-            fn_ctx
-                .llvm_mod
-                .add_function("hew_dyn_box_free", ty, Some(Linkage::External))
-        });
+    let box_free_fn = get_or_declare_dyn_box_free(fn_ctx)?;
     let thunk = fn_ctx.llvm_mod.add_function(
         &symbol,
         void_ty.fn_type(&[ptr_ty.into()], false),
@@ -884,7 +879,7 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
 
     // Act 2: free the box. box = env - HEADER (in-bounds: the header is part
     // of the allocation).
-    let neg_header = i64_ty.const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
+    let neg_header = i64_ty.const_int(env_offset.wrapping_neg(), true);
     let box_ptr =
         unsafe { builder.build_in_bounds_gep(ctx.i8_type(), env, &[neg_header], "env_box_base") }
             .llvm_ctx_with(|| format!("closure env free thunk `{symbol}`: box base gep"))?;
@@ -893,8 +888,8 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
             box_free_fn,
             &[
                 box_ptr.into(),
-                i64_ty.const_int(total_size, false).into(),
-                i64_ty.const_int(CLOSURE_ENV_BOX_ALIGN, false).into(),
+                usize_ty.const_int(total_size, false).into(),
+                usize_ty.const_int(box_align, false).into(),
             ],
             "env_box_free",
         )
@@ -1159,14 +1154,13 @@ pub(crate) fn owned_elem_thunk_key(
         return None;
     };
     // Enum-first: an owned-payload / recursive enum is the F3/F4 shape.
-    let short = short_name(name);
     let enum_key = if args.is_empty() {
         regs.enum_layouts
             .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
+            .find(|el| el.name == *name)
             .map(|el| el.name.clone())
     } else {
-        let mangled = mangle_with_shortened_args(short, args);
+        let mangled = mangle_with_shortened_args(name, args);
         regs.enum_layouts
             .iter()
             .find(|el| el.name == mangled || el.name == *name)
@@ -1184,27 +1178,24 @@ pub(crate) fn owned_elem_thunk_key(
     // from event companions / plain enums by their state-name table.
     if regs
         .machine_layouts
-        .get(short)
+        .get(name)
         .is_some_and(|m| m.state_name_table.is_some())
     {
-        return Some((OwnedElemThunkKind::Enum, short.to_string()));
+        return Some((OwnedElemThunkKind::Enum, name.clone()));
     }
     // Record: look up the codegen record registry key (mangled if generic).
-    // A generic instantiation registers on the bare-normalised spine, so
-    // shorten the type-arg spine before mangling.
+    // The shared layout-key encoder preserves the exact declaration owner
+    // while mapping dots only for the native-safe symbol spelling.
     let lookup_key = if args.is_empty() {
         name.clone()
     } else {
-        mangle_with_shortened_args(short_name(name), args)
+        mangle_with_shortened_args(name, args)
     };
     if regs
         .record_field_resolved_tys
         .contains_key(lookup_key.as_str())
     {
         return Some((OwnedElemThunkKind::Record, lookup_key));
-    }
-    if regs.record_field_resolved_tys.contains_key(short) {
-        return Some((OwnedElemThunkKind::Record, short.to_string()));
     }
     None
 }
@@ -1291,19 +1282,15 @@ fn eq_struct_field_resolved_tys<'ctx>(
         return Some(fields.clone());
     }
     if let Some(ResolvedTy::Named { name, args, .. }) = resolved_ty {
-        let short = short_name(name);
         let key = if args.is_empty() {
             name.clone()
         } else {
-            mangle_with_shortened_args(short, args)
+            mangle_with_shortened_args(name, args)
         };
         if let Some(fields) = fn_ctx.record_field_resolved_tys.get(key.as_str()) {
             return Some(fields.clone());
         }
         if let Some(fields) = fn_ctx.record_field_resolved_tys.get(name.as_str()) {
-            return Some(fields.clone());
-        }
-        if let Some(fields) = fn_ctx.record_field_resolved_tys.get(short) {
             return Some(fields.clone());
         }
     }
@@ -2930,8 +2917,8 @@ pub(crate) fn emit_actor_sys_dispatch_trampoline<'ctx>(
     // M-7-R: emit the `HewSysMsg::Exit` → `#[on(exit)]` case body. The runtime
     // delivers `ExitMessage { crashed_actor_id: u64, reason: i32, crash_kind:
     // i32 }` as the message payload; unpack `crashed_actor_id` and `crash_kind`
-    // (the M-6 projection) and call `__on_exit(ctx, actor_id, crash_kind,
-    // borrow_mode)`. The hook is a run-to-completion ActorHandler returning unit,
+    // (the M-6 projection) and call `__on_exit(ctx, actor_id, crash_kind)`.
+    // The hook is a run-to-completion ActorHandler returning unit,
     // so the dispatch contributes `null` to the suspend-handle phi.
     if let (Some(on_exit_bb), Some(on_exit_symbol)) = (on_exit_bb, &layout.on_exit_symbol) {
         builder.position_at_end(on_exit_bb);

@@ -1311,7 +1311,10 @@ mod tests {
         fn_sigs.insert(name.to_string(), sig);
         TypeCheckOutput {
             expr_types: HashMap::new(),
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
+            produced_value_ownership: HashMap::new(),
+            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1323,6 +1326,8 @@ mod tests {
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
+            method_call_preserves_receiver_identity: HashSet::new(),
+            opaque_resource_candidates: hew_types::check::OpaqueResourceCandidateGraph::default(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -1360,6 +1365,7 @@ mod tests {
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
             import_type_name_aliases: HashMap::new(),
+            ..TypeCheckOutput::default()
         }
     }
 
@@ -1600,7 +1606,10 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types: HashMap::new(),
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
+            produced_value_ownership: HashMap::new(),
+            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1612,6 +1621,8 @@ mod tests {
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
+            method_call_preserves_receiver_identity: HashSet::new(),
+            opaque_resource_candidates: hew_types::check::OpaqueResourceCandidateGraph::default(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -1649,6 +1660,7 @@ mod tests {
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
             import_type_name_aliases: HashMap::new(),
+            ..TypeCheckOutput::default()
         };
         let offset = source.find("Point").unwrap();
         let result = hover(source, &pr, Some(&tc), offset);
@@ -1712,7 +1724,10 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
+            produced_value_ownership: HashMap::new(),
+            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1724,6 +1739,8 @@ mod tests {
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
+            method_call_preserves_receiver_identity: HashSet::new(),
+            opaque_resource_candidates: hew_types::check::OpaqueResourceCandidateGraph::default(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -1761,6 +1778,7 @@ mod tests {
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
             import_type_name_aliases: HashMap::new(),
+            ..TypeCheckOutput::default()
         };
         let result = hover(source, &pr, Some(&tc), x_offset);
         assert!(result.is_some(), "should find hover via expr_types");
@@ -1784,7 +1802,10 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
+            produced_value_ownership: HashMap::new(),
+            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1796,6 +1817,8 @@ mod tests {
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
+            method_call_preserves_receiver_identity: HashSet::new(),
+            opaque_resource_candidates: hew_types::check::OpaqueResourceCandidateGraph::default(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -1833,6 +1856,7 @@ mod tests {
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
             import_type_name_aliases: HashMap::new(),
+            ..TypeCheckOutput::default()
         };
 
         let result = hover(source, &pr, Some(&tc), count_offset).unwrap();
@@ -1910,7 +1934,10 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
+            produced_value_ownership: HashMap::new(),
+            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1922,6 +1949,8 @@ mod tests {
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
+            method_call_preserves_receiver_identity: HashSet::new(),
+            opaque_resource_candidates: hew_types::check::OpaqueResourceCandidateGraph::default(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -1959,6 +1988,7 @@ mod tests {
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
             import_type_name_aliases: HashMap::new(),
+            ..TypeCheckOutput::default()
         };
 
         let result = hover(source, &pr, Some(&tc), use_offset).unwrap();
@@ -2086,7 +2116,10 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
+            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
+            produced_value_ownership: HashMap::new(),
+            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -2098,6 +2131,8 @@ mod tests {
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: std::collections::HashSet::new(),
             method_call_consumes_receiver: HashSet::new(),
+            method_call_preserves_receiver_identity: HashSet::new(),
+            opaque_resource_candidates: hew_types::check::OpaqueResourceCandidateGraph::default(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
             call_type_args: HashMap::new(),
@@ -2135,6 +2170,7 @@ mod tests {
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
             import_type_name_aliases: HashMap::new(),
+            ..TypeCheckOutput::default()
         };
         let result = hover(source, &pr, Some(&tc), x_offset).unwrap();
         // Goes through ResolvedTy::from_ty(materialize_literal_defaults)

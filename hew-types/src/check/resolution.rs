@@ -4,8 +4,190 @@ use super::coerce::cast_is_valid;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::BuiltinType;
 
 impl Checker {
+    /// Resolve a compiler-known nominal discriminator only after the source
+    /// owner has already been selected. Qualified spellings are presentation
+    /// aliases unless either the module binding points at a canonical shipped
+    /// stdlib source or no source declaration exists (catalog-only carriers).
+    /// This prevents `import user::channel as channel` and user modules named
+    /// `std.channel` from minting Sender/Receiver executable authority.
+    pub(super) fn resolved_builtin_type(&self, name: &str) -> Option<BuiltinType> {
+        let candidate = match name {
+            "std.channel.Sender" => Some(BuiltinType::Sender),
+            "std.channel.Receiver" => Some(BuiltinType::Receiver),
+            "std.builtins.VecIter" => Some(BuiltinType::VecIter),
+            _ => crate::lookup_builtin_type(name),
+        }?;
+        let Some((surface_owner, _)) = name.rsplit_once('.') else {
+            // Synthetic cursor discriminants are compiler-produced. The
+            // shipped stdlib registration may type its private cursor
+            // declarations both during the dedicated harness and while its
+            // exact canonical module is the active source. An ordinary bare
+            // source name cannot mint this executable identity from the global
+            // catalog.
+            if matches!(candidate, BuiltinType::VecIter | BuiltinType::HashMapIter)
+                && !self.in_stdlib_registration
+                && !self.current_module.as_deref().is_some_and(|module| {
+                    module == "std.builtins" && self.canonical_std_module_sources.contains(module)
+                })
+            {
+                return None;
+            }
+            return Some(candidate);
+        };
+        let canonical_owner = self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), surface_owner.to_string()))
+            .map_or(surface_owner, String::as_str);
+        let canonical_source = self.canonical_std_module_sources.contains(canonical_owner)
+            || (canonical_owner == "std.channel.channel"
+                && self.canonical_std_module_sources.contains("std.channel"));
+        let lifecycle_authorized =
+            crate::lookup_source_owned_lifecycle_type(name).is_some()
+                && self.canonical_lifecycle_import_authority.iter().any(
+                    |(importer, _, identity)| importer == &self.current_module && identity == name,
+                );
+        if canonical_source || lifecycle_authorized || self.in_stdlib_registration {
+            return Some(candidate);
+        }
+        // Catalog-only qualified carriers remain available when no source
+        // declaration owns the exact identity. An exact user declaration is
+        // always source-owned and cannot inherit the catalog discriminator.
+        (!self.type_def_spans.contains_key(name)).then_some(candidate)
+    }
+
+    /// Canonicalise a qualified lifecycle type through the current importer's
+    /// whole-module binding.  The returned binding is the lexical qualifier
+    /// that must be marked used (`f` in `f.CrashNotification`); the canonical
+    /// identity always retains the full std source owner
+    /// (`std.failure.CrashNotification`).
+    pub(super) fn canonical_source_lifecycle_type_name(
+        &self,
+        name: &str,
+    ) -> Option<(String, String)> {
+        let (binding, tail) = name.split_once('.')?;
+        let bare = tail.split_once("::").map_or(tail, |(ty, _)| ty);
+        let owner = match self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), binding.to_string()))
+            .map(String::as_str)
+        {
+            Some("std.failure") => "std.failure",
+            Some("std.link_monitor") => "std.link_monitor",
+            Some(_) => return None,
+            None => match binding {
+                "failure" => "std.failure",
+                "link_monitor" => "std.link_monitor",
+                _ => binding,
+            },
+        };
+        let canonical = format!("{owner}.{bare}");
+        crate::lookup_source_owned_lifecycle_type(&canonical)
+            .map(|_| (canonical, binding.to_string()))
+    }
+
+    /// Whether this source-owned lifecycle identity is available from the
+    /// module currently being checked.  `type_defs` is intentionally not part
+    /// of this proof: it is a program-global declaration table, so a sibling
+    /// or transitive import must not authorize this module's qualified use.
+    pub(super) fn source_lifecycle_identity_is_in_scope(&self, name: &str, binding: &str) -> bool {
+        if crate::lookup_source_owned_lifecycle_type(name).is_none() {
+            return false;
+        }
+
+        // This is deliberately independent of `type_visibility` and the
+        // ordinary import maps. Those registries describe source spelling and
+        // can legitimately contain a user-backed module named `std.failure`.
+        // Only this source-path-proven authority may mint a lifecycle identity.
+        self.canonical_lifecycle_import_authority.contains(&(
+            self.current_module.clone(),
+            binding.to_string(),
+            name.to_string(),
+        ))
+    }
+
+    /// Apply lifecycle import authority to a value-level record/enum path.
+    ///
+    /// Returns `Ok(None)` for an ordinary source path, `Ok(Some(canonical))`
+    /// for an authorized lifecycle path, and `Err(())` after reporting an
+    /// unauthorized lifecycle construction/reference.  Both module-qualified
+    /// paths (`f.DownReason::Crashed`) and type-qualified paths
+    /// (`DownReason::Crashed`) pass through this seam.
+    pub(super) fn canonicalize_source_lifecycle_value_path(
+        &mut self,
+        path: &str,
+        span: &Span,
+    ) -> Result<Option<String>, ()> {
+        let type_surface = path.split_once("::").map_or(path, |(ty, _)| ty);
+        let suffix = path.strip_prefix(type_surface).unwrap_or_default();
+
+        let resolved = if type_surface.contains('.') {
+            self.canonical_source_lifecycle_type_name(type_surface)
+        } else if !self.local_type_defs.contains(type_surface)
+            && !self.source_type_defs.contains(type_surface)
+            && crate::lookup_source_owned_lifecycle_type(type_surface).is_some()
+        {
+            let canonical = self.published_bare_type_qualified(type_surface);
+            canonical.and_then(|canonical| {
+                crate::lookup_source_owned_lifecycle_type(&canonical)?;
+                let owner = canonical.split_once('.')?.0;
+                let binding = if self
+                    .unqualified_to_module
+                    .contains_key(&(self.current_module.clone(), type_surface.to_string()))
+                {
+                    type_surface.to_string()
+                } else {
+                    owner.to_string()
+                };
+                Some((canonical, binding))
+            })
+        } else {
+            None
+        };
+
+        let Some((canonical, binding)) = resolved else {
+            // A bare lifecycle type-qualified path is recognizable even when
+            // no import published it. Reject it here instead of allowing the
+            // program-global constructor table to supply authority.
+            if !type_surface.contains('.')
+                && !self.local_type_defs.contains(type_surface)
+                && !self.source_type_defs.contains(type_surface)
+                && crate::lookup_source_owned_lifecycle_type(type_surface).is_some()
+            {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    span,
+                    format!("unknown type `{type_surface}`"),
+                    vec![format!(
+                        "import the owning module before using `{type_surface}`"
+                    )],
+                );
+                return Err(());
+            }
+            return Ok(None);
+        };
+
+        if !self.in_stdlib_registration
+            && !self.source_lifecycle_identity_is_in_scope(&canonical, &binding)
+        {
+            self.report_error_with_suggestions(
+                TypeErrorKind::UndefinedType,
+                span,
+                format!("unknown type `{type_surface}`"),
+                vec![format!(
+                    "import the owning module before using `{type_surface}`"
+                )],
+            );
+            return Err(());
+        }
+        self.used_modules
+            .borrow_mut()
+            .insert(ImportKey::new(self.current_module.clone(), binding));
+        Ok(Some(format!("{canonical}{suffix}")))
+    }
+
     /// The QUALIFIED identity (`owner.Name`) a bare TYPE reference resolves to
     /// when exactly one imported module PUBLISHED the bare binding into the
     /// current importer and a qualified def for it is registered; `None`
@@ -105,6 +287,92 @@ impl Checker {
         }
     }
 
+    /// Resolve the exact source owner written before a variant surface's final
+    /// `::`. Imported type aliases and a declaration's own lexical module leaf
+    /// are projected to the checker-owned nominal identity here; no leaf-only
+    /// scan is permitted.
+    fn canonical_variant_surface_owner(&self, surface_owner: &str, expected_ty: &Ty) -> String {
+        if let Some(canonical) = self
+            .import_type_name_aliases
+            .get(&(self.current_module.clone(), surface_owner.to_string()))
+        {
+            return canonical.clone();
+        }
+
+        let dotted = surface_owner.replace("::", ".");
+        if self.type_defs.contains_key(&dotted) || self.known_types.contains(&dotted) {
+            return dotted;
+        }
+
+        if !dotted.contains('.') {
+            if let Some(expected) = expected_ty.type_name() {
+                if let Some(owner) = self.current_module_identity() {
+                    let local = format!("{owner}.{dotted}");
+                    if local == expected
+                        && (self.type_defs.contains_key(&local)
+                            || self.known_types.contains(&local))
+                    {
+                        return local;
+                    }
+                }
+            }
+            if let Some(canonical) = self.canonical_nominal_name(&dotted) {
+                return canonical;
+            }
+        }
+
+        dotted
+    }
+
+    /// Whether a qualified variant surface names `expected_ty`'s exact nominal
+    /// owner. An unqualified variant has no owner to validate and is resolved
+    /// only inside the already-selected expected definition.
+    pub(super) fn variant_surface_owner_matches(
+        &self,
+        surface_name: &str,
+        expected_ty: &Ty,
+    ) -> bool {
+        let Some((surface_owner, _)) = surface_name.rsplit_once("::") else {
+            return true;
+        };
+
+        let expected = match expected_ty {
+            Ty::Named {
+                builtin: Some(BuiltinType::Option),
+                ..
+            } => "Option".to_string(),
+            Ty::Named {
+                builtin: Some(BuiltinType::Result),
+                ..
+            } => "Result".to_string(),
+            Ty::Named { name, .. } => self.strict_nominal_identity(name),
+            _ => return false,
+        };
+        self.canonical_variant_surface_owner(surface_owner, expected_ty) == expected
+    }
+
+    /// Canonicalise a type spelling that uses the current module's *declared
+    /// lexical leaf* as a qualifier.  Module graph identity is full-path, so
+    /// while checking `hew.selfqualtype` the source spelling
+    /// `selfqualtype.Meter` denotes `hew.selfqualtype.Meter` — not a separate
+    /// owner named only `selfqualtype`.
+    ///
+    /// This is deliberately narrower than a final-segment comparison.  A
+    /// nested module such as `left.render` does not thereby acquire an
+    /// unproven `render.Box` self-alias: the exact full current-owner type must
+    /// already be registered.  An explicit import binding is resolved before
+    /// this helper runs, so an intentionally imported foreign `selfqualtype`
+    /// binding retains that foreign owner.
+    fn canonical_current_module_qualified_type_name(&self, name: &str) -> Option<String> {
+        let canonical =
+            crate::current_module_qualified_type_candidate(self.current_module.as_deref(), name)?;
+        (self.type_defs.contains_key(&canonical)
+            || self.known_types.contains(&canonical)
+            || self.type_aliases.contains_key(&canonical)
+            || self.type_visibility.contains_key(&canonical))
+        .then_some(canonical)
+    }
+
     /// Whether comparing `a` and `b` under the permissive suffix rule
     /// (`Ty::names_match_qualified`, used inside `unify`) would ACCEPT a pairing
     /// that owner-qualified nominal identity REJECTS — i.e. the specific
@@ -134,14 +402,12 @@ impl Checker {
     /// its OWN module (`lifecycle.Lifecycle`) — the same definition — compares
     /// equal, while a foreign-owner qualifier (`widgeti8.Widget`) is preserved
     /// and stays distinct from a root-local bare `Widget`.
-    fn strict_nominal_identity(&self, name: &str) -> String {
+    pub(super) fn strict_nominal_identity(&self, name: &str) -> String {
         if let Some(qualified) = self.canonical_nominal_name(name) {
             return qualified;
         }
         if let Some((module, short)) = name.rsplit_once('.') {
-            let current = self.current_module.as_deref();
-            let current_short = current.map(crate::short_name);
-            if current == Some(module) || current_short == Some(module) {
+            if self.current_module.as_deref() == Some(module) {
                 return short.to_string();
             }
         }
@@ -173,10 +439,21 @@ impl Checker {
     /// not a collision, so it must NOT be flagged. A conflict is reported only
     /// when we can prove distinct owners: one side is a genuine root-local /
     /// current-module declaration and the other is a foreign-owner qualifier.
-    fn strict_names_same_owner(&self, an: &str, bn: &str) -> bool {
+    fn strict_names_same_owner(
+        &self,
+        an: &str,
+        a_builtin: Option<BuiltinType>,
+        bn: &str,
+        b_builtin: Option<BuiltinType>,
+    ) -> bool {
+        match (a_builtin, b_builtin) {
+            (Some(a), Some(b)) => return a == b,
+            (Some(_), None) | (None, Some(_)) => return false,
+            (None, None) => {}
+        }
         let a_id = self.strict_nominal_identity(an);
         let b_id = self.strict_nominal_identity(bn);
-        if a_id == b_id || Self::builtin_suffix_alias(&a_id, &b_id) {
+        if a_id == b_id {
             return true;
         }
         // Suffix-equal but distinct spellings that both resolved to a canonical
@@ -204,14 +481,18 @@ impl Checker {
         match (a, b) {
             (
                 Ty::Named {
-                    name: an, args: aa, ..
+                    name: an,
+                    args: aa,
+                    builtin: ab,
                 },
                 Ty::Named {
-                    name: bn, args: ba, ..
+                    name: bn,
+                    args: ba,
+                    builtin: bb,
                 },
             ) => {
                 let names_ok = if strict {
-                    self.strict_names_same_owner(an, bn)
+                    self.strict_names_same_owner(an, *ab, bn, *bb)
                 } else {
                     Ty::names_match_qualified(an, bn)
                 };
@@ -267,24 +548,6 @@ impl Checker {
         }
     }
 
-    /// Whether two owner-qualified names are the SAME builtin handle spelled
-    /// bare vs through its stdlib carrier (`HashSet` ↔ `collections.HashSet`,
-    /// `Sender` ↔ `channel.Sender`) — the one bare↔qualified equivalence that is
-    /// sound for a compiler-known builtin regardless of module keying.
-    fn builtin_suffix_alias(a: &str, b: &str) -> bool {
-        if a == b {
-            return true;
-        }
-        let a_qualified = a.contains('.');
-        let b_qualified = b.contains('.');
-        if a_qualified == b_qualified {
-            return false;
-        }
-        let a_bare = crate::short_name(a);
-        let b_bare = crate::short_name(b);
-        a_bare == b_bare && crate::lookup_builtin_type(a_bare).is_some()
-    }
-
     /// Fail closed on a bare TYPE reference whose qualified-by-default scope is
     /// ill-formed: more than one imported module *published* the bare name
     /// (ambiguous), or one or more modules export it but none published it (not
@@ -297,13 +560,23 @@ impl Checker {
     /// `Gadget { … }` reject the same ill-formed cases identically rather than
     /// the constructor silently binding a last-write-wins bare def.
     pub(super) fn report_bare_type_scope_error(&mut self, name: &str, span: &Span) -> bool {
+        // While registering shipped stdlib declarations, their own source
+        // member signatures are being collected before normal importer-scope
+        // bindings exist. That registration pass supplies the declaration
+        // authority; user-written references still take the guarded path.
+        if self.in_stdlib_registration {
+            return false;
+        }
         if self.local_type_defs.contains(name) || self.source_type_defs.contains(name) {
             return false;
         }
-        // Builtin surfaces resolve to their builtin identity regardless of which
-        // module exports them, so the qualified-by-default publication gate does
-        // not apply — never reject a bare builtin name.
-        if crate::lookup_builtin_type(name).is_some() || builtin_named_type(name).is_some() {
+        // Compiler-intrinsic builtin surfaces resolve regardless of import.
+        // Source-layout lifecycle payloads deliberately do not: their catalog
+        // discriminator is ABI metadata, not lexical authority. They must flow
+        // through the ordinary published-binding path below.
+        if crate::lookup_builtin_type(name).is_some_and(|builtin| !builtin.requires_source_import())
+            || builtin_named_type(name).is_some()
+        {
             return false;
         }
         let mut owner_modules: Vec<&str> = self
@@ -323,9 +596,41 @@ impl Checker {
             .get(&(self.current_module.clone(), name.to_string()))
             .map(|identities| identities.iter().cloned().collect())
             .unwrap_or_default();
+        if published_identities.is_empty()
+            && owner_modules.is_empty()
+            && crate::lookup_source_owned_lifecycle_type(name).is_some()
+        {
+            let span_key = SpanKey::in_module(span, self.current_module_idx);
+            if self
+                .reported_undefined_named_types
+                .insert((name.to_string(), span_key))
+            {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    span,
+                    format!("unknown type `{name}`"),
+                    vec![format!(
+                        "import the lifecycle type explicitly, e.g. `import std::{}::{{ {name} }}`",
+                        if matches!(
+                            crate::lookup_source_owned_lifecycle_type(name),
+                            Some(
+                                crate::BuiltinType::CrashNotification
+                                    | crate::BuiltinType::CrashKind
+                            )
+                        ) {
+                            "failure"
+                        } else {
+                            "link_monitor"
+                        }
+                    )],
+                );
+            }
+            return true;
+        }
         if published_identities.len() > 1 {
             let mut candidates: Vec<String> = published_identities.clone();
             candidates.sort();
+            self.mark_ambiguous_import_owners_used(&candidates);
             self.report_error_with_suggestions(
                 TypeErrorKind::AmbiguousType,
                 span,
@@ -365,6 +670,66 @@ impl Checker {
             return true;
         }
         false
+    }
+
+    /// Treat a rejected ambiguity as a use of every import that introduced the
+    /// competing exact owner. The identity comparison happens here before
+    /// translating to the import table's user-facing leaf spelling.
+    pub(super) fn mark_ambiguous_import_owners_used(&self, candidates: &[String]) {
+        let imported_leaves: HashSet<String> = candidates
+            .iter()
+            .filter_map(|identity| identity.rsplit_once('.').map(|(owner, _)| owner))
+            .filter_map(|owner| owner.rsplit('.').next())
+            .map(str::to_string)
+            .collect();
+        let used_keys: Vec<ImportKey> = self
+            .import_spans
+            .keys()
+            .filter(|key| {
+                key.owner_module == self.current_module && imported_leaves.contains(&key.short_name)
+            })
+            .cloned()
+            .collect();
+        self.used_modules.borrow_mut().extend(used_keys);
+    }
+
+    /// Credit every lexical import binding that names this exact source module.
+    /// `unqualified_to_module` and resolved nominal types intentionally carry
+    /// full declaration owners (`hew.alpha`), whereas the unused-import table
+    /// is keyed by the user's binding (`alpha`, or an explicit module alias).
+    /// Bridge those representations through `module_import_bindings`; never
+    /// recover an owner from a leaf segment.
+    pub(super) fn mark_module_owner_bindings_used(&self, source_owner: &str) {
+        let bindings: Vec<ImportKey> = self
+            .module_import_bindings
+            .iter()
+            .filter(|((importer, _), owner)| {
+                importer == &self.current_module && *owner == source_owner
+            })
+            .map(|((importer, binding), _)| ImportKey::new(importer.clone(), binding.clone()))
+            .filter(|key| self.import_spans.contains_key(key))
+            .collect();
+        self.used_modules.borrow_mut().extend(bindings);
+    }
+
+    /// Credit the lexical binding whose exact source owner prefixes a resolved
+    /// nominal identity. Full owners may themselves be dotted package paths,
+    /// so `split_once('.')` is neither sufficient nor sound here.
+    fn mark_resolved_nominal_owner_used(&self, resolved_name: &str) {
+        let owners: Vec<String> = self
+            .module_import_bindings
+            .iter()
+            .filter(|((importer, _), owner)| {
+                importer == &self.current_module
+                    && resolved_name
+                        .strip_prefix(owner.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('.'))
+            })
+            .map(|(_, owner)| owner.clone())
+            .collect();
+        for owner in owners {
+            self.mark_module_owner_bindings_used(&owner);
+        }
     }
 
     #[expect(
@@ -1285,6 +1650,11 @@ impl Checker {
                 trait_name,
                 assoc_name,
             } => {
+                // Projection carriers may originate at syntax-directed builtin
+                // consumers (`Index`, `Iterator`) or retain an import alias.
+                // Resolve that spelling before consulting declaration-owned impl
+                // binding keys; never retry through an unrelated short trait.
+                let trait_key = self.trait_ref_lookup_key(trait_name);
                 let projected_base = self.project_assoc_types(base);
                 // Resolve via the substitution so a `Ty::Var` bound to a
                 // concrete type also collapses.
@@ -1293,7 +1663,7 @@ impl Checker {
                     if args.is_empty() && self.is_type_param_in_scope(name) {
                         if let Some(binding) = self.lookup_type_param_assoc_binding(
                             name,
-                            trait_name.as_ref(),
+                            &trait_key,
                             assoc_name.as_ref(),
                         ) {
                             return self.project_assoc_types(&binding);
@@ -1304,29 +1674,20 @@ impl Checker {
                             assoc_name: assoc_name.clone(),
                         };
                     }
-                    // An imported type carries its module-qualified spelling
-                    // (`iter.Map`) at a cross-module call site, but the impl's
-                    // associated-type binding and its `type_defs` entry are keyed
-                    // on the bare declaration name (`Map`). Resolve against the
-                    // qualified name first, then fall back to the bare leaf so the
-                    // projection collapses for an imported generic adapter the same
-                    // way it does in the defining module (`per-module-type-identity`:
-                    // the qualifier is an outer-identity concern, not part of the
-                    // impl-binding key).
-                    let bare_name = crate::short_name(name);
-                    let key = (name.clone(), trait_name.to_string(), assoc_name.to_string());
-                    let binding = self.impl_assoc_type_bindings.get(&key).or_else(|| {
-                        if bare_name == name.as_str() {
-                            None
-                        } else {
-                            let bare_key = (
-                                bare_name.to_string(),
-                                trait_name.to_string(),
-                                assoc_name.to_string(),
-                            );
-                            self.impl_assoc_type_bindings.get(&bare_key)
-                        }
-                    });
+                    // Associated-type projection is executable conformance
+                    // authority. Both registration and the resolved base carry
+                    // the full nominal owner, so a miss must remain a miss.
+                    let nominal_identity = Self::canonical_primitive_or_builtin_key(&resolved_base)
+                        .unwrap_or_else(|| {
+                            self.canonical_nominal_name(name)
+                                .unwrap_or_else(|| name.clone())
+                        });
+                    let key = (
+                        nominal_identity.clone(),
+                        trait_key.clone(),
+                        assoc_name.to_string(),
+                    );
+                    let binding = self.impl_assoc_type_bindings.get(&key);
                     if let Some(binding) = binding {
                         // The binding may itself reference impl-level type
                         // params; substitute them using the impl's declared
@@ -1334,11 +1695,7 @@ impl Checker {
                         // available) zipped with `args`. The fallback when
                         // `type_params` is absent is to return the binding
                         // unchanged — sound when the impl is non-generic.
-                        let bound = if let Some(td) = self
-                            .type_defs
-                            .get(name)
-                            .or_else(|| self.type_defs.get(bare_name))
-                        {
+                        let bound = if let Some(td) = self.type_defs.get(&nominal_identity) {
                             let map: HashMap<String, Ty> = td
                                 .type_params
                                 .iter()
@@ -1853,6 +2210,32 @@ impl Checker {
                         })
                         .collect()
                 });
+                // Whole-module imports are lexical bindings, not declaration
+                // identities.  Canonicalise `lmonobox.Box` through the exact
+                // binding owner (`hew.lmonobox.Box`) before it participates in
+                // unification or becomes a generic layout argument.  Lifecycle
+                // source carriers retain their dedicated authority below so the
+                // lexical binding remains available for its import-proof check.
+                let imported_module_binding = name.split_once('.').and_then(|(binding, tail)| {
+                    self.module_import_bindings
+                        .get(&(self.current_module.clone(), binding.to_string()))
+                        .filter(|owner| {
+                            !matches!(owner.as_str(), "std.failure" | "std.link_monitor")
+                        })
+                        .map(|owner| (format!("{owner}.{tail}"), binding.to_string()))
+                });
+                let (canonical_module_name, imported_module_binding) = imported_module_binding
+                    .map_or_else(
+                        || {
+                            (
+                                self.canonical_current_module_qualified_type_name(name)
+                                    .unwrap_or_else(|| name.clone()),
+                                None,
+                            )
+                        },
+                        |(canonical, binding)| (canonical, Some(binding)),
+                    );
+                let name = &canonical_module_name;
                 // Check if it's a generic type parameter
                 for ctx in self.generic_ctx.iter().rev() {
                     if let Some(ty) = ctx.get(name) {
@@ -1862,6 +2245,31 @@ impl Checker {
                 // Check type aliases (transparent: Distance = int → Ty::I64)
                 if let Some(aliased) = self.type_aliases.get(name) {
                     return aliased.clone();
+                }
+                // A qualified lifecycle source identity is valid only when its
+                // canonical owner was imported directly by this lexical module.
+                // Whole-module aliases retain canonical identity (`f.CrashKind`
+                // -> `failure.CrashKind`) while user/transitive definitions with
+                // the same spelling remain ordinary source types.
+                let lifecycle_qualified = self.canonical_source_lifecycle_type_name(name);
+                if let Some((canonical, binding)) = lifecycle_qualified.as_ref() {
+                    if !self.in_stdlib_registration
+                        && !self.source_lifecycle_identity_is_in_scope(canonical, binding)
+                    {
+                        let span_key = SpanKey::in_module(&te.1, self.current_module_idx);
+                        if self
+                            .reported_undefined_named_types
+                            .insert((name.clone(), span_key))
+                        {
+                            self.report_error_with_suggestions(
+                                TypeErrorKind::UndefinedType,
+                                &te.1,
+                                format!("unknown type `{name}`"),
+                                vec![format!("import the owning module before using `{name}`")],
+                            );
+                        }
+                        return Ty::Error;
+                    }
                 }
                 // Qualify unqualified handle types only when imported and
                 // unambiguous. Collect owned strings so this borrow of
@@ -1892,10 +2300,48 @@ impl Checker {
                 // record constructor in `check_struct_init`, so a type position
                 // (`fn f(x: Gadget)`) and a construction (`Gadget { … }`) reject
                 // the ill-formed cases identically.
-                if !is_local && self.report_bare_type_scope_error(name, &te.1) {
+                if !is_local
+                    && !name.contains('.')
+                    && self.report_bare_type_scope_error(name, &te.1)
+                {
                     return Ty::Error;
                 }
-                let resolved_name = if is_local && self.type_defs.contains_key(name) {
+                // A named/glob lifecycle import must carry the same canonical
+                // source proof as a whole-module qualified import. Ordinary
+                // bare-publication tables describe only a module's spelling,
+                // so a user-backed `std.failure::{CrashNotification}` cannot
+                // mint the lifecycle ABI identity.
+                let published_lifecycle = (!is_local && !name.contains('.'))
+                    .then(|| self.published_bare_type_qualified(name))
+                    .flatten()
+                    .filter(|canonical| {
+                        crate::lookup_source_owned_lifecycle_type(canonical).is_some()
+                    });
+                if let Some(canonical) = published_lifecycle {
+                    if !self.in_stdlib_registration
+                        && !self.source_lifecycle_identity_is_in_scope(&canonical, name)
+                    {
+                        let span_key = SpanKey::in_module(&te.1, self.current_module_idx);
+                        if self
+                            .reported_undefined_named_types
+                            .insert((name.clone(), span_key))
+                        {
+                            self.report_error_with_suggestions(
+                                TypeErrorKind::UndefinedType,
+                                &te.1,
+                                format!("unknown type `{name}`"),
+                                vec![format!("import the owning module before using `{name}`")],
+                            );
+                        }
+                        return Ty::Error;
+                    }
+                }
+                let resolved_name = if let Some((canonical, binding)) = lifecycle_qualified {
+                    self.used_modules
+                        .borrow_mut()
+                        .insert(ImportKey::new(self.current_module.clone(), binding));
+                    canonical
+                } else if is_local {
                     // A bare reference to a locally-defined type normally binds
                     // to the bare `type_defs` key. But when checking a non-root
                     // module, the bare key is last-write-wins across modules that
@@ -1905,22 +2351,21 @@ impl Checker {
                     // bare local `Wrap` here would resolve to the WRONG module's
                     // fields downstream (observable as `no field ... help: <other
                     // module's field>` — #2208). Bind to this module's OWN
-                    // qualified identity (`{short}.{name}`) when it exists so the
+                    // qualified identity (`{full_module}.{name}`) when it exists so the
                     // local reference is immune to the cross-module bare-key
                     // race, mirroring the `published_bare_type_qualified` branch
-                    // below. `pre_register_type_decl` always seeds the qualified
-                    // key alongside the bare one, so non-colliding locals resolve
-                    // identically to their own def.
-                    match self.current_module_short() {
-                        Some(short) => {
-                            let qualified = format!("{short}.{name}");
-                            if self.type_defs.contains_key(&qualified) {
-                                qualified
-                            } else {
-                                name.clone()
-                            }
+                    // below. Canonical registration seeds the full qualified
+                    // key; the bare entry may remain only as a compatibility
+                    // surface and is never the owner authority here.
+                    if let Some(module) = self.current_module.as_deref() {
+                        let qualified = format!("{module}.{name}");
+                        if self.type_defs.contains_key(&qualified) {
+                            qualified
+                        } else {
+                            name.clone()
                         }
-                        None => name.clone(),
+                    } else {
+                        name.clone()
                     }
                 } else if let Some(qualified) = self.published_bare_type_qualified(name) {
                     // Exactly one module published this bare name. Bind to that
@@ -1939,12 +2384,29 @@ impl Checker {
                         _ => name.clone(),
                     }
                 };
-                // Mark module as used when type name is module-qualified.
-                if let Some((module, _)) = resolved_name.split_once('.') {
-                    self.used_modules.borrow_mut().insert(ImportKey::new(
-                        self.current_module.clone(),
-                        module.to_string(),
-                    ));
+                // A bare import binding can resolve to its source-canonical
+                // owner (`std.io.closable.CloseError`).  Consume the import by
+                // the original binding before treating that canonical identity
+                // as a source-qualified reference; otherwise the lint would
+                // look for a fictional root `std` import and warn about the
+                // actual `closable` import being unused.
+                if let Some(binding) = imported_module_binding {
+                    // `binding.Type` resolved above to its full source owner.
+                    // The lexical binding is the import-lint authority: using
+                    // the first segment of a dotted source owner such as
+                    // `hew.closableerr.CloseError` would instead credit a
+                    // nonexistent `hew` import and falsely warn that the
+                    // actual `closableerr` binding is unused.
+                    self.used_modules
+                        .borrow_mut()
+                        .insert(ImportKey::new(self.current_module.clone(), binding));
+                } else if let Some(module) = self
+                    .unqualified_to_module
+                    .get(&(self.current_module.clone(), name.clone()))
+                {
+                    self.mark_module_owner_bindings_used(module);
+                } else if resolved_name.contains('.') {
+                    self.mark_resolved_nominal_owner_used(&resolved_name);
                 } else if let Some(module) = self
                     .unqualified_to_module
                     .get(&(self.current_module.clone(), resolved_name.clone()))
@@ -1954,9 +2416,7 @@ impl Checker {
                     // still consumes the owning module — mark it used so the
                     // unused-import lint does not false-positive on bare type
                     // references reached via an explicit opt-in or glob.
-                    self.used_modules
-                        .borrow_mut()
-                        .insert(ImportKey::new(self.current_module.clone(), module.clone()));
+                    self.mark_module_owner_bindings_used(module);
                 }
                 // Visibility enforcement for qualified type references.
                 // Only fires when the resolved name is module-qualified (contains
@@ -2016,18 +2476,18 @@ impl Checker {
                         .type_defs
                         .get(resolved_name.as_str())
                         .is_some_and(|td| td.type_params.is_empty());
-                let builtin_type = builtin_named_type(resolved_name.as_str());
-                let args = match builtin_type {
-                    Some(kind)
-                        if kind.is_channel_handle() && args.is_empty() && !locally_non_generic =>
-                    {
-                        vec![Ty::Var(TypeVar::fresh())]
-                    }
-                    _ => args,
+                let resolved_builtin = self.resolved_builtin_type(resolved_name.as_str());
+                let is_channel_handle = resolved_builtin
+                    .is_some_and(BuiltinType::is_channel_handle)
+                    || builtin_named_type(resolved_name.as_str()).is_some_and(
+                        super::super::builtin_names::BuiltinNamedType::is_channel_handle,
+                    );
+                let args = if is_channel_handle && args.is_empty() && !locally_non_generic {
+                    vec![Ty::Var(TypeVar::fresh())]
+                } else {
+                    args
                 };
-                if crate::lookup_builtin_type(resolved_name.as_str())
-                    == Some(crate::BuiltinType::Rc)
-                {
+                if resolved_builtin == Some(crate::BuiltinType::Rc) {
                     if let Some(type_args) = type_args.as_ref() {
                         if let (Some(payload_ty), Some((_, payload_span))) =
                             (args.first(), type_args.first())
@@ -2036,7 +2496,14 @@ impl Checker {
                         }
                     }
                 }
-                let builtin = crate::lookup_builtin_type(resolved_name.as_str());
+                let builtin = resolved_builtin.filter(|builtin| {
+                    // A raw bare spelling of a source-owned lifecycle type has
+                    // no authority. Real named/glob imports and the isolated
+                    // prelude bootstrap canonicalise it to `owner.Type` above.
+                    !builtin.requires_source_import()
+                        || resolved_name.contains('.')
+                        || self.in_stdlib_registration
+                });
                 // A bare name that shadows a builtin via a local `type X {}` decl
                 // normally binds to the source decl (`builtin: None`). Collection
                 // and substrate-handle builtins are the exception only while
@@ -2051,9 +2518,13 @@ impl Checker {
                 // remains source-owned even though its short spelling
                 // collides. Root bare declarations likewise remain user
                 // shadows.
-                let builtin_overrides_source_decl = resolved_name.contains('.')
-                    && builtin
-                        .is_some_and(|kind| kind.is_collection() || kind.is_substrate_handle());
+                let builtin_overrides_source_decl = self.in_stdlib_registration
+                    || (builtin.is_some() && crate::ty::is_reserved_type_name(&resolved_name))
+                    || builtin.is_some_and(BuiltinType::requires_source_import)
+                    || (resolved_name.contains('.')
+                        && builtin.is_some_and(|kind| {
+                            kind.is_collection() || kind.is_substrate_handle()
+                        }));
                 let local_source_type_def = self.source_type_defs.contains(resolved_name.as_str())
                     && !builtin_overrides_source_decl;
                 // F1: a named type that resolved to nothing — not a builtin, not
@@ -2103,8 +2574,15 @@ impl Checker {
                     return Ty::Error;
                 }
                 self.check_cross_module_generic_layout_use(&resolved_name, &args, &te.1);
-                if builtin.is_some() && !local_source_type_def {
-                    Ty::normalize_named(resolved_name, args)
+                if let Some(builtin) = builtin.filter(|_| !local_source_type_def) {
+                    if builtin == BuiltinType::CancellationToken && args.is_empty() {
+                        return Ty::CancellationToken;
+                    }
+                    Ty::Named {
+                        name: resolved_name,
+                        args,
+                        builtin: Some(builtin),
+                    }
                 } else {
                     Ty::named(resolved_name, args)
                 }

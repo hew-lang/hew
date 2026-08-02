@@ -48,11 +48,89 @@
 //! and clippy-gated.
 
 use crate::ResolvedTy;
+use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoEnumIterator};
 
 // =============================================================================
 // Ownership verdict
 // =============================================================================
+
+/// Why a successfully-published expression result carries one caller-owned
+/// release obligation.
+///
+/// This is deliberately independent of the physical drop function.  The
+/// checker/HIR authority says whether one owner exists; MIR derives the
+/// concrete release ritual from the resolved result type and the ordinary
+/// resource/drop tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProducedValueAcquisition {
+    /// Newly allocated storage or a freshly-created affine handle.
+    Fresh,
+    /// An independently retained reference to existing storage.
+    Retained,
+    /// Ownership delivered by an actor/task/channel/stream suspension.
+    Delivery,
+    /// A deep/retaining clone operation.
+    Clone,
+    /// Ownership moved out of a container or aggregate slot.
+    MoveOut,
+}
+
+/// Typed ownership fact for one expression result.
+///
+/// The variants answer only whether the result denotes a release obligation.
+/// They never name a callee or release symbol: call identity remains a
+/// checker/HIR fact and the release remains type-directed.  `Unknown` is the
+/// fail-closed state; an ownership-demanding sink must diagnose rather than
+/// manufacture a drop from a display name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProducedValueOwnership {
+    /// Scalar, unit, static literal, or another value with no release.
+    NoOwner,
+    /// Alias of storage whose owner remains elsewhere.
+    Borrowed,
+    /// One independent caller owner was published.
+    Owned {
+        acquisition: ProducedValueAcquisition,
+    },
+    /// A consuming fluent call returned the receiver's existing owner.
+    ///
+    /// MIR must transfer the receiver owner to the result; it may not mint a
+    /// second owner.
+    ReceiverIdentity,
+    /// The typed producer contract is absent or incomplete.
+    Unknown,
+}
+
+/// Checker-authored ownership disposition for one call argument.
+///
+/// This is deliberately smaller than MIR's parameter-boundary model: it
+/// answers only whether the result owner's obligation crosses this call edge.
+/// Representation loans and crash-cleanup details remain MIR facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProducedArgumentBoundary {
+    /// The callee observes the value but the caller keeps its owner.
+    Borrow,
+    /// The callee receives the existing owner.
+    Transfer,
+    /// The checker could not prove either disposition.
+    Unknown,
+}
+
+impl ProducedValueOwnership {
+    #[must_use]
+    pub const fn owned(acquisition: ProducedValueAcquisition) -> Self {
+        Self::Owned { acquisition }
+    }
+
+    #[must_use]
+    pub const fn acquisition(self) -> Option<ProducedValueAcquisition> {
+        match self {
+            Self::Owned { acquisition } => Some(acquisition),
+            Self::NoOwner | Self::Borrowed | Self::ReceiverIdentity | Self::Unknown => None,
+        }
+    }
+}
 
 /// Three-valued consume/borrow verdict for one call argument.
 ///
@@ -113,7 +191,7 @@ impl ConsumeVerdict {
 /// elements. The pending Vec genericisation work will collapse most of
 /// these onto a single `Generic` variant that reads the descriptor's
 /// `elem` field — out of scope here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum VecGetElem {
     #[default]
     Bool,
@@ -123,6 +201,12 @@ pub enum VecGetElem {
     I16,
     I32,
     I64,
+    /// Descriptor-backed deep clone into a caller-provided output slot.
+    ///
+    /// Unlike the scalar getters, this family rides the intercepted
+    /// `Terminator::Call` path because its concrete element layout determines
+    /// the hidden output-pointer ABI.
+    Clone,
     Layout,
     Owned,
     Ptr,
@@ -135,7 +219,7 @@ pub enum VecGetElem {
 /// (`hew_vec_slice_range_*`). Narrower than [`VecGetElem`] because slice
 /// does not have a bool path today; descriptor-backed record/tuple elements
 /// route through the `Layout`/`Owned` substrate variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum VecSliceElem {
     #[default]
     Bytesize,
@@ -153,7 +237,7 @@ pub enum VecSliceElem {
 /// recv retired their per-element symbols in favour of the
 /// element-layout-witness `*_layout` entries, which bypass
 /// `RuntimeCallFamily` entirely (codegen `Terminator::Call` intercept).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum StreamElementKind {
     #[default]
     Bytes,
@@ -164,7 +248,7 @@ pub enum StreamElementKind {
 /// identifiers (`"sqrt"`, `"sin"`, …) onto
 /// `RuntimeCallFamily::MathIntrinsic(...)`; MIR carries that family on the
 /// call so codegen never re-derives the intrinsic from the callee string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum MathIntrinsic {
     #[default]
     Sqrt,
@@ -203,7 +287,7 @@ pub enum MathIntrinsic {
 /// `match-fail-closed`). A future contributor cannot silently extend it
 /// behind a wildcard arm; every consumer must add the new arm at the
 /// next slice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
 pub enum RuntimeCallFamily {
     // --- Actor cooperate/link/monitor/unlink/spawn surface ------------------
     ActorAsk,
@@ -906,6 +990,7 @@ impl RuntimeCallFamily {
             Self::VecGet(VecGetElem::I16) => "hew_vec_get_i16",
             Self::VecGet(VecGetElem::I32) => "hew_vec_get_i32",
             Self::VecGet(VecGetElem::I64) => "hew_vec_get_i64",
+            Self::VecGet(VecGetElem::Clone) => "hew_vec_get_clone",
             Self::VecGet(VecGetElem::Layout) => "hew_vec_get_layout",
             Self::VecGet(VecGetElem::Owned) => "hew_vec_get_owned",
             Self::VecGet(VecGetElem::Ptr) => "hew_vec_get_ptr",
@@ -1213,6 +1298,7 @@ impl RuntimeCallFamily {
             "hew_vec_get_i16" => Self::VecGet(VecGetElem::I16),
             "hew_vec_get_i32" => Self::VecGet(VecGetElem::I32),
             "hew_vec_get_i64" => Self::VecGet(VecGetElem::I64),
+            "hew_vec_get_clone" => Self::VecGet(VecGetElem::Clone),
             "hew_vec_get_layout" => Self::VecGet(VecGetElem::Layout),
             "hew_vec_get_owned" => Self::VecGet(VecGetElem::Owned),
             "hew_vec_get_ptr" => Self::VecGet(VecGetElem::Ptr),
@@ -1512,7 +1598,10 @@ impl RuntimeCallFamily {
     /// in `hew-types/src/builtin_names.rs` for the 7-symbol set:
     /// `hew_stream_close`, `hew_sink_close`, `hew_channel_sender_close`,
     /// `hew_channel_receiver_close`, `hew_duplex_close`,
-    /// `hew_duplex_close_half`, `hew_lambda_actor_release`.
+    /// `hew_duplex_close_half`, `hew_lambda_actor_release`, plus the TCP
+    /// active-mode handoff. The latter is not a close call: its consume fact
+    /// comes from the generated FFI contract for `hew_tcp_attach_local`,
+    /// because the reactor becomes the connection's sole close authority.
     ///
     /// LESSONS P0 `boundary-fail-closed`: a missed consume-mark leaks
     /// the handle (drop fires once on a still-live handle) — it never
@@ -1521,6 +1610,14 @@ impl RuntimeCallFamily {
     /// listing.
     #[must_use]
     pub fn consumes_receiver(self) -> bool {
+        if self == Self::TcpAttachLocal {
+            // The TCP handoff carries a scalar connection token at ABI level,
+            // so this must not be a spelling-only ownership inference. An
+            // absent/wrong/short row is deliberately non-consuming; the
+            // generated contract is the sole positive authority.
+            return crate::ffi_contracts::extern_param_ownership(self.c_symbol(), 0)
+                == Some(crate::ffi_contracts::ExternParamOwnership::Consume);
+        }
         matches!(
             self,
             Self::StreamClose
@@ -2276,6 +2373,7 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::VecCloneOwned
             | F::VecContainsLayout
             | F::VecContainsOwned
+            | F::VecGet(VecGetElem::Clone)
             | F::VecNew
             | F::VecPopBool
             | F::VecPopLayout
@@ -2491,9 +2589,12 @@ mod tests {
     /// now delegates to this catalog, so asserting against that function
     /// would be circular — the literal set below is the sole external
     /// anchor: a consuming family losing its consume mark (leak) or a
-    /// non-consuming family gaining one (double-free) fails here. The set
-    /// covers the close family plus the two half-extract methods, which
-    /// move the unified `Duplex` handle out (leaving only the half live).
+    /// non-consuming family gaining one (double-free) fails here. The literal
+    /// set covers the close family plus the two half-extract methods, which
+    /// move the unified `Duplex` handle out (leaving only the half live). TCP
+    /// attach is intentionally separate: its consume fact is anchored in the
+    /// generated FFI table, and this test pins that table projection rather
+    /// than duplicating a second literal authority.
     #[test]
     fn consumes_receiver_mirrors_builtin_names() {
         use std::collections::HashSet;
@@ -2516,7 +2617,10 @@ mod tests {
         for family in all_runtime_call_families() {
             let sym = family.c_symbol();
             let consumes = family.consumes_receiver();
-            let expected_consumes = expected.contains(sym);
+            let expected_consumes = expected.contains(sym)
+                || (sym == "hew_tcp_attach_local"
+                    && crate::ffi_contracts::extern_param_ownership(sym, 0)
+                        == Some(crate::ffi_contracts::ExternParamOwnership::Consume));
             assert_eq!(
                 consumes, expected_consumes,
                 "consumes_receiver mismatch for {family:?} → {sym}: \

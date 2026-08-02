@@ -38,7 +38,16 @@ if (( NO_BUILD == 0 )); then
     cargo build -p hew-lib --profile release-lib 2>&1
 fi
 
-HEW="$REPO_ROOT/target/release/hew"
+# Cargo's artifact root is configurable through CARGO_TARGET_DIR and Cargo
+# configuration.  Resolve it the same way the Makefile does so the binary we
+# just built is the binary this smoke test executes.  Keep this separate from
+# the build step: --no-build must still fail closed when that resolved artifact
+# is absent.
+CARGO_NATIVE_OUT="$("$REPO_ROOT/scripts/cargo-output-dir.py" --native)"
+if [[ "$CARGO_NATIVE_OUT" != /* ]]; then
+    CARGO_NATIVE_OUT="$REPO_ROOT/$CARGO_NATIVE_OUT"
+fi
+HEW="$CARGO_NATIVE_OUT/release/hew"
 if [[ ! -x "$HEW" ]]; then
     echo "error: $HEW not found — run without --no-build or run 'cargo build --release -p hew-cli' first" >&2
     exit 1

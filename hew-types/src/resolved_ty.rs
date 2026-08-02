@@ -18,6 +18,17 @@ use std::fmt;
 
 use crate::builtin_type::BuiltinType;
 use crate::ty::{TraitObjectBound, Ty, TypeVar};
+use crate::NominalId;
+
+/// A concrete use of a declared nominal type.
+///
+/// `nominal` is the declaration identity; `args` are an instance payload and
+/// are never folded into a leaf-name lookup key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NominalInstance {
+    pub nominal: NominalId,
+    pub args: Vec<ResolvedTy>,
+}
 
 /// A fully-resolved, concrete type that has crossed the checker output
 /// boundary.
@@ -266,6 +277,28 @@ impl fmt::Display for BoundaryError {
 impl std::error::Error for BoundaryError {}
 
 impl ResolvedTy {
+    /// Return the canonical nominal instance carried by a user named type.
+    ///
+    /// The checker canonicalises imported names before its output boundary, so
+    /// this method is the only Stage-1 conversion from `ResolvedTy::Named` to
+    /// semantic nominal identity. Builtins and abstract parameters have their
+    /// own closed discriminators and therefore do not produce a user nominal.
+    #[must_use]
+    pub fn nominal_instance(&self) -> Option<NominalInstance> {
+        match self {
+            Self::Named {
+                name,
+                args,
+                builtin: None,
+                ..
+            } => Some(NominalInstance {
+                nominal: NominalId::new(name.clone()),
+                args: args.clone(),
+            }),
+            _ => None,
+        }
+    }
+
     /// Returns whether this type carries the checker-stamped builtin identity.
     #[must_use]
     pub fn is_builtin(&self, expected: BuiltinType) -> bool {

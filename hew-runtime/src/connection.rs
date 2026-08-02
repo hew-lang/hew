@@ -64,7 +64,10 @@ use crate::lifetime::poison_safe::PoisonSafe;
 use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadClass};
 use crate::node_identity::{HewLocation, Location, NodeId};
 use crate::peer_binding::{ClaimState, LiveClaim, PeerAuthSnapshot, PeerCredential, Posture};
-use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
+use crate::routing::{
+    hew_routing_add_route, hew_routing_can_add_route, hew_routing_remove_route_if_conn,
+    HewRoutingTable,
+};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
 use crate::util::{CondvarExt, MutexExt};
@@ -1082,14 +1085,12 @@ fn test_publish_claim(mgr: &HewConnMgr, route_slot: u16, conn_id: c_int) -> u64 
 /// Order matters, and both steps are synchronous:
 ///
 /// 1. Retire the cluster token/member FIRST, before any close is exposed.
-///    Cluster establishment runs before route registration, so by the time a
-///    refusal is decided this peer may already be the CURRENT ALIVE member.
-///    Dropping the current token here both demotes the member and disarms any
-///    still-queued `GuardedTokenEstablished` transition (delivery is gated on
-///    the current token still matching), so no observer can ever see this peer
-///    alive while it has no routing entry and no authenticated published owner.
-///    The call is token-guarded, so a superseding admission's publication is
-///    untouched and the repeat inside the teardown below is a no-op.
+///    Dropping the current token demotes the member and cancels the remaining
+///    steps of any claimed guarded delivery. A step that already passed its
+///    own gate linearizes before this retirement and is not a callback-return
+///    fence; immutable route refusals therefore use the pre-publication path
+///    below instead. The call is token-guarded, so a superseding admission's
+///    publication is untouched and the repeat inside teardown is a no-op.
 /// 2. Hand the connection to the ordinary guarded teardown. That retires the
 ///    claim, removes the route, sets `reader_stop` and ACQUIRES the transport
 ///    close before closing, unlinks the actor and joins the reader — so the
@@ -1119,6 +1120,19 @@ fn refuse_established_publication(
     let _ = remove_connection(mgr, conn_id, Some(publication_token));
 }
 
+/// Fail closed before cluster publication when the immutable route shape can
+/// never be represented by this manager's routing table.
+///
+/// No cluster token was installed for this admission, so there is no cluster
+/// publication to retire. In particular, a bare route-slot demotion would be
+/// unsafe: the cluster entry at that receiver-local alias may belong to an
+/// existing/current member unrelated to this refused identity. The ordinary
+/// removal below uses token-bound retirement, which is a no-op for this
+/// never-published admission while still retiring its claim and connection.
+fn refuse_unpublishable_route(mgr: &HewConnMgr, conn_id: c_int, publication_token: u64) {
+    let _ = remove_connection(mgr, conn_id, Some(publication_token));
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "publication threads route/cluster/gossip metadata plus the issue #2652 superseded claim; bundling them would obscure the call site"
@@ -1143,6 +1157,29 @@ fn publish_identity_connection_established(
     // A superseding admission arriving in the reserve window ⇒ we are no longer
     // the map owner ⇒ abort publish (write no route / cluster token / gossip).
     if !publish_identity_claim(mgr, peer_identity, conn_id, publication_token) {
+        return;
+    }
+
+    // Reserved slots and zero sessions are immutable properties of this
+    // admission and routing table. Reject them BEFORE exposing an ALIVE
+    // cluster transition. Once a guarded delivery has passed one of its
+    // per-step gates, token retirement is intentionally not a callback-return
+    // fence; publishing first would therefore permit an ALIVE callback after
+    // this refusal returned even though no route could ever be installed.
+    if !mgr.routing_table.is_null()
+        && !unsafe {
+            // SAFETY: the routing table is owned by the live manager.
+            hew_routing_can_add_route(mgr.routing_table, peer_route_slot, peer_session_incarnation)
+        }
+    {
+        refuse_unpublishable_route(mgr, conn_id, publication_token);
+        // Reported last so the teardown's own diagnostics cannot mask the
+        // reason the admission was refused.
+        set_last_error(format!(
+            "connection publication refused for peer {peer_identity} on conn {conn_id}: \
+             route slot {peer_route_slot} is reserved (slot 0 or this node's own local \
+             route slot), so no route could be registered"
+        ));
         return;
     }
 
@@ -1193,6 +1230,12 @@ fn publish_identity_connection_established(
         return;
     }
 
+    #[cfg(test)]
+    if !mgr.routing_table.is_null() {
+        // SAFETY: the routing table is owned by the live manager.
+        unsafe { &*mgr.routing_table }.route_add_rendezvous();
+    }
+
     if !mgr.routing_table.is_null() {
         let route_registered = {
             let _publication = publication_sync.lock_or_recover();
@@ -1211,14 +1254,12 @@ fn publish_identity_connection_established(
                 )
             }
         };
-        // Fail closed. The route add refuses a reserved slot (slot 0 or this
-        // node's own local route slot). Publishing anyway would leave an
-        // established peer with no routing-table entry, and every later send to
-        // it would vanish as an unexplained partition instead of a reported
-        // error. Tear the admission down through the guarded path — cluster
-        // membership retired synchronously first, then claim retired, reader
-        // stopped, transport marked, actor removed and closed exactly once —
-        // and emit no registry gossip for a peer we cannot route to.
+        // Defensive fail-closed check. The immutable route coordinates were
+        // accepted before cluster publication by the same predicate used in
+        // `hew_routing_add_route`, so a normal reserved-slot admission cannot
+        // reach this branch. If that invariant is ever broken, retire the
+        // established token and connection and emit no registry gossip for a
+        // peer we failed to route.
         if !route_registered {
             refuse_established_publication(mgr, peer_route_slot, conn_id, publication_token);
             // Reported last so the teardown's own diagnostics cannot mask the
@@ -8708,7 +8749,8 @@ mod tests {
     /// Post-conditions of a refused publication (see the caller): reported,
     /// claim retired, transport closed exactly once through the guarded
     /// teardown, connection unlinked, no reconnect armed, no route, no live
-    /// cluster membership, no gossip drained.
+    /// publication for this admission, no gossip drained. Existing cluster
+    /// membership at the colliding receiver-local alias is left untouched.
     ///
     /// # Safety
     ///
@@ -8777,21 +8819,22 @@ mod tests {
             reconnect_workers, 0,
             "a refused peer must never be scheduled for reconnect"
         );
-        // Cluster establishment runs BEFORE route registration, so the refusal
-        // must retire the member synchronously: no observer may still see this
-        // peer as the current alive member.
+        // Prevalidation ran before this admission installed a cluster token.
+        // The already-live cluster entry at the colliding receiver-local alias
+        // is not proof that it belongs to this refused identity, so refusing
+        // this admission must not demote it by bare route slot.
         // SAFETY: caller keeps the cluster live.
         let member_state = unsafe { crate::cluster::hew_cluster_member_state(cluster, route_slot) };
         assert_eq!(
             member_state,
-            crate::cluster::MEMBER_SUSPECT,
-            "a refused peer must not remain an alive cluster member"
+            crate::cluster::MEMBER_ALIVE,
+            "prepublication refusal must not demote existing cluster membership"
         );
         // SAFETY: caller keeps the cluster live.
         let alive = unsafe { crate::cluster::hew_cluster_alive_count(cluster) };
         assert_eq!(
-            alive, 0,
-            "no member may be alive once the only publication was refused"
+            alive, 1,
+            "prepublication refusal must preserve the existing live member"
         );
         // SAFETY: caller keeps the cluster live.
         let pending = unsafe { &*cluster }.registry_gossip_count();
@@ -8810,8 +8853,9 @@ mod tests {
     /// is drained onto the doomed connection, and — because the refusal runs
     /// through the guarded removal path — the transport is closed EXACTLY
     /// ONCE, the actor is unlinked, the reader exits via the expected-stop
-    /// path without arming a reconnect, and the cluster membership published
-    /// before route registration is retired synchronously.
+    /// path without arming a reconnect. Because the refusal now precedes
+    /// cluster publication, an existing live cluster member at the colliding
+    /// receiver-local alias must not be demoted.
     ///
     /// The connection is staged the way production stages it: reconnect armed,
     /// and a reader parked until the transport close wakes it, running the real
@@ -8862,7 +8906,7 @@ mod tests {
         const CONN_ID: c_int = 33;
 
         let cluster_config = crate::cluster::ClusterConfig {
-            local_node_id: 1,
+            local_node_id: LOCAL_ROUTE_SLOT,
             ..crate::cluster::ClusterConfig::default()
         };
         // SAFETY: `cluster_config` is a live local for the duration of the call.
@@ -8915,7 +8959,13 @@ mod tests {
             );
             assert_eq!((&*cluster).registry_gossip_count(), 1);
 
-            let mgr = hew_connmgr_new(transport_ptr, None, routing_table, cluster, 1);
+            let mgr = hew_connmgr_new(
+                transport_ptr,
+                None,
+                routing_table,
+                cluster,
+                LOCAL_ROUTE_SLOT,
+            );
             assert!(!mgr.is_null());
             // Arm reconnect so a refusal mistaken for an unexpected drop would
             // schedule a retry of the rejected peer.
@@ -8946,10 +8996,9 @@ mod tests {
             (&*mgr).connections.access(|conns| conns.push(actor));
             let superseded = test_reserve_unverified(&*mgr, LOCAL_ROUTE_SLOT, CONN_ID, token);
 
-            // The joined peer is alive before publication, and the publication
-            // makes it the *current-token* alive member before route
-            // registration is even attempted — so the refusal below has live
-            // cluster state to retire.
+            // This is the manager/cluster's legitimate local member and has no
+            // token belonging to the bogus peer admission below. A refusal
+            // keyed only by route slot would incorrectly demote the local node.
             assert_eq!(crate::cluster::hew_cluster_alive_count(cluster), 1);
             assert_eq!(
                 crate::cluster::hew_cluster_member_state(cluster, LOCAL_ROUTE_SLOT),
@@ -8996,9 +9045,9 @@ mod tests {
                 "the refused transport must be closed exactly once"
             );
 
-            // No half-published cluster state is observable: the only close was
-            // exposed AFTER the cluster token/member had already been retired,
-            // so an observer woken by it can never find this peer alive.
+            // The refusal happened before cluster publication. The close
+            // observer must still see the pre-existing member alive: demoting
+            // it would conflate a receiver-local alias with admission identity.
             // SAFETY: `close_impl` is the live RefusalTransport allocated above.
             let seen_at_close = (*close_impl.cast::<RefusalTransport>())
                 .seen_at_close
@@ -9006,9 +9055,8 @@ mod tests {
                 .clone();
             assert_eq!(
                 seen_at_close,
-                vec![(crate::cluster::MEMBER_SUSPECT, 0)],
-                "the refused peer must already be retired from the cluster when its \
-                 close becomes observable"
+                vec![(crate::cluster::MEMBER_ALIVE, 1)],
+                "prepublication refusal must not demote existing cluster membership"
             );
 
             crate::cluster::hew_cluster_free(cluster);
@@ -10281,6 +10329,269 @@ mod tests {
         unsafe {
             race.finish();
             drop(Box::from_raw(log));
+        }
+    }
+
+    /// A route-slot refusal is decided before cluster publication. This pins
+    /// the production ordering at the precise race that token cancellation
+    /// cannot close: a guarded ALIVE membership callback whose per-step gate
+    /// has already succeeded.
+    ///
+    /// The blocker keeps the cluster's single transition drainer occupied
+    /// while the publisher runs. The test-only route-add seam and post-gate
+    /// callback seam make the old ordering deterministic:
+    ///
+    /// 1. publication queues ALIVE, then parks on the doomed route add;
+    /// 2. the drainer reaches ALIVE's successful callback gate and parks;
+    /// 3. route refusal retires the token and returns;
+    /// 4. the already-authorized ALIVE callback runs after the return marker.
+    ///
+    /// Prevalidation makes neither publication seam reachable: the connection
+    /// is refused and the reserved member is demoted before any guarded ALIVE
+    /// transition exists.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the regression stages both sides of the gate-to-callback ordering counterfactual"
+    )]
+    fn reserved_route_is_refused_before_a_guarded_alive_can_pass_its_callback_gate() {
+        const BLOCKER_ROUTE_SLOT: u16 = 9;
+        const CONN: c_int = 49;
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum Observed {
+            Membership(u16, u8),
+            PublicationReturned,
+        }
+
+        struct Observer {
+            log: Mutex<Vec<Observed>>,
+            blocker_entered: std::sync::mpsc::Sender<()>,
+            blocker_release: Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+
+        extern "C" fn observe_membership(
+            node_id: u16,
+            event: u8,
+            user_data: *mut std::ffi::c_void,
+        ) {
+            // SAFETY: the test keeps this Observer alive until the cluster and
+            // all delivering threads have been freed/joined.
+            let observer = unsafe { &*user_data.cast::<Observer>() };
+            if node_id == BLOCKER_ROUTE_SLOT
+                && event == crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED
+            {
+                let _ = observer.blocker_entered.send(());
+                let _ = observer.blocker_release.lock_or_recover().recv();
+            }
+            observer
+                .log
+                .lock_or_recover()
+                .push(Observed::Membership(node_id, event));
+        }
+
+        struct SendCluster(*mut crate::cluster::HewCluster);
+        // SAFETY: the cluster synchronizes its internals and outlives the
+        // blocker thread.
+        unsafe impl Send for SendCluster {}
+
+        struct SendLog(*mut Observer);
+        // SAFETY: the Observer's log is synchronized and outlives the
+        // publisher thread.
+        unsafe impl Send for SendLog {}
+
+        let race = stage_teardown_race(0);
+        // Start the reserved peer SUSPECT so the counterfactual establishment
+        // would enqueue an ALIVE transition with a membership callback.
+        // SAFETY: the cluster is live.
+        unsafe {
+            crate::cluster::hew_cluster_notify_connection_lost(race.cluster, RACE_ROUTE_SLOT);
+        }
+        assert_eq!(
+            // SAFETY: the cluster is live.
+            unsafe { crate::cluster::hew_cluster_member_state(race.cluster, RACE_ROUTE_SLOT) },
+            crate::cluster::MEMBER_SUSPECT
+        );
+
+        let (blocker_entered_tx, blocker_entered_rx) = std::sync::mpsc::channel::<()>();
+        let (blocker_release_tx, blocker_release_rx) = std::sync::mpsc::channel::<()>();
+        let observer = Box::into_raw(Box::new(Observer {
+            log: Mutex::new(Vec::new()),
+            blocker_entered: blocker_entered_tx,
+            blocker_release: Mutex::new(blocker_release_rx),
+        }));
+        // SAFETY: the cluster and Observer are live until teardown below.
+        unsafe {
+            crate::cluster::hew_cluster_set_membership_callback(
+                race.cluster,
+                observe_membership,
+                observer.cast::<std::ffi::c_void>(),
+            );
+        }
+
+        let blocker_cluster = SendCluster(race.cluster);
+        let blocker = std::thread::spawn(move || {
+            let blocker_cluster = blocker_cluster;
+            // SAFETY: cluster outlives this thread and the C string is static.
+            unsafe {
+                crate::cluster::hew_cluster_join(
+                    blocker_cluster.0,
+                    BLOCKER_ROUTE_SLOT,
+                    c"10.0.0.9:9000".as_ptr(),
+                )
+            }
+        });
+        blocker_entered_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the blocker must occupy the transition drainer");
+
+        let staged = race.stage_connection(CONN, RACE_ROUTE_SLOT, false);
+        let (route_entered_tx, route_entered_rx) = std::sync::mpsc::channel::<()>();
+        let (route_release_tx, route_release_rx) = std::sync::mpsc::channel::<()>();
+        // SAFETY: the routing table is live.
+        unsafe { &*race.routing_table }.set_add_route_probe(Some(Arc::new(
+            crate::routing::RouteAddProbe {
+                entered: route_entered_tx,
+                release: Mutex::new(route_release_rx),
+            },
+        )));
+
+        let (callback_gate_entered_tx, callback_gate_entered_rx) = std::sync::mpsc::channel::<()>();
+        let (callback_gate_release_tx, callback_gate_release_rx) = std::sync::mpsc::channel::<()>();
+        // SAFETY: the cluster is live.
+        unsafe { &*race.cluster }.set_guarded_membership_callback_probe(Some(Arc::new(
+            crate::cluster::GuardedDeliveryProbe {
+                entered: callback_gate_entered_tx,
+                release: Mutex::new(callback_gate_release_rx),
+            },
+        )));
+
+        let publisher_mgr = SendConnMgr(race.mgr);
+        let publisher_log = SendLog(observer);
+        let (publisher_done_tx, publisher_done_rx) = std::sync::mpsc::channel::<()>();
+        let publisher = std::thread::spawn(move || {
+            let publisher_mgr = publisher_mgr;
+            let publisher_log = publisher_log;
+            // SAFETY: the manager and Observer outlive this thread.
+            let mgr = unsafe { &*publisher_mgr.0 };
+            publish_connection_established(
+                mgr,
+                RACE_ROUTE_SLOT,
+                CONN,
+                HEW_FEATURE_SUPPORTS_GOSSIP,
+                staged.token,
+                &staged.publication_sync,
+                &staged.publication_removed,
+                staged.superseded,
+            );
+            // SAFETY: Observer outlives this thread.
+            unsafe { &*publisher_log.0 }
+                .log
+                .lock_or_recover()
+                .push(Observed::PublicationReturned);
+            let _ = publisher_done_tx.send(());
+        });
+
+        // Fixed code returns directly from prevalidation. In the
+        // counterfactual old ordering, publication instead reaches and parks
+        // inside the reserved route-add attempt.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let route_add_was_attempted = loop {
+            match publisher_done_rx.try_recv() {
+                Ok(()) => break false,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    panic!("publisher exited without signalling completion");
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            match route_entered_rx.try_recv() {
+                Ok(()) => break true,
+                Err(
+                    std::sync::mpsc::TryRecvError::Disconnected
+                    | std::sync::mpsc::TryRecvError::Empty,
+                ) => {}
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "publication reached neither prevalidation return nor route add"
+            );
+            std::thread::yield_now();
+        };
+
+        blocker_release_tx
+            .send(())
+            .expect("the blocker callback must still be parked");
+
+        if route_add_was_attempted {
+            // Counterfactual execution: let the drainer pass ALIVE's
+            // membership-callback gate, then let route refusal return, and
+            // only then release the callback.
+            callback_gate_entered_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the guarded ALIVE must reach its successful callback gate");
+            route_release_tx
+                .send(())
+                .expect("the reserved route add must still be parked");
+            publisher_done_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("route refusal must return while the callback remains parked");
+            callback_gate_release_tx
+                .send(())
+                .expect("the post-gate callback must still be parked");
+        } else {
+            assert!(
+                callback_gate_entered_rx.try_recv().is_err(),
+                "prevalidation must create no guarded ALIVE callback"
+            );
+        }
+
+        publisher.join().expect("publisher should not panic");
+        assert_eq!(
+            blocker.join().expect("blocker should not panic"),
+            0,
+            "blocker join should succeed"
+        );
+        // SAFETY: both test probes' owners are still live.
+        unsafe {
+            (&*race.routing_table).set_add_route_probe(None);
+            (&*race.cluster).set_guarded_membership_callback_probe(None);
+        }
+
+        // SAFETY: every thread that can append has been joined.
+        let event_log = unsafe { &*observer }.log.lock_or_recover().clone();
+        let returned = event_log
+            .iter()
+            .position(|entry| *entry == Observed::PublicationReturned)
+            .expect("publication return marker must be present");
+        let joined = Observed::Membership(
+            RACE_ROUTE_SLOT,
+            crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_JOINED,
+        );
+        assert!(
+            event_log
+                .iter()
+                .skip(returned + 1)
+                .all(|entry| *entry != joined),
+            "a refused reserved peer became ALIVE after publication returned: {event_log:?}"
+        );
+        assert!(
+            !route_add_was_attempted,
+            "a reserved admission must be rejected before cluster/route publication"
+        );
+        assert_eq!(
+            // SAFETY: cluster is live.
+            unsafe { crate::cluster::hew_cluster_member_state(race.cluster, RACE_ROUTE_SLOT) },
+            crate::cluster::MEMBER_SUSPECT,
+            "the refused reserved member must remain demoted"
+        );
+        assert_eq!(race.transport_impl().closes_of(CONN), 1);
+        // SAFETY: manager is live and no longer used after this call.
+        unsafe { hew_connmgr_free(race.mgr) };
+        assert_eq!(race.transport_impl().closes_of(CONN), 1);
+        // SAFETY: manager is gone and no thread can reach either allocation.
+        unsafe {
+            race.finish();
+            drop(Box::from_raw(observer));
         }
     }
 

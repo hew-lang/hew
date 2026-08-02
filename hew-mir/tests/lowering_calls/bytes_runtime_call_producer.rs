@@ -26,8 +26,11 @@ use hew_types::ResolvedTy;
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
         items,
+        // Hand-built HIR intentionally has no checker-origin producer facts.
+        produced_value_facts: HashMap::default(),
         diagnostic_source_modules: HashMap::default(),
         root_item_ids: std::collections::HashSet::new(),
+        caller_visible_param_projections: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(HashMap::default()),
         type_classes: HashMap::default(),
         monomorphisations: vec![],
@@ -107,6 +110,7 @@ fn call_expr(ids: &mut IdGen, callee: HirExpr, args: Vec<HirExpr>, ret_ty: Resol
         value_class: ValueClass::BitCopy,
         intent: IntentKind::Read,
         kind: HirExprKind::Call {
+            target: hew_types::CallTarget::IndirectFunctionValue,
             callee: Box::new(callee),
             args,
         },
@@ -131,6 +135,7 @@ fn module_with_stmt(ids: &mut IdGen, stmt_expr: HirExpr) -> HirModule {
     empty_module(vec![HirItem::Function(HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("probe"),
         name: "probe".to_string(),
         type_params: vec![],
         params: vec![],
@@ -274,6 +279,7 @@ fn bytes_len_value_needed_emits_i64_dest() {
     let module = empty_module(vec![HirItem::Function(HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("probe"),
         name: "probe".to_string(),
         type_params: vec![],
         params: vec![],
@@ -409,6 +415,7 @@ fn bytes_get_value_needed_dest_is_option_u8() {
     let module = empty_module(vec![HirItem::Function(HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("probe"),
         name: "probe".to_string(),
         type_params: vec![],
         params: vec![],

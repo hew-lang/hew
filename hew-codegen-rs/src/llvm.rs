@@ -67,21 +67,22 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
 use hew_hir::stdlib_catalog::PrintKind;
-use hew_hir::{mangle, mangle_dotted_name, ItemId};
+use hew_hir::{mangle_dotted_name, ItemId};
 use hew_mir::{
     instr_source_places, is_string_const_ty, terminator_source_places, validate_context_markers,
     ActorHandlerKind, ActorLayout, ActorStateLoadMode, CheckedMirFunction, CmpPred, CooperateKind,
-    CooperateSite, DynVtableInstance, ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath,
-    FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind,
-    IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
-    RawMirFunction, RecordLayout, RegexLiteral, ResourceCloseAuthority, SourceOrigin,
-    StateFieldCloneKind, StringRetainCondition, SupervisorChildLayout, SuspendKind, Terminator,
-    TrapKind,
+    CooperateSite, DropFnSpec, DropKind, DynVtableInstance, ElabDrop, ElaboratedMirFunction,
+    EnumLayout, ExitPath, FieldOffset, FloatWidth, FunctionCallConv, Instr, IntArithOp,
+    IntSignedness, IoHandleKind, IrPipeline, LambdaEnvFieldDrop, MachineVariantLayout, MirConst,
+    MirConstValue, MirScope, ParamBoundaryMode, ParamLoanStorage, Place, RawMirFunction,
+    RecordLayout, RegexLiteral, ResourceCloseAuthority, SourceOrigin, StateFieldCloneKind,
+    Strategy, StringRetainCondition, SupervisorChildLayout, SuspendKind, Terminator, TrapKind,
 };
 pub(crate) use hew_types::short_name;
 use hew_types::{
     runtime_call::{MathIntrinsic, RuntimeCapability},
-    BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection, WireLayoutTable, WireTextFormat,
+    wasm_capability_ids, BuiltinType, NumericWidth, ResolvedTy, WasmCapabilityId,
+    WireCodecDirection, WireLayoutTable, WireTextFormat,
 };
 // Single source of truth for the trap discriminants codegen emits. Importing
 // these from the runtime makes a renumber on either side a build error rather
@@ -151,9 +152,9 @@ use crate::suspend::{
 // declaration paths still drive these from this module, so re-import the entry
 // points to keep the call sites unqualified.
 use crate::runtime_abi::{
-    declare_print_runtime, emit_extern_record_return_call, fn_type_for_return, intern_runtime_decl,
-    predeclare_extern_decls, predeclare_stdlib_catalog, reconcile_int_width,
-    reconcile_int_width_signed,
+    classify_typed_call_arg_pass, declare_print_runtime, emit_extern_record_return_call,
+    fn_type_for_return, intern_runtime_decl, predeclare_extern_decls, predeclare_stdlib_catalog,
+    reconcile_int_width, reconcile_int_width_signed, TypedCallArgPass, TypedCallBoundary,
 };
 
 // Vec / HashMap / HashSet / bytes / string collection direct-call lowering
@@ -315,10 +316,10 @@ impl std::fmt::Display for CodegenError {
             Self::Link(s) => write!(f, "link: {s}"),
             Self::Io(e) => write!(f, "io: {e}"),
             Self::WasmUnsupportedSubstrate { symbol } => {
-                // Map the offending symbol prefix to a user-facing construct label
-                // and stable backlog note. Defence in depth — typecheck rejects
-                // most cases earlier (see `hew-types/src/check/expressions.rs`),
-                // but this codegen-level diagnostic must still be specific.
+                // Preserve the legacy public diagnostic shape. Capability
+                // classification itself happens earlier through the private,
+                // typed `WasmExclusion` carrier; only the offending symbol
+                // crosses this public compatibility boundary.
                 let (construct, tracking) = if symbol.starts_with("hew_duplex_") {
                     ("the `Duplex` channel substrate", "WASM-TODO(duplex):")
                 } else if symbol.starts_with("hew_supervisor_") {
@@ -334,10 +335,6 @@ impl std::fmt::Display for CodegenError {
                 } else if symbol == "hew_tcp_stream_from_conn" {
                     ("the TCP transport substrate", "WASM-TODO(tcp-networking):")
                 } else if symbol == "hew_channel_poll" || symbol == "hew_channel_await_recv" {
-                    // NEW-4 suspending channel receive: the `select{}` channel-recv
-                    // arm (`hew_channel_poll`) and the worker-free `await rx.recv()`
-                    // carrier (`hew_channel_await_recv`) both back onto the native
-                    // channel core (`cfg(not(target_arch = "wasm32"))`).
                     (
                         "the suspending channel-receive substrate",
                         "WASM-TODO(channels):",
@@ -686,8 +683,8 @@ fn emit_module_with_options(
     // `boundary-fail-closed` (P0) — name the actual wasm gap, not the
     // collateral missing-declaration symptom.
     if options.wasm {
-        if let Some(symbol) = uses_wasm_excluded_symbol(pipeline) {
-            return Err(CodegenError::WasmUnsupportedSubstrate { symbol });
+        if let Some(exclusion) = uses_wasm_excluded_symbol(pipeline) {
+            return Err(exclusion.into_public_error());
         }
     }
     std::fs::create_dir_all(options.out_dir)?;
@@ -847,8 +844,54 @@ fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) ->
     Ok(())
 }
 
-/// Return the first WASM-excluded substrate symbol found in `pipeline`'s
-/// instruction stream, or `None` if none is present.
+/// A native-only substrate use classified by stable manifest identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WasmExclusion {
+    pub(crate) symbol: String,
+    pub(crate) capability: WasmCapabilityId,
+}
+
+impl WasmExclusion {
+    fn new(symbol: impl Into<String>, capability: WasmCapabilityId) -> Self {
+        Self {
+            symbol: symbol.into(),
+            capability,
+        }
+    }
+
+    /// Cross the compatibility boundary without changing the public enum
+    /// variant's legacy `{ symbol }` shape. The typed capability remains on
+    /// this private carrier for exhaustive classification and internal tests.
+    fn into_public_error(self) -> CodegenError {
+        debug_assert!(!self.capability.as_str().is_empty());
+        CodegenError::WasmUnsupportedSubstrate {
+            symbol: self.symbol,
+        }
+    }
+}
+
+impl std::ops::Deref for WasmExclusion {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.symbol
+    }
+}
+
+impl std::fmt::Display for WasmExclusion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.symbol)
+    }
+}
+
+impl PartialEq<&str> for WasmExclusion {
+    fn eq(&self, other: &&str) -> bool {
+        self.symbol == *other
+    }
+}
+
+/// Return the first WASM-excluded substrate use found in `pipeline`, including
+/// both its evidence symbol and stable manifest capability identity.
 ///
 /// Excluded symbols:
 /// - `hew_duplex_*` — excluded from wasm32 builds via
@@ -888,7 +931,7 @@ fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) ->
 ///   where the resolved C-ABI symbol starts with `"hew_duplex_"`. This covers
 ///   elaborator-produced `"Duplex::close"` strings that resolve to
 ///   `hew_duplex_close` at codegen time.
-pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
+pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<WasmExclusion> {
     for func in &pipeline.raw_mir {
         for block in &func.blocks {
             for instr in &block.instructions {
@@ -910,11 +953,13 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                     // refuses it at construction. std/net's extern-block calls
                     // bypass this scan entirely and rely on the wasm32 runtime
                     // stub. WASM-TODO(tcp-networking): add a WASM TCP transport.
-                    Instr::CallRuntimeAbi(call) => {
-                        wasm_excluded_call_family(call.family()).then(|| call.symbol().to_string())
-                    }
+                    Instr::CallRuntimeAbi(call) => wasm_excluded_call_family(call.family())
+                        .map(|capability| WasmExclusion::new(call.symbol(), capability)),
                     Instr::SpawnTaskDirect { .. } | Instr::SpawnTaskClosure { .. } => {
-                        Some("hew_task_spawn_thread_with_inherited_context".to_string())
+                        Some(WasmExclusion::new(
+                            "hew_task_spawn_thread_with_inherited_context",
+                            wasm_capability_ids::TASKS,
+                        ))
                     }
                     Instr::Drop {
                         drop_fn: Some(spec),
@@ -931,7 +976,10 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                     .iter()
                     .any(|arm| matches!(arm.kind, hew_mir::SelectArmKind::StreamNext { .. }))
                 {
-                    return Some("hew_stream_poll".to_string());
+                    return Some(WasmExclusion::new(
+                        "hew_stream_poll",
+                        wasm_capability_ids::STREAMS,
+                    ));
                 }
                 // NEW-4 channel-recv select arm: the winning/loser dispatch emits
                 // `hew_channel_poll` / `hew_channel_cancel_pending_read`, whose
@@ -945,13 +993,19 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                     .iter()
                     .any(|arm| matches!(arm.kind, hew_mir::SelectArmKind::ChannelRecv { .. }))
                 {
-                    return Some("hew_channel_poll".to_string());
+                    return Some(WasmExclusion::new(
+                        "hew_channel_poll",
+                        wasm_capability_ids::CHANNEL_BLOCKING_RECV,
+                    ));
                 }
                 if arms
                     .iter()
                     .any(|arm| matches!(arm.kind, hew_mir::SelectArmKind::TaskAwait { .. }))
                 {
-                    return Some("hew_task_completion_observe".to_string());
+                    return Some(WasmExclusion::new(
+                        "hew_task_completion_observe",
+                        wasm_capability_ids::TASKS,
+                    ));
                 }
             }
             // cut-select-waitset cooperative `select{}` carrier: the suspending
@@ -967,7 +1021,10 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
             // `Terminator::Select` until the wasm coro substrate lands.
             // WASM-TODO(suspending-select): add a WASM execution-context waitset.
             if let Terminator::SuspendingSelect { .. } = &block.terminator {
-                return Some("hew_await_cancel_schedule_deadline_ms".to_string());
+                return Some(WasmExclusion::new(
+                    "hew_await_cancel_schedule_deadline_ms",
+                    wasm_capability_ids::SUSPENDING_SELECT,
+                ));
             }
             // The ten collapsed suspension carriers fold onto a bare `Suspend`
             // whose kind lives in the `suspend_kinds` side-table. Four of them
@@ -987,9 +1044,9 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
                 if let Some(sym) = func
                     .suspend_kinds
                     .get(&block.id)
-                    .and_then(wasm_excluded_suspend_kind_symbol)
+                    .and_then(wasm_excluded_suspend_kind)
                 {
-                    return Some(sym.to_string());
+                    return Some(sym);
                 }
             }
             // cut-task-sleep scope-deadline carrier (staged): the non-empty
@@ -998,7 +1055,10 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
             // MIR producer keeps non-empty after bodies fail-closed, so this is
             // belt-and-braces. WASM-TODO(scope): add cooperative scope deadlines.
             if let Terminator::SuspendingScopeDeadline { .. } = &block.terminator {
-                return Some("hew_await_cancel_schedule_deadline_ms".to_string());
+                return Some(WasmExclusion::new(
+                    "hew_await_cancel_schedule_deadline_ms",
+                    wasm_capability_ids::STRUCTURED_CONCURRENCY,
+                ));
             }
             // Lambda-actor construction emits `hew_lambda_actor_new`. The
             // whole `hew-runtime/src/lambda_actor.rs` module is gated
@@ -1007,7 +1067,10 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
             // dangling reference; surface the same structured native-only
             // diagnostic the MakeGenerator gate above produces.
             if let Terminator::MakeLambdaActor { .. } = &block.terminator {
-                return Some("hew_lambda_actor_new".to_string());
+                return Some(WasmExclusion::new(
+                    "hew_lambda_actor_new",
+                    wasm_capability_ids::LAMBDA_ACTORS,
+                ));
             }
         }
     }
@@ -1046,19 +1109,32 @@ pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String>
 /// dangling reference. The four flagged kinds mirror the dedicated-carrier
 /// checks the side-table replaced; the others (`Ask` / `Read` / `Accept` /
 /// `RemoteAsk` / `StreamSend` / `CallClosure`) were never flagged here.
-fn wasm_excluded_suspend_kind_symbol(kind: &SuspendKind) -> Option<&'static str> {
+fn wasm_excluded_suspend_kind(kind: &SuspendKind) -> Option<WasmExclusion> {
     match kind {
-        SuspendKind::StreamNext { .. } => Some("hew_stream_await_next"),
-        SuspendKind::ChannelRecv { .. } => Some("hew_channel_await_recv"),
-        SuspendKind::TaskAwait { .. } => Some("hew_task_await_suspend"),
+        SuspendKind::StreamNext { .. } => Some(WasmExclusion::new(
+            "hew_stream_await_next",
+            wasm_capability_ids::STREAMS,
+        )),
+        SuspendKind::ChannelRecv { .. } => Some(WasmExclusion::new(
+            "hew_channel_await_recv",
+            wasm_capability_ids::CHANNEL_BLOCKING_RECV,
+        )),
+        SuspendKind::TaskAwait { .. } => Some(WasmExclusion::new(
+            "hew_task_await_suspend",
+            wasm_capability_ids::TASKS,
+        )),
         // `await_restart` parks on the native supervisor restart observer — a
         // cooperative-scheduler primitive with no wasm32 analogue. Fail closed
         // with the structured `WasmUnsupportedSubstrate` rather than a wasm-ld
         // dangling reference.
-        SuspendKind::RestartWait { .. } => Some("hew_supervisor_restart_await_suspend"),
-        SuspendKind::Sleep { .. } | SuspendKind::SleepUntil { .. } => {
-            Some("hew_await_cancel_schedule_deadline_ms")
-        }
+        SuspendKind::RestartWait { .. } => Some(WasmExclusion::new(
+            "hew_supervisor_restart_await_suspend",
+            wasm_capability_ids::SUPERVISION_TREES,
+        )),
+        SuspendKind::Sleep { .. } | SuspendKind::SleepUntil { .. } => Some(WasmExclusion::new(
+            "hew_await_cancel_schedule_deadline_ms",
+            wasm_capability_ids::TIMER_SUSPENSION,
+        )),
         SuspendKind::Ask { .. }
         | SuspendKind::Read { .. }
         | SuspendKind::Accept { .. }
@@ -1077,14 +1153,20 @@ fn wasm_excluded_suspend_kind_symbol(kind: &SuspendKind) -> Option<&'static str>
 /// are pure Hew code; both compile on wasm32.
 ///
 /// [`RuntimeDropDescriptor`]: hew_types::runtime_call::RuntimeDropDescriptor
-fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
+fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<WasmExclusion> {
     use hew_types::runtime_call::RuntimeDropDescriptor as D;
     match spec {
         hew_mir::DropFnSpec::Runtime(d) => match d {
-            D::DuplexClose | D::SendHalfClose | D::RecvHalfClose => Some(d.c_symbol().to_string()),
+            D::DuplexClose | D::SendHalfClose | D::RecvHalfClose => Some(WasmExclusion::new(
+                d.c_symbol(),
+                wasm_capability_ids::DUPLEX,
+            )),
             // `hew_actor_demonitor` is native-only: link/monitor are OS-thread-
             // dependent and not supported on wasm32 (basic actors are).
-            D::MonitorRefClose => Some(d.c_symbol().to_string()),
+            D::MonitorRefClose => Some(WasmExclusion::new(
+                d.c_symbol(),
+                wasm_capability_ids::LINK_MONITOR,
+            )),
             D::StreamClose
             | D::SinkClose
             | D::SenderClose
@@ -1102,10 +1184,8 @@ fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
     }
 }
 
-/// True iff `family` is a wasm32-EXCLUDED runtime-call family: its native
-/// implementation is `cfg(not(target_arch = "wasm32"))` and a wasm build
-/// reaching `wasm-ld` with the symbol would fail with a confusing dangling
-/// reference instead of a structured `WasmUnsupportedSubstrate` diagnostic.
+/// Return the stable manifest capability for a wasm32-excluded runtime-call
+/// family, or `None` when the family is wasm-available.
 ///
 /// Exhaustive over [`RuntimeCallFamily`] — NO wildcard arm. Every future
 /// family addition forces an explicit wasm32 decision here (LESSONS P0
@@ -1113,7 +1193,9 @@ fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
 /// silently stopped firing when a symbol was renamed).
 ///
 /// [`RuntimeCallFamily`]: hew_types::runtime_call::RuntimeCallFamily
-fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily) -> bool {
+fn wasm_excluded_call_family(
+    family: hew_types::runtime_call::RuntimeCallFamily,
+) -> Option<WasmCapabilityId> {
     use hew_types::runtime_call::RuntimeCallFamily as F;
     match family {
         // Duplex dual-queue substrate: hew-runtime/src/duplex.rs:54 is
@@ -1128,22 +1210,22 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::DuplexSend
         | F::DuplexSendHalf
         | F::DuplexTryRecv
-        | F::DuplexTrySend
+        | F::DuplexTrySend => Some(wasm_capability_ids::DUPLEX),
         // Supervisor restart machinery requires the native preemptive
         // scheduler. WASM-TODO(supervision): add cooperative restart machinery.
-        | F::SupervisorDirectId
+        F::SupervisorDirectId
         | F::SupervisorChildGet
         | F::LocalPidSupervisorChildGet
         | F::SupervisorNestedGet
         | F::SupervisorPoolChildGet
         | F::SupervisorPoolLen
         | F::SupervisorStop
-        | F::SupervisorRestartAwaitBlocking
+        | F::SupervisorRestartAwaitBlocking => Some(wasm_capability_ids::SUPERVISION_TREES),
         // Structured-concurrency task scopes and task handles are implemented
         // only by the native thread/condvar runtime. wasm32 has no cooperative
         // task work queue or non-blocking join/wakeup path yet.
         // WASM-TODO(scope): add a cooperative task executor and join path.
-        | F::TaskAwaitBlocking
+        F::TaskAwaitBlocking
         | F::TaskCompleteThreaded
         | F::TaskCompletionObserve
         | F::TaskCompletionUnobserve
@@ -1152,15 +1234,15 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::TaskGetError
         | F::TaskGetResult
         | F::TaskNew
-        | F::TaskScopeCancelAfterNs
+        | F::TaskSetEnv
+        | F::TaskSetResult
+        | F::TaskSpawnThread => Some(wasm_capability_ids::TASKS),
+        F::TaskScopeCancelAfterNs
         | F::TaskScopeDestroy
         | F::TaskScopeJoinAll
         | F::TaskScopeNew
         | F::TaskScopeSetCurrent
-        | F::TaskScopeSpawn
-        | F::TaskSetEnv
-        | F::TaskSetResult
-        | F::TaskSpawnThread => true,
+        | F::TaskScopeSpawn => Some(wasm_capability_ids::STRUCTURED_CONCURRENCY),
         // Everything else links and runs on wasm32 (or is gated earlier by
         // its own structured check). Exhaustively enumerated so a new
         // family cannot land without a wasm32 decision.
@@ -1349,14 +1431,14 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::VecSetOwned
         | F::VecSetOwnedMove
         | F::VecSliceRange(_)
-        | F::VtableDispatchPanicOnOob => false,
+        | F::VtableDispatchPanicOnOob => None,
     }
 }
 
 fn validate_target_substrate(pipeline: &IrPipeline, triple: &str) -> CodegenResult<()> {
     if triple.starts_with("wasm32") {
-        if let Some(symbol) = uses_wasm_excluded_symbol(pipeline) {
-            return Err(CodegenError::WasmUnsupportedSubstrate { symbol });
+        if let Some(exclusion) = uses_wasm_excluded_symbol(pipeline) {
+            return Err(exclusion.into_public_error());
         }
     }
     Ok(())
@@ -1615,6 +1697,98 @@ pub(crate) struct OwnedElemRegistries<'a, 'ctx> {
     pub(crate) record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
 }
 
+/// The place/guard-independent identity of one typed frame-cleanup ritual.
+///
+/// This is deliberately a structured key instead of a generated symbol name:
+/// `Place` and `guard` are caller-frame facts, whereas `ty`, `kind`, and
+/// `drop_fn` completely describe the thunk body.  `DropFnSpec::InPlace` does
+/// not itself derive `Hash`, so normalize its small closed set here rather than
+/// falling back to a textual/debug representation as an identity.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FrameCleanupDescriptorKey {
+    ty: ResolvedTy,
+    kind: DropKind,
+    drop_fn: Option<FrameCleanupDropFnKey>,
+}
+
+impl FrameCleanupDescriptorKey {
+    fn from_drop(drop: &ElabDrop) -> Self {
+        Self {
+            ty: drop.ty.clone(),
+            kind: drop.kind,
+            drop_fn: drop.drop_fn.as_ref().map(FrameCleanupDropFnKey::from),
+        }
+    }
+}
+
+/// Hashable normalization of the close ritual portion of [`DropFnSpec`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum FrameCleanupDropFnKey {
+    Runtime(hew_types::runtime_call::RuntimeDropDescriptor),
+    Release(&'static str),
+    InPlace(FrameCleanupInPlaceKey),
+    UserClose(String),
+}
+
+impl From<&DropFnSpec> for FrameCleanupDropFnKey {
+    fn from(drop_fn: &DropFnSpec) -> Self {
+        match drop_fn {
+            DropFnSpec::Runtime(descriptor) => Self::Runtime(*descriptor),
+            DropFnSpec::Release(symbol) => Self::Release(symbol),
+            DropFnSpec::InPlace(kind) => Self::InPlace((*kind).into()),
+            DropFnSpec::UserClose(symbol) => Self::UserClose(symbol.clone()),
+        }
+    }
+}
+
+/// Hashable mirror of the closed MIR `InPlaceReleaseKind` selector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum FrameCleanupInPlaceKey {
+    Record,
+    Enum,
+    AggregateRecursive,
+}
+
+impl From<hew_mir::ownership::InPlaceReleaseKind> for FrameCleanupInPlaceKey {
+    fn from(kind: hew_mir::ownership::InPlaceReleaseKind) -> Self {
+        match kind {
+            hew_mir::ownership::InPlaceReleaseKind::Record => Self::Record,
+            hew_mir::ownership::InPlaceReleaseKind::Enum => Self::Enum,
+            hew_mir::ownership::InPlaceReleaseKind::AggregateRecursive => Self::AggregateRecursive,
+        }
+    }
+}
+
+/// Exact cache key for a cleanup thunk in one LLVM module.  The LLVM slot type
+/// is part of the key because the same semantic ritual cannot safely be
+/// rebound to a differently laid-out storage slot.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FrameCleanupThunkKey {
+    descriptor: FrameCleanupDescriptorKey,
+    slot_type: String,
+}
+
+impl FrameCleanupThunkKey {
+    fn new(drop: &ElabDrop, slot_ty: BasicTypeEnum<'_>) -> Self {
+        Self {
+            descriptor: FrameCleanupDescriptorKey::from_drop(drop),
+            slot_type: frame_cleanup_slot_type_key(slot_ty),
+        }
+    }
+}
+
+/// Module-owned state for internally generated typed frame-cleanup thunks.
+///
+/// Every `FnCtx` created while lowering the module borrows this one cache, so
+/// exact descriptor reuse is independent of function order.  Symbols are only
+/// an allocation detail (`__hew_frame_cleanup_0`, `_1`, ...); they never
+/// decide equivalence.
+#[derive(Default)]
+pub(crate) struct FrameCleanupThunkCache<'ctx> {
+    entries: HashMap<FrameCleanupThunkKey, FunctionValue<'ctx>>,
+    next_internal_name: u64,
+}
+
 pub(crate) struct FnCtx<'a, 'ctx> {
     pub(crate) ctx: &'ctx Context,
     pub(crate) llvm_mod: &'a LlvmModule<'ctx>,
@@ -1736,6 +1910,10 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// is shared (read-only) — no new declarations are added during body
     /// lowering.
     pub(crate) fn_symbols: &'a FnSymbolMap<'ctx>,
+    /// Exact module-scoped cache for generated typed frame-cleanup thunks.
+    /// Every function borrows the same cache; generated names are allocation
+    /// details and must never be used as a descriptor identity.
+    pub(crate) frame_cleanup_thunks: &'a RefCell<FrameCleanupThunkCache<'ctx>>,
     /// Symbols of functions carrying typed machine-step provenance in raw MIR.
     /// Call lowering consults this set instead of interpreting the callee name.
     pub(crate) machine_step_symbols: &'a HashSet<String>,
@@ -1874,6 +2052,12 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// borrow is the same per-function `elaborated_mir.drop_plans` slice the
     /// block loop consults; `&[]` for hand-built test pipelines.
     pub(crate) drop_plans: &'a [(ExitPath, hew_mir::DropPlan)],
+    /// Ordinary non-coroutine locals whose typed scope-exit descriptor is also
+    /// armed as a crash snapshot while this helper executes beneath an active
+    /// tracked coroutine. Each exact owner gets a stable runtime token slot
+    /// plus a generated active-state bit; coroutine-frame owners use the
+    /// separate DIRECT_FRAME path and never enter this map.
+    helper_crash_cleanup_owners: HashMap<Place, HelperCrashCleanupOwner<'ctx>>,
     /// The MIR block id of the suspend terminator currently being lowered.
     /// `lower_terminator` sets this before dispatching, so `emit_suspend_point`
     /// (reached deep inside a per-kind emitter, without the block id in scope)
@@ -1883,6 +2067,59 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// a re-entrant one, so a plain `Cell` is sufficient. Initial `0` is
     /// overwritten before any suspend emitter runs.
     pub(crate) suspend_abandon_block: std::cell::Cell<u32>,
+    /// Temporary exact-place rebinding used only while synthesising a typed
+    /// synchronous-crash cleanup thunk.  The thunk receives the address of one
+    /// coroutine-frame slot as its sole `ptr` parameter; rebinding lets the
+    /// ordinary, exhaustively matched `emit_one_elab_drop_unguarded` authority
+    /// emit that slot's ritual without maintaining a second drop-kind switch.
+    ///
+    /// The override is installed and cleared synchronously while the module
+    /// builder is positioned in the thunk body.  Ordinary function lowering
+    /// always observes `None`.
+    pub(crate) elab_drop_slot_override:
+        std::cell::Cell<Option<(Place, PointerValue<'ctx>, BasicTypeEnum<'ctx>)>>,
+    /// Typed callee parameter positions that use the representation-loan ABI.
+    /// The module pass derives this once from MIR boundary facts; call lowering
+    /// uses it for token handoff and never re-infers loan semantics from an
+    /// argument's raw type.
+    representation_loan_params: &'a HashMap<String, Vec<u32>>,
+    /// Finalized MIR parameter-boundary modes for every source function.
+    /// Direct-call marshalling consumes these facts together with the
+    /// checker-resolved argument type and LLVM declaration shape. Extern/runtime
+    /// symbols are absent from this map and therefore use the typed FFI branch.
+    param_boundary_modes: &'a HashMap<String, Vec<Option<ParamBoundaryMode>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HelperCrashCleanupDisposition {
+    /// Ordinary frame-owned value: success retires then performs its drop.
+    Owned,
+    /// Caller-owned representation loan: success only retires the token.
+    CrashOnlyLoan,
+}
+
+#[derive(Clone, Debug)]
+struct HelperCrashCleanupDescriptor {
+    descriptor: ElabDrop,
+    disposition: HelperCrashCleanupDisposition,
+}
+
+impl From<ElabDrop> for HelperCrashCleanupDescriptor {
+    fn from(descriptor: ElabDrop) -> Self {
+        Self {
+            descriptor,
+            disposition: HelperCrashCleanupDisposition::Owned,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct HelperCrashCleanupOwner<'ctx> {
+    descriptor: ElabDrop,
+    token_slot: PointerValue<'ctx>,
+    active_slot: PointerValue<'ctx>,
+    storage: CrashCleanupStorage,
+    disposition: HelperCrashCleanupDisposition,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
@@ -2268,14 +2505,10 @@ pub(crate) fn collect_named_enum_deps(
     let ResolvedTy::Named { name, args, .. } = field_ty else {
         return;
     };
-    // Compute the mangled lookup key the same way `resolve_ty` does: the
-    // registration side keys a generic enum on the bare-normalised spine, so
-    // shorten the type-arg spine before mangling (a nested qualified payload
-    // otherwise misses).
     let key: String = if args.is_empty() {
         name.clone()
     } else {
-        mangle_with_shortened_args(short_name(name), args)
+        mangle_with_shortened_args(name, args)
     };
     if names.contains(key.as_str()) {
         if let Some(idx) = enum_layouts.iter().position(|l| l.name == key) {
@@ -2612,24 +2845,24 @@ fn emit_const_globals<'ctx>(
     Ok(globals)
 }
 
-/// True when `ty` names a machine (short-name match against the machine
-/// layout set) directly or through generic args / tuples / arrays / slices.
+/// True when `ty` names a machine in the exact machine-layout set directly or
+/// through generic args / tuples / arrays / slices.
 /// Drives the deferred (post-machine) enum-registration pass: an enum
 /// instantiation whose payload embeds a machine value must be sized after
 /// the machine's named struct has a body.
-fn resolved_ty_references_machine(ty: &ResolvedTy, machine_short_names: &HashSet<&str>) -> bool {
+fn resolved_ty_references_machine(ty: &ResolvedTy, machine_names: &HashSet<&str>) -> bool {
     match ty {
         ResolvedTy::Named { name, args, .. } => {
-            machine_short_names.contains(short_name(name))
+            machine_names.contains(name.as_str())
                 || args
                     .iter()
-                    .any(|a| resolved_ty_references_machine(a, machine_short_names))
+                    .any(|a| resolved_ty_references_machine(a, machine_names))
         }
         ResolvedTy::Tuple(elems) => elems
             .iter()
-            .any(|e| resolved_ty_references_machine(e, machine_short_names)),
+            .any(|e| resolved_ty_references_machine(e, machine_names)),
         ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
-            resolved_ty_references_machine(inner, machine_short_names)
+            resolved_ty_references_machine(inner, machine_names)
         }
         _ => false,
     }
@@ -2741,68 +2974,12 @@ fn resolved_ty_contains_stream_handle(ty: &ResolvedTy) -> bool {
     }
 }
 
-/// Recursively replace every `Named { name, .. }` anywhere in `ty` with its
-/// short (unqualified) name, stripping any leading `"module."` prefix.
-///
-/// This normalises the type-arg spine of a generic instantiation so
-/// `Result<I64, fs.IoError>` and `Result<I64, IoError>` produce the same
-/// mangle key.  The layout-registration path uses the bare name (from
-/// inside the declaring module), but the MIR at import-use sites carries
-/// the qualified form. Without normalisation the mangled lookup key
-/// diverges and `resolve_ty` falls through to D10 for the generic type.
-///
-/// Thin wrapper over the single canonical `hew_hir::shorten_named_arg_qualifiers`
-/// so the codegen lookup spine and the HIR/MIR registration spine are shortened
-/// by ONE function and cannot drift — including for a NESTED qualified payload
-/// (`Result<Vec<fs.Foo>, _>`) that a `Named`-only shortener would miss.
-fn shorten_named_args(ty: ResolvedTy) -> ResolvedTy {
-    hew_hir::shorten_named_arg_qualifiers(ty)
-}
-
-/// Mangle `name` with `args` after shortening the WHOLE type-arg spine to bare
-/// (unqualified) names. This is the layout-key form every codegen consumer must
-/// use: the enum/record layout-registration side keys on the bare-normalised
-/// spine (`hew_hir::shorten_named_arg_qualifiers` via `EnumLayoutRegistry::insert`
-/// and `hew-mir::lower::user_record_layout_key`), so every codegen lookup /
-/// drop-seed / codec-seed key MUST shorten the spine identically or the keys
-/// diverge and the layout lookup falls through to the D10 fail-closed gate.
-/// Nested qualified payloads are shortened at every depth.
+/// Build the canonical layout key used by codegen lookup and helper synthesis.
+/// This legacy function name remains at local call sites, but all semantics
+/// live in HIR's shared authority: dotted declaration owners and every nested
+/// nominal payload retain their full identity.
 pub(crate) fn mangle_with_shortened_args(name: &str, args: &[ResolvedTy]) -> String {
-    if args.iter().any(needs_normalization) {
-        let short_args: Vec<ResolvedTy> = args.iter().cloned().map(shorten_named_args).collect();
-        mangle(name, &short_args)
-    } else {
-        mangle(name, args)
-    }
-}
-
-/// Returns `true` when `ty` or any nested compound carries a module-qualified
-/// `Named` name (i.e. `short_name(name) != name`).  Used as a fast pre-check
-/// before the allocation in `shorten_named_args` / `mangle_with_shortened_args`
-/// so the common unqualified path stays alloc-free. Recurses every compound
-/// shape `shorten_named_arg_qualifiers` rewrites so a qualified payload nested
-/// in a Tuple/Array/Slice/Function/etc. is not missed by the pre-check.
-fn needs_normalization(ty: &ResolvedTy) -> bool {
-    match ty {
-        ResolvedTy::Named { name, args, .. } => {
-            short_name(name) != name.as_str() || args.iter().any(needs_normalization)
-        }
-        ResolvedTy::Tuple(items) => items.iter().any(needs_normalization),
-        ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => needs_normalization(elem),
-        ResolvedTy::Function { params, ret } | ResolvedTy::Closure { params, ret, .. } => {
-            params.iter().any(needs_normalization) || needs_normalization(ret)
-        }
-        ResolvedTy::Pointer { pointee, .. } | ResolvedTy::Borrow { pointee } => {
-            needs_normalization(pointee)
-        }
-        ResolvedTy::TraitObject { traits } => traits.iter().any(|b| {
-            short_name(&b.trait_name) != b.trait_name.as_str()
-                || b.args.iter().any(needs_normalization)
-                || b.assoc_bindings.iter().any(|(_, t)| needs_normalization(t))
-        }),
-        ResolvedTy::Task(inner) => needs_normalization(inner),
-        _ => false,
-    }
+    hew_hir::mangle_layout_key(name, args)
 }
 
 /// True when a function return type is a SINGLE heap-owning leaf (`bytes`) that
@@ -2873,26 +3050,17 @@ fn is_heap_owning_record_composite_return(
     // it must not be rejected as an opaque handle. Only names absent from the
     // struct map fall through to the opaque exclusion. Mirrors the
     // `record_layouts`-first invariant in `resolve_ty` and the MIR classifier.
-    let short = short_name(name);
     let is_record = if args.is_empty() {
         record_layouts.contains_key(name.as_str())
-            || record_layouts.contains_key(short)
-            || record_layouts
-                .keys()
-                .any(|k| short_name(k) == short || k == name)
     } else {
-        // Generic instantiation: resolve by the mangled registry key. Both
-        // candidates shorten the type-arg spine (registration keys on bare args).
-        let full_mangled = mangle_with_shortened_args(name, args);
-        let short_mangled = mangle_with_shortened_args(short, args);
-        record_layouts.contains_key(full_mangled.as_str())
-            || record_layouts.contains_key(short_mangled.as_str())
+        let key = mangle_with_shortened_args(name, args);
+        record_layouts.contains_key(key.as_str())
     };
     if !is_record {
         // Exclude opaque pointer-backed handles (Stream/Sink/Connection/etc.):
         // they carry no record struct layout, so they have no per-field
         // `RecordInPlace` drop. A bare opaque handle return is handled elsewhere.
-        if record_layouts.opaque.contains(name.as_str()) || record_layouts.opaque.contains(short) {
+        if record_layouts.opaque.contains(name.as_str()) {
             return false;
         }
         return false; // unknown type — not a registered user record
@@ -2963,6 +3131,19 @@ fn resolve_machine_base_ptr<'ctx>(
     }
 }
 
+/// Return the type arguments carried by an exact checker-stamped builtin.
+/// Presentation names are intentionally ignored.
+pub(crate) fn builtin_named_args(ty: &ResolvedTy, expected: BuiltinType) -> Option<&[ResolvedTy]> {
+    match ty {
+        ResolvedTy::Named {
+            args,
+            builtin: Some(actual),
+            ..
+        } if *actual == expected => Some(args),
+        _ => None,
+    }
+}
+
 /// Resolve any `ResolvedTy` to its LLVM `BasicTypeEnum`, consulting the
 /// record-layout map first for named user records. This is the codegen-side
 /// entry point for type lowering — it replaces direct calls to
@@ -2990,9 +3171,9 @@ pub(crate) fn resolve_ty<'ctx>(
     if matches!(
         ty,
         ResolvedTy::Named {
-            builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+            builtin: Some(builtin),
             ..
-        }
+        } if builtin.lowers_as_opaque_pointer_abi()
     ) {
         return Ok(ctx.ptr_type(AddressSpace::default()).into());
     }
@@ -3050,9 +3231,10 @@ pub(crate) fn resolve_ty<'ctx>(
         // check. This mirrors the `record_layouts`-first invariant in the MIR
         // classifier (`hew-mir/src/state_clone.rs` `classify_named`).
         //
-        // WHEN-OBSOLETE: once W4.011 lands and `ResolvedTy::Named` carries a
-        // typed builtin/user discriminator, the name-based opaque set is
-        // replaced by that discriminator and this ordering ceases to matter.
+        // Builtins and explicitly stamped opaque types have already returned
+        // above. This ordering now protects only the legacy module-level
+        // opaque-name registry; remove that fallback once every opaque use
+        // carries `is_opaque` through MIR.
         //
         // Generic-enum instantiations are keyed by mangled name (e.g.
         // `"Option$$i64"`) in the record-layout map — the same key produced
@@ -3081,24 +3263,12 @@ pub(crate) fn resolve_ty<'ctx>(
         if let Some(st) = record_layouts.get(lookup_key.as_ref()) {
             return Ok((*st).into());
         }
-        if args.is_empty() {
-            // Short-name fallback for zero-arg module-qualified types (e.g.
-            // `fs.IoError` → `IoError`).  The layout map is keyed by the
-            // bare (unqualified) name; a use site coming through an
-            // `import std::fs` boundary carries the qualified form.
-            // `is_indirect_enum` already does this fallback unconditionally;
-            // mirror that pattern here so `resolve_ty` agrees.
-            if let Some(st) = record_layouts.get(short_name(name)) {
-                return Ok((*st).into());
-            }
-        } else {
-            let short_key = mangle_with_shortened_args(short_name(name), args);
-            if let Some(st) = record_layouts.get(short_key.as_str()) {
-                return Ok((*st).into());
-            }
-            if let Some(st) = record_layouts.get(short_name(name)) {
-                return Ok((*st).into());
-            }
+        // Machine layouts use the class-tagged machine-mono projection rather
+        // than the record/enum layout projection.  Try that exact key only
+        // after the ordinary nominal lookup, never by a leaf-name fallback.
+        let machine_key = hew_hir::machine_layout_key(name, args);
+        if let Some(st) = record_layouts.get(&machine_key) {
+            return Ok((*st).into());
         }
         // ── Opaque-handle check (after struct-layout lookup) ─────────────
         //
@@ -3107,16 +3277,12 @@ pub(crate) fn resolve_ty<'ctx>(
         // runtime's `*mut T`). Only reached when the name has no registered
         // struct layout (see struct-layout-first comment above).
         //
-        // The opaque-name set is keyed by the **bare** decl name (`Value`),
-        // because MIR collects it from the imported `HirItem::TypeDecl` whose
-        // `name` is unqualified. A use site that came through an
-        // `import std::encoding::json` boundary carries the **qualified** type
-        // name (`json.Value`). Match the short name too so the qualified
-        // import-side name still resolves to `ptr`. Every opaque handle lowers
-        // to the same bare `ptr` regardless of module, so short-name matching
-        // cannot conflate distinct ABIs (there is only one ABI: pointer-width).
-        if record_layouts.opaque.contains(name) || record_layouts.opaque.contains(short_name(name))
-        {
+        // The legacy set is keyed by the presentation emitted alongside the
+        // module's opaque declarations. It is deliberately consulted only
+        // after real record layouts, preventing a same-spelling record from
+        // acquiring pointer representation. New producers carry `is_opaque`
+        // and do not depend on this compatibility registry.
+        if record_layouts.opaque.contains(name) {
             return Ok(ctx.ptr_type(AddressSpace::default()).into());
         }
     }
@@ -3219,113 +3385,26 @@ pub(crate) fn primitive_to_llvm<'ctx>(
         ResolvedTy::Slice(_) => Err(CodegenError::Unsupported(
             "Slice type — composite lowering is Cluster 2",
         )),
-        ResolvedTy::Named { name, .. }
-            if matches!(
-                name.as_str(),
-                "Duplex" | "LambdaPid" | "LocalPid" | "Stream" | "Sink" | "SendHalf" | "RecvHalf"
-            ) =>
-        {
-            // M2 substrate handle. The producer (`hew-mir/src/lower.rs`
-            // `lower_duplex_pair` + `lower_duplex_send`) allocates a
-            // `ResolvedTy::Named { name: "Duplex", .. }` local for every
-            // duplex handle; the lambda-actor producer allocates a
-            // `ResolvedTy::Named { name: "LambdaPid", .. }` local re-tagged as
-            // `Place::LambdaActorHandle`. The half-extract producer
-            // (`lower_duplex_half_extract`) allocates a `SendHalf<S>` /
-            // `RecvHalf<R>` local re-tagged as `Place::SendHalf` /
-            // `Place::RecvHalf`. Codegen materialises every slot as a raw
-            // opaque `ptr` (`*mut HewDuplexHandle` / `*mut
-            // HewLambdaActorHandle` / `*mut HewSendHalfHandle` / `*mut
-            // HewRecvHalfHandle` in the runtime C-ABI). The half-extract call
-            // writes its returned pointer into this alloca; the send/recv/close
-            // ABIs load from it. LESSONS: exhaustive-traversal-and-lowering,
-            // boundary-fail-closed.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
+        // User/source opaque handles carry their representation identity in the
+        // resolved type, not in a presentation-name allowlist. Keep this direct
+        // primitive entry point aligned with `resolve_ty`: reply-drop thunks
+        // call it without a named-layout registry and still need the one-word
+        // ABI. A same-spelling non-opaque user nominal continues to the D10 arm.
         ResolvedTy::Named {
-            builtin: Some(BuiltinType::Sender | BuiltinType::Receiver),
-            ..
-        } => {
-            // Channel endpoints are pointer-width runtime handles. Dispatch
-            // on the typed builtin discriminator so a std declaration
-            // recovered from exact `channel.Sender` / `channel.Receiver`
-            // provenance lowers to `ptr`, while a user `foo.Sender` carrying
-            // `builtin: None` still reaches the D10 fail-closed arm.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named { name, .. } if name == "Vec" => {
-            // C-2 Vec<T> handle. A Vec<T> local is a `*mut HewVec` pointer.
-            // The producer (`lower_vec_index`) allocates the result local
-            // with the element type (i32/i64/f64/ptr); the vec-handle locals
-            // themselves are function parameters at this stage (ptr-sized).
-            // We represent the Vec handle as an opaque `ptr` in the alloca
-            // so `load_ptr_arg` can load the raw pointer from the slot and
-            // pass it to `hew_vec_len` / `hew_vec_get_T`. LESSONS:
-            // exhaustive-traversal-and-lowering, boundary-fail-closed.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named { name, .. } if name == "HashMap" || name == "HashSet" => {
-            // W3.041b layout-backed map/set handle.  A `HashMap<K,V>` or
-            // `HashSet<K>` local holds a `*mut HewLayoutHashMap` /
-            // `*mut HewLayoutHashSet` opaque pointer returned by the
-            // `hew_hashmap_new_with_layout` / `hew_hashset_new_with_layout`
-            // constructor.  Codegen represents the slot as an opaque `ptr`
-            // alloca (same pattern as Vec, Duplex, HewTask) so
-            // `load_duplex_handle` can load the raw pointer and pass it to
-            // the 8 operation ABI entry points.
-            // LESSONS: exhaustive-traversal-and-lowering, boundary-fail-closed.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named { name, .. } if name == "HewTask" => {
-            // Phase 2 task handle. A `HewTask` local holds a `*mut HewTask`
-            // opaque pointer — the Box-allocated task struct returned by
-            // `hew_task_new` and consumed by `hew_task_free`. The MIR
-            // producer for `spawn fn(...)` (inventory row 3) allocates a
-            // `ResolvedTy::Named { name: "HewTask", .. }` local for each
-            // spawned task and uses `Place::DuplexHandle(N)` to reference
-            // it (reusing the duplex-handle tag — the underlying alloca
-            // shape is identical: an opaque ptr slot). Codegen materialises
-            // this as an opaque `ptr` alloca, same as Duplex and Vec handles.
-            // LESSONS: exhaustive-traversal-and-lowering.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named { name, .. } if name == "HewTaskScope" => {
-            // Canonical scope handle (W2.006). A `HewTaskScope` local holds
-            // a `*mut HewTaskScope` opaque pointer — returned by
-            // `hew_task_scope_new` and consumed by `hew_task_scope_destroy`.
-            // The MIR producer for `scope {}` (`hew-mir/src/lower.rs:7577`)
-            // allocates a `ResolvedTy::Named { name: "HewTaskScope", .. }`
-            // local and references it via `Place::DuplexHandle(N)`. Codegen
-            // emits an opaque `ptr` alloca, same as other runtime handles.
-            // LESSONS: exhaustive-traversal-and-lowering.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named {
-            builtin:
-                Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
-            ..
-        } => {
-            // A `Generator<Yield, Return>` value is the heap companion of an
-            // `llvm.coro` switched-resume coroutine — `{ handle, env,
-            // out_drop_thunk, started, pending, out }` — released by
-            // `hew_gen_coro_destroy`. Codegen materialises the slot as a
-            // bare opaque `ptr`, the same representation used for every other
-            // runtime handle (Duplex, Vec, HewTask, CancellationToken). The
-            // construction site stores the companion pointer here; `.next()`
-            // loads it to drive the coroutine (`hew_cont_resume` / `hew_cont_poll`).
-            //
-            // Dispatched on the `builtin` discriminant, NOT the `name` string: a
-            // user-declared `type Generator { ... }` resolves to
-            // `Named { name: "Generator", builtin: None }` and must fall through
-            // to the D10 fail-closed arm below rather than be silently lowered to
-            // an opaque pointer. LESSONS: exhaustive-traversal-and-lowering,
-            // boundary-fail-closed, checker-authority.
-            Ok(ctx.ptr_type(AddressSpace::default()).into())
-        }
-        ResolvedTy::Named {
-            builtin: Some(BuiltinType::Rc | BuiltinType::Weak),
+            builtin: None,
+            is_opaque: true,
             ..
         } => Ok(ctx.ptr_type(AddressSpace::default()).into()),
+        ResolvedTy::Named {
+            builtin: Some(builtin),
+            ..
+        } if builtin.lowers_as_opaque_pointer_abi() => {
+            // Pointer-shaped builtin handles share one checker-owned ABI
+            // discriminator. Presentation names are deliberately irrelevant:
+            // imported/renamed builtins retain the pointer ABI, while a user
+            // nominal with the same spelling reaches the D10 fail-closed arm.
+            Ok(ctx.ptr_type(AddressSpace::default()).into())
+        }
         // `instant` is a monotonic i64-nanos timestamp. The field-type producer
         // surfaces it as `Named { builtin: Instant }` (not the canonical I64), so
         // a record/actor field typed `instant` reaches the emitter as a Named
@@ -3367,8 +3446,8 @@ pub(crate) fn primitive_to_llvm<'ctx>(
             builtin: Some(hew_types::BuiltinType::CloseError),
             ..
         } => Ok(ctx.i32_type().into()),
-        ResolvedTy::Named { name, .. } => Err(CodegenError::FailClosed(format!(
-            "D10 violation: Named/user type `{name}` reached the LLVM emitter; \
+        ResolvedTy::Named { name, args, .. } => Err(CodegenError::FailClosed(format!(
+            "D10 violation: Named/user type `{name}` with args {args:?} reached the LLVM emitter; \
              the MIR D10 gate should have rejected this earlier"
         ))),
         ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => {
@@ -3472,6 +3551,51 @@ fn dyn_vtable_prefix_ty<'ctx>(ctx: &'ctx Context, target_data: &TargetData) -> S
     ctx.struct_type(&[ptr_ty.into(), usize_ty.into(), usize_ty.into()], false)
 }
 
+pub(crate) fn get_or_declare_dyn_box_alloc<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let usize_ty = fn_ctx.ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+    let expected = ptr_ty.fn_type(&[usize_ty.into(), usize_ty.into()], false);
+    if let Some(existing) = fn_ctx.llvm_mod.get_function("hew_dyn_box_alloc") {
+        if existing.get_type() != expected {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_dyn_box_alloc declaration {:?} does not match target usize ABI {:?}",
+                existing.get_type(),
+                expected
+            )));
+        }
+        return Ok(existing);
+    }
+    Ok(fn_ctx
+        .llvm_mod
+        .add_function("hew_dyn_box_alloc", expected, Some(Linkage::External)))
+}
+
+pub(crate) fn get_or_declare_dyn_box_free<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let usize_ty = fn_ctx.ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+    let expected = fn_ctx
+        .ctx
+        .void_type()
+        .fn_type(&[ptr_ty.into(), usize_ty.into(), usize_ty.into()], false);
+    if let Some(existing) = fn_ctx.llvm_mod.get_function("hew_dyn_box_free") {
+        if existing.get_type() != expected {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_dyn_box_free declaration {:?} does not match target usize ABI {:?}",
+                existing.get_type(),
+                expected
+            )));
+        }
+        return Ok(existing);
+    }
+    Ok(fn_ctx
+        .llvm_mod
+        .add_function("hew_dyn_box_free", expected, Some(Linkage::External)))
+}
+
 /// Resolve an `Instr::CoerceToDynTrait` payload to its
 /// `DynVtableInstance` in `registry`.
 ///
@@ -3566,20 +3690,20 @@ fn get_or_declare_dyn_vtable_global<'ctx>(
 /// Emits, for `let dst: dyn Trait = value;`:
 ///
 /// ```llvm
-///   %dyn_data   = insertvalue %hew.dyn.fat_ptr undef,   ptr %value_alloca, 0
+///   %dyn_box    = call ptr @hew_dyn_box_alloc(usize <size>, usize <align>)
+///   call void @llvm.memcpy(... ptr %dyn_box, ... ptr %value_alloca, ...)
+///   %dyn_data   = insertvalue %hew.dyn.fat_ptr undef,   ptr %dyn_box, 0
 ///   %dyn_full   = insertvalue %hew.dyn.fat_ptr %dyn_data, ptr @__hew_vtable_N, 1
 ///   store %hew.dyn.fat_ptr %dyn_full, ptr %dst_alloca
 /// ```
 ///
-/// **Data-pointer choice.** The data word is the source operand's
-/// frame-owned alloca address. The MIR producer's storage classifier
-/// records every `HirExprKind::CoerceToDynTrait` site as
-/// `TraitObjectStorage::FrameOwned` (see
-/// `hew-mir/src/lower.rs::classify_trait_object_storage`), so the
-/// alloca outlives every use of the resulting fat pointer for the same
-/// reason function-scoped allocas always do. Heap-boxed storage
-/// (return-position dyn, dyn-typed actor messages) is the responsibility
-/// of a separate MIR shape and does not reach this arm.
+/// **Data-pointer choice.** Coercion transfers the concrete value into a
+/// target-layout-sized `hew_dyn_box_alloc` buffer. The resulting fat pointer is
+/// therefore self-contained across helper returns, coroutine suspension, crash
+/// snapshots, and dyn-value moves; its drop authority always dispatches slot 0
+/// and then releases the box. The source local's independent drop is suppressed
+/// by MIR at the coercion site, so the byte copy is an ownership transfer rather
+/// than a clone.
 ///
 /// **Vtable-pointer choice.** `lookup_dyn_vtable_instance` resolves the
 /// triple to a stable `vtable_id`, and `get_or_declare_dyn_vtable_global`
@@ -3609,14 +3733,57 @@ fn lower_coerce_to_dyn_trait(
         vtable_entries,
     )?;
 
-    let (value_ptr, _value_slot_ty) = place_pointer(fn_ctx, value)?;
+    let (value_ptr, value_slot_ty) = place_pointer(fn_ctx, value)?;
+    let concrete_slot_ty = resolve_ty(
+        fn_ctx.ctx,
+        fn_ctx.target_data,
+        concrete_type,
+        fn_ctx.record_layouts,
+    )?;
+    if value_slot_ty != concrete_slot_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "dyn coercion source {value:?} has LLVM slot type {value_slot_ty:?}, \
+             but vtable concrete `{concrete_type}` requires {concrete_slot_ty:?}; \
+             refusing to box storage with a mismatched drop layout"
+        )));
+    }
+    let (value_size, value_align) = abi_size_align(value_slot_ty, Some(fn_ctx.target_data))?;
+    let usize_ty = fn_ctx.ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+    let alloc_fn = get_or_declare_dyn_box_alloc(fn_ctx)?;
+    let box_ptr = fn_ctx
+        .builder
+        .build_call(
+            alloc_fn,
+            &[
+                usize_ty.const_int(value_size, false).into(),
+                usize_ty.const_int(u64::from(value_align), false).into(),
+            ],
+            "dyn_box",
+        )
+        .llvm_ctx("dyn trait box alloc")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_dyn_box_alloc returned void for dyn coercion".into())
+        })?
+        .into_pointer_value();
+    fn_ctx
+        .builder
+        .build_memcpy(
+            box_ptr,
+            value_align,
+            value_ptr,
+            value_align,
+            fn_ctx.ctx.i64_type().const_int(value_size, false),
+        )
+        .llvm_ctx("dyn trait box ownership transfer")?;
     let vtable_ptr = get_or_declare_dyn_vtable_global(fn_ctx.ctx, fn_ctx.llvm_mod, inst);
 
     let fat_ty = dyn_trait_fat_ptr_ty(fn_ctx.ctx);
     let agg_undef: StructValue = fat_ty.get_undef();
     let agg_with_data = fn_ctx
         .builder
-        .build_insert_value(agg_undef, value_ptr, 0, "dyn_data")
+        .build_insert_value(agg_undef, box_ptr, 0, "dyn_data")
         .llvm_ctx("insertvalue dyn_data")?;
     let agg_full = fn_ctx
         .builder
@@ -3765,18 +3932,7 @@ fn lower_dyn_trait_vtable_drop(
         // (`hew-runtime/src/trait_object.rs`) uses C `usize` for size/align,
         // ptr-sized by definition; `ptr_sized_int_type` matches it on the
         // native backend (the only target the dyn ABI lands on today).
-        let box_free_fn = fn_ctx
-            .llvm_mod
-            .get_function("hew_dyn_box_free")
-            .unwrap_or_else(|| {
-                let ty = fn_ctx
-                    .ctx
-                    .void_type()
-                    .fn_type(&[ptr_ty.into(), usize_ty.into(), usize_ty.into()], false);
-                fn_ctx
-                    .llvm_mod
-                    .add_function("hew_dyn_box_free", ty, Some(Linkage::External))
-            });
+        let box_free_fn = get_or_declare_dyn_box_free(fn_ctx)?;
         let args: [BasicMetadataValueEnum; 3] =
             [data_ptr.into(), size_val.into(), align_val.into()];
         fn_ctx
@@ -4039,6 +4195,11 @@ pub(crate) fn place_pointer<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     place: Place,
 ) -> CodegenResult<(PointerValue<'ctx>, BasicTypeEnum<'ctx>)> {
+    if let Some((overridden, slot, slot_ty)) = fn_ctx.elab_drop_slot_override.get() {
+        if place == overridden {
+            return Ok((slot, slot_ty));
+        }
+    }
     match place {
         Place::Local(id) => fn_ctx.locals.get(&id).copied().ok_or_else(|| {
             CodegenError::FailClosed(format!("local {id} not allocated before use"))
@@ -6733,7 +6894,7 @@ pub(crate) fn emit_field_drop_step<'ctx>(
         }
         // ClosurePair: the field is the embedded two-pointer `{ fn_ptr,
         // env_ptr }` pair. A non-null env points at the captures region of a
-        // heap env box whose slot at `env - CLOSURE_ENV_BOX_HEADER` holds the
+        // heap env box whose pointer-sized slot immediately before `env` holds the
         // per-closure free thunk baked with the box's static size/align —
         // run it, then null-store the env slot so a structurally-reachable
         // second drop short-circuits (raii-null-after-move). Mirrors the
@@ -6803,7 +6964,8 @@ pub(crate) fn emit_field_drop_step<'ctx>(
                 .llvm_ctx_with(|| format!("drop closure branch f{field_idx}"))?;
             builder.position_at_end(free_bb);
             let i64_ty = ctx.i64_type();
-            let neg_header = i64_ty.const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
+            let (header_size, _) = abi_size_align(ptr_ty.into(), Some(w.target_data))?;
+            let neg_header = i64_ty.const_int(header_size.wrapping_neg(), true);
             let thunk_slot = unsafe {
                 builder.build_in_bounds_gep(
                     ctx.i8_type(),
@@ -8131,7 +8293,7 @@ fn classify_enum_drop_variants_raw(
 ) -> CodegenResult<EnumVariantKinds> {
     let layout = enum_layouts
         .iter()
-        .find(|layout| layout.name == enum_key || short_name(&layout.name) == enum_key)
+        .find(|layout| layout.name == enum_key)
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "indirect-enum free synthesis: enum `{enum_key}` has no registered enum layout"
@@ -8173,7 +8335,7 @@ fn classify_record_drop_fields_raw(
 ) -> CodegenResult<Vec<StateFieldCloneKind>> {
     let record = record_layouts
         .iter()
-        .find(|layout| layout.name == record_key || short_name(&layout.name) == record_key)
+        .find(|layout| layout.name == record_key)
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "indirect-enum free synthesis: record `{record_key}` has no registered field layout"
@@ -8200,23 +8362,18 @@ fn classify_record_drop_fields_raw(
         .collect()
 }
 
-/// Resolve a record's LLVM struct type by registration key (full name, then the
-/// short-name fallback that `record_struct_for` uses) from the raw codegen
-/// record-struct map.
+/// Resolve a record's LLVM struct type by its canonical registration key from
+/// the raw codegen record-struct map.
 fn record_struct_raw<'ctx>(
     record_key: &str,
     record_structs: &RecordLayoutMap<'ctx>,
 ) -> CodegenResult<StructType<'ctx>> {
-    record_structs
-        .get(record_key)
-        .copied()
-        .or_else(|| record_structs.get(short_name(record_key)).copied())
-        .ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "indirect-enum free synthesis: record `{record_key}` is not in the registered \
+    record_structs.get(record_key).copied().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "indirect-enum free synthesis: record `{record_key}` is not in the registered \
                  record-layout map — cannot synthesise its in-place drop body"
-            ))
-        })
+        ))
+    })
 }
 
 /// Ensure `__hew_enum_drop_inplace_<enum_key>` has a body, synthesising it on
@@ -8234,16 +8391,12 @@ fn ensure_enum_drop_body<'ctx>(
     if f.count_basic_blocks() > 0 {
         return Ok(());
     }
-    let layout = w
-        .machine_layouts
-        .get(enum_key)
-        .or_else(|| w.machine_layouts.get(short_name(enum_key)))
-        .ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "indirect-enum free synthesis: inline enum `{enum_key}` has no registered \
+    let layout = w.machine_layouts.get(enum_key).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "indirect-enum free synthesis: inline enum `{enum_key}` has no registered \
                  tagged-union layout"
-            ))
-        })?;
+        ))
+    })?;
     let variant_kinds =
         classify_enum_drop_variants_raw(enum_key, w.record_layouts, w.enum_layouts)?;
     emit_enum_drop_inplace_body(ctx, llvm_mod, enum_key, layout, &variant_kinds, w)
@@ -8268,7 +8421,7 @@ fn ensure_record_drop_body<'ctx>(
     let resource_close = w
         .resource_record_close
         .iter()
-        .find(|(record, _)| record == record_key || short_name(record) == record_key)
+        .find(|(record, _)| record == record_key)
         .map(|(_, symbol)| symbol.as_str());
     emit_record_drop_inplace_body(
         ctx,
@@ -8505,23 +8658,18 @@ pub(crate) fn get_or_declare_indirect_enum_free<'ctx>(
     llvm_mod.add_function(&sym, fn_ty, Some(Linkage::Internal))
 }
 
-/// Resolve the registered `MachineCodegenLayout` for an enum-layout key,
-/// trying the bare key then the short name (the same fallback
-/// `machine_layout_for_local` uses for module-qualified names).
+/// Resolve the registered `MachineCodegenLayout` for an enum-layout key.
 fn indirect_enum_layout_by_key<'a, 'ctx>(
     machine_layouts: &'a MachineLayoutMap<'ctx>,
     enum_name: &str,
 ) -> CodegenResult<&'a MachineCodegenLayout<'ctx>> {
-    machine_layouts
-        .get(enum_name)
-        .or_else(|| machine_layouts.get(short_name(enum_name)))
-        .ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "indirect-enum free synthesis: enum `{enum_name}` is not in \
+    machine_layouts.get(enum_name).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "indirect-enum free synthesis: enum `{enum_name}` is not in \
                  IrPipeline.machine_layouts — registration mismatch between MIR \
                  producer and codegen"
-            ))
-        })
+        ))
+    })
 }
 
 /// Emit the construction-site heap allocation for an `indirect enum` node and
@@ -12640,7 +12788,7 @@ fn lower_instruction_with_cancel_drops(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "BoolNot operand is not an int".into(),
-                    ))
+                    ));
                 }
             };
             let dest_int = match dest_ty {
@@ -12648,7 +12796,7 @@ fn lower_instruction_with_cancel_drops(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "BoolNot dest is not an int".into(),
-                    ))
+                    ));
                 }
             };
             let operand_v = fn_ctx
@@ -13169,7 +13317,7 @@ fn lower_instruction_with_cancel_drops(
                     _ => {
                         return Err(CodegenError::FailClosed(
                             "IntCmp aggregate dest is not an integer".into(),
-                        ))
+                        ));
                     }
                 };
                 let callee =
@@ -13222,7 +13370,7 @@ fn lower_instruction_with_cancel_drops(
                     _ => {
                         return Err(CodegenError::FailClosed(
                             "IntCmp dest is not an integer".into(),
-                        ))
+                        ));
                     }
                 };
                 if let (
@@ -13368,7 +13516,7 @@ fn lower_instruction_with_cancel_drops(
                     _ => {
                         return Err(CodegenError::FailClosed(
                             "IntCmp dest is not an integer".into(),
-                        ))
+                        ));
                     }
                 };
                 let lhs_v = fn_ctx
@@ -13427,7 +13575,7 @@ fn lower_instruction_with_cancel_drops(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntCmp lhs is not an integer".into(),
-                    ))
+                    ));
                 }
             };
             if rhs_ty != lhs_ty {
@@ -13440,7 +13588,7 @@ fn lower_instruction_with_cancel_drops(
                 _ => {
                     return Err(CodegenError::FailClosed(
                         "IntCmp dest is not an integer".into(),
-                    ))
+                    ));
                 }
             };
             let lhs_v = fn_ctx
@@ -14651,27 +14799,12 @@ fn lower_instruction_with_cancel_drops(
                     "Instr::EnumTagLoad src must be a Place::Local; got {src:?}"
                 )));
             };
-            let src_ty = fn_ctx.local_tys.get(src_local).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "Instr::EnumTagLoad src local {src_local} has no resolved type"
-                ))
-            })?;
-            let enum_name = match src_ty {
-                ResolvedTy::Named { name, .. } => name.clone(),
-                other => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "Instr::EnumTagLoad src local {src_local} type {other:?} is not a \
-                         Named enum/event type"
-                    )));
-                }
-            };
-            let layout = fn_ctx.machine_layouts.get(&enum_name).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "Instr::EnumTagLoad src type `{enum_name}` is not in the machine \
-                     layout map — only machine values and their event companions are \
-                     supported by Slice 5"
-                ))
-            })?;
+            // Machine event companions use the same class-qualified key as
+            // their concrete machine instance.  Looking up the bare
+            // `LifecycleEvent` leaf here loses `Lifecycle<i64>`'s identity;
+            // share the exact local-type projection used by MachineTag and
+            // MachineVariant instead.
+            let layout = crate::layout::machine_layout_for_local(fn_ctx, *src_local)?;
             let (src_slot, _src_slot_ty) =
                 fn_ctx.locals.get(src_local).copied().ok_or_else(|| {
                     CodegenError::FailClosed(format!(
@@ -14724,20 +14857,15 @@ fn lower_instruction_with_cancel_drops(
             // 3. GEP into the per-machine `__hew_state_name_table` global
             //    using `[i32 0, i64 tag]`.
             // 4. Load the pointer entry and store it into `dest`.
-            // The MIR carries the use-site spelling, which is
-            // module-qualified for an imported machine (`toggle.Toggle`);
-            // registration uses the bare decl name. Mirror the
-            // short-name fallback the Place::MachineTag lookup applies.
-            let layout = fn_ctx
-                .machine_layouts
-                .get(machine_name)
-                .or_else(|| fn_ctx.machine_layouts.get(short_name(machine_name)))
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "Instr::MachineStateName references machine `{machine_name}` which is \
+            // MIR transports the canonical machine owner, which is also the
+            // registration key. A leaf retry here could select an unrelated
+            // same-leaf machine's state-name table.
+            let layout = fn_ctx.machine_layouts.get(machine_name).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "Instr::MachineStateName references machine `{machine_name}` which is \
                      not in the layout map — register_machine_layouts must populate it"
-                    ))
-                })?;
+                ))
+            })?;
             let table_global = layout.state_name_table.ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Instr::MachineStateName: machine `{machine_name}` has no state-name \
@@ -15330,30 +15458,14 @@ pub(crate) fn record_struct_for<'ctx>(
             let lookup_key: std::borrow::Cow<str> = if args.is_empty() {
                 std::borrow::Cow::Borrowed(name.as_str())
             } else {
-                // Shorten the spine: registration keys on bare args, so a raw
-                // `mangle(name, args)` carrying a qualified payload would miss
-                // the primary key and lean entirely on the short-name fallback.
+                // The shared layout-key authority preserves the declaration
+                // owner and every named argument in the generic spine.
                 std::borrow::Cow::Owned(mangle_with_shortened_args(name, args))
             };
             fn_ctx
                 .record_layouts
                 .get(lookup_key.as_ref())
                 .copied()
-                .or_else(|| {
-                    // Fallback: registration keys on the bare (short) outer
-                    // name, so a monomorphic record reached through a
-                    // module-qualified spelling (`shapes.Point`) misses the
-                    // primary key. Retry under the short name. The generic arm
-                    // shortens both the outer name and the type-arg spine.
-                    let short_key: std::borrow::Cow<str> = if args.is_empty() {
-                        std::borrow::Cow::Borrowed(short_name(name))
-                    } else {
-                        std::borrow::Cow::Owned(mangle_with_shortened_args(short_name(name), args))
-                    };
-                    (short_key.as_ref() != lookup_key.as_ref())
-                        .then(|| fn_ctx.record_layouts.get(short_key.as_ref()).copied())
-                        .flatten()
-                })
                 .ok_or_else(|| {
                     CodegenError::FailClosed(format!(
                         "record codegen: type `{lookup_key}` reached RecordInit/RecordFieldLoad \
@@ -16545,14 +16657,10 @@ fn registered_record_layout_key(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Opti
     } else {
         mangle_with_shortened_args(name, args)
     };
-    let short_key = if args.is_empty() {
-        short_name(name).to_string()
-    } else {
-        mangle_with_shortened_args(short_name(name), args)
-    };
-    [full_key, short_key]
-        .into_iter()
-        .find(|key| fn_ctx.record_field_resolved_tys.contains_key(key))
+    fn_ctx
+        .record_field_resolved_tys
+        .contains_key(&full_key)
+        .then_some(full_key)
 }
 
 fn is_unclonable_builtin_record_field(ty: &ResolvedTy) -> bool {
@@ -17319,7 +17427,7 @@ fn emit_field_overwrite_release(
                 && fn_ctx
                     .resource_record_close
                     .iter()
-                    .any(|(record, _)| record == name || short_name(record) == short_name(name))
+                    .any(|(record, _)| record == name)
             {
                 return Ok(());
             }
@@ -18979,18 +19087,6 @@ fn lower_enum_clone_inplace_instr<'ctx>(
     Ok(())
 }
 
-/// pointer sits immediately BEFORE the address stored in the closure pair
-/// (`env_ptr - 8`), so `ClosureEnvFieldLoad` capture offsets are identical
-/// for stack and heap envs, and any drop site can recover the per-closure
-/// free thunk from the env pointer alone.
-pub(crate) const CLOSURE_ENV_BOX_HEADER: u64 = 8;
-
-/// Alignment `hew_dyn_box_alloc` is called with for closure env boxes. The
-/// header slot is a pointer (align 8) and every admissible env field aligns
-/// to at most 8 (`lower_make_closure` fails closed otherwise), so the box
-/// and the captures region are both correctly aligned.
-pub(crate) const CLOSURE_ENV_BOX_ALIGN: u64 = 8;
-
 fn lower_make_closure(
     fn_ctx: &FnCtx<'_, '_>,
     fn_symbol: &str,
@@ -19130,39 +19226,40 @@ fn emit_closure_env_heap_box<'ctx>(
     env: Place,
 ) -> CodegenResult<PointerValue<'ctx>> {
     let (env_alloca, env_llvm_ty) = place_pointer(fn_ctx, env)?;
-    let host_td = host_target_data();
-    let (env_size, env_align) = abi_size_align(env_llvm_ty, Some(&host_td))?;
-    if u64::from(env_align) > CLOSURE_ENV_BOX_ALIGN {
-        // No admissible capture type today exceeds pointer alignment; a
-        // future 16-aligned capture must widen the header convention, not
-        // silently under-align the box.
-        return Err(CodegenError::FailClosed(format!(
-            "closure env for `{fn_symbol}` requires alignment {env_align} > \
-             {CLOSURE_ENV_BOX_ALIGN}; the env-box header convention only \
-             supports pointer-aligned captures — refusing to emit an \
-             under-aligned heap box (LESSONS: boundary-fail-closed)"
-        )));
-    }
+    let (env_size, env_align) = abi_size_align(env_llvm_ty, Some(fn_ctx.target_data))?;
     let ctx = fn_ctx.ctx;
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
-    let total_size = env_size + CLOSURE_ENV_BOX_HEADER;
-    let alloc_fn = fn_ctx
-        .llvm_mod
-        .get_function("hew_dyn_box_alloc")
-        .unwrap_or_else(|| {
-            let ty = ptr_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
-            fn_ctx
-                .llvm_mod
-                .add_function("hew_dyn_box_alloc", ty, Some(Linkage::External))
-        });
+    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let (header_size, header_align) = abi_size_align(ptr_ty.into(), Some(fn_ctx.target_data))?;
+    let env_align_u64 = u64::from(env_align);
+    let box_align = u64::from(env_align.max(header_align));
+    let env_offset = header_size
+        .checked_add(env_align_u64 - 1)
+        .map(|value| value & !(env_align_u64 - 1))
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "closure env for `{fn_symbol}` overflows while aligning its captures"
+            ))
+        })?;
+    let thunk_offset = env_offset.checked_sub(header_size).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "closure env for `{fn_symbol}` has an invalid target pointer header"
+        ))
+    })?;
+    let total_size = env_offset.checked_add(env_size).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "closure env for `{fn_symbol}` overflows its target allocation size"
+        ))
+    })?;
+    let alloc_fn = get_or_declare_dyn_box_alloc(fn_ctx)?;
     let box_ptr = fn_ctx
         .builder
         .build_call(
             alloc_fn,
             &[
-                i64_ty.const_int(total_size, false).into(),
-                i64_ty.const_int(CLOSURE_ENV_BOX_ALIGN, false).into(),
+                usize_ty.const_int(total_size, false).into(),
+                usize_ty.const_int(box_align, false).into(),
             ],
             "closure_env_box",
         )
@@ -19198,19 +19295,30 @@ fn emit_closure_env_heap_box<'ctx>(
         fn_ctx,
         fn_symbol,
         total_size,
+        env_offset,
+        box_align,
         env_struct,
         &field_kinds,
     )?;
+    let thunk_slot = unsafe {
+        fn_ctx.builder.build_in_bounds_gep(
+            ctx.i8_type(),
+            box_ptr,
+            &[i64_ty.const_int(thunk_offset, false)],
+            "closure_env_thunk_slot",
+        )
+    }
+    .llvm_ctx("closure env thunk slot gep")?;
     fn_ctx
         .builder
-        .build_store(box_ptr, free_thunk.as_global_value().as_pointer_value())
+        .build_store(thunk_slot, free_thunk.as_global_value().as_pointer_value())
         .llvm_ctx("closure env box thunk store")?;
     // Captures region starts after the header.
     let env_data = unsafe {
         fn_ctx.builder.build_in_bounds_gep(
             ctx.i8_type(),
             box_ptr,
-            &[i64_ty.const_int(CLOSURE_ENV_BOX_HEADER, false)],
+            &[i64_ty.const_int(env_offset, false)],
             "closure_env_data",
         )
     }
@@ -19219,7 +19327,7 @@ fn emit_closure_env_heap_box<'ctx>(
         .builder
         .build_memcpy(
             env_data,
-            8,
+            env_align,
             env_alloca,
             env_align,
             i64_ty.const_int(env_size, false),
@@ -19253,8 +19361,8 @@ fn is_closure_pair_vec_call(
     ))
 }
 
-/// Box a closure pair for Vec ingress: `hew_dyn_box_alloc(16, 8)` + copy of
-/// the 16-byte pair. The box becomes the vec slot's owned element.
+/// Box a closure pair for Vec ingress using the target ABI size/alignment.
+/// The box becomes the vec slot's owned element.
 fn emit_box_closure_pair<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     pair_place: Place,
@@ -19267,24 +19375,17 @@ fn emit_box_closure_pair<'ctx>(
         )));
     }
     let ctx = fn_ctx.ctx;
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i64_ty = ctx.i64_type();
-    let alloc_fn = fn_ctx
-        .llvm_mod
-        .get_function("hew_dyn_box_alloc")
-        .unwrap_or_else(|| {
-            let ty = ptr_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
-            fn_ctx
-                .llvm_mod
-                .add_function("hew_dyn_box_alloc", ty, Some(Linkage::External))
-        });
+    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+    let (pair_size, pair_align) = abi_size_align(pair_ty, Some(fn_ctx.target_data))?;
+    let alloc_fn = get_or_declare_dyn_box_alloc(fn_ctx)?;
     let box_ptr = fn_ctx
         .builder
         .build_call(
             alloc_fn,
             &[
-                i64_ty.const_int(16, false).into(),
-                i64_ty.const_int(8, false).into(),
+                usize_ty.const_int(pair_size, false).into(),
+                usize_ty.const_int(u64::from(pair_align), false).into(),
             ],
             "closure_pair_box",
         )
@@ -19297,7 +19398,13 @@ fn emit_box_closure_pair<'ctx>(
         .into_pointer_value();
     fn_ctx
         .builder
-        .build_memcpy(box_ptr, 8, pair_ptr, 8, i64_ty.const_int(16, false))
+        .build_memcpy(
+            box_ptr,
+            pair_align,
+            pair_ptr,
+            pair_align,
+            i64_ty.const_int(pair_size, false),
+        )
         .llvm_ctx("closure pair box memcpy")?;
     Ok(box_ptr)
 }
@@ -19315,9 +19422,16 @@ pub(crate) fn emit_unbox_closure_pair(
         )));
     }
     let i64_ty = fn_ctx.ctx.i64_type();
+    let (pair_size, pair_align) = abi_size_align(dest_ty, Some(fn_ctx.target_data))?;
     fn_ctx
         .builder
-        .build_memcpy(dest_ptr, 8, box_ptr, 8, i64_ty.const_int(16, false))
+        .build_memcpy(
+            dest_ptr,
+            pair_align,
+            box_ptr,
+            pair_align,
+            i64_ty.const_int(pair_size, false),
+        )
         .llvm_ctx("closure pair unbox memcpy")?;
     Ok(())
 }
@@ -19398,25 +19512,18 @@ fn lower_closure_pair_vec_call(
             emit_unbox_closure_pair(fn_ctx, box_ptr, dest)?;
             // Ownership transferred out of the vec: free the element box
             // (the popped pair keeps the env).
-            let ptr_ty = ctx.ptr_type(AddressSpace::default());
-            let void_ty = ctx.void_type();
-            let box_free_fn = fn_ctx
-                .llvm_mod
-                .get_function("hew_dyn_box_free")
-                .unwrap_or_else(|| {
-                    let ty = void_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
-                    fn_ctx
-                        .llvm_mod
-                        .add_function("hew_dyn_box_free", ty, Some(Linkage::External))
-                });
+            let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+            let (_, dest_ty) = place_pointer(fn_ctx, dest)?;
+            let (pair_size, pair_align) = abi_size_align(dest_ty, Some(fn_ctx.target_data))?;
+            let box_free_fn = get_or_declare_dyn_box_free(fn_ctx)?;
             fn_ctx
                 .builder
                 .build_call(
                     box_free_fn,
                     &[
                         box_ptr.into(),
-                        i64_ty.const_int(16, false).into(),
-                        i64_ty.const_int(8, false).into(),
+                        usize_ty.const_int(pair_size, false).into(),
+                        usize_ty.const_int(u64::from(pair_align), false).into(),
                     ],
                     "vec_pop_pair_box_free",
                 )
@@ -20397,28 +20504,10 @@ fn resolve_drop_fn<'ctx>(
             Ok(DropDispatch::RuntimeSymbol(descriptor.c_symbol()))
         }
         hew_mir::DropFnSpec::UserClose(name) => {
-            // Resolve the `<Type>::<method>` close symbol. A module-qualified
-            // receiver (`http_client.Response`) carries its source qualifier into
-            // the drop symbol so same-short-name types from different modules keep
-            // distinct layout/dispatch identities (#2270). A non-colliding
-            // resource's `close` body is registered under the BARE `<Short>::close`
-            // mangling, so on a miss for the qualified spelling retry the bare form
-            // — the same strip-on-miss MIR layout/field lookup uses. A genuinely
-            // colliding type registers a DISTINCT qualified symbol (the #2400
-            // guard forbids two bare `<Short>::close`), so the exact lookup hits
-            // first and this fallback never crosses two distinct bodies; if
-            // neither spelling is registered the drop still fails closed below.
-            let bare_fallback = name.split_once("::").and_then(|(ty, method)| {
-                let short = short_name(ty);
-                (short != ty).then(|| format!("{short}::{method}"))
-            });
-            let resolved: &str = match bare_fallback.as_deref() {
-                Some(bare) if !fn_symbols.contains_key(name) && fn_symbols.contains_key(bare) => {
-                    bare
-                }
-                _ => name.as_str(),
-            };
-            let entry = fn_symbols.get(resolved).ok_or_else(|| {
+            // The MIR authority transports the exact canonical
+            // `<owner>::<method>` identity. Retrying a leaf spelling here would
+            // let same-leaf resources dispatch to each other's close body.
+            let entry = fn_symbols.get(name).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "drop_fn=UserClose({name:?}): no function with that mangled \
                      symbol is registered in the codegen function pre-pass. A \
@@ -20431,7 +20520,7 @@ fn resolve_drop_fn<'ctx>(
                      lifecycle-symmetry)."
                 ))
             })?;
-            let (value, _return_ty, returns_unit) = entry.real(resolved, "drop dispatch")?;
+            let (value, _return_ty, returns_unit) = entry.real(name, "drop dispatch")?;
             if !returns_unit {
                 return Err(CodegenError::FailClosed(format!(
                     "drop_fn=UserClose({name:?}): user-resource `close` must return \
@@ -20444,7 +20533,7 @@ fn resolve_drop_fn<'ctx>(
             }
             Ok(DropDispatch::UserFn {
                 value,
-                symbol: resolved.to_string(),
+                symbol: name.clone(),
             })
         }
         hew_mir::DropFnSpec::Release(symbol) => Err(CodegenError::FailClosed(format!(
@@ -21625,7 +21714,1209 @@ fn emit_one_elab_drop(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> CodegenResult<
     if let Some(flag) = drop.guard {
         return emit_flag_gated_elab_drop(fn_ctx, flag, drop);
     }
+    emit_helper_crash_cleanup_retire_before_drop(fn_ctx, drop)?;
     emit_one_elab_drop_borrow_aware(fn_ctx, drop)
+}
+
+fn frame_cleanup_slot_type_key(slot_ty: BasicTypeEnum<'_>) -> String {
+    match slot_ty {
+        BasicTypeEnum::ArrayType(ty) => ty.print_to_string().to_string(),
+        BasicTypeEnum::FloatType(ty) => ty.print_to_string().to_string(),
+        BasicTypeEnum::IntType(ty) => ty.print_to_string().to_string(),
+        BasicTypeEnum::PointerType(ty) => ty.print_to_string().to_string(),
+        BasicTypeEnum::StructType(ty) => ty.print_to_string().to_string(),
+        BasicTypeEnum::VectorType(ty) => ty.print_to_string().to_string(),
+        BasicTypeEnum::ScalableVectorType(ty) => ty.print_to_string().to_string(),
+    }
+}
+
+/// Synthesize (or reuse) a `void(ptr slot)` thunk by running the ordinary
+/// unguarded `ElabDrop` authority with the descriptor's exact Place rebound to
+/// the thunk parameter.  The exhaustive match in
+/// `emit_one_elab_drop_unguarded` is deliberately the only supported-kind
+/// table: an incoherent or unsupported descriptor returns its existing
+/// fail-closed codegen error instead of becoming an untyped/free-only cleanup.
+fn get_or_emit_frame_cleanup_thunk<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    drop: &ElabDrop,
+    slot_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let key = FrameCleanupThunkKey::new(drop, slot_ty);
+    let name = {
+        let mut cache = fn_ctx.frame_cleanup_thunks.borrow_mut();
+        if let Some(existing) = cache.entries.get(&key) {
+            return Ok(*existing);
+        }
+        if let Some(existing) = cache
+            .entries
+            .keys()
+            .find(|existing| existing.descriptor == key.descriptor)
+        {
+            return Err(CodegenError::FailClosed(format!(
+                "frame-cleanup thunk descriptor slot-type drift: {:?} was registered for LLVM \
+                 slot type `{}`, but was requested for `{}`",
+                key.descriptor, existing.slot_type, key.slot_type
+            )));
+        }
+        let name = format!("__hew_frame_cleanup_{}", cache.next_internal_name);
+        if fn_ctx.llvm_mod.get_function(&name).is_some() {
+            return Err(CodegenError::FailClosed(format!(
+                "frame-cleanup thunk generated name `{name}` already exists but is not \
+                 registered in the module cleanup-thunk cache"
+            )));
+        }
+        cache.next_internal_name = cache.next_internal_name.checked_add(1).ok_or_else(|| {
+            CodegenError::FailClosed(
+                "frame-cleanup thunk generated-name counter overflowed".to_string(),
+            )
+        })?;
+        name
+    };
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let thunk = fn_ctx.llvm_mod.add_function(
+        &name,
+        fn_ctx.ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    thunk.set_linkage(Linkage::Internal);
+    let entry = fn_ctx.ctx.append_basic_block(thunk, "entry");
+    let saved_block = fn_ctx.builder.get_insert_block();
+    fn_ctx.builder.position_at_end(entry);
+    let slot = thunk
+        .get_first_param()
+        .ok_or_else(|| CodegenError::Llvm(format!("{name} has no slot parameter")))?
+        .into_pointer_value();
+    fn_ctx
+        .elab_drop_slot_override
+        .set(Some((drop.place, slot, slot_ty)));
+    let emitted = emit_one_elab_drop_unguarded(fn_ctx, drop);
+    fn_ctx.elab_drop_slot_override.set(None);
+    if emitted.is_ok() {
+        fn_ctx
+            .builder
+            .build_return(None)
+            .llvm_ctx("frame-cleanup thunk return")?;
+    }
+    if let Some(block) = saved_block {
+        fn_ctx.builder.position_at_end(block);
+    }
+    emitted?;
+    let replaced = fn_ctx
+        .frame_cleanup_thunks
+        .borrow_mut()
+        .entries
+        .insert(key, thunk);
+    if replaced.is_some() {
+        return Err(CodegenError::FailClosed(
+            "frame-cleanup thunk cache inserted a duplicate exact key".to_string(),
+        ));
+    }
+    Ok(thunk)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CrashCleanupStorage {
+    DirectFrame = 0,
+    Snapshot = 1,
+}
+
+fn helper_snapshot_type_contains_trait_object(
+    ty: &ResolvedTy,
+    record_field_tys: &HashMap<String, Vec<ResolvedTy>>,
+    enum_layouts: &[EnumLayout],
+    visiting_named: &mut HashSet<String>,
+) -> bool {
+    match ty {
+        ResolvedTy::TraitObject { .. } => true,
+        ResolvedTy::Tuple(fields) => fields.iter().any(|field| {
+            helper_snapshot_type_contains_trait_object(
+                field,
+                record_field_tys,
+                enum_layouts,
+                visiting_named,
+            )
+        }),
+        ResolvedTy::Array(element, _) => helper_snapshot_type_contains_trait_object(
+            element,
+            record_field_tys,
+            enum_layouts,
+            visiting_named,
+        ),
+        ResolvedTy::Named { name, .. } => {
+            if !visiting_named.insert(name.clone()) {
+                return false;
+            }
+            let contains = record_field_tys.get(name).is_some_and(|fields| {
+                fields.iter().any(|field| {
+                    helper_snapshot_type_contains_trait_object(
+                        field,
+                        record_field_tys,
+                        enum_layouts,
+                        visiting_named,
+                    )
+                })
+            }) || enum_layouts
+                .iter()
+                .find(|layout| layout.name == *name)
+                .is_some_and(|layout| {
+                    layout.variants.iter().any(|variant| {
+                        variant.field_tys.iter().any(|field| {
+                            helper_snapshot_type_contains_trait_object(
+                                field,
+                                record_field_tys,
+                                enum_layouts,
+                                visiting_named,
+                            )
+                        })
+                    })
+                });
+            visiting_named.remove(name);
+            contains
+        }
+        // These carriers either contain no nested value (`Function`) or are
+        // persistent handles/pointer pairs whose generic/signature types are
+        // not inline storage, or non-owning indirections whose pointee is not
+        // relocated by a snapshot.
+        ResolvedTy::Function { .. }
+        | ResolvedTy::Closure { .. }
+        | ResolvedTy::Task(_)
+        | ResolvedTy::Slice(_)
+        | ResolvedTy::Pointer { .. }
+        | ResolvedTy::Borrow { .. }
+        | ResolvedTy::I8
+        | ResolvedTy::I16
+        | ResolvedTy::I32
+        | ResolvedTy::I64
+        | ResolvedTy::U8
+        | ResolvedTy::U16
+        | ResolvedTy::U32
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
+        | ResolvedTy::F32
+        | ResolvedTy::F64
+        | ResolvedTy::Bool
+        | ResolvedTy::Char
+        | ResolvedTy::String
+        | ResolvedTy::Bytes
+        | ResolvedTy::CancellationToken
+        | ResolvedTy::Duration
+        | ResolvedTy::Unit
+        | ResolvedTy::Never
+        | ResolvedTy::TypeParam { .. } => false,
+    }
+}
+
+/// Validate semantic drop authority before the crash-cleanup lifecycle
+/// catalog considers producer coverage. The catalog must not mask the
+/// canonical drop diagnostic with a secondary "unsupported producer" or
+/// relocation error, and a genuine no-op has no owner to register.
+fn crash_cleanup_drop_requires_registration(drop: &ElabDrop) -> CodegenResult<bool> {
+    if matches!(
+        drop.kind,
+        hew_mir::DropKind::TraitObject {
+            storage: hew_mir::TraitObjectStorage::FrameOwned
+        }
+    ) && drop.drop_fn.is_some()
+    {
+        return Err(CodegenError::FailClosed(format!(
+            "dyn Trait drop @ {place:?}: \
+             `DropKind::TraitObject {{ storage: FrameOwned }}` MUST NOT carry \
+             an `ElabDrop::drop_fn` (= {drop_fn:?}). The drop ritual is the \
+             vtable slot 0 dispatch (`drop_in_place`), never the close-symbol \
+             path.",
+            place = drop.place,
+            drop_fn = drop.drop_fn,
+        )));
+    }
+
+    if matches!(drop.kind, hew_mir::DropKind::Resource) && drop.drop_fn.is_none() {
+        if ty_is_nonowning_pid_leaf(&drop.ty) {
+            return Ok(false);
+        }
+        return Err(CodegenError::FailClosed(format!(
+            "DropKind::Resource @ {place:?}: an owned `@resource` of type \
+             {ty:?} reached codegen with `ElabDrop::drop_fn = None`, but only \
+             a non-owning actor-pid leaf may drop to a no-op. The close ritual \
+             was lost before codegen.",
+            place = drop.place,
+            ty = drop.ty,
+        )));
+    }
+
+    Ok(true)
+}
+
+fn collect_helper_crash_cleanup_descriptors(
+    func: &RawMirFunction,
+    elab: Option<&ElaboratedMirFunction>,
+    has_suspend: bool,
+    record_field_tys: &HashMap<String, Vec<ResolvedTy>>,
+    enum_layouts: &[EnumLayout],
+    fn_symbols: &FnSymbolMap<'_>,
+) -> CodegenResult<Vec<HelperCrashCleanupDescriptor>> {
+    if !has_suspend && func.call_conv != FunctionCallConv::Default {
+        return Ok(Vec::new());
+    }
+    // Instruction producers are admitted through MIR's exhaustive write-set
+    // authority. This keeps registration congruent with every whole-slot
+    // producer while deliberately excluding interior field mutations.
+    let mut supported_producers = HashSet::new();
+    for local in 0..func.params.len() {
+        let local = u32::try_from(local).map_err(|_| {
+            CodegenError::FailClosed("function parameter count exceeds u32::MAX".into())
+        })?;
+        supported_producers.insert(Place::Local(local));
+    }
+    for block in &func.blocks {
+        for instr in &block.instructions {
+            for place in hew_mir::dataflow::instr_write_places(instr) {
+                supported_producers.insert(place);
+            }
+        }
+        let terminator_writes = hew_mir::dataflow::terminator_write_places(&block.terminator);
+        match &block.terminator {
+            Terminator::Call { callee, .. }
+                if matches!(fn_symbols.get(callee), Some(FnSymbol::Real { .. }))
+                    || callee == "hew_vec_get_clone" =>
+            {
+                supported_producers.extend(terminator_writes);
+            }
+            Terminator::Select { .. } | Terminator::SuspendingSelect { .. } => {
+                supported_producers.extend(terminator_writes);
+            }
+            Terminator::Join { .. } => {
+                supported_producers.extend(terminator_writes);
+            }
+            Terminator::Suspend { .. } => {
+                if let Some(kind) = func.suspend_kinds.get(&block.id) {
+                    supported_producers.extend(hew_mir::dataflow::suspend_kind_write_places(kind));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut descriptors = Vec::<HelperCrashCleanupDescriptor>::new();
+    let mut by_place = HashMap::<Place, usize>::new();
+    for (_, plan) in elab.into_iter().flat_map(|elab| elab.drop_plans.iter()) {
+        for drop in &plan.drops {
+            if !matches!(drop.place, Place::Local(_)) {
+                continue;
+            }
+            if !crash_cleanup_drop_requires_registration(drop)? {
+                continue;
+            }
+            if !supported_producers.contains(&drop.place) {
+                return Err(CodegenError::FailClosed(format!(
+                    "typed crash cleanup for {:?} (`{}`) has no lifecycle hook \
+                     for its producer; supported producers are parameters, \
+                     whole-slot instruction writes, collapsed-suspend ready \
+                     destinations, select/join bindings, generic Real-call \
+                     destinations, and Vec clone destinations",
+                    drop.place, drop.ty
+                )));
+            }
+            let frame_owned = matches!(
+                drop.kind,
+                hew_mir::DropKind::TraitObject {
+                    storage: hew_mir::TraitObjectStorage::FrameOwned
+                }
+            );
+            let exact_trait_object = matches!(drop.kind, hew_mir::DropKind::TraitObject { .. });
+            let contains_trait_object = helper_snapshot_type_contains_trait_object(
+                &drop.ty,
+                record_field_tys,
+                enum_layouts,
+                &mut HashSet::new(),
+            );
+            if (frame_owned && !has_suspend) || (contains_trait_object && !exact_trait_object) {
+                return Err(CodegenError::FailClosed(format!(
+                    "dynamic crash cleanup for {:?} cannot relocate a \
+                     frame-owned trait object inside `{}`",
+                    drop.place, drop.ty
+                )));
+            }
+            if let Some(&index) = by_place.get(&drop.place) {
+                if descriptors[index].descriptor != *drop
+                    || descriptors[index].disposition != HelperCrashCleanupDisposition::Owned
+                {
+                    return Err(CodegenError::FailClosed(format!(
+                        "ordinary helper crash snapshot for {:?} has conflicting \
+                         typed drop descriptors across exit plans",
+                        drop.place
+                    )));
+                }
+                continue;
+            }
+            by_place.insert(drop.place, descriptors.len());
+            descriptors.push(HelperCrashCleanupDescriptor {
+                descriptor: drop.clone(),
+                disposition: HelperCrashCleanupDisposition::Owned,
+            });
+        }
+    }
+
+    for decision in &func.decisions {
+        let Strategy::ParamBoundary(fact) = decision.strategy else {
+            continue;
+        };
+        let ParamBoundaryMode::BorrowRepresentationLoan {
+            storage: ParamLoanStorage::Aliasable,
+            crash_cleanup,
+            ..
+        } = fact.mode
+        else {
+            continue;
+        };
+        let param_index = usize::try_from(fact.param_index).map_err(|_| {
+            CodegenError::FailClosed("representation-loan parameter index exceeds usize".into())
+        })?;
+        let ty = func.params.get(param_index).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "representation-loan parameter {} is outside `{}`'s parameter list",
+                fact.param_index, func.name
+            ))
+        })?;
+        let place = Place::Local(fact.param_index);
+        let descriptor = hew_mir::lower::crash_only_param_loan_drop(place, ty, crash_cleanup)
+            .map_err(CodegenError::FailClosed)?;
+        if by_place.insert(place, descriptors.len()).is_some() {
+            return Err(CodegenError::FailClosed(format!(
+                "representation loan for {place:?} in `{}` conflicts with an ordinary \
+                 owned crash-cleanup descriptor",
+                func.name
+            )));
+        }
+        descriptors.push(HelperCrashCleanupDescriptor {
+            descriptor,
+            disposition: HelperCrashCleanupDisposition::CrashOnlyLoan,
+        });
+    }
+
+    descriptors.sort_by_key(|entry| match entry.descriptor.place {
+        Place::Local(local) => local,
+        _ => u32::MAX,
+    });
+    Ok(descriptors)
+}
+
+fn projected_move_destination(instr: &Instr) -> Option<Place> {
+    match instr {
+        Instr::Move {
+            dest,
+            src: Place::MachineVariant { .. } | Place::EnumVariant { .. },
+        } => Some(*dest),
+        _ => None,
+    }
+}
+
+fn projection_neutralize_transferee(instr: &Instr) -> Option<Place> {
+    match instr {
+        Instr::NeutralizePayloadSlot {
+            transferee: Some(place),
+            ..
+        }
+        | Instr::AggregateProjectionNeutralize {
+            transferee: place, ..
+        } => Some(*place),
+        _ => None,
+    }
+}
+
+/// Normalize any place that addresses bytes within a MIR local to the
+/// whole-local cleanup owner registered for that storage.
+///
+/// Crash-cleanup descriptors are deliberately keyed only by `Place::Local`,
+/// while in-place mutation instructions may name tags, payload projections, or
+/// typed handle views. Keep this match exhaustive so a new `Place` shape cannot
+/// mutate snapshot-owned bytes without an explicit owner-root decision.
+fn helper_crash_cleanup_owner_root(place: Place) -> Option<Place> {
+    match place {
+        Place::Local(local)
+        | Place::DuplexHandle(local)
+        | Place::LambdaActorHandle(local)
+        | Place::ActorHandle(local)
+        | Place::SendHalf(local)
+        | Place::RecvHalf(local)
+        | Place::MachineTag(local)
+        | Place::EnumTag(local)
+        | Place::MachineVariant { local, .. }
+        | Place::EnumVariant { local, .. } => Some(Place::Local(local)),
+        Place::ReturnSlot => None,
+    }
+}
+
+/// Whether `owner` currently contains only a borrowed projection alias whose
+/// source still owns the payload.
+///
+/// A projected `Move` is a byte copy, not an ownership publication. Ownership
+/// reaches the destination only when the MIR's explicit neutralize authority
+/// clears the source slot and names that destination as `transferee`. Keeping
+/// this as a straight-line MIR query prevents a crash between the copy and the
+/// neutralize from registering two cleanup thunks for the same resource.
+fn helper_owner_arm_waits_for_projection_transfer(
+    block: &hew_mir::BasicBlock,
+    through_instr_idx: usize,
+    owner: Place,
+) -> bool {
+    let mut pending = false;
+    for instr in block.instructions.iter().take(through_instr_idx + 1) {
+        if projected_move_destination(instr) == Some(owner) {
+            pending = true;
+            continue;
+        }
+        if projection_neutralize_transferee(instr) == Some(owner) {
+            pending = false;
+            continue;
+        }
+        if hew_mir::dataflow::instr_write_places(instr).contains(&owner) {
+            pending = false;
+        }
+    }
+    pending
+}
+
+fn allocate_helper_crash_cleanup_owners<'ctx>(
+    ctx: &'ctx Context,
+    builder: &Builder<'ctx>,
+    descriptors: Vec<HelperCrashCleanupDescriptor>,
+    storage: CrashCleanupStorage,
+) -> CodegenResult<HashMap<Place, HelperCrashCleanupOwner<'ctx>>> {
+    let mut owners = HashMap::new();
+    for entry in descriptors {
+        let descriptor = entry.descriptor;
+        let Place::Local(local) = descriptor.place else {
+            return Err(CodegenError::FailClosed(
+                "helper crash-cleanup catalog admitted a projected owner".into(),
+            ));
+        };
+        let token_slot = builder
+            .build_alloca(
+                ctx.i64_type(),
+                &format!("helper_crash_cleanup_token_{local}"),
+            )
+            .llvm_ctx("helper crash-cleanup token alloca")?;
+        builder
+            .build_store(token_slot, ctx.i64_type().const_zero())
+            .llvm_ctx("helper crash-cleanup token zero init")?;
+        let active_slot = builder
+            .build_alloca(
+                ctx.bool_type(),
+                &format!("helper_crash_cleanup_active_{local}"),
+            )
+            .llvm_ctx("helper crash-cleanup active alloca")?;
+        builder
+            .build_store(active_slot, ctx.bool_type().const_zero())
+            .llvm_ctx("helper crash-cleanup active zero init")?;
+        owners.insert(
+            descriptor.place,
+            HelperCrashCleanupOwner {
+                descriptor,
+                token_slot,
+                active_slot,
+                storage,
+                disposition: entry.disposition,
+            },
+        );
+    }
+    Ok(owners)
+}
+
+fn initialize_helper_crash_cleanup_guards(
+    fn_ctx: &FnCtx<'_, '_>,
+    parameter_count: usize,
+) -> CodegenResult<()> {
+    let parameter_count = u32::try_from(parameter_count)
+        .map_err(|_| CodegenError::FailClosed("parameter count exceeds u32::MAX".into()))?;
+    let mut initialized = HashSet::new();
+    for (owner_place, owner) in &fn_ctx.helper_crash_cleanup_owners {
+        let Some(guard) = owner.descriptor.guard else {
+            continue;
+        };
+        if !initialized.insert(guard) {
+            continue;
+        }
+        let Place::Local(owner_local) = owner_place else {
+            return Err(CodegenError::FailClosed(
+                "helper crash-cleanup owner guard belongs to a projected place".into(),
+            ));
+        };
+        let (guard_slot, guard_ty) = place_pointer(fn_ctx, guard)?;
+        let BasicTypeEnum::IntType(guard_ty) = guard_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "helper crash-cleanup guard {guard:?} is not integer-typed"
+            )));
+        };
+        // Non-parameter owner slots begin uninitialized. Mark their guard
+        // consumed until MIR publishes the first live generation; otherwise
+        // the owner-write hook reads indeterminate guard bytes and may snapshot
+        // a partially constructed resource before the following guard write.
+        // Parameter owner guards are initialized live because their incoming
+        // value has already been stored by the ABI prologue.
+        let initial = if *owner_local < parameter_count {
+            guard_ty.const_zero()
+        } else {
+            guard_ty.const_all_ones()
+        };
+        fn_ctx
+            .builder
+            .build_store(guard_slot, initial)
+            .llvm_ctx("helper crash-cleanup guard initialization")?;
+    }
+    Ok(())
+}
+
+/// Arm one typed crash-cleanup obligation and trap only on the runtime's hard
+/// failure sentinel. A zero result remains a successful no-op: it means this
+/// ordinary call is executing without an active tracked coroutine.
+///
+/// `Snapshot` deliberately refuses frame-interior trait objects. Their fat
+/// slot can be copied, but the concrete pointee cannot be relocated safely.
+fn emit_crash_cleanup_arm<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    prior_token: IntValue<'ctx>,
+    slot: PointerValue<'ctx>,
+    slot_ty: BasicTypeEnum<'ctx>,
+    thunk: FunctionValue<'ctx>,
+    storage: CrashCleanupStorage,
+    relocation: u64,
+) -> CodegenResult<IntValue<'ctx>> {
+    if storage == CrashCleanupStorage::Snapshot && relocation != 0 {
+        return Err(CodegenError::FailClosed(
+            "snapshot crash cleanup cannot relocate a frame-owned trait object".into(),
+        ));
+    }
+    let size = fn_ctx.target_data.get_store_size(&slot_ty);
+    let align = u64::from(fn_ctx.target_data.get_abi_alignment(&slot_ty));
+    let arm_cleanup = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_cont_crash_cleanup_arm",
+    )?;
+    let token = fn_ctx
+        .builder
+        .build_call(
+            arm_cleanup,
+            &[
+                prior_token.into(),
+                slot.into(),
+                fn_ctx.ctx.i64_type().const_int(size, false).into(),
+                fn_ctx.ctx.i64_type().const_int(align, false).into(),
+                thunk.as_global_value().as_pointer_value().into(),
+                fn_ctx
+                    .ctx
+                    .i32_type()
+                    .const_int(storage as u64, false)
+                    .into(),
+                fn_ctx.ctx.i32_type().const_int(relocation, false).into(),
+            ],
+            "arm_typed_crash_cleanup",
+        )
+        .llvm_ctx("hew_cont_crash_cleanup_arm call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_cont_crash_cleanup_arm returned void".into()))?
+        .into_int_value();
+    let hard_failure = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            token,
+            fn_ctx.ctx.i64_type().const_all_ones(),
+            "frame_cleanup_arm_failed",
+        )
+        .llvm_ctx("frame-cleanup arm sentinel compare")?;
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("frame-cleanup registration has no parent function".into())
+        })?;
+    let accepted_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "frame_cleanup_registered");
+    let rejected_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "frame_cleanup_rejected");
+    fn_ctx
+        .builder
+        .build_conditional_branch(hard_failure, rejected_bb, accepted_bb)
+        .llvm_ctx("frame-cleanup arm result branch")?;
+    fn_ctx.builder.position_at_end(rejected_bb);
+    let trap = Intrinsic::find("llvm.trap")
+        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap, &[], "frame_cleanup_registration_trap")
+        .llvm_ctx("frame-cleanup registration trap")?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .llvm_ctx("frame-cleanup registration unreachable")?;
+    fn_ctx.builder.position_at_end(accepted_bb);
+    Ok(token)
+}
+
+fn emit_checked_crash_cleanup_token_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    symbol: &str,
+    token: IntValue<'_>,
+    label: &str,
+) -> CodegenResult<()> {
+    let callee = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        symbol,
+    )?;
+    let accepted = fn_ctx
+        .builder
+        .build_call(callee, &[token.into()], &format!("{label}_call"))
+        .llvm_ctx_with(|| format!("{symbol} call"))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?
+        .into_int_value();
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::Llvm(format!("{label} has no parent function")))?;
+    let accepted_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_accepted"));
+    let rejected_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_rejected"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(accepted, accepted_bb, rejected_bb)
+        .llvm_ctx_with(|| format!("{label} result branch"))?;
+    fn_ctx.builder.position_at_end(rejected_bb);
+    let trap = Intrinsic::find("llvm.trap")
+        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap, &[], &format!("{label}_trap"))
+        .llvm_ctx_with(|| format!("{label} trap"))?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .llvm_ctx_with(|| format!("{label} unreachable"))?;
+    fn_ctx.builder.position_at_end(accepted_bb);
+    Ok(())
+}
+
+pub(crate) fn emit_helper_crash_cleanup_deactivate_before_write(
+    fn_ctx: &FnCtx<'_, '_>,
+    place: Place,
+) -> CodegenResult<()> {
+    let Some(owner) = fn_ctx.helper_crash_cleanup_owners.get(&place).cloned() else {
+        return Ok(());
+    };
+    let active = fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.bool_type(),
+            owner.active_slot,
+            "helper_crash_cleanup_was_active",
+        )
+        .llvm_ctx("helper crash-cleanup active load")?
+        .into_int_value();
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("helper cleanup deactivate has no parent".into()))?;
+    let deactivate_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "helper_crash_cleanup_deactivate");
+    let merge_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "helper_crash_cleanup_deactivate_merge");
+    fn_ctx
+        .builder
+        .build_conditional_branch(active, deactivate_bb, merge_bb)
+        .llvm_ctx("helper cleanup active branch")?;
+
+    fn_ctx.builder.position_at_end(deactivate_bb);
+    let token = fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.i64_type(),
+            owner.token_slot,
+            "helper_crash_cleanup_token",
+        )
+        .llvm_ctx("helper crash-cleanup token load")?
+        .into_int_value();
+    emit_checked_crash_cleanup_token_call(
+        fn_ctx,
+        "hew_cont_crash_cleanup_deactivate",
+        token,
+        "helper_crash_cleanup_deactivate",
+    )?;
+    fn_ctx
+        .builder
+        .build_store(owner.active_slot, fn_ctx.ctx.bool_type().const_zero())
+        .llvm_ctx("helper crash-cleanup active clear")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("helper cleanup deactivate merge branch")?;
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
+}
+
+/// Transfer dynamic cleanup authority away from owners whose MIR consume
+/// guard is set on this path.
+///
+/// Ordinary owned-carrier transfers already materialize as `Instr::Move`, so
+/// their source token is deactivated by the Move hook. Non-idempotent resource
+/// consumption instead sets the descriptor's path-sensitive drop guard before
+/// the consuming call (`close(self)` and by-value consumer chains). Reading
+/// that same guard keeps the dynamic registry congruent with MIR: borrowed
+/// calls leave the caller token active, while a consumed argument relinquishes
+/// it before callee entry.
+fn emit_helper_crash_cleanup_deactivate_consumed_owners(
+    fn_ctx: &FnCtx<'_, '_>,
+    places: &[Place],
+) -> CodegenResult<()> {
+    let mut seen = HashSet::new();
+    for place in places.iter().copied() {
+        if !seen.insert(place) {
+            continue;
+        }
+        let Some(owner) = fn_ctx.helper_crash_cleanup_owners.get(&place).cloned() else {
+            continue;
+        };
+        let Some(guard) = owner.descriptor.guard else {
+            continue;
+        };
+        let (guard_slot, guard_ty) = place_pointer(fn_ctx, guard)?;
+        let BasicTypeEnum::IntType(guard_ty) = guard_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "crash-cleanup consume guard {guard:?} for {place:?} is not integer-shaped"
+            )));
+        };
+        let guard_value = fn_ctx
+            .builder
+            .build_load(guard_ty, guard_slot, "helper_crash_cleanup_consume_guard")
+            .llvm_ctx("helper crash-cleanup consume guard load")?
+            .into_int_value();
+        let consumed = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                guard_value,
+                guard_ty.const_zero(),
+                "helper_crash_cleanup_arg_consumed",
+            )
+            .llvm_ctx("helper crash-cleanup consume guard compare")?;
+        let parent = fn_ctx
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .ok_or_else(|| {
+                CodegenError::Llvm("call-argument cleanup transfer outside function".into())
+            })?;
+        let transfer_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "helper_crash_cleanup_arg_transfer");
+        let merge_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "helper_crash_cleanup_arg_transfer_merge");
+        fn_ctx
+            .builder
+            .build_conditional_branch(consumed, transfer_bb, merge_bb)
+            .llvm_ctx("helper crash-cleanup consume transfer branch")?;
+        fn_ctx.builder.position_at_end(transfer_bb);
+        emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, place)?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(merge_bb)
+            .llvm_ctx("helper crash-cleanup consume transfer merge branch")?;
+        fn_ctx.builder.position_at_end(merge_bb);
+    }
+    Ok(())
+}
+
+/// Transfer dynamic cleanup authority across one representation-loan call.
+///
+/// The caller token is deactivated before callee entry. The callee arms its
+/// own crash-only token against the same aliased slot in its prologue. If the
+/// call returns normally, the callee has retired that token and the caller
+/// re-arms from the now-current representation. A crashing/abandoned callee
+/// never returns here, leaving exactly its token active.
+fn representation_loan_argument_owners(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
+    args: &[Place],
+) -> CodegenResult<Vec<Place>> {
+    let Some(param_indices) = fn_ctx.representation_loan_params.get(callee) else {
+        return Ok(Vec::new());
+    };
+    let mut owners = Vec::with_capacity(param_indices.len());
+    let mut seen = HashSet::new();
+    for &param_index in param_indices {
+        let param_index = usize::try_from(param_index).map_err(|_| {
+            CodegenError::FailClosed("representation-loan parameter index exceeds usize".into())
+        })?;
+        let place = *args.get(param_index).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "call to `{callee}` has no argument for representation-loan parameter \
+                 {param_index}"
+            ))
+        })?;
+        if !fn_ctx.helper_crash_cleanup_owners.contains_key(&place) {
+            return Err(CodegenError::FailClosed(format!(
+                "representation-loan argument {place:?} passed to `{callee}` has no coherent \
+                 caller crash-cleanup owner"
+            )));
+        }
+        if seen.insert(place) {
+            owners.push(place);
+        }
+    }
+    Ok(owners)
+}
+
+fn emit_representation_loan_handoff_before_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    owners: &[Place],
+) -> CodegenResult<()> {
+    for &owner in owners {
+        emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, owner)?;
+    }
+    Ok(())
+}
+
+fn emit_representation_loan_handoff_after_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    owners: &[Place],
+) -> CodegenResult<()> {
+    for &owner in owners {
+        emit_helper_crash_cleanup_arm_after_write(fn_ctx, owner)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn emit_helper_crash_cleanup_arm_after_write(
+    fn_ctx: &FnCtx<'_, '_>,
+    place: Place,
+) -> CodegenResult<()> {
+    let Some(owner) = fn_ctx.helper_crash_cleanup_owners.get(&place).cloned() else {
+        return Ok(());
+    };
+    let mut should_arm = None;
+    if let Some(guard) = owner.descriptor.guard {
+        let (guard_slot, guard_ty) = place_pointer(fn_ctx, guard)?;
+        let BasicTypeEnum::IntType(guard_ty) = guard_ty else {
+            return Err(CodegenError::FailClosed(format!(
+                "crash-cleanup arm guard {guard:?} for {place:?} is not integer-shaped"
+            )));
+        };
+        let guard_value = fn_ctx
+            .builder
+            .build_load(guard_ty, guard_slot, "helper_crash_cleanup_arm_guard")
+            .llvm_ctx("helper crash-cleanup arm guard load")?
+            .into_int_value();
+        let is_live = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                guard_value,
+                guard_ty.const_zero(),
+                "helper_crash_cleanup_arm_guard_live",
+            )
+            .llvm_ctx("helper crash-cleanup arm guard compare")?;
+        should_arm = Some(is_live);
+    }
+    if let (Some(borrow_mode), Some(base)) = (fn_ctx.borrow_mode, place_base_local(&place)) {
+        if fn_ctx.borrow_drop_tainted.contains(&base) {
+            let borrow_is_copy = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    borrow_mode,
+                    borrow_mode.get_type().const_zero(),
+                    "helper_crash_cleanup_borrow_is_copy",
+                )
+                .llvm_ctx("helper crash-cleanup borrow mode compare")?;
+            should_arm = Some(if let Some(prior) = should_arm {
+                fn_ctx
+                    .builder
+                    .build_and(prior, borrow_is_copy, "helper_crash_cleanup_owner_is_live")
+                    .llvm_ctx("helper crash-cleanup owner live conjunction")?
+            } else {
+                borrow_is_copy
+            });
+        }
+    }
+    let arm_merge_bb = if let Some(should_arm) = should_arm {
+        let parent = fn_ctx
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .ok_or_else(|| CodegenError::Llvm("helper cleanup arm has no parent".into()))?;
+        let arm_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "helper_crash_cleanup_guard_live");
+        let merge_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, "helper_crash_cleanup_guard_merge");
+        fn_ctx
+            .builder
+            .build_conditional_branch(should_arm, arm_bb, merge_bb)
+            .llvm_ctx("helper crash-cleanup arm lifecycle branch")?;
+        fn_ctx.builder.position_at_end(arm_bb);
+        Some(merge_bb)
+    } else {
+        None
+    };
+    let (slot, slot_ty) = place_pointer(fn_ctx, place)?;
+    let thunk = get_or_emit_frame_cleanup_thunk(fn_ctx, &owner.descriptor, slot_ty)?;
+    let prior_token = fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.i64_type(),
+            owner.token_slot,
+            "helper_crash_cleanup_prior_token",
+        )
+        .llvm_ctx("helper crash-cleanup prior token load")?
+        .into_int_value();
+    let token = emit_crash_cleanup_arm(
+        fn_ctx,
+        prior_token,
+        slot,
+        slot_ty,
+        thunk,
+        owner.storage,
+        u64::from(matches!(
+            owner.descriptor.kind,
+            hew_mir::DropKind::TraitObject {
+                storage: hew_mir::TraitObjectStorage::FrameOwned
+            }
+        )),
+    )?;
+    fn_ctx
+        .builder
+        .build_store(owner.token_slot, token)
+        .llvm_ctx("helper crash-cleanup token store")?;
+    fn_ctx
+        .builder
+        .build_store(owner.active_slot, fn_ctx.ctx.bool_type().const_all_ones())
+        .llvm_ctx("helper crash-cleanup active set")?;
+    if let Some(merge_bb) = arm_merge_bb {
+        fn_ctx
+            .builder
+            .build_unconditional_branch(merge_bb)
+            .llvm_ctx("helper crash-cleanup arm lifecycle merge branch")?;
+        fn_ctx.builder.position_at_end(merge_bb);
+    }
+    Ok(())
+}
+
+fn emit_helper_crash_cleanup_retire_before_drop(
+    fn_ctx: &FnCtx<'_, '_>,
+    drop: &ElabDrop,
+) -> CodegenResult<()> {
+    if fn_ctx.elab_drop_slot_override.get().is_some() {
+        return Ok(());
+    }
+    let Some(owner) = fn_ctx.helper_crash_cleanup_owners.get(&drop.place).cloned() else {
+        return Ok(());
+    };
+    if owner.descriptor != *drop {
+        return Err(CodegenError::FailClosed(format!(
+            "ordinary helper cleanup descriptor drift at {:?}",
+            drop.place
+        )));
+    }
+    let active = fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.bool_type(),
+            owner.active_slot,
+            "helper_crash_cleanup_drop_active",
+        )
+        .llvm_ctx("helper crash-cleanup drop active load")?
+        .into_int_value();
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("helper cleanup retire has no parent".into()))?;
+    let retire_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "helper_crash_cleanup_retire");
+    let merge_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "helper_crash_cleanup_retire_merge");
+    fn_ctx
+        .builder
+        .build_conditional_branch(active, retire_bb, merge_bb)
+        .llvm_ctx("helper cleanup retire active branch")?;
+
+    fn_ctx.builder.position_at_end(retire_bb);
+    let token = fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.i64_type(),
+            owner.token_slot,
+            "helper_crash_cleanup_retire_token",
+        )
+        .llvm_ctx("helper crash-cleanup retire token load")?
+        .into_int_value();
+    emit_checked_crash_cleanup_token_call(
+        fn_ctx,
+        "hew_cont_crash_cleanup_retire",
+        token,
+        "helper_crash_cleanup_retire",
+    )?;
+    fn_ctx
+        .builder
+        .build_store(owner.token_slot, fn_ctx.ctx.i64_type().const_zero())
+        .llvm_ctx("helper crash-cleanup retired token clear")?;
+    fn_ctx
+        .builder
+        .build_store(owner.active_slot, fn_ctx.ctx.bool_type().const_zero())
+        .llvm_ctx("helper crash-cleanup retired active clear")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("helper cleanup retire merge branch")?;
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
+}
+
+fn emit_helper_crash_cleanup_retire_before_place_drop(
+    fn_ctx: &FnCtx<'_, '_>,
+    place: Place,
+) -> CodegenResult<()> {
+    let Some(owner) = fn_ctx.helper_crash_cleanup_owners.get(&place).cloned() else {
+        return Ok(());
+    };
+    emit_helper_crash_cleanup_retire_before_drop(fn_ctx, &owner.descriptor)
+}
+
+fn emit_helper_crash_cleanup_retire_remaining_on_return(
+    fn_ctx: &FnCtx<'_, '_>,
+) -> CodegenResult<()> {
+    let mut owners = fn_ctx
+        .helper_crash_cleanup_owners
+        .iter()
+        .map(|(place, owner)| (*place, owner.clone()))
+        .collect::<Vec<_>>();
+    owners.sort_by_key(|(place, _)| match place {
+        Place::Local(local) => *local,
+        _ => u32::MAX,
+    });
+    for (place, owner) in owners {
+        let local = match place {
+            Place::Local(local) => local,
+            _ => u32::MAX,
+        };
+        let parent = fn_ctx
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .ok_or_else(|| CodegenError::Llvm("helper return sweep has no parent".into()))?;
+        let inactive_bb = fn_ctx.ctx.append_basic_block(
+            parent,
+            &format!("helper_crash_cleanup_return_inactive_{local}"),
+        );
+        let active_drop_bb = fn_ctx
+            .ctx
+            .append_basic_block(parent, &format!("helper_crash_cleanup_return_drop_{local}"));
+        let retire_bb = fn_ctx.ctx.append_basic_block(
+            parent,
+            &format!("helper_crash_cleanup_return_retire_{local}"),
+        );
+        let merge_bb = fn_ctx.ctx.append_basic_block(
+            parent,
+            &format!("helper_crash_cleanup_return_merge_{local}"),
+        );
+        let active = fn_ctx
+            .builder
+            .build_load(
+                fn_ctx.ctx.bool_type(),
+                owner.active_slot,
+                &format!("helper_crash_cleanup_return_active_value_{local}"),
+            )
+            .llvm_ctx("helper return active load")?
+            .into_int_value();
+        fn_ctx
+            .builder
+            .build_conditional_branch(active, active_drop_bb, inactive_bb)
+            .llvm_ctx("helper return active cleanup branch")?;
+
+        // An owner can legitimately remain live at a normal return when the
+        // elaborated MIR has no lexical drop on that path (for example, a
+        // borrowed resource payload extracted from an enum and only inspected).
+        // The crash registry is the exact typed ownership authority for that
+        // residual: retire its token first, then run the same guarded drop
+        // ritual used by ordinary elaborated cleanup. Trapping here turned a
+        // recoverable live owner into a post-success SIGTRAP.
+        fn_ctx.builder.position_at_end(active_drop_bb);
+        emit_helper_crash_cleanup_retire_before_drop(fn_ctx, &owner.descriptor)?;
+        if owner.disposition == HelperCrashCleanupDisposition::Owned {
+            emit_one_elab_drop(fn_ctx, &owner.descriptor)?;
+        }
+        fn_ctx
+            .builder
+            .build_unconditional_branch(merge_bb)
+            .llvm_ctx("helper return active cleanup merge branch")?;
+
+        fn_ctx.builder.position_at_end(inactive_bb);
+        let token = fn_ctx
+            .builder
+            .build_load(
+                fn_ctx.ctx.i64_type(),
+                owner.token_slot,
+                &format!("helper_crash_cleanup_return_token_{local}"),
+            )
+            .llvm_ctx("helper return token load")?
+            .into_int_value();
+        let has_token = fn_ctx
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                token,
+                fn_ctx.ctx.i64_type().const_zero(),
+                &format!("helper_crash_cleanup_return_has_token_{local}"),
+            )
+            .llvm_ctx("helper return token compare")?;
+        fn_ctx
+            .builder
+            .build_conditional_branch(has_token, retire_bb, merge_bb)
+            .llvm_ctx("helper return token branch")?;
+        fn_ctx.builder.position_at_end(retire_bb);
+        emit_checked_crash_cleanup_token_call(
+            fn_ctx,
+            "hew_cont_crash_cleanup_retire",
+            token,
+            &format!("helper_crash_cleanup_return_retire_{local}"),
+        )?;
+        fn_ctx
+            .builder
+            .build_store(owner.token_slot, fn_ctx.ctx.i64_type().const_zero())
+            .llvm_ctx("helper return retired token clear")?;
+        fn_ctx
+            .builder
+            .build_store(owner.active_slot, fn_ctx.ctx.bool_type().const_zero())
+            .llvm_ctx("helper return retired active clear")?;
+        fn_ctx
+            .builder
+            .build_unconditional_branch(merge_bb)
+            .llvm_ctx("helper return retire merge branch")?;
+        fn_ctx.builder.position_at_end(merge_bb);
+    }
+    Ok(())
 }
 
 /// Borrow-mode-aware drop emission (the pre-#1933 `emit_one_elab_drop`
@@ -21727,7 +23018,10 @@ fn emit_flag_gated_elab_drop(
         fn_ctx,
         not_consumed,
         ("resource_drop_live_only", "resource_drop_merge"),
-        || emit_one_elab_drop_borrow_aware(fn_ctx, drop),
+        || {
+            emit_helper_crash_cleanup_retire_before_drop(fn_ctx, drop)?;
+            emit_one_elab_drop_borrow_aware(fn_ctx, drop)
+        },
     )
 }
 
@@ -21761,12 +23055,7 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
             args,
             builtin: None,
             ..
-        } if args.is_empty() => {
-            // The type checker qualifies imported record names with their module
-            // prefix (e.g. `"process.CommandOutput"`). The synthesized helper is
-            // keyed by the bare type name (`"CommandOutput"`), so strip the prefix.
-            Ok(short_name(name).to_string())
-        }
+        } if args.is_empty() => Ok(name.clone()),
         ResolvedTy::Named {
             name,
             args,
@@ -21779,11 +23068,10 @@ fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
             // `user_record_layout_key` admit authority and the `state_clone`
             // `lookup_record_layout` resolver produce, and the same key the
             // synthesis seed (`collect_record_inplace_drop_seeds`) registers — so
-            // the drop call resolves the body that was emitted. Strip the module
-            // prefix from the origin name first (the mangler keys on the short
-            // name) so an imported generic record matches its registered layout.
-            let short = short_name(name);
-            Ok(mangle_with_shortened_args(short, args))
+            // the drop call resolves the body that was emitted. The shared
+            // layout-key encoder preserves the declaration owner and converts
+            // dotted segments only for native symbol safety.
+            Ok(mangle_with_shortened_args(name, args))
         }
         // M-5: a builtin owned-aggregate record (today only `CrashInfo`, which
         // carries an owned `message: string`) is keyed by its bare name — the
@@ -21962,9 +23250,8 @@ fn emit_closure_pair_drop_at_slot<'ctx>(
         .llvm_ctx_with(|| format!("{label} closure env branch"))?;
 
     fn_ctx.builder.position_at_end(free_bb);
-    let neg_header = ctx
-        .i64_type()
-        .const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
+    let (header_size, _) = abi_size_align(ptr_ty.into(), Some(fn_ctx.target_data))?;
+    let neg_header = ctx.i64_type().const_int(header_size.wrapping_neg(), true);
     let thunk_slot = unsafe {
         fn_ctx.builder.build_in_bounds_gep(
             ctx.i8_type(),
@@ -22106,14 +23393,19 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                     df = drop.drop_fn,
                 )));
             }
-            let ResolvedTy::Named { name, args, .. } = &drop.ty else {
+            let ResolvedTy::Named {
+                args,
+                builtin: Some(BuiltinType::VecIter),
+                ..
+            } = &drop.ty
+            else {
                 return Err(CodegenError::FailClosed(format!(
                     "VecIterCursor ElabDrop @ {:?} has non-named type {}",
                     drop.place,
                     drop.ty.user_facing()
                 )));
             };
-            if name.rsplit('.').next() != Some("VecIter") || args.len() != 1 {
+            if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "VecIterCursor ElabDrop @ {:?} has non-VecIter type {}",
                     drop.place,
@@ -22502,7 +23794,8 @@ pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
                 Some(
                     hew_types::BuiltinType::Rc
                     | hew_types::BuiltinType::Weak
-                    | hew_types::BuiltinType::Sender,
+                    | hew_types::BuiltinType::Sender
+                    | hew_types::BuiltinType::Receiver,
                 ),
             ..
         } => true,
@@ -22532,17 +23825,20 @@ struct CgHeapLayouts<'a, 'ctx> {
 }
 
 impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
-    fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
-        let short = short_name(name);
-        let key = if args.is_empty() {
-            name.to_string()
-        } else {
-            mangle_with_shortened_args(short, args)
+    fn record_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+        builtin: Option<hew_types::BuiltinType>,
+    ) -> Option<Vec<ResolvedTy>> {
+        let key = match builtin {
+            Some(
+                cursor @ (hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter),
+            ) => hew_hir::synthetic_cursor_layout_key(cursor, args)?,
+            _ if args.is_empty() => name.to_string(),
+            _ => mangle_with_shortened_args(name, args),
         };
-        self.record_field_resolved_tys
-            .get(key.as_str())
-            .or_else(|| self.record_field_resolved_tys.get(short))
-            .cloned()
+        self.record_field_resolved_tys.get(key.as_str()).cloned()
     }
 
     fn enum_variant_field_tys(
@@ -22550,18 +23846,13 @@ impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
         name: &str,
         args: &[ResolvedTy],
     ) -> Option<Vec<Vec<ResolvedTy>>> {
-        let short = short_name(name);
         let key = if args.is_empty() {
             name.to_string()
         } else {
-            mangle_with_shortened_args(short, args)
+            mangle_with_shortened_args(name, args)
         };
         // Enum layouts.
-        if let Some(layout) = self
-            .enum_layouts
-            .iter()
-            .find(|el| el.name == key || el.name == name || short_name(&el.name) == short)
-        {
+        if let Some(layout) = self.enum_layouts.iter().find(|el| el.name == key) {
             return Some(
                 layout
                     .variants
@@ -22573,23 +23864,21 @@ impl hew_mir::HeapOwnershipLayouts for CgHeapLayouts<'_, '_> {
         // Machine state payloads (machines are enums at the value-classification
         // layer; their per-variant field types live in the machine layout
         // registry, not `enum_layouts`).
-        if let Some(machine) = self.machine_layouts.get(short) {
+        if let Some(machine) = self.machine_layouts.get(name) {
             return Some(machine.variant_field_tys.clone());
         }
         None
     }
 
     fn enum_is_indirect(&self, name: &str, args: &[ResolvedTy]) -> bool {
-        let short = short_name(name);
         let key = if args.is_empty() {
             name.to_string()
         } else {
-            mangle_with_shortened_args(short, args)
+            mangle_with_shortened_args(name, args)
         };
-        self.enum_layouts.iter().any(|layout| {
-            (layout.name == key || layout.name == name || short_name(&layout.name) == short)
-                && layout.is_indirect
-        })
+        self.enum_layouts
+            .iter()
+            .any(|layout| layout.name == key && layout.is_indirect)
     }
 }
 
@@ -22785,7 +24074,7 @@ fn classify_record_drop_fields_for_key(
     let record_layouts = codegen_record_layouts(fn_ctx);
     let fields = record_layouts
         .iter()
-        .find(|layout| layout.name == record_key || short_name(&layout.name) == record_key)
+        .find(|layout| layout.name == record_key)
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "aggregate-recursive drop: record leaf `{record_key}` has no registered field layout"
@@ -22822,7 +24111,7 @@ fn classify_enum_drop_variants_for_key(
     let layout = fn_ctx
         .enum_layouts
         .iter()
-        .find(|layout| layout.name == enum_key || short_name(&layout.name) == enum_key)
+        .find(|layout| layout.name == enum_key)
         .ok_or_else(|| {
             CodegenError::FailClosed(format!(
                 "aggregate-recursive drop: enum leaf `{enum_key}` has no registered enum layout"
@@ -24501,19 +25790,17 @@ pub(crate) fn remote_ask_dispatch_ptr<'ctx>(
     pid_place: Place,
 ) -> CodegenResult<PointerValue<'ctx>> {
     let pid_ty = place_resolved_ty(fn_ctx, pid_place)?;
-    let actor_name = match pid_ty {
-        ResolvedTy::Named { name, args, .. } if name == "RemotePid" => match args.first() {
-            Some(ResolvedTy::Named { name: t_name, .. }) => t_name.clone(),
-            other => {
-                return Err(CodegenError::FailClosed(format!(
-                    "RemoteAsk pid `RemotePid<T>` inner T must be a named actor type, \
-                     got {other:?}"
-                )));
-            }
-        },
+    let args = builtin_named_args(pid_ty, BuiltinType::RemotePid).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "RemoteAsk pid must have resolved builtin type RemotePid<T>, got {pid_ty:?}"
+        ))
+    })?;
+    let actor_name = match args.first() {
+        Some(ResolvedTy::Named { name: t_name, .. }) => t_name.clone(),
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "RemoteAsk pid must have resolved type RemotePid<T>, got {other:?}"
+                "RemoteAsk pid `RemotePid<T>` inner T must be a named actor type, \
+                 got {other:?}"
             )));
         }
     };
@@ -24583,29 +25870,23 @@ fn emit_remote_pid_send_call<'ctx>(
     // arg's resolved type. The checker has already concretized both types
     // by the time we reach codegen.
     let pid_ty = place_resolved_ty(fn_ctx, *pid_arg)?;
-    let actor_name = match pid_ty {
-        ResolvedTy::Named { name, args, .. } if name == "RemotePid" => {
-            let inner = args.first().ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_remote_pid_send pid arg `RemotePid<T>` is missing its T type \
-                     parameter"
-                        .into(),
-                )
-            })?;
-            match inner {
-                ResolvedTy::Named { name: t_name, .. } => t_name.clone(),
-                other => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "hew_remote_pid_send: RemotePid<T> inner T must be a named actor \
-                         type, got {other:?}"
-                    )));
-                }
-            }
-        }
+    let pid_args = builtin_named_args(pid_ty, BuiltinType::RemotePid).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "hew_remote_pid_send pid arg must have resolved builtin type RemotePid<T>, \
+             got {pid_ty:?}"
+        ))
+    })?;
+    let inner = pid_args.first().ok_or_else(|| {
+        CodegenError::FailClosed(
+            "hew_remote_pid_send pid arg `RemotePid<T>` is missing its T type parameter".into(),
+        )
+    })?;
+    let actor_name = match inner {
+        ResolvedTy::Named { name: t_name, .. } => t_name.clone(),
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_remote_pid_send pid arg must have resolved type \
-                 ResolvedTy::Named {{ name: \"RemotePid\", .. }}, got {other:?}"
+                "hew_remote_pid_send: RemotePid<T> inner T must be a named actor type, \
+                 got {other:?}"
             )));
         }
     };
@@ -24914,27 +26195,23 @@ fn emit_transport_attach_local_call<'ctx>(
 
     // Resolve the concrete actor type behind the handler's `LocalPid<A>`.
     let handler_ty = place_resolved_ty(fn_ctx, *handler_arg)?;
-    let actor_name = match handler_ty {
-        ResolvedTy::Named { name, args, .. } if name == "LocalPid" => {
-            let inner = args.first().ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "{pseudo_callee} handler arg `LocalPid<A>` is missing its A type parameter"
-                ))
-            })?;
-            match inner {
-                ResolvedTy::Named { name: a_name, .. } => a_name.clone(),
-                other => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "{pseudo_callee}: LocalPid<A> inner A must be a named actor type, \
-                         got {other:?}"
-                    )));
-                }
-            }
-        }
+    let handler_args = builtin_named_args(handler_ty, BuiltinType::LocalPid).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "{pseudo_callee} handler arg must have resolved builtin type LocalPid<A>, \
+             got {handler_ty:?}"
+        ))
+    })?;
+    let inner = handler_args.first().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "{pseudo_callee} handler arg `LocalPid<A>` is missing its A type parameter"
+        ))
+    })?;
+    let actor_name = match inner {
+        ResolvedTy::Named { name: a_name, .. } => a_name.clone(),
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "{pseudo_callee} handler arg must have resolved type \
-                 ResolvedTy::Named {{ name: \"LocalPid\", .. }}, got {other:?}"
+                "{pseudo_callee}: LocalPid<A> inner A must be a named actor type, \
+                 got {other:?}"
             )));
         }
     };
@@ -25285,13 +26562,11 @@ fn recv_dest_option_elem_ty(
             "{callee} dest local _{dest_local} has no registered type"
         ))
     })?;
-    match dest_ty {
-        ResolvedTy::Named { name, args, .. } if name == "Option" && args.len() == 1 => {
-            Ok(args[0].clone())
-        }
-        other => Err(CodegenError::FailClosed(format!(
+    match builtin_named_args(dest_ty, BuiltinType::Option) {
+        Some([elem]) => Ok(elem.clone()),
+        _ => Err(CodegenError::FailClosed(format!(
             "{callee} dest local _{dest_local} must be a checker-resolved Option<T> \
-             slot; got {other:?}"
+             slot; got {dest_ty:?}"
         ))),
     }
 }
@@ -25382,10 +26657,12 @@ pub(crate) fn store_empty_bytes<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, dest: Place) -> 
             "store_empty_bytes: dest must be a bytes struct slot, got {dest_ty:?}"
         )));
     };
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, dest)?;
     fn_ctx
         .builder
         .build_store(dest_ptr, struct_ty.const_zero())
         .llvm_ctx("store empty bytes")?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, dest)?;
     Ok(())
 }
 
@@ -25395,6 +26672,7 @@ pub(crate) fn emit_read_deadline_timeout_err(
     error_dest: Place,
 ) -> CodegenResult<()> {
     let error_local = composite_dest_local(error_dest, "SuspendingRead NetError")?;
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, error_dest)?;
     // `NetError::TimedOut` is variant index 3 in `std/net/net.hew`
     // (ConnectionRefused=0, AddressInUse=1, AddressNotAvailable=2, TimedOut=3).
     store_composite_tag(fn_ctx, error_local, 3, "SuspendingRead NetError::TimedOut")?;
@@ -25418,6 +26696,7 @@ pub(crate) fn emit_read_deadline_timeout_err(
         .builder
         .build_store(payload_ptr, payload_int_ty.const_zero())
         .llvm_ctx("store SuspendingRead NetError::TimedOut payload")?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, error_dest)?;
     emit_result_err(fn_ctx, result_dest, error_dest)
 }
 
@@ -25436,6 +26715,7 @@ pub(crate) fn emit_read_deadline_cancelled_err(
     error_dest: Place,
 ) -> CodegenResult<()> {
     let error_local = composite_dest_local(error_dest, "SuspendingRead NetError")?;
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, error_dest)?;
     store_composite_tag(fn_ctx, error_local, 4, "SuspendingRead NetError::Cancelled")?;
     let (payload_ptr, payload_ty) = place_pointer(
         fn_ctx,
@@ -25457,6 +26737,7 @@ pub(crate) fn emit_read_deadline_cancelled_err(
         .builder
         .build_store(payload_ptr, payload_int_ty.const_zero())
         .llvm_ctx("store SuspendingRead NetError::Cancelled payload")?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, error_dest)?;
     emit_result_err(fn_ctx, result_dest, error_dest)
 }
 
@@ -25467,6 +26748,7 @@ pub(crate) fn emit_recv_deadline_timeout_err(
     error_dest: Place,
 ) -> CodegenResult<()> {
     let error_local = composite_dest_local(error_dest, "SuspendingChannelRecv TimeoutError")?;
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, error_dest)?;
     // `TimeoutError::Timeout` is variant index 0 (the only variant), no payload.
     store_composite_tag(
         fn_ctx,
@@ -25474,6 +26756,7 @@ pub(crate) fn emit_recv_deadline_timeout_err(
         0,
         "SuspendingChannelRecv TimeoutError::Timeout",
     )?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, error_dest)?;
     emit_result_err(fn_ctx, result_dest, error_dest)
 }
 
@@ -25497,10 +26780,12 @@ pub(crate) fn store_invalid_connection<'ctx>(
         .builder
         .build_int_to_ptr(invalid, ptr_ty, "invalid_connection")
         .llvm_ctx("store invalid connection inttoptr")?;
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, dest)?;
     fn_ctx
         .builder
         .build_store(dest_ptr, invalid_ptr)
         .llvm_ctx("store invalid connection")?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, dest)?;
     Ok(())
 }
 
@@ -25847,11 +27132,13 @@ pub(crate) fn emit_result_ok(
     dest: Place,
     payload: Option<Place>,
 ) -> CodegenResult<()> {
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, dest)?;
     let dest_local = composite_dest_local(dest, "emit_result_ok")?;
     store_composite_tag(fn_ctx, dest_local, 0, "emit_result_ok")?;
     if let Some(src) = payload {
         copy_into_variant_field(fn_ctx, src, dest_local, 0, 0, "emit_result_ok")?;
     }
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, dest)?;
     Ok(())
 }
 
@@ -25873,9 +27160,11 @@ pub(crate) fn emit_result_err(
     dest: Place,
     error_payload: Place,
 ) -> CodegenResult<()> {
+    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, dest)?;
     let dest_local = composite_dest_local(dest, "emit_result_err")?;
     store_composite_tag(fn_ctx, dest_local, 1, "emit_result_err")?;
     copy_into_variant_field(fn_ctx, error_payload, dest_local, 1, 0, "emit_result_err")?;
+    emit_helper_crash_cleanup_arm_after_write(fn_ctx, dest)?;
     Ok(())
 }
 
@@ -26801,6 +28090,81 @@ fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
     )
 }
 
+/// Whether `Terminator::Call` is lowered by one of the specialized intercepts
+/// that branches to `next` before the generic call tail.
+///
+/// Dynamic owner registration is deliberately emitted in that generic tail,
+/// after the destination has been written. Until a specialized intercept gains
+/// the same post-write hook, admitting one of its destinations to the cleanup
+/// catalog would deactivate an old token and never rearm the new value. Keep
+/// this predicate congruent with the early-return dispatch below and fail
+/// closed when such a destination has a typed crash-cleanup obligation.
+fn call_bypasses_crash_cleanup_common_tail(
+    fn_ctx: &FnCtx<'_, '_>,
+    callee: &str,
+    builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
+    args: &[Place],
+    dest: Option<&Place>,
+) -> CodegenResult<bool> {
+    use hew_types::runtime_call::RuntimeCallFamily as RtFamily;
+
+    let family_intercept = matches!(
+        builtin,
+        Some(
+            RtFamily::NodeLookup
+                | RtFamily::RemotePidSend
+                | RtFamily::TcpAttachLocal
+                | RtFamily::TlsAttachLocal
+                | RtFamily::WebSocketAttachLocal
+                | RtFamily::StreamNextLayout
+                | RtFamily::StreamTryNextLayout
+                | RtFamily::ChannelRecvLayout
+                | RtFamily::ChannelTryRecvLayout
+                | RtFamily::ChannelSendLayout
+                | RtFamily::StreamSendLayout
+                | RtFamily::MathIntrinsic(_)
+        )
+    );
+    let identity_intercept = matches!(
+        callee,
+        "Node::id"
+            | "hew_node_id_display"
+            | "hew_location_node_id"
+            | "hew_location_slot"
+            | "hew_location_incarnation"
+            | "hew_location_display"
+            | "hew_remote_pid_location"
+            | "hew_remote_pid_node_id"
+            | "hew_remote_pid_slot"
+            | "hew_remote_pid_incarnation"
+            | "hew_remote_pid_display"
+    );
+    let collection_intercept = is_closure_pair_vec_call(fn_ctx, callee, args, dest)?
+        || is_bool_vec_runtime_symbol(callee)
+        || is_vec_constructor_symbol(callee)
+        || crate::layout::is_layout_vec_runtime_symbol(callee)
+        || is_owned_vec_runtime_symbol(callee)
+        || is_vec_i32_get_set_symbol(callee)
+        || is_hashmap_layout_probe_symbol(callee)
+        || is_hashmap_layout_runtime_symbol(callee)
+        || is_hashmap_layout_get_symbol(callee)
+        || matches!(
+            callee,
+            "hew_hashmap_remove_take_layout"
+                | "hew_bytes_get"
+                | "hew_string_get"
+                | "hew_supervisor_pool_get_option"
+                | "hew_string_find"
+                | "hew_string_char_at"
+                | "hew_string_char_at_utf8"
+                | "hew_hashmap_get_clone_layout"
+        )
+        || is_hashmap_constructor_symbol(callee)
+        || is_bytes_constructor_symbol(callee);
+
+    Ok(family_intercept || identity_intercept || collection_intercept)
+}
+
 fn lower_terminator<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
@@ -26818,6 +28182,7 @@ fn lower_terminator<'ctx>(
     fn_ctx.suspend_abandon_block.set(block_id);
     match term {
         Terminator::Return => {
+            emit_helper_crash_cleanup_retire_remaining_on_return(fn_ctx)?;
             // Implicit actor-drain floor: emit `hew_shutdown_initiate_implicit(0)` then
             // `hew_shutdown_wait()` before `main` returns. This ensures
             // fire-and-forget actor messages (spawned actors, pending handler
@@ -26945,6 +28310,12 @@ fn lower_terminator<'ctx>(
                 // SuspendingAsk-driven coroutine, whose natural completion IS this
                 // Return (no explicit final suspend in its MIR).
                 if coro.has_explicit_final_suspend {
+                    crate::coro::emit_coro_frame_handoff(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &fn_ctx.builder,
+                        coro.handle,
+                    )?;
                     fn_ctx
                         .builder
                         .build_return(Some(&coro.handle))
@@ -27156,6 +28527,27 @@ fn lower_terminator<'ctx>(
             next,
         } => {
             use hew_types::runtime_call::RuntimeCallFamily as RtFamily;
+            if let Some(dest) = dest {
+                if fn_ctx.helper_crash_cleanup_owners.contains_key(dest)
+                    && call_bypasses_crash_cleanup_common_tail(
+                        fn_ctx,
+                        callee,
+                        *builtin,
+                        args,
+                        Some(dest),
+                    )?
+                {
+                    return Err(CodegenError::FailClosed(format!(
+                        "typed crash cleanup for call destination {dest:?} cannot \
+                         follow specialized call intercept `{callee}` until that \
+                         intercept provides a post-write rearm hook"
+                    )));
+                }
+            }
+            emit_helper_crash_cleanup_deactivate_consumed_owners(fn_ctx, args)?;
+            if let Some(dest) = dest {
+                emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, *dest)?;
+            }
             // `Node::lookup` constructs `Result<RemotePid<T>, LookupError>`
             // in-place around the runtime's aggregate out-parameter. The generic
             // FnSymbol::Real arm cannot synthesize that Result shape, so handle it
@@ -27522,6 +28914,11 @@ fn lower_terminator<'ctx>(
                     extern_record_ret,
                     extern_malloc_string_ret,
                 } => {
+                    let loan_arg_owners =
+                        representation_loan_argument_owners(fn_ctx, callee, args)?;
+                    emit_representation_loan_handoff_before_call(fn_ctx, &loan_arg_owners)?;
+                    let callee_boundary_modes =
+                        fn_ctx.param_boundary_modes.get(callee).map(Vec::as_slice);
                     let machine_step_queue = if fn_ctx.machine_step_symbols.contains(callee) {
                         let queue = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
                         emit_machine_step_enter_call(fn_ctx, queue)?;
@@ -27542,6 +28939,7 @@ fn lower_terminator<'ctx>(
                             args,
                             dest.as_ref(),
                         )?;
+                        emit_representation_loan_handoff_after_call(fn_ctx, &loan_arg_owners)?;
                     } else {
                         // Reconcile each loaded argument against the callee's
                         // *declared* LLVM parameter type. The Hew place may hold a
@@ -27558,17 +28956,27 @@ fn lower_terminator<'ctx>(
                             Vec::with_capacity(args.len());
                         for (idx, arg) in args.iter().enumerate() {
                             let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
-                            // By-pointer bytes param: the callee declares this
-                            // parameter as `ptr` while the Hew argument is a `bytes`
-                            // value (a `{ptr, i32, i32}` alloca). Pass the alloca
-                            // ADDRESS so the runtime reads the triple through the
-                            // pointer — sidesteps the non-first by-value small-struct
-                            // ABI coercion gap. Every `bytes` param is `ptr`-declared.
-                            if matches!(
-                                declared_param_tys.get(idx),
-                                Some(BasicMetadataTypeEnum::PointerType(_))
-                            ) && matches!(arg_ty, BasicTypeEnum::StructType(_))
-                                && matches!(place_resolved_ty(fn_ctx, *arg)?, ResolvedTy::Bytes)
+                            let declared_ty =
+                                declared_param_tys.get(idx).copied().ok_or_else(|| {
+                                    CodegenError::FailClosed(format!(
+                                        "`{callee}` has no declared parameter for Hew argument {idx}"
+                                    ))
+                                })?;
+                            let arg_resolved_ty = place_resolved_ty(fn_ctx, *arg)?;
+                            let boundary = match callee_boundary_modes {
+                                Some(modes) => {
+                                    TypedCallBoundary::Source(modes.get(idx).copied().flatten())
+                                }
+                                None => TypedCallBoundary::ExternFfi,
+                            };
+                            if classify_typed_call_arg_pass(
+                                arg_resolved_ty,
+                                arg_ty,
+                                declared_ty,
+                                boundary,
+                                callee,
+                                idx,
+                            )? == TypedCallArgPass::StorageAddress
                             {
                                 arg_vals.push(metadata_value_from_basic(arg_ptr.into()));
                                 continue;
@@ -27577,17 +28985,14 @@ fn lower_terminator<'ctx>(
                                 .builder
                                 .build_load(arg_ty, arg_ptr, "call_arg")
                                 .llvm_ctx("call arg load")?;
-                            let reconciled = match declared_param_tys.get(idx) {
-                                Some(BasicMetadataTypeEnum::IntType(param_int)) => {
-                                    let arg_resolved_ty = place_resolved_ty(fn_ctx, *arg)?;
-                                    reconcile_int_width(
-                                        fn_ctx,
-                                        loaded,
-                                        (*param_int).into(),
-                                        !is_unsigned_integer_ty(arg_resolved_ty),
-                                        "argument",
-                                    )?
-                                }
+                            let reconciled = match declared_ty {
+                                BasicMetadataTypeEnum::IntType(param_int) => reconcile_int_width(
+                                    fn_ctx,
+                                    loaded,
+                                    param_int.into(),
+                                    !is_unsigned_integer_ty(arg_resolved_ty),
+                                    "argument",
+                                )?,
                                 _ => loaded,
                             };
                             arg_vals.push(metadata_value_from_basic(reconciled));
@@ -27596,11 +29001,12 @@ fn lower_terminator<'ctx>(
                             .builder
                             .build_call(value, &arg_vals, "call_result")
                             .llvm_ctx("build_call")?;
+                        emit_representation_loan_handoff_after_call(fn_ctx, &loan_arg_owners)?;
                         if let Some(dest_place) = dest {
                             if returns_unit {
                                 return Err(CodegenError::FailClosed(format!(
-                                "Call to unit-returning fn `{callee}` must not carry a Terminator::Call dest"
-                            )));
+                                    "Call to unit-returning fn `{callee}` must not carry a Terminator::Call dest"
+                                )));
                             }
                             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
                             let ret_val =
@@ -27771,6 +29177,9 @@ fn lower_terminator<'ctx>(
                         .build_store(dest_ptr, reg_i32)
                         .llvm_ctx("store reg result")?;
                 }
+            }
+            if let Some(dest) = dest {
+                emit_helper_crash_cleanup_arm_after_write(fn_ctx, *dest)?;
             }
             let next_bb = *fn_ctx
                 .blocks
@@ -29034,6 +30443,12 @@ fn emit_cancel_trap_or_return(fn_ctx: &FnCtx<'_, '_>) -> CodegenResult<()> {
     // via `coro.destroy`. Returning the logical value would `ret i64` from a
     // `ptr`-returning function (an LLVM verify failure).
     if let Some(coro) = fn_ctx.coro {
+        crate::coro::emit_coro_frame_handoff(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &fn_ctx.builder,
+            coro.handle,
+        )?;
         fn_ctx
             .builder
             .build_return(Some(&coro.handle))
@@ -29337,46 +30752,70 @@ fn is_coroutine_function(func: &RawMirFunction) -> bool {
     func.coroutine_facts().is_coroutine
 }
 
-/// True when `func`'s `param_idx`-th parameter is a `bytes` value that may be
-/// ALIASED to the caller's triple — declared `ptr` and passed the caller's
-/// alloca ADDRESS — so a callee mutation (`b.push(..)`) writes through to the
-/// caller's `{ptr,i32,i32}`. This gives `bytes` the same shared-handle,
-/// callee-mutations-visible semantics `Vec`/`HashMap`/`string` already have
-/// (those are heap handles whose by-value copy still aliases the same backing
-/// store; `bytes` is a by-value inline triple, so it needs the explicit
-/// by-pointer alias to match).
-///
-/// Aliasing is sound only when ALL hold:
-///   - the parameter is `bytes`;
-///   - the function uses the ordinary `Default` call convention and is not a
-///     coroutine — both guarantee the call site flows through the generic
-///     `Terminator::Call` arm, whose by-pointer branch passes the caller's
-///     alloca address precisely because this parameter is declared `ptr`.
-///     Actor / lambda-actor / closure / coroutine call sites use distinct
-///     ABIs that deliver the triple by value, so aliasing there would
-///     reinterpret value bits as a pointer;
-///   - the parameter local is never reassigned in the body. A reassignment
-///     (`var b: bytes; b = ..`) lowers to an `Instr::Move` into the parameter
-///     local; aliasing would make that store clobber the caller's slot, so
-///     such parameters fall back to a by-value copy (no write-back, but no
-///     regression versus today's pass-by-copy). `bytes` parameters are
-///     borrows the callee never drops (the `by-value-heap-params-are-borrows`
-///     invariant), so the alias can never double-free the caller's buffer.
-///
-/// `declare_function` and the `lower_function` parameter prologue both derive
-/// the parameter ABI from this single predicate, so the declared parameter
-/// type and the prologue's alias-vs-copy choice can never disagree.
-fn bytes_param_is_aliasable(func: &RawMirFunction, param_idx: usize) -> bool {
-    if func.call_conv != FunctionCallConv::Default || is_coroutine_function(func) {
-        return false;
+/// Parameter positions whose finalized typed MIR boundary mode is an
+/// aliasable representation loan. This is the sole codegen authority for the
+/// pointer ABI and caller/callee crash-token handoff.
+fn representation_loan_params(func: &RawMirFunction) -> Vec<u32> {
+    let mut params = func
+        .decisions
+        .iter()
+        .filter_map(|decision| {
+            let Strategy::ParamBoundary(fact) = decision.strategy else {
+                return None;
+            };
+            matches!(
+                fact.mode,
+                ParamBoundaryMode::BorrowRepresentationLoan {
+                    storage: ParamLoanStorage::Aliasable,
+                    ..
+                }
+            )
+            .then_some(fact.param_index)
+        })
+        .collect::<Vec<_>>();
+    params.sort_unstable();
+    params.dedup();
+    params
+}
+
+fn parameter_boundary_modes(
+    func: &RawMirFunction,
+) -> CodegenResult<Vec<Option<ParamBoundaryMode>>> {
+    let mut modes = vec![None; func.params.len()];
+    for decision in &func.decisions {
+        let Strategy::ParamBoundary(fact) = decision.strategy else {
+            continue;
+        };
+        let idx = usize::try_from(fact.param_index).map_err(|_| {
+            CodegenError::FailClosed(format!(
+                "parameter-boundary index {} of `{}` exceeds usize",
+                fact.param_index, func.name
+            ))
+        })?;
+        let slot = modes.get_mut(idx).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "parameter-boundary index {} is outside `{}`'s {} parameters",
+                fact.param_index,
+                func.name,
+                func.params.len()
+            ))
+        })?;
+        if slot.replace(fact.mode).is_some() {
+            return Err(CodegenError::FailClosed(format!(
+                "parameter-boundary index {} of `{}` is classified more than once",
+                fact.param_index, func.name
+            )));
+        }
     }
-    if !matches!(func.params.get(param_idx), Some(ResolvedTy::Bytes)) {
-        return false;
-    }
-    let Ok(local) = u32::try_from(param_idx) else {
-        return false;
-    };
-    !hew_mir::local_is_written_in_body(func, local)
+    Ok(modes)
+}
+
+fn param_is_aliasable_representation_loan(func: &RawMirFunction, param_idx: usize) -> bool {
+    u32::try_from(param_idx).is_ok_and(|param_idx| {
+        representation_loan_params(func)
+            .binary_search(&param_idx)
+            .is_ok()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -29468,12 +30907,11 @@ fn declare_function<'ctx>(
         param_tys.push(ctx_ptr_ty.into());
     }
     for (param_idx, param_ty) in func.params.iter().enumerate() {
-        if bytes_param_is_aliasable(func, param_idx) {
-            // Pass this `bytes` parameter by pointer. Declaring it `ptr` makes
-            // the generic `Terminator::Call` arm's by-pointer branch hand the
-            // caller's triple ADDRESS, and the `lower_function` prologue
-            // aliases the local slot to that incoming pointer (no copy-in), so
-            // callee mutations write through to the caller's `{ptr,i32,i32}`.
+        if param_is_aliasable_representation_loan(func, param_idx) {
+            // A typed representation loan crosses by pointer. The generic call
+            // arm passes the caller's slot address and the prologue aliases the
+            // parameter local to it, so representation replacement remains
+            // caller-visible without a semantic clone.
             param_tys.push(ctx_ptr_ty.into());
             continue;
         }
@@ -29805,10 +31243,7 @@ fn resolve_di_type<'ctx>(
         };
 
         // An enum (in the enum-layout map) — emit the degraded tagged-union DIE.
-        if let Some(enum_layout) = enum_layouts
-            .iter()
-            .find(|e| e.name == key || short_name(&e.name) == short_name(name))
-        {
+        if let Some(enum_layout) = enum_layouts.iter().find(|e| e.name == key) {
             return resolve_enum_di_type(
                 ctx,
                 dctx,
@@ -29822,10 +31257,7 @@ fn resolve_di_type<'ctx>(
         }
 
         // A record (in the LLVM struct-layout map) — emit a struct DIE.
-        let llvm_struct = record_layouts
-            .get(key.as_str())
-            .or_else(|| record_layouts.get(short_name(name)))
-            .copied();
+        let llvm_struct = record_layouts.get(key.as_str()).copied();
         if let Some(llvm_struct) = llvm_struct {
             // Recursion guard: insert a forward struct placeholder under the key
             // BEFORE resolving members, so a self-referential record terminates.
@@ -29858,12 +31290,8 @@ fn resolve_di_type<'ctx>(
 
             // Resolve member types + offsets. Field names come from the MIR
             // record layout; missing names fall back to positional `field_N`.
-            let field_tys = record_field_resolved_tys
-                .get(key.as_str())
-                .or_else(|| record_field_resolved_tys.get(short_name(name)));
-            let field_names = record_field_names
-                .get(key.as_str())
-                .or_else(|| record_field_names.get(short_name(name)));
+            let field_tys = record_field_resolved_tys.get(key.as_str());
+            let field_names = record_field_names.get(key.as_str());
             if let Some(field_tys) = field_tys {
                 let mut members: Vec<DIType<'ctx>> = Vec::with_capacity(field_tys.len());
                 for (i, fty) in field_tys.iter().enumerate() {
@@ -29992,12 +31420,10 @@ fn resolve_enum_di_type<'ctx>(
         return Some(result);
     }
 
-    // The enum's outer LLVM struct `{ tag: iW, payload: [..] }` lives in the
-    // record-layout map under the enum name.
-    let outer_struct = record_layouts
-        .get(enum_layout.name.as_str())
-        .or_else(|| record_layouts.get(enum_name))
-        .copied()?;
+    // The enum's outer LLVM struct `{ tag: iW, payload: [..] }` is keyed by
+    // the exact canonical enum owner. `enum_name` below is display-only: using
+    // it for lookup would attach a same-leaf enum's storage to this DIE.
+    let outer_struct = enum_debug_outer_struct(record_layouts, &enum_layout.name)?;
     let struct_size_bits = target_data.get_bit_size(&outer_struct);
     let struct_align_bits = target_data.get_abi_alignment(&outer_struct) * 8;
 
@@ -30289,6 +31715,16 @@ fn resolve_enum_di_type<'ctx>(
     } else {
         Some(enum_struct)
     }
+}
+
+/// Resolve the LLVM storage type attached to an enum's debug DIE. The full
+/// nominal owner is semantic; the short name is only a DWARF presentation
+/// label and must never participate in this lookup.
+fn enum_debug_outer_struct<'ctx>(
+    record_layouts: &RecordLayoutMap<'ctx>,
+    enum_owner: &str,
+) -> Option<StructType<'ctx>> {
+    record_layouts.get(enum_owner).copied()
 }
 
 /// Insert an `llvm.dbg.declare` record at the end of `block`, binding `storage`
@@ -30592,6 +32028,8 @@ fn lower_function<'ctx>(
     target_data: &TargetData,
     func: &RawMirFunction,
     fn_symbols: &FnSymbolMap<'ctx>,
+    representation_loan_params_by_function: &HashMap<String, Vec<u32>>,
+    param_boundary_modes_by_function: &HashMap<String, Vec<Option<ParamBoundaryMode>>>,
     machine_step_symbols: &HashSet<String>,
     elab: Option<&ElaboratedMirFunction>,
     checked: Option<&CheckedMirFunction>,
@@ -30603,6 +32041,7 @@ fn lower_function<'ctx>(
     record_field_names: &HashMap<String, Vec<String>>,
     dyn_vtable_registry: &[DynVtableInstance],
     const_globals: &ConstGlobalMap<'ctx>,
+    frame_cleanup_thunks: &RefCell<FrameCleanupThunkCache<'ctx>>,
     resource_record_close: &[(String, String)],
     resource_opaque_close: &[(String, String)],
     emit_wasm_entry_alias: bool,
@@ -31118,7 +32557,7 @@ fn lower_function<'ctx>(
                 func.name
             ))
         })?;
-        if bytes_param_is_aliasable(func, param_idx) {
+        if param_is_aliasable_representation_loan(func, param_idx) {
             // ALIAS the local slot to the caller's triple. `llvm_param` is the
             // `ptr` the caller passed (the address of its `{ptr,i32,i32}`), so
             // rebinding `locals[param_idx]` to it makes every
@@ -31471,6 +32910,23 @@ fn lower_function<'ctx>(
     // suspend-ramp helper) read the same per-function plan set.
     let drop_plans: &[(ExitPath, hew_mir::DropPlan)] =
         elab.map(|e| e.drop_plans.as_slice()).unwrap_or(&[]);
+    let helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        ctx,
+        &builder,
+        collect_helper_crash_cleanup_descriptors(
+            func,
+            elab,
+            has_suspend,
+            record_field_resolved_tys,
+            enum_layouts,
+            fn_symbols,
+        )?,
+        if has_suspend {
+            CrashCleanupStorage::DirectFrame
+        } else {
+            CrashCleanupStorage::Snapshot
+        },
+    )?;
     let fn_ctx = FnCtx {
         ctx,
         llvm_mod,
@@ -31481,6 +32937,8 @@ fn lower_function<'ctx>(
         emit_lambda_drain_epilogue,
         target_data,
         builder,
+        representation_loan_params: representation_loan_params_by_function,
+        param_boundary_modes: param_boundary_modes_by_function,
         return_slot,
         return_ty: body_return_ty_llvm,
         return_resolved_ty: func.return_ty.clone(),
@@ -31496,6 +32954,7 @@ fn lower_function<'ctx>(
         runtime_decls: RefCell::new(HashMap::new()),
         record_layouts,
         fn_symbols,
+        frame_cleanup_thunks,
         machine_step_symbols,
         resource_record_close,
         resource_opaque_close,
@@ -31515,7 +32974,9 @@ fn lower_function<'ctx>(
             _ => None,
         },
         drop_plans,
+        helper_crash_cleanup_owners,
         suspend_abandon_block: std::cell::Cell::new(0),
+        elab_drop_slot_override: std::cell::Cell::new(None),
     };
 
     // Fail-closed boundary: reject composite returns whose heap-owning payload
@@ -31583,6 +33044,13 @@ fn lower_function<'ctx>(
         checked.map(|c| c.cooperate_sites.as_slice()).unwrap_or(&[]);
     let owned_carrier_cancel_drops = collect_owned_carrier_cancel_drops(func)?;
     initialize_owned_carrier_drop_guards(&fn_ctx, &owned_carrier_cancel_drops)?;
+    initialize_helper_crash_cleanup_guards(&fn_ctx, func.params.len())?;
+    for local in 0..func.params.len() {
+        let local = u32::try_from(local).map_err(|_| {
+            CodegenError::FailClosed("function parameter count exceeds u32::MAX".into())
+        })?;
+        emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(local))?;
+    }
     if let Some(site) = cooperate_sites
         .iter()
         .find(|site| site.kind == CooperateKind::FunctionEntry && site.bb_id != entry_block.id)
@@ -31723,6 +33191,86 @@ fn lower_function<'ctx>(
             // entry (synthesised instructions outside any HIR statement). The
             // caller (`build_module_for_target`) retains this span only for a
             // root-origin function; every other origin has it stripped.
+            let instruction_writes = hew_mir::dataflow::instr_write_places(instr);
+            let written_places: HashSet<_> = instruction_writes.iter().copied().collect();
+            let mut seen_owner_writes = HashSet::new();
+            let owner_writes: Vec<_> = instruction_writes
+                .iter()
+                .copied()
+                .filter(|place| {
+                    fn_ctx.helper_crash_cleanup_owners.contains_key(place)
+                        && seen_owner_writes.insert(*place)
+                })
+                .collect();
+            // Whole-place writes and interior mutations are distinct MIR
+            // authorities. Move-state analysis keeps an aggregate live across
+            // an in-place field update, but a helper's Snapshot escrow is a
+            // byte copy and must be refreshed around every such update.
+            let mut seen_interior_owner_writes = HashSet::new();
+            let interior_owner_writes: Vec<_> =
+                hew_mir::dataflow::instr_interior_write_places(instr)
+                    .into_iter()
+                    .filter_map(helper_crash_cleanup_owner_root)
+                    .filter(|place| {
+                        !seen_owner_writes.contains(place)
+                            && fn_ctx.helper_crash_cleanup_owners.contains_key(place)
+                            && seen_interior_owner_writes.insert(*place)
+                    })
+                    .collect();
+            let next_instruction_writes = block
+                .instructions
+                .get(instr_idx + 1)
+                .map(hew_mir::dataflow::instr_write_places)
+                .unwrap_or_default();
+            let previous_instruction_writes = instr_idx
+                .checked_sub(1)
+                .and_then(|previous| block.instructions.get(previous))
+                .map(hew_mir::dataflow::instr_write_places)
+                .unwrap_or_default();
+            // A guarded owner is not live until its generated guard write says
+            // so. Construction emits the value write immediately before that
+            // guard write; let the guard hook publish the single initialized
+            // generation instead of emitting an earlier conditional arm over a
+            // not-yet-live slot and then immediately churning it.
+            let deferred_owner_arms: HashSet<_> = owner_writes
+                .iter()
+                .copied()
+                .filter(|place| {
+                    fn_ctx
+                        .helper_crash_cleanup_owners
+                        .get(place)
+                        .and_then(|owner| owner.descriptor.guard)
+                        .is_some_and(|guard| {
+                            written_places.contains(&guard)
+                                || next_instruction_writes.contains(&guard)
+                        })
+                })
+                .collect();
+            let guard_write_owners: Vec<_> = fn_ctx
+                .helper_crash_cleanup_owners
+                .iter()
+                .filter_map(|(place, owner)| {
+                    owner
+                        .descriptor
+                        .guard
+                        .filter(|guard| written_places.contains(guard))
+                        .map(|_| *place)
+                })
+                .collect();
+            for place in &owner_writes {
+                emit_helper_crash_cleanup_deactivate_before_write(&fn_ctx, *place)?;
+            }
+            for place in &interior_owner_writes {
+                emit_helper_crash_cleanup_deactivate_before_write(&fn_ctx, *place)?;
+            }
+            if let Instr::Move { dest, src } = instr {
+                if src != dest {
+                    emit_helper_crash_cleanup_deactivate_before_write(&fn_ctx, *src)?;
+                }
+            }
+            if let Instr::Drop { place, .. } = instr {
+                emit_helper_crash_cleanup_retire_before_place_drop(&fn_ctx, *place)?;
+            }
             lower_instruction_with_cancel_drops(
                 &fn_ctx,
                 instr,
@@ -31731,6 +33279,48 @@ fn lower_function<'ctx>(
                 &owned_carrier_cancel_drops,
             )
             .map_err(|e| e.with_instr_span(func.instr_spans.get(&instr_key).copied()))?;
+            for place in owner_writes {
+                if !deferred_owner_arms.contains(&place)
+                    && !helper_owner_arm_waits_for_projection_transfer(block, instr_idx, place)
+                {
+                    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, place)?;
+                }
+            }
+            // Refresh the exact root after every in-place mutation. For helper
+            // Snapshot storage this recopies the now-neutralized bytes; for a
+            // coroutine DirectFrame owner it revalidates the same live range.
+            // This MUST precede arming a projection transferee so the source
+            // escrow can never retain the moved-out pointer concurrently.
+            for place in interior_owner_writes {
+                emit_helper_crash_cleanup_arm_after_write(&fn_ctx, place)?;
+            }
+            // Guard writes are lifecycle writes even though the guard is a
+            // separate scalar slot: reconcile the registered owner to the
+            // elaborated-MIR convention (`0` live, non-zero consumed).
+            for place in guard_write_owners {
+                if helper_owner_arm_waits_for_projection_transfer(block, instr_idx, place) {
+                    continue;
+                }
+                // When the immediately preceding owner write deferred its arm
+                // to this guard publication, it already deactivated the prior
+                // generation before touching the value slot. No authority can
+                // be active in between, so a second deactivate is pure churn.
+                if !previous_instruction_writes.contains(&place) {
+                    emit_helper_crash_cleanup_deactivate_before_write(&fn_ctx, place)?;
+                }
+                emit_helper_crash_cleanup_arm_after_write(&fn_ctx, place)?;
+            }
+            // A projected move publishes only a byte-copy alias. The exact
+            // ownership handoff occurs at its explicit neutralize marker, after
+            // the source slot can no longer release the payload. Arm the
+            // transferee here—not at the preceding Move—so a crash in the
+            // copy/neutralize window has one cleanup authority, never two.
+            if let Some(transferee) = projection_neutralize_transferee(instr) {
+                if fn_ctx.helper_crash_cleanup_owners.contains_key(&transferee) {
+                    emit_helper_crash_cleanup_deactivate_before_write(&fn_ctx, transferee)?;
+                    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, transferee)?;
+                }
+            }
         }
         if cooperate_sites
             .iter()
@@ -32201,10 +33791,10 @@ fn build_module_for_target<'ctx>(
     // in their state payloads (pass 1), and the deferred enums may
     // reference machines (pass 3) — the split keeps both directions sized
     // against bodied members.
-    let machine_short_names: HashSet<&str> = pipeline
+    let machine_names: HashSet<&str> = pipeline
         .machine_layouts
         .iter()
-        .map(|m| short_name(&m.name))
+        .map(|m| m.name.as_str())
         .collect();
     let (machine_free_enums, machine_ref_enums): (
         Vec<hew_mir::EnumLayout>,
@@ -32213,7 +33803,7 @@ fn build_module_for_target<'ctx>(
         !layout.variants.iter().any(|v| {
             v.field_tys
                 .iter()
-                .any(|t| resolved_ty_references_machine(t, &machine_short_names))
+                .any(|t| resolved_ty_references_machine(t, &machine_names))
         })
     });
     crate::layout::register_enum_layouts(
@@ -32353,6 +33943,19 @@ fn build_module_for_target<'ctx>(
         })?;
         fn_symbols.insert(func.name.clone(), sym);
     }
+    let representation_loan_params_by_function = pipeline
+        .raw_mir
+        .iter()
+        .filter_map(|func| {
+            let params = representation_loan_params(func);
+            (!params.is_empty()).then(|| (func.name.clone(), params))
+        })
+        .collect::<HashMap<_, _>>();
+    let param_boundary_modes_by_function = pipeline
+        .raw_mir
+        .iter()
+        .map(|func| Ok((func.name.clone(), parameter_boundary_modes(func)?)))
+        .collect::<CodegenResult<HashMap<_, _>>>()?;
     if emit_wasm_entry_alias {
         emit_wasm_main_export_wrapper(ctx, &llvm_mod, &fn_symbols)?;
     }
@@ -32523,6 +34126,10 @@ fn build_module_for_target<'ctx>(
         })
         .map(|func| func.name.clone())
         .collect();
+    // One exact cache for every body in this LLVM module.  The cache's
+    // monotonic generated names are deliberately module-local; descriptor
+    // equality is decided only by its structured key.
+    let frame_cleanup_thunks = RefCell::new(FrameCleanupThunkCache::default());
     for sup in &pipeline.supervisor_layouts {
         emit_supervisor_bootstrap_body(
             ctx,
@@ -32570,6 +34177,8 @@ fn build_module_for_target<'ctx>(
             &target_data,
             func,
             &fn_symbols,
+            &representation_loan_params_by_function,
+            &param_boundary_modes_by_function,
             &machine_step_symbols,
             elab,
             checked,
@@ -32581,6 +34190,7 @@ fn build_module_for_target<'ctx>(
             &record_field_names,
             &pipeline.dyn_vtable_registry,
             &const_globals,
+            &frame_cleanup_thunks,
             &pipeline.resource_record_close,
             &pipeline.resource_opaque_close,
             emit_wasm_entry_alias,

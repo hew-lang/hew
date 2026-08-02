@@ -328,7 +328,7 @@ fn main() -> () [conv=default]
     stmt: use BindingId(13) __hew_for_iter_12 site=SiteId(104) ty=VecIter<i64> intent=Read
     _79 = _69.field[0]
     _80 = _69.field[1]
-    _81 = call hew_vec_get_clone(_79, _80) -> bb50
+    _81 = call hew_vec_get_clone(_79, _80) [builtin=VecGet(Clone)] -> bb50
   bb49:
     _88 = move _71
     _89 = move etag88
@@ -670,4 +670,3 @@ fn duration::fmt(duration) -> string [conv=default]
     drop _2 ty=string fn=release(hew_string_drop)
     ret = move _4
     return
-

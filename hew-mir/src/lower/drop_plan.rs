@@ -9,16 +9,16 @@ use super::{
     derive_local_bytes_drop_allowed, derive_local_collection_drop_allowed,
     derive_owned_record_drop_allowed, derive_returned_aggregate_member_bindings,
     derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
-    derive_tuple_composite_drop_allowed, instr_source_places, mangle_layout_key,
-    place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
-    retained_string_terminator_drop_safe, short_name, string_call_borrows,
-    terminator_source_places, user_record_layout_key, vec_iter_record_init_vec_source, BTreeMap,
-    BasicBlock, BindingId, BlockKind, Builder, BuiltinType, CheckedMirFunction,
-    ClosureEnvFieldOwnership, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock, ElabDrop,
-    ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr, IntentKind,
-    LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, RawMirFunction,
-    ResolvedRef, ResolvedTy, ResourceMarker, ScopeId, SuspendKind, Terminator, TraitObjectStorage,
-    ValueClass, ENTRY_BLOCK_ID,
+    derive_tuple_composite_drop_allowed, instr_source_places, place_is_interior_projection,
+    place_refs_local, propagate_whole_value_alias_roots, retained_string_terminator_drop_safe,
+    short_name, string_call_borrows, terminator_source_places, user_record_layout_key,
+    vec_iter_record_init_vec_source, BTreeMap, BasicBlock, BindingId, BlockKind, Builder,
+    BuiltinType, CheckedMirFunction, ClosureEnvFieldOwnership, ClosurePairRhs, Disposition,
+    DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet,
+    HirExpr, HirExprKind, Instr, IntentKind, LambdaCapture, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, ParamCrashCleanupKind, Place, RawMirFunction, ResolvedRef,
+    ResolvedTy, ResourceMarker, ScopeId, SuspendKind, Terminator, TraitObjectStorage, ValueClass,
+    ENTRY_BLOCK_ID,
 };
 
 /// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
@@ -1206,7 +1206,6 @@ pub(super) fn elaborate(
         &builder.record_field_orders,
         &builder.enum_layouts,
     );
-
     // CAP-08 — owned handle-leaf bindings moved into an actor initial-state
     // record consumed by `SpawnActor`. The actor's synthesised `state_drop_fn`
     // is the single free site (Stream→`hew_stream_close` / Sink→`hew_sink_close`),
@@ -1491,11 +1490,20 @@ pub(super) fn elaborate(
         }
     }
 
+    super::for_await_drop_plan::admit_terminal_handoff_drops(
+        checked,
+        builder,
+        dataflow_result,
+        &returned_member_candidates,
+        &mut drop_plans,
+    );
+
     for (exit, plan) in &mut drop_plans {
-        let ExitPath::Goto { block, .. } = exit else {
-            continue;
+        let block = match exit {
+            ExitPath::Goto { block, .. } | ExitPath::Return { block } => *block,
+            _ => continue,
         };
-        let Some(bindings) = builder.iteration_owner_drop_blocks.get(block) else {
+        let Some(bindings) = builder.iteration_owner_drop_blocks.get(&block) else {
             continue;
         };
         for binding in bindings {
@@ -2167,13 +2175,13 @@ pub(super) fn elaborate(
         }
     }
 
-    // #2395 decision 2 — append each suspend's escape-poisoned abandon-edge drops
-    // (today: the `SuspendKind::StreamSend` in-flight value) to its
-    // `ExitPath::Suspend` plan. `drops_for_exit`'s `BindingState` filter cannot
-    // see an escape-poisoned value, so it is stashed at the pump lowering site
-    // (keyed by the suspend block id) and folded in here. Appended AFTER the
-    // generic drops so it releases in the same LIFO order codegen walks; codegen
-    // fires the whole plan on the case-1 destroy edge only.
+    // Append each suspend's escape-poisoned abandon-edge drops (an in-flight
+    // `StreamSend` value or fresh string arguments to a suspending
+    // `CallClosure`) to its `ExitPath::Suspend` plan. `drops_for_exit`'s
+    // `BindingState` filter cannot see these values, so lowering records them by
+    // suspend block id and folds them in here. Appended AFTER the generic drops
+    // so they release in the same LIFO order codegen walks; codegen fires the
+    // whole plan on the case-1 destroy edge only.
     for (exit, plan) in &mut drop_plans {
         if let ExitPath::Suspend { block, .. } = exit {
             if let Some(extra) = builder.suspend_abandon_extra_drops.get(block) {
@@ -2229,6 +2237,7 @@ pub(super) fn exit_block_id(exit: &ExitPath) -> u32 {
         | ExitPath::Suspend { block, .. } => block,
     }
 }
+
 /// Human-readable label for an `ExitPath` discriminator — surfaced in
 /// `DropPlanUndetermined` diagnostics so the rejected exit is named.
 #[must_use]
@@ -2950,7 +2959,7 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
         // assumed-discharged suppress.
         _ => {}
     }
-    let (_, writes) = dataflow::instr_reads_writes(instr);
+    let (_, writes, _) = dataflow::instr_reads_writes(instr);
     for write in writes {
         if let Some(local) = mint_target_local(write) {
             // The defining write of a payload-alias binder is the transfer
@@ -3810,8 +3819,11 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
             if matches!(drop.place, Place::Local(_))
                 && matches!(
                     &drop.ty,
-                    ResolvedTy::Named { name, args, .. }
-                        if name.rsplit('.').next() == Some("VecIter") && args.len() == 1
+                    ResolvedTy::Named {
+                        args,
+                        builtin: Some(hew_types::BuiltinType::VecIter),
+                        ..
+                    } if args.len() == 1
                 ) =>
         {
             DropKind::VecIterCursor { release }
@@ -4118,23 +4130,39 @@ pub(super) fn is_borrowing_call_abi(
 /// one item from the stream and decode it into the consumer's `Option<T>`
 /// slot; the stream handle itself is borrowed for the call and continues to
 /// live in the caller's slot afterwards (the caller's source drop is still
-/// the SOLE free of the stream's runtime context). Their suspending siblings
+/// the SOLE free of the stream's runtime context). The channel layout entries
+/// use the same endpoint-borrow contract: receive / try-receive move only the
+/// decoded payload into the caller's out slot, while send deep-copies only its
+/// payload into the queue. Sender/receiver close remains owned by the caller.
+/// Their suspending siblings
 /// ([`Terminator::SuspendingStreamNext`]) are already exempt because they are
 /// not [`Terminator::Call`]s; listing the blocking / non-suspending entries
 /// here keeps the same borrow-not-consume semantics for the
 /// `let (sink, input) = stream.pipe(N); input.try_recv()` shape that goes
 /// through [`Terminator::Call`].
 ///
-/// Kept narrow: each entry's Rust impl takes `*mut HewStream` and ONLY reads
-/// one queued item without mutating the handle's ownership; adding a callee
-/// that actually consumes the handle here would silently disable the
-/// double-free gate for its caller.
+/// Kept narrow: each entry's Rust impl takes a live endpoint pointer and
+/// leaves the endpoint's ownership in the caller's slot; adding a callee that
+/// actually consumes the handle here would silently disable the double-free
+/// gate for its caller.
 pub(super) fn is_handle_borrowing_call_abi(
     builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
 ) -> bool {
     use hew_types::runtime_call::RuntimeCallFamily as F;
-    matches!(builtin, Some(F::StreamNextLayout | F::StreamTryNextLayout))
+    matches!(
+        builtin,
+        Some(
+            F::StreamNextLayout
+                | F::StreamTryNextLayout
+                | F::ChannelRecvLayout
+                | F::ChannelTryRecvLayout
+                | F::ChannelSendLayout
+        )
+    )
 }
+
+#[cfg(test)]
+mod handle_borrowing_call_abi_tests;
 /// True when `ty` is a NON-OWNING owned-handle leaf: an actor pid
 /// (`Pid`/`LocalPid`/`RemotePid`, `handle_family() == ActorPid`) with NO
 /// `close`/release ABI (`close_method().is_none()`). Its drop frees nothing —
@@ -4299,17 +4327,7 @@ pub(super) fn ty_is_heap_owning_enum_composite(
     // not an opaque/builtin handle). Indirect (heap-boxed) enums route their
     // payload drop through the boxed-storage release path, not this in-place
     // helper, so they are excluded here.
-    let short = hew_types::short_name(name);
-    let layout = if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|el| el.name == *name || hew_types::short_name(&el.name) == short)
-    } else {
-        let mangled = mangle_layout_key(short, args);
-        enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
-    };
+    let layout = crate::model::find_enum_layout(name, args, enum_layouts);
     let Some(layout) = layout else {
         return false;
     };
@@ -4548,6 +4566,47 @@ pub(super) fn drop_kind_for(
         | Place::MachineVariant { .. }
         | Place::EnumTag(_)
         | Place::EnumVariant { .. } => DropKind::Resource,
+    }
+}
+
+/// Materialize the ordinary typed drop ritual used by a crash-only parameter
+/// loan.  The descriptor is deliberately kept out of lexical drop plans:
+/// success retires the loan without releasing caller-owned storage, while the
+/// dynamic crash registry may invoke this ritual if the callee is abandoned.
+///
+/// Keeping construction here makes the drop-plan dispatcher the only
+/// authority that maps the typed loan kind to an [`ElabDrop`]; codegen never
+/// infers the ritual from a raw parameter type or runtime symbol name.
+///
+/// # Errors
+///
+/// Returns an error when the typed cleanup kind is incompatible with the
+/// parameter's resolved storage shape.
+pub fn crash_only_param_loan_drop(
+    place: Place,
+    ty: &ResolvedTy,
+    cleanup: ParamCrashCleanupKind,
+) -> Result<ElabDrop, String> {
+    match cleanup {
+        ParamCrashCleanupKind::Bytes if matches!(ty, ResolvedTy::Bytes) => {
+            let descriptor = ElabDrop {
+                place,
+                ty: ty.clone(),
+                drop_fn: None,
+                kind: drop_kind_for(place, ty, None),
+                guard: None,
+            };
+            debug_assert_eq!(
+                descriptor.kind,
+                DropKind::CowHeap {
+                    release: crate::ownership::CowHeapRelease::Bytes,
+                }
+            );
+            Ok(descriptor)
+        }
+        ParamCrashCleanupKind::Bytes => Err(format!(
+            "bytes crash-cleanup loan at {place:?} carried incompatible type `{ty}`"
+        )),
     }
 }
 /// RAII-1 opaque-resource close registry: `(opaque_type_name, "<Type>::<close>")`
@@ -4901,10 +4960,10 @@ pub(super) fn dyn_rebind_source_binding(value: &HirExpr) -> Option<BindingId> {
 /// pipeline aborts at the MIR boundary.
 ///
 /// Recognised shapes:
-/// - `HirExprKind::CoerceToDynTrait` → `FrameOwned`. The producer wraps
-///   a concrete value into a fat pointer whose `data` word aliases the
-///   concrete's frame slot; the coerced fat pointer's drop is the
-///   slot-0 `drop_in_place` only.
+/// - `HirExprKind::CoerceToDynTrait` → `HeapBoxed`. Codegen transfers the
+///   concrete value into a `hew_dyn_box_alloc` buffer, so the fat pointer
+///   remains valid across helper returns, suspension, and crash snapshots; its
+///   drop runs slot 0 and releases that buffer.
 /// - `HirExprKind::Call` / `CallTraitMethodStatic` / `CallDynMethod`
 ///   whose return type is `dyn Trait` → `HeapBoxed`. Returning a fat
 ///   pointer across a call boundary is only well-defined via the
@@ -4924,8 +4983,8 @@ pub(super) fn classify_dyn_trait_storage(
     dyn_trait_storage: &HashMap<BindingId, TraitObjectStorage>,
 ) -> Result<TraitObjectStorage, String> {
     match &value.kind {
-        HirExprKind::CoerceToDynTrait { .. } => Ok(TraitObjectStorage::FrameOwned),
-        HirExprKind::Call { .. }
+        HirExprKind::CoerceToDynTrait { .. }
+        | HirExprKind::Call { .. }
         | HirExprKind::CallTraitMethodStatic { .. }
         | HirExprKind::ResolvedImplCall { .. }
         | HirExprKind::CallDynMethod { .. } => Ok(TraitObjectStorage::HeapBoxed),
@@ -5414,11 +5473,7 @@ fn unguarded_bind_sites_pairwise_exclusive(
 /// into owned child nodes), not an inline composite drop.
 #[must_use]
 fn name_is_indirect_enum(name: &str, enum_layouts: &[crate::model::EnumLayout]) -> bool {
-    let short = short_name(name);
-    enum_layouts
-        .iter()
-        .find(|el| el.name == name || short_name(&el.name) == short)
-        .is_some_and(|el| el.is_indirect)
+    crate::model::find_enum_layout(name, &[], enum_layouts).is_some_and(|layout| layout.is_indirect)
 }
 /// True when `ty` is an `indirect enum` type.
 #[must_use]
@@ -6414,15 +6469,19 @@ pub(super) fn ty_is_stream_handle(ty: &ResolvedTy) -> bool {
 /// field/tuple projection (`for v in x.v`), or an rvalue (`for v in make()`).
 pub(super) fn vec_iter_init_vec_source_expr(value: &HirExpr) -> Option<&HirExpr> {
     let HirExprKind::StructInit {
-        name,
-        fields,
-        base: None,
-        ..
+        fields, base: None, ..
     } = &value.kind
     else {
         return None;
     };
-    if name != "VecIter" {
+    if !matches!(
+        &value.ty,
+        ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::VecIter),
+            ..
+        } if args.len() == 1
+    ) {
         return None;
     }
     fields
@@ -8414,6 +8473,22 @@ mod drop_admission_type_shape_pins {
              population in the allowlist above deliberately"
         );
     }
+
+    #[test]
+    fn seed_fact_comparison_inventory_rejects_a_raw_counterfactual() {
+        let squeezed: String = production_source()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let baseline = squeezed.matches("!=ValueClass::BitCopy").count();
+        let counterfactual = format!("{squeezed}ifraw!=ValueClass::BitCopy{{}}");
+        assert_eq!(baseline, 3, "the production inventory changed unexpectedly");
+        assert_ne!(
+            counterfactual.matches("!=ValueClass::BitCopy").count(),
+            baseline,
+            "a newly introduced raw seed comparison must make the inventory red"
+        );
+    }
 }
 #[cfg(test)]
 mod twin_gate_classifier {
@@ -8571,6 +8646,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![place_arg],
             },
@@ -8610,6 +8686,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![literal_arg],
             },
@@ -8648,6 +8725,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![literal_arg],
             },
@@ -8682,6 +8760,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![],
             },

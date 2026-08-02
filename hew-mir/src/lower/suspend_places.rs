@@ -3,8 +3,8 @@ use super::*;
 #[cfg(not(test))]
 use super::{
     base_local, is_borrowing_call_abi, is_handle_borrowing_call_abi, ty_is_nonowning_handle_leaf,
-    ty_is_owned_handle_leaf, ClosureEnvFieldOwnership, HirExpr, HirExprKind, HirStmt, HirStmtKind,
-    Instr, Place, ResolvedTy, SelectArm, SelectArmKind, SuspendKind, Terminator,
+    ty_is_owned_handle_leaf, BuiltinType, ClosureEnvFieldOwnership, HirExpr, HirExprKind, HirStmt,
+    HirStmtKind, Instr, Place, ResolvedTy, SelectArm, SelectArmKind, SuspendKind, Terminator,
 };
 
 /// The *source* (read) operands of an instruction — every `Place` whose
@@ -859,7 +859,11 @@ pub(super) fn instr_escape_places(instr: &Instr) -> Vec<Place> {
 /// blocking-call path, whose codegen intercept fails closed on its own.
 pub(super) fn option_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
     match ty {
-        ResolvedTy::Named { name, args, .. } if name == "Option" && args.len() == 1 => args.first(),
+        ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::Option),
+            ..
+        } if args.len() == 1 => args.first(),
         _ => None,
     }
 }
@@ -1047,6 +1051,19 @@ mod f1_suspending_escape_poison {
 
     fn sink_string_ty() -> ResolvedTy {
         ResolvedTy::named_builtin("Sink", BuiltinType::Sink, vec![ResolvedTy::String])
+    }
+
+    #[test]
+    fn option_payload_uses_builtin_identity_not_presentation() {
+        let renamed = ResolvedTy::named_builtin(
+            "presentation.RenamedOption",
+            BuiltinType::Option,
+            vec![ResolvedTy::String],
+        );
+        assert_eq!(option_payload_ty(&renamed), Some(&ResolvedTy::String));
+
+        let shadow = ResolvedTy::named_user("Option", vec![ResolvedTy::String]);
+        assert_eq!(option_payload_ty(&shadow), None);
     }
 
     // A collapsed suspension carrier is a bare `Suspend` whose payload lives in

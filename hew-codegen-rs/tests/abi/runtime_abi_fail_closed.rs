@@ -22,7 +22,7 @@ use hew_mir::{
     BasicBlock, BlockKind, CheckedMirFunction, DropPlan, ElabBlock, ElaboratedMirFunction,
     ExitPath, Instr, IrPipeline, Place, RawMirFunction, Terminator,
 };
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 /// Build a minimal `IrPipeline` containing one function with a
 /// single `Instr::CallRuntimeAbi` in its instruction stream. The
@@ -122,17 +122,16 @@ fn pipeline_with_call_runtime_abi_parts(
 }
 
 fn local_pid_ty() -> ResolvedTy {
-    ResolvedTy::Named {
-        name: "LocalPid".to_string(),
-        args: vec![ResolvedTy::Named {
+    ResolvedTy::named_builtin(
+        "renamed.LocalPidPresentation",
+        BuiltinType::LocalPid,
+        vec![ResolvedTy::Named {
             name: "Probe".to_string(),
             args: vec![],
             builtin: None,
             is_opaque: false,
         }],
-        builtin: None,
-        is_opaque: false,
-    }
+    )
 }
 
 /// A wired symbol (`hew_duplex_send`) called with the wrong arg count
@@ -199,12 +198,11 @@ fn call_runtime_abi_succeeds_for_lambda_actor_release() {
         "hew_lambda_actor_release",
         vec![Place::LambdaActorHandle(0)],
         None,
-        vec![ResolvedTy::Named {
-            name: "Duplex".to_string(),
-            args: vec![ResolvedTy::Unit, ResolvedTy::Unit],
-            builtin: None,
-            is_opaque: false,
-        }],
+        vec![ResolvedTy::named_builtin(
+            "renamed.LambdaPidPresentation",
+            BuiltinType::LambdaPid,
+            vec![ResolvedTy::Unit, ResolvedTy::Unit],
+        )],
     );
     let tmp = std::env::temp_dir().join("hew-mir-4-5c-ok-lambda-release");
     let options = EmitOptions {

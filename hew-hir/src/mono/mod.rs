@@ -48,7 +48,7 @@ pub mod machine;
 pub mod mangle;
 
 pub use function::{Function, FunctionMonoKey};
-pub use machine::{Machine, MachineMonoEntry, MachineMonoKey};
+pub use machine::{machine_layout_key, Machine, MachineMonoEntry, MachineMonoKey};
 pub use mangle::{mangle_instantiation, sanitize_for_symbol, ConstValue, SymbolClass};
 
 /// Type alias for the parametric actor-mono key shape.

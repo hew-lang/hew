@@ -493,11 +493,9 @@ def test_the_real_makefile_reaches_check_libhew_fresh_through_its_consumers() ->
 
 # ── Finding 6: a build-artefact precondition behind a variable ────────────────
 #
-# `make test-rust` is proved reached by CONTAINMENT: CI runs every command the
-# recipe runs. When the recipe grew `test -f $(LIBHEW)` — an assertion that the
-# archive make just brought up to date is really on disk — the proof collapsed,
-# because the only `test -f` the checker classified was one on a literal
-# `target/…` path, and the output directory had moved behind a variable.
+# A target proved through containment may assert that an artefact declared in
+# its prerequisites exists. When the path moved behind a variable, an older
+# classifier lost that relationship and treated the assertion as opaque.
 #
 # The licence is the prerequisite, not the path. Everything else about
 # `test -f` stays unclassified.
@@ -532,42 +530,34 @@ def test_a_real_command_is_not_smuggled_in_as_a_precondition() -> None:
     )
 
 
-def test_the_real_test_rust_recipe_is_proved_from_its_prerequisites() -> None:
+def test_real_ci_reaches_the_complete_test_prerequisite_graph() -> None:
     phony, prereqs, recipes = gate.parse_makefile(gate.MAKEFILE.read_text())
     known = set(prereqs) | phony
-    reached = {"check-libhew-fresh", "runtime", "wasm-runtime"}
-    assert gate.prove_contained(
+    workflows = gate.load_workflows()
+    commands = "\n".join(command for _, command in gate.ci_step_commands(workflows))
+    roots = gate.make_targets_in(commands, known)
+    reached = gate.close_over_makefile(roots, prereqs, recipes, known)
+    required = {
+        "test",
         "test-rust",
-        prereqs,
-        recipes,
-        reached,
-        known,
-        [],
-        ["cargo nextest run --workspace --profile ci"],
-        ["hew-cabi"],
-        set(),
-    ), (
-        "CI runs the workspace suite test-rust runs; the rest of the recipe is "
-        "a nextest probe and an archive precondition"
+        "check-libhew-fresh",
+        "libhew-debug",
+        "runtime",
+        "wasm-runtime",
+    }
+    assert required <= reached, (
+        "CI must execute the authoritative Make test edge and its native, WASI, "
+        f"and libhew prerequisites; missing {sorted(required - reached)}"
     )
 
 
 # ── Counterfactual: a parity marker is not an edge ────────────────────────────
 #
-# ci.yml annotates its workspace test step `run: >-  # parity-cmd: make test`,
-# and it is tempting to read that as wiring: check-preflight-ci-parity.sh knows
-# the convention, so the marker looks checked. It is not checked in the sense
-# reachability needs. That script asserts the NAMED command appears in the
-# dispatcher's CI_REQUIRED_CHECKS array and in its fallback command set; nothing
-# anywhere compares the workflow's `run:` body against what `make test` would
-# actually run. Honouring the marker would make a YAML comment plus a bash
-# array entry sufficient to declare a target reached — a mention promoted to an
-# edge, one indirection deeper than the release-gate.yml TODO that made this
-# checker necessary.
-#
-# `make test` is reached here on a proof instead: every command in its recipe
-# is a command CI demonstrably runs. That proof reads the real commands on both
-# sides, so it cannot be satisfied by writing a comment.
+# A `parity-cmd` annotation is metadata for the separate preflight-parity
+# checker, not an executable CI edge. Honouring the marker here would make a
+# YAML comment plus a dispatcher entry sufficient to declare a target reached.
+# The real workflow now executes `make test`; keep this counterfactual so a
+# future inline replacement cannot recover reachability through a comment.
 
 
 def test_a_parity_cmd_marker_is_not_an_edge() -> None:
@@ -1018,7 +1008,7 @@ _TESTS = [
     test_a_precondition_on_a_declared_prerequisite_is_scaffolding,
     test_a_precondition_on_a_path_the_target_never_declared_is_not,
     test_a_real_command_is_not_smuggled_in_as_a_precondition,
-    test_the_real_test_rust_recipe_is_proved_from_its_prerequisites,
+    test_real_ci_reaches_the_complete_test_prerequisite_graph,
     test_a_parity_cmd_marker_is_not_an_edge,
     test_the_gate_has_no_marker_convention_at_all,
     test_a_new_unwired_generic_oracle_or_e2e_is_red,

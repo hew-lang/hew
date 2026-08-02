@@ -1253,9 +1253,9 @@ fn stream$from_file -> Result<Stream<string>, string>
     return[bb5] ->
       (none)
     goto[bb6->bb5] ->
-      (none)
+      drop _2 ty=Stream<string> kind=resource fn=rt(StreamClose)
     cancel[bb6] ->
-      (none)
+      drop _2 ty=Stream<string> kind=resource fn=rt(StreamClose)
 
 fn stream$try_from_file -> Result<Stream<string>, fs.IoError>
   statements:
@@ -1293,9 +1293,9 @@ fn stream$try_from_file -> Result<Stream<string>, fs.IoError>
     call[bb8 fs$io_error_from_kind -> bb9] ->
       (none)
     goto[bb9->bb5] ->
-      (none)
+      drop _2 ty=Stream<string> kind=resource fn=rt(StreamClose)
     cancel[bb9] ->
-      (none)
+      drop _2 ty=Stream<string> kind=resource fn=rt(StreamClose)
 
 fn stream$to_file -> Result<Sink<string>, string>
   statements:
@@ -1322,9 +1322,9 @@ fn stream$to_file -> Result<Sink<string>, string>
     return[bb5] ->
       (none)
     goto[bb6->bb5] ->
-      (none)
+      drop _2 ty=Sink<string> kind=resource fn=rt(SinkClose)
     cancel[bb6] ->
-      (none)
+      drop _2 ty=Sink<string> kind=resource fn=rt(SinkClose)
 
 fn stream$try_to_file -> Result<Sink<string>, fs.IoError>
   statements:
@@ -1362,9 +1362,9 @@ fn stream$try_to_file -> Result<Sink<string>, fs.IoError>
     call[bb8 fs$io_error_from_kind -> bb9] ->
       (none)
     goto[bb9->bb5] ->
-      (none)
+      drop _2 ty=Sink<string> kind=resource fn=rt(SinkClose)
     cancel[bb9] ->
-      (none)
+      drop _2 ty=Sink<string> kind=resource fn=rt(SinkClose)
 
 fn stream$forward -> ()
   statements:

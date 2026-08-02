@@ -21,7 +21,7 @@
 //! drop-allowset-from-value-flow (P0).
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, Instr, IrPipeline, Terminator};
+use hew_mir::{lower_hir_module, Instr, IrPipeline, SuspendKind, Terminator};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::{Checker, ResolvedTy};
 
@@ -87,6 +87,378 @@ fn assert_no_nyi(pl: &IrPipeline) {
         .filter(|d| matches!(d.kind, hew_mir::MirDiagnosticKind::NotYetImplemented { .. }))
         .collect();
     assert!(nyi.is_empty(), "unexpected NYI diagnostics: {nyi:#?}");
+}
+
+/// A stream can be created before an unrelated await and transferred into its
+/// `for await` cursor only after that suspension resumes.  Destroying the
+/// coroutine while parked must close the original stream; after the transfer,
+/// only the cursor may own that close.  This pins both sides of the hand-off so
+/// a global LIFO re-add cannot hide a double-close behind the leak fix.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression pins both sides of one ownership hand-off in one readable fixture"
+)]
+fn forawait_stream_source_is_closed_on_pretransfer_suspend_only() {
+    let pl = pipeline_with_tc(
+        r#"
+        actor Maker {
+            receive gen fn items() -> string {
+                yield "one";
+            }
+
+            receive fn tick() -> i64 {
+                1
+            }
+        }
+
+        actor Drain {
+            receive fn run(m: LocalPid<Maker>) {
+                let input = m.items();
+                let _ready = await m.tick();
+                for await item in input {
+                    println(item);
+                }
+            }
+        }
+        "#,
+    );
+    assert_no_nyi(&pl);
+    assert!(
+        !pl.diagnostics.iter().any(|diag| matches!(
+            diag.kind,
+            hew_mir::MirDiagnosticKind::ObligationUnderReleased { ref function, .. }
+                if function == "Drain__recv__run"
+        )),
+        "pre-transfer stream ownership must balance on every suspend-abandon edge: {:#?}",
+        pl.diagnostics
+    );
+    assert!(
+        !pl.diagnostics.iter().any(|diag| matches!(
+            diag.kind,
+            hew_mir::MirDiagnosticKind::ObligationOverReleased { ref function, .. }
+                if function == "Drain__recv__run"
+        )),
+        "the source/cursor hand-off must not add a second stream close: {:#?}",
+        pl.diagnostics
+    );
+
+    let raw = pl
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Drain__recv__run")
+        .expect("drain handler must lower");
+    let pretransfer_block = raw
+        .blocks
+        .iter()
+        .find(|block| {
+            matches!(
+                raw.suspend_kinds.get(&block.id),
+                Some(SuspendKind::Ask { .. })
+            )
+        })
+        .map(|block| block.id)
+        .expect("await tick must suspend before the for-await transfer");
+    let posttransfer_block = raw
+        .blocks
+        .iter()
+        .find(|block| {
+            matches!(
+                raw.suspend_kinds.get(&block.id),
+                Some(SuspendKind::StreamNext { .. })
+            )
+        })
+        .map(|block| block.id)
+        .expect("for-await must suspend on stream-next after the transfer");
+
+    let elaborated = pl
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Drain__recv__run")
+        .expect("drain handler must elaborate");
+    let stream_close_places = |block| {
+        elaborated
+            .drop_plans
+            .iter()
+            .find_map(|(exit, plan)| match exit {
+                hew_mir::ExitPath::Suspend { block: actual, .. } if *actual == block => Some(
+                    plan.drops
+                        .iter()
+                        .filter(|drop| {
+                            matches!(
+                                drop.drop_fn,
+                                Some(hew_mir::DropFnSpec::Runtime(
+                                    hew_types::runtime_call::RuntimeDropDescriptor::StreamClose
+                                ))
+                            )
+                        })
+                        .map(|drop| drop.place)
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .expect("suspend-abandon plan must have a drop plan")
+    };
+    let pretransfer_closes = stream_close_places(pretransfer_block);
+    assert_eq!(
+        pretransfer_closes.len(),
+        1,
+        "pre-transfer abandonment closes exactly the original source"
+    );
+    let source_place = pretransfer_closes[0];
+    let posttransfer_closes = stream_close_places(posttransfer_block);
+    assert_eq!(
+        posttransfer_closes.len(),
+        1,
+        "post-transfer abandonment closes exactly the cursor"
+    );
+    assert!(
+        !posttransfer_closes.contains(&source_place),
+        "after transfer the consumed source local must not receive a second close"
+    );
+}
+
+/// A guard can return before the later `for await` move. That terminal plan
+/// must close the original source once; normal post-handoff cleanup remains
+/// owned by the cursor.
+#[test]
+fn forawait_stream_source_is_closed_on_pretransfer_return() {
+    let pl = pipeline_with_tc(
+        r#"
+        actor Maker {
+            receive gen fn items() -> string {
+                yield "one";
+            }
+
+            receive fn tick() -> i64 {
+                1
+            }
+        }
+
+        actor Drain {
+            receive fn run(m: LocalPid<Maker>, stop: bool) {
+                let input = m.items();
+                if stop {
+                    return;
+                }
+                let _ready = await m.tick();
+                for await item in input {
+                    println(item);
+                }
+            }
+        }
+        "#,
+    );
+    assert_no_nyi(&pl);
+    assert!(
+        !pl.diagnostics.iter().any(|diag| matches!(
+            diag.kind,
+            hew_mir::MirDiagnosticKind::ObligationUnderReleased { ref function, .. }
+                | hew_mir::MirDiagnosticKind::ObligationOverReleased { ref function, .. }
+                if function == "Drain__recv__run"
+        )),
+        "pre-transfer return must balance the original stream exactly once: {:#?}",
+        pl.diagnostics
+    );
+
+    let raw = pl
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Drain__recv__run")
+        .expect("drain handler must lower");
+    let ask_block = raw
+        .blocks
+        .iter()
+        .find(|block| {
+            matches!(
+                raw.suspend_kinds.get(&block.id),
+                Some(SuspendKind::Ask { .. })
+            )
+        })
+        .map(|block| block.id)
+        .expect("the non-returning path must reach the setup await");
+    let elaborated = pl
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Drain__recv__run")
+        .expect("drain handler must elaborate");
+    let source_place = elaborated
+        .drop_plans
+        .iter()
+        .find_map(|(exit, plan)| match exit {
+            hew_mir::ExitPath::Suspend { block, .. } if *block == ask_block => plan
+                .drops
+                .iter()
+                .find(|drop| {
+                    matches!(
+                        drop.drop_fn,
+                        Some(hew_mir::DropFnSpec::Runtime(
+                            hew_types::runtime_call::RuntimeDropDescriptor::StreamClose
+                        ))
+                    )
+                })
+                .map(|drop| drop.place),
+            _ => None,
+        })
+        .expect("the setup await must close the pre-transfer source on abandonment");
+    let early_return_closes: Vec<_> = elaborated
+        .drop_plans
+        .iter()
+        .filter_map(|(exit, plan)| matches!(exit, hew_mir::ExitPath::Return { .. }).then_some(plan))
+        .flat_map(|plan| {
+            plan.drops.iter().filter(move |drop| {
+                drop.place == source_place
+                    && matches!(
+                        drop.drop_fn,
+                        Some(hew_mir::DropFnSpec::Runtime(
+                            hew_types::runtime_call::RuntimeDropDescriptor::StreamClose
+                        ))
+                    )
+            })
+        })
+        .collect();
+    assert_eq!(
+        early_return_closes.len(),
+        1,
+        "the sole pre-transfer return plan closes the original source exactly once"
+    );
+}
+
+/// Multiple hand-offs can be at different stages on the same abandonment
+/// edge. Source/cursor admission is proved independently, then closes still
+/// follow the shared declaration-LIFO order.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression keeps its multi-stage ownership and LIFO assertions together"
+)]
+fn forawait_stream_handoff_mixed_owners_preserve_lifo_order() {
+    let pl = pipeline_with_tc(
+        r#"
+        actor Maker {
+            receive gen fn items() -> string {
+                yield "one";
+            }
+
+            receive fn tick() -> i64 {
+                1
+            }
+        }
+
+        actor Drain {
+            receive fn run(m: LocalPid<Maker>) {
+                let old = m.items();
+                let a = m.items();
+                let b = m.items();
+                let newest = m.items();
+                let _ready = await m.tick();
+                for await outer in a {
+                    for await inner in b {
+                        println(inner);
+                        break;
+                    }
+                    println(outer);
+                    break;
+                }
+            }
+        }
+        "#,
+    );
+    assert_no_nyi(&pl);
+    assert!(
+        !pl.diagnostics.iter().any(|diag| matches!(
+            diag.kind,
+            hew_mir::MirDiagnosticKind::ObligationUnderReleased { ref function, .. }
+                | hew_mir::MirDiagnosticKind::ObligationOverReleased { ref function, .. }
+                if function == "Drain__recv__run"
+        )),
+        "mixed hand-off ownership must remain exactly-once: {:#?}",
+        pl.diagnostics
+    );
+
+    let raw = pl
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "Drain__recv__run")
+        .expect("drain handler must lower");
+    let setup_suspend = raw
+        .blocks
+        .iter()
+        .find(|block| {
+            matches!(
+                raw.suspend_kinds.get(&block.id),
+                Some(SuspendKind::Ask { .. })
+            )
+        })
+        .map(|block| block.id)
+        .expect("setup await must suspend before either hand-off");
+    let stream_suspends: Vec<_> = raw
+        .blocks
+        .iter()
+        .filter_map(|block| match raw.suspend_kinds.get(&block.id) {
+            Some(SuspendKind::StreamNext { stream, .. }) => Some((block.id, *stream)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        stream_suspends.len() >= 2,
+        "nested for-await must lower two stream-next suspensions"
+    );
+    let (outer_block, outer_cursor) = stream_suspends[0];
+    let (inner_block, inner_cursor) = stream_suspends[1];
+
+    let elaborated = pl
+        .elaborated_mir
+        .iter()
+        .find(|function| function.name == "Drain__recv__run")
+        .expect("drain handler must elaborate");
+    let closes_for_suspend = |block| {
+        elaborated
+            .drop_plans
+            .iter()
+            .find_map(|(exit, plan)| match exit {
+                hew_mir::ExitPath::Suspend { block: actual, .. } if *actual == block => Some(
+                    plan.drops
+                        .iter()
+                        .filter(|drop| {
+                            matches!(
+                                drop.drop_fn,
+                                Some(hew_mir::DropFnSpec::Runtime(
+                                    hew_types::runtime_call::RuntimeDropDescriptor::StreamClose
+                                ))
+                            )
+                        })
+                        .map(|drop| drop.place)
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .expect("suspend-abandon plan must exist")
+    };
+    let setup_closes = closes_for_suspend(setup_suspend);
+    assert_eq!(
+        setup_closes.len(),
+        4,
+        "setup suspension owns both hand-off sources and ordinary neighbors"
+    );
+    let newest_ordinary = setup_closes[0];
+    let source_b = setup_closes[1];
+    let source_a = setup_closes[2];
+    let old_ordinary = setup_closes[3];
+    assert_ne!(source_a, source_b, "the two source handles are distinct");
+
+    let outer_closes = closes_for_suspend(outer_block);
+    assert_eq!(
+        outer_closes,
+        vec![outer_cursor, newest_ordinary, source_b, old_ordinary],
+        "cursor and deferred source insert among newer/older ordinary owners in declaration-LIFO order"
+    );
+    let inner_closes = closes_for_suspend(inner_block);
+    assert_eq!(
+        inner_closes,
+        vec![inner_cursor, outer_cursor, newest_ordinary, old_ordinary],
+        "inner next preserves nested cursor and ordinary-owner declaration-LIFO order"
+    );
 }
 
 /// An early `return` on one body path must not suppress the fall-through

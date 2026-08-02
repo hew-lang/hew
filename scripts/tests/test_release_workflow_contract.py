@@ -2,7 +2,10 @@
 
 import os
 import re
+import shutil
+import stat
 import subprocess
+import tarfile
 import tempfile
 import textwrap
 from pathlib import Path
@@ -11,20 +14,35 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HEW_SHA = "0123456789abcdef0123456789abcdef01234567"
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+NPM_PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-npm-packages.yml"
 RELEASE_GATE = ROOT / ".github" / "workflows" / "release-gate.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+COVERAGE_NIGHTLY_WORKFLOW = ROOT / ".github" / "workflows" / "coverage-nightly.yml"
 RELEASE_NOTES = ROOT / "docs" / "releases" / "v0.6.0-rc1.md"
 RUNBOOK = ROOT / "docs" / "release-runbook.md"
+CHANGELOG = ROOT / "CHANGELOG.md"
 UNIX_INSTALLER = ROOT / "installers" / "install.sh"
 PRE_RELEASE_VALIDATOR = ROOT / "scripts" / "pre-release-validate.sh"
 RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.sh"
 WINDOWS_RELEASE_LINK_PROBE = ROOT / "scripts" / "test-release-lib-link.ps1"
+WINDOWS_RELEASE_BUILD = ROOT / "scripts" / "windows-release-build.ps1"
 SANITIZER_GATE = ROOT / "scripts" / "check-sanitizer-gate.sh"
 MAKEFILE = ROOT / "Makefile"
+RELEASE_BINARY_SMOKE = ROOT / "scripts" / "test-release-binary.sh"
+PACKAGE_BUILDER = ROOT / "installers" / "build-packages.sh"
+WINDOWS_LLVM_PREBUILD = ROOT / ".github" / "workflows" / "prebuild-llvm.yml"
+SETUP_LLVM_ACTION = ROOT / ".github" / "actions" / "setup-llvm" / "action.yml"
+WINDOWS_BUILD_GUIDE = ROOT / "docs" / "cross-platform-build-guide.md"
+WINDOWS_LLVM_TOOLCHAIN_TAG = "toolchain/llvm-22.1.0-windows-msvc-v4"
+WINDOWS_LLVM_TOOLCHAIN_ASSET = "hew-llvm-22.1.0-windows-msvc-v4.tar.gz"
 
 
 def workflow() -> str:
     return WORKFLOW.read_text()
+
+
+def npm_publish_workflow() -> str:
+    return NPM_PUBLISH_WORKFLOW.read_text()
 
 
 def playground_job(text: str | None = None) -> str:
@@ -238,6 +256,44 @@ def test_rc_tag_normalization_and_exact_release_body() -> None:
     assert 'VERSION="${RELEASE_TAG#v}"' in playground_job()
     assert "body_path: docs/releases/${{ env.RELEASE_TAG }}.md" in text
     assert RELEASE_NOTES.exists()
+
+
+def test_npm_publication_is_pinned_to_a_version_matching_release_tag() -> None:
+    text = npm_publish_workflow()
+    assert "      release_tag:\n" in text
+    assert "Immutable release tag to publish" in text
+    assert "        required: true\n" in text
+    assert "        type: string\n" in text
+    assert "  group: publish-npm-packages-${{ inputs.release_tag }}" in text
+    assert "          ref: ${{ inputs.release_tag }}" in text
+    assert "          fetch-depth: 0" in text
+    assert (
+        "      - name: Verify immutable release identity and package versions\n" in text
+    )
+    assert "RELEASE_TAG: ${{ inputs.release_tag }}" in text
+    assert "^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$" in text
+    assert 'git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"' in text
+    assert 'git rev-parse "refs/tags/${RELEASE_TAG}^{commit}"' in text
+    assert 'if [ "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]; then' in text
+    assert 'EXPECTED_VERSION="${RELEASE_TAG#v}"' in text
+    assert (
+        "Cargo.toml version ${WORKSPACE_VERSION} does not match ${RELEASE_TAG}" in text
+    )
+    assert (
+        "hew-sandbox-vm version ${SANDBOX_VM_VERSION} does not match ${RELEASE_TAG}"
+        in text
+    )
+    assert 'if [[ "${EXPECTED_VERSION}" == *-* ]]; then' in text
+    assert "NPM_DIST_TAG=next" in text
+    assert "NPM_DIST_TAG=latest" in text
+    assert 'echo "NPM_DIST_TAG=${NPM_DIST_TAG}" >> "${GITHUB_ENV}"' in text
+    publish_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith('npm publish "${PKG_DIR}"')
+    ]
+    assert len(publish_lines) == 3
+    assert all('--tag "${NPM_DIST_TAG}"' in line for line in publish_lines)
 
 
 def test_playground_dispatch_is_purpose_scoped_and_fail_closed() -> None:
@@ -502,16 +558,17 @@ def test_release_checksums_require_every_platform_asset() -> None:
 
 def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     validator = PRE_RELEASE_VALIDATOR.read_text()
+    windows_build = WINDOWS_RELEASE_BUILD.read_text()
     probe = RELEASE_LINK_PROBE.read_text()
     windows_probe = WINDOWS_RELEASE_LINK_PROBE.read_text()
     makefile = MAKEFILE.read_text()
 
     assert "verify_libhew_external_link" in validator
-    assert (
-        "scripts/test-release-lib-link.sh --hew target/release/hew --archive target/release-lib/libhew.a"
-        in validator
-    )
-    assert "hew.exe build .\\\\_smoke.hew -o .\\\\_smoke.exe" in validator
+    assert "scripts/cargo-output-dir.py --profile release" in validator
+    assert "scripts/cargo-output-dir.py --profile release-lib" in validator
+    assert r"--hew \"\$release_dir/hew\"" in validator
+    assert r"--archive \"\$release_lib_dir/libhew.a\"" in validator
+    assert "& $Hew build $SmokeSource -o $SmokeOutput" in windows_build
     assert "ar t target/release-lib" not in validator
     assert "target/release/hew _smoke.hew -o" not in validator
     assert '"$WORK_DIR/release/bin/hew" build' in probe
@@ -522,7 +579,7 @@ def test_prerelease_validator_proves_external_staticlib_linking() -> None:
     assert "Copy-Item -LiteralPath $Archive" in windows_probe
     assert "& $StagedHew build" in windows_probe
     assert "test-release-lib-link:" in makefile
-    assert "--hew $(RELEASE_HEW) --archive $(RELEASE_LIBHEW)" in makefile
+    assert '--hew "$(RELEASE_HEW)" --archive "$(RELEASE_LIBHEW)"' in makefile
     assert "scripts/test-release-lib-link.ps1" in makefile
     assert "RELEASE_HEW := $(RELEASE_DIR)/hew.exe" in makefile
     assert "RELEASE_LIBHEW := $(RELEASE_LIB_DIR)/hew.lib" in makefile
@@ -589,11 +646,46 @@ def test_sanitizer_gate_is_behavioral_and_release_scoped() -> None:
         assert ledger.count(field) >= 2
 
 
-def test_release_notes_and_runbook_keep_candidate_truthful() -> None:
+def test_release_record_is_durable_and_tag_ready() -> None:
+    changelog = CHANGELOG.read_text()
     notes = RELEASE_NOTES.read_text()
     runbook = RUNBOOK.read_text()
-    assert "v0.6.0-rc1" in notes
-    assert "not a final release" in notes
+    notes_words = " ".join(notes.split())
+    runbook_words = " ".join(runbook.split())
+
+    current_changelog = changelog.split("### Changed", maxsplit=1)[0]
+    assert "## [0.6.0-rc1] - 2026-07-29" in current_changelog
+    for provisional in (
+        "unreleased",
+        "tag is not cut",
+        "will be finalized when",
+        "in preparation",
+    ):
+        assert provisional not in current_changelog.lower()
+
+    assert "v0.6.0-rc1" in notes_words
+    assert "first release candidate for v0.6.0" in notes_words
+    assert "not the final v0.6.0 release" in notes_words
+    assert "Publication for this first RC is deliberately staged" in notes_words
+    assert (
+        "The signed tag publishes the platform assets and checksums first"
+        in notes_words
+    )
+    assert "npm publication is not inferred from the tag" in notes_words
+    for pre_tag_only in (
+        "tag and final changelog date remain intentionally unset",
+        "This candidate does not claim",
+    ):
+        assert pre_tag_only not in notes_words
+
+    assert (
+        "CHANGELOG.md has either a populated `[Unreleased]` section or the dated "
+        "`[X.Y.Z]` section for the intended release"
+    ) in runbook_words
+    assert 'git tag -s v0.6.0-rc1 -m "Hew v0.6.0-rc1"' in runbook
+    assert "git push origin v0.6.0-rc1" in runbook
+    assert "git tag v0.4.0" not in runbook
+    assert "git push origin v0.4.0" not in runbook
     assert "every release bar and the final-candidate checklist are green" in runbook
     assert "Manually dispatch" in runbook
     assert "both independent publication arms" in runbook
@@ -608,8 +700,590 @@ def test_contract_oracle_runs_in_required_ci() -> None:
     assert "make test-release-workflow-contract" in ci
 
 
+def workflow_job(text: str, name: str) -> str:
+    """Return one top-level GitHub Actions job without parsing unrelated YAML."""
+    start = text.index(f"  {name}:\n")
+    next_job = re.search(r"^  [a-z][a-z0-9-]*:\n", text[start + 1 :], re.MULTILINE)
+    end = start + 1 + next_job.start() if next_job else len(text)
+    return text[start:end]
+
+
+def assert_windows_job_initialises_msvc_before_native_linking(job: str) -> None:
+    """Require precisely one MSVC environment import before LLVM/Cargo use."""
+    setup_msvc = "uses: ./.github/actions/setup-msvc"
+    setup_llvm = "uses: ./.github/actions/setup-llvm"
+    assert job.count(setup_msvc) == 1
+    assert setup_msvc in job and setup_llvm in job
+    assert job.index(setup_msvc) < job.index(setup_llvm)
+    assert job.index(setup_msvc) < job.index("cargo ")
+
+
+def test_windows_test_workflows_initialise_msvc_before_lld_link() -> None:
+    workflows = (
+        (CI_WORKFLOW.read_text(), "build-and-test-windows"),
+        (COVERAGE_NIGHTLY_WORKFLOW.read_text(), "full-windows"),
+        (RELEASE_GATE.read_text(), "gate-windows"),
+    )
+    for text, name in workflows:
+        assert_windows_job_initialises_msvc_before_native_linking(
+            workflow_job(text, name)
+        )
+
+
+def test_windows_test_workflow_msvc_ordering_mutations_are_rejected() -> None:
+    job = workflow_job(CI_WORKFLOW.read_text(), "build-and-test-windows")
+    setup_msvc = "uses: ./.github/actions/setup-msvc"
+    setup_llvm = "uses: ./.github/actions/setup-llvm"
+    for mutation in (
+        job.replace(setup_msvc, "", 1),
+        job.replace(setup_msvc, setup_msvc + "\n        " + setup_msvc, 1),
+        job.replace(setup_msvc, "__MSVC_STEP__", 1)
+        .replace(setup_llvm, setup_msvc, 1)
+        .replace("__MSVC_STEP__", setup_llvm, 1),
+    ):
+        try:
+            assert_windows_job_initialises_msvc_before_native_linking(mutation)
+        except AssertionError:
+            continue
+        raise AssertionError("Windows MSVC setup mutation escaped the contract")
+
+
+def assert_windows_llvm_toolchain_contract(
+    prebuild: str, setup_action: str, release: str, build_guide: str
+) -> None:
+    """Keep static llvm-sys linking on Windows compatible with the UCRT."""
+    assert "-DLLVM_INTEGRATED_CRT_ALLOC=OFF" in prebuild
+    assert "llvm-ar.exe" in prebuild
+    assert "rpmalloc\\.c\\.obj" in prebuild
+    assert f'TOOLCHAIN_TAG: "{WINDOWS_LLVM_TOOLCHAIN_TAG}"' in prebuild
+    assert f'ASSET_NAME: "{WINDOWS_LLVM_TOOLCHAIN_ASSET}"' in prebuild
+    assert f'asset="{WINDOWS_LLVM_TOOLCHAIN_ASSET}"' in setup_action
+    assert f'"{WINDOWS_LLVM_TOOLCHAIN_ASSET}")' in setup_action
+    assert f"releases/download/{WINDOWS_LLVM_TOOLCHAIN_TAG}/${{asset}}" in setup_action
+    assert f'$toolchainTag = "{WINDOWS_LLVM_TOOLCHAIN_TAG}"' in release
+    assert f'$asset        = "{WINDOWS_LLVM_TOOLCHAIN_ASSET}"' in release
+    assert release.count(f'$asset = "{WINDOWS_LLVM_TOOLCHAIN_ASSET}"') == 2
+    assert "windows-msvc-v3" not in "\n".join((prebuild, setup_action, release))
+    assert "-DLLVM_INTEGRATED_CRT_ALLOC=OFF" in build_guide
+
+
+def test_windows_llvm_toolchain_disables_integrated_crt_allocator() -> None:
+    assert_windows_llvm_toolchain_contract(
+        WINDOWS_LLVM_PREBUILD.read_text(),
+        SETUP_LLVM_ACTION.read_text(),
+        workflow(),
+        WINDOWS_BUILD_GUIDE.read_text(),
+    )
+
+
+def test_windows_llvm_toolchain_allocator_mutations_are_rejected() -> None:
+    prebuild = WINDOWS_LLVM_PREBUILD.read_text()
+    setup_action = SETUP_LLVM_ACTION.read_text()
+    release = workflow()
+    build_guide = WINDOWS_BUILD_GUIDE.read_text()
+    for mutation in (
+        (
+            prebuild.replace(
+                "-DLLVM_INTEGRATED_CRT_ALLOC=OFF",
+                "-DLLVM_INTEGRATED_CRT_ALLOC=ON",
+                1,
+            ),
+            setup_action,
+            release,
+            build_guide,
+        ),
+        (
+            prebuild,
+            setup_action,
+            release.replace(
+                WINDOWS_LLVM_TOOLCHAIN_TAG,
+                "toolchain/llvm-22.1.0-windows-msvc-v3",
+                1,
+            ),
+            build_guide,
+        ),
+    ):
+        try:
+            assert_windows_llvm_toolchain_contract(*mutation)
+        except AssertionError:
+            continue
+        raise AssertionError(
+            "Windows LLVM allocator safety mutation escaped the contract"
+        )
+
+
+def _write_release_binary_smoke_double(path: Path) -> None:
+    """Emit the narrow CLI surface the --no-build smoke path uses."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" != "compile" || "${2:-}" != "hello_int.hew" ]]; then
+    echo "unexpected release-smoke invocation: $*" >&2
+    exit 91
+fi
+mkdir -p .tmp/compile-out
+printf '%s\\n' '#!/usr/bin/env bash' 'exit 42' > .tmp/compile-out/hello_int
+chmod +x .tmp/compile-out/hello_int
+"""
+    )
+    path.chmod(0o755)
+
+
+def _run_release_binary_target_dir_contract(target_dir: Path, env_value: str) -> None:
+    _write_release_binary_smoke_double(target_dir / "release" / "hew")
+    env = os.environ.copy()
+    env["CARGO_TARGET_DIR"] = env_value
+    result = subprocess.run(
+        ["bash", str(RELEASE_BINARY_SMOKE), "--no-build"],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS: release binary compiled fixture" in result.stdout
+
+
+def test_release_binary_smoke_honors_absolute_and_relative_target_dirs() -> None:
+    """The artifact probe must follow the target root Cargo was given."""
+    with tempfile.TemporaryDirectory(prefix="hew-release-smoke-absolute-") as absolute:
+        absolute_target = Path(absolute)
+        _run_release_binary_target_dir_contract(absolute_target, str(absolute_target))
+
+    with tempfile.TemporaryDirectory(
+        prefix=".tmp-release-smoke-relative-", dir=ROOT
+    ) as relative:
+        relative_target = Path(relative)
+        _run_release_binary_target_dir_contract(
+            relative_target, str(relative_target.relative_to(ROOT))
+        )
+
+
+def test_local_release_builds_and_assembles_every_shipped_binary() -> None:
+    makefile = MAKEFILE.read_text()
+    release = makefile[
+        makefile.index("release:\n") : makefile.index("\n# Validate release builds")
+    ]
+    assembly = makefile[
+        makefile.index("assemble-release:\n") : makefile.index("\n# ── Tests")
+    ]
+    install = makefile[
+        makefile.index("define require_release_artifacts\n") : makefile.index(
+            "\nuninstall:"
+        )
+    ]
+
+    for package in ("hew-cli", "adze-cli", "hew-lsp", "hew-observe"):
+        assert f"cargo build -p {package} --release" in release
+    for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+        name = re.escape(binary)
+        assert re.search(
+            rf'^\s*@ln -sfn "\$\(LINK_UP2\)\$\(RELEASE_DIR\)/{name}"\s+'
+            rf'"\$\(BUILD_DIR\)/bin/{name}"$',
+            assembly,
+            re.MULTILINE,
+        )
+        assert f'@test -x "$(RELEASE_DIR)/{binary}" \\' in install
+        assert f'install -m 755 "$(RELEASE_DIR)/{binary}"' in install
+        assert f'"$(DESTDIR)$(PREFIX)/bin/{binary}"' in install
+    assert "cargo build -p hew-lib --profile release-lib" in release
+    assert "$(RELEASE_LIB_DIR)/libhew.a" in assembly
+
+
+def test_windows_completion_packaging_fails_closed() -> None:
+    release = workflow()
+    start = release.index("      - name: Package archive (Windows)\n")
+    end = release.index("      # ── macOS code signing", start)
+    package = release[start:end]
+
+    assert "function Write-Completion {" in package
+    assert "$Completion = & $Executable completions $Shell" in package
+    assert "if ($LASTEXITCODE -ne 0) {" in package
+    assert "produced empty output" in package
+    for executable in ("hew.exe", "adze.exe"):
+        assert (
+            f'Write-Completion "${{ArchiveName}}/bin/{executable}" $shell '
+            f'"${{ArchiveName}}/completions/{executable.removesuffix(".exe")}.${{shell}}"'
+            in package
+        )
+
+
+def _make_dry_run(target: str, cargo_target_dir: Path, *make_overrides: str) -> str:
+    env = os.environ.copy()
+    env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
+    result = subprocess.run(
+        ["make", "-n", target, *make_overrides],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "warning: overriding commands for target" not in result.stderr
+    assert "warning: ignoring old commands for target" not in result.stderr
+    return result.stdout
+
+
+def test_make_release_surfaces_quote_spacious_cargo_target_dir() -> None:
+    """Make must not split Cargo artifact paths into targets or shell words."""
+    with tempfile.TemporaryDirectory(prefix="hew-make-output-contract-") as raw:
+        cargo_target_dir = Path(raw) / "cargo artifacts with spaces"
+        release_dir = cargo_target_dir / "release"
+        release_lib_dir = cargo_target_dir / "release-lib"
+
+        assembly = _make_dry_run("assemble-release", cargo_target_dir)
+        install = _make_dry_run("install", cargo_target_dir)
+        debug = _make_dry_run("assemble", cargo_target_dir)
+        target_triple = "x86_64-unknown-linux-gnu"
+        cross_assembly = _make_dry_run(
+            "assemble-release",
+            cargo_target_dir,
+            f"TARGET_TRIPLE={target_triple}",
+        )
+
+        for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+            source = release_dir / binary
+            assert f'"{source}"' in assembly
+            assert f'"{source}"' in install
+
+        release_archive = release_lib_dir / "libhew.a"
+        assert f'--archive "{release_archive}"' in assembly
+        assert f'"{release_archive}"' in install
+
+        # The same invariant applies to debug and explicit wasm target layouts.
+        assert f'"{cargo_target_dir / "debug" / "hew"}"' in debug
+        wasm_debug = cargo_target_dir / "wasm32-wasip1" / "debug"
+        assert f'"{wasm_debug}/$lib"' in debug
+
+        cross_release = cargo_target_dir / target_triple / "release"
+        cross_release_lib = cargo_target_dir / target_triple / "release-lib"
+        assert f'"{cross_release / "hew-lsp"}"' in cross_assembly
+        assert f'--archive "{cross_release_lib / "libhew.a"}"' in cross_assembly
+
+
+def _write_install_artifacts(target_dir: Path) -> None:
+    binaries = tuple(
+        target_dir / "release" / name
+        for name in ("hew", "adze", "hew-lsp", "hew-observe")
+    )
+    for binary in binaries:
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text(
+            "#!/bin/sh\n"
+            'if [ "${1:-}" = completions ]; then\n'
+            f"  printf 'completion:{binary.name}:%s\\n' \"${{2:-}}\"\n"
+            "fi\n"
+        )
+        binary.chmod(0o755)
+    for archive in (
+        target_dir / "release-lib" / "libhew.a",
+        target_dir / "wasm32-wasip1" / "release" / "libhew_runtime.a",
+    ):
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        archive.write_bytes(f"fixture:{archive.name}\n".encode())
+
+
+def test_staged_install_and_uninstall_preserve_spacious_path_boundaries() -> None:
+    """The staged prefix is one path, never a shell word list or broad root."""
+    with tempfile.TemporaryDirectory(prefix="hew-staged-install-") as raw:
+        temp = Path(raw)
+        cargo_target_dir = temp / "cargo artifacts"
+        destdir = temp / "stage root"
+        prefix = "/opt/hew rc1"
+        install_root = Path(f"{destdir}{prefix}")
+        neighbour = install_root.with_name("hew rc1-neighbour")
+        neighbour.mkdir(parents=True)
+        sentinel = neighbour / "keep"
+        sentinel.write_text("not owned by uninstall\n")
+        _write_install_artifacts(cargo_target_dir)
+
+        env = os.environ.copy()
+        env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
+        overrides = [f"DESTDIR={destdir}", f"PREFIX={prefix}"]
+        installed = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'umask 077; exec "$@"',
+                "staged-install",
+                "make",
+                "install",
+                *overrides,
+            ],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert installed.returncode == 0, installed.stdout + installed.stderr
+
+        for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+            path = install_root / "bin" / binary
+            assert path.is_file()
+            assert os.access(path, os.X_OK)
+        assert (install_root / "lib" / "libhew.a").is_file()
+        assert (install_root / "lib" / "wasm32-wasip1" / "libhew_runtime.a").is_file()
+        assert (install_root / "std" / "prelude.hew").is_file()
+        for completion in (
+            "hew.bash",
+            "hew.zsh",
+            "hew.fish",
+            "adze.bash",
+            "adze.zsh",
+            "adze.fish",
+        ):
+            path = install_root / "completions" / completion
+            tool, shell = completion.split(".")
+            assert path.read_text() == f"completion:{tool}:{shell}\n"
+            assert stat.S_IMODE(path.stat().st_mode) == 0o644
+
+        removed = subprocess.run(
+            ["make", "uninstall", *overrides],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert removed.returncode == 0, removed.stdout + removed.stderr
+        assert not install_root.exists()
+        assert sentinel.read_text() == "not owned by uninstall\n"
+
+        # Counterfactual: an installed completion is part of the release
+        # surface, so a generator failure must make the staged install red.
+        hew = cargo_target_dir / "release" / "hew"
+        hew.write_text("#!/bin/sh\nexit 17\n")
+        hew.chmod(0o755)
+        completion_failure = subprocess.run(
+            ["make", "install", *overrides],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert completion_failure.returncode != 0
+
+        for unsafe_destdir, unsafe_prefix in (
+            ("", ""),
+            ("", "/"),
+            ("", "/."),
+            ("", "/.."),
+            ("", "//"),
+            ("/.", "/"),
+            ("", "."),
+            ("", ".."),
+            (".", "/"),
+        ):
+            refused = subprocess.run(
+                [
+                    "make",
+                    "uninstall",
+                    f"DESTDIR={unsafe_destdir}",
+                    f"PREFIX={unsafe_prefix}",
+                ],
+                cwd=ROOT,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert refused.returncode != 0
+            assert "Error:" in refused.stderr
+
+        for invalid_destdir, invalid_prefix in (("", "."), (".", "/opt/hew")):
+            refused_install = subprocess.run(
+                [
+                    "make",
+                    "install",
+                    f"DESTDIR={invalid_destdir}",
+                    f"PREFIX={invalid_prefix}",
+                ],
+                cwd=ROOT,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert refused_install.returncode != 0
+            assert "must be" in refused_install.stderr
+
+
+_PACKAGING_CARGO_DOUBLE = """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+if args and args[0] == "metadata":
+    print(json.dumps({"target_directory": os.environ["MOCK_TARGET_ROOT"]}))
+    raise SystemExit(0)
+
+with Path(os.environ["MOCK_CARGO_LOG"]).open("a") as stream:
+    stream.write("cargo " + " ".join(args) + "\\n")
+
+root = Path(os.environ.get("CARGO_TARGET_DIR", os.environ["MOCK_TARGET_ROOT"]))
+if not root.is_absolute():
+    root = Path.cwd() / root
+target = ""
+if "--target" in args:
+    target = args[args.index("--target") + 1]
+elif os.environ.get("CARGO_BUILD_TARGET"):
+    target = os.environ["CARGO_BUILD_TARGET"]
+elif os.environ.get("MOCK_BUILD_TARGET"):
+    target = os.environ["MOCK_BUILD_TARGET"]
+if target:
+    root /= target
+
+profile = "release-lib" if "--profile" in args else "release"
+out = root / profile
+out.mkdir(parents=True, exist_ok=True)
+if profile == "release-lib":
+    (out / "libhew.a").write_bytes(b"release-lib-archive")
+else:
+    # A stale/wrong-profile archive proves package assembly did not copy this.
+    (out / "libhew.a").write_bytes(b"fat-lto-release-archive")
+    program = (
+        "#!/usr/bin/env bash\\n"
+        'if [[ "${1:-}" == "completions" ]]; then printf "mock completion\\\\n"; fi\\n'
+    )
+    for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+        path = out / binary
+        path.write_text(program)
+        path.chmod(0o755)
+"""
+
+
+def test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive() -> None:
+    """Execute the real packager against env- and config-selected layouts."""
+    scenarios = ("CARGO_TARGET_DIR", "build.target-dir")
+    for scenario in scenarios:
+        with tempfile.TemporaryDirectory(
+            prefix=f"hew-package-{scenario.lower().replace('.', '-')}-"
+        ) as directory:
+            repo = Path(directory) / "hew"
+            (repo / "installers").mkdir(parents=True)
+            (repo / "scripts" / "lib").mkdir(parents=True)
+            (repo / "std").mkdir()
+            (repo / "mock-bin").mkdir()
+
+            for source, destination in (
+                (PACKAGE_BUILDER, repo / "installers" / "build-packages.sh"),
+                (
+                    ROOT / "scripts" / "cargo-output-dir.py",
+                    repo / "scripts" / "cargo-output-dir.py",
+                ),
+                (
+                    ROOT / "scripts" / "lib" / "toml_compat.py",
+                    repo / "scripts" / "lib" / "toml_compat.py",
+                ),
+            ):
+                shutil.copy2(source, destination)
+                destination.chmod(0o755)
+
+            (repo / "std" / "prelude.hew").write_text("// packaging fixture\n")
+            for name in ("LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "README.md"):
+                (repo / name).write_text(f"{name}\n")
+
+            cargo = repo / "mock-bin" / "cargo"
+            cargo.write_text(_PACKAGING_CARGO_DOUBLE)
+            cargo.chmod(0o755)
+            cargo_log = repo / "cargo.log"
+            target_root = repo / ".cargo-artifacts"
+            build_target = "x86_64-contract-linux-gnu"
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{repo / 'mock-bin'}:{env['PATH']}",
+                    "MOCK_CARGO_LOG": str(cargo_log),
+                    "MOCK_TARGET_ROOT": str(target_root),
+                }
+            )
+            env.pop("CARGO_TARGET_DIR", None)
+            env.pop("CARGO_BUILD_TARGET", None)
+            if scenario == "CARGO_TARGET_DIR":
+                env["CARGO_TARGET_DIR"] = ".cargo-artifacts"
+                env["CARGO_BUILD_TARGET"] = build_target
+            else:
+                (repo / ".cargo").mkdir()
+                (repo / ".cargo" / "config.toml").write_text(
+                    "[build]\n"
+                    'target-dir = ".cargo-artifacts"\n'
+                    f'target = "{build_target}"\n'
+                )
+                # The command double mirrors Cargo's parsed configuration while
+                # the production resolver itself reads the config target.
+                env["MOCK_BUILD_TARGET"] = build_target
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(repo / "installers" / "build-packages.sh"),
+                    "--version",
+                    "0.6.0-rc1",
+                    "--arch",
+                    "x86_64",
+                    "--only",
+                    "tarball",
+                ],
+                cwd=repo,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            assert result.returncode == 0, (
+                scenario + "\n" + result.stdout + result.stderr
+            )
+
+            calls = cargo_log.read_text().splitlines()
+            assert calls == [
+                "cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release",
+                "cargo build -p hew-lib --profile release-lib",
+            ]
+
+            archive = repo / "dist" / "hew-v0.6.0-rc1-linux-x86_64.tar.gz"
+            package_root = "hew-v0.6.0-rc1-linux-x86_64"
+            with tarfile.open(archive) as package:
+                names = set(package.getnames())
+                for binary in ("hew", "adze", "hew-lsp", "hew-observe"):
+                    assert f"{package_root}/bin/{binary}" in names
+                member = package.extractfile(f"{package_root}/lib/libhew.a")
+                assert member is not None
+                assert member.read() == b"release-lib-archive"
+
+
+def test_musl_packaging_uses_explicit_target_release_lib_output() -> None:
+    builder = PACKAGE_BUILDER.read_text()
+    assert (
+        'cargo build --profile release-lib --target "${musl_target}" -p hew-lib'
+        in builder
+    )
+    assert (
+        '_cargo_output_dir --native --profile release-lib --target "${musl_target}"'
+        in builder
+    )
+    assert "${REPO_DIR}/target/release" not in builder
+    assert "${REPO_DIR}/target/${musl_target}" not in builder
+
+
 _TESTS = [
     test_rc_tag_normalization_and_exact_release_body,
+    test_npm_publication_is_pinned_to_a_version_matching_release_tag,
     test_playground_dispatch_is_purpose_scoped_and_fail_closed,
     test_dispatch_uses_exact_playground_workflow_input_and_ref,
     test_dispatch_correlation_is_unique_and_bounded,
@@ -634,8 +1308,19 @@ _TESTS = [
     test_every_release_lane_executes_the_library_consumer_proof,
     test_freebsd_release_lanes_provision_bash_and_package_with_posix_sh,
     test_sanitizer_gate_is_behavioral_and_release_scoped,
-    test_release_notes_and_runbook_keep_candidate_truthful,
+    test_release_record_is_durable_and_tag_ready,
     test_contract_oracle_runs_in_required_ci,
+    test_windows_test_workflows_initialise_msvc_before_lld_link,
+    test_windows_test_workflow_msvc_ordering_mutations_are_rejected,
+    test_windows_llvm_toolchain_disables_integrated_crt_allocator,
+    test_windows_llvm_toolchain_allocator_mutations_are_rejected,
+    test_release_binary_smoke_honors_absolute_and_relative_target_dirs,
+    test_local_release_builds_and_assembles_every_shipped_binary,
+    test_windows_completion_packaging_fails_closed,
+    test_make_release_surfaces_quote_spacious_cargo_target_dir,
+    test_staged_install_and_uninstall_preserve_spacious_path_boundaries,
+    test_distro_tarball_uses_cargo_output_layout_and_release_lib_archive,
+    test_musl_packaging_uses_explicit_target_release_lib_output,
 ]
 
 

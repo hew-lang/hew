@@ -240,7 +240,12 @@ if [[ $count_unexpected_fail -gt 0 ]]; then
     while IFS= read -r path; do
         [[ -z "$path" ]] && continue
         echo "  UNEXPECTED: $path"
-        "$HEW_BIN" check "$REPO_ROOT/$path" 2>&1 | head -3 | sed 's/^/    /'
+        # This command is known to fail — it is the failure we are reporting.
+        # `head` under `pipefail` instead turns a long diagnostic into SIGPIPE
+        # (141), preventing the deliberate corpus-gate failure and hiding the
+        # rest of the compact report.  `sed -n` reads the full stream while
+        # printing only the first three lines, so the compiler exits normally.
+        "$HEW_BIN" check "$REPO_ROOT/$path" 2>&1 | sed -n '1,3{s/^/    /;p;}' || true
     done <<< "$unexpected_failures"
     echo ""
     echo "  If these are deferred (NYI feature), add them to:"

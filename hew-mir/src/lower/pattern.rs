@@ -2,14 +2,25 @@ use super::{
     base_local, callee_is_resolved_item, callee_returns_fresh_owner,
     field_override_uses_record_field_drop, float_width, generator_yield_instr_escapes,
     generator_yield_terminator_escapes, hir_expr_contains_synthetic_vec_get_clone,
-    literal_match_scrutinee_ty, mangle_layout_key, place_is_interior_projection, short_name,
-    ty_is_generator_handle, ty_is_indirect_enum, user_record_layout_key, BindingId, Builder,
-    CmpPred, Disposition, FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr,
-    HirExprKind, HirLiteral, Instr, IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement,
-    Place, ProjectedPayloadOrigin, ProjectedPayloadProvenance, ProjectedPayloadRejectReason,
+    literal_match_scrutinee_ty, place_is_interior_projection, ty_is_generator_handle,
+    ty_is_indirect_enum, user_record_layout_key, BindingId, Builder, BuiltinType, CmpPred,
+    Disposition, FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr, HirExprKind,
+    HirLiteral, Instr, IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement, Place,
+    ProjectedPayloadOrigin, ProjectedPayloadProvenance, ProjectedPayloadRejectReason,
     ProjectedScrutinee, ReleaseSymbolVerdict, ResolvedRef, ResolvedTy, SiteId, Terminator,
     TrapKind, ValueClass, VecElementRelease, SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
 };
+
+fn is_builtin_option_carrier(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            args,
+            builtin: Some(BuiltinType::Option),
+            ..
+        } if args.len() == 1
+    )
+}
 
 /// Chain-wide ownership mode for record/tuple project matches.
 ///
@@ -271,15 +282,8 @@ impl Builder {
     /// fresh, solely-owned per-frame value, so it follows the same body/edge
     /// release-or-transfer lifecycle as a generator or receiver yield.
     fn is_vec_iter_next_scrutinee(&self, scrutinee: &HirExpr) -> bool {
-        matches!(
-            &self.subst_ty(&scrutinee.ty),
-            ResolvedTy::Named {
-                name,
-                args,
-                builtin: None,
-                ..
-            } if name == "Option" && args.len() == 1
-        ) && hir_expr_contains_synthetic_vec_get_clone(scrutinee)
+        is_builtin_option_carrier(&self.subst_ty(&scrutinee.ty))
+            && hir_expr_contains_synthetic_vec_get_clone(scrutinee)
     }
 
     /// True when the match scrutinee is a generator `.next()` consumption node
@@ -526,15 +530,7 @@ impl Builder {
         let ResolvedTy::Named { name, args, .. } = ty else {
             return None;
         };
-        let key = if args.is_empty() {
-            name.clone()
-        } else {
-            mangle_layout_key(short_name(name), args)
-        };
-        let is_enum = self
-            .enum_layouts
-            .iter()
-            .any(|el| el.name == key || short_name(&el.name) == short_name(name));
+        let is_enum = crate::model::find_enum_layout(name, args, &self.enum_layouts).is_some();
         Some(if is_enum {
             crate::ownership::InPlaceReleaseKind::Enum
         } else {
@@ -1082,7 +1078,7 @@ impl Builder {
                     record_field_orders: &self.record_field_orders,
                     enum_layouts: &self.enum_layouts,
                 };
-                let verdict = if let Some(field_tys) = layouts.record_field_tys(name, args) {
+                let verdict = if let Some(field_tys) = layouts.record_field_tys(name, args, None) {
                     field_tys
                         .iter()
                         .all(|field_ty| self.field_drop_slot_dischargeable(field_ty, visiting))
@@ -1330,7 +1326,7 @@ impl Builder {
             // can smuggle the binding), or it is not summary-proven to return
             // a fresh owner AND some argument itself may alias (the callee can
             // forward that argument's heap into its return).
-            HirExprKind::Call { callee, args } => {
+            HirExprKind::Call { callee, args, .. } => {
                 !callee_is_resolved_item(callee)
                     || (!callee_returns_fresh_owner(
                         callee,
@@ -1927,12 +1923,12 @@ impl Builder {
             } = &arm.predicate
             {
                 let binding_ty = self.subst_ty(ty);
-                self.statements.push(MirStatement::Bind {
-                    binding: *binding_id,
-                    name: name.clone(),
-                    site: arm.body.site,
-                    ty: binding_ty.clone(),
-                });
+                self.push_bind_statement(
+                    *binding_id,
+                    name.clone(),
+                    arm.body.site,
+                    binding_ty.clone(),
+                );
                 self.record_binding_scope(*binding_id);
                 let dest = self.alloc_local(binding_ty);
                 self.push_instr(Instr::Move {
@@ -2145,12 +2141,12 @@ impl Builder {
 
         for binding in &arm.bindings {
             let binding_ty = self.subst_ty(&binding.ty);
-            self.statements.push(MirStatement::Bind {
-                binding: binding.binding,
-                name: binding.name.clone(),
-                site: arm.body.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(
+                binding.binding,
+                binding.name.clone(),
+                arm.body.site,
+                binding_ty.clone(),
+            );
             self.record_binding_scope(binding.binding);
             // U1 — the payload binder's owner is minted over a field of the
             // scrutinee, so the provenance question is the scrutinee's. The
@@ -2228,12 +2224,7 @@ impl Builder {
         } = &arm.predicate
         {
             let binding_ty = self.subst_ty(ty);
-            self.statements.push(MirStatement::Bind {
-                binding: *binding_id,
-                name: name.clone(),
-                site: arm.body.site,
-                ty: binding_ty.clone(),
-            });
+            self.push_bind_statement(*binding_id, name.clone(), arm.body.site, binding_ty.clone());
             self.record_binding_scope(*binding_id);
             let warrant =
                 self.owner_warrant_for_scrutinee_payload(*binding_id, scrutinee, &binding_ty);
@@ -3659,7 +3650,7 @@ impl Builder {
     /// FULL `OPAQUE`-only reject lands at S4b.
     fn classify_call_arm_scrutinee_origin(&self, scrutinee: &HirExpr) -> ProjectedPayloadOrigin {
         use crate::return_provenance::AliasBits;
-        if let HirExprKind::Call { callee, args } = &scrutinee.kind {
+        if let HirExprKind::Call { callee, args, .. } = &scrutinee.kind {
             if let HirExprKind::BindingRef {
                 name,
                 resolved: ResolvedRef::Item(id),
@@ -4006,9 +3997,22 @@ impl Builder {
                 None
             };
 
-        // Lower the scrutinee in the entry block. A failure propagates
-        // via `?`; the half-built match leaves no dangling block.
-        let scrutinee_place = self.lower_value(scrutinee)?;
+        // Recv/generator/iterator-next matches have specialised per-arm
+        // release authority for the ephemeral result shell/payload. Do not
+        // also mint the generic typed-publication owner for that same
+        // generation while lowering the scrutinee.
+        let specialised_scrutinee_owner =
+            generator_next_scrutinee || recv_next_scrutinee || vec_iter_next_scrutinee;
+        if specialised_scrutinee_owner {
+            self.suppress_typed_produced_owner_sites
+                .insert(scrutinee.site);
+        }
+        // Lower the scrutinee in the entry block. A failure propagates via `?`;
+        // the half-built match leaves no dangling block.
+        let scrutinee_place = self.lower_value(scrutinee);
+        self.suppress_typed_produced_owner_sites
+            .remove(&scrutinee.site);
+        let scrutinee_place = scrutinee_place?;
         let scrutinee_local = match scrutinee_place {
             Place::Local(n) => n,
             other => {
@@ -4064,7 +4068,7 @@ impl Builder {
                         ty: owner.ty,
                         partial_projection: true,
                     });
-                    self.register_synthetic_owned_local(
+                    self.adopt_synthetic_owned_local(
                         SYNTHETIC_PROJECTED_SCRUTINEE_NAME,
                         scrutinee.site,
                         scrutinee_local,
@@ -4327,12 +4331,12 @@ impl Builder {
             let mut generator_yield_drop_bindings = Vec::new();
             for binding in &arm.bindings {
                 let binding_ty = self.subst_ty(&binding.ty);
-                self.statements.push(MirStatement::Bind {
-                    binding: binding.binding,
-                    name: binding.name.clone(),
-                    site: arm.body.site,
-                    ty: binding_ty.clone(),
-                });
+                self.push_bind_statement(
+                    binding.binding,
+                    binding.name.clone(),
+                    arm.body.site,
+                    binding_ty.clone(),
+                );
                 self.record_match_arm_binding_scope(binding.binding, arm);
                 // A mixed-return wrapper has no shell owner: the whole Result
                 // may contain an opaque sibling. Its selected payload can still
@@ -4600,7 +4604,7 @@ impl Builder {
                     let local = base_local(dest).expect(
                         "alloc_local must produce a Local place for active-variant payload ownership",
                     );
-                    let binding = self.register_synthetic_owned_local(
+                    let binding = self.adopt_synthetic_owned_local(
                         "__hew_active_variant_payload",
                         arm.body.site,
                         local,
@@ -4631,12 +4635,12 @@ impl Builder {
             // `Some`-payload concerns and cannot apply at nesting depth ≥ 1.
             for (src_local, src_variant_idx, binding) in nested_binding_jobs {
                 let binding_ty = self.subst_ty(&binding.ty);
-                self.statements.push(MirStatement::Bind {
-                    binding: binding.binding,
-                    name: binding.name.clone(),
-                    site: arm.body.site,
-                    ty: binding_ty.clone(),
-                });
+                self.push_bind_statement(
+                    binding.binding,
+                    binding.name.clone(),
+                    arm.body.site,
+                    binding_ty.clone(),
+                );
                 self.record_match_arm_binding_scope(binding.binding, arm);
                 let warrant = self.owner_warrant_for_scrutinee_payload(
                     binding.binding,
@@ -4959,12 +4963,7 @@ impl Builder {
             return;
         };
         let binding_ty = self.subst_ty(ty);
-        self.statements.push(MirStatement::Bind {
-            binding: *binding_id,
-            name: name.clone(),
-            site: arm.body.site,
-            ty: binding_ty.clone(),
-        });
+        self.push_bind_statement(*binding_id, name.clone(), arm.body.site, binding_ty.clone());
         self.record_binding_scope(*binding_id);
         let dest = self.alloc_local(binding_ty);
         self.push_instr(Instr::Move {
@@ -4972,5 +4971,23 @@ impl Builder {
             src: scrutinee_local,
         });
         self.binding_locals.insert(*binding_id, dest);
+    }
+}
+
+#[cfg(test)]
+mod builtin_carrier_tests {
+    use super::*;
+
+    #[test]
+    fn option_carrier_uses_builtin_identity_not_presentation() {
+        let renamed = ResolvedTy::named_builtin(
+            "presentation.RenamedOption",
+            BuiltinType::Option,
+            vec![ResolvedTy::String],
+        );
+        assert!(is_builtin_option_carrier(&renamed));
+
+        let shadow = ResolvedTy::named_user("Option", vec![ResolvedTy::String]);
+        assert!(!is_builtin_option_carrier(&shadow));
     }
 }

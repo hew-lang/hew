@@ -3552,8 +3552,26 @@ mod tests {
         _data_size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        Box::into_raw(frame).cast::<c_void>()
+        crate::coro_exec::test_support::ScratchFrame::into_executor_owned_handle(1)
+    }
+
+    /// Test-only borrowed-frame variant for witnesses that need to inspect the
+    /// frame after the runtime has invoked its destroy outline. Unlike the
+    /// production-shaped helper above, its destroy outline releases the inner
+    /// guard only; the test remains responsible for the outer `Box`.
+    #[cfg(target_arch = "wasm32")]
+    unsafe extern "C-unwind" fn suspend_once_dispatch_test_owned_wasm(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _data_size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        Box::into_raw(Box::new(crate::coro_exec::test_support::ScratchFrame::new(
+            1,
+        )))
+        .cast()
     }
 
     /// Actual-target WASM continuation probe whose destroy outline frees its
@@ -3850,8 +3868,7 @@ mod tests {
         unsafe {
             let _ = crate::reply_channel_wasm::hew_reply(ch.cast(), ptr::null_mut(), 0);
         }
-        let frame = Box::new(crate::coro_exec::test_support::ScratchFrame::new(1));
-        Box::into_raw(frame).cast::<c_void>()
+        crate::coro_exec::test_support::ScratchFrame::into_executor_owned_handle(1)
     }
 
     /// Park an actor inside an `ask` whose handler suspended, and hand back the
@@ -4554,7 +4571,7 @@ mod tests {
         let (callee_ptr, reply) = unsafe {
             park_wasm_ask(
                 std::ptr::from_mut(&mut callee_actor),
-                suspend_once_dispatch_wasm,
+                suspend_once_dispatch_test_owned_wasm,
             )
         };
         let callee_native = as_native_actor(callee_ptr);

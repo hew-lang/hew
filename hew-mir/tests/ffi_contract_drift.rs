@@ -1,7 +1,7 @@
 //! 1:1 drift proof between the two ownership-contract carriers.
 //!
 //! `scripts/jit-symbol-classification.toml` `[[ownership.contracts]]` is the
-//! authority; `hew-mir/build.rs` projects it into the static
+//! authority; `hew-types/build.rs` projects it into the static
 //! `FFI_OWNERSHIP_CONTRACTS` table with a hand-rolled line parser. This test
 //! re-parses the TOML with the independent `toml` crate and asserts exact
 //! row-for-row equality, so neither a build-script parser bug nor a stale
@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use hew_mir::ffi_contracts::{
-    ExternParamOwnership, ExternResultOwnership, ReleaseDischargeDepth, FFI_OWNERSHIP_CONTRACTS,
+    ExternParamOwnership, ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
+    FFI_OWNERSHIP_CONTRACTS,
 };
 
 #[derive(Debug, serde::Deserialize)]
@@ -32,10 +33,16 @@ struct Contract {
     symbol: String,
     result: String,
     params: Vec<String>,
+    #[serde(rename = "resource-param-types", default)]
+    resource_param_types: Vec<String>,
+    #[serde(rename = "resource-result-type", default)]
+    resource_result_type: Option<String>,
     #[serde(rename = "release-symbol")]
     release_symbol: String,
     #[serde(rename = "discharge-depth")]
     discharge_depth: String,
+    #[serde(rename = "result-retention", default)]
+    result_retention: String,
 }
 
 fn classification_toml() -> Document {
@@ -70,6 +77,13 @@ fn depth_spelling(depth: ReleaseDischargeDepth) -> &'static str {
     }
 }
 
+fn retention_spelling(retention: ExternResultRetention) -> &'static str {
+    match retention {
+        ExternResultRetention::Transferred => "transferred",
+        ExternResultRetention::Unspecified => "",
+    }
+}
+
 #[test]
 fn compiler_table_matches_toml_one_to_one() {
     let document = classification_toml();
@@ -99,6 +113,15 @@ fn compiler_table_matches_toml_one_to_one() {
             .collect();
         assert_eq!(compiled_params, expected.params, "{symbol}: params drift");
         assert_eq!(
+            compiled.resource_param_types, expected.resource_param_types,
+            "{symbol}: resource-param-types drift"
+        );
+        assert_eq!(
+            compiled.resource_result_type,
+            expected.resource_result_type.as_deref(),
+            "{symbol}: resource-result-type drift"
+        );
+        assert_eq!(
             result_spelling(compiled.result),
             expected.result,
             "{symbol}: result drift"
@@ -112,5 +135,39 @@ fn compiler_table_matches_toml_one_to_one() {
             expected.discharge_depth,
             "{symbol}: discharge-depth drift"
         );
+        assert_eq!(
+            retention_spelling(compiled.result_retention),
+            expected.result_retention,
+            "{symbol}: result-retention drift"
+        );
     }
+}
+
+#[test]
+fn string_to_bytes_transfer_row_does_not_drift() {
+    let document = classification_toml();
+    let source = document
+        .ownership
+        .contracts
+        .iter()
+        .find(|row| row.symbol == "hew_string_to_bytes")
+        .expect("TOML string-to-bytes ownership row");
+    assert_eq!(source.result, "fresh");
+    assert_eq!(source.params, ["borrow"]);
+    assert_eq!(source.release_symbol, "hew_bytes_drop");
+    assert_eq!(source.discharge_depth, "shallow");
+    assert_eq!(source.result_retention, "transferred");
+
+    let (_, compiled) = FFI_OWNERSHIP_CONTRACTS
+        .iter()
+        .find(|(symbol, _)| *symbol == "hew_string_to_bytes")
+        .expect("compiled string-to-bytes ownership row");
+    assert_eq!(compiled.result, ExternResultOwnership::Fresh);
+    assert_eq!(compiled.params, &[ExternParamOwnership::Borrow]);
+    assert_eq!(compiled.release_symbol, "hew_bytes_drop");
+    assert_eq!(compiled.discharge_depth, ReleaseDischargeDepth::Shallow);
+    assert_eq!(
+        compiled.result_retention,
+        ExternResultRetention::Transferred
+    );
 }

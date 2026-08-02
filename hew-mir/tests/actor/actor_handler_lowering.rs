@@ -15,8 +15,12 @@ use hew_types::{ActorHandlerSpec, ActorProtocolDescriptor, BuiltinType, Resolved
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
         items,
+        // This handcrafted fixture bypasses HIR checking, so it has no typed
+        // producer ownership facts to carry into MIR lowering.
+        produced_value_facts: HashMap::default(),
         diagnostic_source_modules: HashMap::default(),
         root_item_ids: std::collections::HashSet::new(),
+        caller_visible_param_projections: std::collections::HashSet::new(),
         wire_layouts: std::sync::Arc::new(HashMap::default()),
         type_classes: HashMap::default(),
         monomorphisations: vec![],
@@ -229,6 +233,7 @@ fn actor_cycle_capable_threads_to_layout_and_spawn_instr() {
     let main = HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],
@@ -291,6 +296,7 @@ fn non_cycle_actor_keeps_false_layout_and_spawn_default() {
     let main = HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],
@@ -853,6 +859,7 @@ fn standalone_ticks_gen_fn(ids: &mut IdGen) -> HirFn {
     HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("stream_twin"),
         name: "stream_twin".to_string(),
         type_params: vec![],
         params: vec![],
@@ -1541,6 +1548,7 @@ fn main_calling_gen_stream(ids: &mut IdGen, actor_name: &str, method: &str) -> H
     HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],
@@ -1852,6 +1860,7 @@ fn actor_handler_symbol_collision_emits_typed_diagnostic_and_skips_handler() {
     let top_level = HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("Counter__recv__ping"),
         name: "Counter__recv__ping".to_string(),
         type_params: vec![],
         params: vec![],
@@ -1930,21 +1939,61 @@ fn actor_lifecycle_crash_lowers_to_actor_handler_function() {
 }
 
 #[test]
-fn qualified_failure_lifecycle_payloads_expand_to_runtime_abi() {
+fn exit_hook_with_uncanonicalized_payload_fails_closed_before_raw_mir() {
+    let mut ids = IdGen::default();
+    let exit_return = return_none_stmt(&mut ids);
+    let note = binding(
+        &mut ids,
+        "note",
+        ResolvedTy::named_user("f.CrashNotification", Vec::new()),
+    );
+    let mut watcher = actor(&mut ids, "Watcher", vec![]);
+    watcher.lifecycle_hooks = vec![HirLifecycleHook {
+        kind: HirLifecycleHookKind::Exit,
+        name: "on_exit".to_string(),
+        params: vec![note],
+        return_ty: ResolvedTy::Unit,
+        body: block(&mut ids, vec![exit_return], None, ResolvedTy::Unit),
+        span: 0..0,
+    }];
+
+    let pipeline = lower_hir_module(&empty_module(vec![HirItem::Actor(watcher)]));
+    assert!(
+        !pipeline
+            .raw_mir
+            .iter()
+            .any(|function| function.name == "Watcher__on_exit"),
+        "MIR must not emit a handler with an aggregate parameter where the runtime calls (u64, i32)"
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                MirDiagnosticKind::UnsupportedNode { reason }
+                    if reason.contains("without exactly one canonical")
+            )
+        }),
+        "the checker/HIR ABI mismatch must produce a fail-closed MIR diagnostic: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn canonical_failure_lifecycle_payloads_expand_to_runtime_abi() {
     use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
     let mut parsed = hew_parser::parse(
         r#"
-        import std::failure;
+        import std::failure as f;
 
         actor Watcher {
             #[on(crash)]
-            fn on_crash(info: failure.CrashInfo) -> failure.CrashAction {
+            fn on_crash(info: CrashInfo) -> CrashAction {
                 panic("stop")
             }
 
             #[on(exit)]
-            fn on_exit(note: failure.CrashNotification) {}
+            fn on_exit(note: f.CrashNotification) {}
         }
 
         fn main() {}
@@ -1972,6 +2021,11 @@ fn qualified_failure_lifecycle_payloads_expand_to_runtime_abi() {
         })
         .expect("fixture import must exist");
     import.resolved_items = Some(failure_items.clone());
+    let failure_source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-mir has a workspace parent")
+        .join("std/failure.hew");
+    import.resolved_source_paths = vec![failure_source.clone()];
     let root_id = ModuleId::root();
     let failure_id = ModuleId::new(vec!["std".to_string(), "failure".to_string()]);
     let mut graph = ModuleGraph::new(root_id.clone());
@@ -1980,7 +2034,7 @@ fn qualified_failure_lifecycle_payloads_expand_to_runtime_abi() {
             id: failure_id.clone(),
             items: failure_items,
             imports: Vec::new(),
-            source_paths: Vec::new(),
+            source_paths: vec![failure_source],
             doc: None,
         })
         .expect("failure module id must be unique");

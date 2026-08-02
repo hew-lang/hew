@@ -1117,7 +1117,7 @@ pub(super) fn attribute_field_binder_provenance(
             if defining_write {
                 continue;
             }
-            let (_, writes) = crate::dataflow::instr_reads_writes(instr);
+            let (_, writes, _) = crate::dataflow::instr_reads_writes(instr);
             for w in writes {
                 if let Some(wl) = base_local(w) {
                     if field_binders.contains(&wl) {
@@ -1301,6 +1301,7 @@ mod slice3_invariants {
         HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new("handler"),
             name: "handler".to_string(),
             type_params: vec![],
             is_generator: false,
@@ -1358,6 +1359,7 @@ mod slice3_invariants {
                 &HashSet::new(),
                 &std::rc::Rc::new(crate::return_provenance::CallScrutineeProvenance::default()),
                 &std::rc::Rc::new(ParamOwnershipFacts::default()),
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 None,

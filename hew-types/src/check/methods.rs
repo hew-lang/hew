@@ -19,6 +19,7 @@ use crate::method_resolution::{
     collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
 };
+use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
 /// Resolve the closed set of compiler-lowered active transport attach methods.
@@ -32,10 +33,48 @@ fn transport_attach_runtime_symbol(receiver_name: &str, method: &str) -> Option<
         return None;
     }
     match receiver_name {
-        "net.Connection" => Some("hew_tcp_attach_local"),
+        STD_NET_CONNECTION => Some("hew_tcp_attach_local"),
         "tls.TlsStream" => Some("hew_tls_attach_local"),
         "websocket.Conn" => Some("hew_ws_attach_local"),
         _ => None,
+    }
+}
+
+impl Checker {
+    /// Return the checker-minted trait declaration IDs for a call-site trait
+    /// spelling. Import aliases are resolved through their full source owner;
+    /// short registry keys remain compatibility-only and are never used to mint
+    /// a fresh ID here.
+    pub(super) fn trait_method_call_target_ids(
+        &self,
+        trait_name: &str,
+        method_name: &str,
+    ) -> Option<(crate::DefId, crate::DefId)> {
+        self.trait_method_ids_by_binding
+            .get(&(
+                self.current_module.clone(),
+                trait_name.to_string(),
+                method_name.to_string(),
+            ))
+            .cloned()
+            .or_else(|| {
+                self.current_module.as_ref().and_then(|module| {
+                    self.trait_method_ids
+                        .get(&format!("{module}.{trait_name}::{method_name}"))
+                        .cloned()
+                })
+            })
+            .or_else(|| {
+                let declaring_trait = self.trait_ref_lookup_key(trait_name);
+                self.trait_method_ids
+                    .get(&format!("{declaring_trait}::{method_name}"))
+                    .cloned()
+            })
+            .or_else(|| {
+                self.trait_method_ids
+                    .get(&format!("{trait_name}::{method_name}"))
+                    .cloned()
+            })
     }
 }
 
@@ -44,8 +83,13 @@ fn transport_attach_runtime_symbol(receiver_name: &str, method: &str) -> Option<
 /// type from a `from_json`/`from_yaml` `Result<Self, string>` return so the codec
 /// rewrite carries the produced wire type, not the `Result` wrapper.
 fn result_ok_payload(ty: &Ty) -> Option<Ty> {
-    if let Ty::Named { name, args, .. } = ty {
-        if name == "Result" && args.len() == 2 {
+    if let Ty::Named {
+        builtin: Some(BuiltinType::Result),
+        args,
+        ..
+    } = ty
+    {
+        if args.len() == 2 {
             return Some(args[0].clone());
         }
     }
@@ -305,44 +349,6 @@ impl Checker {
             ],
         );
     }
-
-    /// Stdlib modules that have no wasm32 runtime support, together with the
-    /// [`WasmUnsupportedFeature`] variant used in the rejection diagnostic.
-    /// Any call expression or value-position reference to a function in one of
-    /// these modules is rejected with a `PlatformLimitation` error when
-    /// targeting wasm32.
-    ///
-    /// `crypto.random_bytes` is handled separately (it is a single function
-    /// within the otherwise-supported `crypto` module) and does NOT appear in
-    /// this table.
-    ///
-    /// Both the call-form guard (`check_method_call`) and the value-position
-    /// guard (`check_field_access`) iterate this slice, so neither path can
-    /// silently miss a module the other rejects.
-    ///
-    /// **The module short-names in this table must exactly match
-    /// [`crate::NATIVE_ONLY_WASM_MODULES`]** (the public API const consumed by
-    /// `hew-sandbox-wasm`'s profile gate).  The test
-    /// `wasm_rejects::native_only_wasm_modules_const_matches_rejection_table`
-    /// enforces parity between the two at test time; update both together when
-    /// the native-only module set changes.
-    pub(super) const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &'static [(
-        &'static str,
-        WasmUnsupportedFeature,
-    )] = &[
-        ("stream", WasmUnsupportedFeature::Streams),
-        ("http", WasmUnsupportedFeature::HttpServer),
-        ("net", WasmUnsupportedFeature::TcpNetworking),
-        ("process", WasmUnsupportedFeature::ProcessExecution),
-        ("tls", WasmUnsupportedFeature::Tls),
-        ("quic", WasmUnsupportedFeature::Quic),
-        ("dns", WasmUnsupportedFeature::Dns),
-        ("os", WasmUnsupportedFeature::OsEnv),
-        ("encrypt", WasmUnsupportedFeature::CryptoEncrypt),
-        ("sign", WasmUnsupportedFeature::CryptoSign),
-        ("http_client", WasmUnsupportedFeature::HttpClient),
-        ("smtp", WasmUnsupportedFeature::Smtp),
-    ];
 
     fn numeric_method_signedness(ty: &Ty) -> Option<NumericSignedness> {
         match ty {
@@ -702,13 +708,14 @@ impl Checker {
                                                             new_layout_facts.push((span_key, fact));
                                                         }
                                                         None => {
-                                                            let mut err = crate::error::TypeError::new(
-                                                                        TypeErrorKind::InvalidOperation,
-                                                                        check.span.clone(),
-                                                                        format!(
-                                                                            "`HashMap` value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
-                                                                        ),
-                                                                    );
+                                                            let mut err =
+                                                                crate::error::TypeError::new(
+                                                                    TypeErrorKind::InvalidOperation,
+                                                                    check.span.clone(),
+                                                                    format!(
+                                                                        "`HashMap` value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
+                                                                    ),
+                                                                );
                                                             if let Some(module) =
                                                                 check.source_module
                                                             {
@@ -721,12 +728,12 @@ impl Checker {
                                                 }
                                                 None => {
                                                     let mut err = crate::error::TypeError::new(
-                                                                TypeErrorKind::InvalidOperation,
-                                                                check.span.clone(),
-                                                                format!(
-                                                                    "`HashMap` value type `{val_name}` is not defined; cannot compute layout for layout-key `HashMap`",
-                                                                ),
-                                                            );
+                                                        TypeErrorKind::InvalidOperation,
+                                                        check.span.clone(),
+                                                        format!(
+                                                            "`HashMap` value type `{val_name}` is not defined; cannot compute layout for layout-key `HashMap`",
+                                                        ),
+                                                    );
                                                     if let Some(module) = check.source_module {
                                                         err = err.with_source_module(module);
                                                     }
@@ -736,8 +743,8 @@ impl Checker {
                                         } else {
                                             // Should not happen: HashMapValueType::Layout implies Named.
                                             unreachable!(
-                                                        "HashMapValueType::Layout produced for non-Named value type"
-                                                    );
+                                                "HashMapValueType::Layout produced for non-Named value type"
+                                            );
                                         }
                                     }
                                     Ok(val_type) => {
@@ -752,14 +759,14 @@ impl Checker {
                                     }
                                     Err(e) => {
                                         let mut err = crate::error::TypeError::new(
-                                                    TypeErrorKind::InvalidOperation,
-                                                    check.span.clone(),
-                                                    format!(
-                                                        "HashMap<{key_name}, {}> value type is not supported for layout-key HashMap: {:?}",
-                                                        resolved_val.user_facing(),
-                                                        e,
-                                                    ),
-                                                );
+                                            TypeErrorKind::InvalidOperation,
+                                            check.span.clone(),
+                                            format!(
+                                                "HashMap<{key_name}, {}> value type is not supported for layout-key HashMap: {:?}",
+                                                resolved_val.user_facing(),
+                                                e,
+                                            ),
+                                        );
                                         if let Some(module) = check.source_module {
                                             err = err.with_source_module(module);
                                         }
@@ -1057,7 +1064,16 @@ impl Checker {
     /// * Unsupported concrete type → emit [`TypeErrorKind::InvalidOperation`];
     ///   the inline validation pass may have already emitted a diagnostic, but
     ///   deferred entries bypass that guard, so we re-check here.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "deferred channel resolution validates type, ABI, and ownership together"
+    )]
     pub(super) fn finalize_channel_rewrites(&mut self) {
+        use crate::runtime_call::{
+            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
+            ProducedValueOwnership as Ownership,
+        };
+
         let deferred = std::mem::take(&mut self.deferred_channel_rewrites);
         let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
 
@@ -1135,12 +1151,54 @@ impl Checker {
                             .expect("channel close family rejects elem; substrate invariant")
                     });
                 self.method_call_rewrites.insert(
-                    span_key,
+                    span_key.clone(),
                     MethodCallRewrite::RewriteToFunction {
+                        target: descriptor.as_ref().map_or_else(
+                            || CallTarget::Unsupported {
+                                reason: format!(
+                                    "channel runtime method `{c_symbol}` has no registered family"
+                                ),
+                            },
+                            |descriptor| CallTarget::Runtime(descriptor.family()),
+                        ),
                         c_symbol: c_symbol.to_string(),
                         descriptor,
+                        extern_identity: None,
                         elem_ty: None,
                         consumes_receiver,
+                        returns_receiver_identity: false,
+                    },
+                );
+                let source_arg_count = self
+                    .produced_call_arities
+                    .get(&span_key)
+                    .map_or(0, |(_, count)| *count);
+                let ownership = match entry.method.as_str() {
+                    "recv" | "try_recv" => Ownership::owned(Acquisition::Delivery),
+                    "close" => Ownership::NoOwner,
+                    _ => Ownership::Unknown,
+                };
+                self.resolved_method_call_ownership.insert(
+                    span_key,
+                    PendingMethodCallOwnership {
+                        fact: ProducedValueFact {
+                            ownership,
+                            receiver_span: None,
+                            receiver_boundary: Some(if consumes_receiver {
+                                Boundary::Transfer
+                            } else {
+                                Boundary::Borrow
+                            }),
+                            arguments: match entry.method.as_str() {
+                                "send" => vec![Boundary::Transfer; source_arg_count],
+                                "recv" | "try_recv" | "close" => {
+                                    vec![Boundary::Borrow; source_arg_count]
+                                }
+                                _ => vec![Boundary::Unknown; source_arg_count],
+                            },
+                        },
+                        extern_identity: None,
+                        resolved_result_ty: resolved,
                     },
                 );
             } else {
@@ -1213,37 +1271,24 @@ impl Checker {
     fn named_type_inherent_close_consumes_receiver(
         &self,
         type_name: &str,
+        builtin: Option<BuiltinType>,
         method: &str,
         sig: &FnSig,
     ) -> bool {
         if method != "close" || sig.requires_mutable_receiver {
             return false;
         }
-        // The trait registry is the single authority for the `#[resource]`
-        // fact. `is_resource` matches the declared bare name and the
-        // module-qualified receiver's unqualified suffix (`mod.Conn` → `Conn`)
-        // for imported handle types.
-        self.registry.is_resource(type_name)
-    }
-
-    /// Apply the consume-receiver marker for a trait-dispatched method call:
-    /// record the per-call-site flag for codegen and mark the receiver
-    /// expression moved so subsequent uses surface `UseAfterMove`. No-op
-    /// when the resolved method does not declare `consumes_receiver`.
-    fn apply_consume_receiver_if_flagged(
-        &mut self,
-        qualified_method: &str,
-        receiver: &Spanned<Expr>,
-        receiver_ty: &Ty,
-        span: &Span,
-    ) {
-        if !self.is_consume_receiver_method(qualified_method) {
-            return;
+        // Compiler carriers such as `MonitorRef` already carry their exact,
+        // shadow-proof identity on the resolved `Ty`.  Use that discriminator
+        // instead of asking the name-indexed source registry to rediscover a
+        // prelude spelling: imported source declarations are registry-owned,
+        // while compiler carriers are catalog-owned.
+        if builtin.is_some_and(|kind| kind.close_method() == Some(method)) {
+            return true;
         }
-        self.method_call_consumes_receiver
-            .insert(SpanKey::in_module(span, self.current_module_idx));
-        let resolved_ty = self.subst.resolve(receiver_ty);
-        self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_ty);
+        // The trait registry is the single authority for source-declared
+        // `#[resource]` facts, keyed by exact declaration identity.
+        self.registry.is_resource(type_name)
     }
 
     fn record_method_call_rewrite(&mut self, span: &Span, rewrite: MethodCallRewrite) {
@@ -1264,37 +1309,52 @@ impl Checker {
     /// a module actor, so the reply type is defined in `{module}`; if a
     /// collision-free `{module}.{Name}` registry alias exists (seeded by
     /// `register_qualified_type_alias` → `alias_type_markers`), derive `Send`
-    /// through that qualified identity. Root / flat-file actors (bare identity,
-    /// no `.`) and replies whose qualified form is not registered fall back to
-    /// the bare type unchanged.
-    fn send_gate_reply_ty(&self, method_id: &str, resolved_reply: &Ty) -> Ty {
+    /// through that qualified identity. Root / flat-file actors retain their
+    /// bare identity. A module actor whose lexical import binding or canonical
+    /// marker row is absent returns `None`: the Send gate must reject rather
+    /// than consulting a same-name bare marker row.
+    fn send_gate_reply_ty(&self, method_id: &str, resolved_reply: &Ty) -> Option<Ty> {
         let Ty::Named {
             name,
             args,
             builtin,
         } = resolved_reply
         else {
-            return resolved_reply.clone();
+            return Some(resolved_reply.clone());
         };
-        // Already qualified, or a builtin/generic — nothing to re-key.
-        if builtin.is_some() || name.contains('.') {
-            return resolved_reply.clone();
+        // Builtins carry their own marker authority. A qualified user name,
+        // by contrast, must have an exact structural marker row.
+        if builtin.is_some() {
+            return Some(resolved_reply.clone());
+        }
+        if name.contains('.') {
+            return self
+                .registry
+                .has_type_markers(name)
+                .then(|| resolved_reply.clone());
         }
         let Some((actor_identity, _method)) = method_id.rsplit_once("::") else {
-            return resolved_reply.clone();
+            return Some(resolved_reply.clone());
         };
         let Some((module_short, _actor)) = actor_identity.rsplit_once('.') else {
-            return resolved_reply.clone();
+            return Some(resolved_reply.clone());
         };
-        let qualified = format!("{module_short}.{name}");
+        // `method_id` carries the imported actor's lexical module binding;
+        // marker derivation keys on the source declaration's full owner. A
+        // missing binding is not evidence for a bare reply type — fail closed
+        // so a same-name sibling cannot lend it a Send marker.
+        let module_owner = self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), module_short.to_string()))?;
+        let qualified = format!("{module_owner}.{name}");
         if self.registry.has_type_markers(&qualified) {
-            Ty::Named {
+            Some(Ty::Named {
                 name: qualified,
                 args: args.clone(),
                 builtin: *builtin,
-            }
+            })
         } else {
-            resolved_reply.clone()
+            None
         }
     }
 
@@ -1349,21 +1409,33 @@ impl Checker {
             // registry key. The qualified form is used only for the marker
             // lookup and diagnostic text; the dispatch table keeps the original
             // bare `reply_ty` the rest of the pipeline expects.
-            let send_check_ty = self.send_gate_reply_ty(&method_id, &resolved_reply);
-            if !send_check_ty.has_inference_var()
-                && !send_check_ty.contains_error()
-                && !self
-                    .registry
-                    .implements_marker(&send_check_ty, MarkerTrait::Send)
-            {
-                self.report_error(
+            match self.send_gate_reply_ty(&method_id, &resolved_reply) {
+                Some(send_check_ty)
+                    if !send_check_ty.has_inference_var()
+                        && !send_check_ty.contains_error()
+                        && !self
+                            .registry
+                            .implements_marker(&send_check_ty, MarkerTrait::Send) =>
+                {
+                    self.report_error(
+                        TypeErrorKind::InvalidSend,
+                        span,
+                        format!(
+                            "ask-shaped actor reply type `{}` is not Send (E_DUPLEX_NON_SEND)",
+                            resolved_reply.user_facing()
+                        ),
+                    );
+                }
+                Some(_) => {}
+                None => self.report_error(
                     TypeErrorKind::InvalidSend,
                     span,
                     format!(
-                        "ask-shaped actor reply type `{}` is not Send (E_DUPLEX_NON_SEND)",
+                        "ask-shaped actor reply type `{}` has no exact module-owned Send proof \
+                         (E_DUPLEX_NON_SEND)",
                         resolved_reply.user_facing()
                     ),
-                );
+                ),
             }
             ActorMethodKind::Ask(method_id, reply_ty)
         };
@@ -1431,12 +1503,71 @@ impl Checker {
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteToFunction {
+                target: descriptor.as_ref().map_or_else(
+                    || CallTarget::Unsupported {
+                        reason: format!("unregistered runtime method `{c_symbol}`"),
+                    },
+                    |descriptor| CallTarget::Runtime(descriptor.family()),
+                ),
                 c_symbol,
                 descriptor,
+                extern_identity: None,
                 elem_ty: None,
                 consumes_receiver,
+                returns_receiver_identity: false,
             },
         );
+    }
+
+    /// Record a direct opaque-handle call through the exact source extern
+    /// declaration that owns its ABI endpoint.
+    ///
+    /// Extracted registry metadata is intentionally only a signature surface:
+    /// it may use the legacy `net.Listener` presentation spelling while the
+    /// source declaration is owned by `std.net`.  A non-catalog endpoint must
+    /// therefore not be fabricated as a runtime call merely because the
+    /// registry found it.  This bridge admits it only when the canonical
+    /// receiver owner and the source extern declaration agree exactly.
+    fn record_source_extern_handle_method_rewrite(
+        &mut self,
+        span: &Span,
+        receiver_name: &str,
+        c_symbol: String,
+    ) -> bool {
+        let Some((owner_module, _)) = receiver_name.rsplit_once('.') else {
+            return false;
+        };
+        let Some(declaration) = self.source_extern_declarations.iter().find(|declaration| {
+            declaration.symbol == c_symbol
+                && declaration.declaring_module.as_deref() == Some(owner_module)
+        }) else {
+            return false;
+        };
+
+        let extern_identity = ExternMethodCallIdentity {
+            endpoint: declaration.symbol.clone(),
+            signature_key: declaration.signature_key.clone(),
+            declaring_module: declaration.declaring_module.clone(),
+            trusted_compiled_stdlib: self.canonical_std_module_sources.contains(owner_module),
+        };
+        let consumes_receiver =
+            crate::builtin_names::runtime_symbol_consumes_receiver(&extern_identity.endpoint);
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::Extern {
+                    declaration: crate::DefId::new(extern_identity.signature_key.clone()),
+                    endpoint: extern_identity.endpoint.clone(),
+                },
+                c_symbol,
+                descriptor: None,
+                extern_identity: Some(extern_identity),
+                elem_ty: None,
+                consumes_receiver,
+                returns_receiver_identity: false,
+            },
+        );
+        true
     }
 
     /// Record a rewrite for an **open-set** `#[extern_symbol]` FFI method call.
@@ -1462,15 +1593,55 @@ impl Checker {
     /// fail-closed (LESSONS: drop-allowset-from-value-flow): any symbol the
     /// allow-set does not name is borrowing, so an FFI binding that merely
     /// collides with a non-release name at worst leaks — it never double-frees.
-    fn record_extern_symbol_method_call_rewrite(&mut self, span: &Span, c_symbol: String) {
+    fn record_extern_symbol_method_call_rewrite(
+        &mut self,
+        span: &Span,
+        c_symbol: String,
+        signature_key: String,
+    ) {
         let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
+        let (declaring_module, trusted_compiled_stdlib) = self
+            .extern_method_origins
+            .get(&signature_key)
+            .cloned()
+            .unwrap_or((None, false));
+        let extern_identity = ExternMethodCallIdentity {
+            endpoint: c_symbol.clone(),
+            signature_key,
+            declaring_module,
+            trusted_compiled_stdlib,
+        };
+        // The endpoint is an ABI spelling, not a declaration identity.  In
+        // particular an imported receiver may be written through an alias at
+        // the call site, while the source impl was registered under its full
+        // owner path.  Carry the ID allocated at that registration boundary;
+        // do not manufacture one from the call-site signature key.
+        let target = self
+            .impl_method_declaration_ids
+            .get(&extern_identity.signature_key)
+            .cloned()
+            .map_or_else(
+                || CallTarget::Unsupported {
+                    reason: format!(
+                        "extern-symbol method `{}` has no registered declaration identity",
+                        extern_identity.signature_key
+                    ),
+                },
+                |declaration| CallTarget::Extern {
+                    declaration,
+                    endpoint: extern_identity.endpoint.clone(),
+                },
+            );
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteToFunction {
+                target,
                 c_symbol,
                 descriptor: None,
+                extern_identity: Some(extern_identity),
                 elem_ty: None,
                 consumes_receiver,
+                returns_receiver_identity: false,
             },
         );
     }
@@ -1478,11 +1649,22 @@ impl Checker {
     fn record_monomorphic_extern_symbol_rewrite_if_any(
         &mut self,
         sig: &FnSig,
+        signature_key: &str,
         span: &Span,
     ) -> bool {
         let Some(spec) = &sig.extern_symbol else {
             return false;
         };
+        if spec.template.raw == "hew_bytes_clear"
+            && signature_key == "bytes::clear"
+            && self
+                .extern_method_origins
+                .get(signature_key)
+                .is_some_and(|(module, trusted)| *trusted && module.as_deref() == Some("std.io"))
+        {
+            self.record_runtime_method_call_rewrite(span, spec.template.raw.clone());
+            return true;
+        }
         if !spec.template.is_monomorphic() {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
@@ -1495,7 +1677,11 @@ impl Checker {
             );
             return false;
         }
-        self.record_extern_symbol_method_call_rewrite(span, spec.template.raw.clone());
+        self.record_extern_symbol_method_call_rewrite(
+            span,
+            spec.template.raw.clone(),
+            signature_key.to_string(),
+        );
         true
     }
 
@@ -1510,8 +1696,28 @@ impl Checker {
         let Some(spec) = &sig.extern_symbol else {
             return false;
         };
+        let signature_key = format!("{receiver_type_name}::{method}");
+        // `bytes::clear` is a closed compiler builtin even though its method
+        // signature is authored in std/io.hew with `#[extern_symbol]`.  Admit
+        // the typed runtime family only for that exact source declaration and
+        // endpoint triple. User-authored extern symbols remain open-set and
+        // continue through the declaration-owned Extern target below.
+        if spec.template.raw == "hew_bytes_clear"
+            && signature_key == "bytes::clear"
+            && self
+                .extern_method_origins
+                .get(&signature_key)
+                .is_some_and(|(module, trusted)| *trusted && module.as_deref() == Some("std.io"))
+        {
+            self.record_runtime_method_call_rewrite(span, spec.template.raw.clone());
+            return true;
+        }
         if spec.template.is_monomorphic() {
-            self.record_extern_symbol_method_call_rewrite(span, spec.template.raw.clone());
+            self.record_extern_symbol_method_call_rewrite(
+                span,
+                spec.template.raw.clone(),
+                signature_key,
+            );
             return true;
         }
         if !matches!(receiver_type_name, "Option" | "Result") {
@@ -1558,12 +1764,17 @@ impl Checker {
                 return false;
             }
         };
-        self.record_extern_symbol_method_call_rewrite(span, expanded);
+        self.record_extern_symbol_method_call_rewrite(
+            span,
+            expanded,
+            format!("{receiver_type_name}::{method}"),
+        );
         true
     }
 
     fn record_builtin_option_result_method_rewrite_if_any(
         &mut self,
+        receiver_builtin: BuiltinType,
         receiver_type_name: &str,
         type_args: &[Ty],
         method: &str,
@@ -1572,21 +1783,25 @@ impl Checker {
         use crate::check::OptionResultMethod as M;
         use MethodCallRewrite::BuiltinOptionResult;
 
-        let Some(marker) = (match (receiver_type_name, method) {
-            ("Option", "is_some") => Some(M::OptionIsSome),
-            ("Option", "is_none") => Some(M::OptionIsNone),
-            ("Option", "unwrap") => Some(M::OptionUnwrap),
-            ("Option", "unwrap_or") => Some(M::OptionUnwrapOr),
-            ("Result", "is_ok") => Some(M::ResultIsOk),
-            ("Result", "is_err") => Some(M::ResultIsErr),
-            ("Result", "unwrap") => Some(M::ResultUnwrap),
-            ("Result", "unwrap_or") => Some(M::ResultUnwrapOr),
+        let Some(marker) = (match (receiver_builtin, method) {
+            (BuiltinType::Option, "is_some") => Some(M::OptionIsSome),
+            (BuiltinType::Option, "is_none") => Some(M::OptionIsNone),
+            (BuiltinType::Option, "unwrap") => Some(M::OptionUnwrap),
+            (BuiltinType::Option, "unwrap_or") => Some(M::OptionUnwrapOr),
+            (BuiltinType::Result, "is_ok") => Some(M::ResultIsOk),
+            (BuiltinType::Result, "is_err") => Some(M::ResultIsErr),
+            (BuiltinType::Result, "unwrap") => Some(M::ResultUnwrap),
+            (BuiltinType::Result, "unwrap_or") => Some(M::ResultUnwrapOr),
             _ => None,
         }) else {
             return false;
         };
 
-        let expected_args = if receiver_type_name == "Option" { 1 } else { 2 };
+        let expected_args = if receiver_builtin == BuiltinType::Option {
+            1
+        } else {
+            2
+        };
         if type_args.len() != expected_args {
             if type_args
                 .iter()
@@ -1617,11 +1832,19 @@ impl Checker {
         true
     }
 
-    fn is_builtin_option_result_marker_method(receiver_type_name: &str, method: &str) -> bool {
+    fn is_builtin_option_result_marker_method(
+        receiver_builtin: Option<BuiltinType>,
+        method: &str,
+    ) -> bool {
         matches!(
-            (receiver_type_name, method),
-            ("Option", "is_some" | "is_none" | "unwrap" | "unwrap_or")
-                | ("Result", "is_ok" | "is_err" | "unwrap" | "unwrap_or")
+            (receiver_builtin, method),
+            (
+                Some(BuiltinType::Option),
+                "is_some" | "is_none" | "unwrap" | "unwrap_or"
+            ) | (
+                Some(BuiltinType::Result),
+                "is_ok" | "is_err" | "unwrap" | "unwrap_or"
+            )
         )
     }
 
@@ -1652,7 +1875,7 @@ impl Checker {
             },
             true,
         );
-        self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, span);
+        self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, &method_key, span);
         Some(applied_sig.return_type)
     }
 
@@ -1727,14 +1950,47 @@ impl Checker {
         &mut self,
         span: &Span,
         c_symbol: impl Into<String>,
+        source_declaration: impl Into<String>,
     ) {
+        let c_symbol = c_symbol.into();
+        let source_declaration = source_declaration.into();
+        let target = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol).map_or_else(
+            || CallTarget::User(crate::DefId::new(source_declaration)),
+            CallTarget::Runtime,
+        );
         self.record_method_call_rewrite(
             span,
             MethodCallRewrite::RewriteModuleQualifiedToFunction {
-                c_symbol: c_symbol.into(),
+                target,
+                c_symbol,
                 elem_ty: None,
             },
         );
+    }
+
+    /// Resolve a module spelling in the current source file to the exact
+    /// imported module path.  The spelling is an input-namespace key only;
+    /// declaration IDs must use this source owner, never an alias or final
+    /// path segment.
+    pub(super) fn canonical_module_import_owner(&self, module_name: &str) -> String {
+        self.module_import_bindings
+            .get(&(self.current_module.clone(), module_name.to_string()))
+            .cloned()
+            .unwrap_or_else(|| module_name.to_string())
+    }
+
+    /// Whether this module spelling resolves to a user-source declaration.
+    /// `user_modules` is intentionally not consulted: it is a legacy lexical
+    /// spelling set and therefore cannot distinguish two paths with the same
+    /// final component.
+    fn module_binding_has_user_declaration(&self, module_name: &str, method: &str) -> bool {
+        let owner = self.canonical_module_import_owner(module_name);
+        let declaration = format!("{owner}.{method}");
+        self.fn_def_spans
+            .get(&declaration)
+            .is_some_and(|(_, declaring_module)| {
+                declaring_module.as_deref() == Some(owner.as_str())
+            })
     }
 
     /// Record a channel method rewrite to be resolved after inference settles.
@@ -1802,7 +2058,11 @@ impl Checker {
                     .module_registry
                     .handle_method_dispatches_through_impl(name, method)
             {
-                self.record_runtime_method_call_rewrite(span, c_symbol);
+                if crate::runtime_call::RuntimeCallFamily::from_c_symbol(&c_symbol).is_some() {
+                    self.record_runtime_method_call_rewrite(span, c_symbol);
+                } else {
+                    let _ = self.record_source_extern_handle_method_rewrite(span, name, c_symbol);
+                }
             }
         }
     }
@@ -1853,60 +2113,46 @@ impl Checker {
         method: &str,
         span: &Span,
     ) {
-        if self.user_modules.contains(module_name) {
+        let canonical_owner = self.canonical_module_import_owner(module_name);
+        let source_declaration = format!("{canonical_owner}.{method}");
+        if let Some(target) = self.intrinsic_runtime_target_for_signature(&source_declaration) {
+            // The checker has already proved the exact canonical declaration
+            // and catalog identity. Keep the user-facing callee spelling only
+            // for HIR presentation; the typed target is the executable
+            // authority and no lowering re-parses this string.
+            self.record_method_call_rewrite(
+                span,
+                MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                    target: CallTarget::Runtime(target),
+                    c_symbol: method.to_string(),
+                    elem_ty: None,
+                },
+            );
+            return;
+        }
+        if self.module_binding_has_user_declaration(module_name, method) {
             return;
         }
         if let Some(c_symbol) = self
             .module_registry
-            .resolve_module_call(module_name, method)
+            .resolve_module_call(&canonical_owner, method)
         {
             let symbol = if c_symbol == method {
-                let qualified = format!("{module_name}.{method}");
-                if !self.fn_sigs.contains_key(&qualified) {
+                let source_qualified = format!("{canonical_owner}.{method}");
+                let surface_qualified = format!("{module_name}.{method}");
+                if !self.fn_sigs.contains_key(&source_qualified)
+                    && !self.fn_sigs.contains_key(&surface_qualified)
+                {
                     return;
                 }
-                if module_name == "math" && Self::is_direct_math_intrinsic(method) {
-                    method.to_string()
-                } else {
-                    qualified
-                }
+                // Linker presentation remains the checker-selected registry
+                // spelling for now; the target below carries the canonical
+                // source declaration identity.
+                surface_qualified
             } else {
                 c_symbol
             };
-            self.record_module_qualified_method_call_rewrite(span, symbol);
-        }
-    }
-
-    fn is_direct_math_intrinsic(method: &str) -> bool {
-        matches!(
-            method,
-            "sqrt"
-                | "exp"
-                | "log"
-                | "sin"
-                | "cos"
-                | "abs"
-                | "min"
-                | "max"
-                | "abs_f"
-                | "min_f"
-                | "max_f"
-                | "pow"
-                | "floor"
-                | "ceil"
-                | "round"
-        )
-    }
-
-    fn generic_math_intrinsic_op(module_name: &str, method: &str) -> Option<MathGenericOp> {
-        if module_name != "math" {
-            return None;
-        }
-        match method {
-            "abs" => Some(MathGenericOp::Abs),
-            "min" => Some(MathGenericOp::Min),
-            "max" => Some(MathGenericOp::Max),
-            _ => None,
+            self.record_module_qualified_method_call_rewrite(span, symbol, source_declaration);
         }
     }
 
@@ -1925,12 +2171,34 @@ impl Checker {
         method: &str,
         span: &Span,
     ) {
-        if !self.user_modules.contains(module_name) {
+        if !self.module_binding_has_user_declaration(module_name, method) {
             return;
         }
-        let key = format!("{module_name}.{method}");
-        if self.fn_sigs.contains_key(&key) {
-            self.record_module_qualified_method_call_rewrite(span, key);
+        let canonical_owner = self.canonical_module_import_owner(module_name);
+        let source_declaration = format!("{canonical_owner}.{method}");
+        // A canonical compiler-intrinsic declaration is source-backed but not
+        // an ordinary user function. Its typed runtime or type-directed math
+        // rewrite was selected by the stdlib path; never overwrite it with a
+        // linker-name `User` fallback merely because it also has a source fn.
+        if self
+            .intrinsic_runtime_target_for_signature(&source_declaration)
+            .is_some()
+            || self
+                .intrinsic_math_generic_op_for_signature(&source_declaration)
+                .is_some()
+        {
+            return;
+        }
+        if self.fn_sigs.contains_key(&source_declaration)
+            || self
+                .fn_sigs
+                .contains_key(&format!("{module_name}.{method}"))
+        {
+            self.record_module_qualified_method_call_rewrite(
+                span,
+                source_declaration.clone(),
+                source_declaration,
+            );
         }
     }
 
@@ -1961,7 +2229,7 @@ impl Checker {
             "http.Server" | "http.Request" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpServer);
             }
-            "net.Listener" | "net.Connection" => {
+            STD_NET_LISTENER | STD_NET_CONNECTION => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking);
             }
             "tls.TlsStream" => {
@@ -2044,12 +2312,32 @@ impl Checker {
         if !self.modules.contains(module_short) {
             return None;
         }
-        let exports = self.module_type_exports.get(module_short)?;
+        let resolved_module = self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), module_short.to_string()))
+            .map(String::as_str)?;
+        let exports = self.module_type_exports.get(resolved_module)?;
         if !exports.contains(type_name) {
             return None;
         }
-        let qualified = format!("{module_short}.{type_name}");
+        let qualified = format!("{resolved_module}.{type_name}");
         self.type_defs.get(&qualified).cloned()
+    }
+
+    /// Return the exact source owner's exported type set for a lexical module
+    /// binding. Diagnostics use this helper as well as successful resolution so
+    /// suggestions never accidentally consult a same-leaf surface key.
+    pub(super) fn module_type_exports_for_binding(
+        &self,
+        module_short: &str,
+    ) -> Option<&HashSet<String>> {
+        if !self.modules.contains(module_short) {
+            return None;
+        }
+        let owner = self
+            .module_import_bindings
+            .get(&(self.current_module.clone(), module_short.to_string()))?;
+        self.module_type_exports.get(owner)
     }
 
     /// Resolve a `(module, type, variant)` triple to its `VariantDef`, gated on
@@ -2068,19 +2356,17 @@ impl Checker {
         Some((td, v))
     }
 
-    /// Look up a non-builtin named method via `type_defs` first, then `fn_sigs`.
-    /// The last `.`-separated segment of `current_module`, i.e. the *short*
-    /// module name used as the qualified type-alias prefix (`websocket` for
-    /// `std.net.websocket`). Returns `None` at the root / flat namespace, where
-    /// type names are unqualified.
-    pub(super) fn current_module_short(&self) -> Option<&str> {
-        self.current_module.as_deref().map(crate::short_name)
+    /// Full canonical owner path of the module whose declarations are being
+    /// checked. Use this for declaration identity and layout-facing type
+    /// lookup.
+    pub(super) fn current_module_identity(&self) -> Option<&str> {
+        self.current_module.as_deref()
     }
 
     /// Resolve a bare actor reference to its registered checker identity.
     ///
     /// Resolution order (local-first, mirroring `per-module-type-identity`):
-    /// 1. the current module's own actor (`{current_short}.{name}`)
+    /// 1. the current module's own actor (`{current_full_path}.{name}`)
     /// 2. a root/flat actor registered under the bare name
     /// 3. a named-import binding (`unqualified_to_module`)
     /// 4. the modules exporting an actor of that name: exactly one resolves
@@ -2091,8 +2377,8 @@ impl Checker {
                 .get(key)
                 .is_some_and(|td| td.kind == TypeDefKind::Actor)
         };
-        if let Some(short) = self.current_module_short() {
-            let dotted = format!("{short}.{name}");
+        if let Some(module) = self.current_module.as_deref() {
+            let dotted = format!("{module}.{name}");
             if is_actor(&dotted) {
                 return BareActorResolution::Resolved(dotted);
             }
@@ -2100,13 +2386,26 @@ impl Checker {
         if is_actor(name) {
             return BareActorResolution::Resolved(name.to_string());
         }
-        if let Some(module) = self
-            .unqualified_to_module
+        if let Some(owners) = self
+            .published_bare_type_owners
             .get(&(self.current_module.clone(), name.to_string()))
         {
-            let dotted = format!("{module}.{name}");
-            if is_actor(&dotted) {
-                return BareActorResolution::Resolved(dotted);
+            let candidates: Vec<String> = owners
+                .iter()
+                .filter(|identity| is_actor(identity))
+                .cloned()
+                .collect();
+            match candidates.as_slice() {
+                [identity] => return BareActorResolution::Resolved(identity.clone()),
+                [] => {}
+                _ => {
+                    let modules = candidates
+                        .iter()
+                        .filter_map(|identity| identity.rsplit_once('.'))
+                        .map(|(module, _)| module.to_string())
+                        .collect();
+                    return BareActorResolution::Ambiguous(modules);
+                }
             }
         }
         let mut candidates: Vec<&str> = self
@@ -2138,8 +2437,8 @@ impl Checker {
     /// bare key last. Returns `None` outside a module or when the qualified
     /// type def / method is absent (caller falls back to the bare lookup).
     pub(super) fn module_local_method_sig(&self, type_name: &str, method: &str) -> Option<FnSig> {
-        let short = self.current_module_short()?;
-        let qualified = format!("{short}.{type_name}");
+        let owner = self.current_module_identity()?;
+        let qualified = format!("{owner}.{type_name}");
         let td = self.type_defs.get(&qualified)?;
         td.methods.get(method).cloned()
     }
@@ -2150,8 +2449,8 @@ impl Checker {
     /// This avoids the bare-name last-write-wins entry when a sibling module
     /// declares the same record/type name.
     pub(super) fn module_local_type_def(&self, type_name: &str) -> Option<TypeDef> {
-        let short = self.current_module_short()?;
-        let qualified = format!("{short}.{type_name}");
+        let owner = self.current_module_identity()?;
+        let qualified = format!("{owner}.{type_name}");
         self.type_defs.get(&qualified).cloned()
     }
 
@@ -4266,7 +4565,7 @@ impl Checker {
                 self.resolved_calls
                     .get_mut(&key)
                     .expect("collection resolver inserted Vec call before symbol override")
-                    .target
+                    .method_target
                     .symbol_name = symbol_name;
             }
             crate::vec_authority::VecSymbolResolution::Deferred => {}
@@ -4842,11 +5141,8 @@ impl Checker {
                         },
                     );
                 }
-                iter_ty = Ty::Named {
-                    name: "HashMapIter".to_string(),
-                    args: vec![resolved_key, resolved_val],
-                    builtin: None,
-                };
+                iter_ty =
+                    Ty::builtin_named(BuiltinType::HashMapIter, vec![resolved_key, resolved_val]);
             }
             return iter_ty;
         }
@@ -5371,7 +5667,15 @@ impl Checker {
                         }
                         return true;
                     }
-                    Some(BuiltinType::Rc | BuiltinType::Weak | BuiltinType::Sender) => {
+                    // Sender is cloneable while Receiver is deliberately
+                    // drop-only. Both need descriptor-backed Vec storage;
+                    // copy/clone surfaces reject Receiver separately.
+                    Some(
+                        BuiltinType::Rc
+                        | BuiltinType::Weak
+                        | BuiltinType::Sender
+                        | BuiltinType::Receiver,
+                    ) => {
                         return args.len() == 1;
                     }
                     // Other builtin nominals are not user records/enums and
@@ -5784,11 +6088,7 @@ impl Checker {
                         },
                     );
                 }
-                Ty::Named {
-                    name: "VecIter".to_string(),
-                    args: vec![resolved_elem],
-                    builtin: None,
-                }
+                Ty::builtin_named(BuiltinType::VecIter, vec![resolved_elem])
             }
             "iter" => {
                 // `Vec<T>::iter()` yields the SAME `VecIter<T>` surface as
@@ -5833,11 +6133,7 @@ impl Checker {
                         },
                     );
                 }
-                Ty::Named {
-                    name: "VecIter".to_string(),
-                    args: vec![resolved_elem],
-                    builtin: None,
-                }
+                Ty::builtin_named(BuiltinType::VecIter, vec![resolved_elem])
             }
             "get" if runtime_method_declared => {
                 // Trait-routed `Index<i64>` accessor: `<Vec<T> as Index>::get
@@ -6195,6 +6491,19 @@ impl Checker {
         } else {
             method_key.clone()
         };
+        let target = self
+            .impl_method_declaration_ids
+            .get(&c_symbol)
+            .or_else(|| self.impl_method_declaration_ids.get(&method_key))
+            .cloned()
+            .map_or_else(
+                || CallTarget::Unsupported {
+                    reason: format!(
+                        "primitive impl method `{c_symbol}` has no registered declaration identity"
+                    ),
+                },
+                CallTarget::impl_method,
+            );
         self.record_method_call_receiver_kind(
             span,
             MethodCallReceiverKind::PrimitiveTraitImpl {
@@ -6206,15 +6515,18 @@ impl Checker {
             self.record_method_call_rewrite(
                 span,
                 MethodCallRewrite::RewriteToFunction {
+                    target,
                     c_symbol,
                     // User-fn dispatch into a primitive trait impl
                     // (`i64::fmt` etc.) is open-set; the typed runtime-call
                     // catalog does not enumerate user-defined method keys.
                     descriptor: None,
+                    extern_identity: None,
                     elem_ty: None,
                     // Primitive trait-impl dispatch is a user-fn call; it never
                     // consumes the receiver as a handle release.
-                    consumes_receiver: false,
+                    consumes_receiver: sig.consumes_receiver,
+                    returns_receiver_identity: sig.returns_receiver_identity,
                 },
             );
         }
@@ -6434,6 +6746,7 @@ impl Checker {
         span: &Span,
     ) -> Option<Ty> {
         let first_arg = args.first()?;
+        let trait_key = self.trait_ref_lookup_key(trait_name);
         // Short-circuit before synthesising first_arg: if trait_name has no
         // primitive impls registered at all, return immediately.  This
         // prevents the fallback trait-qualified path from synthesising
@@ -6444,7 +6757,7 @@ impl Checker {
         let has_primitive_impl = self
             .primitive_trait_impls
             .keys()
-            .any(|(_, tn)| tn == trait_name);
+            .any(|(_, tn)| tn == &trait_key);
         if !has_primitive_impl {
             return None;
         }
@@ -6471,7 +6784,7 @@ impl Checker {
         // this call site and there is no ambiguity to resolve.
         let sig = self
             .primitive_trait_impls
-            .get(&(canonical.clone(), trait_name.to_string()))
+            .get(&(canonical.clone(), trait_key.clone()))
             .and_then(|methods| methods.get(method_name))
             .cloned()?;
         // Bind the impl's type params from the concrete receiver before
@@ -6484,7 +6797,7 @@ impl Checker {
         let sig = self.instantiate_primitive_trait_method_sig(
             sig,
             &canonical,
-            trait_name,
+            &trait_key,
             &resolved_receiver,
         )?;
         // Do not add an outer check_arity here.  apply_instantiated_call_signature
@@ -6516,11 +6829,312 @@ impl Checker {
         Some(self.project_assoc_types(&applied.return_type))
     }
 
+    pub(super) fn check_method_call(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let result = self.check_method_call_inner(receiver, method, args, span);
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let runtime_rewrite_consumes_receiver = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::RewriteToFunction {
+                consumes_receiver: true,
+                ..
+            })
+        );
+        if runtime_rewrite_consumes_receiver {
+            self.method_call_consumes_receiver.insert(key);
+            if let Expr::Identifier(name) = &receiver.0 {
+                // The exact runtime ABI transfer overrides a surface Copy
+                // derivation. In particular, LambdaActorHandle is represented
+                // by an empty stdlib nominal, but release still consumes its
+                // sole runtime handle and any later receiver use is invalid.
+                self.env.mark_moved(name, receiver.1.clone());
+            }
+        }
+        self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
+        result
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "method ownership joins every resolved dispatch family at one authority seam"
+    )]
+    fn record_resolved_method_call_ownership(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        _method: &str,
+        args: &[CallArg],
+        span: &Span,
+        result_ty: &Ty,
+    ) {
+        use crate::runtime_call::{
+            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
+            ProducedValueOwnership as Ownership,
+        };
+
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let resolved_result = self.subst.resolve(result_ty).materialize_literal_defaults();
+        let non_owning = resolved_result.is_copy()
+            || self
+                .registry
+                .implements_marker(&resolved_result, MarkerTrait::Copy);
+        let rewrite = self.method_call_rewrites.get(&key);
+        let dyn_call = self.dyn_trait_method_calls.get(&key);
+        let resolved_call = self.resolved_calls.get(&key);
+        let actor_call = self.actor_method_dispatch.get(&key);
+        let machine_call = self.machine_method_dispatch.get(&key);
+        let runtime_family = match rewrite {
+            Some(MethodCallRewrite::RewriteToFunction {
+                descriptor: Some(descriptor),
+                ..
+            }) => Some(descriptor.family()),
+            _ => None,
+        };
+
+        let result_ownership = if non_owning {
+            Ownership::NoOwner
+        } else if self.method_call_preserves_receiver_identity.contains(&key) {
+            Ownership::Borrowed
+        } else if matches!(
+            rewrite,
+            Some(
+                MethodCallRewrite::RewriteToFunction {
+                    returns_receiver_identity: true,
+                    ..
+                } | MethodCallRewrite::StaticTraitDispatch {
+                    returns_receiver_identity: true,
+                    ..
+                }
+            )
+        ) || dyn_call.is_some_and(|call| call.signature.returns_receiver_identity)
+        {
+            Ownership::ReceiverIdentity
+        } else if matches!(
+            actor_call,
+            Some(ActorMethodKind::Ask(..) | ActorMethodKind::StreamProducer(..))
+        ) || matches!(
+            runtime_family,
+            Some(
+                crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout
+                    | crate::runtime_call::RuntimeCallFamily::ChannelTryRecvLayout
+                    | crate::runtime_call::RuntimeCallFamily::StreamNextLayout
+                    | crate::runtime_call::RuntimeCallFamily::StreamTryNextLayout
+                    | crate::runtime_call::RuntimeCallFamily::DuplexRecv
+                    | crate::runtime_call::RuntimeCallFamily::DuplexTryRecv
+            )
+        ) {
+            Ownership::owned(Acquisition::Delivery)
+        } else if let Some(call) = resolved_call {
+            match call.method_target.family {
+                MethodTargetFamily::HashMap(HashMapMethod::Remove)
+                | MethodTargetFamily::Vec(VecMethod::Pop | VecMethod::Remove) => {
+                    Ownership::owned(Acquisition::MoveOut)
+                }
+                MethodTargetFamily::HashMap(
+                    HashMapMethod::Clone
+                    | HashMapMethod::Get
+                    | HashMapMethod::Keys
+                    | HashMapMethod::Values,
+                )
+                | MethodTargetFamily::HashSet(HashSetMethod::Clone | HashSetMethod::ToVec)
+                | MethodTargetFamily::Vec(VecMethod::Clone | VecMethod::Get) => {
+                    Ownership::owned(Acquisition::Clone)
+                }
+                MethodTargetFamily::HashMap(_)
+                | MethodTargetFamily::HashSet(_)
+                | MethodTargetFamily::Vec(_) => Ownership::Unknown,
+            }
+        } else {
+            match rewrite {
+                Some(
+                    MethodCallRewrite::BuiltinVecIntoIter { .. }
+                    | MethodCallRewrite::BuiltinVecIter { .. }
+                    | MethodCallRewrite::BuiltinHashMapIntoIter { .. }
+                    | MethodCallRewrite::WireCodec { .. },
+                ) => Ownership::owned(Acquisition::Fresh),
+                Some(MethodCallRewrite::RecordCloneInplace { .. }) => {
+                    Ownership::owned(Acquisition::Clone)
+                }
+                Some(
+                    MethodCallRewrite::GeneratorNext { .. } | MethodCallRewrite::RemoteActorAsk,
+                ) => Ownership::owned(Acquisition::Delivery),
+                Some(MethodCallRewrite::RcIntrinsic { .. }) => {
+                    Ownership::owned(Acquisition::Retained)
+                }
+                _ => match machine_call {
+                    Some(MachineMethodKind::StateName { .. }) => {
+                        Ownership::owned(Acquisition::Fresh)
+                    }
+                    Some(MachineMethodKind::Step { .. } | MachineMethodKind::TakeEmits { .. })
+                    | None => Ownership::Unknown,
+                },
+            }
+        };
+
+        let signature = if let Some(call) = dyn_call {
+            Some((
+                format!("{}::{}", call.trait_name, call.method_name),
+                call.signature.clone(),
+            ))
+        } else {
+            match rewrite {
+                Some(MethodCallRewrite::RewriteToFunction {
+                    extern_identity: Some(identity),
+                    ..
+                }) => self
+                    .fn_sigs
+                    .get(&identity.signature_key)
+                    .cloned()
+                    .map(|sig| (identity.signature_key.clone(), sig)),
+                Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. }) => self
+                    .fn_sigs
+                    .get(c_symbol)
+                    .cloned()
+                    .map(|sig| (c_symbol.clone(), sig)),
+                Some(MethodCallRewrite::StaticTraitDispatch {
+                    declaring_trait,
+                    method_name,
+                    ..
+                }) => {
+                    let signature_key = format!("{declaring_trait}::{method_name}");
+                    self.fn_sigs
+                        .get(&signature_key)
+                        .cloned()
+                        .map(|sig| (signature_key, sig))
+                }
+                _ => None,
+            }
+        };
+        let arguments = if let Some(family) = runtime_family {
+            args.iter()
+                .enumerate()
+                .map(|(source_index, _)| {
+                    match family.arg_consume_verdict(source_index.saturating_add(1)) {
+                        crate::runtime_call::ConsumeVerdict::ProvenBorrow => Boundary::Borrow,
+                        crate::runtime_call::ConsumeVerdict::ProvenConsume
+                        | crate::runtime_call::ConsumeVerdict::ConservativeConsume => {
+                            Boundary::Transfer
+                        }
+                    }
+                })
+                .collect()
+        } else if let Some((signature_key, signature)) = signature {
+            let modes = self
+                .fn_param_ownership
+                .get(&signature_key)
+                .cloned()
+                .unwrap_or_else(|| vec![Boundary::Unknown; signature.params.len()]);
+            args.iter()
+                .enumerate()
+                .map(|(source_index, arg)| {
+                    let formal_index = arg
+                        .name()
+                        .and_then(|name| {
+                            signature
+                                .param_names
+                                .iter()
+                                .position(|formal| formal == name)
+                        })
+                        .unwrap_or(source_index);
+                    modes
+                        .get(formal_index)
+                        .copied()
+                        .unwrap_or(Boundary::Unknown)
+                })
+                .collect()
+        } else if let Some(call) = resolved_call {
+            match call.method_target.family {
+                MethodTargetFamily::HashMap(HashMapMethod::Insert)
+                | MethodTargetFamily::HashSet(HashSetMethod::Insert)
+                | MethodTargetFamily::Vec(VecMethod::Push | VecMethod::Set | VecMethod::Append) => {
+                    vec![Boundary::Transfer; args.len()]
+                }
+                MethodTargetFamily::HashMap(_)
+                | MethodTargetFamily::HashSet(_)
+                | MethodTargetFamily::Vec(_) => vec![Boundary::Borrow; args.len()],
+            }
+        } else if actor_call.is_some() {
+            vec![Boundary::Transfer; args.len()]
+        } else {
+            args.iter()
+                .map(|arg| {
+                    let arg_ty = self
+                        .expr_types
+                        .get(&SpanKey::in_module(&arg.expr().1, self.current_module_idx))
+                        .map(|ty| self.subst.resolve(ty));
+                    if arg_ty.as_ref().is_some_and(|ty| {
+                        ty.is_copy() || self.registry.implements_marker(ty, MarkerTrait::Copy)
+                    }) {
+                        Boundary::Borrow
+                    } else {
+                        Boundary::Unknown
+                    }
+                })
+                .collect()
+        };
+
+        let recognized = rewrite.is_some()
+            || dyn_call.is_some()
+            || resolved_call.is_some()
+            || actor_call.is_some()
+            || machine_call.is_some();
+        let receiver_boundary = if matches!(result_ownership, Ownership::ReceiverIdentity) {
+            Some(Boundary::Transfer)
+        } else if !recognized {
+            Some(Boundary::Unknown)
+        } else if self.method_call_consumes_receiver.contains(&key)
+            || resolved_call.is_some_and(|call| call.method_target.consumes_receiver)
+            || dyn_call.is_some_and(|call| call.signature.consumes_receiver)
+            || matches!(
+                rewrite,
+                Some(
+                    MethodCallRewrite::RewriteToFunction {
+                        consumes_receiver: true,
+                        ..
+                    } | MethodCallRewrite::StaticTraitDispatch {
+                        consumes_receiver: true,
+                        ..
+                    }
+                )
+            )
+        {
+            Some(Boundary::Transfer)
+        } else {
+            Some(Boundary::Borrow)
+        };
+
+        self.produced_call_arities
+            .insert(key.clone(), (true, args.len()));
+        self.resolved_method_call_ownership.insert(
+            key,
+            PendingMethodCallOwnership {
+                fact: ProducedValueFact {
+                    ownership: result_ownership,
+                    receiver_span: matches!(result_ownership, Ownership::ReceiverIdentity)
+                        .then(|| SpanKey::in_module(&receiver.1, self.current_module_idx)),
+                    receiver_boundary,
+                    arguments,
+                },
+                extern_identity: rewrite.and_then(|rewrite| match rewrite {
+                    MethodCallRewrite::RewriteToFunction {
+                        extern_identity, ..
+                    } => extern_identity.clone(),
+                    _ => None,
+                }),
+                resolved_result_ty: resolved_result,
+            },
+        );
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "pattern matching type checker with many variants"
     )]
-    pub(super) fn check_method_call(
+    fn check_method_call_inner(
         &mut self,
         receiver: &Spanned<Expr>,
         method: &str,
@@ -6531,7 +7145,13 @@ impl Checker {
         if let Expr::Identifier(name) = &receiver.0 {
             let receiver_is_binding = self.env.lookup_ref(name).is_some();
             let receiver_is_known_type = self.type_defs.contains_key(name);
-            let key = format!("{name}.{method}");
+            // `name` is a lexical import binding (`string`, or an explicit
+            // module alias). Declaration and export registries are keyed by the
+            // exact source owner, so resolve the binding before every authority
+            // lookup. Never recover the owner from the final path segment: two
+            // nested stdlib modules may share both a leaf and a function name.
+            let canonical_owner = self.canonical_module_import_owner(name);
+            let key = format!("{canonical_owner}.{method}");
             let looks_like_module_call = !receiver_is_binding
                 && !receiver_is_known_type
                 && (self.modules.contains(name)
@@ -6547,7 +7167,14 @@ impl Checker {
                 // method contains "::" → treat as a qualified variant constructor rather than a
                 // module function. Mirrors the lookup in check_call (calls.rs:407-465).
                 if method.contains("::") {
-                    let constructor_match = self.lookup_variant_constructor(method);
+                    let lifecycle_surface = format!("{name}.{method}");
+                    let Ok(canonical_lifecycle) =
+                        self.canonicalize_source_lifecycle_value_path(&lifecycle_surface, span)
+                    else {
+                        return Ty::Error;
+                    };
+                    let constructor_surface = canonical_lifecycle.as_deref().unwrap_or(method);
+                    let constructor_match = self.lookup_variant_constructor(constructor_surface);
                     if let Some((type_name, expected_params, type_params)) = constructor_match {
                         let type_param_count = type_params.len();
                         let mut inferred_args = Vec::new();
@@ -6577,7 +7204,7 @@ impl Checker {
                             .iter()
                             .map(|ty| self.subst.resolve(ty))
                             .collect();
-                        return Ty::normalize_named(type_name, resolved_args);
+                        return self.variant_nominal_ty(type_name, resolved_args);
                     }
                 }
                 if !self.module_fn_exports.contains(&key) {
@@ -6640,12 +7267,12 @@ impl Checker {
                 self.require_unsafe(&key, span);
                 // Native-only stdlib modules are rejected on wasm32 because
                 // their runtime implementations are not compiled there.
-                // NATIVE_ONLY_WASM_MODULE_REJECTIONS is the single source of
-                // truth shared with the value-position guard in expressions.rs.
+                // The manifest-generated module rejection slice is shared with
+                // the value-position guard in expressions.rs.
                 if !self.user_modules.contains(name) {
-                    for &(module, feature) in Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
-                        if name == module {
-                            self.reject_wasm_feature(span, feature);
+                    for rejection in crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
+                        if name == rejection.module {
+                            self.reject_wasm_feature(span, rejection.feature);
                         }
                     }
                     // crypto.random_bytes and its fallible twin depend on a
@@ -6685,11 +7312,11 @@ impl Checker {
                     // Channel constructor: inject a shared type variable so
                     // Sender<T> and Receiver<T> from the same `new` call are
                     // linked through unification.
-                    if key == "channel.new" {
+                    if canonical_owner == "std.channel.channel" && method == "new" {
                         let t = Ty::Var(TypeVar::fresh());
                         return Ty::Tuple(vec![Ty::sender(t.clone()), Ty::receiver(t)]);
                     }
-                    if let Some(op) = Self::generic_math_intrinsic_op(name, method) {
+                    if let Some(op) = self.intrinsic_math_generic_op_for_signature(&key) {
                         self.record_method_call_rewrite(
                             span,
                             MethodCallRewrite::GenericMathIntrinsic { op },
@@ -6843,7 +7470,7 @@ impl Checker {
             // Recognised ONLY directly under an `await` (the suspend point); a
             // bare `conn.read()` stays the blocking FFI call (E8).
             let is_conn_await_read = self.inside_await_expr
-                && (name == "Connection" || name == "net.Connection")
+                && name == "std.net.Connection"
                 && matches!(method, "read" | "read_string");
             if is_conn_await_read {
                 self.conn_await_reads.insert(
@@ -6857,9 +7484,8 @@ impl Checker {
                 // `ListenerAwaitAccept` instead of the blocking `hew_tcp_accept`.
                 // Recognised ONLY directly under an `await`; a bare
                 // `listener.accept()` stays the blocking FFI call.
-                let is_listener_await_accept = self.inside_await_expr
-                    && (name == "Listener" || name == "net.Listener")
-                    && method == "accept";
+                let is_listener_await_accept =
+                    self.inside_await_expr && name == "std.net.Listener" && method == "accept";
                 if is_listener_await_accept {
                     self.listener_await_accepts
                         .insert(SpanKey::in_module(span, self.current_module_idx));
@@ -7574,6 +8200,9 @@ impl Checker {
                             self.method_call_rewrites.insert(
                                 SpanKey::in_module(span, self.current_module_idx),
                                 MethodCallRewrite::RewriteToFunction {
+                                    target: CallTarget::Runtime(
+                                        crate::runtime_call::RuntimeCallFamily::RemotePidSend,
+                                    ),
                                     c_symbol: "hew_remote_pid_send".to_string(),
                                     // Closed runtime call dispatched by callee-
                                     // name intercept in codegen; the substrate
@@ -7585,10 +8214,12 @@ impl Checker {
                                         )
                                         .expect("RemotePidSend rejects elem"),
                                     ),
+                                    extern_identity: None,
                                     elem_ty: None,
                                     // Fire-and-forget send; borrows the pid
                                     // handle, does not release it.
                                     consumes_receiver: false,
+                                    returns_receiver_identity: false,
                                 },
                             );
                         }
@@ -7600,10 +8231,7 @@ impl Checker {
                             "display" => Some("hew_remote_pid_display"),
                             _ => None,
                         } {
-                            self.record_extern_symbol_method_call_rewrite(
-                                span,
-                                c_symbol.to_string(),
-                            );
+                            self.record_runtime_method_call_rewrite(span, c_symbol);
                         }
                         return return_type;
                     }
@@ -8430,7 +9058,9 @@ impl Checker {
                     //      method). The resolved sig carries the consume fact.
                     let consumes_receiver = sig.consumes_receiver
                         || self.named_type_method_consumes_receiver(name, method)
-                        || self.named_type_inherent_close_consumes_receiver(name, method, &sig);
+                        || self.named_type_inherent_close_consumes_receiver(
+                            name, *builtin, method, &sig,
+                        );
                     if consumes_receiver {
                         self.method_call_consumes_receiver
                             .insert(SpanKey::in_module(span, self.current_module_idx));
@@ -8439,11 +9069,18 @@ impl Checker {
                     }
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
                     let builtin_option_result_marker =
-                        matches!(builtin, Some(BuiltinType::Result | BuiltinType::Option))
-                            && Self::is_builtin_option_result_marker_method(name, method);
-                    self.record_builtin_option_result_method_rewrite_if_any(
-                        name, type_args, method, span,
-                    );
+                        Self::is_builtin_option_result_marker_method(*builtin, method);
+                    if let Some(receiver_builtin @ (BuiltinType::Result | BuiltinType::Option)) =
+                        *builtin
+                    {
+                        self.record_builtin_option_result_method_rewrite_if_any(
+                            receiver_builtin,
+                            name,
+                            type_args,
+                            method,
+                            span,
+                        );
+                    }
                     self.record_named_extern_symbol_rewrite_if_any(
                         name, type_args, method, &sig, span,
                     );
@@ -8472,7 +9109,10 @@ impl Checker {
                         || self.dyn_trait_method_calls.contains_key(&span_key)
                         || self.resolved_calls.contains_key(&span_key);
                     if !already_rewritten {
-                        let method_owner = crate::short_name(name);
+                        // The resolved receiver owner is executable dispatch
+                        // authority. Registration publishes this exact key;
+                        // never retry through the receiver's final segment.
+                        let method_owner = name.as_str();
                         let method_key = format!("{method_owner}::{method}");
                         // Wire codec instance serialize methods on a `#[wire]`
                         // struct or enum. `encode` is the binary CBOR path
@@ -8512,7 +9152,8 @@ impl Checker {
                                     },
                                 );
                             }
-                        } else if method_owner == "VecIter" && method == "next" {
+                        } else if matches!(*builtin, Some(BuiltinType::VecIter)) && method == "next"
+                        {
                             if let Some(elem_ty) = type_args.first() {
                                 if !self.validate_vec_iter_element_clone_type(elem_ty, span) {
                                     return Ty::Error;
@@ -8582,11 +9223,27 @@ impl Checker {
                             self.record_method_call_rewrite(
                                 span,
                                 MethodCallRewrite::RewriteToFunction {
+                                    target: self
+                                        .impl_method_declaration_ids
+                                        .get(&dispatch_key)
+                                        .or_else(|| {
+                                            self.impl_method_declaration_ids.get(&method_key)
+                                        })
+                                        .cloned()
+                                        .map_or_else(
+                                            || CallTarget::Unsupported {
+                                                reason: format!(
+                                                    "impl method `{dispatch_key}` has no registered declaration identity"
+                                                ),
+                                            },
+                                            CallTarget::impl_method,
+                                        ),
                                     c_symbol: dispatch_key,
                                     // User-defined `Type::method` dispatch is
                                     // open-set; the typed runtime-call catalog
                                     // does not enumerate user method keys.
                                     descriptor: None,
+                                    extern_identity: None,
                                     elem_ty: None,
                                     // #1295: a `#[resource]` type's inherent
                                     // `close(self)` is a terminal handle-release
@@ -8599,6 +9256,7 @@ impl Checker {
                                     // this type); other inherent/trait methods
                                     // are not consuming releases.
                                     consumes_receiver,
+                                    returns_receiver_identity: sig.returns_receiver_identity,
                                 },
                             );
                         }
@@ -8634,8 +9292,13 @@ impl Checker {
                     // method reaches two distinct declaring traits.
                     let mut hits: Vec<(String, String, FnSig)> = Vec::new();
                     for bound_trait in &bounds {
+                        // Keep the source spelling for diagnostics, but resolve
+                        // the dispatch lookup through the declaration owner.
+                        // An imported alias such as `AlphaRender` is not a
+                        // declaration identity and must never reach HIR as one.
+                        let bound_trait_key = self.trait_ref_lookup_key(bound_trait);
                         let declaring =
-                            self.collect_all_declaring_traits_for_method(bound_trait, method);
+                            self.collect_all_declaring_traits_for_method(&bound_trait_key, method);
                         for declaring_trait in declaring {
                             // Resolve the sig from the declaring trait directly.
                             if let Some((_, sig)) =
@@ -8733,22 +9396,42 @@ impl Checker {
                                 type_name: name.clone(),
                             },
                         );
-                        let qualified = format!("{declaring_trait}::{method}");
-                        self.apply_consume_receiver_if_flagged(
-                            &qualified,
-                            receiver,
-                            &receiver_ty,
-                            span,
-                        );
+                        if trait_sig.consumes_receiver {
+                            self.method_call_consumes_receiver
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                            let resolved_ty = self.subst.resolve(&receiver_ty);
+                            self.mark_expr_moved_if_non_copy(
+                                &receiver.0,
+                                &receiver.1,
+                                &resolved_ty,
+                            );
+                        }
                         // Record the StaticTraitDispatch rewrite for HIR consumption.
+                        let target = self
+                            .trait_method_call_target_ids(&declaring_trait, method)
+                            .or_else(|| self.trait_method_call_target_ids(&bound_trait, method))
+                            .map_or_else(
+                                || CallTarget::Unsupported {
+                                    reason: format!(
+                                        "trait method `{declaring_trait}::{method}` has no registered declaration identity"
+                                    ),
+                                },
+                                |(declaring_trait, method)| CallTarget::StaticTraitMethod {
+                                    declaring_trait,
+                                    method,
+                                },
+                            );
                         self.record_method_call_rewrite(
                             span,
                             MethodCallRewrite::StaticTraitDispatch {
+                                target,
                                 receiver_type_param: name.clone(),
                                 bound_trait,
                                 declaring_trait,
                                 method_name: method.to_string(),
                                 requires_mutable_receiver: trait_sig.requires_mutable_receiver,
+                                consumes_receiver: trait_sig.consumes_receiver,
+                                returns_receiver_identity: trait_sig.returns_receiver_identity,
                             },
                         );
                         return self.project_assoc_types(&applied_sig.return_type);
@@ -8989,9 +9672,27 @@ impl Checker {
                                 // boundary explicit (LESSONS:
                                 // `boundary-fail-closed`).
                                 let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
+                                let target = self
+                                    .trait_method_call_target_ids(&bound.trait_name, method)
+                                    .map_or_else(
+                                        || CallTarget::Unsupported {
+                                            reason: format!(
+                                                "dynamic trait method `{}::{method}` has no registered declaration identity",
+                                                bound.trait_name
+                                            ),
+                                        },
+                                        |(declaring_trait, method)| {
+                                            CallTarget::DynamicVtable {
+                                                declaring_trait,
+                                                method,
+                                                slot,
+                                            }
+                                        },
+                                    );
                                 self.dyn_trait_method_calls.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     crate::check::types::DynMethodCall {
+                                        target,
                                         trait_name: bound.trait_name.clone(),
                                         method_name: method.to_string(),
                                         slot,
@@ -9000,13 +9701,16 @@ impl Checker {
                                 );
                             }
                         }
-                        let qualified = format!("{}::{method}", bound.trait_name);
-                        self.apply_consume_receiver_if_flagged(
-                            &qualified,
-                            receiver,
-                            &receiver_ty,
-                            span,
-                        );
+                        if sig.consumes_receiver {
+                            self.method_call_consumes_receiver
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                            let resolved_ty = self.subst.resolve(&receiver_ty);
+                            self.mark_expr_moved_if_non_copy(
+                                &receiver.0,
+                                &receiver.1,
+                                &resolved_ty,
+                            );
+                        }
                     }
                     let applied_sig = self.apply_instantiated_call_signature(
                         &sig,
@@ -9429,9 +10133,58 @@ mod tests {
     use crate::module_registry::ModuleRegistry;
 
     #[test]
+    fn ask_reply_send_gate_uses_exact_import_owner_and_fails_closed_without_it() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker
+            .registry
+            .register_type("hew.replysend.Reply".to_string(), vec![Ty::I64]);
+        checker.registry.register_type(
+            "hew.replynonsend.Reply".to_string(),
+            vec![Ty::Named {
+                name: "Rc".to_string(),
+                args: vec![Ty::I64],
+                builtin: Some(BuiltinType::Rc),
+            }],
+        );
+        checker
+            .module_import_bindings
+            .insert((None, "replysend".to_string()), "hew.replysend".to_string());
+        checker.module_import_bindings.insert(
+            (None, "replynonsend".to_string()),
+            "hew.replynonsend".to_string(),
+        );
+        let bare_reply = Ty::Named {
+            name: "Reply".to_string(),
+            args: Vec::new(),
+            builtin: None,
+        };
+
+        let send = checker
+            .send_gate_reply_ty("replysend.Producer::make", &bare_reply)
+            .expect("an exact replysend binding and marker row must resolve");
+        assert!(matches!(send, Ty::Named { ref name, .. } if name == "hew.replysend.Reply"));
+        assert!(checker.registry.implements_marker(&send, MarkerTrait::Send));
+
+        let non_send = checker
+            .send_gate_reply_ty("replynonsend.Producer::make", &bare_reply)
+            .expect("an exact replynonsend binding and marker row must resolve");
+        assert!(matches!(non_send, Ty::Named { ref name, .. } if name == "hew.replynonsend.Reply"));
+        assert!(!checker
+            .registry
+            .implements_marker(&non_send, MarkerTrait::Send));
+
+        assert!(
+            checker
+                .send_gate_reply_ty("missing.Producer::make", &bare_reply)
+                .is_none(),
+            "a missing lexical module binding must not fall back to bare Reply"
+        );
+    }
+
+    #[test]
     fn transport_attach_rewrite_requires_authoritative_qualified_identity() {
         for (receiver, symbol) in [
-            ("net.Connection", "hew_tcp_attach_local"),
+            (STD_NET_CONNECTION, "hew_tcp_attach_local"),
             ("tls.TlsStream", "hew_tls_attach_local"),
             ("websocket.Conn", "hew_ws_attach_local"),
         ] {
@@ -9491,10 +10244,7 @@ mod tests {
         };
 
         assert_eq!(
-            checker.qualify_method_return_to_receiver_owner(
-                "net.Listener",
-                &bare_connection,
-            ),
+            checker.qualify_method_return_to_receiver_owner("net.Listener", &bare_connection,),
             Ty::Named {
                 name: "net.Connection".to_string(),
                 args: Vec::new(),
@@ -9732,7 +10482,7 @@ mod tests {
             .resolved_calls
             .get(&SpanKey::in_module(&span, 0))
             .expect("generic HashMap method dispatch must record a resolved call");
-        assert_eq!(call.target.symbol_name, "hew_hashmap_insert_layout");
+        assert_eq!(call.method_target.symbol_name, "hew_hashmap_insert_layout");
     }
 
     /// Two deferred `HashMap` admissions sharing the same unresolved

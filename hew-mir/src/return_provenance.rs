@@ -549,7 +549,7 @@ fn return_alias_bits_scoped<P: LeafPolicy>(
                 acc | return_alias_bits_scoped(v, policy, scope)
             }),
         },
-        HirExprKind::Call { callee, args } => match policy.classify_call(callee) {
+        HirExprKind::Call { callee, args, .. } => match policy.classify_call(callee) {
             CallClass::Opaque => AliasBits::OPAQUE,
             CallClass::Fresh => AliasBits::EMPTY,
             CallClass::ParamSubst => args.iter().fold(AliasBits::EMPTY, |acc, a| {
@@ -1766,7 +1766,7 @@ impl ExternContractTable {
 /// permissive fallback.
 ///
 /// The rows come from [`crate::ffi_contracts::extern_ownership_contract`],
-/// which `hew-mir/build.rs` projects from the `[[ownership.contracts]]` table
+/// which `hew-types/build.rs` projects from the `[[ownership.contracts]]` table
 /// of `scripts/jit-symbol-classification.toml` — the single authority for
 /// per-parameter consume/borrow facts, validated out of band by
 /// `scripts/verify-ffi-symbols.py`. `ExternParamOwnership::Borrow` is defined
@@ -1945,10 +1945,11 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
             //
             // The third disjunct is the only one that mints for a value that
             // DOES carry a pointer, and it mints solely on a measured retention
-            // answer — see `extern_result_is_measured_transfer`.
+            // answer plus the exact release that the declared type will run —
+            // see `extern_result_is_measured_transfer`.
             if ty_is_scalar_non_heap(&ef.return_ty)
                 || pointer_free_records.ty_is_pointer_free(&ef.return_ty)
-                || extern_result_is_measured_transfer(&ef.name, ef, &type_decls)
+                || extern_result_is_measured_transfer(&ef.name, ef, &type_decls, module)
             {
                 rows.insert(ef.id, AliasBits::EMPTY);
                 fresh_return_names.insert(ef.name.clone());
@@ -2033,20 +2034,117 @@ fn extern_result_is_measured_transfer(
     symbol: &str,
     decl: &hew_hir::HirExternFn,
     decls: &HashMap<&str, &hew_hir::HirTypeDecl>,
+    module: &hew_hir::HirModule,
 ) -> bool {
-    let ReturnRelease::One(planned) = declared_return_release(&decl.return_ty, decls, 0) else {
-        return false;
-    };
     if !extern_result_is_audited_owned_transfer(symbol, decl.param_tys.len()) {
         return false;
     }
     crate::ffi_contracts::extern_ownership_contract(symbol)
         .contract()
         .is_some_and(|contract| {
-            contract.result_retention == crate::ffi_contracts::ExternResultRetention::Transferred
-                && contract.release_symbol == planned
-                && contract.discharge_depth == crate::ffi_contracts::ReleaseDischargeDepth::Shallow
+            if contract.result_retention != crate::ffi_contracts::ExternResultRetention::Transferred
+                || contract.discharge_depth != crate::ffi_contracts::ReleaseDischargeDepth::Shallow
+            {
+                return false;
+            }
+            match declared_return_release(&decl.return_ty, decls, 0) {
+                // Heap values whose compiler-derived release is a direct C ABI
+                // symbol (string, bytes, and a structurally homogeneous
+                // record) keep the existing exact-symbol proof.
+                ReturnRelease::One(planned) => contract.release_symbol == planned,
+                // An opaque `#[resource]` discharges through its inherent
+                // `<Type>::close` function rather than a raw C symbol.  It is
+                // still an exactly-one release, but only when that particular
+                // close body directly invokes the exact C close named by the
+                // producer row.  This is the resource analogue of `One`: a
+                // fresh `Connection` cannot be minted merely because a source
+                // marker says resource, nor can a similarly-spelled producer
+                // select an unrelated close ritual.
+                ReturnRelease::Unresolved => resource_opaque_return_releases_through(
+                    &decl.return_ty,
+                    module,
+                    contract.release_symbol,
+                ),
+                ReturnRelease::Nothing => false,
+            }
         })
+}
+
+/// Whether an opaque resource return is discharged by exactly `release_symbol`.
+///
+/// The resource drop plan emits the close method recorded in
+/// `module.type_classes`; this admission reads that same entry, then insists
+/// that its body has a direct call to the producer row's close symbol.  We do
+/// not follow wrappers here: a transitive analysis could be sound, but a missed
+/// edge in it would turn an ownership proof into a guess.  Refusing the wrapper
+/// is the safe (leak) direction until it has its own complete proof.
+fn resource_opaque_return_releases_through(
+    ty: &ResolvedTy,
+    module: &hew_hir::HirModule,
+    release_symbol: &str,
+) -> bool {
+    let ResolvedTy::Named {
+        name,
+        args,
+        is_opaque,
+        ..
+    } = ty
+    else {
+        return false;
+    };
+    if !*is_opaque || !args.is_empty() {
+        return false;
+    }
+    let short = hew_types::short_name(name);
+    let Some((class_name, (marker, Some(close_method)))) = module
+        .type_classes
+        .get_key_value(name.as_str())
+        .or_else(|| module.type_classes.get_key_value(short))
+    else {
+        return false;
+    };
+    if *marker != hew_hir::ResourceMarker::Resource {
+        return false;
+    }
+
+    let qualified_close = format!("{class_name}::{close_method}");
+    let short_close = format!("{short}::{close_method}");
+    module.items.iter().any(|item| {
+        let hew_hir::HirItem::Function(function) = item else {
+            return false;
+        };
+        (function.name == qualified_close || function.name == short_close)
+            && block_directly_calls_symbol(&function.body, release_symbol)
+    })
+}
+
+/// The intentionally tiny authority walk used by
+/// [`resource_opaque_return_releases_through`]. `unsafe { ... }` becomes a HIR
+/// block, so a direct FFI close is either a statement or a tail below one or
+/// more such blocks. Any other expression form is not a proof.
+fn block_directly_calls_symbol(block: &HirBlock, symbol: &str) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            HirStmtKind::Expr(expr) => expr_directly_calls_symbol(expr, symbol),
+            _ => false,
+        })
+        || block
+            .tail
+            .as_deref()
+            .is_some_and(|tail| expr_directly_calls_symbol(tail, symbol))
+}
+
+fn expr_directly_calls_symbol(expr: &HirExpr, symbol: &str) -> bool {
+    match &expr.kind {
+        HirExprKind::Call { callee, .. } => matches!(
+            &callee.kind,
+            HirExprKind::BindingRef { name, .. } if name == symbol
+        ),
+        HirExprKind::Block(block) => block_directly_calls_symbol(block, symbol),
+        _ => false,
+    }
 }
 
 /// What the compiler's type-directed drop plan will emit for a declared type.
@@ -2825,6 +2923,8 @@ pub(crate) fn build_call_scrutinee_provenance(
     let may_mutate = compute_may_mutate_heap_param(origin_fns);
     let provenance =
         compute_call_scrutinee_return_provenance(origin_fns, &extern_table, &may_mutate);
+    let owned_string_carrier_provenance =
+        compute_owned_string_return_carrier_provenance(origin_fns, &extern_table, &may_mutate);
     let retained_string_projection_returns =
         compute_fn_returns_retained_string_projection_owner(origin_fns);
     // The table-aware freshness authority: the coarse proof MINUS everything the
@@ -2857,20 +2957,18 @@ pub(crate) fn build_call_scrutinee_provenance(
         &declared_release,
     );
     // A string return needs one independently releasable share, not necessarily
-    // a pointer-distinct allocation. `Fresh(∅)` already has that postcondition.
-    // `ParamsOnly({PARAM})` has it too for a Hew body: returning a whole string
-    // parameter inserts `StringRetain`, while returning a string field/tuple
-    // projection goes through a retained field load. Calls propagate the same
-    // postcondition through this fixpoint. An OPAQUE bit is never rescuable.
+    // a pointer-distinct allocation. The string-specific fixpoint preserves the
+    // established direct-call rules (`Fresh(∅)` and `ParamsOnly({PARAM})`) and
+    // additionally reads an indirect call through the ClosureInvoke ABI's
+    // one-share postcondition. Calls propagate that fact through wrapper depth.
+    // An OPAQUE direct extern remains OPAQUE transitively.
     //
     // Do not filter on the origin's declared return type here: a generic origin
     // may declare `T` and be instantiated at `string`; the consumer checks the
     // concrete call-result type before consulting this set.
-    let owned_string_return_carriers = provenance
+    let owned_string_return_carriers = owned_string_carrier_provenance
         .iter()
-        .filter_map(|(&id, bits)| {
-            (!bits.is_opaque() && !launders_opaque_extern.contains(&id)).then_some(id)
-        })
+        .filter_map(|(&id, bits)| (!bits.is_opaque()).then_some(id))
         .collect::<HashSet<_>>();
     let owned_string_return_carrier_symbols = origin_fns
         .iter()
@@ -3231,7 +3329,7 @@ pub fn reachable_bindings(expr: &HirExpr, out: &mut Reachable) {
         }
         // Calls / methods — an argument (or receiver) embedding a tracked local
         // carries it to the call boundary.
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             reachable_bindings(callee, out);
             for a in args {
                 reachable_bindings(a, out);
@@ -3532,7 +3630,7 @@ impl MutationScan<'_> {
             // argument reaches a heap-param class; a callable-param invocation is
             // may-mutate unconditionally when an arg reaches (or when the invoked
             // callable itself captures — conservatively any-arg).
-            HirExprKind::Call { callee, args } => {
+            HirExprKind::Call { callee, args, .. } => {
                 let callee_pure = self.callee_is_proven_pure(callee);
                 if !callee_pure && args.iter().any(|a| self.arg_reaches_param(a)) {
                     return true;
@@ -3725,7 +3823,14 @@ pub fn compute_local_binding_provenance(
     extern_table: &ExternContractTable,
     may_mutate: &HashMap<hew_hir::ItemId, bool>,
 ) -> HashMap<BindingId, AliasBits> {
-    local_binding_provenance_impl(f, provenance, extern_table, may_mutate).0
+    local_binding_provenance_impl(
+        f,
+        provenance,
+        extern_table,
+        may_mutate,
+        LocalProvenancePolicy::Precise,
+    )
+    .0
 }
 
 /// The CURRENT function's local-binding freshness facts for the S2b caller
@@ -3789,8 +3894,13 @@ pub fn compute_local_binding_freshness(
     extern_table: &ExternContractTable,
     may_mutate: &HashMap<hew_hir::ItemId, bool>,
 ) -> LocalBindingFreshness {
-    let (bits, aliased, pattern_binders) =
-        local_binding_provenance_impl(f, provenance, extern_table, may_mutate);
+    let (bits, aliased, pattern_binders) = local_binding_provenance_impl(
+        f,
+        provenance,
+        extern_table,
+        may_mutate,
+        LocalProvenancePolicy::Precise,
+    );
     let mut ref_counts: HashMap<BindingId, u32> = HashMap::new();
     let mut saw_unknown_form = false;
     count_binding_refs_in_block(&f.body, &mut ref_counts, &mut saw_unknown_form);
@@ -3803,11 +3913,18 @@ pub fn compute_local_binding_freshness(
     }
 }
 
+#[derive(Clone, Copy)]
+enum LocalProvenancePolicy {
+    Precise,
+    OwnedStringCarrier,
+}
+
 fn local_binding_provenance_impl(
     f: &HirFn,
     provenance: &HashMap<hew_hir::ItemId, AliasBits>,
     extern_table: &ExternContractTable,
     may_mutate: &HashMap<hew_hir::ItemId, bool>,
+    policy_kind: LocalProvenancePolicy,
 ) -> (
     HashMap<BindingId, AliasBits>,
     HashSet<BindingId>,
@@ -3862,15 +3979,27 @@ fn local_binding_provenance_impl(
     loop {
         let mut changed = false;
         for (&id, sources) in &collector.defs {
-            let policy = PrecisePolicy {
-                provenance,
-                extern_table,
-                local_bits: &bits,
-            };
             let mut new_bits = *bits.get(&id).unwrap_or(&AliasBits::EMPTY);
             for src in sources {
                 new_bits |= match src {
-                    DefSource::Value(e) => return_alias_bits(e, &policy),
+                    DefSource::Value(e) => match policy_kind {
+                        LocalProvenancePolicy::Precise => return_alias_bits(
+                            e,
+                            &PrecisePolicy {
+                                provenance,
+                                extern_table,
+                                local_bits: &bits,
+                            },
+                        ),
+                        LocalProvenancePolicy::OwnedStringCarrier => return_alias_bits(
+                            e,
+                            &OwnedStringCarrierPolicy {
+                                provenance,
+                                extern_table,
+                                local_bits: &bits,
+                            },
+                        ),
+                    },
                     DefSource::Opaque => AliasBits::OPAQUE,
                 };
             }
@@ -4039,7 +4168,7 @@ fn count_binding_refs(expr: &HirExpr, counts: &mut HashMap<BindingId, u32>, unkn
             }
         }
         HirExprKind::Continue { .. } => {}
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             count_binding_refs(callee, counts, unknown);
             for a in args {
                 count_binding_refs(a, counts, unknown);
@@ -4380,7 +4509,7 @@ impl<'f> DefCollector<'_, 'f> {
             // Caller-side call-argument taint: an argument reaching a heap local,
             // passed to a not-proven-pure direct callee, poisons that local's
             // class.
-            HirExprKind::Call { callee, args } => {
+            HirExprKind::Call { callee, args, .. } => {
                 let pure = callee_is_proven_pure_item(callee, self.may_mutate);
                 for a in args {
                     if !pure {
@@ -4800,6 +4929,64 @@ impl LeafPolicy for PrecisePolicy<'_> {
     }
 }
 
+/// String-return-carrier sibling of [`PrecisePolicy`].
+///
+/// This policy changes exactly one leaf: a call through a first-class callable
+/// value is an independently releasable carrier when its concrete result is a
+/// `string`. Every callable pair targets a compiler-generated
+/// `ClosureInvoke` shim, and those shims establish one caller-owned string
+/// share before returning: fresh results transfer their existing `+1`, string
+/// parameters are retained at the return edge, and string capture/field loads
+/// are retained when loaded.
+///
+/// The policy is consumed only by
+/// [`compute_owned_string_return_carrier_provenance`], whose result is queried
+/// only after the call site's concrete result type has been checked as
+/// `string`. It must never feed the general fresh-owner/composite authorities:
+/// an indirect call remains pointer-provenance-opaque there. Direct calls,
+/// including declared externs, delegate unchanged to [`PrecisePolicy`], so an
+/// ownership-opaque extern and every Hew wrapper that forwards it remain
+/// denied.
+#[derive(Debug)]
+struct OwnedStringCarrierPolicy<'a> {
+    provenance: &'a HashMap<hew_hir::ItemId, AliasBits>,
+    extern_table: &'a ExternContractTable,
+    local_bits: &'a HashMap<BindingId, AliasBits>,
+}
+
+impl OwnedStringCarrierPolicy<'_> {
+    fn precise(&self) -> PrecisePolicy<'_> {
+        PrecisePolicy {
+            provenance: self.provenance,
+            extern_table: self.extern_table,
+            local_bits: self.local_bits,
+        }
+    }
+}
+
+impl LeafPolicy for OwnedStringCarrierPolicy<'_> {
+    fn classify_call(&self, callee: &HirExpr) -> CallClass {
+        if !matches!(
+            &callee.kind,
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Item(_),
+                ..
+            }
+        ) {
+            return CallClass::Fresh;
+        }
+        self.precise().classify_call(callee)
+    }
+
+    fn leaf_bits(&self, expr: &HirExpr) -> AliasBits {
+        self.precise().leaf_bits(expr)
+    }
+
+    fn missing_position_bits(&self, enclosing: &HirExpr) -> AliasBits {
+        self.precise().missing_position_bits(enclosing)
+    }
+}
+
 /// The module return-provenance summary: `ItemId → ReturnProvenance`, a monotone
 /// least-fixpoint over the three-state lattice that starts every function at `∅`
 /// and grows by union to stability.
@@ -4842,6 +5029,62 @@ pub fn compute_call_scrutinee_return_provenance(
             let mut bits = provenance[&id];
             for e in &return_values {
                 bits |= return_alias_bits(e, &policy);
+            }
+            if bits != provenance[&id] {
+                provenance.insert(id, bits);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    provenance
+}
+
+/// String-specific module fixpoint proving that each function return path
+/// establishes one independently releasable carrier.
+///
+/// This mirrors [`compute_call_scrutinee_return_provenance`] but runs under
+/// [`OwnedStringCarrierPolicy`]. Keeping the tables separate is load-bearing:
+/// the general table must continue to classify indirect calls as `OPAQUE` for
+/// composite/destructive-owner decisions, while this table may use the
+/// `ClosureInvoke` string ABI's retained-share postcondition. Direct opaque
+/// externs are still `OPAQUE` and that bit propagates through arbitrary Hew
+/// wrapper depth.
+fn compute_owned_string_return_carrier_provenance(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+    extern_table: &ExternContractTable,
+    may_mutate: &HashMap<hew_hir::ItemId, bool>,
+) -> HashMap<hew_hir::ItemId, ReturnProvenance> {
+    let mut provenance: HashMap<hew_hir::ItemId, AliasBits> =
+        fns.keys().map(|&id| (id, AliasBits::EMPTY)).collect();
+    loop {
+        let mut changed = false;
+        for (&id, &f) in fns {
+            let local_bits = local_binding_provenance_impl(
+                f,
+                &provenance,
+                extern_table,
+                may_mutate,
+                LocalProvenancePolicy::OwnedStringCarrier,
+            )
+            .0;
+            let policy = OwnedStringCarrierPolicy {
+                provenance: &provenance,
+                extern_table,
+                local_bits: &local_bits,
+            };
+            let mut return_values: Vec<&HirExpr> = Vec::new();
+            crate::lower::collect_return_values_in_block(&f.body, &mut return_values);
+            if let Some(tail) = &f.body.tail {
+                if !matches!(tail.ty, ResolvedTy::Unit | ResolvedTy::Never) {
+                    return_values.push(tail);
+                }
+            }
+            let mut bits = provenance[&id];
+            for value in return_values {
+                bits |= return_alias_bits(value, &policy);
             }
             if bits != provenance[&id] {
                 provenance.insert(id, bits);
@@ -4950,7 +5193,12 @@ pub fn origin_fns_of(module: &hew_hir::HirModule) -> HashMap<hew_hir::ItemId, &H
 pub struct EmptyLayouts;
 
 impl crate::model::HeapOwnershipLayouts for EmptyLayouts {
-    fn record_field_tys(&self, _name: &str, _args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
+    fn record_field_tys(
+        &self,
+        _name: &str,
+        _args: &[ResolvedTy],
+        _builtin: Option<hew_types::BuiltinType>,
+    ) -> Option<Vec<ResolvedTy>> {
         None
     }
 
@@ -5100,6 +5348,55 @@ pub(crate) mod tests {
         assert!(
             !authority.item_returns_retained_string_owner(fn_id(&module, "mixed")),
             "one forwarding return path must veto the retained-projection authority"
+        );
+    }
+
+    #[test]
+    fn indirect_string_carrier_authority_is_separate_and_extern_closed() {
+        let module = lower_source(
+            r#"
+            extern "C" {
+                fn host_opaque_string() -> string;
+            }
+
+            fn invoke(make: fn() -> string) -> string {
+                make()
+            }
+
+            fn invoke_via_local(make: fn() -> string) -> string {
+                let value = make();
+                value
+            }
+
+            fn opaque_wrapper() -> string {
+                unsafe { host_opaque_string() }
+            }
+            "#,
+        );
+        let origin_fns = origin_fns_of(&module);
+        let coarse = compute_fn_returns_fresh_owner(&origin_fns);
+        let context = build_call_scrutinee_provenance(&module, &origin_fns, &coarse);
+
+        for name in ["invoke", "invoke_via_local"] {
+            let id = fn_id(&module, name);
+            assert!(
+                context.provenance[&id].is_opaque(),
+                "`{name}` must remain opaque to the general pointer/composite \
+                 freshness authority"
+            );
+            assert!(
+                context.owned_string_return_carriers.contains(&id),
+                "`{name}` must carry the ClosureInvoke ABI's independently \
+                 releasable string-share fact, including through a local alias"
+            );
+        }
+
+        let opaque = fn_id(&module, "opaque_wrapper");
+        assert!(
+            context.provenance[&opaque].is_opaque()
+                && !context.owned_string_return_carriers.contains(&opaque),
+            "a direct ownership-opaque extern wrapper must be denied by both \
+             authorities; the closure-only rule must not launder it"
         );
     }
 
@@ -6445,6 +6742,58 @@ fn main() {}
     }
 
     #[test]
+    fn tcp_resource_producer_mints_only_through_its_exact_inherent_close() {
+        const MATCHING_CLOSE: &str = r#"
+#[resource]
+#[opaque]
+type Connection {}
+impl Connection {
+    fn close(conn: Connection) {
+        unsafe { hew_tcp_close(conn) };
+    }
+}
+extern "C" {
+    fn hew_tcp_close(consume conn: Connection);
+    fn hew_tcp_connect(addr: string) -> Connection;
+    fn hew_tcp_unclassified(addr: string) -> Connection;
+}
+fn main() {}
+"#;
+        const WRONG_CLOSE: &str = r#"
+#[resource]
+#[opaque]
+type Connection {}
+impl Connection {
+    fn close(conn: Connection) {
+        unsafe { hew_tcp_listener_close(conn) };
+    }
+}
+extern "C" {
+    fn hew_tcp_listener_close(consume conn: Connection);
+    fn hew_tcp_connect(addr: string) -> Connection;
+}
+fn main() {}
+"#;
+
+        let matching = table_for(MATCHING_CLOSE);
+        assert!(
+            matching.extern_return_is_audited_fresh_owner("hew_tcp_connect"),
+            "the row's transferred result and `Connection::close -> hew_tcp_close` \
+             must jointly mint the TCP producer"
+        );
+        assert!(
+            !matching.extern_return_is_audited_fresh_owner("hew_tcp_unclassified"),
+            "an unclassified producer has no positive row and must remain opaque"
+        );
+
+        assert!(
+            !table_for(WRONG_CLOSE).extern_return_is_audited_fresh_owner("hew_tcp_connect"),
+            "a resource marker alone is not authority: the emitted close must \
+             be the exact release symbol audited for this producer"
+        );
+    }
+
+    #[test]
     fn the_whole_measured_family_is_minted() {
         // Every symbol the oracles established, read back through the same
         // admission path a real declaration takes.
@@ -6688,16 +7037,12 @@ fn main() {}
     }
 
     #[test]
-    fn a_fresh_result_without_a_measured_retention_is_refused() {
+    fn string_to_bytes_mints_only_after_measured_retention_transfer() {
         // `hew_string_to_bytes` is audited `result = "fresh"`, released by
-        // `hew_bytes_drop`, shallow — identical on every axis Clause A reads.
-        // It is deliberately outside the measured string-result program, so
-        // this negative remains about the default retention rule rather than
-        // an active subsystem lane that could be promoted as a family.
-        // It is refused for the one reason that matters: nobody has established
-        // that the callee keeps no pointer into what it returned. Absence is
-        // the answer "not established", and that costs a leak rather than a
-        // double free.
+        // `hew_bytes_drop`, shallow. Its dedicated runtime retention oracle
+        // proves that source and result storage are independent and balanced
+        // in both release orders, so the contract now carries the additional
+        // `transferred` axis Clause C requires.
         const SOURCE: &str = r#"extern "C" {
     fn hew_string_to_bytes(input: string) -> bytes;
 }
@@ -6713,12 +7058,51 @@ fn main() {}
         assert_eq!(contract.release_symbol, BYTES_RELEASE_SYMBOL);
         assert_eq!(
             contract.result_retention,
-            crate::ffi_contracts::ExternResultRetention::Unspecified
+            crate::ffi_contracts::ExternResultRetention::Transferred
         );
         assert!(
-            !table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_string_to_bytes"),
-            "`fresh` says the allocation is new, not that the callee stopped \
-             referring to it; only the retention axis answers that"
+            table_for(SOURCE).extern_return_is_audited_fresh_owner("hew_string_to_bytes"),
+            "the exact fresh/transfer/release contract must mint the returned bytes; \
+             caller-side produced-value registration remains a separate authority"
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_fresh_or_retained_heap_result_is_refused() {
+        let (symbol, contract) = crate::ffi_contracts::FFI_OWNERSHIP_CONTRACTS
+            .iter()
+            .find(|(_, contract)| {
+                matches!(
+                    contract.result,
+                    crate::ffi_contracts::ExternResultOwnership::Fresh
+                        | crate::ffi_contracts::ExternResultOwnership::Retained
+                ) && contract.result_retention
+                    == crate::ffi_contracts::ExternResultRetention::Unspecified
+                    && contract.discharge_depth
+                        == crate::ffi_contracts::ReleaseDischargeDepth::Shallow
+                    && matches!(
+                        contract.release_symbol,
+                        STRING_RELEASE_SYMBOL | BYTES_RELEASE_SYMBOL
+                    )
+            })
+            .expect("the contract corpus must retain an unmeasured owned heap result");
+        let return_ty = if contract.release_symbol == STRING_RELEASE_SYMBOL {
+            "string"
+        } else {
+            "bytes"
+        };
+        let params = (0..contract.params.len())
+            .map(|index| format!("p{index}: i64"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let source =
+            format!("extern \"C\" {{ fn {symbol}({params}) -> {return_ty}; }}\nfn main() {{}}\n");
+
+        assert!(
+            !table_for(&source).extern_return_is_audited_fresh_owner(symbol),
+            "`fresh`/`retained` and an exact release do not prove that the \
+             foreign callee stopped referring to its result; absent measured \
+             retention must stay fail-closed for `{symbol}`"
         );
     }
 

@@ -7277,18 +7277,16 @@ impl Checker {
                 // their runtime implementations are not compiled there.
                 // The manifest-generated module rejection slice is shared with
                 // the value-position guard in expressions.rs.
-                if !self.user_modules.contains(name) {
-                    for rejection in crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
-                        if name == rejection.module {
-                            self.reject_wasm_feature(span, rejection.feature);
-                        }
-                    }
-                    // crypto.random_bytes and its fallible twin depend on a
-                    // native-only secure entropy source absent from the wasm32 link
-                    // set; reject so secure randomness fails closed on wasm32.
-                    if name == "crypto" && matches!(method, "random_bytes" | "try_random_bytes") {
-                        self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
-                    }
+                if let Some(feature) = self.wasm_native_only_module_feature(name) {
+                    self.reject_wasm_feature(span, feature);
+                }
+                // crypto.random_bytes and its fallible twin depend on a
+                // native-only secure entropy source absent from the wasm32 link
+                // set; reject so secure randomness fails closed on wasm32.
+                if self.is_shipped_crypto_module(name)
+                    && matches!(method, "random_bytes" | "try_random_bytes")
+                {
+                    self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
                 }
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
                     if let Some(caller) = &self.current_function {

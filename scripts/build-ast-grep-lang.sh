@@ -8,6 +8,9 @@ ARTIFACT_DIR="$REPO_ROOT/.ast-grep"
 CACHE_DIR="$ARTIFACT_DIR/cache"
 GRAMMAR_ARCHIVE="$CACHE_DIR/tree-sitter-hew.tar.gz"
 GRAMMAR_DIR="$CACHE_DIR/tree-sitter-hew"
+GRAMMAR_DIALECT_PATCH="$REPO_ROOT/tools/tree-sitter-hew-consume-parameter.patch"
+TREE_SITTER_ROOT="$ARTIFACT_DIR/tree-sitter-tool"
+TREE_SITTER="$TREE_SITTER_ROOT/bin/tree-sitter"
 OUT="$ARTIFACT_DIR/hew-lang.so"
 BOOTSTRAP=0
 
@@ -16,6 +19,26 @@ if [[ "${1:-}" == "--bootstrap" ]]; then BOOTSTRAP=1; shift; fi
 [[ $# -eq 0 ]] || { usage; exit 2; }
 # shellcheck disable=SC1090
 source "$LOCK"
+
+if [[ "$BOOTSTRAP" == 1 ]] && {
+    [[ ! -x "$TREE_SITTER" ]] ||
+    [[ "$("$TREE_SITTER" --version)" != "tree-sitter $TREE_SITTER_CLI_VERSION" ]];
+}; then
+    command -v cargo >/dev/null || {
+        echo "error: cargo is required to install pinned tree-sitter-cli" >&2
+        exit 1
+    }
+    cargo install "$TREE_SITTER_CLI_CARGO_PACKAGE" \
+        --version "$TREE_SITTER_CLI_VERSION" --locked --root "$TREE_SITTER_ROOT"
+fi
+[[ -x "$TREE_SITTER" ]] || {
+    echo "error: pinned tree-sitter $TREE_SITTER_CLI_VERSION is absent; run '$0 --bootstrap' once (network required)." >&2
+    exit 1
+}
+[[ "$("$TREE_SITTER" --version)" == "tree-sitter $TREE_SITTER_CLI_VERSION" ]] || {
+    echo "error: pinned tree-sitter version mismatch; remove .ast-grep/tree-sitter-tool and bootstrap again" >&2
+    exit 1
+}
 
 sha256_file() {
     local backend="${HEW_AST_GREP_SHA256_BACKEND:-auto}"
@@ -79,6 +102,15 @@ fi
 rm -rf "$GRAMMAR_DIR"
 mkdir -p "$GRAMMAR_DIR"
 tar -xzf "$GRAMMAR_ARCHIVE" --strip-components=1 -C "$GRAMMAR_DIR"
+[[ -f "$GRAMMAR_DIALECT_PATCH" ]] || {
+    echo "error: pinned Hew grammar dialect patch is absent" >&2; exit 1;
+}
+# The upstream locked grammar predates named `consume value: T` parameters and
+# authority attributes on extern declarations. Apply the small reviewed source
+# dialect and regenerate with the separately pinned tree-sitter CLI; compiling
+# an opaque pre-generated parser would make the accepted dialect unauditable.
+patch --batch --forward -d "$GRAMMAR_DIR" -p1 < "$GRAMMAR_DIALECT_PATCH" >/dev/null
+(cd "$GRAMMAR_DIR" && "$TREE_SITTER" generate)
 grep -q "#define LANGUAGE_VERSION $TREE_SITTER_HEW_LANGUAGE_ABI" "$GRAMMAR_DIR/src/parser.c" || {
     echo "error: pinned grammar ABI does not match tools/ast-grep.lock" >&2; exit 1;
 }

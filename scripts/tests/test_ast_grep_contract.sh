@@ -9,7 +9,10 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/scripts" "$tmp/tools" "$tmp/.ast-grep/cache"
 cp "$ROOT/scripts/build-ast-grep-lang.sh" "$tmp/scripts/"
 cp "$ROOT/tools/ast-grep.lock" "$tmp/tools/"
+cp "$ROOT/tools/tree-sitter-hew-consume-parameter.patch" "$tmp/tools/"
 cp "$archive" "$tmp/.ast-grep/cache/tree-sitter-hew.tar.gz"
+mkdir -p "$tmp/.ast-grep/tree-sitter-tool/bin"
+cp "$ROOT/.ast-grep/tree-sitter-tool/bin/tree-sitter" "$tmp/.ast-grep/tree-sitter-tool/bin/"
 
 # Exercise both supported checksum command shapes, independent of which one is
 # installed on the host running this contract test.
@@ -61,6 +64,18 @@ fn dialect(a: int, b: int) {
     let sub = a &- b;
     let mul = a &* b;
 }
+
+type Handle {}
+
+trait HandleOps {
+    fn push(consuming self, consume child: Handle) -> Self;
+}
+
+extern "C" {
+    #[runtime_capability(blocking_offload)]
+    fn release(consume value: Handle);
+    fn combine(left: Handle, consume right: Handle);
+}
 EOF
 ast_grep="$ROOT/.ast-grep/tool/bin/ast-grep"
 [[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --kind clone_expression --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
@@ -73,6 +88,17 @@ for operator in '&+' '&-' '&*'; do
         exit 1
     }
 done
+# The dollar-prefixed names are ast-grep metavariables, not shell expansions.
+# shellcheck disable=SC2016
+[[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --pattern 'fn $F(consume $P: $T);' --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
+    echo "pinned Hew grammar did not parse a leading named consume parameter" >&2
+    exit 1
+}
+# shellcheck disable=SC2016
+[[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --pattern 'fn $F($A: $AT, consume $B: $BT);' --json=stream "$tmp/dialect.hew" | wc -l | tr -d ' ')" == 1 ]] || {
+    echo "pinned Hew grammar did not parse a secondary named consume parameter" >&2
+    exit 1
+}
 if "$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --kind ERROR "$tmp/dialect.hew" >/dev/null 2>&1; then
     echo "pinned Hew dialect corpus contains parser ERROR nodes" >&2
     exit 1

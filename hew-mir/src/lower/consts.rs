@@ -22,7 +22,7 @@ use super::{
 /// and decodes the tag byte. A `panic()`-diverging body returns no value.
 pub(super) fn crash_action_return_ty() -> ResolvedTy {
     ResolvedTy::named_builtin(
-        "CrashAction",
+        "std.failure.CrashAction",
         hew_types::BuiltinType::CrashAction,
         Vec::new(),
     )
@@ -55,7 +55,7 @@ pub(super) fn crash_action_return_ty() -> ResolvedTy {
 pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> HirBlock {
     let span = note_param.span.clone();
     let crash_notification_ty = note_param.ty.clone();
-    let crash_kind_ty = ResolvedTy::named_user("CrashKind", Vec::new());
+    let crash_kind_ty = ResolvedTy::named_user("std.failure.CrashKind", Vec::new());
 
     let actor_id_ref = || HirExpr {
         node: SENTINEL_CRASH_CODE_NODE,
@@ -88,7 +88,7 @@ pub(super) fn build_exit_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                 value_class: ValueClass::BitCopy,
                 intent: IntentKind::Read,
                 kind: HirExprKind::MachineVariantCtor {
-                    machine_name: "CrashKind".to_string(),
+                    machine_name: "std.failure.CrashKind".to_string(),
                     state_idx: idx,
                     payload: None,
                 },
@@ -200,8 +200,11 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
         ResolvedTy::named_builtin("DownTarget", hew_types::BuiltinType::DownTarget, Vec::new());
     let down_reason_ty =
         ResolvedTy::named_builtin("DownReason", hew_types::BuiltinType::DownReason, Vec::new());
-    let crash_kind_ty =
-        ResolvedTy::named_builtin("CrashKind", hew_types::BuiltinType::CrashKind, Vec::new());
+    let crash_kind_ty = ResolvedTy::named_builtin(
+        "std.failure.CrashKind",
+        hew_types::BuiltinType::CrashKind,
+        Vec::new(),
+    );
     let location_ty =
         ResolvedTy::named_builtin("Location", hew_types::BuiltinType::Location, Vec::new());
 
@@ -345,9 +348,18 @@ pub(super) fn build_down_hook_body(body: HirBlock, note_param: &HirBinding) -> H
                 ResolvedTy::I32,
             )),
             arms: vec![
-                match_arm(Some(0), unit_variant("CrashKind", 0, crash_kind_ty.clone())),
-                match_arm(Some(1), unit_variant("CrashKind", 1, crash_kind_ty.clone())),
-                match_arm(None, unit_variant("CrashKind", 2, crash_kind_ty.clone())),
+                match_arm(
+                    Some(0),
+                    unit_variant("std.failure.CrashKind", 0, crash_kind_ty.clone()),
+                ),
+                match_arm(
+                    Some(1),
+                    unit_variant("std.failure.CrashKind", 1, crash_kind_ty.clone()),
+                ),
+                match_arm(
+                    None,
+                    unit_variant("std.failure.CrashKind", 2, crash_kind_ty.clone()),
+                ),
             ],
         },
         span: span.clone(),
@@ -759,18 +771,16 @@ pub(super) fn register_builtin_record_layouts(
 /// tagged-union types; `Builder::is_known_actor_runtime_ty` reads
 /// `machine_layout_names` to classify the type as `BitCopy`.
 ///
-/// Returns the set of registered names so the caller can fold them into
-/// `machine_layout_names`. Skips any name that already has a layout (e.g.
-/// because a user enum coincidentally shadows the builtin name); the
-/// user-source layout wins, mirroring the precedent in
-/// `register_builtin_record_layouts`.
+/// Returns the set of exact registered identities so the caller can fold them
+/// into `machine_layout_names`. A same-leaf user enum is a distinct nominal and
+/// therefore coexists with the generated builtin layout.
 pub(super) fn register_builtin_monomorphic_enum_layouts(
     enum_layouts: &mut Vec<crate::model::EnumLayout>,
 ) -> Vec<String> {
     let existing: HashSet<String> = enum_layouts.iter().map(|el| el.name.clone()).collect();
     let mut registered = Vec::new();
     for spec in hew_types::builtin_enums::monomorphic_builtin_enums() {
-        if existing.contains(spec.name) {
+        if existing.contains(spec.canonical_name) {
             continue;
         }
         let variant_count = u32::try_from(spec.variants.len().max(1)).unwrap_or(u32::MAX);
@@ -785,12 +795,12 @@ pub(super) fn register_builtin_monomorphic_enum_layouts(
             })
             .collect();
         enum_layouts.push(crate::model::EnumLayout {
-            name: spec.name.to_string(),
+            name: spec.canonical_name.to_string(),
             tag_width,
             variants,
             is_indirect: false,
         });
-        registered.push(spec.name.to_string());
+        registered.push(spec.canonical_name.to_string());
     }
     registered
 }
@@ -1312,5 +1322,51 @@ mod builtin_carrier_tests {
 
         let shadow = ResolvedTy::named_user("RemotePid", vec![actor_ty()]);
         assert_eq!(actor_name_from_remote_pid_ty(&shadow), None);
+    }
+
+    #[test]
+    fn builtin_enum_layouts_use_exact_source_identity() {
+        let mut layouts = Vec::new();
+        let registered = register_builtin_monomorphic_enum_layouts(&mut layouts);
+
+        for expected in [
+            "std.builtins.LookupError",
+            "std.builtins.LinkError",
+            "std.link_monitor.MonitorError",
+            "std.failure.CrashAction",
+            "std.failure.CrashKind",
+        ] {
+            assert!(registered.iter().any(|name| name == expected));
+            assert!(layouts.iter().any(|layout| layout.name == expected));
+        }
+        assert!(layouts.iter().all(|layout| layout.name.contains('.')));
+    }
+
+    #[test]
+    fn same_leaf_user_layout_does_not_suppress_or_inherit_builtin_layout() {
+        let mut layouts = vec![crate::model::EnumLayout {
+            name: "LinkError".to_string(),
+            tag_width: 1,
+            variants: vec![crate::model::MachineVariantLayout {
+                name: "UserOnly".to_string(),
+                field_tys: Vec::new(),
+                field_names: Vec::new(),
+            }],
+            is_indirect: false,
+        }];
+
+        register_builtin_monomorphic_enum_layouts(&mut layouts);
+
+        let user = layouts
+            .iter()
+            .find(|layout| layout.name == "LinkError")
+            .expect("same-leaf user layout");
+        assert_eq!(user.variants.len(), 1);
+        assert_eq!(user.variants[0].name, "UserOnly");
+        let builtin = layouts
+            .iter()
+            .find(|layout| layout.name == "std.builtins.LinkError")
+            .expect("canonical builtin layout must coexist");
+        assert_ne!(builtin.variants.len(), user.variants.len());
     }
 }

@@ -12,8 +12,12 @@
 /// discriminant tag consumed by HIR, MIR, and codegen.
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinMonomorphicEnum {
+    /// Exact dotted module that owns the declaration.
+    pub owner: &'static str,
     /// Type name as written in the owning stdlib source.
     pub name: &'static str,
+    /// Exact nominal identity (`owner.name`) used by HIR, MIR, and codegen.
+    pub canonical_name: &'static str,
     /// Unit variants in `.hew` declaration order.
     pub variants: &'static [BuiltinMonomorphicEnumVariant],
     /// Whether sandbox bytecode should suppress an otherwise unused descriptor.

@@ -563,7 +563,10 @@ const SYNTHETIC_STREAM_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 17);
 /// payload type-parameter names index into `type_params`.
 #[derive(Clone, Copy)]
 pub(crate) struct BuiltinEnumSpec {
+    /// Prelude spelling used only to publish compatibility aliases.
     pub(crate) type_name: &'static str,
+    /// Exact declaration identity used by every semantic registry.
+    pub(crate) canonical_type_name: &'static str,
     pub(crate) item_id: ItemId,
     pub(crate) type_params: &'static [&'static str],
     variants: BuiltinEnumVariants,
@@ -633,6 +636,7 @@ const MONOMORPHIC_BUILTIN_ENUMS: &[hew_types::builtin_enums::BuiltinMonomorphicE
 const BUILTIN_ENUM_SPEC_COUNT: usize = 2 + MONOMORPHIC_BUILTIN_ENUMS.len();
 const EMPTY_BUILTIN_ENUM_SPEC: BuiltinEnumSpec = BuiltinEnumSpec {
     type_name: "",
+    canonical_type_name: "",
     item_id: ItemId(0),
     type_params: &[],
     variants: BuiltinEnumVariants::Generic(&[]),
@@ -641,14 +645,17 @@ const EMPTY_BUILTIN_ENUM_SPEC: BuiltinEnumSpec = BuiltinEnumSpec {
 /// HIR registration order is observable for duplicate bare variant names:
 /// later specs replace earlier entries in `machine_ctor_registry`.
 const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[(&str, ItemId)] = &[
-    ("LookupError", SYNTHETIC_LOOKUP_ERROR_ITEM),
-    ("SendError", SYNTHETIC_SEND_ERROR_ITEM),
-    ("TimeoutError", SYNTHETIC_TIMEOUT_ERROR_ITEM),
-    ("LinkError", SYNTHETIC_LINK_ERROR_ITEM),
-    ("AskError", SYNTHETIC_ASK_ERROR_ITEM),
-    ("CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
-    ("CrashKind", SYNTHETIC_CRASH_KIND_ITEM),
-    ("MonitorError", SYNTHETIC_MONITOR_ERROR_ITEM),
+    ("std.builtins.LookupError", SYNTHETIC_LOOKUP_ERROR_ITEM),
+    ("std.builtins.SendError", SYNTHETIC_SEND_ERROR_ITEM),
+    ("std.builtins.TimeoutError", SYNTHETIC_TIMEOUT_ERROR_ITEM),
+    ("std.builtins.LinkError", SYNTHETIC_LINK_ERROR_ITEM),
+    ("std.builtins.AskError", SYNTHETIC_ASK_ERROR_ITEM),
+    ("std.failure.CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
+    ("std.failure.CrashKind", SYNTHETIC_CRASH_KIND_ITEM),
+    (
+        "std.link_monitor.MonitorError",
+        SYNTHETIC_MONITOR_ERROR_ITEM,
+    ),
 ];
 
 const fn const_str_eq(left: &str, right: &str) -> bool {
@@ -668,12 +675,12 @@ const fn const_str_eq(left: &str, right: &str) -> bool {
 }
 
 const fn monomorphic_builtin_enum(
-    type_name: &str,
+    canonical_type_name: &str,
 ) -> hew_types::builtin_enums::BuiltinMonomorphicEnum {
     let mut index = 0;
     while index < MONOMORPHIC_BUILTIN_ENUMS.len() {
         let candidate = MONOMORPHIC_BUILTIN_ENUMS[index];
-        if const_str_eq(candidate.name, type_name) {
+        if const_str_eq(candidate.canonical_name, canonical_type_name) {
             return candidate;
         }
         index += 1;
@@ -701,7 +708,7 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
     let mut catalog_index = 0;
     while catalog_index < MONOMORPHIC_BUILTIN_ENUMS.len() {
         assert!(
-            hir_order_entry_count(MONOMORPHIC_BUILTIN_ENUMS[catalog_index].name) == 1,
+            hir_order_entry_count(MONOMORPHIC_BUILTIN_ENUMS[catalog_index].canonical_name) == 1,
             "monomorphic builtin enum must have exactly one HIR order entry"
         );
         catalog_index += 1;
@@ -710,6 +717,7 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
     let mut specs = [EMPTY_BUILTIN_ENUM_SPEC; BUILTIN_ENUM_SPEC_COUNT];
     specs[0] = BuiltinEnumSpec {
         type_name: "Option",
+        canonical_type_name: "Option",
         item_id: SYNTHETIC_OPTION_ITEM,
         type_params: &["T"],
         variants: BuiltinEnumVariants::Generic(&["Some", "None"]),
@@ -717,6 +725,7 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
     };
     specs[1] = BuiltinEnumSpec {
         type_name: "Result",
+        canonical_type_name: "Result",
         item_id: SYNTHETIC_RESULT_ITEM,
         type_params: &["T", "E"],
         variants: BuiltinEnumVariants::Generic(&["Ok", "Err"]),
@@ -725,10 +734,11 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
 
     let mut index = 0;
     while index < MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER.len() {
-        let (type_name, item_id) = MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER[index];
-        let catalog_entry = monomorphic_builtin_enum(type_name);
+        let (canonical_type_name, item_id) = MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER[index];
+        let catalog_entry = monomorphic_builtin_enum(canonical_type_name);
         specs[index + 2] = BuiltinEnumSpec {
             type_name: catalog_entry.name,
+            canonical_type_name: catalog_entry.canonical_name,
             item_id,
             type_params: &[],
             variants: BuiltinEnumVariants::Monomorphic(catalog_entry.variants),
@@ -3007,9 +3017,17 @@ pub fn lower_program_with_mono_cap(
         // existing code that uses the fully-qualified path keeps working.
         for spec in BUILTIN_ENUM_SPECS {
             for (variant_idx, variant_name) in spec.variant_names().enumerate() {
-                let qualified = format!("{}::{}", spec.type_name, variant_name);
+                let canonical = format!("{}::{variant_name}", spec.canonical_type_name);
+                ctx.machine_ctor_registry.insert(
+                    canonical,
+                    (spec.canonical_type_name.to_string(), variant_idx),
+                );
+                // `Type::Variant` is a prelude presentation alias. Never let
+                // it replace an exact root declaration with the same leaf.
+                let qualified_alias = format!("{}::{variant_name}", spec.type_name);
                 ctx.machine_ctor_registry
-                    .insert(qualified, (spec.type_name.to_string(), variant_idx));
+                    .entry(qualified_alias)
+                    .or_insert_with(|| (spec.canonical_type_name.to_string(), variant_idx));
                 // Register the bare form only when count == 1 (unique) AND
                 // the user has not declared their own variant with this name.
                 if bare_counts.get(variant_name).copied().unwrap_or(0) == 1
@@ -3017,7 +3035,7 @@ pub fn lower_program_with_mono_cap(
                 {
                     ctx.machine_ctor_registry.insert(
                         variant_name.to_string(),
-                        (spec.type_name.to_string(), variant_idx),
+                        (spec.canonical_type_name.to_string(), variant_idx),
                     );
                 }
             }
@@ -3034,13 +3052,13 @@ pub fn lower_program_with_mono_cap(
     for spec in BUILTIN_ENUM_SPECS {
         let variants = builtin_enum_hir_variants(spec);
         ctx.enum_variants_by_name
-            .insert(spec.type_name.to_string(), variants);
+            .insert(spec.canonical_type_name.to_string(), variants);
         ctx.enum_type_params.insert(
-            spec.type_name.to_string(),
+            spec.canonical_type_name.to_string(),
             spec.type_params.iter().map(|s| (*s).to_string()).collect(),
         );
         ctx.enum_item_ids
-            .insert(spec.type_name.to_string(), spec.item_id);
+            .insert(spec.canonical_type_name.to_string(), spec.item_id);
         // Tag-only / monomorphic builtin enums (e.g. `LookupError`) need a
         // `type_classes` registration so MIR `push_unknown_type_diagnostics`
         // does not flag them, and so `ValueClass::of_ty` resolves them as
@@ -3050,8 +3068,10 @@ pub fn lower_program_with_mono_cap(
         // `enum_layouts.iter().map(origin_name)` chain in `hew-mir/src/lower.rs`,
         // and their `ValueClass` is computed on the substituted variants.
         if spec.type_params.is_empty() {
-            ctx.type_classes
-                .insert(spec.type_name.to_string(), (ResourceMarker::BitCopy, None));
+            ctx.type_classes.insert(
+                spec.canonical_type_name.to_string(),
+                (ResourceMarker::BitCopy, None),
+            );
         }
     }
 
@@ -14430,7 +14450,7 @@ impl LowerCtx {
                 // (the condition is "tag matches None") and a plain
                 // identifier pattern is semantically a `while true` with
                 // a re-bind which is not what users mean.
-                let (PatternKind::VariantCtor, Some(variant_match)) =
+                let (PatternKind::VariantCtor, Some(mut variant_match)) =
                     (resolution.pattern_kind, resolution.variant_match)
                 else {
                     self.unsupported(
@@ -14464,11 +14484,8 @@ impl LowerCtx {
                 // Resolve variant_idx via `machine_ctor_registry` (same
                 // qualified-key lookup used by `lower_match_expr` so that
                 // MIR/codegen consume identical indices).
-                let qualified = format!(
-                    "{}::{}",
-                    variant_match.type_name, variant_match.variant_name
-                );
-                let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned()
+                let Some((registered_type, idx_usize, _)) =
+                    self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
                 else {
                     self.unsupported(
                         pattern_span.clone(),
@@ -14493,6 +14510,7 @@ impl LowerCtx {
                         span: span.clone(),
                     };
                 };
+                variant_match.type_name = registered_type;
                 let variant_idx = u32::try_from(idx_usize)
                     .expect("variant index exceeds u32::MAX — impossible in Hew");
 
@@ -15195,11 +15213,9 @@ impl LowerCtx {
             return None;
         };
 
-        let qualified = format!(
-            "{}::{}",
-            variant_match.type_name, variant_match.variant_name
-        );
-        let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned() else {
+        let Some((_, idx_usize, _)) =
+            self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
+        else {
             self.unsupported(
                 pattern_span.clone(),
                 "let-else variant not registered in machine/enum ctor registry",
@@ -15428,7 +15444,7 @@ impl LowerCtx {
             });
         }
 
-        let (PatternKind::VariantCtor, Some(variant_match)) =
+        let (PatternKind::VariantCtor, Some(mut variant_match)) =
             (resolution.pattern_kind, resolution.variant_match)
         else {
             self.unsupported(
@@ -15447,11 +15463,9 @@ impl LowerCtx {
             return None;
         };
 
-        let qualified = format!(
-            "{}::{}",
-            variant_match.type_name, variant_match.variant_name
-        );
-        let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned() else {
+        let Some((registered_type, idx_usize, _)) =
+            self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
+        else {
             self.unsupported(
                 pattern_span.clone(),
                 "if-let variant not registered in machine/enum ctor registry",
@@ -15465,6 +15479,7 @@ impl LowerCtx {
             }
             return None;
         };
+        variant_match.type_name = registered_type;
         let variant_idx =
             u32::try_from(idx_usize).expect("variant index exceeds u32::MAX — impossible in Hew");
 
@@ -20665,14 +20680,15 @@ impl LowerCtx {
         let checker_owner = self
             .expr_types
             .get(&key)
-            .and_then(|ty| ResolvedTy::from_ty(ty).ok());
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .map(|ty| self.qualify_current_module_record_ty(ty));
         let registry_hit = self
             .lookup_variant_ctor(name, checker_owner.as_ref())
             .map(|(type_name, variant_idx, _)| (type_name, variant_idx));
         if let Some((tagged_union_name, variant_idx)) = registry_hit {
-            let checker_agrees = match self.expr_types.get(&key) {
-                None => true,
-                Some(Ty::Named { name: n, .. }) => Ty::names_match_qualified(n, &tagged_union_name),
+            let checker_agrees = match checker_owner.as_ref() {
+                None => !self.expr_types.contains_key(&key),
+                Some(ResolvedTy::Named { name, .. }) => name == &tagged_union_name,
                 Some(_) => false,
             };
             if checker_agrees {
@@ -20688,7 +20704,7 @@ impl LowerCtx {
                 // always populate accepted unit-ctor reference sites.
                 let result_ty = if let Some(ty) = self.expr_types.get(&key).cloned() {
                     match ResolvedTy::from_ty(&ty) {
-                        Ok(resolved) => resolved,
+                        Ok(resolved) => self.qualify_current_module_record_ty(resolved),
                         Err(err) => {
                             self.diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -21230,6 +21246,29 @@ impl LowerCtx {
             .current_module_name
             .as_deref()
             .is_some_and(|module| self.file_import_module_names.contains(module));
+        if let Some(canonical) = self.canonical_monomorphic_builtin_enum_name(
+            &name,
+            builtin,
+            current_module_is_file_import,
+        ) {
+            return match builtin {
+                Some(builtin) => ResolvedTy::named_builtin(canonical, builtin, args),
+                None => ResolvedTy::named_user(canonical.to_string(), args),
+            };
+        }
+        if builtin.is_some()
+            && !name.contains('.')
+            && MONOMORPHIC_BUILTIN_ENUMS
+                .iter()
+                .any(|fact| fact.name == name)
+            && self.current_scope_declares_source_type(&name, current_module_is_file_import)
+        {
+            // A checker compatibility discriminator attached by leaf spelling
+            // cannot override exact source ownership. The local declaration
+            // won resolution, so discard the builtin marker at the HIR
+            // boundary instead of letting it acquire the generated layout.
+            return ResolvedTy::named_user(name, args);
+        }
         if !name.contains('.')
             && (self.current_module_name.is_none() || current_module_is_file_import)
             && self.root_opaque_type_short_names.contains(&name)
@@ -21321,6 +21360,35 @@ impl LowerCtx {
         } else {
             ResolvedTy::named_user(canonical, args)
         }
+    }
+
+    /// Map a checker/presentation spelling of a generated monomorphic builtin
+    /// enum to its exact source owner. A bare leaf is admitted only when the
+    /// current source scope does not declare that leaf itself; an explicitly
+    /// qualified foreign owner is never retried by leaf.
+    fn canonical_monomorphic_builtin_enum_name(
+        &self,
+        name: &str,
+        builtin: Option<BuiltinType>,
+        current_module_is_file_import: bool,
+    ) -> Option<&'static str> {
+        for fact in MONOMORPHIC_BUILTIN_ENUMS {
+            if name == fact.canonical_name {
+                return Some(fact.canonical_name);
+            }
+            if name.contains('.') || name != fact.name {
+                continue;
+            }
+            if self.current_scope_declares_source_type(name, current_module_is_file_import)
+                && self.current_module_name.as_deref() != Some(fact.owner)
+            {
+                continue;
+            }
+            if builtin.is_none_or(|kind| kind.canonical_name() == fact.name) {
+                return Some(fact.canonical_name);
+            }
+        }
+        None
     }
 
     fn canonical_current_module_record_name(&self, name: &str) -> String {
@@ -27185,7 +27253,7 @@ impl LowerCtx {
                     }
                 }
                 PatternKind::VariantCtor => {
-                    let Some(vm) = resolution.variant_match.clone() else {
+                    let Some(mut vm) = resolution.variant_match.clone() else {
                         let _ = self.lower_expr(&arm.body, IntentKind::Read);
                         self.unsupported(
                             pattern_span.clone(),
@@ -27200,8 +27268,8 @@ impl LowerCtx {
                     // from `Item::TypeDecl` body order. The index matches
                     // `EnumLayout.variants` ordering so MIR/codegen don't
                     // re-derive it.
-                    let qualified = format!("{}::{}", vm.type_name, vm.variant_name);
-                    let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned()
+                    let Some((registered_type, idx_usize, _)) =
+                        self.lookup_variant_ctor(&vm.variant_name, Some(&scrutinee_hir.ty))
                     else {
                         let _ = self.lower_expr(&arm.body, IntentKind::Read);
                         self.unsupported(
@@ -27212,6 +27280,7 @@ impl LowerCtx {
                         rejected = true;
                         continue;
                     };
+                    vm.type_name = registered_type;
                     let idx = u32::try_from(idx_usize)
                         .expect("variant index exceeds u32::MAX — impossible in Hew");
                     HirMatchArmPredicate::EnumVariant {
@@ -27660,11 +27729,9 @@ impl LowerCtx {
         // so MIR/codegen find its mangled layout (no-op for monomorphic
         // enums; the scrutinee registration only covers the outer type).
         self.try_register_enum_instantiation_ty(&payload_ty, pattern_span);
-        let qualified = format!(
-            "{}::{}",
-            pvp.variant_match.type_name, pvp.variant_match.variant_name
-        );
-        let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned() else {
+        let Some((registered_type, idx_usize, _)) =
+            self.lookup_variant_ctor(&pvp.variant_match.variant_name, Some(&payload_ty))
+        else {
             self.unsupported(
                 pattern_span.clone(),
                 "nested match-arm variant not registered in machine/enum ctor registry",
@@ -27723,7 +27790,10 @@ impl LowerCtx {
         Some(HirPayloadVariantPredicate {
             field_idx,
             payload_ty,
-            variant_match: pvp.variant_match.clone(),
+            variant_match: hew_types::VariantMatch {
+                type_name: registered_type,
+                variant_name: pvp.variant_match.variant_name.clone(),
+            },
             variant_idx,
             bindings,
             nested,
@@ -36141,6 +36211,96 @@ fn main() {}
     }
 
     #[test]
+    fn same_leaf_user_enums_keep_user_constructor_identity() {
+        let (_, _, lowered) = parse_typecheck_and_lower(
+            r"
+            enum LinkError { UserLink; }
+            enum LookupError { UserLookup; }
+            enum MonitorError { UserMonitor; }
+            enum CrashAction { UserAction; }
+            enum CrashKind { UserKind; }
+
+            fn user_link() -> LinkError { LinkError::UserLink }
+            fn user_lookup() -> LookupError { LookupError::UserLookup }
+            fn user_monitor() -> MonitorError { MonitorError::UserMonitor }
+            fn user_action() -> CrashAction { CrashAction::UserAction }
+            fn user_kind() -> CrashKind { CrashKind::UserKind }
+            ",
+        );
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "same-leaf user enum lowering diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+
+        for (function_name, expected_type) in [
+            ("user_link", "LinkError"),
+            ("user_lookup", "LookupError"),
+            ("user_monitor", "MonitorError"),
+            ("user_action", "CrashAction"),
+            ("user_kind", "CrashKind"),
+        ] {
+            let function = function_named(&lowered, function_name);
+            let tail = function.body.tail.as_deref().expect("constructor tail");
+            let HirExprKind::MachineVariantCtor { machine_name, .. } = &tail.kind else {
+                panic!("expected enum constructor tail, got {:#?}", tail.kind);
+            };
+            assert_eq!(machine_name, expected_type);
+            assert!(
+                matches!(
+                    &tail.ty,
+                    ResolvedTy::Named { name, builtin: None, .. } if name == expected_type
+                ),
+                "{function_name} retained non-user type identity: {:?}",
+                tail.ty
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_builtin_enum_owners_round_trip_exactly() {
+        let output = TypeCheckOutput::default();
+        let ctx = LowerCtx::new(&output, MONOMORPHISATION_REGISTRY_CAP, TargetArch::host());
+        for expected_type in [
+            "std.builtins.LinkError",
+            "std.builtins.LookupError",
+            "std.link_monitor.MonitorError",
+            "std.failure.CrashAction",
+            "std.failure.CrashKind",
+        ] {
+            assert_eq!(
+                ctx.canonical_monomorphic_builtin_enum_name(expected_type, None, false),
+                Some(expected_type)
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_qualified_same_leaf_is_not_a_builtin_alias() {
+        let output = TypeCheckOutput::default();
+        let ctx = LowerCtx::new(&output, MONOMORPHISATION_REGISTRY_CAP, TargetArch::host());
+        assert_eq!(
+            ctx.canonical_monomorphic_builtin_enum_name("std.other.LinkError", None, false),
+            None
+        );
+        assert_eq!(
+            ctx.canonical_monomorphic_builtin_enum_name("app.failure.CrashKind", None, false),
+            None
+        );
+        for false_owner in [
+            "std.lookup_error.LookupError",
+            "std.link_monitor.LinkError",
+            "std.link_monitor.CrashKind",
+        ] {
+            assert_eq!(
+                ctx.canonical_monomorphic_builtin_enum_name(false_owner, None, false),
+                None,
+                "false checker/bootstrap owner must not be accepted: {false_owner}"
+            );
+        }
+    }
+
+    #[test]
     fn named_import_enum_alias_resolves_variant_through_exact_source_owner() {
         use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
@@ -36680,8 +36840,8 @@ mod caller_visible_param_projection_tests {
 mod builtin_enum_catalog_fingerprint_tests {
     use super::BUILTIN_ENUM_SPECS;
 
-    const TRANSITION_FINGERPRINT: u64 = 0x83e6_8437_693c_a927;
-    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0xc1be_3c6a_3ff5_be4f;
+    const TRANSITION_FINGERPRINT: u64 = 0xb212_192b_75a4_473a;
+    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0x1615_c20e_10cb_dac2;
 
     fn hash_byte(hash: &mut u64, byte: u8) {
         *hash ^= u64::from(byte);
@@ -36699,7 +36859,7 @@ mod builtin_enum_catalog_fingerprint_tests {
         BUILTIN_ENUM_SPECS
             .iter()
             .filter(|spec| spec.type_params.is_empty())
-            .map(|spec| (spec.type_name, spec.variant_names().collect()))
+            .map(|spec| (spec.canonical_type_name, spec.variant_names().collect()))
             .collect()
     }
 
@@ -36725,13 +36885,35 @@ mod builtin_enum_catalog_fingerprint_tests {
         );
     }
 
+    #[test]
+    fn monomorphic_builtin_specs_retain_exact_owner_identity() {
+        let identities: Vec<_> = BUILTIN_ENUM_SPECS
+            .iter()
+            .filter(|spec| spec.type_params.is_empty())
+            .map(|spec| spec.canonical_type_name)
+            .collect();
+        for expected in [
+            "std.builtins.LookupError",
+            "std.builtins.LinkError",
+            "std.link_monitor.MonitorError",
+            "std.failure.CrashAction",
+            "std.failure.CrashKind",
+        ] {
+            assert!(
+                identities.contains(&expected),
+                "missing HIR spec {expected}"
+            );
+        }
+        assert!(identities.iter().all(|identity| identity.contains('.')));
+    }
+
     // Guards HIR derivation-order drift separately from the upstream build-time `.hew` ABI guard.
     #[test]
     fn transition_fingerprint_detects_derived_variant_order_drift() {
         let mut specs = derived_monomorphic_specs();
         let crash_action_variants = &mut specs
             .iter_mut()
-            .find(|(type_name, _)| *type_name == "CrashAction")
+            .find(|(type_name, _)| *type_name == "std.failure.CrashAction")
             .expect("derived catalog must contain CrashAction")
             .1;
         crash_action_variants.swap(0, 1);

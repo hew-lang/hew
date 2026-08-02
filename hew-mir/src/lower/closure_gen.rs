@@ -1128,6 +1128,10 @@ impl Builder {
         //     its copy and the caller's binding remains the owner of the
         //     original. The env drop releases the clone via
         //     `hew_string_drop` exactly once at actor shutdown.
+        //   - Strong `LambdaPid`: as with string, the frame store is only an
+        //     alias. Codegen replaces it with `hew_lambda_actor_clone` in the
+        //     boxed env, and the env drop releases that independent strong
+        //     handle exactly once with `hew_lambda_actor_release`.
         //   - Anything else (Vec, HashMap, records, owned handles):
         //     `CannotMaterializeClosureCapture` — no silent shallow copy
         //     of an owned aggregate across the actor boundary.
@@ -1172,6 +1176,13 @@ impl Builder {
                     (hew_hir::HirCaptureKind::Strong, ResolvedTy::String) => {
                         crate::model::LambdaEnvFieldDrop::String
                     }
+                    (
+                        hew_hir::HirCaptureKind::Strong,
+                        ResolvedTy::Named {
+                            builtin: Some(BuiltinType::LambdaPid),
+                            ..
+                        },
+                    ) => crate::model::LambdaEnvFieldDrop::StrongLambdaActorHandle,
                     // BitCopy scalars and pids share the no-drop class. A pid
                     // is an opaque identity reference with no drop glue (its
                     // drop is a codegen no-op — see the double-free origin
@@ -1212,7 +1223,7 @@ impl Builder {
                             note: format!(
                                 "lambda-actor capture `{}` has type `{}`, which the \
                                  capture env cannot carry yet: only BitCopy scalars, \
-                                 `string`, actor pids, and the weak self-handle have \
+                                 `string`, actor pids, `LambdaPid`, and the weak self-handle have \
                                  an ownership protocol across the actor boundary. A \
                                  shallow byte copy of an owned aggregate would alias \
                                  its heap and double-free at shutdown — fail closed \

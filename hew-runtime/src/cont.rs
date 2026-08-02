@@ -2493,7 +2493,7 @@ mod tests {
             sibling: Box::into_raw(Box::new(72)),
         };
         let stale_old = state.updated;
-        let replacement = Box::into_raw(Box::new(73));
+        let replacement: *mut u64 = Box::into_raw(Box::new(73));
         // SAFETY: the initialized state remains live through matching recovery;
         // prepared escrow owns replacement while the stale live field is raw.
         unsafe {
@@ -2799,6 +2799,9 @@ mod tests {
         }
     }
 
+    // This verifies Rust unwinding through a `C-unwind` cleanup callback.
+    // WASI uses aborting panics, so there is no in-process unwind contract.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn rust_c_unwind_cleanup_panic_is_quarantined_and_siblings_run_once() {
         let _ = take_crash_cleanup_test_drops();
@@ -3326,6 +3329,9 @@ mod tests {
         }
     }
 
+    // Cross-worker migration is the native M:N scheduler contract.  The
+    // wasm32 runtime has no OS-thread worker migration to exercise.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn crash_cleanup_registry_survives_cross_worker_frame_migration() {
         MIGRATED_CRASH_CLEANUP_VALUE.store(0, Ordering::Release);

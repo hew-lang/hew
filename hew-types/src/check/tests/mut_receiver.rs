@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 pub(super) use super::*;
+use crate::{DefId, LangItem};
 
 // ---------------------------------------------------------------------------
 // Q297 Stage 1 — receiver-mutability flag plumbing.
@@ -421,5 +422,21 @@ fn q297_stdlib_iterator_next_and_vec_iter_carry_mut_receiver_flag() {
         next_sig.requires_mutable_receiver,
         "VecIter::next must declare `var self` to match the trait after Q297 Stage 1; \
          td.methods[next].requires_mutable_receiver was false",
+    );
+}
+
+#[test]
+fn builtin_iterator_lang_item_publishes_exact_next_identity() {
+    let output = check_source("");
+    let binding = output
+        .lang_items
+        .get(LangItem::IteratorNext.key())
+        .expect("the prelude Iterator::next must publish its lang-item identity");
+    assert_eq!(binding.trait_name, "Iterator");
+    assert_eq!(binding.method_name.as_deref(), Some("next"));
+    assert_eq!(binding.trait_id.full_path(), "std.builtins.Iterator");
+    assert_eq!(
+        binding.method_id.as_ref().map(DefId::full_path),
+        Some("std.builtins.Iterator::next")
     );
 }

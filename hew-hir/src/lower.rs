@@ -10801,35 +10801,36 @@ impl LowerCtx {
         self.trait_method_ids
             .get(&format!("{declaring_trait}::{method_name}"))
             .cloned()
-            // `Iterator` is a compiler prelude trait, available inside an
-            // imported stdlib module without a lexical import binding. The
-            // checker retains its declaration under the canonical builtins
-            // owner rather than a bare compatibility key. Select that one
-            // exact published identity only after local and imported-binding
-            // lookups above have failed, so a user-declared/imported trait
-            // named `Iterator` still wins. This is deliberately not a
-            // leaf/suffix search: both declaration IDs must match the one
-            // compiler-owned prelude method exactly.
             .or_else(|| {
-                (declaring_trait == "Iterator" && method_name == "next").then(|| {
-                    self.trait_method_ids
-                        .values()
-                        .find_map(|(trait_id, method_id)| {
-                            (trait_id.full_path() == "std.builtins.Iterator"
-                                && method_id.full_path() == "std.builtins.Iterator::next")
-                                .then(|| (trait_id.clone(), method_id.clone()))
-                        })
-                })?
+                // The prelude iterator may be available without a lexical
+                // import binding.  Its lang-item binding carries the exact
+                // checker-minted declaration identities; compare only its
+                // checker-published surface names, never a hard-coded leaf or
+                // a scan over declaration-ID strings. Local/import bindings
+                // above remain higher priority.
+                let binding = self
+                    .lang_items
+                    .get(hew_types::LangItem::IteratorNext.key())?;
+                if declaring_trait == binding.trait_name
+                    && binding.method_name.as_deref() == Some(method_name)
+                {
+                    Some((binding.trait_id.clone(), binding.method_id.clone()?))
+                } else {
+                    None
+                }
             })
-            // Prelude `Display` is available without an import binding. Its
-            // lang-item declaration is the checker-owned authority for both
-            // generic call sites and `impl Display for UserType`; use it only
-            // after lexical/local identity lookups above have failed so a
-            // source-declared same-name trait still wins.
             .or_else(|| {
-                let (trait_id, method_id) = self.lang_items.display_method_identity()?;
-                (declaring_trait == "Display" && method_name == self.lang_items.display_method()?)
-                    .then(|| (trait_id.clone(), method_id.clone()))
+                // Display has the same prelude shape.  The method-level
+                // lang-item is the single exact authority, including if the
+                // stdlib later renames the trait or method.
+                let binding = self.lang_items.get(hew_types::LANG_ITEM_DISPLAY_FMT)?;
+                if declaring_trait == binding.trait_name
+                    && binding.method_name.as_deref() == Some(method_name)
+                {
+                    Some((binding.trait_id.clone(), binding.method_id.clone()?))
+                } else {
+                    None
+                }
             })
     }
 
@@ -33486,6 +33487,78 @@ mod tests {
     use super::*;
     use hew_types::module_registry::ModuleRegistry;
     use hew_types::Checker;
+
+    #[test]
+    fn trait_method_identity_prefers_local_and_imported_same_leaf_traits_over_prelude_items() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.current_module_name = Some("app".to_string());
+        for (lang_item, trait_name, method_name, prelude_owner) in [
+            (
+                hew_types::LangItem::IteratorNext,
+                "Iterator",
+                "next",
+                "std.builtins.Iterator",
+            ),
+            (
+                hew_types::LangItem::DisplayFmt,
+                "Display",
+                "fmt",
+                "std.builtins.Display",
+            ),
+        ] {
+            let prelude_trait = hew_types::DefId::new(prelude_owner);
+            let prelude_method = hew_types::DefId::new(format!("{prelude_owner}::{method_name}"));
+            ctx.lang_items.insert(
+                lang_item.key(),
+                hew_types::LangItemBinding {
+                    trait_name: trait_name.to_string(),
+                    trait_id: prelude_trait,
+                    method_name: Some(method_name.to_string()),
+                    method_id: Some(prelude_method),
+                },
+            );
+
+            let local_trait = hew_types::DefId::new(format!("app.{trait_name}"));
+            let local_method = hew_types::DefId::new(format!("app.{trait_name}::{method_name}"));
+            ctx.trait_method_ids.insert(
+                format!("app.{trait_name}::{method_name}"),
+                (local_trait.clone(), local_method.clone()),
+            );
+            assert_eq!(
+                ctx.trait_method_identity(trait_name, method_name),
+                Some((local_trait, local_method)),
+                "a local same-leaf {trait_name} must not be replaced by the prelude lang item"
+            );
+            ctx.trait_method_ids
+                .remove(&format!("app.{trait_name}::{method_name}"));
+
+            let imported_trait = hew_types::DefId::new(format!("vendor.{trait_name}"));
+            let imported_method =
+                hew_types::DefId::new(format!("vendor.{trait_name}::{method_name}"));
+            ctx.trait_method_ids_by_binding.insert(
+                (
+                    Some("app".to_string()),
+                    trait_name.to_string(),
+                    method_name.to_string(),
+                ),
+                (imported_trait.clone(), imported_method.clone()),
+            );
+            assert_eq!(
+                ctx.trait_method_identity(trait_name, method_name),
+                Some((imported_trait, imported_method)),
+                "an imported same-leaf {trait_name} must not be replaced by the prelude lang item"
+            );
+            ctx.trait_method_ids_by_binding.remove(&(
+                Some("app".to_string()),
+                trait_name.to_string(),
+                method_name.to_string(),
+            ));
+        }
+    }
 
     #[test]
     fn conflicting_impl_body_plan_is_a_checker_boundary_diagnostic_not_a_panic() {

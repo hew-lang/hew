@@ -333,9 +333,11 @@ impl<T: ActorMsg> Pid for RemotePid<T> {
 /// that own non-shared resources (heap-owning buffers, channel readers)
 /// inherit the "exhaustion ≠ drop" invariant — see the `lifecycle-symmetry`
 /// invariant in `LESSONS.md`.
+#[lang_item("iterator")]
 pub trait Iterator {
     type Item;
 
+    #[lang_item("iterator.next")]
     fn next(var self) -> Option<Self::Item>;
 }
 

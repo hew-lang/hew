@@ -199,10 +199,16 @@ fn is_channel_handle_ty(ty: &ResolvedTy) -> bool {
 /// Forward-scan transfer function over one block's statements.
 /// Emits `InitialisedBeforeUse` / `UseAfterConsume` checks as it
 /// goes; returns the exit state for this block's terminator.
-fn transfer_block(
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the transfer carries the shared checker sinks and covers every statement plus exact tail-return ownership"
+)]
+fn transfer_block<S: std::hash::BuildHasher>(
     entry: BTreeMap<BindingId, BindingState>,
     block: &BasicBlock,
     type_classes: &TypeClassTable,
+    binding_locals: &HashMap<BindingId, Place, S>,
     linear_bindings: &mut BTreeMap<BindingId, (String, ResolvedTy, SiteId)>,
     checks: &mut Vec<MirCheck>,
     use_after_consume_seen: &mut HashSet<(BindingId, SiteId)>,
@@ -322,6 +328,42 @@ fn transfer_block(
             MirStatement::Return { .. }
             | MirStatement::Evaluate { .. }
             | MirStatement::Drop { .. } => {}
+        }
+    }
+
+    // Tail expressions lower their physical hand-off directly into the return
+    // slot.  Unlike an explicit consuming use, that move has no corresponding
+    // `MirStatement::Use { intent: Consume }`, so mirror the exact machine
+    // transfer in the binding-state authority.  Only accept an unambiguous
+    // named backing local: stale/synthetic aliases must be rekeyed by lowering
+    // before they can affect exit cleanup.
+    if matches!(block.terminator, Terminator::Return) {
+        let return_site = block
+            .statements
+            .iter()
+            .rev()
+            .find_map(|statement| match statement {
+                MirStatement::Return { site, .. } => Some(site.unwrap_or(SiteId(0))),
+                _ => None,
+            })
+            .unwrap_or(SiteId(0));
+        for instruction in &block.instructions {
+            let Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(local),
+            } = instruction
+            else {
+                continue;
+            };
+            let mut owners = binding_locals.iter().filter_map(|(binding, place)| {
+                (*place == Place::Local(*local)).then_some(*binding)
+            });
+            let Some(binding) = owners.next() else {
+                continue;
+            };
+            if owners.next().is_none() {
+                state.insert(binding, BindingState::Consumed(return_site));
+            }
         }
     }
     state
@@ -1088,6 +1130,23 @@ pub fn analyze(
     type_classes: &TypeClassTable,
     param_bindings: &[BindingId],
 ) -> DataflowResult {
+    analyze_with_binding_locals(blocks, type_classes, param_bindings, &HashMap::new())
+}
+
+/// Run [`analyze`] with the lowering authority that maps source bindings to
+/// their concrete backing places.  The additional mapping lets tail moves into
+/// `ReturnSlot` participate in the same consume state as explicit uses.
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "two-phase dataflow (fixpoint + diagnostic sweep); splitting would require shared mutable state across functions"
+)]
+pub fn analyze_with_binding_locals<S: std::hash::BuildHasher>(
+    blocks: &[BasicBlock],
+    type_classes: &TypeClassTable,
+    param_bindings: &[BindingId],
+    binding_locals: &HashMap<BindingId, Place, S>,
+) -> DataflowResult {
     if blocks.is_empty() {
         return DataflowResult::default();
     }
@@ -1169,6 +1228,7 @@ pub fn analyze(
             entry,
             block,
             type_classes,
+            binding_locals,
             &mut linear_bindings,
             &mut phase1_checks,
             &mut phase1_use_seen,
@@ -1235,6 +1295,7 @@ pub fn analyze(
             entry,
             block,
             type_classes,
+            binding_locals,
             &mut linear_bindings,
             &mut checks,
             &mut use_after_consume_seen,
@@ -1987,6 +2048,42 @@ mod tests {
         assert!(
             !result.entry_states.contains_key(&2),
             "the diagnostic dataflow pass must not materialise unreachable cursor state"
+        );
+    }
+
+    #[test]
+    fn tail_move_to_return_slot_consumes_the_named_backing_binding() {
+        // Tail returns do not emit a consuming `Use`; the physical move is the
+        // authority.  Keep this small counterexample here so return cleanup
+        // cannot silently regress to treating the escaped owner as live.
+        let binding = BindingId(34);
+        let blocks = vec![BasicBlock {
+            id: 0,
+            statements: vec![
+                MirStatement::Bind {
+                    binding,
+                    name: "value".to_string(),
+                    site: SiteId(10),
+                    ty: ResolvedTy::I64,
+                },
+                MirStatement::Return {
+                    site: Some(SiteId(11)),
+                    ty: ResolvedTy::I64,
+                },
+            ],
+            instructions: vec![Instr::Move {
+                dest: Place::ReturnSlot,
+                src: Place::Local(9),
+            }],
+            terminator: Terminator::Return,
+        }];
+        let binding_locals = HashMap::from([(binding, Place::Local(9))]);
+
+        let result =
+            analyze_with_binding_locals(&blocks, &TypeClassTable::default(), &[], &binding_locals);
+        assert_eq!(
+            result.exit_states[&0][&binding],
+            BindingState::Consumed(SiteId(11))
         );
     }
 

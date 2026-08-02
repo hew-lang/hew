@@ -531,15 +531,9 @@ impl Builder {
     pub(crate) fn retire_provisional_owner_for_bound_value(
         &mut self,
         binding: BindingId,
+        name: &str,
         source: Place,
     ) {
-        if !self
-            .owned_locals
-            .iter()
-            .any(|entry| entry.binding == binding)
-        {
-            return;
-        }
         let Some(index) = self.owned_locals.iter().position(|entry| {
             entry.binding != binding
                 && self.binding_locals.get(&entry.binding) == Some(&source)
@@ -549,10 +543,33 @@ impl Builder {
         }) else {
             return;
         };
-        let provisional = self.owned_locals.remove(index).binding;
+        let provisional = self.owned_locals[index].binding;
         self.synthetic_owner_publication_sites.remove(&provisional);
         self.typed_produced_value_owner_bindings
             .remove(&provisional);
+        if self
+            .owned_locals
+            .iter()
+            .any(|entry| entry.binding == binding)
+        {
+            // The ordinary `let` registrar already owns the destination slot.
+            // Its ledger entry is the one the exit planner must use; discard
+            // only the moved-from publication generation.
+            self.owned_locals.remove(index);
+            return;
+        }
+
+        // Some typed producers (notably `Weak<T>`) have a concrete ownership
+        // fact even though the legacy `let` classifier does not mint a second
+        // ordinary entry for their surface type.  The initializer's Move is the
+        // exact transfer into this named slot, so preserve the one typed owner
+        // by rekeying it to the binder instead of leaving a stale source-local
+        // generation.  This keeps return transfer and suspend-abandon planning
+        // on the real owner without creating another cleanup authority.
+        self.binding_locals.remove(&provisional);
+        let entry = &mut self.owned_locals[index];
+        entry.binding = binding;
+        entry.name = name.to_string();
     }
 
     /// Retire a typed-publication temporary after an assignment has emitted an
@@ -2045,7 +2062,7 @@ impl Builder {
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()
     }
-    /// The owned-locals whose release obligation is still SOLE-OWNED per binding —
+    /// The owned locals that may still own a value on a path to an exit —
     /// either scope-exit-live (`ScopeExit`) or retracted only by a consume that
     /// transfers the value out (`ConsumedAt`). A binding in this view is a
     /// candidate for the path-sensitive returned-member re-admission in
@@ -2056,14 +2073,16 @@ impl Builder {
     /// / `ScopeReleased` (already released mid-body) and `AliasOf` (a non-owning
     /// interior alias — never its own drop) are excluded, so the re-admission
     /// never resurrects a drop those dispositions deliberately elide.
-    pub(crate) fn owned_locals_returned_candidates(&self) -> Vec<(BindingId, String, ResolvedTy)> {
+    pub(crate) fn owned_locals_exit_candidates(&self) -> Vec<(BindingId, String, ResolvedTy)> {
         self.owned_locals
             .iter()
             .filter(|entry| {
                 matches!(
                     entry.disposition,
                     Disposition::ScopeExit | Disposition::ConsumedAt { .. }
-                )
+                ) && !self
+                    .synthetic_owner_publication_sites
+                    .contains_key(&entry.binding)
             })
             .map(|entry| (entry.binding, entry.name.clone(), entry.ty.clone()))
             .collect()
@@ -4873,5 +4892,46 @@ mod typed_produced_owner_tests {
             target, dest, &expr.ty, source, &expr.ty,
         );
         assert!(builder.owned_locals.is_empty());
+    }
+
+    #[test]
+    fn let_binding_adopts_typed_owner_when_legacy_registration_has_none() {
+        let site = SiteId(721);
+        let expr = owned_resource(site);
+        let mut builder = Builder::default();
+        let mut facts = ParamOwnershipFacts::default();
+        facts.produced_value_facts.insert(
+            site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::Literal,
+                ownership: ProducedValueOwnership::owned(ProducedValueAcquisition::Fresh),
+                relation: hew_hir::HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
+        builder.param_ownership = Rc::new(facts);
+
+        let source = Place::Local(9);
+        let binding = BindingId(89);
+        builder.adopt_typed_produced_value_owner(&expr, source);
+        let provisional = builder.owned_locals[0].binding;
+        builder.binding_locals.insert(binding, Place::Local(10));
+
+        builder.retire_provisional_owner_for_bound_value(binding, "weak", source);
+
+        assert_eq!(builder.owned_locals.len(), 1);
+        assert_eq!(builder.owned_locals[0].binding, binding);
+        assert_eq!(builder.owned_locals[0].name, "weak");
+        assert_eq!(builder.binding_locals[&binding], Place::Local(10));
+        assert!(!builder.binding_locals.contains_key(&provisional));
+        assert!(!builder
+            .synthetic_owner_publication_sites
+            .contains_key(&provisional));
+        assert_eq!(
+            builder.owned_locals_exit_candidates(),
+            vec![(binding, "weak".to_string(), expr.ty)]
+        );
     }
 }

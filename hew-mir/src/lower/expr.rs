@@ -2213,7 +2213,7 @@ impl Builder {
                             );
                         }
                     }
-                    self.retire_provisional_owner_for_bound_value(binding.id, src);
+                    self.retire_provisional_owner_for_bound_value(binding.id, &binding.name, src);
                 }
                 // #1933 / #1941 — allocate the path-sensitive drop-flag for a
                 // non-idempotent user `#[resource]` binding now that its backend

@@ -1074,7 +1074,12 @@ pub(super) fn check_function(
     // by the calling convention (LLVM function argument + parameter prologue
     // in codegen), never by a `Bind` statement in the checker-authority stream.
     let param_ids: Vec<hew_hir::BindingId> = func.params.iter().map(|p| p.id).collect();
-    let mut result = dataflow::analyze(blocks, &builder.type_classes, &param_ids);
+    let mut result = dataflow::analyze_with_binding_locals(
+        blocks,
+        &builder.type_classes,
+        &param_ids,
+        &builder.binding_locals,
+    );
     let checks = &mut result.checks;
 
     // DecisionMapTotal. Every `DecisionFact` on this function must

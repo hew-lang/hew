@@ -826,7 +826,18 @@ fn hew_lib_candidates(
             Some("release" | "release-lib") => {
                 (Some("release-lib"), &["release-lib", "release", "debug"])
             }
-            _ => (None, &[]),
+            // Installed compilers conventionally live in `bin`/`sbin`; those
+            // directory names describe the installation layout, not a Cargo
+            // profile.  Keep the target-aware installed paths authoritative.
+            Some("bin" | "sbin") | None => (None, &[]),
+            // Custom Cargo profiles follow the same output contract as the
+            // built-in profiles: the compiler and its host archive share the
+            // profile directory, while cross-target archives live under
+            // `<target>/<triple>/<profile>`.  Keep that paired archive ahead
+            // of every installed or release-lib fallback.  Treating an
+            // unfamiliar profile as "not Cargo" lets a stale release-lib
+            // sibling silently shadow a freshly-built custom-profile runtime.
+            Some(profile) => (Some(profile), &[]),
         };
 
     let mut candidates = Vec::new();
@@ -2077,6 +2088,42 @@ mod tests {
         assert!(
             plain_release > 1,
             "a release compiler must prefer the consumer-linkable release-lib archive"
+        );
+    }
+
+    #[test]
+    fn custom_profile_candidates_prefer_the_paired_archive() {
+        let exe_dir = std::path::Path::new("/repo/target/perf");
+        let triple = "aarch64-apple-darwin";
+
+        let host = hew_lib_candidates(exe_dir, "libhew.a", triple, true);
+        assert_eq!(
+            host[0],
+            std::path::PathBuf::from("/repo/target/aarch64-apple-darwin/perf/libhew.a")
+        );
+        assert_eq!(
+            host[1],
+            std::path::PathBuf::from("/repo/target/perf/libhew.a")
+        );
+        let stale_release_lib = host
+            .iter()
+            .position(|candidate| candidate.ends_with("target/release-lib/libhew.a"))
+            .expect("release-lib remains an installed/development fallback");
+        assert!(
+            stale_release_lib > 1,
+            "a stale release-lib must not shadow the archive paired with a custom-profile compiler"
+        );
+
+        let cross = hew_lib_candidates(exe_dir, "libhew.a", triple, false);
+        assert_eq!(
+            cross[0],
+            std::path::PathBuf::from("/repo/target/aarch64-apple-darwin/perf/libhew.a"),
+            "cross compilation must preserve the custom profile below the target triple"
+        );
+        assert_ne!(
+            cross.get(1),
+            Some(&std::path::PathBuf::from("/repo/target/perf/libhew.a")),
+            "a host custom-profile archive must not satisfy a cross-target link"
         );
     }
 

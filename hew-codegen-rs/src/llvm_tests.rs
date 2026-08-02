@@ -6161,6 +6161,53 @@ fn return_sweep_skips_planned_owner_but_drops_unplanned_live_owner() {
 }
 
 #[test]
+fn return_sweep_uses_only_the_current_return_blocks_plan() {
+    let ctx = Context::create();
+    let module = ctx.create_module("return_cleanup_block_discrimination");
+    let harness = build_harness(&ctx, &[], &[]);
+    let owner = frame_cleanup_string_descriptor(Place::Local(0));
+    let drop_plans = vec![(
+        ExitPath::Return { block: 1 },
+        hew_mir::DropPlan {
+            drops: vec![owner.clone()],
+        },
+    )];
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.drop_plans = &drop_plans;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![owner.into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("return cleanup owner");
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(0)).expect("arm owner");
+
+    emit_helper_crash_cleanup_retire_remaining_on_return(&fn_ctx, 0)
+        .expect("current-block return sweep");
+    finish_test_fn(&fn_ctx);
+    module
+        .verify()
+        .expect("return block discrimination module verify");
+    let ir = module
+        .get_function("driver")
+        .expect("return block discrimination driver")
+        .print_to_string()
+        .to_string();
+
+    assert_eq!(
+        ir.matches("call void @hew_string_drop(").count(),
+        1,
+        "a plan belonging to another Return block must not suppress this block's residual drop:\n{ir}"
+    );
+    assert!(
+        ir.contains("helper_crash_cleanup_return_drop_0"),
+        "a descriptor planned only by another Return block must retain this block's active-gated destructor path:\n{ir}"
+    );
+}
+
+#[test]
 fn return_sweep_rejects_same_place_descriptor_drift() {
     let ctx = Context::create();
     let module = ctx.create_module("return_cleanup_descriptor_drift");
@@ -11838,6 +11885,20 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
     ];
 
     for (label, pipeline, expected_kinds, rituals) in cases {
+        if label == "record" {
+            let ingress_retain_count = pipeline
+                .raw_mir
+                .iter()
+                .filter(|function| function.name == "Probe__recv__run")
+                .flat_map(|function| &function.blocks)
+                .flat_map(|block| &block.instructions)
+                .filter(|instr| matches!(instr, Instr::BytesRetain { .. }))
+                .count();
+            assert_eq!(
+                ingress_retain_count, 1,
+                "the Packet field and fresh producer may have two releases only when aggregate ingress retains the Bytes owner exactly once"
+            );
+        }
         let drops = suspending_call_closure_drops(&pipeline);
         assert_eq!(
             drops.iter().map(|drop| drop.kind).collect::<Vec<_>>(),

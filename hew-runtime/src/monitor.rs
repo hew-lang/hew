@@ -1586,6 +1586,7 @@ mod tests {
             spawn_serial: id,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }
     }
 

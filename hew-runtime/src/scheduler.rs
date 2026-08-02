@@ -2152,12 +2152,16 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     // here so a running-frame longjmp can drop untouched state fields safely.
     // SAFETY: this activation exclusively owns the live actor state through
     // the matching finish/recovery call.
-    let crash_state_drop = match (a.state_clone_fn, a.state_drop_fn) {
-        (Some(_), Some(drop)) => Some(drop),
-        (None, None) => None,
-        _ => {
-            eprintln!("fatal: actor state has half-registered clone/drop classifier proof");
-            std::process::abort();
+    let crash_state_drop = if a.state_drop_borrowed.load(Ordering::Acquire) {
+        None
+    } else {
+        match (a.state_clone_fn, a.state_drop_fn) {
+            (Some(_), Some(drop)) => Some(drop),
+            (None, None) => None,
+            _ => {
+                eprintln!("fatal: actor state has half-registered clone/drop classifier proof");
+                std::process::abort();
+            }
         }
     };
     // SAFETY: this activation exclusively owns the live actor state through
@@ -3027,14 +3031,18 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     // The handler's state is fully initialized at this point.
                     // SAFETY: this activation exclusively owns the live actor
                     // state until the matching finish/recovery call.
-                    let crash_state_drop = match (a.state_clone_fn, a.state_drop_fn) {
-                        (Some(_), Some(drop)) => Some(drop),
-                        (None, None) => None,
-                        _ => {
-                            eprintln!(
+                    let crash_state_drop = if a.state_drop_borrowed.load(Ordering::Acquire) {
+                        None
+                    } else {
+                        match (a.state_clone_fn, a.state_drop_fn) {
+                            (Some(_), Some(drop)) => Some(drop),
+                            (None, None) => None,
+                            _ => {
+                                eprintln!(
                                 "fatal: actor state has half-registered clone/drop classifier proof"
                             );
-                            std::process::abort();
+                                std::process::abort();
+                            }
                         }
                     };
                     // SAFETY: this activation exclusively owns the live actor
@@ -4624,6 +4632,7 @@ mod tests {
             spawn_serial: 1,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         }
     }
 
@@ -5766,6 +5775,7 @@ mod tests {
             spawn_serial: 0,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -6846,7 +6856,7 @@ mod tests {
     ///
     /// Bite-proof, both halves:
     /// - Drop the retire from `hew_actor_free_inner`'s destroy branch AND from
-    ///   `free_actor_resources_with_options` and the `recv_timeout` below trips:
+    ///   actor resource teardown and the `recv_timeout` below trips:
     ///   the asking thread never returns from `hew_reply_wait`.
     /// - Retire twice, or release without publishing, and the channel-count
     ///   assertion trips instead -- zero releases leaves `baseline + 1`, two
@@ -7969,6 +7979,7 @@ mod tests {
             spawn_serial: 0,
             sys_dispatch: None,
             state_drop_consumed: AtomicBool::new(false),
+            state_drop_borrowed: AtomicBool::new(false),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

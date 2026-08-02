@@ -4192,12 +4192,8 @@ mod layout_key_shortening_guard {
             "layout keys must retain the full nominal owner, never `short_name(..)`"
         );
         assert!(
-            prod.matches("mangle_layout_key(name, args)").count() >= 2,
-            "field-store and field-read must both pass their resolved outer name"
-        );
-        assert!(
-            prod.contains("mangle_layout_key(tname, args)"),
-            "StructInit must pass its resolved outer name to the layout key helper"
+            prod.matches("mangle_layout_key(name, args)").count() >= 3,
+            "field-store, field-read, and StructInit must pass their resolved outer name"
         );
     }
 }

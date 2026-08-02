@@ -1552,6 +1552,20 @@ def opaque_fact_json(facts: list[OpaqueResourceFact]) -> dict[str, object]:
             }
             for fact in facts
         ],
+        "compiler_e2e_cases": [
+            {
+                "carrier_key": fact.carrier_key,
+                "scope_exit_source": (
+                    f"import {fact.module.replace('.', '::')};\n"
+                    f"fn scope_exit_case(value: {fact.resource}) {{ }}\n"
+                ),
+                "explicit_close_source": (
+                    f"import {fact.module.replace('.', '::')};\n"
+                    f"fn explicit_close_case(value: {fact.resource}) {{ value.close(); }}\n"
+                ),
+            }
+            for fact in facts
+        ],
     }
 
 

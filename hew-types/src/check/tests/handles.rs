@@ -246,6 +246,82 @@ fn check_source_with_handle(source: &str, handle_type: &str) -> TypeCheckOutput 
     checker.check_program(&parse_result.program)
 }
 
+#[test]
+fn checker_handle_rewrite_requires_exact_receiver_owner() {
+    fn shared_info(symbol: &str, return_name: &str) -> crate::stdlib_loader::ModuleInfo {
+        let parsed = hew_parser::parse("pub type Handle { value: i32; }\n");
+        assert!(parsed.errors.is_empty());
+        crate::stdlib_loader::ModuleInfo {
+            source_path: None,
+            source_items: parsed.program.items,
+            functions: Vec::new(),
+            clean_names: Vec::new(),
+            handle_types: vec!["shared.Handle".to_string()],
+            handle_methods: vec![crate::stdlib_loader::HandleMethod {
+                type_name: "shared.Handle".to_string(),
+                method_name: "peer".to_string(),
+                c_symbol: symbol.to_string(),
+                params: Vec::new(),
+                return_type: Ty::named(return_name, vec![]),
+                dispatch_through_impl: false,
+            }],
+            wrapper_fns: Vec::new(),
+            drop_types: Vec::new(),
+            resource_wrapper_types: Vec::new(),
+            drop_funcs: Vec::new(),
+            unsupported_type_signatures: Vec::new(),
+        }
+    }
+
+    let mut registry = ModuleRegistry::new(Vec::new());
+    registry.insert_module_info_for_test(
+        "vendor_a.shared",
+        shared_info("vendor_a_peer", "vendor_b.shared.Handle"),
+    );
+    registry.insert_module_info_for_test(
+        "vendor_b.shared",
+        shared_info("vendor_b_peer", "vendor_a.shared.Handle"),
+    );
+    let mut checker = Checker::new(registry);
+
+    assert!(checker.receiver_is_opaque_handle("vendor_a.shared.Handle"));
+    assert!(checker.receiver_is_opaque_handle("vendor_b.shared.Handle"));
+    assert!(
+        !checker.receiver_is_opaque_handle("shared.Handle"),
+        "an ambiguous legacy receiver must not enter direct handle rewriting"
+    );
+
+    let a_ty = Ty::named("vendor_a.shared.Handle", vec![]);
+    assert_eq!(
+        checker.canonical_handle_receiver_type_name(&a_ty),
+        Some("vendor_a.shared.Handle".to_string())
+    );
+    let a_sig = checker
+        .lookup_named_method_sig("vendor_a.shared.Handle", &[], "peer")
+        .expect("exact vendor_a method should resolve");
+    assert_eq!(
+        a_sig.return_type,
+        Ty::named("vendor_b.shared.Handle", vec![]),
+        "an already-qualified foreign return must retain its own owner"
+    );
+    assert_eq!(
+        checker
+            .qualify_method_return_to_receiver_owner("vendor_a.shared.Handle", &a_sig.return_type),
+        Ty::named("vendor_b.shared.Handle", vec![]),
+        "receiver-owner qualification must not rewrite B.Handle to A.Handle"
+    );
+
+    let call_span = 10..11;
+    checker.record_handle_method_call_receiver_kind_if_any(&a_ty, &call_span);
+    assert!(matches!(
+        checker
+            .method_call_receiver_kinds
+            .get(&SpanKey::in_module(&call_span, checker.current_module_idx)),
+        Some(MethodCallReceiverKind::HandleInstance { type_name })
+            if type_name == "vendor_a.shared.Handle"
+    ));
+}
+
 /// Direct `return self.field` — the existing check; must still fire after the
 /// bind-then-return refactor.
 #[test]

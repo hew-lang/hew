@@ -758,7 +758,7 @@ pub(super) fn register_builtin_record_layouts(
     record_layouts: &mut Vec<crate::model::RecordLayout>,
     record_field_orders: &mut HashMap<String, Vec<(String, ResolvedTy)>>,
 ) {
-    for registration in hew_hir::builtin_type_classes::builtin_type_registrations() {
+    for registration in hew_hir::builtin_type_classes::compiler_record_layout_registrations() {
         let hew_hir::builtin_type_classes::BuiltinTypeShape::Struct(fields) = registration.shape
         else {
             continue;

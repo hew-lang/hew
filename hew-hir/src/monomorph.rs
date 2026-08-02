@@ -202,8 +202,7 @@ pub fn compiler_record_layout_key(
     ) {
         return synthetic_cursor_layout_key(builtin, type_args);
     }
-    let registration =
-        crate::builtin_type_classes::builtin_type_registration(builtin.canonical_name())?;
+    let registration = crate::builtin_type_classes::compiler_record_layout_registration(builtin)?;
     if !type_args.is_empty()
         || !matches!(
             registration.shape,

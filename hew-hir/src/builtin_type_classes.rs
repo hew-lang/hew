@@ -223,12 +223,17 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(RecvHalf, BuiltinTypeShape::Opaque),
     registration!(CrashInfo, BuiltinTypeShape::Struct(CRASH_INFO_FIELDS)),
     registration!(CrashAction, BuiltinTypeShape::Enum(CRASH_ACTION_VARIANTS)),
-    registration!(
-        CrashNotification,
-        BuiltinTypeShape::Struct(CRASH_NOTIFICATION_FIELDS)
-    ),
     registration!(MonitorRef, BuiltinTypeShape::Struct(MONITOR_REF_FIELDS)),
 ];
+
+// Compiler-created lifecycle payloads need a representation entry without
+// becoming bare-name source builtins. Keeping this table separate prevents a
+// user `CrashNotification` declaration from acquiring the std.failure ABI
+// while still giving the generated exit-hook prologue a disjoint layout key.
+const SYNTHETIC_RECORD_LAYOUT_REGISTRATIONS: &[BuiltinTypeRegistration] = &[registration!(
+    CrashNotification,
+    BuiltinTypeShape::Struct(CRASH_NOTIFICATION_FIELDS)
+)];
 
 #[must_use]
 pub fn builtin_type_registrations() -> &'static [BuiltinTypeRegistration] {
@@ -240,6 +245,28 @@ pub fn builtin_type_registration(name: &str) -> Option<&'static BuiltinTypeRegis
     BUILTIN_TYPE_REGISTRATIONS
         .iter()
         .find(|registration| registration.name() == name)
+}
+
+/// Return the representation entry for a compiler-owned record identity.
+///
+/// This includes synthetic lifecycle carriers that intentionally do not
+/// participate in bare source-name admission.
+#[must_use]
+pub fn compiler_record_layout_registration(
+    builtin: BuiltinType,
+) -> Option<&'static BuiltinTypeRegistration> {
+    BUILTIN_TYPE_REGISTRATIONS
+        .iter()
+        .chain(SYNTHETIC_RECORD_LAYOUT_REGISTRATIONS)
+        .find(|registration| registration.builtin == builtin)
+}
+
+/// Iterate every compiler-owned record representation entry.
+pub fn compiler_record_layout_registrations(
+) -> impl Iterator<Item = &'static BuiltinTypeRegistration> {
+    BUILTIN_TYPE_REGISTRATIONS
+        .iter()
+        .chain(SYNTHETIC_RECORD_LAYOUT_REGISTRATIONS)
 }
 
 /// Return the compiler-known crash-info payload registration.
@@ -500,7 +527,11 @@ mod tests {
 
     #[test]
     fn crash_notification_shape_carries_the_canonical_crash_kind_enum() {
-        let registration = builtin_type_registration("CrashNotification")
+        assert!(
+            builtin_type_registration("CrashNotification").is_none(),
+            "the generated payload layout must not admit a bare source builtin"
+        );
+        let registration = compiler_record_layout_registration(BuiltinType::CrashNotification)
             .expect("CrashNotification must have a compiler-owned layout");
         assert_eq!(
             registration.shape,

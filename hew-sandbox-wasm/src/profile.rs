@@ -1081,10 +1081,7 @@ impl<'a> ProfileChecker<'a> {
                 )
             }
             Ty::Named { name, .. }
-                if matches!(
-                    name.as_str(),
-                    "Regex" | "regex.Pattern" | "std.text.regex.Pattern"
-                ) =>
+                if matches!(name.as_str(), "regex.Pattern" | "std.text.regex.Pattern") =>
             {
                 // `Pattern` is a `#[resource]`; `close()` is its canonical
                 // release method (renamed from `free()` in the resource

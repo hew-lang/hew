@@ -162,3 +162,61 @@ fn cross_module_machine_ctor_resolves_to_machine_variant_ctor() {
          so MIR's machine_layout_names includes it"
     );
 }
+
+#[test]
+fn imported_generic_machine_usage_discovers_a_concrete_layout() {
+    let imported_src = r"
+pub machine Lifecycle<T> {
+    events { Stop; }
+    state Created;
+    state Stopped;
+    on Stop: Created => Stopped { Stopped }
+    on Stop: Stopped => Stopped;
+}
+";
+    let root_src = r"
+import m;
+
+fn main() {
+    var lifecycle: m.Lifecycle<i64> = m.Lifecycle::Created;
+    lifecycle.step(m.LifecycleEvent::Stop);
+}
+";
+    let program = support::checker_pipeline::program_with_imported_module(imported_src, root_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    assert!(
+        output.module.machine_instantiations.iter().any(|entry| {
+            entry.key.origin_name == "m.Lifecycle"
+                && entry.key.type_args == vec![hew_types::ResolvedTy::I64]
+        }),
+        "expected imported generic lifecycle layout: {:#?}",
+        output.module.machine_instantiations
+    );
+    let main = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("root main must be lowered");
+    let HirStmtKind::Expr(step) = &main.body.statements[1].kind else {
+        panic!("expected lifecycle step expression")
+    };
+    let HirExprKind::MachineStep {
+        receiver, event, ..
+    } = &step.kind
+    else {
+        panic!("expected machine step, got {:#?}", step.kind)
+    };
+    assert!(matches!(
+        receiver.ty,
+        hew_types::ResolvedTy::Named { ref name, .. } if name == "m.Lifecycle"
+    ));
+    assert!(matches!(
+        event.ty,
+        hew_types::ResolvedTy::Named { ref name, .. } if name == "m.LifecycleEvent"
+    ));
+}

@@ -1805,7 +1805,7 @@ an edge from a user-declarable caller at all, rather than distinguish by hand \
 between a caller whose arguments reach the system queue and one whose do \
 not."""
 
-"free_actor_resources_with_options -> hew_mailbox_free" = """
+"free_actor_resources -> hew_mailbox_free" = """
 Accounted teardown, native. This is the edge every actor-lifecycle route \
 reaches system-queue destruction through. The user-declarable raw destructor \
 is NOT one of those routes any more: `hew_actor_free` moved to `internal` \
@@ -1829,7 +1829,7 @@ move. No \
 user-declarable caller reaches this edge at all any more -- \
 hew_supervisor_remove_child was the last one and is now internal."""
 
-"free_actor_resources_wasm_with_options -> hew_mailbox_free" = """
+"free_actor_resources_wasm -> hew_mailbox_free" = """
 The wasm mirror of the edge above, retiring through \
 mailbox_wasm::retire_pending_sys_lane with the same ordering and the same \
 per-signal accounting."""

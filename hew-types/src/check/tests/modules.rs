@@ -68,6 +68,57 @@ fn nested_module_leaf_is_not_a_nominal_self_qualifier() {
 }
 
 #[test]
+fn source_owned_bare_impl_target_matches_its_full_return_owner_only() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("std.encoding.yaml".to_string());
+    checker.local_type_defs.insert("Value".to_string());
+
+    assert!(
+        checker.strict_names_same_owner("std.encoding.yaml.Value", None, "Value", None),
+        "a module's bare impl target and its resolved full source return owner are one nominal"
+    );
+    assert!(
+        !checker.strict_names_same_owner("other.Value", None, "Value", None),
+        "the source-owner exception must not collapse a foreign same-leaf type"
+    );
+}
+
+#[test]
+fn source_owned_bare_variant_surface_matches_full_scrutinee_owner_only() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("std.encoding.yaml".to_string());
+    checker.type_defs.insert(
+        "std.encoding.yaml.ParseError".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Enum,
+            name: "ParseError".to_string(),
+            type_params: vec![],
+            bounds: HashMap::new(),
+            fields: HashMap::new(),
+            field_order: vec![],
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        },
+    );
+    let expected = Ty::Named {
+        name: "std.encoding.yaml.ParseError".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+
+    assert!(checker.variant_surface_owner_matches("ParseError::Invalid", &expected));
+    assert!(!checker.variant_surface_owner_matches("other.ParseError::Invalid", &expected));
+
+    checker.current_module = None;
+    assert!(
+        checker.variant_surface_owner_matches("ParseError::Invalid", &expected),
+        "a bare associated-pattern owner is resolved from its exact expected enum"
+    );
+}
+
+#[test]
 fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.current_module = Some("std.net.tls".to_string());

@@ -393,14 +393,6 @@ impl Checker {
         }
 
         let dotted = surface_owner.replace("::", ".");
-        if self.type_defs.contains_key(&dotted) || self.known_types.contains(&dotted) {
-            return dotted;
-        }
-
-        if let Some(canonical) = self.canonical_nominal_name(&dotted) {
-            return canonical;
-        }
-
         if !dotted.contains('.') {
             if let Some(expected) = expected_ty.type_name() {
                 if let Some(owner) = self.current_module_identity() {
@@ -412,7 +404,31 @@ impl Checker {
                         return local;
                     }
                 }
+                // A qualified enum pattern is checked against an already
+                // resolved scrutinee.  That expected nominal is sufficient
+                // authority for its own bare source leaf (for example a
+                // `Result<_, std.encoding.yaml.ParseError>` arm written as
+                // `ParseError::Invalid(_)` after `import std::encoding::yaml`).
+                // This is not a leaf-name lookup: the returned identity is the
+                // exact expected owner, and a local or explicitly published
+                // bare type has already claimed the spelling above.
+                if expected
+                    .rsplit_once('.')
+                    .is_some_and(|(_, short)| short == dotted)
+                    && !self.local_type_defs.contains(&dotted)
+                    && !self.source_type_defs.contains(&dotted)
+                {
+                    return expected.to_string();
+                }
             }
+        }
+
+        if self.type_defs.contains_key(&dotted) || self.known_types.contains(&dotted) {
+            return dotted;
+        }
+
+        if let Some(canonical) = self.canonical_nominal_name(&dotted) {
+            return canonical;
         }
 
         dotted
@@ -439,7 +455,14 @@ impl Checker {
                 builtin: Some(BuiltinType::Result),
                 ..
             } => "Result".to_string(),
-            Ty::Named { name, .. } => self.strict_nominal_identity(name),
+            // Preserve an already-resolved full source owner here.  The
+            // strict comparison helper intentionally renders a declaration's
+            // own full spelling as its short source spelling for collision
+            // diagnostics, but variant-surface ownership compares against the
+            // full key produced by `canonical_variant_surface_owner`.
+            Ty::Named { name, .. } => self
+                .canonical_nominal_name(name)
+                .unwrap_or_else(|| name.clone()),
             _ => return false,
         };
         self.canonical_variant_surface_owner(surface_owner, expected_ty) == expected
@@ -654,7 +677,7 @@ impl Checker {
     /// not a collision, so it must NOT be flagged. A conflict is reported only
     /// when we can prove distinct owners: one side is a genuine root-local /
     /// current-module declaration and the other is a foreign-owner qualifier.
-    fn strict_names_same_owner(
+    pub(super) fn strict_names_same_owner(
         &self,
         an: &str,
         a_builtin: Option<BuiltinType>,
@@ -665,6 +688,18 @@ impl Checker {
             (Some(a), Some(b)) => return a == b,
             (Some(_), None) | (None, Some(_)) => return false,
             (None, None) => {}
+        }
+        // A source module checks its own impl signatures with the target
+        // written bare (`Value`) while primary signature resolution preserves
+        // the declaration's full source owner (`std.encoding.yaml.Value`).
+        // Those are the same nominal only when the qualified spelling is the
+        // exact current module owner; do this before the root-local-vs-foreign
+        // collision guard below, which quite correctly rejects that shape for
+        // an actual imported type.
+        if let Some(module) = self.current_module.as_deref() {
+            if an == format!("{module}.{bn}") || bn == format!("{module}.{an}") {
+                return true;
+            }
         }
         let a_id = self.strict_nominal_identity(an);
         let b_id = self.strict_nominal_identity(bn);

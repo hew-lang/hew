@@ -11858,6 +11858,13 @@ fn suspending_closure_frame_cleanup_uses_exact_suspend_drop_plans() {
         thunk.contains("call void @hew_string_drop("),
         "the cached thunk must reuse the typed string-drop ritual:\n{thunk}"
     );
+    assert!(
+        !thunk.contains("invoke ")
+            && !thunk.contains("landingpad")
+            && !thunk.contains("personality"),
+        "generated cleanup thunks use a plain direct-call policy, not an LLVM unwind quarantine; \
+         a Rust panic in the plain-C runtime callee is process-fatal:\n{thunk}"
+    );
 
     let free_module =
         build_module(&ctx, &capture_free, "capture_free_frame_cleanup").expect("free module");

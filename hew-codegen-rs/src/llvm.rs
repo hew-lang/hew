@@ -33273,6 +33273,10 @@ fn lower_function<'ctx>(
             .builder
             .build_conditional_branch(is_live, trap_bb, cont_bb)
             .llvm_ctx("borrow-escape trap branch")?;
+        // TRAP-DISPOSITION: actor-cooperative(hew_panic). This generated edge
+        // calls the plain-C runtime symbol directly: an installed actor
+        // recovery frame catches it; otherwise the process exits. It cannot
+        // Rust-unwind.
         fn_ctx.builder.position_at_end(trap_bb);
         let panic_fn = llvm_mod.get_function("hew_panic").unwrap_or_else(|| {
             let panic_ty = ctx.void_type().fn_type(&[], false);

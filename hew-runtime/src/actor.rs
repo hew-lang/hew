@@ -14720,6 +14720,102 @@ mod tests {
     }
 
     #[test]
+    fn caught_unwind_after_state_clear_transfers_final_drop_authority() {
+        let _guard = crate::runtime_test_guard();
+        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+        let src = 41_u64;
+        // SAFETY: spawn copies the initialized scalar bytes into actor state.
+        let actor = unsafe {
+            hew_actor_spawn(
+                std::ptr::from_ref(&src).cast_mut().cast(),
+                std::mem::size_of::<u64>(),
+                Some(noop_dispatch),
+            )
+        };
+        assert!(!actor.is_null());
+
+        // Model the caught-Rust-unwind window after generated code neutralized
+        // the escrow field but before it completed the live-field overwrite.
+        // Recovery(false) must consume the now-authoritative snapshot and
+        // transfer that fact to final actor teardown.
+        // SAFETY: the test exclusively owns the actor and brackets one complete
+        // dispatch escrow before terminal free.
+        unsafe {
+            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            assert!(crate::cont::begin_dispatch_crash_cleanup(
+                (*actor).state,
+                (*actor).state_size,
+                Some(crash_skip_state_drop_callback),
+            ));
+            assert!(crate::cont::hew_dispatch_state_cleanup_clear(
+                (*actor).state,
+                std::mem::size_of::<u64>() as u64,
+            ));
+            let outcome = crate::cont::recover_dispatch_crash_cleanup_with_outcome(false);
+            assert!(outcome.registry_found);
+            assert!(
+                outcome.state_authority_consumed,
+                "a begun state mutation makes false-recovery one-way"
+            );
+            assert_eq!(CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst), 1);
+            record_dispatch_state_drop_consumed(actor);
+            (*actor)
+                .actor_state
+                .store(HewActorState::Crashed as i32, Ordering::Release);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+        assert_eq!(
+            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            1,
+            "final free must not retry live bytes after a cleared escrow consumed state authority"
+        );
+    }
+
+    #[test]
+    fn caught_unwind_before_state_mutation_preserves_final_drop_authority() {
+        let _guard = crate::runtime_test_guard();
+        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+        let src = 42_u64;
+        // SAFETY: spawn copies the initialized scalar bytes into actor state.
+        let actor = unsafe {
+            hew_actor_spawn(
+                std::ptr::from_ref(&src).cast_mut().cast(),
+                std::mem::size_of::<u64>(),
+                Some(noop_dispatch),
+            )
+        };
+        assert!(!actor.is_null());
+
+        // Untouched false-recovery remains the control: discard only escrow
+        // bytes and leave the original state callback for final actor free.
+        // SAFETY: the test exclusively owns the actor and brackets one complete
+        // dispatch escrow before terminal free.
+        unsafe {
+            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            assert!(crate::cont::begin_dispatch_crash_cleanup(
+                (*actor).state,
+                (*actor).state_size,
+                Some(crash_skip_state_drop_callback),
+            ));
+            let outcome = crate::cont::recover_dispatch_crash_cleanup_with_outcome(false);
+            assert!(outcome.registry_found);
+            assert!(!outcome.state_authority_consumed);
+            assert_eq!(CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst), 0);
+            (*actor)
+                .actor_state
+                .store(HewActorState::Crashed as i32, Ordering::Release);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+        assert_eq!(
+            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            1,
+            "untouched false-recovery must preserve final live-state drop authority"
+        );
+    }
+
+    #[test]
     fn free_actor_resources_runs_state_drop_on_stopped_actor() {
         // Companion to the crash-authority tests above:
         // a non-Crashed actor MUST still see its state-drop callback fire.

@@ -699,29 +699,6 @@ fn derive_opaque_resource_candidate_graph(
 }
 
 impl Checker {
-    fn canonicalize_registry_signature_ty(&self, ty: &Ty, canonical_owner: &str) -> Ty {
-        let mapped = ty.map_children_pub(&|child| {
-            self.canonicalize_registry_signature_ty(child, canonical_owner)
-        });
-        let Ty::Named {
-            name,
-            args,
-            builtin,
-        } = mapped
-        else {
-            return mapped;
-        };
-        let canonical_name = self
-            .module_registry
-            .canonical_registry_signature_type_identity(&name, canonical_owner)
-            .unwrap_or(name);
-        Ty::Named {
-            name: canonical_name,
-            args,
-            builtin,
-        }
-    }
-
     fn mark_import_module_used_for_owner(&self, owner: Option<String>, imported_module: &str) {
         self.used_modules
             .borrow_mut()
@@ -926,24 +903,8 @@ impl Checker {
     }
 
     pub(super) fn canonical_owned_handle_type_name(&self, type_name: &str) -> Option<String> {
-        if let Some(canonical) = self
-            .module_registry
+        self.module_registry
             .canonical_owned_type_identity(type_name)
-        {
-            return Some(canonical);
-        }
-        if self.module_registry.drop_func_for(type_name).is_some()
-            || self.module_registry.is_drop_type(type_name)
-            || self.module_registry.is_handle_type(type_name)
-        {
-            return Some(type_name.to_string());
-        }
-
-        let qualified = self.module_registry.qualify_handle_type(type_name)?;
-        (self.module_registry.drop_func_for(&qualified).is_some()
-            || self.module_registry.is_drop_type(&qualified)
-            || self.module_registry.is_handle_type(&qualified))
-        .then_some(qualified)
     }
 
     pub(super) fn registered_type_def_name(&self, name: &str) -> Option<String> {
@@ -9262,10 +9223,11 @@ impl Checker {
                                 .params
                                 .iter()
                                 .map(|ty| {
-                                    self.canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                    self.module_registry
+                                        .canonicalize_registry_signature_ty(ty, &canonical_owner)
                                 })
                                 .collect(),
-                            return_type: self.canonicalize_registry_signature_ty(
+                            return_type: self.module_registry.canonicalize_registry_signature_ty(
                                 &func.return_type,
                                 &canonical_owner,
                             ),
@@ -9287,10 +9249,11 @@ impl Checker {
                                 .params
                                 .iter()
                                 .map(|ty| {
-                                    self.canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                    self.module_registry
+                                        .canonicalize_registry_signature_ty(ty, &canonical_owner)
                                 })
                                 .collect(),
-                            return_type: self.canonicalize_registry_signature_ty(
+                            return_type: self.module_registry.canonicalize_registry_signature_ty(
                                 &wfn.return_type,
                                 &canonical_owner,
                             ),

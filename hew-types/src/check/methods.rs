@@ -1443,20 +1443,18 @@ impl Checker {
             .insert(SpanKey::in_module(span, self.current_module_idx), dispatch);
     }
 
-    fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {
+    pub(super) fn canonical_handle_receiver_type_name(&self, receiver_ty: &Ty) -> Option<String> {
         let Ty::Named { name, .. } = receiver_ty else {
             return None;
         };
-        if self.module_registry.is_handle_type(name) {
-            return Some(name.clone());
-        }
-        if name.contains('.') {
-            return Some(name.clone());
-        }
-        self.module_registry.qualify_handle_type(name)
+        self.module_registry.canonical_handle_type_identity(name)
     }
 
-    fn record_handle_method_call_receiver_kind_if_any(&mut self, receiver_ty: &Ty, span: &Span) {
+    pub(super) fn record_handle_method_call_receiver_kind_if_any(
+        &mut self,
+        receiver_ty: &Ty,
+        span: &Span,
+    ) {
         let Some(type_name) = self.canonical_handle_receiver_type_name(receiver_ty) else {
             return;
         };
@@ -2160,9 +2158,8 @@ impl Checker {
     /// a fielded `#[resource]` wrapper — whose qualified name is not in the
     /// opaque `handle_types` set and whose short name matches no fieldless
     /// handle — so its methods keep dispatching through their real impl body.
-    fn receiver_is_opaque_handle(&self, name: &str) -> bool {
+    pub(super) fn receiver_is_opaque_handle(&self, name: &str) -> bool {
         self.module_registry.is_handle_type(name)
-            || self.module_registry.qualify_handle_type(name).is_some()
     }
 
     pub(super) fn record_module_qualified_stdlib_call_rewrite_if_any(
@@ -2539,7 +2536,7 @@ impl Checker {
             .or_else(|| {
                 self.module_registry
                     .resolve_handle_method_sig(type_name, method)
-                    .map(|(_c_symbol, params, return_type)| FnSig {
+                    .map(|(_c_symbol, params, return_type, _canonical_owner)| FnSig {
                         params,
                         return_type,
                         ..FnSig::default()
@@ -2636,22 +2633,24 @@ impl Checker {
     /// Only names proven in the same owner's `type_defs` are qualified. An
     /// already-qualified result (including `foo.Connection`) is authoritative
     /// and unchanged, as are builtins and a method on a bare/root receiver.
-    fn qualify_method_return_to_receiver_owner(&self, receiver_name: &str, ty: &Ty) -> Ty {
+    pub(super) fn qualify_method_return_to_receiver_owner(
+        &self,
+        receiver_name: &str,
+        ty: &Ty,
+    ) -> Ty {
         let canonical_registry_receiver = self
             .module_registry
             .canonical_method_receiver_identity(receiver_name);
-        let exact_receiver = canonical_registry_receiver
-            .as_deref()
-            .unwrap_or(receiver_name);
+        let exact_receiver = if let Some(canonical) = canonical_registry_receiver.as_deref() {
+            canonical
+        } else if self.type_defs.contains_key(receiver_name) {
+            receiver_name
+        } else {
+            return ty.clone();
+        };
         let Some((owner, _)) = exact_receiver.rsplit_once('.') else {
             return ty.clone();
         };
-        if !self.type_defs.contains_key(receiver_name)
-            && !self.module_registry.is_method_receiver_type(receiver_name)
-        {
-            return ty.clone();
-        }
-
         self.qualify_method_return_to_owner(owner, ty)
     }
 
@@ -2667,19 +2666,6 @@ impl Checker {
             return mapped;
         };
         if name.contains('.') {
-            let leaf = name
-                .rsplit_once('.')
-                .map_or(name.as_str(), |(_, leaf)| leaf);
-            let qualified = format!("{owner}.{leaf}");
-            if self.module_registry.is_method_receiver_type(&name)
-                && self.module_registry.is_method_receiver_type(&qualified)
-            {
-                return Ty::Named {
-                    name: qualified,
-                    args,
-                    builtin: None,
-                };
-            }
             return Ty::Named {
                 name,
                 args,

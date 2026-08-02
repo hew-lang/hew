@@ -1,158 +1,260 @@
 {
-  "schema_version": 1,
-  "resources": {
-    "std.channel.ChannelPair": {
-      "teardown_family": "channel-pair-free",
-      "runtime": { "path": "hew-runtime/src/channel.rs", "test": "pair_held_receiver_releases_queued_owned_elements", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "sandbox-vm-export", "disposition": "rejected", "path": "hew-sandbox-wasm/src/lib.rs", "test": "user_resource_type_is_profile_rejected_w3030" },
-      "status": "green",
-      "composition_requirement": null
+  "schema_version": 2,
+  "resources": [
+    {
+      "source_path": "std/channel/channel.hew",
+      "resource": "ChannelPair",
+      "runtime": {
+        "path": "hew-runtime/src/channel.rs",
+        "test": "pair_held_receiver_releases_queued_owned_elements",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted"
+      },
+      "release_symbol": "hew_channel_pair_free"
     },
-    "std.encoding.json.Value": {
-      "teardown_family": "json-value-free",
-      "runtime": { "path": "hew-std/src/json.rs", "test": "roundtrip_complex_builder_structure", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "sandbox-vm-export", "disposition": "rejected", "path": "hew-sandbox-wasm/src/lib.rs", "test": "user_resource_type_is_profile_rejected_w3030" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/encoding/json/json.hew",
+      "resource": "Value",
+      "runtime": {
+        "path": "hew-std/src/json.rs",
+        "test": "roundtrip_complex_builder_structure",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted"
+      },
+      "release_symbol": "hew_json_free"
     },
-    "std.encoding.toml.Value": {
-      "teardown_family": "toml-value-free",
-      "runtime": { "path": "hew-std/src/toml.rs", "test": "test_builder_stringify_roundtrip", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "sandbox-vm-export", "disposition": "rejected", "path": "hew-sandbox-wasm/src/lib.rs", "test": "user_resource_type_is_profile_rejected_w3030" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/encoding/toml/toml.hew",
+      "resource": "Value",
+      "runtime": {
+        "path": "hew-std/src/toml.rs",
+        "test": "test_builder_stringify_roundtrip",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted"
+      },
+      "release_symbol": "hew_toml_free"
     },
-    "std.encoding.yaml.Value": {
-      "teardown_family": "yaml-value-free",
-      "runtime": { "path": "hew-std/src/yaml.rs", "test": "roundtrip_complex_builder_structure", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "sandbox-vm-export", "disposition": "rejected", "path": "hew-sandbox-wasm/src/lib.rs", "test": "user_resource_type_is_profile_rejected_w3030" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/encoding/yaml/yaml.hew",
+      "resource": "Value",
+      "runtime": {
+        "path": "hew-std/src/yaml.rs",
+        "test": "roundtrip_complex_builder_structure",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted"
+      },
+      "release_symbol": "hew_yaml_free"
     },
-    "std.fs.FileReadStream": {
-      "teardown_family": "file-read-stream-close",
-      "runtime": { "path": "hew-runtime/src/stream.rs", "test": "nominal_file_read_resource_endpoints_share_one_live_handle", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "sandbox-vm-export", "disposition": "rejected", "path": "hew-sandbox-wasm/src/lib.rs", "test": "user_resource_type_is_profile_rejected_w3030" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/fs.hew",
+      "resource": "FileReadStream",
+      "runtime": {
+        "path": "hew-runtime/src/stream.rs",
+        "test": "nominal_file_read_resource_endpoints_share_one_live_handle",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted"
+      },
+      "release_symbol": "hew_file_read_stream_close"
     },
-    "std.net.Connection": {
-      "teardown_family": "tcp-connection-close",
-      "runtime": { "path": "hew-cli/tests/string_result_retention_leak_oracle.rs", "test": "tcp_crash_resource_lifecycles_are_exact_zero_at_low_and_high_frames", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/string_result_retention_leak_oracle.rs", "test": "suspending_closure_sync_crash_explicitly_closes_tcp_controls", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_net_connect_value_position" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/net/net.hew",
+      "resource": "Connection",
+      "runtime": {
+        "path": "hew-cli/tests/string_result_retention_leak_oracle.rs",
+        "test": "tcp_crash_resource_lifecycles_are_exact_zero_at_low_and_high_frames",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected"
+      },
+      "release_symbol": "hew_tcp_close"
     },
-    "std.net.Listener": {
-      "teardown_family": "tcp-listener-close",
-      "runtime": { "path": "hew-cli/tests/string_result_retention_leak_oracle.rs", "test": "tcp_crash_resource_lifecycles_are_exact_zero_at_low_and_high_frames", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/string_result_retention_leak_oracle.rs", "test": "suspending_closure_sync_crash_explicitly_closes_tcp_controls", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_net_connect_value_position" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/net/net.hew",
+      "resource": "Listener",
+      "runtime": {
+        "path": "hew-cli/tests/string_result_retention_leak_oracle.rs",
+        "test": "tcp_crash_resource_lifecycles_are_exact_zero_at_low_and_high_frames",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected"
+      },
+      "release_symbol": "hew_tcp_listener_close"
     },
-    "std.net.http.Server": {
-      "teardown_family": "http-server-close",
-      "runtime": { "path": "hew-std/src/http/server.rs", "test": "server_close_cancels_streaming_responses_and_drains_threads", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_native_rc1_resource_modules" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/net/http/http.hew",
+      "resource": "Server",
+      "runtime": {
+        "path": "hew-std/src/http/server.rs",
+        "test": "server_close_cancels_streaming_responses_and_drains_threads",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected"
+      },
+      "release_symbol": "hew_http_server_close"
     },
-    "std.net.quic.QUICConnection": {
-      "teardown_family": "quic-connection-disconnect",
-      "runtime": { "path": "hew-std/src/quic.rs", "test": "quic_stream_recv_timeout_zero_means_no_deadline", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_quic_module_call" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/net/quic/quic.hew",
+      "resource": "QUICConnection",
+      "runtime": {
+        "path": "hew-std/src/quic.rs",
+        "test": "quic_stream_recv_timeout_zero_means_no_deadline",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected"
+      },
+      "release_symbol": "hew_quic_conn_disconnect"
     },
-    "std.net.quic.QUICEndpoint": {
-      "teardown_family": "quic-endpoint-close",
-      "runtime": { "path": "hew-std/src/quic.rs", "test": "quic_stream_recv_timeout_zero_means_no_deadline", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_quic_module_call" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/net/quic/quic.hew",
+      "resource": "QUICEndpoint",
+      "runtime": {
+        "path": "hew-std/src/quic.rs",
+        "test": "quic_stream_recv_timeout_zero_means_no_deadline",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected"
+      },
+      "release_symbol": "hew_quic_endpoint_close"
     },
-    "std.net.quic.QUICStream": {
-      "teardown_family": "quic-stream-close",
-      "runtime": { "path": "hew-std/src/quic.rs", "test": "quic_stream_recv_timeout_zero_means_no_deadline", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_quic_module_call" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/net/quic/quic.hew",
+      "resource": "QUICStream",
+      "runtime": {
+        "path": "hew-std/src/quic.rs",
+        "test": "quic_stream_recv_timeout_zero_means_no_deadline",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected"
+      },
+      "release_symbol": "hew_quic_stream_close"
     },
-    "std.net.smtp.Conn": {
-      "teardown_family": "smtp-connection-close",
-      "runtime": { "path": "hew-std/src/smtp.rs", "test": "successful_send_clears_last_error", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_native_rc1_resource_modules" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/net/smtp/smtp.hew",
+      "resource": "Conn",
+      "runtime": {
+        "path": "hew-std/src/smtp.rs",
+        "test": "successful_send_clears_last_error",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted"
+      },
+      "release_symbol": "hew_smtp_close"
     },
-    "std.net.tls.TlsStream": {
-      "teardown_family": "tls-stream-close",
-      "runtime": { "path": "hew-std/src/tls.rs", "test": "close_reaps_a_live_blocked_reader_without_hanging", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_tls_module_call" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/net/tls/tls.hew",
+      "resource": "TlsStream",
+      "runtime": {
+        "path": "hew-std/src/tls.rs",
+        "test": "close_reaps_a_live_blocked_reader_without_hanging",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected"
+      },
+      "release_symbol": "hew_tls_close"
     },
-    "std.net.websocket.Conn": {
-      "teardown_family": "websocket-connection-close",
-      "runtime": { "path": "hew-std/src/websocket.rs", "test": "attach_reader_exits_when_conn_closes_before_actor_stop", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_websocket_handle_methods" },
-      "status": "composition-required",
-      "composition_requirement": "Compose WebSocket runtime/capability changes from 20dcb3e22 before running the native teardown proof."
+    {
+      "source_path": "std/net/websocket/websocket.hew",
+      "resource": "Conn",
+      "runtime": {
+        "path": "hew-std/src/websocket.rs",
+        "test": "attach_reader_exits_when_conn_closes_before_actor_stop",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected"
+      },
+      "release_symbol": "hew_ws_close"
     },
-    "std.net.websocket.Server": {
-      "teardown_family": "websocket-server-close",
-      "runtime": { "path": "hew-std/src/websocket.rs", "test": "server_accept_cancel_returns_cancelled", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_websocket_module_calls_and_values" },
-      "status": "composition-required",
-      "composition_requirement": "Compose WebSocket runtime/capability changes from 20dcb3e22 before running the native teardown proof."
+    {
+      "source_path": "std/net/websocket/websocket.hew",
+      "resource": "Server",
+      "runtime": {
+        "path": "hew-std/src/websocket.rs",
+        "test": "server_accept_cancel_returns_cancelled",
+        "valid_handle": true,
+        "execution_profile": "external-network"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "rejected"
+      },
+      "release_symbol": "hew_ws_server_close"
     },
-    "std.process.ProcessResultHandle": {
-      "teardown_family": "process-result-free",
-      "runtime": { "path": "hew-runtime/src/process.rs", "test": "run_echo_command", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_native_rc1_resource_modules" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/process.hew",
+      "resource": "ProcessResultHandle",
+      "runtime": {
+        "path": "hew-runtime/src/process.rs",
+        "test": "run_echo_command",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted"
+      },
+      "release_symbol": "hew_process_result_free"
     },
-    "std.stream.StreamPair": {
-      "teardown_family": "stream-pair-free",
-      "runtime": { "path": "hew-runtime/src/stream.rs", "test": "layout_stream_owned_roundtrip_and_close_releases_queued", "valid_handle": true },
-      "scope_exit": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_nested_close_fires_on_drop", "valid_handle": true },
-      "explicit_close": { "path": "hew-cli/tests/resource_record_close_leak_oracle.rs", "test": "resource_record_explicit_close_single_no_double", "valid_handle": true },
-      "wasm": { "profile": "wasm32-wasi", "disposition": "rejected", "path": "hew-types/src/check/tests/wasm.rs", "test": "wasm_rejects_stream_method" },
-      "status": "green",
-      "composition_requirement": null
+    {
+      "source_path": "std/stream.hew",
+      "resource": "StreamPair",
+      "runtime": {
+        "path": "hew-runtime/src/stream.rs",
+        "test": "layout_stream_owned_roundtrip_and_close_releases_queued",
+        "valid_handle": true,
+        "execution_profile": "local"
+      },
+      "wasm": {
+        "profile": "wasm32-wasi",
+        "disposition": "accepted"
+      },
+      "release_symbol": "hew_stream_pair_free"
     }
-  }
+  ]
 }

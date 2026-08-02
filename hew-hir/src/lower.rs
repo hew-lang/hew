@@ -31,8 +31,8 @@ use hew_types::{
     ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, ImplId,
     LoweringFact, MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily,
     NumericMethodLowering, OptionResultMethod, PatternKind, ProducedValueDependency,
-    ProducedValueFact, RcIntrinsicOp, ResolvedTy, SpanKey, Ty, TyPattern, TypeCheckOutput,
-    WireCodecDirection,
+    ProducedValueFact, RcIntrinsicOp, ResolvedTraitBound, ResolvedTy, SpanKey, Ty, TyPattern,
+    TypeCheckOutput, WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -14501,7 +14501,7 @@ impl LowerCtx {
                 let mut binding_error = false;
                 for payload in &resolution.payload_bindings {
                     let ty = match ResolvedTy::from_ty(&payload.ty) {
-                        Ok(ty) => ty,
+                        Ok(ty) => self.qualify_current_module_record_ty(ty),
                         Err(err) => {
                             self.unsupported(
                                 pattern_span.clone(),
@@ -15216,7 +15216,7 @@ impl LowerCtx {
         let mut binding_error = false;
         for payload in &resolution.payload_bindings {
             let ty = match ResolvedTy::from_ty(&payload.ty) {
-                Ok(ty) => ty,
+                Ok(ty) => self.qualify_current_module_record_ty(ty),
                 Err(err) => {
                     self.unsupported(
                         pattern_span.clone(),
@@ -15473,7 +15473,7 @@ impl LowerCtx {
         let mut binding_error = false;
         for payload in &resolution.payload_bindings {
             let ty = match ResolvedTy::from_ty(&payload.ty) {
-                Ok(ty) => ty,
+                Ok(ty) => self.qualify_current_module_record_ty(ty),
                 Err(err) => {
                     self.unsupported(
                         pattern_span.clone(),
@@ -15622,7 +15622,12 @@ impl LowerCtx {
     }
 
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
-        let lowered = self.lower_expr_without_root_fact(expr, intent);
+        let mut lowered = self.lower_expr_without_root_fact(expr, intent);
+        let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
+        if normalized_ty != lowered.ty {
+            lowered.value_class = ValueClass::of_ty(&normalized_ty, &self.type_classes);
+            lowered.ty = normalized_ty;
+        }
         self.record_produced_value_fact(&expr.1, &lowered);
         lowered
     }
@@ -19272,7 +19277,7 @@ impl LowerCtx {
             return None;
         };
         match ResolvedTy::from_ty(&ty) {
-            Ok(resolved) => Some(resolved),
+            Ok(resolved) => Some(self.qualify_current_module_record_ty(resolved)),
             Err(err) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -21117,7 +21122,96 @@ impl LowerCtx {
         None
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one recursive checker-to-HIR identity authority covers every ResolvedTy wrapper"
+    )]
     fn qualify_current_module_record_ty(&self, ty: ResolvedTy) -> ResolvedTy {
+        let ty = match ty {
+            ResolvedTy::Tuple(elements) => {
+                return ResolvedTy::Tuple(
+                    elements
+                        .into_iter()
+                        .map(|element| self.qualify_current_module_record_ty(element))
+                        .collect(),
+                );
+            }
+            ResolvedTy::Array(element, size) => {
+                return ResolvedTy::Array(
+                    Box::new(self.qualify_current_module_record_ty(*element)),
+                    size,
+                );
+            }
+            ResolvedTy::Slice(element) => {
+                return ResolvedTy::Slice(Box::new(
+                    self.qualify_current_module_record_ty(*element),
+                ));
+            }
+            ResolvedTy::Function { params, ret } => {
+                return ResolvedTy::Function {
+                    params: params
+                        .into_iter()
+                        .map(|param| self.qualify_current_module_record_ty(param))
+                        .collect(),
+                    ret: Box::new(self.qualify_current_module_record_ty(*ret)),
+                };
+            }
+            ResolvedTy::Closure {
+                params,
+                ret,
+                captures,
+            } => {
+                return ResolvedTy::Closure {
+                    params: params
+                        .into_iter()
+                        .map(|param| self.qualify_current_module_record_ty(param))
+                        .collect(),
+                    ret: Box::new(self.qualify_current_module_record_ty(*ret)),
+                    captures: captures
+                        .into_iter()
+                        .map(|capture| self.qualify_current_module_record_ty(capture))
+                        .collect(),
+                };
+            }
+            ResolvedTy::Pointer {
+                is_mutable,
+                pointee,
+            } => {
+                return ResolvedTy::Pointer {
+                    is_mutable,
+                    pointee: Box::new(self.qualify_current_module_record_ty(*pointee)),
+                };
+            }
+            ResolvedTy::Borrow { pointee } => {
+                return ResolvedTy::Borrow {
+                    pointee: Box::new(self.qualify_current_module_record_ty(*pointee)),
+                };
+            }
+            ResolvedTy::TraitObject { traits } => {
+                return ResolvedTy::TraitObject {
+                    traits: traits
+                        .into_iter()
+                        .map(|bound| ResolvedTraitBound {
+                            trait_name: bound.trait_name,
+                            args: bound
+                                .args
+                                .into_iter()
+                                .map(|arg| self.qualify_current_module_record_ty(arg))
+                                .collect(),
+                            assoc_bindings: bound
+                                .assoc_bindings
+                                .into_iter()
+                                .map(|(name, ty)| (name, self.qualify_current_module_record_ty(ty)))
+                                .collect(),
+                        })
+                        .collect(),
+                };
+            }
+            ResolvedTy::Task(result) => {
+                return ResolvedTy::Task(Box::new(self.qualify_current_module_record_ty(*result)));
+            }
+            other => other,
+        };
         let ResolvedTy::Named {
             name,
             args,
@@ -21183,11 +21277,17 @@ impl LowerCtx {
                 && self.current_module_name.is_none()
                 && !name.contains('.')
                 && self.root_opaque_type_short_names.contains(&name));
-        if builtin.is_some() || is_opaque {
+        if let Some(builtin) = builtin {
+            if !name.contains('.') || self.qualified_source_builtin(&name) == Some(builtin) {
+                return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+            }
+            return ResolvedTy::named_user(name, args);
+        }
+        if is_opaque {
             return ResolvedTy::Named {
                 name,
                 args,
-                builtin,
+                builtin: None,
                 is_opaque,
             };
         }
@@ -27235,7 +27335,7 @@ impl LowerCtx {
             let mut binding_error = false;
             for payload in &resolution.payload_bindings {
                 let ty = match ResolvedTy::from_ty(&payload.ty) {
-                    Ok(ty) => ty,
+                    Ok(ty) => self.qualify_current_module_record_ty(ty),
                     Err(err) => {
                         self.unsupported(
                             pattern_span.clone(),
@@ -27531,7 +27631,7 @@ impl LowerCtx {
         pattern_span: &Span,
     ) -> Option<HirPayloadVariantPredicate> {
         let payload_ty = match ResolvedTy::from_ty(&pvp.payload_ty) {
-            Ok(ty) => ty,
+            Ok(ty) => self.qualify_current_module_record_ty(ty),
             Err(err) => {
                 self.unsupported(
                     pattern_span.clone(),
@@ -27570,7 +27670,7 @@ impl LowerCtx {
         let mut bindings = Vec::with_capacity(pvp.bindings.len());
         for payload in &pvp.bindings {
             let ty = match ResolvedTy::from_ty(&payload.ty) {
-                Ok(ty) => ty,
+                Ok(ty) => self.qualify_current_module_record_ty(ty),
                 Err(err) => {
                     self.unsupported(
                         pattern_span.clone(),
@@ -33100,6 +33200,54 @@ fn main() {}
             )
         );
 
+        ctx.current_module_name = Some("std.stream".to_string());
+        ctx.canonical_std_source_type_identities
+            .insert("std.stream.Stream".to_string());
+        let exact_nested = ResolvedTy::named_builtin(
+            "Result",
+            BuiltinType::Result,
+            vec![
+                ResolvedTy::Tuple(vec![
+                    ResolvedTy::Named {
+                        name: "std.stream.Sink".to_string(),
+                        args: vec![ResolvedTy::String],
+                        builtin: Some(BuiltinType::Sink),
+                        is_opaque: false,
+                    },
+                    ResolvedTy::Named {
+                        name: "std.stream.Stream".to_string(),
+                        args: vec![ResolvedTy::String],
+                        builtin: Some(BuiltinType::Stream),
+                        is_opaque: false,
+                    },
+                ]),
+                ResolvedTy::String,
+            ],
+        );
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(exact_nested),
+            ResolvedTy::named_builtin(
+                "Result",
+                BuiltinType::Result,
+                vec![
+                    ResolvedTy::Tuple(vec![
+                        ResolvedTy::named_builtin(
+                            "Sink",
+                            BuiltinType::Sink,
+                            vec![ResolvedTy::String],
+                        ),
+                        ResolvedTy::named_builtin(
+                            "Stream",
+                            BuiltinType::Stream,
+                            vec![ResolvedTy::String],
+                        ),
+                    ]),
+                    ResolvedTy::String,
+                ],
+            ),
+            "nested checker facts must normalize to the function signature's carrier ABI"
+        );
+
         ctx.current_module_name = Some("acme.http".to_string());
         assert_eq!(
             ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
@@ -33108,6 +33256,16 @@ fn main() {}
             )),
             ResolvedTy::named_user("stream.Sink", vec![ResolvedTy::String]),
             "a user `stream.Sink` collision must not inherit std carrier identity"
+        );
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::Named {
+                name: "stream.Sink".to_string(),
+                args: vec![ResolvedTy::String],
+                builtin: Some(BuiltinType::Sink),
+                is_opaque: false,
+            }),
+            ResolvedTy::named_user("stream.Sink".to_string(), vec![ResolvedTy::String]),
+            "even a stale checker builtin bit cannot grant a user same-leaf carrier ABI"
         );
     }
 

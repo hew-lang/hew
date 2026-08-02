@@ -1,0 +1,16 @@
+id: no-lifecycle-state-drop-suppression
+language: rust
+severity: error
+message: >-
+  Actor typed-drop authority must come only from explicit per-incarnation
+  borrowed/consumed provenance. Do not add a restart- or lifecycle-specific
+  free helper or a state-drop suppression option; route teardown through the
+  common actor free path and update provenance at the ownership-transfer edge.
+files:
+  - 'hew-runtime/src/actor.rs'
+  - 'hew-runtime/src/supervisor.rs'
+  - 'hew-runtime/src/scheduler.rs'
+  - 'hew-runtime/src/scheduler_wasm.rs'
+rule:
+  kind: identifier
+  regex: '(^.*actor.*restart.*free.*$|^.*actor.*free.*restart.*$|^.*restart.*actor.*free.*$|^.*restart.*free.*actor.*$|^.*free.*actor.*restart.*$|^.*free.*restart.*actor.*$|^free_actor_resources.*options$|^.*(skip|suppress|omit|disable).*state_drop.*$|^.*state_drop.*(skip|suppress|omit|disable).*$)'

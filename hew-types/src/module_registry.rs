@@ -521,6 +521,23 @@ impl ModuleRegistry {
         }
     }
 
+    /// Resolve an owned registry receiver to its exact loaded source identity.
+    ///
+    /// Ownership metadata is extracted under the registry spelling
+    /// (`regex.Pattern`), while source annotations carry the complete owner
+    /// (`std.text.regex.Pattern`). This joins only those two representations of
+    /// the same loaded declaration; it never recovers an owner from a leaf.
+    #[must_use]
+    pub fn canonical_owned_type_identity(&self, name: &str) -> Option<String> {
+        let spelling = self.registry_method_receiver_spelling(name)?;
+        (self.handle_types.contains(&spelling)
+            || self.resource_wrapper_types.contains(&spelling)
+            || self.drop_types.contains(&spelling)
+            || self.drop_funcs.contains_key(&spelling))
+        .then(|| self.canonical_method_receiver_identity(name))
+        .flatten()
+    }
+
     /// Check if a fully-qualified name is a drop type across all loaded modules.
     #[must_use]
     pub fn is_drop_type(&self, name: &str) -> bool {

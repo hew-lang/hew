@@ -999,7 +999,11 @@ impl Ty {
     /// layer this is a named-type marker, consistent with `SendError`/`RecvError`.
     #[must_use]
     pub fn link_error() -> Ty {
-        Self::builtin_named(BuiltinType::LinkError, vec![])
+        Ty::Named {
+            name: "std.link_monitor.LinkError".to_string(),
+            args: vec![],
+            builtin: None,
+        }
     }
 
     /// Construct `MonitorError` — setup error for `monitor(RemotePid<T>)`.

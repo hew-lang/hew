@@ -2854,7 +2854,8 @@ impl Checker {
                 trait_name,
                 assoc_name,
                 ..
-            } if trait_name.as_ref() == "Pid" && assoc_name.as_ref() == "Msg"
+            } if matches!(trait_name.as_ref(), "Pid" | "std.builtins.Pid")
+                && assoc_name.as_ref() == "Msg"
         )
     }
 
@@ -9483,7 +9484,9 @@ impl Checker {
                             },
                             true,
                         );
-                        if declaring_trait == "Pid" && method == "send" {
+                        if matches!(declaring_trait.as_str(), "Pid" | "std.builtins.Pid")
+                            && method == "send"
+                        {
                             // TODO(A640): replace this fail-closed branch with
                             // a first-class `P::Msg: Serializable` projection
                             // bound once the checker can express that shape on

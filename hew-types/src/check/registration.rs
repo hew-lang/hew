@@ -708,6 +708,32 @@ fn derive_opaque_resource_candidate_graph(
 }
 
 impl Checker {
+    fn canonicalize_registry_signature_ty(ty: &Ty, canonical_owner: &str) -> Ty {
+        let mapped = ty.map_children_pub(&|child| {
+            Self::canonicalize_registry_signature_ty(child, canonical_owner)
+        });
+        let Ty::Named {
+            name,
+            args,
+            builtin,
+        } = mapped
+        else {
+            return mapped;
+        };
+        let extracted_owner = canonical_owner
+            .rsplit_once('.')
+            .map_or(canonical_owner, |(_, leaf)| leaf);
+        let prefix = format!("{extracted_owner}.");
+        let canonical_name = name
+            .strip_prefix(&prefix)
+            .map_or(name.clone(), |leaf| format!("{canonical_owner}.{leaf}"));
+        Ty::Named {
+            name: canonical_name,
+            args,
+            builtin,
+        }
+    }
+
     fn mark_import_module_used_for_owner(&self, owner: Option<String>, imported_module: &str) {
         self.used_modules
             .borrow_mut()
@@ -912,6 +938,12 @@ impl Checker {
     }
 
     pub(super) fn canonical_owned_handle_type_name(&self, type_name: &str) -> Option<String> {
+        if let Some(canonical) = self
+            .module_registry
+            .canonical_owned_type_identity(type_name)
+        {
+            return Some(canonical);
+        }
         if self.module_registry.drop_func_for(type_name).is_some()
             || self.module_registry.is_drop_type(type_name)
             || self.module_registry.is_handle_type(type_name)
@@ -8592,7 +8624,10 @@ impl Checker {
             if builtin.is_collection()
                 || matches!(
                     builtin,
-                    BuiltinType::Generator | BuiltinType::AsyncGenerator
+                    BuiltinType::Generator
+                        | BuiltinType::AsyncGenerator
+                        | BuiltinType::LocalPid
+                        | BuiltinType::RemotePid
                 )
             {
                 return Some(builtin.canonical_name().to_string());
@@ -8609,12 +8644,21 @@ impl Checker {
         Self::canonical_primitive_or_builtin_key_from_name(name).or_else(|| {
             self.resolved_builtin_type(name)
                 .filter(|builtin| {
-                    matches!(builtin, BuiltinType::VecIter | BuiltinType::HashMapIter)
+                    matches!(
+                        builtin,
+                        BuiltinType::VecIter
+                            | BuiltinType::HashMapIter
+                            | BuiltinType::LocalPid
+                            | BuiltinType::RemotePid
+                    )
                 })
                 .map(|builtin| match builtin {
                     BuiltinType::VecIter => "std.builtins.VecIter".to_string(),
                     BuiltinType::HashMapIter => "std.builtins.HashMapIter".to_string(),
-                    _ => unreachable!("cursor filter admits only synthetic cursors"),
+                    BuiltinType::LocalPid | BuiltinType::RemotePid => {
+                        builtin.canonical_name().to_string()
+                    }
+                    _ => unreachable!("filter admits only compiler carrier builtins"),
                 })
         })
     }
@@ -9231,8 +9275,17 @@ impl Checker {
                         let accepts_kwargs = module_path == "std::misc::log"
                             && Self::LOG_KWARGS_FUNCTIONS.contains(&func.name.as_str());
                         let sig = FnSig {
-                            params: func.params,
-                            return_type: func.return_type,
+                            params: func
+                                .params
+                                .iter()
+                                .map(|ty| {
+                                    Self::canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                })
+                                .collect(),
+                            return_type: Self::canonicalize_registry_signature_ty(
+                                &func.return_type,
+                                &canonical_owner,
+                            ),
                             accepts_kwargs,
                             ..FnSig::default()
                         };
@@ -9247,8 +9300,17 @@ impl Checker {
                         let sig = FnSig {
                             type_params: wfn.type_params,
                             type_param_bounds: wfn.type_param_bounds,
-                            params: wfn.params,
-                            return_type: wfn.return_type,
+                            params: wfn
+                                .params
+                                .iter()
+                                .map(|ty| {
+                                    Self::canonicalize_registry_signature_ty(ty, &canonical_owner)
+                                })
+                                .collect(),
+                            return_type: Self::canonicalize_registry_signature_ty(
+                                &wfn.return_type,
+                                &canonical_owner,
+                            ),
                             accepts_kwargs,
                             ..FnSig::default()
                         };

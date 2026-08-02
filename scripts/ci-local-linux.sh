@@ -37,20 +37,25 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BRANCH="$(git -C "${ROOT}" rev-parse --abbrev-ref HEAD)"
 SHA="$(git -C "${ROOT}" rev-parse --short HEAD)"
 SLUG="ci-local-$(printf '%s' "${BRANCH}" | tr '/:' '--')"   # slash-safe ref/worktree name
+REF="refs/hew-ci/${SLUG}"
 WT="/tmp/${SLUG}"
 
 echo "==> Syncing ${BRANCH} (${SHA}) → ${HOST}:${REMOTE_REL} as ${SLUG}"
-git -C "${ROOT}" push --force-with-lease "${HOST}:${REMOTE_REL}" "HEAD:refs/heads/${SLUG}" 2>&1 | tail -2
+# This private non-branch ref is scratch space owned by the harness. Keeping it
+# outside refs/heads means a prior detached validation worktree can never make
+# an ordinary rerun fail because the receive side considers the ref checked
+# out. No project branch is addressed by this operation.
+git -C "${ROOT}" push --force "${HOST}:${REMOTE_REL}" "HEAD:${REF}" 2>&1 | tail -2
 
 echo "==> Running 'Build & test (Linux)' step '${STEP}' on ${HOST} (LLVM_SYS_221_PREFIX=${LLVM_PREFIX})"
 # Quoted heredoc: the body runs verbatim server-side; locals are passed as args.
-ssh "${HOST}" bash -s -- "${STEP}" "${SLUG}" "${WT}" "${REMOTE_REL}" "${LLVM_PREFIX}" <<'REMOTE'
+ssh "${HOST}" bash -s -- "${STEP}" "${SLUG}" "${REF}" "${WT}" "${REMOTE_REL}" "${LLVM_PREFIX}" <<'REMOTE'
 set -euo pipefail
-STEP="$1"; SLUG="$2"; WT="$3"; REMOTE_REL="$4"; LLVM_PREFIX="$5"
+STEP="$1"; SLUG="$2"; REF="$3"; WT="$4"; REMOTE_REL="$5"; LLVM_PREFIX="$6"
 cd "$HOME/$REMOTE_REL"
-git fetch . "$SLUG" >/dev/null 2>&1 || true
+git fetch . "$REF" >/dev/null
 rm -rf "$WT"; git worktree prune
-git worktree add "$WT" "$SLUG" >/dev/null
+git worktree add --detach "$WT" FETCH_HEAD >/dev/null
 cd "$WT"
 export LLVM_SYS_221_PREFIX="$LLVM_PREFIX"
 export CARGO_TERM_COLOR=always

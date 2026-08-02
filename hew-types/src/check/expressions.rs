@@ -1351,10 +1351,18 @@ impl Checker {
     /// won the bare-name slot but a user-declared variant with the same name
     /// should take priority within this compilation unit.
     /// Construct an enum nominal from the declaration authority already chosen
-    /// by the checker. A source declaration wins over the builtin catalog even
-    /// when its surface spelling is `Option` or `Result`; non-source entries
-    /// retain normal builtin canonicalization (including imported aliases).
+    /// by the checker. An exact generated-enum owner retains the catalog's
+    /// builtin discriminator; every other source declaration wins over builtin
+    /// normalization even when its leaf spelling is `Option` or `Result`.
+    /// Non-source entries retain normal builtin canonicalization (including
+    /// imported aliases).
     pub(super) fn variant_nominal_ty(&self, type_name: String, type_args: Vec<Ty>) -> Ty {
+        if self
+            .source_authorized_generated_enum_builtin(&type_name)
+            .is_some()
+        {
+            return Ty::normalize_named(type_name, type_args);
+        }
         if self.local_type_defs.contains(type_name.as_str())
             || self.source_type_defs.contains(type_name.as_str())
         {
@@ -1509,14 +1517,17 @@ impl Checker {
                                     });
                                 if sig_names_correct_enum {
                                     let mut ret = sig.return_type.clone();
-                                    if let Ty::Named { name, .. } = &mut ret {
-                                        name.clone_from(&canonical_type_prefix);
-                                    }
                                     for tp in &sig.type_params {
                                         ret = ret
                                             .substitute_named_param(tp, &Ty::Var(TypeVar::fresh()));
                                     }
-                                    ret
+                                    match ret {
+                                        Ty::Named { args, .. } => self.variant_nominal_ty(
+                                            canonical_type_prefix.clone(),
+                                            args,
+                                        ),
+                                        other => other,
+                                    }
                                 } else {
                                     // fn_sig belongs to a different enum; bare name is correct.
                                     self.variant_nominal_ty(canonical_type_prefix.clone(), vec![])

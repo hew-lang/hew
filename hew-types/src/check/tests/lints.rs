@@ -3782,30 +3782,15 @@ fn count_must_use(diags: &[TypeError]) -> usize {
         .count()
 }
 
-/// A local `WriteError`/`SendError` plus a fn returning each as a `Result` error
-/// arm — enough to exercise the lint without loading the stdlib (the lint keys
-/// on the canonical type name, which matches both the stdlib and these locals).
-const MUST_USE_PRELUDE: &str = "enum WriteError { Disconnected(i64); }\n\
-     enum SendError { Closed; }\n\
-     fn w() -> Result<(), WriteError> { Ok(()) }\n\
-     fn s() -> Result<(), SendError> { Ok(()) }\n";
-
-#[test]
-fn must_use_flags_discarded_write_result() {
-    let src = format!("{MUST_USE_PRELUDE}fn caller() {{ w(); }}");
-    let (errors, warnings) = parse_and_check(&src);
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
-    let hit = warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::Lint(LintId::MustUse))
-        .expect("a discarded Result<(), WriteError> must fire must_use");
-    assert!(hit.message.contains("WriteError"), "msg: {}", hit.message);
-}
+/// A fieldless actor whose `process` reply makes `await d.process(_)` resolve to
+/// `Result<i64, AskError>` — the ask-shaped must-use case. `AskError` is a
+/// compiler-owned builtin whose exact owner comes from the generated catalog.
+const ASK_ACTOR: &str = "actor Doubler { receive fn process(n: i64) -> i64 { n * 2 } }\n";
 
 #[test]
 fn must_use_flags_discarded_send_result() {
-    let src = format!("{MUST_USE_PRELUDE}fn caller() {{ s(); }}");
-    let (_, warnings) = parse_and_check(&src);
+    let src = "fn caller() { let log = actor |n: i64| { let _ = n; }; log(5); }";
+    let (_, warnings) = parse_and_check(src);
     let hit = warnings
         .iter()
         .find(|w| w.kind == TypeErrorKind::Lint(LintId::MustUse))
@@ -3815,10 +3800,9 @@ fn must_use_flags_discarded_send_result() {
 
 #[test]
 fn must_use_flags_bare_error_value() {
-    let src = "enum WriteError { Disconnected(i64); }\n\
-         fn make() -> WriteError { WriteError::Disconnected(1) }\n\
-         fn caller() { make(); }";
-    let (_, warnings) = parse_and_check(src);
+    let src = "import std::net;\nfn caller(error: net.WriteError) { error; }";
+    let (errors, warnings) = parse_and_check_with_stdlib(src);
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
     assert_eq!(
         count_must_use(&warnings),
         1,
@@ -3828,7 +3812,10 @@ fn must_use_flags_bare_error_value() {
 
 #[test]
 fn must_use_not_flagged_when_handled_by_question() {
-    let src = format!("{MUST_USE_PRELUDE}fn caller() -> Result<(), WriteError> {{ w()?; Ok(()) }}");
+    let src = format!(
+        "{ASK_ACTOR}fn caller() -> Result<(), AskError> {{ \
+         let d = spawn Doubler; await d.process(5)?; Ok(()) }}"
+    );
     let (_, warnings) = parse_and_check(&src);
     assert_eq!(
         count_must_use(&warnings),
@@ -3839,7 +3826,8 @@ fn must_use_not_flagged_when_handled_by_question() {
 
 #[test]
 fn must_use_not_flagged_when_explicitly_bound() {
-    let src = format!("{MUST_USE_PRELUDE}fn caller() {{ let _ = w(); }}");
+    let src =
+        format!("{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; let _ = await d.process(5); }}");
     let (_, warnings) = parse_and_check(&src);
     assert_eq!(
         count_must_use(&warnings),
@@ -3851,7 +3839,10 @@ fn must_use_not_flagged_when_explicitly_bound() {
 #[test]
 fn must_use_not_flagged_in_tail_position() {
     // The trailing expression is the block's value (used), not a discard.
-    let src = format!("{MUST_USE_PRELUDE}fn caller() -> Result<(), WriteError> {{ w() }}");
+    let src = format!(
+        "{ASK_ACTOR}fn caller() -> Result<i64, AskError> {{ \
+         let d = spawn Doubler; await d.process(5) }}"
+    );
     let (_, warnings) = parse_and_check(&src);
     assert_eq!(
         count_must_use(&warnings),
@@ -3862,8 +3853,10 @@ fn must_use_not_flagged_in_tail_position() {
 
 #[test]
 fn must_use_not_flagged_when_matched() {
-    let src =
-        format!("{MUST_USE_PRELUDE}fn caller() {{ match w() {{ Ok(_) => {{}} Err(_) => {{}} }} }}");
+    let src = format!(
+        "{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; \
+         match await d.process(5) {{ Ok(_) => {{}} Err(_) => {{}} }} }}"
+    );
     let (_, warnings) = parse_and_check(&src);
     assert_eq!(
         count_must_use(&warnings),
@@ -3885,8 +3878,26 @@ fn must_use_not_flagged_for_ordinary_result() {
 }
 
 #[test]
+fn must_use_rejects_user_same_leaf_error_names() {
+    let src = "enum SendError { Closed; }\n\
+        enum AskError { Timeout; }\n\
+        enum WriteError { Disconnected; }\n\
+        fn send() -> SendError { SendError::Closed }\n\
+        fn ask() -> AskError { AskError::Timeout }\n\
+        fn write() -> WriteError { WriteError::Disconnected }\n\
+        fn caller() { send(); ask(); write(); }";
+    let (errors, warnings) = parse_and_check(src);
+    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
+    assert_eq!(
+        count_must_use(&warnings),
+        0,
+        "same-leaf user types do not carry stdlib must-use authority: {warnings:?}"
+    );
+}
+
+#[test]
 fn must_use_deny_routes_to_errors() {
-    let src = format!("{MUST_USE_PRELUDE}fn caller() {{ w(); }}");
+    let src = format!("{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; await d.process(5); }}");
     let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Deny);
     assert_eq!(count_must_use(&out.errors), 1, "errors: {:?}", out.errors);
     assert_eq!(count_must_use(&out.warnings), 0);
@@ -3894,7 +3905,7 @@ fn must_use_deny_routes_to_errors() {
 
 #[test]
 fn must_use_allow_suppresses() {
-    let src = format!("{MUST_USE_PRELUDE}fn caller() {{ w(); }}");
+    let src = format!("{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; await d.process(5); }}");
     let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Allow);
     assert_eq!(count_must_use(&out.warnings), 0);
     assert_eq!(count_must_use(&out.errors), 0);
@@ -3902,7 +3913,9 @@ fn must_use_allow_suppresses() {
 
 #[test]
 fn must_use_suppressed_by_directive() {
-    let src = format!("{MUST_USE_PRELUDE}fn caller() {{\n    // hew:allow(must_use)\n    w();\n}}");
+    let src = format!(
+        "{ASK_ACTOR}fn caller() {{\n    let d = spawn Doubler;\n    // hew:allow(must_use)\n    await d.process(5);\n}}"
+    );
     let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Warn);
     assert_eq!(
         count_must_use(&out.warnings),
@@ -3911,11 +3924,6 @@ fn must_use_suppressed_by_directive() {
         out.warnings
     );
 }
-
-/// A fieldless actor whose `process` reply makes `await d.process(_)` resolve to
-/// `Result<i64, AskError>` — the ask-shaped must-use case. `AskError` is a
-/// builtin error type, so no prelude enum is needed (unlike WriteError/SendError).
-const ASK_ACTOR: &str = "actor Doubler { receive fn process(n: i64) -> i64 { n * 2 } }\n";
 
 #[test]
 fn must_use_flags_discarded_await_ask() {

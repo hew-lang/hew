@@ -2106,7 +2106,7 @@ impl Checker {
             .or_else(|| decl.path.last().cloned())
             .unwrap_or_else(|| owner.rsplit('.').next().unwrap_or(owner).to_string());
         let lifecycle_names: &[&str] = match owner {
-            "std.failure" => &["CrashNotification", "CrashKind"],
+            "std.failure" => &["CrashInfo", "CrashAction", "CrashNotification", "CrashKind"],
             "std.link_monitor" => &[
                 "MonitorId",
                 "DownTarget",
@@ -2164,7 +2164,7 @@ impl Checker {
             return;
         }
         let lifecycle_names: &[&str] = match owner {
-            "std.failure" => &["CrashNotification", "CrashKind"],
+            "std.failure" => &["CrashInfo", "CrashAction", "CrashNotification", "CrashKind"],
             "std.link_monitor" => &[
                 "MonitorId",
                 "DownTarget",
@@ -2984,11 +2984,8 @@ impl Checker {
                         .current_module
                         .as_ref()
                         .map_or_else(|| td.name.clone(), |module| format!("{module}.{}", td.name));
-                    let return_type = Ty::Named {
-                        builtin: None,
-                        name: declaration_name,
-                        args: enum_return_args.clone(),
-                    };
+                    let return_type =
+                        self.variant_nominal_ty(declaration_name, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.clone(), VariantDef::Unit);
@@ -3278,11 +3275,8 @@ impl Checker {
                         .current_module
                         .as_ref()
                         .map_or_else(|| td.name.clone(), |module| format!("{module}.{}", td.name));
-                    let return_type = Ty::Named {
-                        builtin: None,
-                        name: declaration_name,
-                        args: enum_return_args.clone(),
-                    };
+                    let return_type =
+                        self.variant_nominal_ty(declaration_name, enum_return_args.clone());
                     match &variant.kind {
                         VariantKind::Unit => {
                             variants.insert(variant.name.clone(), VariantDef::Unit);
@@ -7695,7 +7689,13 @@ impl Checker {
         identity
             .owner
             .as_ref()
-            .map(|owner| format!("{owner}.{}", identity.source_trait_name))
+            .map(|owner| {
+                let canonical_owner = self
+                    .module_import_bindings
+                    .get(&(self.current_module.clone(), owner.clone()))
+                    .map_or(owner.as_str(), String::as_str);
+                format!("{canonical_owner}.{}", identity.source_trait_name)
+            })
             .filter(|q| self.trait_defs.contains_key(q))
             .unwrap_or_else(|| identity.source_trait_name.clone())
     }
@@ -9411,8 +9411,9 @@ impl Checker {
                     // inline programs we use the embedded source instead.  Parsing
                     // it here registers `Closable` in `trait_defs` and `CloseError`
                     // in `type_defs`.  The `register_stdlib_hew_items` loop then
-                    // fires the `tr.name == "Closable"` arm which wires
-                    // `"Closable::close"` into `consume_receiver_methods`.
+                    // fires the `tr.name == "Closable"` arm which wires its
+                    // exact source-owned trait method into
+                    // `consume_receiver_methods`.
                     if module_path == "std::io::closable" && decl.resolved_items.is_none() {
                         let identity = format!("module:{module_path}");
                         if !self
@@ -9911,7 +9912,7 @@ impl Checker {
                     // phantom consume markers.
                     if tr.name == "Closable" {
                         self.consume_receiver_methods
-                            .insert("Closable::close".to_string());
+                            .insert(format!("{module_full_path}.{}::close", tr.name));
                     }
                 }
                 Item::Function(fd) => {

@@ -737,6 +737,11 @@ impl Ty {
 
     #[must_use]
     fn canonical_named_builtin(name: &str) -> Option<&'static str> {
+        if let Some(fact) = crate::builtin_enums::monomorphic_builtin_enum(name) {
+            if name == fact.canonical_name {
+                return Some(fact.canonical_name);
+            }
+        }
         lookup_builtin_type(name).map(BuiltinType::canonical_name)
     }
 

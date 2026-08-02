@@ -319,7 +319,9 @@ impl BuiltinType {
     pub const fn requires_source_import(self) -> bool {
         matches!(
             self,
-            Self::CrashNotification
+            Self::CrashInfo
+                | Self::CrashAction
+                | Self::CrashNotification
                 | Self::CrashKind
                 | Self::MonitorId
                 | Self::DownTarget
@@ -567,10 +569,22 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
         }
         _ => {}
     }
-    builtin_types()
+    if let Some(kind) = builtin_types()
         .iter()
         .find(|info| info.canonical_name == name)
         .map(|info| info.kind)
+    {
+        return Some(kind);
+    }
+    let generated = crate::builtin_enums::monomorphic_builtin_enum(name)?;
+    (name == generated.canonical_name)
+        .then(|| {
+            builtin_types()
+                .iter()
+                .find(|info| info.canonical_name == generated.name)
+                .map(|info| info.kind)
+        })
+        .flatten()
 }
 
 /// Look up a source-owned lifecycle builtin by either its bare name or its
@@ -606,7 +620,10 @@ pub fn lookup_source_owned_lifecycle_type(name: &str) -> Option<BuiltinType> {
                     (owner, builtin),
                     (
                         "failure" | "std.failure",
-                        BuiltinType::CrashNotification | BuiltinType::CrashKind
+                        BuiltinType::CrashInfo
+                            | BuiltinType::CrashAction
+                            | BuiltinType::CrashNotification
+                            | BuiltinType::CrashKind
                     ) | (
                         "link_monitor" | "std.link_monitor",
                         BuiltinType::MonitorId
@@ -618,6 +635,13 @@ pub fn lookup_source_owned_lifecycle_type(name: &str) -> Option<BuiltinType> {
                     )
                 )
         })
+}
+
+/// Whether `name` and `builtin` jointly identify an exact source-owned
+/// lifecycle declaration. Bare or foreign same-leaf spellings never pass.
+#[must_use]
+pub fn has_exact_source_owned_lifecycle_identity(name: &str, builtin: Option<BuiltinType>) -> bool {
+    name.contains('.') && builtin.is_some() && lookup_source_owned_lifecycle_type(name) == builtin
 }
 
 #[cfg(test)]
@@ -654,6 +678,49 @@ mod tests {
             lookup_builtin_type("std.link_monitor.MonitorError"),
             Some(BuiltinType::MonitorError)
         );
+    }
+
+    #[test]
+    fn lookup_accepts_exact_generated_enum_owners_without_foreign_leaf_fallback() {
+        for fact in crate::builtin_enums::monomorphic_builtin_enums() {
+            assert_eq!(
+                lookup_builtin_type(fact.canonical_name),
+                lookup_builtin_type(fact.name),
+                "generated owner identity for {} must preserve its discriminator",
+                fact.name
+            );
+            assert_eq!(
+                lookup_builtin_type(&format!("foreign.{}", fact.name)),
+                None,
+                "a same-leaf foreign owner must not acquire the generated discriminator"
+            );
+        }
+    }
+
+    #[test]
+    fn source_lifecycle_identity_requires_exact_owner_and_discriminator() {
+        for (name, builtin) in [
+            ("std.failure.CrashInfo", BuiltinType::CrashInfo),
+            ("std.failure.CrashAction", BuiltinType::CrashAction),
+        ] {
+            assert!(has_exact_source_owned_lifecycle_identity(
+                name,
+                Some(builtin)
+            ));
+            assert!(!has_exact_source_owned_lifecycle_identity(name, None));
+            assert!(!has_exact_source_owned_lifecycle_identity(
+                name,
+                Some(BuiltinType::AskError)
+            ));
+            assert!(!has_exact_source_owned_lifecycle_identity(
+                crate::short_name(name),
+                Some(builtin)
+            ));
+            assert!(!has_exact_source_owned_lifecycle_identity(
+                &format!("foreign.{}", crate::short_name(name)),
+                Some(builtin)
+            ));
+        }
     }
 
     #[test]

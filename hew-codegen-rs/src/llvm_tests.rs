@@ -6107,6 +6107,95 @@ fn borrow_tainted_crash_cleanup_arms_only_in_copy_mode() {
     );
 }
 
+#[test]
+fn return_sweep_skips_planned_owner_but_drops_unplanned_live_owner() {
+    let ctx = Context::create();
+    let module = ctx.create_module("mixed_return_cleanup_owners");
+    let harness = build_harness(&ctx, &[], &[]);
+    let planned = frame_cleanup_string_descriptor(Place::Local(0));
+    let residual = frame_cleanup_string_descriptor(Place::Local(1));
+    let drop_plans = vec![(
+        ExitPath::Return { block: 0 },
+        hew_mir::DropPlan {
+            drops: vec![planned.clone()],
+        },
+    )];
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.drop_plans = &drop_plans;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    alloc_local(&mut fn_ctx, 1, ResolvedTy::String);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![planned.clone().into(), residual.into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("mixed return cleanup owners");
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(0)).expect("arm planned owner");
+    emit_helper_crash_cleanup_arm_after_write(&fn_ctx, Place::Local(1))
+        .expect("arm residual owner");
+
+    emit_one_elab_drop(&fn_ctx, &planned).expect("ordinary Return-plan drop");
+    emit_helper_crash_cleanup_retire_remaining_on_return(&fn_ctx, 0)
+        .expect("residual return sweep");
+    finish_test_fn(&fn_ctx);
+    module.verify().expect("mixed return cleanup module verify");
+    let ir = module
+        .get_function("driver")
+        .expect("mixed return cleanup driver")
+        .print_to_string()
+        .to_string();
+
+    assert_eq!(
+        ir.matches("call void @hew_string_drop(").count(),
+        2,
+        "the planned and residual owners must each have exactly one destructor site:\n{ir}"
+    );
+    assert!(
+        ir.contains("helper_crash_cleanup_return_drop_1")
+            && !ir.contains("helper_crash_cleanup_return_drop_0")
+            && ir.contains("helper_crash_cleanup_return_retire_0"),
+        "the planned owner needs only its stale-token retirement path, while only \
+         the unplanned live owner belongs to the residual destructor sweep:\n{ir}"
+    );
+}
+
+#[test]
+fn return_sweep_rejects_same_place_descriptor_drift() {
+    let ctx = Context::create();
+    let module = ctx.create_module("return_cleanup_descriptor_drift");
+    let harness = build_harness(&ctx, &[], &[]);
+    let registered = frame_cleanup_string_descriptor(Place::Local(0));
+    let mut drifted = registered.clone();
+    drifted.kind = hew_mir::DropKind::CowHeap {
+        release: hew_mir::CowHeapRelease::Bytes,
+    };
+    let drop_plans = vec![(
+        ExitPath::Return { block: 0 },
+        hew_mir::DropPlan {
+            drops: vec![drifted],
+        },
+    )];
+    let mut fn_ctx = make_test_fn_ctx(&ctx, &module, &harness, "driver");
+    fn_ctx.drop_plans = &drop_plans;
+    alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+    fn_ctx.helper_crash_cleanup_owners = allocate_helper_crash_cleanup_owners(
+        &ctx,
+        &fn_ctx.builder,
+        vec![registered.into()],
+        CrashCleanupStorage::Snapshot,
+    )
+    .expect("registered cleanup owner");
+
+    let error = emit_helper_crash_cleanup_retire_remaining_on_return(&fn_ctx, 0)
+        .expect_err("same-place descriptor drift must fail closed");
+    assert!(
+        matches!(error, CodegenError::FailClosed(ref message) if message.contains("return drop descriptor drift")
+            && message.contains("Local(0)")),
+        "unexpected drift error: {error:?}"
+    );
+}
+
 /// A `DropKind::CowHeap { release: Bytes }` ElabDrop on a
 /// `bytes` local must route through the BytesTriple-aware emitter
 /// (`emit_bytes_inplace_drop`): GEP field 0, load the data pointer, call
@@ -11714,8 +11803,20 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 };"#,
                 r#"if owner.text.len() + owner.data.len() == -1 { panic("record"); }"#,
             ),
-            vec![hew_mir::DropKind::RecordInPlace],
-            vec!["call void @__hew_record_drop_inplace_Packet("],
+            // `RecordInit` retains the fresh bytes producer before copying it
+            // into `Packet`.  The record field and the original producer local
+            // are therefore two independent owners, and the Suspend plan must
+            // retire both of them.
+            vec![
+                hew_mir::DropKind::RecordInPlace,
+                hew_mir::DropKind::CowHeap {
+                    release: hew_mir::CowHeapRelease::Bytes,
+                },
+            ],
+            vec![
+                "call void @__hew_record_drop_inplace_Packet(",
+                "call void @hew_bytes_drop(",
+            ],
         ),
         (
             "closure",
@@ -11741,7 +11842,7 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
         assert_eq!(
             drops.iter().map(|drop| drop.kind).collect::<Vec<_>>(),
             expected_kinds,
-            "{label}: grounded Suspend plan selected the wrong typed rituals"
+            "{label}: grounded Suspend plan selected the wrong typed rituals: {drops:#?}"
         );
         let ctx = Context::create();
         let module = build_module(&ctx, &pipeline, &format!("{label}_frame_cleanup"))
@@ -12140,10 +12241,10 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
         assert!(
             helper.contains("helper_crash_cleanup_retire")
                 && helper.contains("helper_crash_cleanup_return_retire")
-                && helper.contains("helper_crash_cleanup_return_drop")
+                && !helper.contains("helper_crash_cleanup_return_drop")
                 && !helper.contains("helper_crash_cleanup_return_active_trap"),
-            "{triple}: normal drops and the return sweep must both retire lexical tokens:\n\
-             {helper}"
+            "{triple}: ordinary drops own every destructor site while the return \
+             sweep only retires stale lexical tokens:\n{helper}"
         );
     }
 }
@@ -12405,12 +12506,13 @@ fn helper_snapshot_interior_mutation_refreshes_before_transfer_native_and_wasm32
             "{triple}: refreshed source owner must remain a Snapshot escrow:\n{helper}"
         );
         assert!(
-            helper.contains("helper_crash_cleanup_return_drop")
+            !helper.contains("helper_crash_cleanup_return_drop")
                 && helper.contains("@hew_panic_msg")
                 && helper.contains("cancel_exit")
-                && helper.contains("helper_crash_cleanup_retire"),
+                && helper.contains("helper_crash_cleanup_retire")
+                && helper.contains("helper_crash_cleanup_return_retire"),
             "{triple}: the same helper must retain normal-return, crash, and \
-             cancellation cleanup paths:\n{helper}"
+             cancellation cleanup paths without a duplicate return destructor:\n{helper}"
         );
     }
 }
@@ -12560,10 +12662,12 @@ fn helper_snapshot_refreshes_around_bytes_runtime_mutation_native_and_wasm32() {
         );
         assert!(
             helper.contains("@hew_panic_msg")
-                && helper.contains("helper_crash_cleanup_return_drop")
+                && !helper.contains("helper_crash_cleanup_return_drop")
                 && helper.contains("helper_crash_cleanup_retire")
+                && helper.contains("helper_crash_cleanup_return_retire")
                 && helper.contains("cancel_exit"),
-            "{triple}: normal return, crash, and cancellation cleanup must remain present:\n{helper}"
+            "{triple}: normal return, crash, and cancellation cleanup must remain \
+             present without a duplicate return destructor:\n{helper}"
         );
     }
 }

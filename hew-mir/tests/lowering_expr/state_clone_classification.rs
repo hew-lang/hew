@@ -794,6 +794,44 @@ fn vec_of_opaque_handle_actor_state_fails_closed_end_to_end() {
     );
 }
 
+/// Crash-state escrow eligibility uses the same paired clone/drop classifier:
+/// a non-relocatable owned graph is rejected at MIR construction, while POD
+/// state receives the paired (no-op drop) thunks that prove byte relocation.
+#[test]
+fn crash_escrow_rejects_nonrelocatable_owned_state_and_accepts_pod() {
+    let src = r"
+        #[opaque]
+        type Widget {}
+
+        actor Bad {
+            let values: Vec<Widget>;
+            receive fn ping() {}
+        }
+
+        actor Pod {
+            let count: i64;
+            receive fn ping() {}
+        }
+    ";
+    let pipeline = lower_source(src);
+    let bad = find_actor(&pipeline, "Bad");
+    assert!(
+        bad.state_clone_fn_symbol.is_none() && bad.state_drop_fn_symbol.is_none(),
+        "non-relocatable owned state must not receive crash-escrow thunks"
+    );
+    assert!(pipeline.diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { actor, .. }
+            if actor == "Bad"
+    )));
+
+    let pod = find_actor(&pipeline, "Pod");
+    assert!(
+        pod.state_clone_fn_symbol.is_some() && pod.state_drop_fn_symbol.is_some(),
+        "POD state must receive paired relocation proof and no-op drop thunks"
+    );
+}
+
 /// `HashMap<string, Widget>` (opaque value) MUST also fail closed end-to-end,
 /// confirming the transitive authority covers the map-value position, not just
 /// Vec elements.

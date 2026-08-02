@@ -147,6 +147,7 @@ pub enum CrashCleanupStorage {
 
 struct CrashCleanupEntry {
     token: u64,
+    owner_registry: *mut CrashCleanupRegistry,
     owner_frame: *mut c_void,
     slot: *mut c_void,
     snapshot: *mut u8,
@@ -167,6 +168,15 @@ struct CrashCleanupRegistry {
     /// token name a later logical entry.
     entries: Vec<*mut CrashCleanupEntry>,
     next_order: u64,
+    /// Dispatch scopes additionally escrow the actor's complete state. The
+    /// snapshot is kept structurally drop-safe across field updates by the
+    /// generated clear/publish hooks below; coroutine-frame registries leave
+    /// these fields null/zero.
+    state_source: *mut u8,
+    state_snapshot: *mut u8,
+    state_size: u64,
+    state_align: u64,
+    state_drop: Option<CrashCleanupThunk>,
 }
 
 /// Process-wide non-reusing crash-cleanup identity source.
@@ -193,6 +203,14 @@ thread_local! {
     /// longjmp skips the normal pop and leaves the positively tracked frames
     /// here for scheduler crash recovery to reclaim in LIFO order.
     static ACTIVE_COROUTINE_FRAMES: RefCell<Vec<ActiveCoroutineFrame>> =
+        const { RefCell::new(Vec::new()) };
+
+    /// Scheduler-bracketed cooperative crash domains. Ordinary handler and
+    /// free-function stack owners attach here when no tracked coroutine frame
+    /// is active. Native longjmp and WASM unwind recovery detach and drain the
+    /// top scope; normal dispatch completion discards its state escrow only
+    /// after generated lexical owners have retired their tokens.
+    static DISPATCH_CRASH_CLEANUP_SCOPES: RefCell<Vec<*mut CrashCleanupRegistry>> =
         const { RefCell::new(Vec::new()) };
 }
 
@@ -412,12 +430,10 @@ unsafe fn frame_cleanup_registry_slot(frame: *mut c_void) -> *mut *mut CrashClea
     }
 }
 
+#[cfg(test)]
 unsafe fn frame_cleanup_registry(frame: *mut c_void) -> *mut CrashCleanupRegistry {
-    // SAFETY: caller supplies a live frame from this allocator.
-    let slot = unsafe { frame_cleanup_registry_slot(frame) };
-    // SAFETY: the header word is initialized at allocation and only mutated by
-    // the registry helpers while the frame is exclusively running/destroying.
-    unsafe { ptr::read_unaligned(slot) }
+    // SAFETY: test callers supply a live frame allocation.
+    unsafe { ptr::read_unaligned(frame_cleanup_registry_slot(frame)) }
 }
 
 unsafe fn ensure_frame_cleanup_registry(frame: *mut c_void) -> *mut CrashCleanupRegistry {
@@ -469,6 +485,51 @@ unsafe fn free_crash_cleanup_entry(entry: *mut CrashCleanupEntry, run: bool) {
     }
 }
 
+unsafe fn free_dispatch_state_snapshot(registry: &mut CrashCleanupRegistry, run: bool) {
+    let snapshot = std::mem::replace(&mut registry.state_snapshot, ptr::null_mut());
+    if snapshot.is_null() {
+        return;
+    }
+    if run {
+        if let Some(drop) = registry.state_drop.take() {
+            // SAFETY: dispatch begin copied a fully initialized actor state and
+            // every generated field update cleared its range before a
+            // potentially trapping release, publishing new bytes only after
+            // the replacement became valid. The generated state-drop thunk is
+            // therefore valid for this escrow even after longjmp/unwind.
+            unsafe { drop(snapshot.cast()) };
+        }
+    }
+    // SAFETY: begin allocated the escrow with this exact size/alignment.
+    unsafe { hew_dealloc(snapshot, registry.state_size, registry.state_align) };
+}
+
+unsafe fn free_crash_cleanup_registry(
+    registry: *mut CrashCleanupRegistry,
+    run_entries: bool,
+    run_state: bool,
+) {
+    if registry.is_null() {
+        return;
+    }
+    // SAFETY: the registry was detached from its sole TLS/frame owner before
+    // this reconstruction.
+    let mut registry = unsafe { Box::from_raw(registry) };
+    let mut entries = std::mem::take(&mut registry.entries);
+    entries.sort_unstable_by_key(|entry| {
+        // SAFETY: every registry member is a live stable box.
+        unsafe { (**entry).order }
+    });
+    for entry in entries.into_iter().rev() {
+        // SAFETY: detachment transferred the sole typed authority here.
+        unsafe { free_crash_cleanup_entry(entry, run_entries) };
+    }
+    // Actor state predates every lexical owner, so it is released last.
+    // SAFETY: detachment transferred sole ownership of the escrow allocation
+    // and generated typed drop metadata to this drain.
+    unsafe { free_dispatch_state_snapshot(&mut registry, run_state) };
+}
+
 unsafe fn discard_frame_crash_cleanup_registry(frame: *mut c_void) {
     // SAFETY: caller supplies a live frame whose raw allocation is about to be
     // freed through the ordinary MIR/coro.destroy authority.
@@ -506,18 +567,9 @@ unsafe fn run_frame_crash_cleanups(frame: *mut c_void) {
     if registry.is_null() {
         return;
     }
-    // SAFETY: pointer came from Box::into_raw in ensure_frame_cleanup_registry.
-    let registry = unsafe { Box::from_raw(registry) };
-    let mut entries = registry.entries;
-    entries.sort_unstable_by_key(|entry| {
-        // SAFETY: all registry members are live stable boxes.
-        unsafe { (**entry).order }
-    });
-    for entry in entries.into_iter().rev() {
-        // SAFETY: this is the sole post-longjmp typed authority for the
-        // abandoned original bytes.
-        unsafe { free_crash_cleanup_entry(entry, true) };
-    }
+    // SAFETY: detachment transferred the frame registry's sole authority;
+    // frame registries never carry actor-state escrow.
+    unsafe { free_crash_cleanup_registry(registry, true, false) };
 }
 
 fn crash_cleanup_ranges_overlap(
@@ -688,7 +740,7 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_arm(
     storage: u32,
     relocation: u32,
 ) -> u64 {
-    let Some(owner_frame) = active_top_tracked_frame() else {
+    let Some((registry, owner_frame)) = current_crash_cleanup_registry() else {
         return if token == 0 {
             0
         } else {
@@ -709,8 +761,6 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_arm(
         return CRASH_CLEANUP_ARM_FAILED;
     }
 
-    // SAFETY: owner_frame is the live active tracked frame.
-    let registry = unsafe { ensure_frame_cleanup_registry(owner_frame) };
     // SAFETY: the executing frame has exclusive access to its registry.
     let registry = unsafe { &mut *registry };
 
@@ -745,7 +795,8 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_arm(
         // SAFETY: membership proves this is a live stable entry in the current
         // owner frame.
         let entry = unsafe { &mut *entry };
-        if entry.owner_frame != owner_frame
+        if entry.owner_registry != ptr::from_mut(registry)
+            || entry.owner_frame != owner_frame
             || entry.active
             || entry.slot != slot
             || entry.size != size
@@ -773,6 +824,7 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_arm(
     registry.next_order = order;
     let mut boxed = Box::new(CrashCleanupEntry {
         token,
+        owner_registry: ptr::from_mut(registry),
         owner_frame,
         slot,
         snapshot: ptr::null_mut(),
@@ -811,17 +863,12 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_deactivate(token: u64) -> bool {
     if token == CRASH_CLEANUP_ARM_FAILED {
         return false;
     }
-    let Some(owner_frame) = active_top_tracked_frame() else {
+    let Some((registry, owner_frame)) = current_crash_cleanup_registry() else {
         return false;
     };
     // Resolve the process-unique generation through the live owner registry.
     // A forged/stale FFI integer therefore fails closed without becoming an
     // arbitrary raw-pointer read or aliasing a recycled allocation address.
-    // SAFETY: owner_frame is the live active tracked frame.
-    let registry = unsafe { frame_cleanup_registry(owner_frame) };
-    if registry.is_null() {
-        return false;
-    }
     // SAFETY: the executing frame exclusively owns its registry.
     let entries = unsafe { &(*registry).entries };
     let Some(&entry) = entries.iter().find(|entry| {
@@ -832,7 +879,7 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_deactivate(token: u64) -> bool {
     };
     // SAFETY: registry membership proves a live stable token.
     let entry = unsafe { &mut *entry };
-    if entry.owner_frame != owner_frame || !entry.active {
+    if entry.owner_registry != registry || entry.owner_frame != owner_frame || !entry.active {
         return false;
     }
     entry.active = false;
@@ -854,25 +901,259 @@ pub unsafe extern "C" fn hew_cont_crash_cleanup_retire(token: u64) -> bool {
     if token == CRASH_CLEANUP_ARM_FAILED {
         return false;
     }
-    let Some(owner_frame) = active_top_tracked_frame() else {
+    let Some((registry, owner_frame)) = current_crash_cleanup_registry() else {
         return false;
     };
-    // SAFETY: the owner frame is live until its lexical generated retire.
-    let registry = unsafe { frame_cleanup_registry(owner_frame) };
-    if registry.is_null() {
-        return false;
-    }
     // SAFETY: frame lifecycle excludes concurrent mutation.
     let entries = unsafe { &mut (*registry).entries };
     let Some(index) = entries.iter().position(|entry| {
         // SAFETY: all registry members are live stable boxes.
-        unsafe { (**entry).token == token }
+        unsafe {
+            (**entry).token == token
+                && (**entry).owner_registry == registry
+                && (**entry).owner_frame == owner_frame
+        }
     }) else {
         return false;
     };
     let removed = entries.remove(index);
     // SAFETY: removal transfers sole ownership of the stable entry.
     unsafe { free_crash_cleanup_entry(removed, false) };
+    true
+}
+
+fn active_dispatch_cleanup_registry() -> Option<*mut CrashCleanupRegistry> {
+    DISPATCH_CRASH_CLEANUP_SCOPES.with(|scopes| scopes.borrow().last().copied())
+}
+
+fn current_crash_cleanup_registry() -> Option<(*mut CrashCleanupRegistry, *mut c_void)> {
+    if let Some(frame) = active_top_tracked_frame() {
+        // SAFETY: the tracked frame is live and exclusively executing. Lazily
+        // allocate its registry exactly as the historical frame-only path did.
+        let registry = unsafe { ensure_frame_cleanup_registry(frame) };
+        return Some((registry, frame));
+    }
+    active_dispatch_cleanup_registry().map(|registry| (registry, ptr::null_mut()))
+}
+
+/// Open one cooperative scheduler dispatch crash domain.
+///
+/// The actor-state bytes are escrowed before generated handler code runs. The
+/// state snapshot is not an independent live owner on the normal path: it is
+/// raw-discarded at dispatch completion. Crash recovery instead runs the
+/// generated state-drop thunk on the escrow and later raw-frees the abandoned
+/// original state wrapper.
+///
+/// Returns `false` only when the state escrow could not be represented.
+///
+/// # Safety
+///
+/// `state`, when non-null, must name `state_size` initialized bytes and remain
+/// live through the matching finish/recover call. `state_drop` must be the
+/// generated typed drop thunk for those bytes.
+pub(crate) unsafe fn begin_dispatch_crash_cleanup(
+    state: *mut c_void,
+    state_size: usize,
+    state_drop: Option<CrashCleanupThunk>,
+) -> bool {
+    let mut registry = Box::new(CrashCleanupRegistry::default());
+    if !state.is_null() && state_size != 0 {
+        let Ok(state_size_u64) = u64::try_from(state_size) else {
+            return false;
+        };
+        registry.state_source = state.cast();
+        registry.state_size = state_size_u64;
+    }
+    if !state.is_null() && state_size != 0 && state_drop.is_some() {
+        let Ok(state_size_u64) = u64::try_from(state_size) else {
+            return false;
+        };
+        // Derive a conservative effective alignment from the live state
+        // allocation itself. Every valid LLVM actor-state layout's ABI
+        // alignment divides this address, so allocating the escrow at the
+        // address's largest power-of-two divisor is at least as aligned as the
+        // generated typed drop thunk requires. This avoids assuming that every
+        // actor state fits the coroutine frame's fixed 16-byte alignment.
+        let state_addr = state as usize;
+        let state_align = 1usize << state_addr.trailing_zeros();
+        let Ok(state_align_u64) = u64::try_from(state_align) else {
+            return false;
+        };
+        // SAFETY: hew_alloc validates this non-zero, power-of-two layout.
+        let snapshot = unsafe { hew_alloc(state_size_u64, state_align_u64) };
+        if snapshot.is_null() {
+            return false;
+        }
+        // SAFETY: caller guarantees the source range; snapshot is a distinct
+        // allocation of the exact same size.
+        unsafe { ptr::copy_nonoverlapping(state.cast::<u8>(), snapshot, state_size) };
+        registry.state_snapshot = snapshot;
+        registry.state_align = state_align_u64;
+        registry.state_drop = state_drop;
+    }
+    let registry = Box::into_raw(registry);
+    DISPATCH_CRASH_CLEANUP_SCOPES.with(|scopes| scopes.borrow_mut().push(registry));
+    true
+}
+
+fn take_dispatch_crash_cleanup_registry() -> Option<*mut CrashCleanupRegistry> {
+    DISPATCH_CRASH_CLEANUP_SCOPES.with(|scopes| scopes.borrow_mut().pop())
+}
+
+/// Close a normally returned dispatch scope.
+///
+/// Returns false if generated code left a typed lexical token registered. The
+/// scheduler treats that as a compiler/runtime invariant failure rather than
+/// silently discarding an owner.
+pub(crate) unsafe fn finish_dispatch_crash_cleanup() -> bool {
+    let Some(registry) = take_dispatch_crash_cleanup_registry() else {
+        return false;
+    };
+    // SAFETY: detachment gives this function sole registry access.
+    let has_entries = unsafe { !(*registry).entries.is_empty() };
+    // SAFETY: normal return owns the original actor state and every lexical
+    // value; discard escrow bytes only, never run typed drops.
+    unsafe { free_crash_cleanup_registry(registry, false, false) };
+    !has_entries
+}
+
+/// Drain a crash-abandoned dispatch scope in lexical LIFO order.
+///
+/// `drop_state` is true for cooperative Hew actor crashes. Test-only/raw Rust
+/// unwinds that the WASM scheduler elects to recover without killing the actor
+/// still drain abandoned lexical owners but preserve the original state.
+pub(crate) unsafe fn recover_dispatch_crash_cleanup(drop_state: bool) -> bool {
+    let Some(registry) = take_dispatch_crash_cleanup_registry() else {
+        return false;
+    };
+    // Detach before calling arbitrary generated/user cleanup code so re-entry
+    // cannot observe a half-drained scope.
+    // SAFETY: the popped TLS entry transfers sole registry ownership here.
+    unsafe { free_crash_cleanup_registry(registry, true, drop_state) };
+    true
+}
+
+fn dispatch_state_snapshot_range(
+    field: *mut c_void,
+    size: u64,
+) -> Option<(*mut u8, *mut u8, usize)> {
+    let registry = active_dispatch_cleanup_registry()?;
+    // SAFETY: the active scheduler scope exclusively owns this registry.
+    let registry = unsafe { &mut *registry };
+    let size = usize::try_from(size).ok()?;
+    if field.is_null() || size == 0 {
+        return None;
+    }
+    let source_start = registry.state_source as usize;
+    let field_start = field as usize;
+    let offset = field_start.checked_sub(source_start)?;
+    let state_size = usize::try_from(registry.state_size).ok()?;
+    if offset.checked_add(size)? > state_size {
+        return None;
+    }
+    // SAFETY: the validated range lies in both equal-sized source/snapshot
+    // allocations.
+    let snapshot = if registry.state_snapshot.is_null() {
+        ptr::null_mut()
+    } else {
+        // SAFETY: offset + size was checked inside the escrow range above.
+        unsafe { registry.state_snapshot.add(offset) }
+    };
+    // SAFETY: offset + size was checked within the live source range above.
+    Some(unsafe { (registry.state_source.add(offset), snapshot, size) })
+}
+
+/// Remove one actor-state field from the crash escrow before its old-value
+/// release/overwrite begins. Zero is the generated state-drop spine's neutral
+/// representation for every owned state leaf (pointer handles and recursively
+/// null-filled aggregates).
+///
+/// # Safety
+///
+/// `field..field+size` must be a live field range within the actor state named
+/// by the current dispatch cleanup scope.
+#[no_mangle]
+pub unsafe extern "C" fn hew_dispatch_state_cleanup_clear(field: *mut c_void, size: u64) -> bool {
+    let Some((_source, snapshot, size)) = dispatch_state_snapshot_range(field, size) else {
+        return false;
+    };
+    if snapshot.is_null() {
+        return true;
+    }
+    // SAFETY: range validation above proved `size` writable snapshot bytes.
+    unsafe { ptr::write_bytes(snapshot, 0, size) };
+    true
+}
+
+/// Publish a fully initialized replacement field into the crash escrow.
+///
+/// # Safety
+///
+/// `field..field+size` must be a fully initialized live field range within the
+/// actor state named by the current dispatch cleanup scope.
+#[no_mangle]
+pub unsafe extern "C" fn hew_dispatch_state_cleanup_publish(field: *mut c_void, size: u64) -> bool {
+    let Some((source, snapshot, size)) = dispatch_state_snapshot_range(field, size) else {
+        return false;
+    };
+    if snapshot.is_null() {
+        return true;
+    }
+    // SAFETY: range validation proved equal readable/writable field ranges.
+    unsafe { ptr::copy_nonoverlapping(source, snapshot, size) };
+    true
+}
+
+/// Transfer one active lexical cleanup token into an initialized actor-state
+/// field and publish the same bytes into the state crash escrow.
+///
+/// Validation is completed before either authority changes. On `false`, the
+/// source token remains active and the escrow is untouched. After validation,
+/// deactivation plus the in-process byte copy contain no cooperative panic
+/// edge, so a `true` result is one indivisible ownership publication.
+///
+/// # Safety
+///
+/// `token` must name the initialized source owner whose bytes were just stored
+/// into `field`; `field..field+size` must lie within the current dispatch's
+/// live actor state.
+#[no_mangle]
+pub unsafe extern "C" fn hew_dispatch_state_cleanup_transfer(
+    token: u64,
+    field: *mut c_void,
+    size: u64,
+) -> bool {
+    if token == 0 || token == CRASH_CLEANUP_ARM_FAILED {
+        return false;
+    }
+    let Some((_source, snapshot, size)) = dispatch_state_snapshot_range(field, size) else {
+        return false;
+    };
+    let Some((registry, owner_frame)) = current_crash_cleanup_registry() else {
+        return false;
+    };
+    // SAFETY: the executing generated code exclusively owns its current
+    // registry and every member remains boxed until retirement/drain.
+    let entries = unsafe { &(*registry).entries };
+    let Some(&entry) = entries.iter().find(|entry| {
+        // SAFETY: registry membership keeps the stable entry live.
+        unsafe { (***entry).token == token }
+    }) else {
+        return false;
+    };
+    // SAFETY: membership above proves the stable entry remains live.
+    let entry = unsafe { &mut *entry };
+    if entry.owner_registry != registry || entry.owner_frame != owner_frame || !entry.active {
+        return false;
+    }
+
+    // All validation precedes authority mutation. The following flag write and
+    // memcpy neither allocate nor call generated/user code.
+    entry.active = false;
+    if !snapshot.is_null() {
+        // SAFETY: dispatch_state_snapshot_range proved equal valid ranges.
+        unsafe { ptr::copy_nonoverlapping(field.cast::<u8>(), snapshot, size) };
+    }
     true
 }
 
@@ -1476,6 +1757,258 @@ mod tests {
         assert!(unsafe { hew_cont_crash_cleanup_deactivate(token) });
         // SAFETY: token zero is also the documented benign retire no-op.
         assert!(unsafe { hew_cont_crash_cleanup_retire(token) });
+    }
+
+    #[test]
+    fn dispatch_crash_cleanup_tracks_ordinary_stack_owners_lifo() {
+        let _ = take_crash_cleanup_test_drops();
+        // SAFETY: the scheduler-style scope brackets both initialized stack
+        // snapshots and crash recovery consumes the detached escrow exactly
+        // once.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(ptr::null_mut(), 0, None));
+            let mut outer_value = 41_u64;
+            let mut nested_value = 42_u64;
+            for slot in [
+                ptr::from_mut(&mut outer_value).cast(),
+                ptr::from_mut(&mut nested_value).cast(),
+            ] {
+                let token = hew_cont_crash_cleanup_arm(
+                    0,
+                    slot,
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                    Some(record_u64_cleanup),
+                    CrashCleanupStorage::Snapshot as u32,
+                    CrashCleanupRelocation::Bitwise as u32,
+                );
+                assert_ne!(token, 0, "dispatch fallback must issue a real token");
+                assert_ne!(token, CRASH_CLEANUP_ARM_FAILED);
+            }
+            assert!(recover_dispatch_crash_cleanup(true));
+        }
+        assert_eq!(
+            take_crash_cleanup_test_drops(),
+            [42, 41],
+            "callee/transitive owner must release before its caller owner"
+        );
+    }
+
+    #[test]
+    fn normal_dispatch_retirement_discards_escrow_without_drop() {
+        let _ = take_crash_cleanup_test_drops();
+        // SAFETY: the initialized stack snapshot remains live through token
+        // retirement and the matching normal scope finish.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(ptr::null_mut(), 0, None));
+            let mut owner = 51_u64;
+            let token = hew_cont_crash_cleanup_arm(
+                0,
+                ptr::from_mut(&mut owner).cast(),
+                size_of::<u64>() as u64,
+                align_of::<u64>() as u64,
+                Some(record_u64_cleanup),
+                CrashCleanupStorage::Snapshot as u32,
+                CrashCleanupRelocation::Bitwise as u32,
+            );
+            assert_ne!(token, 0);
+            assert!(hew_cont_crash_cleanup_retire(token));
+            assert!(finish_dispatch_crash_cleanup());
+        }
+        assert!(
+            take_crash_cleanup_test_drops().is_empty(),
+            "normal return must never run the crash-only typed thunk"
+        );
+    }
+
+    #[test]
+    fn dispatch_state_transfer_rejects_without_registry() {
+        let mut field = 90_u64;
+        // SAFETY: the field range is valid; absence of a dispatch registry is
+        // the condition under test and must fail before any access/mutation.
+        assert!(!unsafe {
+            hew_dispatch_state_cleanup_transfer(
+                1,
+                ptr::from_mut(&mut field).cast(),
+                size_of::<u64>() as u64,
+            )
+        });
+    }
+
+    #[test]
+    fn dispatch_state_transfer_failures_leave_source_active() {
+        let _ = take_crash_cleanup_test_drops();
+        let mut state = 90_u64;
+        let mut source = 91_u64;
+        // SAFETY: both initialized u64 slots remain live through recovery; the
+        // transaction is exercised with forged token/range inputs before the
+        // one valid authority handoff.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<u64>(),
+                Some(record_u64_cleanup),
+            ));
+            let token = hew_cont_crash_cleanup_arm(
+                0,
+                ptr::from_mut(&mut source).cast(),
+                size_of::<u64>() as u64,
+                align_of::<u64>() as u64,
+                Some(record_u64_cleanup),
+                CrashCleanupStorage::Snapshot as u32,
+                CrashCleanupRelocation::Bitwise as u32,
+            );
+            assert_ne!(token, 0);
+            assert_ne!(token, CRASH_CLEANUP_ARM_FAILED);
+            state = source;
+
+            assert!(!hew_dispatch_state_cleanup_transfer(
+                token.wrapping_add(1),
+                ptr::from_mut(&mut state).cast(),
+                size_of::<u64>() as u64,
+            ));
+            let outside = ptr::from_mut(&mut state)
+                .cast::<u8>()
+                .wrapping_add(size_of::<u64>());
+            assert!(!hew_dispatch_state_cleanup_transfer(
+                token,
+                outside.cast(),
+                size_of::<u64>() as u64,
+            ));
+
+            // Both rejected validations left the source active, so the same
+            // token can still complete the one valid transfer.
+            assert!(hew_dispatch_state_cleanup_transfer(
+                token,
+                ptr::from_mut(&mut state).cast(),
+                size_of::<u64>() as u64,
+            ));
+            assert!(recover_dispatch_crash_cleanup(true));
+        }
+        assert_eq!(
+            take_crash_cleanup_test_drops(),
+            [91],
+            "only the published state owner drops after the source transfer"
+        );
+    }
+
+    #[repr(C)]
+    struct CrashStatePair {
+        updated: *mut u64,
+        sibling: *mut u64,
+    }
+
+    unsafe extern "C" fn drop_crash_state_pair(state: *mut c_void) {
+        let state = state.cast::<CrashStatePair>();
+        for field in [
+            // SAFETY: the state escrow has this exact repr(C) shape.
+            unsafe { &raw mut (*state).updated },
+            // SAFETY: the state escrow has this exact repr(C) shape.
+            unsafe { &raw mut (*state).sibling },
+        ] {
+            // SAFETY: field points into the writable snapshot.
+            let value = unsafe { ptr::replace(field, ptr::null_mut()) };
+            if !value.is_null() {
+                // SAFETY: tests populate each live slot from Box::into_raw and
+                // crash cleanup is its sole release authority.
+                let value = unsafe { Box::from_raw(value) };
+                CRASH_CLEANUP_TEST_DROPS.with(|drops| drops.borrow_mut().push(*value));
+            }
+        }
+    }
+
+    #[test]
+    fn actor_state_escrow_withholds_only_inflight_field_and_drops_sibling_once() {
+        let _ = take_crash_cleanup_test_drops();
+        let mut state = CrashStatePair {
+            updated: Box::into_raw(Box::new(61)),
+            sibling: Box::into_raw(Box::new(62)),
+        };
+        let abandoned_updated = state.updated;
+        // SAFETY: the initialized state remains live through matching recovery;
+        // the generated-shape test drop owns the escrow only.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<CrashStatePair>(),
+                Some(drop_crash_state_pair),
+            ));
+            // Model a trap during the old field's release: codegen clears the
+            // escrow range before entering that arbitrary close ritual.
+            assert!(hew_dispatch_state_cleanup_clear(
+                ptr::from_mut(&mut state.updated).cast(),
+                size_of::<*mut u64>() as u64,
+            ));
+            assert!(recover_dispatch_crash_cleanup(true));
+            // The live-state wrapper is raw-abandoned on crash. Reclaim only
+            // the withheld field's test allocation; sibling was owned by the
+            // escrow drop and must not be touched again.
+            drop(Box::from_raw(abandoned_updated));
+        }
+        assert_eq!(
+            take_crash_cleanup_test_drops(),
+            [62],
+            "an in-flight field is withheld while every untouched sibling is released once"
+        );
+    }
+
+    #[test]
+    fn actor_state_escrow_publishes_replacement_only_after_valid_store() {
+        let _ = take_crash_cleanup_test_drops();
+        let mut state = CrashStatePair {
+            updated: Box::into_raw(Box::new(71)),
+            sibling: Box::into_raw(Box::new(72)),
+        };
+        // SAFETY: the initialized state remains live through matching recovery;
+        // each raw Box owner is transferred or released exactly once below.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<CrashStatePair>(),
+                Some(drop_crash_state_pair),
+            ));
+            assert!(hew_dispatch_state_cleanup_clear(
+                ptr::from_mut(&mut state.updated).cast(),
+                size_of::<*mut u64>() as u64,
+            ));
+            // Model the ordinary old-value release before the fully initialized
+            // replacement store.
+            drop(Box::from_raw(state.updated));
+            state.updated = Box::into_raw(Box::new(73));
+            assert!(hew_dispatch_state_cleanup_publish(
+                ptr::from_mut(&mut state.updated).cast(),
+                size_of::<*mut u64>() as u64,
+            ));
+            assert!(recover_dispatch_crash_cleanup(true));
+        }
+        assert_eq!(
+            take_crash_cleanup_test_drops(),
+            [73, 72],
+            "post-store crash must release the new field and untouched sibling exactly once"
+        );
+    }
+
+    #[test]
+    fn normal_actor_state_escrow_does_not_double_drop_live_state() {
+        let _ = take_crash_cleanup_test_drops();
+        let mut state = CrashStatePair {
+            updated: Box::into_raw(Box::new(81)),
+            sibling: Box::into_raw(Box::new(82)),
+        };
+        // SAFETY: the initialized state remains live through matching finish,
+        // after which ordinary teardown is its sole drop authority.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<CrashStatePair>(),
+                Some(drop_crash_state_pair),
+            ));
+            assert!(finish_dispatch_crash_cleanup());
+            assert!(take_crash_cleanup_test_drops().is_empty());
+            // Normal actor teardown remains the sole typed owner.
+            drop_crash_state_pair(ptr::from_mut(&mut state).cast());
+        }
+        assert_eq!(take_crash_cleanup_test_drops(), [81, 82]);
     }
 
     #[test]

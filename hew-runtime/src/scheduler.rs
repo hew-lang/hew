@@ -2137,10 +2137,42 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         return;
     }
 
+    // Establish the dispatch-level typed escrow before resumed user code can
+    // publish any lexical owner or mutate actor state. Coroutine-frame owners
+    // still attach to their frame registry; the actor-state snapshot remains
+    // here so a running-frame longjmp can drop untouched state fields safely.
+    // SAFETY: this activation exclusively owns the live actor state through
+    // the matching finish/recovery call.
+    let crash_state_drop = match (a.state_clone_fn, a.state_drop_fn) {
+        (Some(_), Some(drop)) => Some(drop),
+        (None, None) => None,
+        _ => {
+            eprintln!("fatal: actor state has half-registered clone/drop classifier proof");
+            std::process::abort();
+        }
+    };
+    // SAFETY: this activation exclusively owns the live actor state through
+    // the matching finish/recovery call.
+    if !unsafe {
+        crate::cont::begin_dispatch_crash_cleanup(a.state, a.state_size, crash_state_drop)
+    } {
+        eprintln!("fatal: could not establish resumed dispatch crash cleanup");
+        std::process::abort();
+    }
+
     crate::observe::record_coroutine_resume();
     // SAFETY: the parked handle is the executor-owned frame; `resume_park`
     // enforces FG2/FG4 internally (refuses a null slot or non-Parked tag).
     let poll = unsafe { crate::coro_exec::resume_park(a) };
+
+    // A normal resume must have retired every lexical dispatch token. The
+    // state escrow is raw-discarded here; the actor's live state remains the
+    // sole normal-path owner.
+    // SAFETY: this is the matching close for the scope opened above.
+    if !unsafe { crate::cont::finish_dispatch_crash_cleanup() } {
+        eprintln!("fatal: resumed dispatch returned with live crash-cleanup owners");
+        std::process::abort();
+    }
 
     // Dispatch's resume step completed without a trap — clear the recovery point
     // so a later stale signal can't jump to this dead frame.
@@ -2250,6 +2282,12 @@ unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewEx
     // frees only positively tracked nested frames and preserves
     // `scheduler_root` for the actor-slot authority.
     let _ = unsafe { crate::cont::reclaim_active_coroutine_frames_excluding(scheduler_root) };
+    // Frame/nested owners are newer and drain first. The dispatch registry then
+    // releases ordinary stack owners and finally the structurally valid actor
+    // state escrow, all before arena reset and raw state disposal.
+    // SAFETY: longjmp proves the dispatch stack is abandoned and this recovery
+    // path exclusively owns its cleanup scope.
+    let _ = unsafe { crate::cont::recover_dispatch_crash_cleanup(true) };
 
     // Capture the crashed resume's reply-channel state from the still-installed
     // resume context (carrying the handler's stashed reply channel) before
@@ -2971,6 +3009,38 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     // the currently-installed context. Nested dispatch is
                     // restored via `prev_context`.
 
+                    // Open the cooperative cleanup domain before any
+                    // dispatch-adjacent fail-closed guard can call Hew panic.
+                    // The handler's state is fully initialized at this point.
+                    // SAFETY: this activation exclusively owns the live actor
+                    // state until the matching finish/recovery call.
+                    let crash_state_drop = match (a.state_clone_fn, a.state_drop_fn) {
+                        (Some(_), Some(drop)) => Some(drop),
+                        (None, None) => None,
+                        _ => {
+                            eprintln!(
+                                "fatal: actor state has half-registered clone/drop classifier proof"
+                            );
+                            std::process::abort();
+                        }
+                    };
+                    // SAFETY: this activation exclusively owns the live actor
+                    // state until the matching finish/recovery call.
+                    if !unsafe {
+                        crate::cont::begin_dispatch_crash_cleanup(
+                            a.state,
+                            a.state_size,
+                            // The paired clone/drop classifier is also the
+                            // relocation proof for byte-escrowing this state.
+                            // Unsupported/interior-pointer layouts fall back
+                            // to lexical cleanup only.
+                            crash_state_drop,
+                        )
+                    } {
+                        eprintln!("fatal: could not establish actor dispatch crash cleanup");
+                        std::process::abort();
+                    }
+
                     // Phase α COW: envelope-aware dispatch.  Legacy
                     // (copy-mode) nodes carry payload bytes in
                     // `data`/`data_size` and dispatch by value.
@@ -3068,6 +3138,9 @@ fn activate_queued_actor(actor: *mut HewActor) {
                         unsafe { crate::actor::hew_actor_state_lock_acquire_for_context(ec_ptr) }
                             == crate::actor::HEW_ACTOR_STATE_LOCK_OK;
                     if !lock_acquired {
+                        // SAFETY: the handler was not entered; this activation
+                        // exclusively owns the open dispatch cleanup scope.
+                        let _ = unsafe { crate::cont::recover_dispatch_crash_cleanup(true) };
                         // Refuse to enter the handler without the per-actor lock.
                         // SAFETY: `actor` is the actor currently owned by this
                         // scheduler frame.
@@ -3172,6 +3245,9 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     let release_result =
                         unsafe { crate::actor::hew_actor_state_lock_release_for_context(ec_ptr) };
                     if release_result != crate::actor::HEW_ACTOR_STATE_LOCK_OK {
+                        // SAFETY: dispatch returned and this activation owns
+                        // the still-open cleanup scope.
+                        let _ = unsafe { crate::cont::recover_dispatch_crash_cleanup(true) };
                         // SAFETY: `actor` is the actor currently owned by this
                         // scheduler frame.
                         unsafe {
@@ -3194,6 +3270,17 @@ fn activate_queued_actor(actor: *mut HewActor) {
                         crate::observe::observe_dispatch_abandon(observe_dispatch_ticket);
                         crashed = true;
                         break;
+                    }
+
+                    if dispatch_result.is_ok() {
+                        // SAFETY: normal dispatch return matches the cleanup
+                        // scope opened immediately before handler entry.
+                        if !unsafe { crate::cont::finish_dispatch_crash_cleanup() } {
+                            eprintln!(
+                                "fatal: actor dispatch returned with live crash-cleanup owners"
+                            );
+                            std::process::abort();
+                        }
                     }
 
                     // D-A.2: the suspend handle the trampoline returned. `null`
@@ -3273,6 +3360,13 @@ fn activate_queued_actor(actor: *mut HewActor) {
                                 std::ptr::null_mut(),
                             )
                         };
+                        // A caught Rust unwind is not a Hew actor crash on the
+                        // native compatibility path, so drain abandoned lexical
+                        // owners but preserve actor state. Explicit Hew panic
+                        // never reaches this branch: it longjmps below.
+                        // SAFETY: catch_unwind proves the synchronous dispatch
+                        // stack is abandoned and transfers its cleanup scope.
+                        let _ = unsafe { crate::cont::recover_dispatch_crash_cleanup(false) };
                     }
 
                     let reply_consumed = current_reply_channel_consumed_on(ec_ptr);
@@ -3392,6 +3486,9 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     let _ = unsafe {
                         crate::cont::reclaim_active_coroutine_frames_excluding(std::ptr::null_mut())
                     };
+                    // SAFETY: longjmp proves the dispatch stack is abandoned;
+                    // this recovery path owns the open cleanup scope.
+                    let _ = unsafe { crate::cont::recover_dispatch_crash_cleanup(true) };
                     // Capture the crashed dispatch's reply-channel state from
                     // the still-installed ctx before restoring `prev_context`.
                     // The ctx pointer becomes stale after the restore, so we

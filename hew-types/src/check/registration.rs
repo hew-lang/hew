@@ -7560,7 +7560,7 @@ impl Checker {
         //     reference not in the loaded graph; the downstream method-set / sig
         //     check fires honestly against an absent/empty set — fail-closed).
         let suffix = format!(".{name}");
-        let mut owners: Vec<&str> = self
+        let mut owners: Vec<String> = self
             .trait_defs
             .keys()
             .filter_map(|k| k.strip_suffix(&suffix))
@@ -7574,11 +7574,17 @@ impl Checker {
                             .as_deref()
                             .is_some_and(|current| crate::short_name(current) == *module))
             })
+            .map(|module| {
+                self.module_import_bindings
+                    .get(&(self.current_module.clone(), module.to_string()))
+                    .cloned()
+                    .unwrap_or_else(|| module.to_string())
+            })
             .collect();
         owners.sort_unstable();
         owners.dedup();
         let owner = match owners.as_slice() {
-            [single] => Some((*single).to_string()),
+            [single] => Some(single.clone()),
             _ => None,
         };
         ResolvedTraitIdentity {
@@ -7798,13 +7804,13 @@ impl Checker {
     }
 
     /// Recover a trait identity from a `trait_defs` key. An owner-qualified
-    /// `{module}.{Trait}` key whose module is in scope yields
+    /// `{module}.{Trait}` key registered by the checker yields
     /// `owner = Some(module)`, `source = Trait`; a bare key yields a local
     /// identity (`is_local = true`, no owner). Used to re-anchor the signature
     /// lookup on a declaring SUPERTRAIT reached through the super chain.
     fn identity_from_trait_defs_key(&self, key: &str) -> ResolvedTraitIdentity {
         match key.rsplit_once('.') {
-            Some((module, source)) if self.modules.contains(module) => ResolvedTraitIdentity {
+            Some((module, source)) if self.trait_defs.contains_key(key) => ResolvedTraitIdentity {
                 owner: Some(module.to_string()),
                 source_trait_name: source.to_string(),
                 is_local: false,
@@ -9448,6 +9454,12 @@ impl Checker {
                     // exact source-owned trait method into
                     // `consume_receiver_methods`.
                     if module_path == "std::io::closable" && decl.resolved_items.is_none() {
+                        // This embedded source is the shipped module selected by
+                        // the import resolver, not a user module that happens
+                        // to share its spelling.  Preserve that provenance so
+                        // bare `Closable` resolves to its exact owner.
+                        self.canonical_std_module_sources
+                            .insert("std.io.closable".to_string());
                         let identity = format!("module:{module_path}");
                         if !self
                             .registered_stdlib_hew_sources

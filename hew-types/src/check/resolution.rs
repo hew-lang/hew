@@ -1999,7 +1999,20 @@ impl Checker {
                     .canonical_nominal_name(name)
                     .unwrap_or_else(|| name.clone());
                 Ty::Named {
-                    builtin: builtin.or_else(|| self.resolved_builtin_type(&canonical_name)),
+                    // A source declaration may share a builtin leaf spelling
+                    // (`Option`, `Result`, or an imported source nominal). The
+                    // resolver already established that its provisional type
+                    // is source-owned with `builtin: None`; do not recreate a
+                    // builtin discriminator merely because the final handoff
+                    // revisits that presentation name.
+                    builtin: builtin.or_else(|| {
+                        let source_nominal = self.local_type_defs.contains(&canonical_name)
+                            || self.source_type_defs.contains(&canonical_name)
+                            || self.type_defs.contains_key(&canonical_name);
+                        (!source_nominal)
+                            .then(|| self.resolved_builtin_type(&canonical_name))
+                            .flatten()
+                    }),
                     name: canonical_name,
                     args: args
                         .iter()
@@ -2268,6 +2281,30 @@ impl Checker {
             hole_vars,
             TypeResolutionContext::Ordinary,
         )
+    }
+
+    /// Parser shorthand for `Option<..>` and `Result<..>` must still obey the
+    /// same lexical authority as an ordinary named type.  The AST preserves
+    /// those spellings as dedicated variants for builtin ergonomics, but that
+    /// representation cannot let a root declaration or an explicitly imported
+    /// source declaration silently become a compiler builtin.
+    fn source_builtin_shorthand_nominal(&self, name: &str, args: &[Ty]) -> Option<Ty> {
+        if self.local_type_defs.contains(name) {
+            let resolved_name = self.current_module.as_ref().map_or_else(
+                || name.to_string(),
+                |module| {
+                    let qualified = format!("{module}.{name}");
+                    if self.type_defs.contains_key(&qualified) {
+                        qualified
+                    } else {
+                        name.to_string()
+                    }
+                },
+            );
+            return Some(Ty::named(resolved_name, args.to_vec()));
+        }
+        self.published_bare_type_qualified(name)
+            .map(|qualified| Ty::named(qualified, args.to_vec()))
     }
 
     #[expect(
@@ -2822,8 +2859,11 @@ impl Checker {
                         && builtin.is_some_and(|kind| {
                             kind.is_collection() || kind.is_substrate_handle()
                         }));
-                let local_source_type_def = self.source_type_defs.contains(resolved_name.as_str())
-                    && !builtin_overrides_source_decl;
+                // Preserve the lexical declaration decision made above. A
+                // local source type may be owner-qualified before this point,
+                // so re-testing its output spelling would let builtin-shaped
+                // declarations such as `Option` and `Result` lose authority.
+                let local_source_type_def = is_local && !builtin_overrides_source_decl;
                 // F1: a named type that resolved to nothing — not a builtin, not
                 // a registered user type / trait / alias, and not a generic type
                 // parameter (those all returned earlier) — is genuinely
@@ -2884,13 +2924,21 @@ impl Checker {
                     Ty::named(resolved_name, args)
                 }
             }
-            TypeExpr::Result { ok, err } => Ty::result(
-                self.resolve_type_expr_tracking_holes_with_context(ok, hole_vars, context),
-                self.resolve_type_expr_tracking_holes_with_context(err, hole_vars, context),
-            ),
-            TypeExpr::Option(inner) => Ty::option(
-                self.resolve_type_expr_tracking_holes_with_context(inner, hole_vars, context),
-            ),
+            TypeExpr::Result { ok, err } => {
+                let args = vec![
+                    self.resolve_type_expr_tracking_holes_with_context(ok, hole_vars, context),
+                    self.resolve_type_expr_tracking_holes_with_context(err, hole_vars, context),
+                ];
+                self.source_builtin_shorthand_nominal("Result", &args)
+                    .unwrap_or_else(|| Ty::result(args[0].clone(), args[1].clone()))
+            }
+            TypeExpr::Option(inner) => {
+                let args =
+                    vec![self
+                        .resolve_type_expr_tracking_holes_with_context(inner, hole_vars, context)];
+                self.source_builtin_shorthand_nominal("Option", &args)
+                    .unwrap_or_else(|| Ty::option(args[0].clone()))
+            }
             TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
             TypeExpr::Tuple(elems) => Ty::Tuple(
                 elems

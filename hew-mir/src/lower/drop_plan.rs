@@ -109,6 +109,7 @@ pub(super) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
             function,
             block,
             name,
+            hard,
             reason,
             ..
         } => Some(MirDiagnostic {
@@ -116,14 +117,20 @@ pub(super) fn check_to_diagnostic(check: &MirCheck) -> Option<MirDiagnostic> {
                 function: function.clone(),
                 block: *block,
                 name: name.clone(),
+                hard: *hard,
                 reason: reason.clone(),
             },
-            note: "every heap-owning owned value must be released exactly once \
-                   on every reachable exit path; this exit path never \
-                   discharges the mint (leak). This is an advisory warning, not \
-                   a build error — fix the drop plan (release on every exit) to \
-                   silence it"
-                .to_string(),
+            note: if *hard {
+                "an explicit MIR retain minted an independently owned reference, but this exit \
+                 never releases it. Retain-backed mint/release mismatches are compiler invariant \
+                 failures and cannot be downgraded"
+                    .to_string()
+            } else {
+                "every heap-owning owned value must be released exactly once on every reachable \
+                 exit path; this exit path never discharges the mint (leak). This is an advisory \
+                 warning, not a build error — fix the drop plan (release on every exit) to silence it"
+                    .to_string()
+            },
         }),
         MirCheck::ObligationOverReleased {
             function,
@@ -2374,9 +2381,10 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
 // `validate_obligation_balance` is the SIBLING pass to `validate_drop_plan`:
 // that pass owns KIND coherence (place ↔ DropKind), this pass owns BALANCE —
 // for every heap-owning owned local (the MINT set, read off the type-directed
-// registration ledger), every reachable `Return` exit path must carry exactly
-// one DISCHARGE. Discharge count 0 on a path = under-release (leak); 2+ on a
-// path = over-release (double-free).
+// registration ledger), every reachable `Return` exit path must carry one
+// DISCHARGE per owner MINT. Ordinary definitions mint one owner; explicit
+// retain instructions mint an additional co-owner. Fewer discharges than
+// mints = under-release (leak); more = over-release (double-free).
 //
 // INDEPENDENCE INVARIANT: the discharge set is re-derived from the primitive
 // `Instr` stream + the raw CFG + the per-exit `DropPlan`s (the elaborator's
@@ -2389,9 +2397,12 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
 // EXCLUSION only.
 //
 // MODEL (whole-local granularity, interval dataflow):
-//   - state per tracked local = a discharge-count interval `[lo, hi]`
-//     (saturating at 2) + a payload-neutralization flag, per CFG point;
+//   - state per tracked local = owner-mint and discharge-count intervals
+//     (both saturating at 2) + a payload-neutralization flag, per CFG point;
 //     a local absent from the state map is UNMINTED on every reaching path.
+//   - explicit `BytesRetain` / `StringRetain` instructions increment the
+//     source mint count. An adjacent retain + whole-local move instead gives
+//     the destination an independent mint while preserving the source owner.
 //   - DEFINITE discharges (`lo` and `hi`): a terminal/inline drop of the
 //     local, a return-transfer (`Move`/`WitnessMove` into `ReturnSlot`), a
 //     payload-slot neutralization after move-out, a `ValueSnapshotDrop`, a
@@ -2406,7 +2417,9 @@ pub(super) fn validate_drop_plan(elab: &ElaboratedMirFunction) -> Vec<MirCheck> 
 //     definite verdict in either direction — a finding is reported only when
 //     EVERY modelling of the path is unbalanced.
 //   - verdict per `(Return exit, local)` after folding in the exit plan's
-//     drops: `hi == 0` → under-release; `lo >= 2` → over-release.
+//     drops: `hi < mint_lo`, or an explicit-retain `mint_hi > hi`, →
+//     under-release;
+//     `max_definite > mint_hi` → over-release.
 //
 // WHAT THIS PASS DOES NOT DO (A278 / S1875): it counts DISCHARGES, not USES.
 // A balanced value used after a transfer is the move-checker's concern; this
@@ -2455,51 +2468,96 @@ impl PayloadNeutralized {
 /// balance-relevant magnitudes.
 const OBLIGATION_COUNT_SATURATION: u8 = 2;
 
-/// Discharge-count interval for one tracked local over the CFG paths
-/// reaching a program point. `lo` = minimum possible discharges along any
-/// reaching path, `hi` = maximum; `max_definite` = the maximum number of
-/// DEFINITE (unambiguous) discharges on any single reaching path. All three
+/// Owner-mint and discharge-count intervals for one tracked local over the CFG
+/// paths reaching a program point. `mint_lo` / `mint_hi` bound the owners;
+/// `lo` / `hi` bound possible discharges; `max_definite` is the maximum number
+/// of DEFINITE (unambiguous) discharges on any single reaching path. Counts
 /// saturate at [`OBLIGATION_COUNT_SATURATION`].
 ///
 /// The two release verdicts read different components so each fails in the
 /// safe direction:
-///   - UNDER-release (leak) requires EVERY path to under-discharge, so it
-///     reads `hi == 0` (no discharge — definite or ambiguous — on any path);
+///   - UNDER-release (leak) reads `hi < mint_lo` when every reaching path is
+///     short a release. For explicit retains it also reads `mint_hi > hi`,
+///     which proves that even the largest discharge count cannot pay the path
+///     carrying the largest retain-backed owner count;
 ///   - OVER-release (double-free) is memory-unsafe on ANY path, so it reads
-///     `max_definite >= SATURATION` (some single path definitely discharges
-///     twice). Reading `lo` (the per-path MINIMUM) here would path-dilute a
-///     branch-conditional double-free away: a double-free on one arm but not
-///     another leaves `lo == 1` and silently certifies. Ambiguous discharges
+///     `max_definite > mint_hi` (some single path definitely discharges more
+///     owners than can exist). Reading `lo` (the per-path MINIMUM) here would
+///     path-dilute a branch-conditional double-free away: a double-free on one
+///     arm but not another leaves `lo == 1` and silently certifies. Ambiguous discharges
 ///     never raise `max_definite`, so widen-only events (mirrored plan drops,
 ///     aggregation operands, single-owner-resolved-elsewhere transfers)
 ///     cannot manufacture a false over-release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ObligationState {
+    /// Minimum/maximum owner mints present on reaching paths.  Ordinary
+    /// defining writes reset this to one; explicit retain instructions add a
+    /// second owner unless the retain is paired with a local move, in which
+    /// case the destination receives its own independent state.
+    mint_lo: u8,
+    mint_hi: u8,
     lo: u8,
     hi: u8,
     /// Per-path maximum of DEFINITE discharges. `meet` takes the max across
     /// joining paths; only [`ObligationState::definite_discharge`] raises it.
     max_definite: u8,
+    /// Whether every/any reaching mint generation was created by an explicit
+    /// retain. A definitely leaked retained generation is a compiler invariant
+    /// failure, not a legacy advisory ownership hole.
+    explicit_retain_lo: bool,
+    explicit_retain_hi: bool,
     neutralized: PayloadNeutralized,
 }
 
 impl ObligationState {
     fn minted() -> Self {
         Self {
+            mint_lo: 1,
+            mint_hi: 1,
             lo: 0,
             hi: 0,
             max_definite: 0,
+            explicit_retain_lo: false,
+            explicit_retain_hi: false,
             neutralized: PayloadNeutralized::No,
+        }
+    }
+
+    fn minted_by_retain() -> Self {
+        Self {
+            explicit_retain_lo: true,
+            explicit_retain_hi: true,
+            ..Self::minted()
         }
     }
 
     fn meet(self, other: Self) -> Self {
         Self {
+            mint_lo: self.mint_lo.min(other.mint_lo),
+            mint_hi: self.mint_hi.max(other.mint_hi),
             lo: self.lo.min(other.lo),
             hi: self.hi.max(other.hi),
             max_definite: self.max_definite.max(other.max_definite),
+            explicit_retain_lo: self.explicit_retain_lo && other.explicit_retain_lo,
+            explicit_retain_hi: self.explicit_retain_hi || other.explicit_retain_hi,
             neutralized: self.neutralized.meet(other.neutralized),
         }
+    }
+
+    /// Mint one additional co-owner over this live value. The release count is
+    /// intentionally unchanged: a later owning sink and the original local's
+    /// terminal drop must independently discharge the two references.
+    fn retain_mint(&mut self) {
+        self.mint_lo = self
+            .mint_lo
+            .saturating_add(1)
+            .min(OBLIGATION_COUNT_SATURATION);
+        self.mint_hi = self
+            .mint_hi
+            .saturating_add(1)
+            .min(OBLIGATION_COUNT_SATURATION);
+        self.explicit_retain_lo = true;
+        self.explicit_retain_hi = true;
     }
 
     /// A discharge that fires on every modelling of the current path.
@@ -2617,6 +2675,10 @@ struct ObligationCtx<'a> {
     /// borrows. A whole-local rebind FROM a parameter is a borrow alias, so
     /// the rebound dest mints with the hi-credit.
     parameter_locals: &'a HashSet<u32>,
+    /// Exact `retain(source); move(destination, source)` instruction pairs.
+    /// These are shares, not transfers: the source keeps its obligation and
+    /// the defining move mints an independently retained destination owner.
+    retained_move_sites: &'a HashSet<(u32, usize)>,
 }
 
 impl ObligationCtx<'_> {
@@ -2750,6 +2812,42 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
     alias_to
 }
 
+/// Re-derive the explicit whole-local retain/share protocol from primitive
+/// MIR. The pair is deliberately structural: codegen executes the retain on
+/// every dynamic visit even when a destination slot is reused or the block is
+/// cyclic, so the obligation model must count it on those paths rather than
+/// inherit the stricter sole-owner-prover admission policy.
+fn collect_retained_move_sites(blocks: &[BasicBlock]) -> HashSet<(u32, usize)> {
+    let mut sites = HashSet::new();
+    for block in blocks {
+        for move_index in 1..block.instructions.len() {
+            let retain_source = match &block.instructions[move_index - 1] {
+                Instr::BytesRetain { value }
+                | Instr::StringRetain {
+                    value,
+                    condition: crate::model::StringRetainCondition::Always,
+                } => Some(*value),
+                _ => None,
+            };
+            let Some(retain_source) = retain_source else {
+                continue;
+            };
+            let (dest, move_source) = match &block.instructions[move_index] {
+                Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => (*dest, *src),
+                _ => continue,
+            };
+            if retain_source == move_source
+                && whole_owner_local(dest).is_some()
+                && whole_owner_local(move_source).is_some()
+                && whole_owner_local(dest) != whole_owner_local(move_source)
+            {
+                sites.insert((block.id, move_index));
+            }
+        }
+    }
+    sites
+}
+
 /// Forward transfer of one instruction: discharge events first, then mint
 /// (whole-slot write) resets.
 #[allow(
@@ -2764,7 +2862,14 @@ fn collect_payload_alias_map(blocks: &[BasicBlock]) -> HashMap<u32, u32> {
               distinct transfer classes (aggregation vs capture vs dispatch); \
               merging them would erase the per-class rationale comments"
 )]
-fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &ObligationCtx<'_>) {
+fn apply_balance_instr(
+    state: &mut ObligationMap,
+    instr: &Instr,
+    block: u32,
+    instr_index: usize,
+    cx: &ObligationCtx<'_>,
+) {
+    let retained_share_move = cx.retained_move_sites.contains(&(block, instr_index));
     // Derived mints take an hi-credit of 1 ("another owner's release may be
     // mine"), applied after the generic mint below:
     //   - a whole-local rebind FROM a tracked local (`let m2 = m;` — which
@@ -2784,6 +2889,7 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
     let rebind_credit_dest = match instr {
         Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => whole_owner_local(*src)
             .filter(|s| cx.parameter_locals.contains(s) || cx.tracked.contains_key(&cx.root_of(*s)))
+            .filter(|_| !retained_share_move)
             .and_then(|_| credit_dest(dest)),
         Instr::RecordFieldLoad { dest, .. }
         | Instr::TupleFieldLoad { dest, .. }
@@ -2806,7 +2912,12 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
         }
         Instr::Move { dest, src } | Instr::WitnessMove { dest, src, .. } => {
             if let Some(root) = cx.tracked_root(*src) {
-                if matches!(dest, Place::ReturnSlot) {
+                if retained_share_move {
+                    // The immediately preceding retain minted a distinct
+                    // destination reference. The source remains owned here;
+                    // the generic defining-write pass below creates the new
+                    // destination obligation without a rebind credit.
+                } else if matches!(dest, Place::ReturnSlot) {
                     // Return-transfer: the caller receives the one owner.
                     obligation_entry(state, root).definite_discharge();
                 } else {
@@ -2819,6 +2930,20 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
             // A move OUT of a variant projection is either alias-folded (no
             // neutralize anywhere — see `collect_payload_alias_map`) or paid
             // by the `NeutralizePayloadSlot` that follows it; no event here.
+        }
+        Instr::BytesRetain { value } | Instr::StringRetain { value, .. } => {
+            // An exact retain+move pair mints the destination generation; do
+            // not also charge the source with a second anonymous owner. Every
+            // other retain creates a co-owner that an owning sink must consume
+            // independently of the original local's terminal drop.
+            let paired_move = cx
+                .retained_move_sites
+                .contains(&(block, instr_index.saturating_add(1)));
+            if !paired_move {
+                if let Some(root) = cx.tracked_root(*value) {
+                    obligation_entry(state, root).retain_mint();
+                }
+            }
         }
         Instr::NeutralizePayloadSlot { place, .. } => {
             if let Some(root) = cx.tracked_carrier(*place) {
@@ -3005,7 +3130,12 @@ fn apply_balance_instr(state: &mut ObligationMap, instr: &Instr, cx: &Obligation
                 continue;
             }
             if cx.tracked.contains_key(&local) {
-                state.insert(local, ObligationState::minted());
+                let minted = if retained_share_move {
+                    ObligationState::minted_by_retain()
+                } else {
+                    ObligationState::minted()
+                };
+                state.insert(local, minted);
             }
         }
     }
@@ -3375,6 +3505,7 @@ fn validate_obligation_balance_capped(
     }
 
     let alias_to = collect_payload_alias_map(blocks);
+    let retained_move_sites = collect_retained_move_sites(blocks);
     // A payload-alias binder's discharges fold into its carrier; the binder
     // is not an independent obligation.
     let mut tracked = tracked_in.clone();
@@ -3462,6 +3593,7 @@ fn validate_obligation_balance_capped(
         tracked: &tracked,
         alias_to: &alias_to,
         parameter_locals,
+        retained_move_sites: &retained_move_sites,
     };
 
     // Scope-exit releases ride the NORMAL-continuation exit plans (a
@@ -3576,8 +3708,8 @@ fn validate_obligation_balance_capped(
             })
             .unwrap_or_default();
         let mut state = entry;
-        for instr in &block.instructions {
-            apply_balance_instr(&mut state, instr, &cx);
+        for (instr_index, instr) in block.instructions.iter().enumerate() {
+            apply_balance_instr(&mut state, instr, bb_id, instr_index, &cx);
         }
         apply_balance_terminator(&mut state, block, suspend_kinds.get(&bb_id), &cx);
         if let Some(drops) = edge_drops.get(&bb_id) {
@@ -3618,30 +3750,46 @@ fn validate_obligation_balance_capped(
                 .get(root)
                 .cloned()
                 .unwrap_or_else(|| format!("local_{root}"));
-            if ob.hi == 0 {
+            // Two independently safe proofs feed the leak verdict:
+            //   * `hi < mint_lo`: every reaching path is short a release;
+            //   * `mint_hi > hi`: the path carrying the largest explicit
+            //     retain count cannot be paid even by the largest possible
+            //     discharge count on any reaching path.
+            // The second form preserves a branch-local retain debt instead of
+            // diluting it against an unretained sibling at the CFG join.
+            let retained_path_under_released = ob.explicit_retain_hi && ob.mint_hi > ob.hi;
+            if ob.hi < ob.mint_lo || retained_path_under_released {
+                let reported_mints = if retained_path_under_released {
+                    ob.mint_hi
+                } else {
+                    ob.mint_lo
+                };
                 findings.push(MirCheck::ObligationUnderReleased {
                     function: elab.name.clone(),
                     block,
                     name: name.clone(),
                     local_ty: local_types.get(root).cloned().unwrap_or_default(),
+                    hard: retained_path_under_released || ob.explicit_retain_lo,
                     reason: format!(
-                        "owned local `{name}` reaches {exit_label}[bb{block}] with zero \
-                         discharges on every path modelling: no terminal drop in \
-                         this exit's plan and no ownership transfer before the \
-                         exit (mint without discharge = leak)"
+                        "owned local `{name}` reaches {exit_label}[bb{block}] with at least \
+                         {mint_lo} owner mint(s), but at most {discharge_hi} discharge(s) on \
+                         every path modelling: one or more owners have no terminal drop or \
+                         ownership transfer before the exit (mint without discharge = leak)",
+                        mint_lo = reported_mints,
+                        discharge_hi = ob.hi,
                     ),
                 });
-            } else if ob.max_definite >= OBLIGATION_COUNT_SATURATION {
+            } else if ob.max_definite > ob.mint_hi {
                 findings.push(MirCheck::ObligationOverReleased {
                     function: elab.name.clone(),
                     block,
                     name: name.clone(),
                     reason: format!(
-                        "owned local `{name}` accumulates {max_def}+ definite \
-                         discharges on a single path reaching {exit_label}[bb{block}] \
-                         (discharge interval [{lo}, {hi}], per-path definite max \
-                         {max_def}): double release",
+                        "owned local `{name}` accumulates {max_def} definite discharges for at \
+                         most {mint_hi} owner mint(s) on a single path reaching \
+                         {exit_label}[bb{block}] (discharge interval [{lo}, {hi}]): double release",
                         max_def = ob.max_definite,
+                        mint_hi = ob.mint_hi,
                         lo = ob.lo,
                         hi = ob.hi,
                     ),
@@ -9334,6 +9482,177 @@ mod obligation_balance_validator {
         assert!(
             findings.is_empty(),
             "borrow-derived mints never definite-leak: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn bytes_retain_move_requires_independent_destination_release() {
+        let blocks = vec![block(
+            0,
+            vec![
+                mint(1),
+                Instr::BytesRetain {
+                    value: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let plans = vec![(
+            ExitPath::Return { block: 0 },
+            DropPlan {
+                drops: vec![plain_drop(Place::Local(1))],
+            },
+        )];
+        let findings = run(blocks, plans, &[(1, "source"), (2, "retained")]);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::ObligationUnderReleased {
+                    name,
+                    hard: true,
+                    ..
+                }] if name == "retained"
+            ),
+            "the explicit bytes retain mints a second owner; a source drop cannot pay the \
+             destination's missing release: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn string_retain_move_preserves_source_obligation() {
+        let blocks = vec![block(
+            0,
+            vec![
+                mint(1),
+                Instr::StringRetain {
+                    value: Place::Local(1),
+                    condition: crate::model::StringRetainCondition::Always,
+                },
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let plans = vec![(
+            ExitPath::Return { block: 0 },
+            DropPlan {
+                drops: vec![plain_drop(Place::Local(2))],
+            },
+        )];
+        let findings = run(blocks, plans, &[(1, "source"), (2, "retained")]);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::ObligationUnderReleased {
+                    name,
+                    hard: false,
+                    ..
+                }] if name == "source"
+            ),
+            "a retain-backed move is a share, not an ambiguous source transfer; the original \
+             string owner still needs its terminal release: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_retain_adds_an_owner_obligation() {
+        let blocks = vec![block(
+            0,
+            vec![
+                mint(1),
+                Instr::BytesRetain {
+                    value: Place::Local(1),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let plans = vec![(
+            ExitPath::Return { block: 0 },
+            DropPlan {
+                drops: vec![plain_drop(Place::Local(1))],
+            },
+        )];
+        let findings = run(blocks, plans, &[(1, "shared")]);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::ObligationUnderReleased { hard: true, .. }]
+            ),
+            "one terminal drop cannot pay two owner mints after an explicit retain: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn branch_local_retain_debt_is_not_diluted_at_join() {
+        let blocks = vec![
+            block(
+                0,
+                vec![mint(1)],
+                Terminator::Branch {
+                    cond: Place::Local(0),
+                    then_target: 1,
+                    else_target: 2,
+                },
+            ),
+            block(
+                1,
+                vec![Instr::BytesRetain {
+                    value: Place::Local(1),
+                }],
+                Terminator::Goto { target: 3 },
+            ),
+            block(2, Vec::new(), Terminator::Goto { target: 3 }),
+            block(3, Vec::new(), Terminator::Return),
+        ];
+        let plans = vec![(
+            ExitPath::Return { block: 3 },
+            DropPlan {
+                drops: vec![plain_drop(Place::Local(1))],
+            },
+        )];
+        let findings = run(blocks, plans, &[(1, "shared")]);
+        assert!(
+            matches!(
+                findings.as_slice(),
+                [MirCheck::ObligationUnderReleased { hard: true, .. }]
+            ),
+            "the retained branch has two mints but only one release; the balanced sibling must \
+             not dilute that explicit owner debt at the join: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn retain_move_with_both_terminal_releases_balances() {
+        let blocks = vec![block(
+            0,
+            vec![
+                mint(1),
+                Instr::BytesRetain {
+                    value: Place::Local(1),
+                },
+                Instr::Move {
+                    dest: Place::Local(2),
+                    src: Place::Local(1),
+                },
+            ],
+            Terminator::Return,
+        )];
+        let plans = vec![(
+            ExitPath::Return { block: 0 },
+            DropPlan {
+                drops: vec![plain_drop(Place::Local(2)), plain_drop(Place::Local(1))],
+            },
+        )];
+        let findings = run(blocks, plans, &[(1, "source"), (2, "retained")]);
+        assert!(
+            findings.is_empty(),
+            "the source and retained destination each carry one mint and one release: {findings:?}"
         );
     }
 

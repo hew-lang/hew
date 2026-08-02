@@ -1983,7 +1983,11 @@ impl Checker {
     /// `user_modules` is intentionally not consulted: it is a legacy lexical
     /// spelling set and therefore cannot distinguish two paths with the same
     /// final component.
-    fn module_binding_has_user_declaration(&self, module_name: &str, method: &str) -> bool {
+    pub(super) fn module_binding_has_user_declaration(
+        &self,
+        module_name: &str,
+        method: &str,
+    ) -> bool {
         let owner = self.canonical_module_import_owner(module_name);
         let declaration = format!("{owner}.{method}");
         self.fn_def_spans
@@ -1991,6 +1995,60 @@ impl Checker {
             .is_some_and(|(_, declaring_module)| {
                 declaring_module.as_deref() == Some(owner.as_str())
             })
+    }
+
+    /// Reject an exact native-only function at the semantic call/reference
+    /// boundary. Module spellings are lexical only: aliases resolve to their
+    /// canonical imported owner before consulting the fully-qualified
+    /// manifest policy, while user declarations with the same spelling remain
+    /// valid. Whole-module policy remains owned by
+    /// `wasm_native_only_module_feature` so the two tables cannot emit duplicate
+    /// diagnostics for the same call.
+    pub(super) fn reject_wasm_native_only_module_function(
+        &mut self,
+        module_name: &str,
+        method: &str,
+        span: &Span,
+    ) {
+        if !self.wasm_target {
+            return;
+        }
+        let owner = self.canonical_module_import_owner(module_name);
+        if !self.canonical_std_module_sources.contains(&owner) {
+            return;
+        }
+        // Function policy is fully qualified and therefore cannot be shadowed
+        // by a user module whose leaf happens to be `fs`.
+        for rejection in crate::NATIVE_ONLY_WASM_FUNCTION_REJECTIONS {
+            if owner == rejection.module && method == rejection.function {
+                self.reject_wasm_feature(span, rejection.feature);
+            }
+        }
+    }
+
+    /// Apply exact function policy after a named import has resolved its
+    /// declaration owner.  Unlike a bare surface spelling this carries the
+    /// source identity (`std.fs.try_read`) and cannot be captured by a user
+    /// function or a same-leaf module.
+    pub(super) fn reject_wasm_native_only_function_identity(
+        &mut self,
+        source_identity: &str,
+        span: &Span,
+    ) {
+        if !self.wasm_target {
+            return;
+        }
+        let Some((module, function)) = source_identity.rsplit_once('.') else {
+            return;
+        };
+        if !self.canonical_std_module_sources.contains(module) {
+            return;
+        }
+        for rejection in crate::NATIVE_ONLY_WASM_FUNCTION_REJECTIONS {
+            if module == rejection.module && function == rejection.function {
+                self.reject_wasm_feature(span, rejection.feature);
+            }
+        }
     }
 
     /// Record a channel method rewrite to be resolved after inference settles.
@@ -7280,6 +7338,10 @@ impl Checker {
                 if let Some(feature) = self.wasm_native_only_module_feature(name) {
                     self.reject_wasm_feature(span, feature);
                 }
+                // Exact-function policy is separately keyed by canonical
+                // source owner, so supported modules can retain native-only
+                // member exclusions without weakening alias coverage.
+                self.reject_wasm_native_only_module_function(name, method, span);
                 // crypto.random_bytes and its fallible twin depend on a
                 // native-only secure entropy source absent from the wasm32 link
                 // set; reject so secure randomness fails closed on wasm32.
@@ -10143,6 +10205,43 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
 mod tests {
     use super::*;
     use crate::module_registry::ModuleRegistry;
+
+    #[test]
+    fn wasm_file_stream_function_policy_uses_canonical_std_owner_not_spellings() {
+        let span = 0..0;
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.enable_wasm_target();
+        checker
+            .canonical_std_module_sources
+            .insert("std.fs".to_string());
+        checker
+            .module_import_bindings
+            .insert((None, "files".to_string()), "std.fs".to_string());
+        checker.reject_wasm_native_only_module_function("files", "try_read", &span);
+        assert_eq!(checker.errors.len(), 1, "module alias must reject");
+
+        // Use a fresh checker: the production de-duplication key intentionally
+        // suppresses repeated diagnostics at one source span.
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.enable_wasm_target();
+        checker
+            .canonical_std_module_sources
+            .insert("std.fs".to_string());
+        checker.reject_wasm_native_only_function_identity("std.fs.try_read", &span);
+        assert_eq!(checker.errors.len(), 1, "named-import identity must reject");
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.enable_wasm_target();
+        checker
+            .module_import_bindings
+            .insert((None, "lookalike".to_string()), "app.fs".to_string());
+        checker.reject_wasm_native_only_module_function("lookalike", "try_read", &span);
+        checker.reject_wasm_native_only_function_identity("app.fs.try_read", &span);
+        assert!(
+            checker.errors.is_empty(),
+            "a user package with the same leaf must not inherit std.fs policy"
+        );
+    }
 
     #[test]
     fn ask_reply_send_gate_uses_exact_import_owner_and_fails_closed_without_it() {

@@ -35,6 +35,7 @@ pub enum WasmUnsupportedFeature {
     Timers,
     PeriodicTimers,
     Streams,
+    FilesystemStreams,
     HttpClient,
     Smtp,
     WebSocket,
@@ -64,6 +65,7 @@ impl WasmUnsupportedFeature {
         Self::Timers,
         Self::PeriodicTimers,
         Self::Streams,
+        Self::FilesystemStreams,
         Self::HttpClient,
         Self::Smtp,
         Self::WebSocket,
@@ -93,6 +95,7 @@ impl WasmUnsupportedFeature {
             Self::Timers => WasmCapabilityId("timers-sleep"),
             Self::PeriodicTimers => WasmCapabilityId("timers-every"),
             Self::Streams => WasmCapabilityId("streams"),
+            Self::FilesystemStreams => WasmCapabilityId("filesystem-streams"),
             Self::HttpClient => WasmCapabilityId("http-client"),
             Self::Smtp => WasmCapabilityId("smtp"),
             Self::WebSocket => WasmCapabilityId("websocket"),
@@ -123,6 +126,7 @@ impl WasmUnsupportedFeature {
             Self::Timers => WasmFeatureDisposition::Warn,
             Self::PeriodicTimers => WasmFeatureDisposition::Warn,
             Self::Streams => WasmFeatureDisposition::Reject,
+            Self::FilesystemStreams => WasmFeatureDisposition::Reject,
             Self::HttpClient => WasmFeatureDisposition::Reject,
             Self::Smtp => WasmFeatureDisposition::Reject,
             Self::WebSocket => WasmFeatureDisposition::Reject,
@@ -153,6 +157,7 @@ impl WasmUnsupportedFeature {
             Self::Timers => "Timer operations",
             Self::PeriodicTimers => "Timer operations",
             Self::Streams => "Stream operations",
+            Self::FilesystemStreams => "File-backed stream operations",
             Self::HttpClient => "std::net::http::http_client operations",
             Self::Smtp => "std::net::smtp operations",
             Self::WebSocket => "std::net::websocket operations",
@@ -183,6 +188,7 @@ impl WasmUnsupportedFeature {
             Self::Timers => "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue",
             Self::PeriodicTimers => "timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue",
             Self::Streams => "I/O streams require the OS threading and networking stack; the stream runtime module is not compiled for wasm32",
+            Self::FilesystemStreams => "the FileReadStream runtime and stream collector are not compiled for wasm32; reject before code generation rather than leaving unresolved native symbols",
             Self::HttpClient => "the std::net::http::http_client wrappers are still native-only; no wasm32 networking bridge exists yet",
             Self::Smtp => "the std::net::smtp transport is still native-only; no wasm32 SMTP bridge exists yet",
             Self::WebSocket => "the std::net::websocket transport uses native sockets and OS threads; no wasm32 WebSocket bridge exists yet",
@@ -221,6 +227,7 @@ pub mod wasm_capability_ids {
     pub const DNS: WasmCapabilityId = WasmCapabilityId("dns");
     pub const DUPLEX: WasmCapabilityId = WasmCapabilityId("duplex");
     pub const DYN_TRAIT_RETURNS: WasmCapabilityId = WasmCapabilityId("dyn-trait-returns");
+    pub const FILESYSTEM_STREAMS: WasmCapabilityId = WasmCapabilityId("filesystem-streams");
     pub const HTTP_CLIENT: WasmCapabilityId = WasmCapabilityId("http-client");
     pub const HTTP_SERVER: WasmCapabilityId = WasmCapabilityId("http-server");
     pub const LAMBDA_ACTORS: WasmCapabilityId = WasmCapabilityId("lambda-actors");
@@ -261,6 +268,14 @@ pub struct WasmModuleRejection {
     pub feature: WasmUnsupportedFeature,
 }
 
+/// A native-only stdlib function in an otherwise supported module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WasmFunctionRejection {
+    pub module: &'static str,
+    pub function: &'static str,
+    pub feature: WasmUnsupportedFeature,
+}
+
 /// Generated module rejection classification.
 pub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[
     WasmModuleRejection { module: "stream", feature: WasmUnsupportedFeature::Streams },
@@ -276,6 +291,11 @@ pub const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &[WasmModuleRejection] = &[
     WasmModuleRejection { module: "os", feature: WasmUnsupportedFeature::OsEnv },
     WasmModuleRejection { module: "encrypt", feature: WasmUnsupportedFeature::CryptoEncrypt },
     WasmModuleRejection { module: "sign", feature: WasmUnsupportedFeature::CryptoSign },
+];
+
+/// Generated exact-function rejection classification.
+pub const NATIVE_ONLY_WASM_FUNCTION_REJECTIONS: &[WasmFunctionRejection] = &[
+    WasmFunctionRejection { module: "std.fs", function: "try_read", feature: WasmUnsupportedFeature::FilesystemStreams },
 ];
 
 /// Generated native-only module short-names for sandbox and checker consumers.

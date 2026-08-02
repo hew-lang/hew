@@ -472,10 +472,6 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule(
     unsafe { hew_timer_wheel_schedule_handle(tw, delay_ms, cb, data).entry }
 }
 
-#[allow(
-    dead_code,
-    reason = "absolute scheduling is used by the wasm32 cooperative runtime"
-)]
 #[derive(Clone, Copy)]
 enum TimerSchedule {
     After(u64),
@@ -1048,6 +1044,46 @@ mod tests {
     }
 
     // ── insert_entry: level placement ─────────────────────────────────
+
+    #[test]
+    fn past_due_absolute_deadline_fires_once_on_next_tick() {
+        let fire_count = AtomicI32::new(0);
+        let data = (&raw const fire_count).cast::<c_void>().cast_mut();
+        let tw = make_timer_wheel(1_000);
+
+        // SAFETY: `tw` is test-owned and `data` outlives every tick below.
+        unsafe {
+            let handle = timer_wheel_schedule_at_handle(tw, 900, test_cb, data);
+            assert!(!handle.entry.is_null());
+
+            assert_eq!(timer_wheel_tick_to(tw, 1_001), 1);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 1);
+            assert_eq!(timer_wheel_tick_to(tw, 1_002), 0);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 1);
+
+            hew_timer_wheel_free(tw);
+        }
+    }
+
+    #[test]
+    fn zero_delay_fires_on_next_tick_without_l0_wrap() {
+        let fire_count = AtomicI32::new(0);
+        let data = (&raw const fire_count).cast::<c_void>().cast_mut();
+        let tw = make_timer_wheel(1_000);
+
+        // SAFETY: `tw` is test-owned and `data` outlives every tick below.
+        unsafe {
+            let handle = hew_timer_wheel_schedule_handle(tw, 0, test_cb, data);
+            assert!(!handle.entry.is_null());
+
+            assert_eq!(timer_wheel_tick_to(tw, 1_001), 1);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 1);
+            assert_eq!(timer_wheel_tick_to(tw, 1_255), 0);
+            assert_eq!(fire_count.load(Ordering::SeqCst), 1);
+
+            hew_timer_wheel_free(tw);
+        }
+    }
 
     #[test]
     fn insert_zero_delta_lands_in_l0() {

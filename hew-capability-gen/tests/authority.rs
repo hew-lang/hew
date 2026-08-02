@@ -46,6 +46,80 @@ fn checked_outputs_are_current() {
 }
 
 #[test]
+fn structural_coverage_ratchet_is_pinned() {
+    let manifest = parsed();
+    let variants: Vec<_> = manifest
+        .features
+        .iter()
+        .filter_map(|feature| feature.enum_variant.as_deref())
+        .collect();
+
+    assert_eq!(
+        manifest.features.len(),
+        35,
+        "review every feature row change"
+    );
+    assert_eq!(
+        variants,
+        [
+            "SupervisionTrees",
+            "LinkMonitor",
+            "StructuredConcurrency",
+            "Tasks",
+            "BlockingChannelRecv",
+            "BlockingSemaphoreAcquire",
+            "Timers",
+            "PeriodicTimers",
+            "Streams",
+            "FilesystemStreams",
+            "HttpClient",
+            "Smtp",
+            "WebSocket",
+            "HttpServer",
+            "TcpNetworking",
+            "ProcessExecution",
+            "Tls",
+            "Quic",
+            "Dns",
+            "OsEnv",
+            "Distributed",
+            "CryptoRandom",
+            "CryptoEncrypt",
+            "CryptoSign",
+        ],
+        "checker coverage changed; review the complete bidirectional authority"
+    );
+    assert_eq!(
+        manifest.backlog.len(),
+        39,
+        "review every backlog row change"
+    );
+    assert_eq!(
+        manifest
+            .features
+            .iter()
+            .map(|feature| feature.native_only_modules.len())
+            .sum::<usize>(),
+        13,
+        "review every generated native-only module exclusion"
+    );
+    assert_eq!(
+        manifest
+            .features
+            .iter()
+            .map(|feature| feature.native_only_functions.len())
+            .sum::<usize>(),
+        1,
+        "review every generated native-only function exclusion"
+    );
+    assert_eq!(
+        manifest.playground_wasi.len(),
+        7,
+        "review every curated WASI exclusion"
+    );
+}
+
+#[test]
 fn reject_warn_variants_are_bijective_and_exhaustive_in_generated_rust() {
     let manifest = parsed();
     let rust = manifest
@@ -116,6 +190,15 @@ fn authority_mutations_fail_closed() {
     assert!(Manifest::parse(&unknown_field)
         .expect_err("unknown authority field must fail")
         .contains("unknown field"));
+
+    let runtime_mismatch = source.replacen(
+        "checker = \"reject\"\nruntime = \"native-only\"",
+        "checker = \"warn\"\nruntime = \"native-only\"",
+        1,
+    );
+    assert!(Manifest::parse(&runtime_mismatch)
+        .expect_err("warning/native-only mismatch must fail")
+        .contains("must have cooperative runtime disposition"));
 }
 
 #[test]

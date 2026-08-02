@@ -390,10 +390,16 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 | `types/collections`, `types/pattern_matching`, `types/structural_bounds` | `runnable` | No WASM-limited features |
 | `types/wire_types` | `unsupported` | Wire enum codec not yet lowered on WASI (#1822) |
 
-The `WASI_CAPABILITY` table in `scripts/gen-playground-manifest.py` is the
-single source of truth for these per-entry values.  Entries absent from that
-table default to `"runnable"`.  The `--check` mode of that script validates
-that every checked-in manifest entry carries well-formed capability metadata.
+The typed `[[playground_wasi]]` rows in `wasm-capability-manifest.toml` are the
+source of truth for non-runnable per-entry values. `hew-capability-gen` renders
+those rows into `examples/playground/wasm-capabilities.json`; the playground
+manifest generator consumes that checked output and owns no independent WASI
+capability table.
+
+Entries absent from `[[playground_wasi]]` are candidates for `"runnable"`, not
+declarative pass claims. The WASI E2E test compiles and executes every such
+entry and compares its real output. This keeps Pass proof in the executable
+gate rather than allowing a table row to waive it.
 
 The WASI e2e test (`hew-cli/tests/wasi_run_e2e.rs`) reads `capabilities.wasi`
 from the manifest to determine which examples to run vs. which to verify on the

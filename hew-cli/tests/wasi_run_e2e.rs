@@ -37,30 +37,15 @@ fn run_wasi_example(source: &Path) -> Output {
     run_hew_in(repo_root(), &["run", source, "--target", "wasm32-wasi"])
 }
 
-// Exact set of curated playground entries that declare wasi: "unsupported".
-// Update this constant AND scripts/gen-playground-manifest.py :: WASI_CAPABILITY
-// together whenever the unsupported set changes intentionally.  The coverage
-// guard in curated_playground_examples_run_under_wasi relies on this to catch
-// misclassified manifest entries before they silently drop out of the runnable loop.
-const EXPECTED_WASI_UNSUPPORTED: &[&str] = &[
-    "concurrency/actor_pipeline",
-    "concurrency/async_await",
-    "concurrency/counter_actor",
-    "concurrency/supervisor",
-    "language/string_slicing",
-    "machines/traffic_light",
-    "types/method_clone",
-];
-
 #[test]
 fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();
 
     let manifest = load_playground_manifest();
     // Tracks the curated playground manifest's entry count as a deliberate
-    // tripwire: it forces a human to review EXPECTED_WASI_UNSUPPORTED (and the
-    // runnable loop below) whenever a fixture is added, rather than letting a
-    // new entry silently fall into the wrong bucket. A dynamic count derived
+    // tripwire: it forces a human to review the manifest-owned exclusions and
+    // runnable loop whenever a fixture is added, rather than letting a new
+    // entry silently fall into the wrong bucket. A dynamic count derived
     // from the manifest itself would be tautological against `manifest.len()`
     // and lose that review trigger, so the literal is intentional; bump it
     // alongside manifest.json (currently 44, +1 for types/method_clone).
@@ -70,21 +55,9 @@ fn curated_playground_examples_run_under_wasi() {
         "expected the curated 44-snippet manifest"
     );
 
-    let mut actual_unsupported: Vec<&str> = manifest
-        .iter()
-        .filter(|entry| entry.capabilities.wasi == "unsupported")
-        .map(|entry| entry.id.as_str())
-        .collect();
-    actual_unsupported.sort_unstable();
-
-    assert_eq!(
-        actual_unsupported, EXPECTED_WASI_UNSUPPORTED,
-        "wasi 'unsupported' set mismatch: if a new example is intentionally \
-         unsupported update EXPECTED_WASI_UNSUPPORTED in wasi_run_e2e.rs and \
-         WASI_CAPABILITY in scripts/gen-playground-manifest.py together; if \
-         an example was misclassified, fix its manifest capability instead"
-    );
-
+    // The unsupported set is generated from the typed WASM authority. Do not
+    // duplicate it here. Pass remains non-declarative: every entry omitted
+    // from that set is compiled, executed, and compared below.
     let runnable: Vec<_> = manifest
         .iter()
         .filter(|entry| entry.capabilities.wasi == "runnable")

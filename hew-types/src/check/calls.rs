@@ -924,9 +924,9 @@ impl Checker {
         }
         self.require_unsafe(&key, span);
         if !self.user_modules.contains(module_name) {
-            for &(module, feature) in Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
-                if module_name == module {
-                    self.reject_wasm_feature(span, feature);
+            for rejection in crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
+                if module_name == rejection.module {
+                    self.reject_wasm_feature(span, rejection.feature);
                 }
             }
             if module_name == "crypto" && method == "random_bytes" {

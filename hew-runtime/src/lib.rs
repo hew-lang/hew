@@ -107,7 +107,10 @@ pub extern "C" fn hew_arena_instance_id_new() -> i64 {
 
 #[cfg(test)]
 mod arena_instance_id_tests {
-    use super::{claim_arena_instance_id, hew_arena_instance_id_new};
+    use super::claim_arena_instance_id;
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::hew_arena_instance_id_new;
+    #[cfg(not(target_arch = "wasm32"))]
     use std::collections::HashSet;
     use std::sync::atomic::AtomicU64;
 
@@ -126,6 +129,7 @@ mod arena_instance_id_tests {
         assert_eq!(claim_arena_instance_id(&counter), None);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn exported_instance_ids_are_unique_under_concurrency() {
         const THREADS: usize = 8;

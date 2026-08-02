@@ -350,44 +350,6 @@ impl Checker {
         );
     }
 
-    /// Stdlib modules that have no wasm32 runtime support, together with the
-    /// [`WasmUnsupportedFeature`] variant used in the rejection diagnostic.
-    /// Any call expression or value-position reference to a function in one of
-    /// these modules is rejected with a `PlatformLimitation` error when
-    /// targeting wasm32.
-    ///
-    /// `crypto.random_bytes` is handled separately (it is a single function
-    /// within the otherwise-supported `crypto` module) and does NOT appear in
-    /// this table.
-    ///
-    /// Both the call-form guard (`check_method_call`) and the value-position
-    /// guard (`check_field_access`) iterate this slice, so neither path can
-    /// silently miss a module the other rejects.
-    ///
-    /// **The module short-names in this table must exactly match
-    /// [`crate::NATIVE_ONLY_WASM_MODULES`]** (the public API const consumed by
-    /// `hew-sandbox-wasm`'s profile gate).  The test
-    /// `wasm_rejects::native_only_wasm_modules_const_matches_rejection_table`
-    /// enforces parity between the two at test time; update both together when
-    /// the native-only module set changes.
-    pub(super) const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &'static [(
-        &'static str,
-        WasmUnsupportedFeature,
-    )] = &[
-        ("stream", WasmUnsupportedFeature::Streams),
-        ("http", WasmUnsupportedFeature::HttpServer),
-        ("net", WasmUnsupportedFeature::TcpNetworking),
-        ("process", WasmUnsupportedFeature::ProcessExecution),
-        ("tls", WasmUnsupportedFeature::Tls),
-        ("quic", WasmUnsupportedFeature::Quic),
-        ("dns", WasmUnsupportedFeature::Dns),
-        ("os", WasmUnsupportedFeature::OsEnv),
-        ("encrypt", WasmUnsupportedFeature::CryptoEncrypt),
-        ("sign", WasmUnsupportedFeature::CryptoSign),
-        ("http_client", WasmUnsupportedFeature::HttpClient),
-        ("smtp", WasmUnsupportedFeature::Smtp),
-    ];
-
     fn numeric_method_signedness(ty: &Ty) -> Option<NumericSignedness> {
         match ty {
             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Isize => Some(NumericSignedness::Signed),
@@ -7305,12 +7267,12 @@ impl Checker {
                 self.require_unsafe(&key, span);
                 // Native-only stdlib modules are rejected on wasm32 because
                 // their runtime implementations are not compiled there.
-                // NATIVE_ONLY_WASM_MODULE_REJECTIONS is the single source of
-                // truth shared with the value-position guard in expressions.rs.
+                // The manifest-generated module rejection slice is shared with
+                // the value-position guard in expressions.rs.
                 if !self.user_modules.contains(name) {
-                    for &(module, feature) in Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
-                        if name == module {
-                            self.reject_wasm_feature(span, feature);
+                    for rejection in crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
+                        if name == rejection.module {
+                            self.reject_wasm_feature(span, rejection.feature);
                         }
                     }
                     // crypto.random_bytes and its fallible twin depend on a

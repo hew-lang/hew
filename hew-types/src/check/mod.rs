@@ -7,6 +7,7 @@ use crate::resolved_ty::{BoundaryError, ResolvedTy};
 use crate::traits::{MarkerTrait, TraitRegistry};
 use crate::ty::{Ty, TypeVar};
 use crate::unify::unify;
+use crate::{WasmFeatureDisposition, WasmUnsupportedFeature};
 use hew_parser::ast::{
     ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec, ConstDecl,
     Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item,
@@ -53,7 +54,7 @@ use self::types::{
     DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
     ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingDirectCallOwnership,
     PendingLoweringFact, PendingMethodCallOwnership, SourceExternDeclaration,
-    TraitAssociatedTypeInfo, TraitInfo, TypeParamScope, WasmUnsupportedFeature,
+    TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,

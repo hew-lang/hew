@@ -249,10 +249,15 @@ fn task_scope_new_call_blocks_wasm_emission() {
     };
     let result = emit_module(&pipeline, &options);
     match result {
-        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+        Err(CodegenError::WasmUnsupportedSubstrate { symbol, capability }) => {
             assert!(
                 symbol.starts_with("hew_task_scope_"),
                 "WasmUnsupportedSubstrate symbol must be a task_scope symbol; got: {symbol}"
+            );
+            assert_eq!(
+                capability,
+                hew_types::wasm_capability_ids::STRUCTURED_CONCURRENCY,
+                "task-scope rejection must carry manifest identity"
             );
         }
         Ok(_) => panic!(
@@ -282,7 +287,7 @@ fn task_new_call_blocks_wasm_emission() {
     };
     let result = emit_module(&pipeline, &options);
     match result {
-        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+        Err(CodegenError::WasmUnsupportedSubstrate { symbol, .. }) => {
             assert_eq!(symbol, "hew_task_new");
         }
         Ok(_) => panic!(
@@ -314,7 +319,7 @@ fn spawn_task_instruction_blocks_wasm_emission() {
     };
     let result = emit_module(&pipeline, &options);
     match result {
-        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+        Err(CodegenError::WasmUnsupportedSubstrate { symbol, .. }) => {
             assert_eq!(symbol, "hew_task_spawn_thread_with_inherited_context");
         }
         Ok(_) => panic!(
@@ -345,7 +350,7 @@ fn task_await_select_arm_blocks_wasm_emission() {
     };
     let result = emit_module(&pipeline, &options);
     match result {
-        Err(CodegenError::WasmUnsupportedSubstrate { symbol }) => {
+        Err(CodegenError::WasmUnsupportedSubstrate { symbol, .. }) => {
             assert_eq!(symbol, "hew_task_completion_observe");
         }
         Ok(_) => panic!(

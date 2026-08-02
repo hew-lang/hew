@@ -1953,7 +1953,7 @@ impl Checker {
         }
 
         if valid_every_duration {
-            self.warn_wasm_limitation(&attr.span, WasmUnsupportedFeature::Timers);
+            self.warn_wasm_limitation(&attr.span, WasmUnsupportedFeature::PeriodicTimers);
         }
 
         // Periodic handlers must not have parameters (they receive no message payload).

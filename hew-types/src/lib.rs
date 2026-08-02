@@ -34,6 +34,7 @@ pub mod ty;
 pub mod type_descriptor;
 pub mod unify;
 pub mod vec_authority;
+mod wasm_capabilities_generated;
 
 pub use actor_protocol::{
     compute_default_msg_id, qualified_handler_name, ActorHandlerDescriptor, ActorHandlerSpec,
@@ -92,6 +93,10 @@ pub use stdlib_authority::{
 pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;
 pub use vec_authority::VecElementToken;
+pub use wasm_capabilities_generated::{
+    wasm_capability_ids, WasmCapabilityId, WasmFeatureDisposition, WasmModuleRejection,
+    WasmUnsupportedFeature, NATIVE_ONLY_WASM_MODULES, NATIVE_ONLY_WASM_MODULE_REJECTIONS,
+};
 
 /// Canonical identity of one declared definition.
 ///
@@ -199,34 +204,6 @@ pub fn current_module_qualified_type_candidate(
     let owner = current_module?;
     (binding == short_name(owner)).then(|| format!("{owner}.{tail}"))
 }
-
-/// Native-only stdlib module short-names that are rejected on the wasm32 target
-/// and in the browser sandbox.
-///
-/// This is the single authoritative list shared between the type checker's
-/// call-form and value-position wasm32 guards (`check_method_call` in
-/// `methods.rs`, `check_field_access` in `expressions.rs`) and the browser
-/// sandbox profile gate (`hew-sandbox-wasm/src/profile.rs`).  Every guard that
-/// rejects a value-position or call-position reference to these modules on
-/// wasm32 must reference this const rather than maintaining its own copy.
-///
-/// Note: `crypto` is intentionally absent — only the specific symbol
-/// `crypto.random_bytes` is rejected, not the entire `crypto` module.
-pub const NATIVE_ONLY_WASM_MODULES: &[&str] = &[
-    "stream",
-    "http",
-    "net",
-    "process",
-    "tls",
-    "quic",
-    "dns",
-    "os",
-    "encrypt",
-    "sign",
-    "http_client",
-    "smtp",
-];
-
 #[cfg(test)]
 mod tests {
     use super::{current_module_qualified_type_candidate, short_name, DefId, NominalId};

@@ -821,9 +821,8 @@ mod wasm_rejects {
     // ── Native sibling tests: no platform error on non-wasm target ────────
 
     // ── Additional value-position coverage: net, http_client, encrypt (#2135) ─
-    // These tests verify that the NATIVE_ONLY_WASM_MODULE_REJECTIONS table
-    // covers a representative subset of the 12 native-only modules in the
-    // value-position path so a future accidental deletion is caught.
+    // These tests verify that the manifest-generated module rejection slice
+    // covers representative native-only modules in the value-position path.
 
     #[test]
     fn wasm_rejects_net_connect_value_position() {
@@ -1844,37 +1843,33 @@ fn main() {
         );
     }
 
-    // ── Dedup parity: public const ↔ internal rejection table ────────────────
+    // ── Generated module classification projection ─────────────────────────
 
     #[test]
     fn native_only_wasm_modules_const_matches_rejection_table() {
-        // Verify that the public API const `crate::NATIVE_ONLY_WASM_MODULES`
-        // (consumed by hew-sandbox-wasm's profile gate) and the internal
-        // `Checker::NATIVE_ONLY_WASM_MODULE_REJECTIONS` table (consumed by
-        // `check_method_call` and `check_field_access`) enumerate the exact same
-        // set of module short-names.  Drift between the two means:
-        //   - a module added to the public const but missing from the table
-        //     → the compiler silently accepts it on wasm32 (fail-open)
-        //   - a module in the table but not in the public const
-        //     → the sandbox's profile gate silently accepts it (parity gap)
-        //
-        // To intentionally verify the test catches drift: temporarily comment
-        // out one entry from either list and confirm this test fails.
+        // Both projections are generated from native_only_modules in the
+        // typed manifest. This test protects the consumer-facing shape and
+        // proves every module classification points at a Reject feature.
         let mut from_const: Vec<&str> = crate::NATIVE_ONLY_WASM_MODULES.to_vec();
         from_const.sort_unstable();
 
-        let mut from_table: Vec<&str> = Checker::NATIVE_ONLY_WASM_MODULE_REJECTIONS
+        let mut from_table: Vec<&str> = crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS
             .iter()
-            .map(|(name, _)| *name)
+            .map(|rejection| {
+                assert_eq!(
+                    rejection.feature.disposition(),
+                    crate::WasmFeatureDisposition::Reject,
+                    "native-only module {} must map to a reject feature",
+                    rejection.module
+                );
+                rejection.module
+            })
             .collect();
         from_table.sort_unstable();
 
         assert_eq!(
             from_const, from_table,
-            "NATIVE_ONLY_WASM_MODULES (public API const) and \
-             Checker::NATIVE_ONLY_WASM_MODULE_REJECTIONS (internal table) must \
-             list the same module short-names; add or remove the entry from BOTH \
-             when the native-only module set changes"
+            "generated module-name and typed-rejection projections must agree"
         );
     }
 }

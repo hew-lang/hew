@@ -63,9 +63,11 @@ make playground-check           # manifest freshness + curated analyze smoke + b
 make playground-wasi-check      # focused manifest-driven WASI runtime preflight
 ```
 
-`examples/playground/manifest.json` is the curated source of truth for the
-downstream browser catalog. Use `make playground-manifest-check` when you only
-need to confirm that manifest is current, `make playground-check` when you also
+`wasm-capability-manifest.toml` owns non-runnable WASI decisions and generates
+the capability input used to build `examples/playground/manifest.json`; the
+latter remains the curated downstream browser catalog. Use
+`make playground-manifest-check` when you only need to confirm both generated
+capability surfaces and the catalog are current, `make playground-check` when you also
 want the curated `analyze()` smoke over every manifest entry plus the repo-local
 `hew-wasm` build that backs browser-side analysis, or
 `make playground-wasi-check` in codegen-capable environments when you want the

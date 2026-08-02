@@ -316,6 +316,13 @@ impl Builder {
     ///     set (the same set the W3.029 value-class allow-list and the codegen
     ///     descriptor derive from — `dedup-semantic-boundary`).
     pub(super) fn is_owned_vec_element(&self, elem_ty: &ResolvedTy) -> bool {
+        if self
+            .lifecycle_registry
+            .opaque_resource_for_ty(elem_ty)
+            .is_some()
+        {
+            return true;
+        }
         match elem_ty {
             // A tuple element is owned when any field transitively owns heap.
             // Use `named_elem_owns_heap` (which consults
@@ -1070,7 +1077,7 @@ impl Builder {
                 field_names: fields.iter().map(|(field, _)| field.clone()).collect(),
             })
             .collect();
-        let plan = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        let plan = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             &concrete,
             &record_layouts,
             &self.enum_layouts,

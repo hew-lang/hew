@@ -349,7 +349,7 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
         })
         .collect();
     let mut visited = HashSet::new();
-    let kind = hew_mir::classify_state_field_with_resource_handles(
+    let kind = hew_mir::classify_state_field_with_lifecycle_registry(
         reply_ty,
         &record_layouts,
         fn_ctx.enum_layouts,
@@ -2696,7 +2696,7 @@ pub(crate) fn emit_actor_message_drop_fn<'ctx>(
             )?);
             let mut visited = HashSet::new();
             field_kinds.push(
-                hew_mir::classify_state_field_with_resource_handles(
+                hew_mir::classify_state_field_with_lifecycle_registry(
                     param_ty,
                     mir_record_layouts,
                     enum_layouts,

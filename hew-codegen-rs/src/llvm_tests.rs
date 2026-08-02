@@ -3729,7 +3729,7 @@ fn generator_env_clone_emits_ordered_clones_rollback_and_payload_drop() {
     let fields = field_tys
         .iter()
         .map(|ty| {
-            hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+            hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                 ty,
                 &record_layouts,
                 &[],
@@ -3830,7 +3830,7 @@ fn generator_env_move_skips_clone_but_keeps_drop_and_rollback() {
         .build_alloca(ctx.i8_type().array_type(64), "companion")
         .expect("companion storage");
     let record_layouts = codegen_record_layouts(&fn_ctx);
-    let string_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+    let string_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
         &ResolvedTy::String,
         &record_layouts,
         &[],
@@ -3927,7 +3927,7 @@ fn generator_env_pointer_backed_indirect_enum_clone_fails_closed() {
         .build_memcpy(dst, 1, src, 1, env_struct.size_of().expect("env size"))
         .expect("shallow seed memcpy");
     let record_layouts = codegen_record_layouts(&fn_ctx);
-    let tree_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+    let tree_plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
         &ResolvedTy::named_user("Node", vec![]),
         &record_layouts,
         std::slice::from_ref(&enum_layout),
@@ -5673,7 +5673,7 @@ fn failed_actor_sender_transfer_closes_the_prepared_owner() {
         .expect("Sender carrier slot");
     fn_ctx.locals.insert(0, (slot, ptr_ty.into()));
     fn_ctx.local_tys.insert(0, sender_ty.clone());
-    let plan = hew_mir::state_clone::classify_value_snapshot_plan_with_resource_handles(
+    let plan = hew_mir::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
         &sender_ty,
         &[],
         &[],
@@ -6844,6 +6844,67 @@ fn owned_vec_element_walker_treats_tokens_and_generators_as_heap_owning() {
     assert!(
         !resolved_ty_element_owns_heap_for_owned_vec(&fn_ctx, &plain_tuple),
         "an all-BitCopy tuple must not be classified heap-owning"
+    );
+}
+
+#[test]
+fn owned_vec_resource_descriptor_is_drop_only_and_uses_exact_close() {
+    let ctx = Context::create();
+    let llvm_mod = ctx.create_module("resource_vec_descriptor");
+    let mut harness = build_harness(&ctx, &[], &[]);
+    let resource_ty = ResolvedTy::named_opaque("std.net.Connection", vec![]);
+    let lifecycle = hew_hir::OpaqueResourceLifecycle {
+        resource_declaration: hew_types::DefId::new("std.net.Connection"),
+        close_declaration: hew_types::DefId::new("std.net.Connection::close"),
+        release_declaration: hew_types::DefId::new("std.net.hew_tcp_close"),
+        close_symbol: "std__net__Connection::close".to_string(),
+        release_symbol: "hew_tcp_close".to_string(),
+        discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+        producer_declarations: std::collections::BTreeSet::new(),
+        producer_symbols: std::collections::BTreeSet::new(),
+        producer_modules: std::collections::BTreeSet::new(),
+    };
+    harness
+        .lifecycle_registry
+        .admit_opaque_resource(lifecycle.clone())
+        .unwrap();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &lifecycle.close_symbol,
+        ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        None,
+    );
+    let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "resource_vec_probe");
+
+    assert!(resolved_ty_element_owns_heap_for_owned_vec(
+        &fn_ctx,
+        &resource_ty
+    ));
+    crate::layout::owned_elem_layout_descriptor_ptr(
+        &ctx,
+        &llvm_mod,
+        fn_ctx.target_data,
+        fn_ctx.owned_elem_registries(),
+        &resource_ty,
+        ptr_ty.into(),
+        "resource_vec",
+    )
+    .expect("exact resource lifecycle must produce a drop-only Vec descriptor");
+
+    let ir = llvm_mod.print_to_string().to_string();
+    assert!(
+        ir.contains("__hew_vec_elem_layout_resource_std$net$Connection_drop_only")
+            && ir.contains("ptr null"),
+        "resource Vec descriptor must carry no clone callback:\n{ir}"
+    );
+    let drop_start = ir
+        .find("define internal void @\"__hew_vec_resource_std$net$Connection_drop_inplace\"")
+        .expect("resource Vec drop wrapper");
+    let drop_body = &ir[drop_start..];
+    assert!(
+        drop_body.contains("call void @\"std__net__Connection::close\"")
+            && drop_body.contains("store ptr null"),
+        "resource Vec drop wrapper must call the exact close once and neutralise its slot:\n{drop_body}"
     );
 }
 

@@ -1137,7 +1137,7 @@ struct Builder {
     /// RAII-1 opaque-resource close registry — `(opaque_type, "<Type>::<close>")`
     /// for every single-slot `#[resource] #[opaque]` handle (see
     /// `resource_opaque_close_registry`). Threaded into
-    /// `classify_actor_state_fields_with_resource_handles` at the owned-aggregate
+    /// `classify_actor_state_fields_with_lifecycle_registry` at the owned-aggregate
     /// admission gate so a resource-bearing record field classifies as
     /// `StateFieldCloneKind::Resource` (RAII drop spine) instead of the
     /// no-op-drop `OpaqueHandle` (the W3.029 leak). Built from
@@ -2385,13 +2385,14 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
         let closure_field = actor.state_fields.iter().enumerate().find(|(_, field)| {
             crate::model::ty_contains_closure_value(&field.ty, &record_layouts, &enum_layouts)
         });
-        let classification = crate::state_clone::classify_actor_state_fields_with_resource_handles(
-            &state_field_tys,
-            &record_layouts,
-            &classification_enum_layouts,
-            &opaque_handle_names,
-            &lifecycle_registry,
-        );
+        let classification =
+            crate::state_clone::classify_actor_state_fields_with_lifecycle_registry(
+                &state_field_tys,
+                &record_layouts,
+                &classification_enum_layouts,
+                &opaque_handle_names,
+                &lifecycle_registry,
+            );
         let (clone_sym, drop_sym, clone_kinds) = if let Some((field_index, field)) = closure_field {
             let reason = format!(
                 "field `{}` holds (or transitively contains) a function value; \
@@ -2442,7 +2443,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     let mut found = false;
                     for (idx, field) in actor.state_fields.iter().enumerate() {
                         let mut v = std::collections::HashSet::new();
-                        if crate::state_clone::classify_state_field_with_resource_handles(
+                        if crate::state_clone::classify_state_field_with_lifecycle_registry(
                             &field.ty,
                             &record_layouts,
                             &classification_enum_layouts,
@@ -4169,28 +4170,29 @@ fn prepare_owned_call_carriers(
         }
 
         for arg in &site.args {
-            let plan = match crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
-                &arg.ty,
-                &record_layouts,
-                &builder.enum_layouts,
-                &builder.opaque_handle_names,
-                &builder.lifecycle_registry,
-            ) {
-                Ok(plan) => plan,
-                Err(error) => {
-                    builder.diagnostics.push(MirDiagnostic {
-                        kind: MirDiagnosticKind::NotYetImplemented {
-                            construct: format!(
-                                "owned call-carrier plan for `{}`",
-                                arg.ty.user_facing()
-                            ),
-                            site: arg.site,
-                        },
-                        note: error.to_string(),
-                    });
-                    continue;
-                }
-            };
+            let plan =
+                match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
+                    &arg.ty,
+                    &record_layouts,
+                    &builder.enum_layouts,
+                    &builder.opaque_handle_names,
+                    &builder.lifecycle_registry,
+                ) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        builder.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: format!(
+                                    "owned call-carrier plan for `{}`",
+                                    arg.ty.user_facing()
+                                ),
+                                site: arg.site,
+                            },
+                            note: error.to_string(),
+                        });
+                        continue;
+                    }
+                };
             // Caller half of the admission predicate: the callee half never
             // registers these roots (`register_owned_call_carrier_param`),
             // so preparing a transfer or clone here would strand an owner.
@@ -4563,7 +4565,7 @@ fn resolve_outbound_actor_modes(
                     return SendAliasMode::TransferLastUse;
                 }
 
-                match crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                match crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                     &arg.ty,
                     &record_layouts,
                     &builder.enum_layouts,
@@ -4859,7 +4861,7 @@ fn prepare_outbound_actor_payloads(
                             authority: crate::model::NeutralizeAuthority::SendTransferLastUse,
                         });
                         if let Ok(plan) =
-                            crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                            crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                                 &arg.ty,
                                 &record_layouts,
                                 &builder.enum_layouts,
@@ -4881,7 +4883,7 @@ fn prepare_outbound_actor_payloads(
                     }
                     SendAliasMode::SnapshotRetain | SendAliasMode::SnapshotMaterialize => {
                         let Ok(plan) =
-                            crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                            crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                                 &arg.ty,
                                 &record_layouts,
                                 &builder.enum_layouts,
@@ -4972,7 +4974,7 @@ fn prepare_outbound_actor_payloads(
             let cleanup_plan = base_local(prepared_payload)
                 .and_then(|local| builder.locals.get(local as usize))
                 .and_then(|ty| {
-                    crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+                    crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
                         ty,
                         &record_layouts,
                         &builder.enum_layouts,

@@ -2135,7 +2135,7 @@ impl Builder {
     /// Returns `Some(kinds)` iff the record named by `key`:
     ///   1. has a registered layout (`record_field_orders`),
     ///   2. classifies cleanly under the SAME resource-aware field classifier
-    ///      actor state uses (`classify_actor_state_fields_with_resource_handles`),
+    ///      actor state uses (`classify_actor_state_fields_with_lifecycle_registry`),
     ///      AND
     ///   3. every field's kind is admissible to the in-place record value-class
     ///      (`StateFieldCloneKind::supports_value_class_drop_spine`) — so codegen
@@ -2195,7 +2195,7 @@ impl Builder {
             .map(|(_, ty)| self.normalize_machine_field_ty(ty))
             .collect();
         let record_layouts = self.record_layouts_for_classification();
-        let kinds = crate::state_clone::classify_actor_state_fields_with_resource_handles(
+        let kinds = crate::state_clone::classify_actor_state_fields_with_lifecycle_registry(
             &field_tys,
             &record_layouts,
             &self.enum_layouts,

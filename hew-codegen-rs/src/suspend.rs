@@ -7244,7 +7244,7 @@ pub(crate) fn emit_supervisor_bootstrap_body<'ctx>(
                 .is_some_and(|r| {
                     r.field_tys.iter().any(|ty| {
                         let mut visited = std::collections::HashSet::new();
-                        hew_mir::classify_state_field_with_resource_handles(
+                        hew_mir::classify_state_field_with_lifecycle_registry(
                             ty,
                             mir_record_layouts,
                             mir_enum_layouts,

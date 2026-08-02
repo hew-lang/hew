@@ -31,7 +31,7 @@ impl Builder {
             return captures.is_empty();
         }
         let record_layouts = self.record_layouts_for_classification();
-        crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             ty,
             &record_layouts,
             &self.enum_layouts,
@@ -56,7 +56,7 @@ impl Builder {
             return Some(GeneratorEnvFieldPlan::TrivialCopy);
         }
         let record_layouts = self.record_layouts_for_classification();
-        let plan = crate::state_clone::classify_value_snapshot_plan_with_resource_handles(
+        let plan = crate::state_clone::classify_value_snapshot_plan_with_lifecycle_registry(
             ty,
             &record_layouts,
             &self.enum_layouts,

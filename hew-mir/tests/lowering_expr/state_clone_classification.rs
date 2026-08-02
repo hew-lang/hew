@@ -34,7 +34,7 @@ fn classify_for_test(
     records: &[RecordLayout],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
-    hew_mir::classify_state_field_with_resource_handles(
+    hew_mir::classify_state_field_with_lifecycle_registry(
         ty,
         records,
         &[],
@@ -50,7 +50,7 @@ fn classify_for_test_with_enums(
     enums: &[hew_mir::EnumLayout],
     visited: &mut HashSet<String>,
 ) -> Result<StateFieldCloneKind, ClassificationError> {
-    hew_mir::classify_state_field_with_resource_handles(
+    hew_mir::classify_state_field_with_lifecycle_registry(
         ty,
         records,
         enums,
@@ -64,7 +64,7 @@ fn classify_actor_for_test(
     tys: &[ResolvedTy],
     records: &[RecordLayout],
 ) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
-    hew_mir::classify_actor_state_fields_with_resource_handles(
+    hew_mir::classify_actor_state_fields_with_lifecycle_registry(
         tys,
         records,
         &[],

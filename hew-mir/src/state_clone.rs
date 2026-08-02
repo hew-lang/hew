@@ -756,14 +756,15 @@ impl StateFieldCloneKind {
             // no closure pair (the managed clone would shallow-copy the pair
             // and alias its sole-owner environment; closure-pair Vecs ride the
             // release-only descriptor, not a cloneable state witness), no
-            // `#[resource]` handle (RAII-1 wires the exactly-once
-            // close only for direct/nested-record fields, not for a managed
-            // collection element / tuple member whose tag-aware clone would
-            // alias the handle), and the element/key/value kind is itself
-            // supported.
-            StateFieldCloneKind::Vec { elem }
-            | StateFieldCloneKind::HashSet { elem }
-            | StateFieldCloneKind::Array { elem, .. } => {
+            // `#[resource]` values are drop-capable inside these shapes; their
+            // clone path is independently refused, while Vec uses a drop-only
+            // element descriptor carrying the exact close callback.
+            StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::Array { elem, .. } => {
+                !self.contains_opaque_handle()
+                    && !self.contains_closure_pair()
+                    && elem.supports_value_class_drop_spine()
+            }
+            StateFieldCloneKind::HashSet { elem } => {
                 !self.contains_opaque_handle()
                     && !self.contains_closure_pair()
                     && !self.contains_resource()
@@ -772,7 +773,6 @@ impl StateFieldCloneKind {
             StateFieldCloneKind::Tuple { elems } => {
                 !self.contains_opaque_handle()
                     && !self.contains_closure_pair()
-                    && !self.contains_resource()
                     && elems
                         .iter()
                         .all(StateFieldCloneKind::supports_value_class_drop_spine)
@@ -1005,7 +1005,7 @@ pub fn classify_actor_state_fields_with_opaque_handles(
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
 ) -> Result<Vec<StateFieldCloneKind>, ClassificationError> {
-    classify_actor_state_fields_with_resource_handles(
+    classify_actor_state_fields_with_lifecycle_registry(
         state_field_tys,
         record_layouts,
         enum_layouts,
@@ -1028,7 +1028,7 @@ pub fn classify_actor_state_fields_with_opaque_handles(
 /// # Errors
 ///
 /// Same conditions as [`classify_actor_state_fields_with_opaque_handles`].
-pub fn classify_actor_state_fields_with_resource_handles(
+pub fn classify_actor_state_fields_with_lifecycle_registry(
     state_field_tys: &[ResolvedTy],
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
@@ -1038,7 +1038,7 @@ pub fn classify_actor_state_fields_with_resource_handles(
     state_field_tys
         .iter()
         .map(|ty| {
-            classify_value_snapshot_plan_with_resource_handles(
+            classify_value_snapshot_plan_with_lifecycle_registry(
                 ty,
                 record_layouts,
                 enum_layouts,
@@ -1061,7 +1061,7 @@ pub fn classify_actor_state_fields_with_resource_handles(
 ///
 /// Returns [`ClassificationError`] for every unsupported or recursively
 /// unclassifiable shape accepted by the underlying closed classifier.
-pub fn classify_value_snapshot_plan_with_resource_handles(
+pub fn classify_value_snapshot_plan_with_lifecycle_registry(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
@@ -1109,7 +1109,7 @@ pub fn inline_enum_overwrite_drop_is_ready(
     resource_close: &hew_hir::LifecycleRegistry,
     resource_record_names: &[String],
 ) -> Result<bool, ClassificationError> {
-    let plan = classify_value_snapshot_plan_with_resource_handles(
+    let plan = classify_value_snapshot_plan_with_lifecycle_registry(
         ty,
         record_layouts,
         enum_layouts,
@@ -1161,7 +1161,7 @@ pub fn record_with_inline_enum_drop_is_ready(
     resource_close: &hew_hir::LifecycleRegistry,
     resource_record_names: &[String],
 ) -> Result<bool, ClassificationError> {
-    let plan = classify_value_snapshot_plan_with_resource_handles(
+    let plan = classify_value_snapshot_plan_with_lifecycle_registry(
         ty,
         record_layouts,
         enum_layouts,
@@ -1309,7 +1309,7 @@ pub fn classify_owned_string_record_fields(
     enum_layouts: &[EnumLayout],
     lifecycle_registry: &hew_hir::LifecycleRegistry,
 ) -> Result<Option<Vec<StateFieldCloneKind>>, ClassificationError> {
-    let kinds = classify_actor_state_fields_with_resource_handles(
+    let kinds = classify_actor_state_fields_with_lifecycle_registry(
         field_tys,
         record_layouts,
         enum_layouts,
@@ -1436,7 +1436,7 @@ pub fn classify_state_field_full(
     clippy::implicit_hasher,
     reason = "the substrate is internally-consumed; callers don't pick the hasher"
 )]
-pub fn classify_state_field_with_resource_handles(
+pub fn classify_state_field_with_lifecycle_registry(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
@@ -1539,10 +1539,7 @@ fn classify_state_field_full_impl(
                 resource_close,
                 visited,
             )?;
-            if elem_kind.contains_opaque_handle()
-                || elem_kind.contains_closure_pair()
-                || elem_kind.contains_resource()
-            {
+            if elem_kind.contains_opaque_handle() || elem_kind.contains_closure_pair() {
                 return Err(ClassificationError::Unsupported {
                     rendered: format!("{ty:?}"),
                 });
@@ -1690,7 +1687,15 @@ fn reject_unclonable_opaque_container(
     elem: &ResolvedTy,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
+    resource_close: &hew_hir::LifecycleRegistry,
 ) -> Result<(), ClassificationError> {
+    // Vec has a clone-null/drop-present element descriptor for exact opaque
+    // resources. HashMap/HashSet do not; keep those containers rejected at the
+    // classifier boundary until their runtime layouts can carry the same
+    // lifecycle callback.
+    if outer == "Vec" && resource_close.opaque_resource_for_ty(elem).is_some() {
+        return Ok(());
+    }
     if crate::model::ty_contains_unclonable_opaque(elem, record_layouts, enum_layouts) {
         return Err(ClassificationError::OpaqueInContainer {
             outer: outer.to_string(),
@@ -1955,7 +1960,13 @@ fn classify_named(
             // shallow-copying the opaque pointer (double-free / UAF on restart).
             // The single transitive authority covers Vec<json.Value>,
             // Vec<Option<json.Value>>, Vec<RecordWithOpaqueField>, etc.
-            reject_unclonable_opaque_container("Vec", elem, record_layouts, enum_layouts)?;
+            reject_unclonable_opaque_container(
+                "Vec",
+                elem,
+                record_layouts,
+                enum_layouts,
+                resource_close,
+            )?;
             let elem_kind = classify_container_element(
                 elem,
                 record_layouts,
@@ -1980,8 +1991,20 @@ fn classify_named(
                     rendered: format!("Named {{ name: \"HashMap\", args: {args:?} }}"),
                 })?;
             // Fail closed on either an opaque key or an opaque value.
-            reject_unclonable_opaque_container("HashMap", key, record_layouts, enum_layouts)?;
-            reject_unclonable_opaque_container("HashMap", val, record_layouts, enum_layouts)?;
+            reject_unclonable_opaque_container(
+                "HashMap",
+                key,
+                record_layouts,
+                enum_layouts,
+                resource_close,
+            )?;
+            reject_unclonable_opaque_container(
+                "HashMap",
+                val,
+                record_layouts,
+                enum_layouts,
+                resource_close,
+            )?;
             // The key position is not a self-recursion boundary (a hashable key
             // does not recurse through the map); classify it directly. The value
             // position IS a container-indirected boundary, so it takes the
@@ -2013,7 +2036,13 @@ fn classify_named(
                 .ok_or_else(|| ClassificationError::Unsupported {
                     rendered: format!("Named {{ name: \"HashSet\", args: {args:?} }}"),
                 })?;
-            reject_unclonable_opaque_container("HashSet", elem, record_layouts, enum_layouts)?;
+            reject_unclonable_opaque_container(
+                "HashSet",
+                elem,
+                record_layouts,
+                enum_layouts,
+                resource_close,
+            )?;
             let elem_kind = classify_container_element(
                 elem,
                 record_layouts,
@@ -2457,7 +2486,7 @@ mod tests {
         let rc = builtin(hew_types::BuiltinType::Rc, vec![payload.clone()]);
         let weak = builtin(hew_types::BuiltinType::Weak, vec![payload]);
 
-        let rc_plan = classify_value_snapshot_plan_with_resource_handles(
+        let rc_plan = classify_value_snapshot_plan_with_lifecycle_registry(
             &rc,
             &no_records(),
             &[],
@@ -2465,7 +2494,7 @@ mod tests {
             &registry(&[]),
         )
         .unwrap();
-        let weak_plan = classify_value_snapshot_plan_with_resource_handles(
+        let weak_plan = classify_value_snapshot_plan_with_lifecycle_registry(
             &weak,
             &no_records(),
             &[],
@@ -2710,7 +2739,7 @@ mod tests {
             is_opaque: true,
         };
         assert_eq!(
-            classify_state_field_with_resource_handles(
+            classify_state_field_with_lifecycle_registry(
                 &ty,
                 &no_records(),
                 &[],
@@ -2741,7 +2770,7 @@ mod tests {
             ("foo.Connection", "foo.Connection::close"),
         ]);
         assert_eq!(
-            classify_state_field_with_resource_handles(
+            classify_state_field_with_lifecycle_registry(
                 &ty,
                 &no_records(),
                 &[],
@@ -2772,7 +2801,7 @@ mod tests {
         };
         let registry = registry(&[("Pattern", "Pattern::free")]);
         assert_eq!(
-            classify_state_field_with_resource_handles(
+            classify_state_field_with_lifecycle_registry(
                 &ty,
                 &no_records(),
                 &[],
@@ -2803,7 +2832,7 @@ mod tests {
             is_opaque: true,
         };
         assert_eq!(
-            classify_state_field_with_resource_handles(
+            classify_state_field_with_lifecycle_registry(
                 &ty,
                 &no_records(),
                 &[],
@@ -2829,7 +2858,7 @@ mod tests {
         };
         let registry = registry(&[("Pattern", "Pattern::free")]);
         assert_eq!(
-            classify_state_field_with_resource_handles(
+            classify_state_field_with_lifecycle_registry(
                 &ty,
                 &no_records(),
                 &[],
@@ -2857,20 +2886,19 @@ mod tests {
         // It is neither an opaque handle nor a closure pair.
         assert!(!res.contains_opaque_handle());
         assert!(!res.contains_closure_pair());
-        // A resource carried DIRECTLY in a container is fail-closed (the managed
-        // /tag-aware clone would alias the handle → double-close): the container
-        // does not support the drop spine, so a record holding it stays at the
-        // W3.029 reject.
+        // A resource carried directly in a container remains drop-capable. Its
+        // clone path refuses independently, while the drop spine retains the
+        // exact lifecycle close.
         let vec_of_res = StateFieldCloneKind::Vec {
             elem: Box::new(res.clone()),
         };
         assert!(vec_of_res.contains_resource());
-        assert!(!vec_of_res.supports_value_class_drop_spine());
+        assert!(vec_of_res.supports_value_class_drop_spine());
         let tuple_of_res = StateFieldCloneKind::Tuple {
             elems: vec![StateFieldCloneKind::BitCopy { size_bytes: 8 }, res],
         };
         assert!(tuple_of_res.contains_resource());
-        assert!(!tuple_of_res.supports_value_class_drop_spine());
+        assert!(tuple_of_res.supports_value_class_drop_spine());
     }
 
     #[test]
@@ -2890,7 +2918,7 @@ mod tests {
                 is_opaque: true,
             }],
         );
-        let kind = classify_state_field_with_resource_handles(
+        let kind = classify_state_field_with_lifecycle_registry(
             &ty,
             &no_records(),
             &[],
@@ -2915,7 +2943,51 @@ mod tests {
             },
         );
         assert!(kind.contains_resource());
-        assert!(!kind.supports_value_class_drop_spine());
+        assert!(kind.supports_value_class_drop_spine());
+    }
+
+    #[test]
+    fn hash_containers_of_exact_resources_fail_before_codegen() {
+        let resource = ResolvedTy::Named {
+            name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: true,
+        };
+        let lifecycle = registry(&[(
+            hew_types::stdlib::STD_NET_CONNECTION,
+            "std.net.Connection::close",
+        )]);
+        for (outer, ty) in [
+            (
+                "HashMap",
+                builtin(
+                    hew_types::BuiltinType::HashMap,
+                    vec![ResolvedTy::I64, resource.clone()],
+                ),
+            ),
+            (
+                "HashSet",
+                builtin(hew_types::BuiltinType::HashSet, vec![resource.clone()]),
+            ),
+        ] {
+            let error = classify_state_field_with_lifecycle_registry(
+                &ty,
+                &no_records(),
+                &[],
+                &[hew_types::stdlib::STD_NET_CONNECTION.to_string()],
+                &lifecycle,
+                &mut HashSet::new(),
+            )
+            .expect_err("hash containers have no resource drop-only descriptor");
+            assert_eq!(
+                error,
+                ClassificationError::OpaqueInContainer {
+                    outer: outer.to_string(),
+                    opaque: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
+                }
+            );
+        }
     }
 
     #[test]

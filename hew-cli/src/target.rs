@@ -241,7 +241,7 @@ impl TargetSpec {
                 needs_dsymutil: false,
                 // A `-g` Windows link must request the PDB explicitly so lld-link
                 // writes the CodeView records to a `.pdb` next to the `.exe`.
-                needs_pdb_debug: true,
+                needs_pdb_debug: self.env.as_deref() == Some("msvc"),
             },
             TargetOs::Wasi | TargetOs::WasmFreestanding => NativeLinkPlan {
                 gc_flags: &[],
@@ -996,6 +996,10 @@ mod tests {
         assert!(plan.needs_windows_crt_fixup, "Windows needs DLL CRT fixup");
         assert!(!plan.needs_darwin_sdk);
         assert!(!plan.needs_dsymutil);
+        assert!(
+            !plan.needs_pdb_debug,
+            "windows-gnu does not emit CodeView PDBs"
+        );
     }
 
     #[test]

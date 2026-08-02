@@ -760,11 +760,15 @@ pub(super) fn register_builtin_record_layouts(
             continue;
         };
         if let Some(existing_fields) = record_field_orders.get(registration.name) {
-            debug_assert!(
-                builtin_registration_fields_match(existing_fields, fields),
-                "builtin record registration for `{}` disagrees with existing record layout",
-                registration.name
-            );
+            // A source declaration in the root namespace can deliberately
+            // shadow a builtin leaf (`type MonitorRef {}` is a valid user
+            // resource).  `record_field_orders` is keyed by the concrete HIR
+            // nominal identity, so that existing layout is already the only
+            // layout reachable through this bare spelling.  Do not turn the
+            // unrelated compiler registration into an assertion or replace the
+            // source layout: builtin identity travels on `ResolvedTy::builtin`,
+            // never on this leaf key.
+            let _same_shape = builtin_registration_fields_match(existing_fields, fields);
             continue;
         }
 
@@ -1557,6 +1561,18 @@ mod builtin_carrier_tests {
             .find(|layout| layout.name == "std.builtins.LinkError")
             .expect("canonical builtin layout must coexist");
         assert_ne!(builtin.variants.len(), user.variants.len());
+    }
+
+    #[test]
+    fn user_monitor_ref_layout_shadows_bare_builtin_registration() {
+        let mut layouts = Vec::new();
+        let mut fields: HashMap<String, Vec<(String, ResolvedTy)>> =
+            HashMap::from([("MonitorRef".to_string(), Vec::new())]);
+
+        register_builtin_record_layouts(&mut layouts, &mut fields);
+
+        assert_eq!(fields.get("MonitorRef"), Some(&Vec::new()));
+        assert!(layouts.iter().all(|layout| layout.name != "MonitorRef"));
     }
 
     #[test]

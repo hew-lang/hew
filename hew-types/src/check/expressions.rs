@@ -161,6 +161,28 @@ impl Checker {
         if resolved.is_instant() {
             return;
         }
+        // These compiler carriers have a closed Display ABI selected by their
+        // builtin discriminator in HIR/codegen (`hew_*_display`), with the
+        // shipped `std.builtins` impl supplying the source-level contract.
+        // The carrier representation deliberately stays canonical rather than
+        // inheriting a `std.builtins.*` nominal name, so a generic nominal-impl
+        // lookup alone cannot prove the implementation.  This is the same
+        // typed identity boundary used by f-string lowering, not a leaf-name
+        // exception; a user `NodeId` remains `builtin: None` and reaches the
+        // ordinary trait lookup below.
+        if matches!(
+            resolved,
+            Ty::Named {
+                builtin: Some(
+                    crate::BuiltinType::NodeId
+                        | crate::BuiltinType::Location
+                        | crate::BuiltinType::RemotePid
+                ),
+                ..
+            }
+        ) {
+            return;
+        }
         // Resolve the Display trait name through the lang-item registry.
         // No `#[lang_item("display")]` in scope means the program defines no
         // Display trait at all — in which case f-string interpolation can

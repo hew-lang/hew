@@ -4768,6 +4768,7 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.type_classes,
         &mut ctx.diagnostics,
     );
+    admit_declared_opaque_resource_lifecycles(&items, &mut ctx.type_classes, &mut ctx.diagnostics);
     admit_resource_record_lifecycles(&items, &mut ctx.type_classes, &mut ctx.diagnostics);
 
     let mut module = HirModule {
@@ -5079,6 +5080,141 @@ fn admit_opaque_resource_lifecycles(
                 decl.span.clone(),
                 "the canonical close does not match the checker-admitted consuming release",
             )),
+        }
+    }
+}
+
+/// Admit the ordinary authored `#[resource] #[opaque]` form when it has no
+/// checker-discovered producer/release pair.  The candidate graph deliberately
+/// covers wrappers around a known external producer; it must not be mistaken
+/// for the authority on whether a source-owned resource has an automatic
+/// close.  A direct actor-state field can be constructed by arbitrary FFI or
+/// passed in from its owner and still needs its exact inherent `close` body at
+/// teardown.
+///
+/// This is declaration-keyed throughout.  In particular, a user `MonitorRef`
+/// or `Receiver` can never inherit the standard-library lifecycle merely from
+/// its leaf spelling.
+#[expect(
+    clippy::too_many_lines,
+    reason = "validates one source-owned opaque lifecycle end-to-end: declaration, exact impl method, emitted body, and registry admission"
+)]
+fn admit_declared_opaque_resource_lifecycles(
+    items: &[HirItem],
+    type_classes: &mut crate::value_class::TypeClassTable,
+    diagnostics: &mut Vec<HirDiagnostic>,
+) {
+    for decl in items.iter().filter_map(|item| match item {
+        HirItem::TypeDecl(decl)
+            if decl.is_opaque
+                && decl.marker == ResourceMarker::Resource
+                && decl.variants.is_empty() =>
+        {
+            Some(decl)
+        }
+        _ => None,
+    }) {
+        if type_classes
+            .lifecycle_registry()
+            .opaque_resource(&decl.declaration)
+            .is_some()
+        {
+            continue;
+        }
+        let exact_owner = decl.declaration.full_path();
+        let close_methods: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Impl(impl_block)
+                    if impl_block.trait_name.is_none()
+                        && impl_block.self_type_name == exact_owner =>
+                {
+                    Some(impl_block)
+                }
+                _ => None,
+            })
+            .flat_map(|impl_block| {
+                impl_block
+                    .method_names
+                    .iter()
+                    .zip(&impl_block.method_ids)
+                    .zip(&impl_block.method_symbols)
+            })
+            .filter_map(|((name, declaration), symbol)| {
+                (name == "close")
+                    .then(|| declaration.as_ref().map(|id| (id.clone(), symbol.clone())))
+                    .flatten()
+            })
+            .collect();
+        let [(close_declaration, close_symbol)] = close_methods.as_slice() else {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                exact_owner,
+                format!(
+                    "opaque resource requires one exact inherent close declaration; found {}",
+                    close_methods.len()
+                ),
+                &decl.span,
+                "opaque resource lifecycle identity did not survive HIR lowering",
+            ));
+            continue;
+        };
+        let close_bodies: Vec<_> = items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(function)
+                    if function.declaration == *close_declaration
+                        && function.name == *close_symbol =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .collect();
+        let [close_body] = close_bodies.as_slice() else {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                close_declaration.full_path(),
+                format!(
+                    "opaque resource close requires one exact emitted body; found {}",
+                    close_bodies.len()
+                ),
+                &decl.span,
+                "opaque resource close body did not survive HIR lowering",
+            ));
+            continue;
+        };
+        if close_body.return_ty != ResolvedTy::Unit || close_body.params.len() != 1 {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                close_declaration.full_path(),
+                "opaque resource close body must take one receiver and return unit".to_string(),
+                &decl.span,
+                "opaque resource close body has an inadmissible signature",
+            ));
+            continue;
+        }
+        let lifecycle = crate::OpaqueResourceLifecycle {
+            resource_declaration: decl.declaration.clone(),
+            close_declaration: close_declaration.clone(),
+            // There is no separately declared release ABI in this authored
+            // form.  The generated close body is the exact lifecycle endpoint;
+            // the fields are retained for the shared lifecycle carrier.
+            release_declaration: close_declaration.clone(),
+            close_symbol: close_symbol.clone(),
+            release_symbol: close_symbol.clone(),
+            discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
+            producer_declarations: std::collections::BTreeSet::new(),
+            producer_symbols: std::collections::BTreeSet::new(),
+            producer_modules: std::collections::BTreeSet::new(),
+        };
+        if type_classes
+            .admit_opaque_resource_lifecycle(lifecycle)
+            .is_err()
+        {
+            diagnostics.push(resource_lifecycle_boundary_diagnostic(
+                exact_owner,
+                "duplicate exact opaque resource lifecycle admission".to_string(),
+                &decl.span,
+                "one qualified resource may have exactly one automatic lifecycle authority",
+            ));
         }
     }
 }
@@ -25004,6 +25140,26 @@ impl LowerCtx {
                 );
             }
         }
+        // A checker-selected typed runtime endpoint is already a complete
+        // executable dispatch decision.  It intentionally wins over the
+        // declaration-level resolver verdict that was also recorded while
+        // validating the source method surface: active transport `attach`, for
+        // example, has a source trait implementation solely for type checking,
+        // while its actual call ABI is the runtime family that synthesises
+        // concrete actor protocol IDs.  Trying to project that source stub into
+        // an imported HIR body both loses the runtime ABI and rejects valid
+        // imported handles when the trait declaration has no materialised
+        // body.  Keep this precedence structural (the typed `CallTarget`), not
+        // symbol- or receiver-name based, so every future runtime override has
+        // the same semantics.
+        let rewrite = self.method_call_rewrites.get(&key).cloned();
+        let runtime_rewrite_selected = matches!(
+            &rewrite,
+            Some(MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::Runtime(_),
+                ..
+            })
+        );
         // Look up the checker's `resolved_calls` verdict unconditionally so any
         // boundary-type conversion failure (TyPattern -> ResolvedTy mapping
         // bugs, `expr_types` side-table inconsistency, missing impl registration)
@@ -25020,101 +25176,105 @@ impl LowerCtx {
         // The legacy `method_call_rewrites` entries for that overlap are
         // removed in the C3 commit that retires the per-V allowlists, so the
         // precedence is exercised by construction once dual-emit retires.
-        if let Some(resolved) = self.resolved_calls.get(&key).cloned() {
-            // The checker's `expr_types` is the authoritative source for
-            // the call-site result type (LESSONS `checker-authority`).
-            // A missing or non-convertible entry is a checker boundary
-            // violation — we record it eagerly so the gap is visible
-            // long before the consumer is wired.
-            let ret_ty = match self
-                .expr_types
-                .get(&key)
-                .cloned()
-                .map(|ty| ResolvedTy::from_ty(&ty))
-            {
-                Some(Ok(ty)) => Some(ty),
-                Some(Err(err)) => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: format!("resolved-impl call `.{method}`"),
-                            reason: err.to_string(),
-                        },
-                        span.clone(),
-                        "checker-resolved method call has poisoned result type",
-                    ));
-                    None
-                }
-                None => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: format!("resolved-impl call `.{method}`"),
-                            reason: "missing expr_types entry for call site".to_string(),
-                        },
-                        span.clone(),
-                        "checker recorded a ResolvedCall for this site but no \
+        if !runtime_rewrite_selected {
+            if let Some(resolved) = self.resolved_calls.get(&key).cloned() {
+                // The checker's `expr_types` is the authoritative source for
+                // the call-site result type (LESSONS `checker-authority`).
+                // A missing or non-convertible entry is a checker boundary
+                // violation — we record it eagerly so the gap is visible
+                // long before the consumer is wired.
+                let ret_ty = match self
+                    .expr_types
+                    .get(&key)
+                    .cloned()
+                    .map(|ty| ResolvedTy::from_ty(&ty))
+                {
+                    Some(Ok(ty)) => Some(ty),
+                    Some(Err(err)) => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("resolved-impl call `.{method}`"),
+                                reason: err.to_string(),
+                            },
+                            span.clone(),
+                            "checker-resolved method call has poisoned result type",
+                        ));
+                        None
+                    }
+                    None => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("resolved-impl call `.{method}`"),
+                                reason: "missing expr_types entry for call site".to_string(),
+                            },
+                            span.clone(),
+                            "checker recorded a ResolvedCall for this site but no \
                          expr_types entry — the side-tables are inconsistent",
-                    ));
-                    None
-                }
-            };
-            #[allow(
-                clippy::items_after_statements,
-                reason = "the activation gate lives next to the guard it controls; \
+                        ));
+                        None
+                    }
+                };
+                #[allow(
+                    clippy::items_after_statements,
+                    reason = "the activation gate lives next to the guard it controls; \
                           promoting to a module-level const would scatter the \
                           deferral rationale across the file"
-            )]
-            const RESOLVED_IMPL_CALL_ACTIVATED: bool = true;
-            if RESOLVED_IMPL_CALL_ACTIVATED {
-                // Only emit when the resolver verdict survived boundary
-                // conversion; otherwise fall through to the legacy
-                // `method_call_rewrites` arm below.
-                if let Some(ret_ty) = ret_ty {
-                    if !self.ensure_executable_target(&resolved.target, "resolved impl call", &span)
-                    {
+                )]
+                const RESOLVED_IMPL_CALL_ACTIVATED: bool = true;
+                if RESOLVED_IMPL_CALL_ACTIVATED {
+                    // Only emit when the resolver verdict survived boundary
+                    // conversion; otherwise fall through to the legacy
+                    // `method_call_rewrites` arm below.
+                    if let Some(ret_ty) = ret_ty {
+                        if !self.ensure_executable_target(
+                            &resolved.target,
+                            "resolved impl call",
+                            &span,
+                        ) {
+                            return (
+                                HirExprKind::Unsupported(
+                                    "resolved impl call has no checker target".to_string(),
+                                ),
+                                ret_ty,
+                            );
+                        }
+                        // Register any enum instantiation that surfaces as the
+                        // return type (e.g. `HashMap::get -> Option<V>`,
+                        // `HashMap::remove -> Option<V>`). Without this the
+                        // module-level `enum_layouts` table lacks the matching
+                        // key for `Named { name: "Option", .. }`, MIR records
+                        // `ValueClass::Unknown → Strategy::UnknownBlocked` at
+                        // the call site, and the totality gate fires
+                        // (`DecisionMapTotal { offending_sites: [...] }`).
+                        // This mirrors the legacy `RewriteToFunction` arm
+                        // below — the new resolver-authority path inherits
+                        // the same boundary obligation.
+                        self.try_register_enum_instantiation(&span);
+                        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                        let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                         return (
-                            HirExprKind::Unsupported(
-                                "resolved impl call has no checker target".to_string(),
-                            ),
+                            HirExprKind::ResolvedImplCall {
+                                receiver: Box::new(lowered_receiver),
+                                target: resolved.target,
+                                impl_id: resolved.impl_id,
+                                method_name: resolved.method_name,
+                                target_symbol: resolved.method_target.symbol_name,
+                                target_family: resolved.method_target.family,
+                                type_args: resolved.type_args,
+                                args: lowered_args,
+                                ret_ty: ret_ty.clone(),
+                            },
                             ret_ty,
                         );
                     }
-                    // Register any enum instantiation that surfaces as the
-                    // return type (e.g. `HashMap::get -> Option<V>`,
-                    // `HashMap::remove -> Option<V>`). Without this the
-                    // module-level `enum_layouts` table lacks the matching
-                    // key for `Named { name: "Option", .. }`, MIR records
-                    // `ValueClass::Unknown → Strategy::UnknownBlocked` at
-                    // the call site, and the totality gate fires
-                    // (`DecisionMapTotal { offending_sites: [...] }`).
-                    // This mirrors the legacy `RewriteToFunction` arm
-                    // below — the new resolver-authority path inherits
-                    // the same boundary obligation.
-                    self.try_register_enum_instantiation(&span);
-                    let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                    let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
-                    return (
-                        HirExprKind::ResolvedImplCall {
-                            receiver: Box::new(lowered_receiver),
-                            target: resolved.target,
-                            impl_id: resolved.impl_id,
-                            method_name: resolved.method_name,
-                            target_symbol: resolved.method_target.symbol_name,
-                            target_family: resolved.method_target.family,
-                            type_args: resolved.type_args,
-                            args: lowered_args,
-                            ret_ty: ret_ty.clone(),
-                        },
-                        ret_ty,
-                    );
                 }
+                // Dormant path: the lookup ran (and diagnostics fired if the
+                // boundary failed), but emission is deferred. Fall through to
+                // the legacy `method_call_rewrites` branch below so live sites
+                // keep their current dispatch behaviour.
+                let _ = resolved;
             }
-            // Dormant path: the lookup ran (and diagnostics fired if the
-            // boundary failed), but emission is deferred. Fall through to
-            // the legacy `method_call_rewrites` branch below so live sites
-            // keep their current dispatch behaviour.
-            let _ = resolved;
         }
-        let rewrite = self.method_call_rewrites.get(&key).cloned();
         match rewrite {
             Some(MethodCallRewrite::RcIntrinsic { op, payload_ty }) => {
                 let result_ty = self

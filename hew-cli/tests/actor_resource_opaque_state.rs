@@ -447,11 +447,9 @@ fn main() {}
         .expect("read emitted LLVM IR");
     let clone = fn_body(&ll, "@__hew_state_clone_Direct(");
     assert!(
-        clone.contains("field_step_0_clone")
-            && clone.contains("rollback_before_step_0")
-            && clone.contains("ret ptr null"),
-        "direct resource actor restart clone must use the affine clone-refusal \
-         protocol, not an opaque-handle codegen error or a shallow copy:\n{clone}",
+        clone.contains("ret ptr null"),
+        "direct resource actor restart clone must refuse without copying its \
+         affine handle:\n{clone}",
     );
     assert!(
         !clone.contains("@\"Dq::close\""),

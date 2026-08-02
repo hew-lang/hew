@@ -34,8 +34,8 @@ fn transport_attach_runtime_symbol(receiver_name: &str, method: &str) -> Option<
     }
     match receiver_name {
         STD_NET_CONNECTION => Some("hew_tcp_attach_local"),
-        "tls.TlsStream" => Some("hew_tls_attach_local"),
-        "websocket.Conn" => Some("hew_ws_attach_local"),
+        "std.net.tls.TlsStream" => Some("hew_tls_attach_local"),
+        "std.net.websocket.Conn" => Some("hew_ws_attach_local"),
         _ => None,
     }
 }
@@ -2191,8 +2191,18 @@ impl Checker {
             .unwrap_or_else(|| receiver_name.to_string());
         let symbol = transport_attach_runtime_symbol(&canonical, method)?;
         let (module, _) = canonical.rsplit_once('.')?;
+        // The registry carries the original loaded spelling (`tls.TlsStream` /
+        // `websocket.Conn`), while nominal resolution carries its exact full
+        // source owner. Join the two identities here rather than asking the
+        // registry to recognise the canonical spelling directly: a user
+        // module may use either leaf spelling but cannot produce the same
+        // loaded source identity.
         if self.user_modules.contains(module)
-            || !self.module_registry.is_handle_type(canonical.as_str())
+            || self
+                .module_registry
+                .canonical_handle_type_identity(receiver_name)
+                .as_deref()
+                != Some(canonical.as_str())
         {
             return None;
         }
@@ -10503,8 +10513,8 @@ mod tests {
     fn transport_attach_rewrite_requires_authoritative_qualified_identity() {
         for (receiver, symbol) in [
             (STD_NET_CONNECTION, "hew_tcp_attach_local"),
-            ("tls.TlsStream", "hew_tls_attach_local"),
-            ("websocket.Conn", "hew_ws_attach_local"),
+            ("std.net.tls.TlsStream", "hew_tls_attach_local"),
+            ("std.net.websocket.Conn", "hew_ws_attach_local"),
         ] {
             assert_eq!(
                 transport_attach_runtime_symbol(receiver, "attach"),

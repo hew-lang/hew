@@ -2150,7 +2150,9 @@ fn vec_iter_clone_totality_rejects_function_inside_positional_record() {
 #[test]
 fn vec_iter_clone_totality_rejects_qualified_opaque_name() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.user_opaque_type_names.insert("Handle".to_string());
+    checker
+        .user_opaque_type_names
+        .insert("pkg.Handle".to_string());
     let ty = Ty::Named {
         name: "pkg.Handle".to_string(),
         args: vec![],

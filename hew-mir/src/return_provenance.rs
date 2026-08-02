@@ -130,8 +130,8 @@ use hew_types::ResolvedTy;
 /// pre-existing two-class behaviour.
 #[derive(Debug, Clone, Default)]
 pub struct DeclaredReleaseTypes {
-    /// Admitted type names, stored under both the declaration's spelling and
-    /// its short name so a qualified construction site resolves.
+    /// Admitted declaration identities. A semantic adoption proof is nominal:
+    /// a same-leaf declaration from another owner must never inherit it.
     names: HashSet<String>,
 }
 
@@ -144,7 +144,9 @@ impl DeclaredReleaseTypes {
             .items
             .iter()
             .filter_map(|item| match item {
-                hew_hir::HirItem::TypeDecl(decl) if decl.is_opaque => Some(decl.name.as_str()),
+                hew_hir::HirItem::TypeDecl(decl) if decl.is_opaque => {
+                    Some(decl.declaration.full_path())
+                }
                 _ => None,
             })
             .collect();
@@ -157,8 +159,7 @@ impl DeclaredReleaseTypes {
             // read from the one table codegen's thunk synthesis reads.
             let declares_close = module
                 .type_classes
-                .get(decl.name.as_str())
-                .or_else(|| module.type_classes.get(hew_types::short_name(&decl.name)))
+                .get(decl.declaration.full_path())
                 .is_some_and(|(marker, close)| {
                     matches!(marker, hew_hir::ResourceMarker::Resource) && close.is_some()
                 });
@@ -171,8 +172,7 @@ impl DeclaredReleaseTypes {
             }) {
                 continue;
             }
-            names.insert(decl.name.clone());
-            names.insert(hew_types::short_name(&decl.name).to_string());
+            names.insert(decl.declaration.full_path().to_string());
         }
         Self { names }
     }
@@ -181,7 +181,7 @@ impl DeclaredReleaseTypes {
     /// value's whole release is the type's declared close.
     #[must_use]
     pub fn release_is_declared(&self, name: &str) -> bool {
-        self.names.contains(name) || self.names.contains(hew_types::short_name(name))
+        self.names.contains(name)
     }
 
     /// True when this authority admits no type at all — the state every
@@ -223,9 +223,7 @@ fn field_is_released_only_by_the_declared_close(
     if !args.is_empty() {
         return false;
     }
-    *is_opaque
-        || opaque_handles.contains(name.as_str())
-        || opaque_handles.contains(hew_types::short_name(name))
+    *is_opaque || opaque_handles.contains(name.as_str())
 }
 
 // ---------------------------------------------------------------------------
@@ -1909,7 +1907,7 @@ pub fn build_extern_contract_table(module: &hew_hir::HirModule) -> ExternContrac
         .items
         .iter()
         .filter_map(|item| match item {
-            hew_hir::HirItem::TypeDecl(decl) => Some((decl.name.as_str(), decl)),
+            hew_hir::HirItem::TypeDecl(decl) => Some((decl.declaration.full_path(), decl)),
             _ => None,
         })
         .collect();
@@ -2159,10 +2157,7 @@ fn declared_return_release(
             if *is_opaque || !args.is_empty() || depth >= MAX_RECORD_DEPTH {
                 return ReturnRelease::Unresolved;
             }
-            let Some(decl) = decls
-                .get(name.as_str())
-                .or_else(|| decls.get(hew_types::short_name(name)))
-            else {
+            let Some(decl) = decls.get(name.as_str()) else {
                 return ReturnRelease::Unresolved;
             };
             if decl.is_opaque || decl.fields.is_empty() {
@@ -2211,7 +2206,7 @@ impl PointerFreeRecords {
             .items
             .iter()
             .filter_map(|item| match item {
-                hew_hir::HirItem::TypeDecl(decl) => Some((decl.name.as_str(), decl)),
+                hew_hir::HirItem::TypeDecl(decl) => Some((decl.declaration.full_path(), decl)),
                 _ => None,
             })
             .collect();
@@ -2222,8 +2217,8 @@ impl PointerFreeRecords {
         // (which cannot be pointer-free anyway) is never admitted.
         loop {
             let mut changed = false;
-            for (name, decl) in &decls {
-                if names.contains(*name) || decl.is_opaque || decl.fields.is_empty() {
+            for (identity, decl) in &decls {
+                if names.contains(*identity) || decl.is_opaque || decl.fields.is_empty() {
                     continue;
                 }
                 if decl
@@ -2231,8 +2226,7 @@ impl PointerFreeRecords {
                     .iter()
                     .all(|field| field_ty_is_pointer_free(&field.ty, &names))
                 {
-                    names.insert((*name).to_string());
-                    names.insert(hew_types::short_name(name).to_string());
+                    names.insert((*identity).to_string());
                     changed = true;
                 }
             }
@@ -2270,7 +2264,7 @@ fn field_ty_is_pointer_free(ty: &ResolvedTy, pointer_free: &HashSet<String>) -> 
     if *is_opaque || !args.is_empty() {
         return false;
     }
-    pointer_free.contains(name.as_str()) || pointer_free.contains(hew_types::short_name(name))
+    pointer_free.contains(name.as_str())
 }
 
 /// The ARGUMENT-axis admission — see [`build_extern_contract_table`] for why
@@ -7232,7 +7226,7 @@ fn main() {}
             .items
             .iter()
             .filter_map(|item| match item {
-                hew_hir::HirItem::TypeDecl(decl) => Some((decl.name.as_str(), decl)),
+                hew_hir::HirItem::TypeDecl(decl) => Some((decl.declaration.full_path(), decl)),
                 _ => None,
             })
             .collect();
@@ -7281,5 +7275,47 @@ fn main() {}
             declared_return_release(&named("NotDeclaredHere"), &decls, 0),
             ReturnRelease::Unresolved
         );
+    }
+
+    #[test]
+    fn nominal_release_and_pointer_free_proofs_do_not_cross_same_leaf_owners() {
+        let declared = DeclaredReleaseTypes {
+            names: HashSet::from(["left.Handle".to_string(), "Handle".to_string()]),
+        };
+        assert!(declared.release_is_declared("left.Handle"));
+        assert!(
+            !declared.release_is_declared("right.Handle"),
+            "a declared close is an exact nominal authority"
+        );
+
+        let pointer_free = HashSet::from(["left.Pod".to_string(), "Pod".to_string()]);
+        let named = |name: &str| ResolvedTy::Named {
+            name: name.to_string(),
+            args: Vec::new(),
+            builtin: None,
+            is_opaque: false,
+        };
+        assert!(field_ty_is_pointer_free(&named("left.Pod"), &pointer_free));
+        assert!(
+            !field_ty_is_pointer_free(&named("right.Pod"), &pointer_free),
+            "a same-leaf foreign record cannot inherit pointer-free proof"
+        );
+    }
+
+    #[test]
+    fn semantic_nominal_sinks_have_no_short_name_fallbacks() {
+        let source = include_str!("return_provenance.rs");
+        for prefix in [
+            "names.insert(hew_types::",
+            "contains(hew_types::",
+            ".or_else(|| decls.get(hew_types::",
+            "opaque_handles.contains(hew_types::",
+        ] {
+            let forbidden = format!("{prefix}short_name");
+            assert!(
+                !source.contains(&forbidden),
+                "semantic ownership authority must remain exact-owner keyed: {forbidden}"
+            );
+        }
     }
 }

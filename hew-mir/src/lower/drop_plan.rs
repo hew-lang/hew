@@ -4698,10 +4698,7 @@ pub(super) fn resource_drop_fn(
             if *is_opaque {
                 return None;
             }
-            let short = short_name(name);
-            let class_entry = type_classes
-                .get_key_value(name)
-                .or_else(|| type_classes.get_key_value(short));
+            let class_entry = type_classes.get_key_value(name);
             class_entry.and_then(|(class_name, (_, close))| {
                 close.as_ref().map(|method| {
                     crate::model::DropFnSpec::UserClose(format!("{class_name}::{method}"))
@@ -4867,6 +4864,36 @@ mod typed_resource_close_authority {
             Some(crate::model::DropFnSpec::UserClose(
                 "foo.Receiver::close".to_string()
             ))
+        );
+    }
+
+    #[test]
+    fn nonopaque_resource_close_never_crosses_same_leaf_owner() {
+        let mut classes = hew_hir::TypeClassTable::new();
+        classes.insert(
+            "left.Socket".to_string(),
+            (ResourceMarker::Resource, Some("close".to_string())),
+        );
+        // Models a legacy bare spelling in the table. The foreign qualified
+        // type must not inherit it through a short-name fallback.
+        classes.insert(
+            "Socket".to_string(),
+            (ResourceMarker::Resource, Some("legacy_close".to_string())),
+        );
+        assert_eq!(
+            resource_drop_fn(&ResolvedTy::named_user("left.Socket", Vec::new()), &classes),
+            Some(crate::model::DropFnSpec::UserClose(
+                "left.Socket::close".to_string()
+            )),
+            "the declaration's exact owner retains its close"
+        );
+        assert_eq!(
+            resource_drop_fn(
+                &ResolvedTy::named_user("right.Socket", Vec::new()),
+                &classes
+            ),
+            None,
+            "a same-leaf foreign type must not acquire left.Socket::close"
         );
     }
 }

@@ -3211,7 +3211,14 @@ impl Checker {
         // carries opaque types imported via `use module::*`; user-declared
         // opaques in the same file are NOT registered there.
         if td.is_opaque {
+            let canonical_name = self
+                .current_module_identity()
+                .map_or_else(|| td.name.clone(), |module| format!("{module}.{}", td.name));
+            // Keep the defining module's lexical spelling as its own identity
+            // too. Lookups remain exact, so this cannot authorize a foreign
+            // qualified same-leaf declaration.
             self.user_opaque_type_names.insert(td.name.clone());
+            self.user_opaque_type_names.insert(canonical_name);
         }
 
         let kind = match td.kind {
@@ -3436,9 +3443,12 @@ impl Checker {
                 args: vec![],
             })
             .collect();
+        let declaration_name = self
+            .current_module_identity()
+            .map_or_else(|| rd.name.clone(), |module| format!("{module}.{}", rd.name));
         let return_type = Ty::Named {
             builtin: None,
-            name: rd.name.clone(),
+            name: declaration_name.clone(),
             args: enum_return_args,
         };
 
@@ -3472,16 +3482,20 @@ impl Checker {
                 // Register a constructor function so `R(1, 2)` resolves via
                 // `check_call`.  The `fields` map intentionally stays empty —
                 // `.0`/`.1` access is not permitted on tuple records (A-D2).
-                self.fn_sigs.insert(
-                    rd.name.clone(),
-                    FnSig {
-                        type_params: type_param_names.clone(),
-                        type_param_bounds: type_param_bounds.clone(),
-                        params: param_tys,
-                        return_type: return_type.clone(),
-                        ..FnSig::default()
-                    },
-                );
+                let signature = FnSig {
+                    type_params: type_param_names.clone(),
+                    type_param_bounds: type_param_bounds.clone(),
+                    params: param_tys,
+                    return_type: return_type.clone(),
+                    ..FnSig::default()
+                };
+                // The bare key remains the lexical constructor spelling for
+                // the defining module. The exact declaration key is the
+                // semantic signature authority for imported/collision paths.
+                self.fn_sigs.insert(rd.name.clone(), signature.clone());
+                if declaration_name != rd.name {
+                    self.fn_sigs.insert(declaration_name, signature);
+                }
             }
         }
 

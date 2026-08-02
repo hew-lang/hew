@@ -1215,10 +1215,9 @@ fn type_reaches_forbidden_overwrite_boundary(
             builtin,
             ..
         } => {
-            let short = hew_types::short_name(name);
             if resource_record_names
                 .iter()
-                .any(|resource| resource == name || hew_types::short_name(resource) == short)
+                .any(|resource| resource == name)
             {
                 return true;
             }
@@ -4309,5 +4308,28 @@ mod tests {
             len: 1,
         }
         .supports_value_class_drop_spine());
+    }
+
+    #[test]
+    fn resource_overwrite_boundary_uses_exact_nominal_owner() {
+        let mut visited = HashSet::new();
+        assert!(type_reaches_forbidden_overwrite_boundary(
+            &named("left.Resource", Vec::new()),
+            &[],
+            &[],
+            &["left.Resource".to_string()],
+            &mut visited,
+        ));
+        let mut visited = HashSet::new();
+        assert!(
+            !type_reaches_forbidden_overwrite_boundary(
+                &named("right.Resource", Vec::new()),
+                &[],
+                &[],
+                &["left.Resource".to_string()],
+                &mut visited,
+            ),
+            "a same-leaf foreign type is not a resource overwrite boundary"
+        );
     }
 }

@@ -42,18 +42,7 @@ pub type TypeClassTable = HashMap<String, (ResourceMarker, Option<String>)>;
 pub fn lookup_type_marker(name: &str, type_classes: &TypeClassTable) -> Option<ResourceMarker> {
     crate::builtin_type_classes::builtin_type_registration(name)
         .map(|registration| registration.marker)
-        .or_else(|| {
-            let exact = type_classes.get(name).map(|(marker, _)| *marker);
-            let short = hew_types::short_name(name);
-            match (exact, short != name) {
-                (Some(ResourceMarker::None), true) => {
-                    type_classes.get(short).map(|(marker, _)| *marker).or(exact)
-                }
-                (Some(marker), _) => Some(marker),
-                (None, true) => type_classes.get(short).map(|(marker, _)| *marker),
-                (None, false) => None,
-            }
-        })
+        .or_else(|| type_classes.get(name).map(|(marker, _)| *marker))
 }
 
 #[must_use]
@@ -101,57 +90,21 @@ pub fn lookup_type_marker_for_ty(
     }
 
     if !args.is_empty() {
-        // `type_classes` is keyed on the per-instantiation `mangled_name`, which
-        // the registry side (`RecordLayoutRegistry::insert`, `layout_mono`,
-        // `finalize_user_record_value_classes`) builds from the BARE-normalised
-        // type-arg spine. So the probe must shorten its args too: a generic with
-        // a module-qualified payload (`Holder<lmonobox.Box>`) is registered as
-        // `Holder$$Box`, and a raw `mangle(name, args)` keying `Holder$$lmonobox.Box`
-        // would miss and silently fall through to the coarse outer-name lookup
-        // below, losing the per-instantiation marker. Nested qualified payloads
-        // are shortened at depth by `shorten_named_arg_qualifiers`.
-        let short_args: Vec<ResolvedTy> = args
+        // Generic keys retain their canonical nominal paths throughout the
+        // spine; no leaf-name normalisation may select a value class.
+        let canonical_args: Vec<ResolvedTy> = args
             .iter()
             .cloned()
             .map(crate::monomorph::shorten_named_arg_qualifiers)
             .collect();
-        let concrete_key = crate::monomorph::mangle(name, &short_args);
+        let concrete_key =
+            crate::monomorph::mangle(&crate::mangle_dotted_name(name), &canonical_args);
         if let Some((marker, _)) = type_classes.get(&concrete_key) {
             return Some(*marker);
         }
-        // A generic value record defined in an IMPORTED module carries a
-        // module-qualified USE-site name (`k.Key<string>`), but its layout is
-        // registered under the bare-origin mangling the DECLARATION produced
-        // (`Key$$string`) — `RecordLayoutRegistry::insert` shortens the type
-        // args but keeps the origin name verbatim, and the declaration's own
-        // name is unqualified. So the qualified `concrete_key`
-        // (`k.Key$$string`) misses while the bare per-instantiation marker is
-        // present. Probe the short-origin mangling too so an imported-origin
-        // generic instance resolves to the same per-instantiation value class
-        // as its single-file / non-generic siblings (#2744). Without this the
-        // probe falls through to the coarse outer-name lookup below, which
-        // sees the generic origin's `ResourceMarker::None` and misclassifies
-        // the mono instance as `Unknown` → the MIR value-class gate rejects a
-        // valid BitCopy record.
-        let short_origin = hew_types::short_name(name);
-        if short_origin != name.as_str() {
-            let short_key = crate::monomorph::mangle(short_origin, &short_args);
-            if let Some((marker, _)) = type_classes.get(&short_key) {
-                return Some(*marker);
-            }
-        }
     }
 
-    let exact = type_classes.get(name).map(|(marker, _)| *marker);
-    let short = hew_types::short_name(name);
-    match (exact, short != name.as_str()) {
-        (Some(ResourceMarker::None), true) => {
-            type_classes.get(short).map(|(marker, _)| *marker).or(exact)
-        }
-        (Some(marker), _) => Some(marker),
-        (None, true) => type_classes.get(short).map(|(marker, _)| *marker),
-        (None, false) => None,
-    }
+    type_classes.get(name).map(|(marker, _)| *marker)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -467,76 +420,51 @@ mod tests {
         assert!(!components[1].has_args);
     }
 
-    // ── C1 qualified-payload concrete-key symmetry ──────────────────────────
-    //
-    // `lookup_type_marker_for_ty` probes the per-instantiation marker via a
-    // mangled concrete key. `type_classes` is registered under the BARE-spine
-    // mangled name (`RecordLayoutRegistry::insert` / `layout_mono` /
-    // `finalize_user_record_value_classes` all shorten the spine). So a generic
-    // with a module-qualified payload (`Holder<lmonobox.Box>`) must shorten its
-    // probe args or the concrete key (`Holder$$lmonobox.Box`) diverges from the
-    // registered `Holder$$Box`, silently missing the per-instantiation marker.
+    // ── Canonical qualified-payload concrete-key identity ───────────────────
 
     #[test]
-    fn qualified_payload_resolves_per_instantiation_marker() {
+    fn qualified_payload_does_not_select_bare_instantiation_marker() {
         use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
 
         let mut table: TypeClassTable = std::collections::HashMap::default();
-        // Registered under the BARE spine, exactly as the registry keys it.
+        // Registered under a distinct bare declaration identity.
         let bare_key = crate::monomorph::mangle("Holder", &[ResolvedTy::named_user("Box", vec![])]);
         table.insert(bare_key, (ResourceMarker::BitCopy, None));
 
-        // Probe with the QUALIFIED payload (`lmonobox.Box`), the import-use form.
-        // A raw `mangle("Holder", [lmonobox.Box])` keys `Holder$$lmonobox.Box`
-        // and would miss the registered `Holder$$Box`.
+        // Probe with a QUALIFIED payload. It must not select the bare key.
         let qualified = ResolvedTy::named_user(
             "Holder",
             vec![ResolvedTy::named_user("lmonobox.Box", vec![])],
         );
         assert_eq!(
             lookup_type_marker_for_ty(&qualified, &table),
-            Some(ResourceMarker::BitCopy),
-            "the qualified-payload probe must shorten its spine to hit the \
-             bare-key per-instantiation marker"
+            None,
+            "the qualified-payload probe must not collapse onto a bare declaration"
         );
     }
 
-    // ── #2744 qualified-ORIGIN concrete-key symmetry ────────────────────────
-    //
-    // A generic value record defined in an IMPORTED module is used through its
-    // module-qualified OUTER name (`keyed.Key<string>`), but its layout — and
-    // therefore its per-instantiation value-class marker — is registered under
-    // the bare-origin mangling the declaration produced (`Key$$string`). The
-    // probe must shorten the qualified ORIGIN (not just the payload spine) or
-    // the concrete key (`keyed.Key$$string`) diverges from the registered
-    // `Key$$string`, the outer-name fallback sees the generic origin's
-    // `ResourceMarker::None`, and the mono instance is misclassified Unknown.
+    // ── Canonical qualified-origin concrete-key identity ────────────────────
 
     #[test]
-    fn qualified_origin_resolves_per_instantiation_marker() {
+    fn qualified_origin_does_not_select_bare_instantiation_marker() {
         use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
 
         let mut table: TypeClassTable = std::collections::HashMap::default();
-        // The mono instance is registered under the BARE origin, exactly as the
-        // declaration-side registry / finalize keys it.
+        // The mono instance is registered under a distinct bare origin.
         let bare_key = crate::monomorph::mangle("Key", &[ResolvedTy::String]);
         table.insert(bare_key, (ResourceMarker::BitCopy, None));
         // The generic origin itself carries `ResourceMarker::None` under both
-        // its qualified and bare spellings (finalize seeds every registry key),
-        // so the coarse outer-name fallback must NOT be what answers the probe.
+        // spellings, allowing the assertion to prove the concrete bare marker
+        // was not selected.
         table.insert("keyed.Key".to_string(), (ResourceMarker::None, None));
         table.insert("Key".to_string(), (ResourceMarker::None, None));
 
-        // Probe with the QUALIFIED origin (`keyed.Key<string>`), the import-use
-        // form. A raw `mangle("keyed.Key", [string])` keys `keyed.Key$$string`
-        // and misses the registered bare `Key$$string`.
+        // A QUALIFIED origin must remain distinct from bare `Key<string>`.
         let qualified = ResolvedTy::named_user("keyed.Key", vec![ResolvedTy::String]);
         assert_eq!(
             lookup_type_marker_for_ty(&qualified, &table),
-            Some(ResourceMarker::BitCopy),
-            "the qualified-origin probe must shorten the outer name to hit the \
-             bare-key per-instantiation marker, not fall through to the \
-             generic origin's None marker"
+            Some(ResourceMarker::None),
+            "the qualified-origin probe must not collapse onto the bare instance"
         );
     }
 

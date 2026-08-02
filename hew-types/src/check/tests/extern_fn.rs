@@ -173,10 +173,10 @@ fn generic_extern_symbol_call_keeps_exact_endpoint_and_move_out_fact() {
     let (call_span, call) = output
         .resolved_calls
         .iter()
-        .find(|(_, call)| call.target.symbol_name == "hew_vec_pop_str")
+        .find(|(_, call)| call.method_target.symbol_name == "hew_vec_pop_str")
         .expect("Vec<string>::pop must preserve its exact expanded extern endpoint");
     assert!(matches!(
-        call.target.family,
+        call.method_target.family,
         crate::check::dispatch::MethodTargetFamily::Vec(crate::check::dispatch::VecMethod::Pop)
     ));
 

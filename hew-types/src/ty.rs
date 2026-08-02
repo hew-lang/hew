@@ -33,6 +33,8 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Vec
             | BuiltinType::HashMap
             | BuiltinType::HashSet
+            | BuiltinType::VecIter
+            | BuiltinType::HashMapIter
             | BuiltinType::Task
             | BuiltinType::SupervisorPool
             | BuiltinType::StreamPair
@@ -797,8 +799,8 @@ impl Ty {
         if a_qualified && b_qualified {
             return false;
         }
-        let a_bare = a.find('.').map_or(a, |dot| &a[dot + 1..]);
-        let b_bare = b.find('.').map_or(b, |dot| &b[dot + 1..]);
+        let a_bare = a.rsplit_once('.').map_or(a, |(_, leaf)| leaf);
+        let b_bare = b.rsplit_once('.').map_or(b, |(_, leaf)| leaf);
         a_bare == b_bare
     }
 

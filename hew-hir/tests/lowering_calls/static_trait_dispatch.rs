@@ -18,7 +18,12 @@
 
 use crate::support;
 
-use hew_hir::dump_hir;
+use hew_hir::{
+    dump_hir, lower_program_host_target, HirExpr, HirExprKind, HirItem, HirStmtKind, ResolutionCtx,
+};
+use hew_parser::ast::{Item, Program};
+use hew_parser::module::{Module, ModuleGraph, ModuleId};
+use hew_types::{module_registry::ModuleRegistry, CallTarget, Checker};
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     support::checker_pipeline::lower_through_checker(source)
@@ -27,6 +32,339 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
 fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
     let (_, tco) = support::checker_pipeline::typecheck_source(source);
     tco
+}
+
+/// Construct a real three-module program with two imported modules whose full
+/// paths may share the same final component. The root's imports carry
+/// parser-produced items, while the graph gives the checker/lowerer the module
+/// ownership context that qualifies the declarations.
+fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
+    let root = hew_parser::parse(root_src);
+    assert!(
+        root.errors.is_empty(),
+        "root parse errors: {:#?}",
+        root.errors
+    );
+    let root_id = ModuleId::root();
+    let mut graph = ModuleGraph::new(root_id.clone());
+    let mut source_items = std::collections::HashMap::new();
+
+    for (name, source) in modules {
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "{name} parse errors: {:#?}",
+            parsed.errors
+        );
+        let items: Vec<_> = parsed
+            .program
+            .items
+            .iter()
+            .filter(|(item, _)| !matches!(item, Item::Import(_)))
+            .cloned()
+            .collect();
+        let id = ModuleId::new(name.split("::").map(String::from).collect());
+        graph
+            .add_module(Module {
+                id: id.clone(),
+                items: items.clone(),
+                imports: Vec::new(),
+                source_paths: Vec::new(),
+                doc: None,
+            })
+            .expect("unique imported module");
+        graph.topo_order.push(id);
+        source_items.insert((*name).to_string(), items);
+    }
+
+    let mut root_items = root.program.items.clone();
+    for (item, _) in &mut root_items {
+        if let Item::Import(import) = item {
+            let full_path = import.path.join("::");
+            if let Some(items) = source_items.get(&full_path) {
+                import.resolved_items = Some(items.clone());
+            }
+        }
+    }
+    graph
+        .add_module(Module {
+            id: root_id,
+            items: root_items.clone(),
+            imports: Vec::new(),
+            source_paths: Vec::new(),
+            doc: None,
+        })
+        .expect("root module");
+    Program {
+        items: root_items,
+        module_graph: Some(graph),
+        ..root.program
+    }
+}
+
+#[allow(
+    deprecated,
+    reason = "the assertion reads the legacy static-dispatch carrier"
+)]
+fn walk_calls(expr: &HirExpr, calls: &mut Vec<CallTarget>) {
+    match &expr.kind {
+        HirExprKind::Call {
+            target,
+            callee,
+            args,
+            ..
+        } => {
+            calls.push(target.clone());
+            walk_calls(callee, calls);
+            for arg in args {
+                walk_calls(arg, calls);
+            }
+        }
+        HirExprKind::Block(block) => {
+            for stmt in &block.statements {
+                if let HirStmtKind::Expr(expr) | HirStmtKind::Let(_, Some(expr)) = &stmt.kind {
+                    walk_calls(expr, calls);
+                }
+            }
+            if let Some(tail) = &block.tail {
+                walk_calls(tail, calls);
+            }
+        }
+        HirExprKind::CallTraitMethodStatic { target, .. } => calls.push(target.clone()),
+        _ => {}
+    }
+}
+
+fn walk_block_calls(block: &hew_hir::HirBlock, calls: &mut Vec<CallTarget>) {
+    for stmt in &block.statements {
+        if let HirStmtKind::Expr(expr) | HirStmtKind::Let(_, Some(expr)) = &stmt.kind {
+            walk_calls(expr, calls);
+        }
+    }
+    if let Some(tail) = &block.tail {
+        walk_calls(tail, calls);
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the cross-module identity regression keeps setup, lowering, and every same-leaf assertion together"
+)]
+fn e2e_multi_module_same_leaf_generic_and_specialized_dispatch_stays_canonical() {
+    let program = multi_module_program(
+        r"
+import left::render::{Render as LeftRender, Box as LeftBox, identity as left_identity};
+import right::render::{Render as RightRender, Box as RightBox, identity as right_identity};
+
+fn use_left<T: LeftRender>(value: T) -> string { value.render() }
+fn use_right<T: RightRender>(value: T) -> string { value.render() }
+fn main() -> string {
+    let a = LeftBox<i64> { value: 1 };
+    let b = RightBox<bool> { value: true };
+    let left_direct = left_identity();
+    let right_direct = right_identity();
+    let ignored = use_left(a);
+    use_right(b)
+}
+",
+        &[
+            (
+                "left::render",
+                r#"
+pub trait Render {
+    fn render(value: Self) -> string;
+}
+pub type Box<T> { value: T; }
+pub fn identity() -> string { "left-direct" }
+impl<T> Render for Box<T> {
+    fn render(value: Box<T>) -> string { "left-generic" }
+}
+impl Render for Box<i64> {
+    fn render(value: Box<i64>) -> string { "left-i64" }
+}
+"#,
+            ),
+            (
+                "right::render",
+                r#"
+pub trait Render {
+    fn render(value: Self) -> string;
+}
+pub type Box<T> { value: T; }
+pub fn identity() -> string { "right-direct" }
+impl<T> Render for Box<T> {
+    fn render(value: Box<T>) -> string { "right-generic" }
+}
+impl Render for Box<string> {
+    fn render(value: Box<string>) -> string { "right-string" }
+}
+"#,
+            ),
+        ],
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tco = checker.check_program(&program);
+    assert!(tco.errors.is_empty(), "type errors: {:#?}", tco.errors);
+    assert!(
+        tco.impl_method_declaration_ids
+            .contains_key("left.render.Box$$i64::render"),
+        "checker must publish the exact emitted specialized impl symbol; keys: {:#?}",
+        tco.impl_method_declaration_ids.keys().collect::<Vec<_>>()
+    );
+    let output = lower_program_host_target(&program, &tco, &ResolutionCtx);
+    assert!(
+        output.diagnostics.is_empty(),
+        "HIR diagnostics: {:#?}",
+        output.diagnostics
+    );
+
+    let mut static_targets = Vec::new();
+    for item in &output.module.items {
+        let HirItem::Function(function) = item else {
+            continue;
+        };
+        if matches!(function.name.as_str(), "use_left" | "use_right") {
+            walk_block_calls(&function.body, &mut static_targets);
+        }
+    }
+    let mut identities: Vec<_> = static_targets
+        .into_iter()
+        .filter_map(|target| match target {
+            CallTarget::StaticTraitMethod {
+                declaring_trait,
+                method,
+            } => Some((
+                declaring_trait.full_path().to_string(),
+                method.full_path().to_string(),
+            )),
+            _ => None,
+        })
+        .collect();
+    identities.sort();
+    assert_eq!(
+        identities,
+        vec![
+            (
+                "left.render.Render".to_string(),
+                "left.render.Render::render".to_string()
+            ),
+            (
+                "right.render.Render".to_string(),
+                "right.render.Render::render".to_string()
+            ),
+        ],
+        "the typechecker-selected static-call targets must preserve module ownership"
+    );
+
+    let mut main_targets = Vec::new();
+    for item in &output.module.items {
+        let HirItem::Function(function) = item else {
+            continue;
+        };
+        if function.name == "main" {
+            walk_block_calls(&function.body, &mut main_targets);
+        }
+    }
+    let direct_identities: Vec<_> = main_targets
+        .into_iter()
+        .filter_map(|target| match target {
+            CallTarget::User(id) => Some(id.full_path().to_string()),
+            _ => None,
+        })
+        .collect();
+    let left_direct = direct_identities
+        .iter()
+        .find(|identity| identity.as_str() == "left.render.identity")
+        .expect("left imported alias must retain its source declaration identity");
+    let right_direct = direct_identities
+        .iter()
+        .find(|identity| identity.as_str() == "right.render.identity")
+        .expect("right imported alias must retain its source declaration identity");
+    assert_ne!(
+        left_direct, right_direct,
+        "same-leaf imported functions must retain distinct source identities"
+    );
+
+    let index = hew_hir::dispatch::build_trait_impl_method_index(&output.module.items);
+    let left_specialized = index
+        .iter()
+        .find(|(key, _)| {
+            key.declaring_trait.full_path() == "left.render.Render"
+                && key.self_type.nominal.declaration().full_path() == "left.render.Box"
+                && key.self_type.args == vec![hew_types::ResolvedTy::I64]
+        })
+        .expect("left.render's i64 specialization must be indexed structurally");
+    let right_generic = index
+        .iter()
+        .find(|(key, _)| {
+            key.declaring_trait.full_path() == "right.render.Render"
+                && key.self_type.nominal.declaration().full_path() == "right.render.Box"
+                && key.self_type.args.is_empty()
+        })
+        .expect("right.render's generic impl must be indexed structurally");
+    assert_ne!(
+        left_specialized.0.declaring_trait, right_generic.0.declaring_trait,
+        "same leaf trait names from different modules must not collide"
+    );
+    assert_ne!(
+        left_specialized.0.method, right_generic.0.method,
+        "same leaf method names from different modules must not collide"
+    );
+    assert_ne!(
+        left_specialized.0.self_type.nominal, right_generic.0.self_type.nominal,
+        "same leaf nominal names from different modules must not collide"
+    );
+
+    let left_selected = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
+        &index,
+        &left_specialized.0.declaring_trait,
+        &hew_types::NominalInstance {
+            nominal: left_specialized.0.self_type.nominal.clone(),
+            args: vec![hew_types::ResolvedTy::I64],
+        },
+        &left_specialized.0.method,
+    )
+    .expect("left i64 dispatch must resolve its specialization");
+    assert_eq!(
+        left_specialized.0.method.full_path(),
+        "left.render.Render::render",
+        "the static registry key must use the checker-selected trait declaration identity"
+    );
+    assert_eq!(
+        left_selected.method.full_path(),
+        "left.render.Box::<impl left.render.Render for left.render.Box<i64>>::render",
+        "the emitted body keeps its distinct checker implementation declaration identity: {left_selected:?}"
+    );
+    assert_ne!(
+        left_specialized.0.method, left_selected.method,
+        "static lookup must not conflate a trait method declaration with an implementation declaration"
+    );
+    assert_eq!(
+        left_selected.method_symbol,
+        left_specialized.1.method_symbol
+    );
+    assert!(
+        left_selected.impl_type_params.is_empty(),
+        "left i64 dispatch must select the specialized impl: {left_selected:?}"
+    );
+
+    let right_selected = hew_hir::dispatch::lookup_trait_impl_entry_by_id(
+        &index,
+        &right_generic.0.declaring_trait,
+        &hew_types::NominalInstance {
+            nominal: right_generic.0.self_type.nominal.clone(),
+            args: vec![hew_types::ResolvedTy::Bool],
+        },
+        &right_generic.0.method,
+    )
+    .expect("right bool dispatch must fall back to its generic impl");
+    assert_eq!(right_selected.method_symbol, right_generic.1.method_symbol);
+    assert_eq!(
+        right_selected.impl_type_params,
+        vec!["T".to_string()],
+        "right bool dispatch must select the generic impl"
+    );
 }
 
 // ─── V1: Basic static trait dispatch ─────────────────────────────────────────
@@ -470,15 +808,14 @@ fn main() -> string {
     );
 }
 
-// ─── V15: Generic impl monomorphization closure registers impl method ────────
+// ─── V15: Generic static dispatch keeps canonical monomorph identity ────────
 
 #[test]
-fn v15_generic_impl_monomorphization_closure_registers_impl_method() {
-    // When `display<T: Show>` is called with `Wrapper<i64>`, the
-    // monomorphization closure must discover the `CallTraitMethodStatic`
-    // inside `display`'s body and register `Wrapper::show` monomorphised
-    // with type_args `[i64]` — producing the mangled symbol
-    // `Wrapper::show<i64>` in the registry.
+fn v15_static_dispatch_monomorphization_keeps_canonical_owner_and_typed_args() {
+    // `display<T: Show>` is instantiated with the exact root nominal
+    // `Wrapper<i64>`. The registry authority is the outer declaration's
+    // ItemId plus this typed argument spine; it must not manufacture the
+    // legacy leaf-derived `Wrapper::show` string as a second identity.
     let src = r#"
 trait Show {
     fn show(val: Self) -> string;
@@ -495,36 +832,25 @@ fn main() -> string {
 }
 "#;
     let output = lower(src);
-    // The monomorphisation registry should contain an entry for
-    // `Wrapper::show` with type_args containing i64.
-    let has_wrapper_show_mono = output.module.monomorphisations.iter().any(|mono| {
-        mono.key.origin_name == "Wrapper::show"
-            && mono
-                .key
-                .type_args
-                .iter()
-                .any(|t| matches!(t, hew_types::ResolvedTy::I64))
-    });
+    let expected_args = vec![hew_types::ResolvedTy::named_user(
+        "Wrapper",
+        vec![hew_types::ResolvedTy::I64],
+    )];
+    let display_mono = output
+        .module
+        .monomorphisations
+        .iter()
+        .find(|mono| mono.key.linker_symbol == "display")
+        .expect("expected canonical `display<Wrapper<i64>>` monomorphisation");
+    assert_eq!(display_mono.key.type_args, expected_args);
+    assert_eq!(display_mono.mangled_name, "display$$Wrapper$li64$g");
     assert!(
-        has_wrapper_show_mono,
-        "expected monomorphisation registry to contain `Wrapper::show<i64>`, \
-         got entries: {:?}",
         output
             .module
             .monomorphisations
             .iter()
-            .map(|m| &m.mangled_name)
-            .collect::<Vec<_>>()
-    );
-    // The mangled name should follow the mangle convention.
-    let mangled = output
-        .module
-        .monomorphisations
-        .iter()
-        .find(|m| m.key.origin_name == "Wrapper::show")
-        .map(|m| m.mangled_name.as_str());
-    assert!(
-        mangled.is_some(),
-        "Wrapper::show monomorphisation should have a mangled name"
+            .all(|mono| mono.key.declaration.full_path() != "Wrapper::show"),
+        "static dispatch must retain the checker implementation declaration rather than a leaf-derived `Wrapper::show` identity: {:#?}",
+        output.module.monomorphisations
     );
 }

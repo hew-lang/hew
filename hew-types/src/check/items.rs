@@ -1113,14 +1113,14 @@ impl Checker {
     }
 
     pub(super) fn check_actor(&mut self, ad: &ActorDecl) {
-        // The actor's checker identity: dotted `{module_short}.{name}` for a
+        // The actor's checker identity: dotted `{module_path}.{name}` for a
         // module actor (the body is checked with `current_module` set), bare
         // for root/flat actors. All signature lookups during body checking
         // (`fn_sigs["{identity}::{rf}"]`), the `this` receiver type, and the
         // max-heap table key must use the same identity the registration
         // pass authored, or a same-named actor from another module would be
         // consulted instead.
-        let identity = Self::actor_identity(self.current_module_short(), &ad.name);
+        let identity = Self::actor_identity(self.current_module.as_deref(), &ad.name);
         let actor_ty = Ty::Named {
             builtin: None,
             name: identity.clone(),
@@ -1581,7 +1581,7 @@ impl Checker {
                 let is_crash_info = is_canonical_std_named_type(
                     &pty,
                     crate::BuiltinType::CrashInfo,
-                    "failure.CrashInfo",
+                    "std.failure.CrashInfo",
                 );
                 if !is_crash_info {
                     self.errors.push(TypeError::new(
@@ -1625,7 +1625,7 @@ impl Checker {
             if !is_canonical_std_named_type(
                 &ty,
                 crate::BuiltinType::CrashAction,
-                "failure.CrashAction",
+                "std.failure.CrashAction",
             ) {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
@@ -1724,13 +1724,13 @@ impl Checker {
         // Param: exactly one canonical `note: CrashNotification`. Match either
         // the compiler discriminator or the exact source-owned std identity:
         // the module graph resolves the declaration to
-        // `failure.CrashNotification` without a builtin marker, while an
+        // `std.failure.CrashNotification` without a builtin marker, while an
         // unrelated user type can share the short name.
         match hook.params.as_slice() {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
                 let is_crash_notification =
-                    is_canonical_lifecycle_source_type(&pty, "failure.CrashNotification");
+                    is_canonical_lifecycle_source_type(&pty, "std.failure.CrashNotification");
                 if !is_crash_notification && !matches!(pty, Ty::Error) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
@@ -1812,7 +1812,7 @@ impl Checker {
             [p] => {
                 let pty = self.resolve_type_expr(&p.ty);
                 let is_down_notification =
-                    is_canonical_lifecycle_source_type(&pty, "link_monitor.DownNotification");
+                    is_canonical_lifecycle_source_type(&pty, "std.link_monitor.DownNotification");
                 if !is_down_notification && !matches!(pty, Ty::Error) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,

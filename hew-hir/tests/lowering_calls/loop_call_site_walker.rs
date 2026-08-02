@@ -83,11 +83,12 @@ fn inner_generic_call_in_while_condition_surfaces_via_substitution() {
     // traverses the while condition.
     let mono = &output.module.monomorphisations;
     assert!(
-        mono.iter().any(|m| m.key.origin_name == "wrap"),
+        mono.iter().any(|m| m.key.linker_symbol == "wrap"),
         "expected `wrap` in monomorphisation registry; got {mono:#?}"
     );
     assert!(
-        mono.iter().any(|m| m.key.origin_name == "should_continue"),
+        mono.iter()
+            .any(|m| m.key.linker_symbol == "should_continue"),
         "expected `should_continue` in monomorphisation registry \
          (discovered via while-condition walker); got {mono:#?}"
     );
@@ -133,11 +134,11 @@ fn inner_generic_call_in_for_range_body_surfaces_via_substitution() {
     // the for-range body.
     let mono = &output.module.monomorphisations;
     assert!(
-        mono.iter().any(|m| m.key.origin_name == "accumulate"),
+        mono.iter().any(|m| m.key.linker_symbol == "accumulate"),
         "expected `accumulate` in monomorphisation registry; got {mono:#?}"
     );
     assert!(
-        mono.iter().any(|m| m.key.origin_name == "passthrough"),
+        mono.iter().any(|m| m.key.linker_symbol == "passthrough"),
         "expected `passthrough` in monomorphisation registry \
          (discovered via for-range-body walker); got {mono:#?}"
     );

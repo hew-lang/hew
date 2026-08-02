@@ -48,6 +48,7 @@
 //! and clippy-gated.
 
 use crate::ResolvedTy;
+use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoEnumIterator};
 
 // =============================================================================
@@ -190,7 +191,7 @@ impl ConsumeVerdict {
 /// elements. The pending Vec genericisation work will collapse most of
 /// these onto a single `Generic` variant that reads the descriptor's
 /// `elem` field — out of scope here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum VecGetElem {
     #[default]
     Bool,
@@ -212,7 +213,7 @@ pub enum VecGetElem {
 /// (`hew_vec_slice_range_*`). Narrower than [`VecGetElem`] because slice
 /// does not have a bool path today; descriptor-backed record/tuple elements
 /// route through the `Layout`/`Owned` substrate variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum VecSliceElem {
     #[default]
     Bytesize,
@@ -230,7 +231,7 @@ pub enum VecSliceElem {
 /// recv retired their per-element symbols in favour of the
 /// element-layout-witness `*_layout` entries, which bypass
 /// `RuntimeCallFamily` entirely (codegen `Terminator::Call` intercept).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum StreamElementKind {
     #[default]
     Bytes,
@@ -241,7 +242,7 @@ pub enum StreamElementKind {
 /// identifiers (`"sqrt"`, `"sin"`, …) onto
 /// `RuntimeCallFamily::MathIntrinsic(...)`; MIR carries that family on the
 /// call so codegen never re-derives the intrinsic from the callee string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
 pub enum MathIntrinsic {
     #[default]
     Sqrt,
@@ -280,7 +281,7 @@ pub enum MathIntrinsic {
 /// `match-fail-closed`). A future contributor cannot silently extend it
 /// behind a wildcard arm; every consumer must add the new arm at the
 /// next slice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
 pub enum RuntimeCallFamily {
     // --- Actor cooperate/link/monitor/unlink/spawn surface ------------------
     ActorAsk,

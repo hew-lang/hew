@@ -1,0 +1,1 @@
+pub const CLASH_CONST: i64 = 22;

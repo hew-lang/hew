@@ -132,7 +132,7 @@ fn return_value_may_alias_borrow_ref(
                 .iter()
                 .any(|(_, v)| return_value_may_alias_borrow_ref(v, scope, fresh))
         }),
-        HirExprKind::Call { callee, args } => {
+        HirExprKind::Call { callee, args, .. } => {
             !callee_is_resolved_item_ref(callee)
                 || (!callee_returns_fresh_owner_ref(callee, fresh)
                     && args

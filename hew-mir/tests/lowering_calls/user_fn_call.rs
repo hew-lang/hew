@@ -11,7 +11,7 @@
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::{lower_hir_module, IrPipeline, MirDiagnosticKind, Terminator};
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::{Checker, TypeCheckOutput};
+use hew_types::{CallTarget, Checker, DefId, TypeCheckOutput};
 
 fn pipeline_with_tc(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
@@ -106,6 +106,143 @@ fn direct_call_emits_call_terminator_with_correct_callee_and_args() {
         }
         other => panic!("expected call terminator, got {other:?}"),
     }
+}
+
+/// A checked direct call is linked only through the HIR-built DefId-to-symbol
+/// projection.  This is the positive half of the fail-closed contract: the
+/// selected declaration reaches the emitted symbol without re-reading the
+/// callee spelling.
+#[test]
+fn user_call_target_projects_to_its_emitted_symbol() {
+    let src = r"
+        fn helper() -> i64 { 42 }
+        fn main() -> i64 { helper() }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc = checker.check_program(&parsed.program);
+    let output = lower_program(
+        &parsed.program,
+        &tc,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+
+    let main = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main must be lowered");
+    let Some(tail) = &main.body.tail else {
+        panic!("main must retain the direct call as its tail expression");
+    };
+    let hew_hir::HirExprKind::Call {
+        target: CallTarget::User(declaration),
+        ..
+    } = &tail.kind
+    else {
+        panic!("main call must retain a checker-selected User target: {tail:#?}");
+    };
+    assert_eq!(declaration.full_path(), "helper");
+
+    let pipeline = lower_hir_module(&output.module);
+    assert!(
+        pipeline.diagnostics.iter().all(|diagnostic| !matches!(
+            diagnostic.kind,
+            MirDiagnosticKind::NotYetImplemented { .. }
+        )),
+        "a mapped User target must lower without a missing-projection diagnostic: {:#?}",
+        pipeline.diagnostics
+    );
+    let main = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main must reach MIR");
+    assert!(
+        main.blocks.iter().any(|block| matches!(
+            &block.terminator,
+            Terminator::Call { callee, .. } if callee == "helper"
+        )),
+        "the User target must lower through its exact emitted symbol: {:#?}",
+        main.blocks
+    );
+}
+
+/// A `DefId` not present in HIR's direct-call symbol index is a producer-boundary
+/// failure.  MIR must diagnose it and stop rather than deriving a linker label
+/// from the `DefId` path.
+#[test]
+fn user_call_target_without_hir_symbol_map_fails_closed() {
+    let src = r"
+        fn helper() -> i64 { 42 }
+        fn main() -> i64 { helper() }
+    ";
+    let parsed = hew_parser::parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc = checker.check_program(&parsed.program);
+    let mut output = lower_program(
+        &parsed.program,
+        &tc,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+
+    let main = output
+        .module
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
+        })
+        .expect("main must be lowered");
+    let tail = main
+        .body
+        .tail
+        .as_mut()
+        .expect("main must retain the direct call as its tail expression");
+    let hew_hir::HirExprKind::Call { target, .. } = &mut tail.kind else {
+        panic!("main tail must be an ordinary direct call: {tail:#?}");
+    };
+    *target = CallTarget::User(DefId::new("missing.owner.helper"));
+
+    let pipeline = lower_hir_module(&output.module);
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct == "direct declaration `missing.owner.helper` without an HIR symbol map"
+        )),
+        "missing User DefId projection must fail closed: {:#?}",
+        pipeline.diagnostics
+    );
+    let main = pipeline
+        .raw_mir
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main must reach MIR for diagnostic recovery");
+    assert!(
+        main.blocks
+            .iter()
+            .all(|block| !matches!(block.terminator, Terminator::Call { .. })),
+        "missing User DefId projection must not emit a reconstructed call: {:#?}",
+        main.blocks
+    );
 }
 
 /// Parameters of the callee (`add`) must resolve to `Place::Local` slots,

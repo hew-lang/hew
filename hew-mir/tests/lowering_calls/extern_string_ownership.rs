@@ -28,7 +28,7 @@ use hew_hir::{ids::IdGen, ExternProvenance, HirExternFn, HirItem, HirModule};
 use hew_mir::{
     classify_extern_string_ownership, lower_hir_module, ExternStringOwnership, MirDiagnosticKind,
 };
-use hew_types::ResolvedTy;
+use hew_types::{DefId, ResolvedTy};
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
     HirModule {
@@ -61,9 +61,14 @@ fn extern_item(
     abi: &str,
     provenance: ExternProvenance,
 ) -> HirItem {
+    let declaration = match &provenance {
+        ExternProvenance::Root => DefId::new(name),
+        ExternProvenance::Module(module) => DefId::new(format!("{module}.{name}")),
+    };
     HirItem::ExternFn(HirExternFn {
         id: ids.item(),
         node: ids.node(),
+        declaration,
         name: name.to_string(),
         abi: abi.to_string(),
         param_tys: vec![],

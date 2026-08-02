@@ -513,7 +513,7 @@ fn walk_for_structural_coercion(expr: &hew_hir::HirExpr, found: &mut bool) {
         *found = true;
     }
     match &expr.kind {
-        HirExprKind::Call { callee, args } => {
+        HirExprKind::Call { callee, args, .. } => {
             walk_for_structural_coercion(callee, found);
             for arg in args {
                 walk_for_structural_coercion(arg, found);

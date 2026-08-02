@@ -4,10 +4,10 @@
 //! clean name mappings, handle types, and handle method mappings.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use hew_parser::ast::{
-    Block, Expr, ExternFnDecl, FnDecl, ImplDecl, Item, ResourceMarker, Stmt, TypeBodyItem,
+    Block, Expr, ExternFnDecl, FnDecl, ImplDecl, Item, ResourceMarker, Spanned, Stmt, TypeBodyItem,
     TypeDeclKind, TypeExpr,
 };
 use hew_parser::parse;
@@ -63,6 +63,15 @@ pub struct HandleMethod {
 /// All type information extracted from a single `.hew` module file.
 #[derive(Debug, Clone)]
 pub struct ModuleInfo {
+    /// Exact file selected by module resolution. Consumers that grant
+    /// compiler-only stdlib authority must use this provenance rather than a
+    /// lexical module name.
+    pub source_path: Option<PathBuf>,
+    /// Parsed source declarations selected alongside this registry entry.
+    /// Keeping the source surface lets checker registration retain declaration
+    /// metadata (notably compiler-intrinsic identities) instead of reducing a
+    /// Hew module to only its legacy ABI signature summary.
+    pub source_items: Vec<Spanned<Item>>,
     /// C function signatures from `extern` blocks.
     pub functions: Vec<CFunction>,
     /// Clean name mappings: (`user_name`, `c_symbol`).
@@ -135,7 +144,10 @@ pub(crate) fn load_module_checked(
     }
 
     let module_short = module_short_name(module_path);
-    Ok(Some(extract_module_info(&result.program, &module_short)))
+    let mut info = extract_module_info(&result.program, &module_short);
+    info.source_path = Some(hew_path);
+    info.source_items = result.program.items;
+    Ok(Some(info))
 }
 
 /// Resolve a module path to a `.hew` file on disk.
@@ -227,6 +239,8 @@ fn collect_extern_fn_names(program: &hew_parser::ast::Program) -> HashSet<String
 /// Extract all type information from a parsed `.hew` program.
 fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -> ModuleInfo {
     let mut info = ModuleInfo {
+        source_path: None,
+        source_items: Vec::new(),
         functions: Vec::new(),
         clean_names: Vec::new(),
         handle_types: Vec::new(),
@@ -1305,7 +1319,6 @@ fn extract_handle_methods(
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_root() -> PathBuf {

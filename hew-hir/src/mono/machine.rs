@@ -62,6 +62,19 @@ pub enum ConstValue {
 /// the same origin name + type args.
 pub type MachineMonoKey = MonoKey<Machine>;
 
+/// Canonical LLVM/layout registry key for a concrete machine nominal.
+///
+/// This is deliberately the same class-tagged projection that
+/// [`MachineMonoKey::mangle`] uses (with no const arguments): a generic
+/// function, record, enum, and machine that happen to share an origin spelling
+/// cannot claim the same downstream layout key.  Consumers that begin from a
+/// `ResolvedTy::Named` use this helper because that carrier has the nominal
+/// owner and concrete type spine but not the declaration `ItemId`.
+#[must_use]
+pub fn machine_layout_key(origin_name: &str, type_args: &[ResolvedTy]) -> String {
+    super::mangle_instantiation(SymbolClass::Machine, origin_name, type_args, &[])
+}
+
 /// One discovered machine instantiation in the post-function-mono
 /// [`crate::machine_mono::run_machine_mono_pass`] output.
 ///

@@ -9,16 +9,16 @@ use super::{
     derive_local_bytes_drop_allowed, derive_local_collection_drop_allowed,
     derive_owned_record_drop_allowed, derive_returned_aggregate_member_bindings,
     derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
-    derive_tuple_composite_drop_allowed, instr_source_places, mangle_layout_key,
-    place_is_interior_projection, place_refs_local, propagate_whole_value_alias_roots,
-    retained_string_terminator_drop_safe, short_name, string_call_borrows,
-    terminator_source_places, user_record_layout_key, vec_iter_record_init_vec_source, BTreeMap,
-    BasicBlock, BindingId, BlockKind, Builder, BuiltinType, CheckedMirFunction,
-    ClosureEnvFieldOwnership, ClosurePairRhs, Disposition, DropKind, DropPlan, ElabBlock, ElabDrop,
-    ElaboratedMirFunction, ExitPath, HashMap, HashSet, HirExpr, HirExprKind, Instr, IntentKind,
-    LambdaCapture, MirCheck, MirDiagnostic, MirDiagnosticKind, MirStatement, ParamCrashCleanupKind,
-    Place, RawMirFunction, ResolvedRef, ResolvedTy, ResourceMarker, ScopeId, SuspendKind,
-    Terminator, TraitObjectStorage, ValueClass, ENTRY_BLOCK_ID,
+    derive_tuple_composite_drop_allowed, instr_source_places, place_is_interior_projection,
+    place_refs_local, propagate_whole_value_alias_roots, retained_string_terminator_drop_safe,
+    short_name, string_call_borrows, terminator_source_places, user_record_layout_key,
+    vec_iter_record_init_vec_source, BTreeMap, BasicBlock, BindingId, BlockKind, Builder,
+    BuiltinType, CheckedMirFunction, ClosureEnvFieldOwnership, ClosurePairRhs, Disposition,
+    DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath, HashMap, HashSet,
+    HirExpr, HirExprKind, Instr, IntentKind, LambdaCapture, MirCheck, MirDiagnostic,
+    MirDiagnosticKind, MirStatement, ParamCrashCleanupKind, Place, RawMirFunction, ResolvedRef,
+    ResolvedTy, ResourceMarker, ScopeId, SuspendKind, Terminator, TraitObjectStorage, ValueClass,
+    ENTRY_BLOCK_ID,
 };
 
 /// Project a Checked MIR finding to a `MirDiagnostic` for the CLI
@@ -3819,8 +3819,11 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
             if matches!(drop.place, Place::Local(_))
                 && matches!(
                     &drop.ty,
-                    ResolvedTy::Named { name, args, .. }
-                        if name.rsplit('.').next() == Some("VecIter") && args.len() == 1
+                    ResolvedTy::Named {
+                        args,
+                        builtin: Some(hew_types::BuiltinType::VecIter),
+                        ..
+                    } if args.len() == 1
                 ) =>
         {
             DropKind::VecIterCursor { release }
@@ -4324,17 +4327,7 @@ pub(super) fn ty_is_heap_owning_enum_composite(
     // not an opaque/builtin handle). Indirect (heap-boxed) enums route their
     // payload drop through the boxed-storage release path, not this in-place
     // helper, so they are excluded here.
-    let short = hew_types::short_name(name);
-    let layout = if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|el| el.name == *name || hew_types::short_name(&el.name) == short)
-    } else {
-        let mangled = mangle_layout_key(short, args);
-        enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
-    };
+    let layout = crate::model::find_enum_layout(name, args, enum_layouts);
     let Some(layout) = layout else {
         return false;
     };
@@ -5480,11 +5473,7 @@ fn unguarded_bind_sites_pairwise_exclusive(
 /// into owned child nodes), not an inline composite drop.
 #[must_use]
 fn name_is_indirect_enum(name: &str, enum_layouts: &[crate::model::EnumLayout]) -> bool {
-    let short = short_name(name);
-    enum_layouts
-        .iter()
-        .find(|el| el.name == name || short_name(&el.name) == short)
-        .is_some_and(|el| el.is_indirect)
+    crate::model::find_enum_layout(name, &[], enum_layouts).is_some_and(|layout| layout.is_indirect)
 }
 /// True when `ty` is an `indirect enum` type.
 #[must_use]
@@ -6480,15 +6469,19 @@ pub(super) fn ty_is_stream_handle(ty: &ResolvedTy) -> bool {
 /// field/tuple projection (`for v in x.v`), or an rvalue (`for v in make()`).
 pub(super) fn vec_iter_init_vec_source_expr(value: &HirExpr) -> Option<&HirExpr> {
     let HirExprKind::StructInit {
-        name,
-        fields,
-        base: None,
-        ..
+        fields, base: None, ..
     } = &value.kind
     else {
         return None;
     };
-    if name != "VecIter" {
+    if !matches!(
+        &value.ty,
+        ResolvedTy::Named {
+            args,
+            builtin: Some(hew_types::BuiltinType::VecIter),
+            ..
+        } if args.len() == 1
+    ) {
         return None;
     }
     fields
@@ -8653,6 +8646,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![place_arg],
             },
@@ -8692,6 +8686,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![literal_arg],
             },
@@ -8730,6 +8725,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![literal_arg],
             },
@@ -8764,6 +8760,7 @@ mod twin_gate_classifier {
         );
         let call = expr(
             HirExprKind::Call {
+                target: hew_types::CallTarget::IndirectFunctionValue,
                 callee: Box::new(callee),
                 args: vec![],
             },

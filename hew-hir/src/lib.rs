@@ -32,12 +32,14 @@ pub use lower::{
 };
 pub use machine_mono::run_machine_mono_pass;
 pub use mono::{
-    mangle_instantiation, sanitize_for_symbol, ActorMonoKey, ConstValue as MonoConstValue,
-    FunctionMonoKey, MachineMonoEntry, MachineMonoKey, MonoKind, SymbolClass,
+    machine_layout_key, mangle_instantiation, sanitize_for_symbol, ActorMonoKey,
+    ConstValue as MonoConstValue, FunctionMonoKey, MachineMonoEntry, MachineMonoKey, MonoKind,
+    SymbolClass,
 };
 pub use monomorph::{
-    mangle, mangle_resolved_ty, shorten_named_arg_qualifiers, substitute_type_params, EnumLayout,
-    EnumMonoKey, EnumVariantLayout, MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey,
+    mangle, mangle_layout_key, mangle_resolved_ty, shorten_named_arg_qualifiers,
+    substitute_type_params, synthetic_cursor_layout_key, EnumLayout, EnumMonoKey,
+    EnumVariantLayout, MonoKey, MonomorphizedFn, RecordLayout, RecordMonoKey,
     MONOMORPHISATION_REGISTRY_CAP,
 };
 pub use node::{

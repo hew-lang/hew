@@ -1,0 +1,14 @@
+// Two imported modules share the final component and export a generic enum
+// named `Parcel<T>`.  Their concrete payloads differ: the left owner uses an
+// owned string; the right owner uses an owned user record containing a string.
+//
+// Each owner constructs, clones, matches, and consumes its own enum.  This is
+// an end-to-end layout/clone/drop oracle: neither generic enum layout nor its
+// owned payload traversal may retry by leaf name.
+import left::render as left_render;
+import right::render as right_render;
+
+fn main() {
+    println(left_render.clone_and_consume_parcel(left_render.make_parcel()));
+    println(right_render.clone_and_consume_parcel(right_render.make_parcel()));
+}

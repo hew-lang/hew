@@ -410,7 +410,9 @@ impl Checker {
                 };
                 let missing: Vec<String> = variants
                     .iter()
-                    .filter(|(name, shape)| !self.variant_covered(&leaves, name, shape))
+                    .filter(|(name, shape)| {
+                        !self.variant_covered(&leaves, scrutinee_ty, name, shape)
+                    })
                     .map(|(name, _)| name.clone())
                     .collect();
                 if !missing.is_empty() {
@@ -455,7 +457,9 @@ impl Checker {
                         };
                         let mut missing_names: Vec<String> = variants
                             .iter()
-                            .filter(|(vname, shape)| !self.variant_covered(&leaves, vname, shape))
+                            .filter(|(vname, shape)| {
+                                !self.variant_covered(&leaves, scrutinee_ty, vname, shape)
+                            })
                             .map(|(vname, _)| vname.clone())
                             .collect();
                         if !missing_names.is_empty() {

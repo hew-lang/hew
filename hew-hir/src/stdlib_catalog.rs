@@ -2222,42 +2222,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
-        "math.tanh",
-        BuiltinClass::ClassB,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.tanh",
-        },
-    ),
-    direct(
-        "math.log2",
-        BuiltinClass::ClassB,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.log2",
-        },
-    ),
-    direct(
-        "math.log10",
-        BuiltinClass::ClassB,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.log10",
-        },
-    ),
-    direct(
-        "math.exp2",
-        BuiltinClass::ClassB,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.exp2",
-        },
-    ),
-    direct(
         "math.pow",
         BuiltinClass::ClassB,
         F64_F64,
@@ -2285,21 +2249,12 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
-        "math.pi",
+        "math.round",
         BuiltinClass::ClassB,
-        EMPTY,
+        F64,
         BuiltinTy::F64,
         BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.pi",
-        },
-    ),
-    direct(
-        "math.e",
-        BuiltinClass::ClassB,
-        EMPTY,
-        BuiltinTy::F64,
-        BuiltinLinkage::CompilerIntrinsic {
-            intrinsic: "math.e",
+            intrinsic: "math.round",
         },
     ),
     // Class B: random module runtime shims.

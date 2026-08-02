@@ -11,6 +11,10 @@ use super::{
 };
 use crate::model::{GeneratorEnvFieldPlan, GeneratorEnvPlan};
 
+fn is_lambda_pid_ty(ty: &ResolvedTy) -> bool {
+    ty.is_builtin(BuiltinType::LambdaPid)
+}
+
 impl Builder {
     /// True when `ty` may be snapshotted into a generator environment with a
     /// total semantic clone and inverse drop.
@@ -357,10 +361,7 @@ impl Builder {
             // checker's `check_call`; if MIR sees one here, the checker gate
             // was bypassed by a new source form. Fail closed rather than
             // misrouting to `hew_duplex_send` (wrong runtime ABI).
-            if matches!(
-                &capture.ty,
-                ResolvedTy::Named { name, .. } if name == "LambdaPid"
-            ) {
+            if is_lambda_pid_ty(&capture.ty) {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::ClosureCapturesDuplexHandle {
                         name: capture.name.clone(),
@@ -495,6 +496,14 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
+            // Direct calls in nested user bodies keep the checker-selected
+            // declaration, so their linker projection must cross the frame
+            // boundary with the rest of the module facts.  In particular, an
+            // imported generic free function may be first called from a
+            // closure/lambda/task body; reconstructing a name from its DefId
+            // here would let a same-leaf declaration win.  The parent already
+            // received this exact declaration-to-emitted-symbol map from HIR.
+            direct_call_symbols: self.direct_call_symbols.clone(),
             param_ownership: self.param_ownership.clone(),
             // U2 — the proven-foreign ledger CROSSES the frame boundary with the
             // captures. `BindingId`s are globally unique, so carrying the
@@ -715,6 +724,7 @@ impl Builder {
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new(shim_name),
             name: shim_name.to_string(),
             type_params: Vec::new(),
             is_generator: false,
@@ -898,6 +908,7 @@ impl Builder {
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new(shim_name),
             name: shim_name.to_string(),
             type_params: Vec::new(),
             is_generator: false,
@@ -1421,6 +1432,7 @@ impl Builder {
         let synthetic_fn = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new(body_name.clone()),
             name: body_name.clone(),
             type_params: Vec::new(),
             is_generator: false,
@@ -2315,6 +2327,7 @@ impl Builder {
         let synthetic_fn = HirFn {
             id: hew_hir::ItemId(0),
             node: hew_hir::HirNodeId(0),
+            declaration: hew_types::DefId::new(body_name.clone()),
             name: body_name.clone(),
             type_params: Vec::new(),
             is_generator: false,
@@ -2651,12 +2664,8 @@ impl Builder {
         let (resume_bb, close_bb) = self.emit_pump_peer_closed_check(pump.sink);
 
         self.start_block(resume_bb);
-        let option_ty = ResolvedTy::Named {
-            name: "Option".to_string(),
-            args: vec![pump.yield_ty.clone()],
-            builtin: None,
-            is_opaque: false,
-        };
+        let option_ty =
+            ResolvedTy::named_builtin("Option", BuiltinType::Option, vec![pump.yield_ty.clone()]);
         let opt_dest = self.alloc_local(option_ty);
         self.push_instr(Instr::GeneratorNext {
             dest: opt_dest,
@@ -2811,5 +2820,23 @@ impl Builder {
 
         // `yield` evaluates to unit in the gen body.
         None
+    }
+}
+
+#[cfg(test)]
+mod builtin_carrier_tests {
+    use super::*;
+
+    #[test]
+    fn lambda_pid_gate_uses_builtin_identity_not_presentation() {
+        let renamed = ResolvedTy::named_builtin(
+            "presentation.RenamedLambdaPid",
+            BuiltinType::LambdaPid,
+            vec![ResolvedTy::String, ResolvedTy::I64],
+        );
+        assert!(is_lambda_pid_ty(&renamed));
+
+        let shadow = ResolvedTy::named_user("LambdaPid", vec![ResolvedTy::String, ResolvedTy::I64]);
+        assert!(!is_lambda_pid_ty(&shadow));
     }
 }

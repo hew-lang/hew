@@ -355,6 +355,20 @@ impl TypeEnv {
         None
     }
 
+    /// Read-only lookup with the defining lexical-scope index.
+    ///
+    /// Import bindings live in the persistent outer scope (index zero), while
+    /// locals and parameters live in a body scope. Callers that validate an
+    /// imported namespace must preserve that ordinary local-shadowing rule.
+    #[must_use]
+    pub fn lookup_ref_with_depth(&self, name: &str) -> Option<(usize, &Binding)> {
+        self.scopes
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(depth, scope)| scope.get(name).map(|binding| (depth, binding)))
+    }
+
     /// Look up a variable by name, returning the scope depth where it was found. Marks as used.
     #[must_use]
     pub fn lookup_with_depth(&mut self, name: &str) -> Option<(usize, &Binding)> {

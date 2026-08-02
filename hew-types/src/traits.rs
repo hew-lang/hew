@@ -301,11 +301,9 @@ impl TraitRegistry {
         self.serializable_members.insert(name, member_types);
     }
 
-    /// Look up `Serializable` members by exact or module-qualified/unqualified name.
+    /// Look up `Serializable` members by canonical declaration identity.
     fn serializable_members_any(&self, name: &str) -> Option<&Vec<Ty>> {
-        self.serializable_members
-            .get(name)
-            .or_else(|| self.serializable_members.get(crate::short_name(name)))
+        self.serializable_members.get(name)
     }
 
     fn has_encode_decode(&self, ty: &Ty) -> bool {
@@ -413,25 +411,17 @@ impl TraitRegistry {
         self.drop_types.insert(name);
     }
 
-    /// Check if a name is a handle type (qualified or unqualified).
+    /// Check a canonical handle declaration identity.
     fn is_handle_type_any(&self, name: &str) -> bool {
         self.handle_types.contains(name)
-            || self
-                .handle_types
-                .iter()
-                .any(|ht| crate::short_name(ht) == name)
     }
 
-    /// Check if a name is a drop type (qualified or unqualified).
+    /// Check a canonical drop declaration identity.
     fn is_drop_type_any(&self, name: &str) -> bool {
         self.drop_types.contains(name)
-            || self
-                .drop_types
-                .iter()
-                .any(|dt| crate::short_name(dt) == name)
     }
 
-    /// Register a `#[resource]` type by its declared (bare) name.
+    /// Register a `#[resource]` type by its canonical declaration path.
     ///
     /// Called at type-decl registration for every user/stdlib `#[resource]`
     /// declaration. The registry is the single authority for this fact;
@@ -481,28 +471,17 @@ impl TraitRegistry {
 
     /// Report whether `name` is a `#[resource]` type.
     ///
-    /// `resource_types` is keyed by the declared (bare) type name. A receiver
-    /// type name may arrive module-qualified (`mod.Conn`) for an imported
-    /// handle type, so the unqualified suffix is matched too — mirroring the
-    /// bare/unqualified lookup the `Drop`/handle type sets use.
+    /// `resource_types` is keyed by the canonical declaration path. Missing
+    /// metadata fails closed instead of retrying with a leaf spelling.
     #[must_use]
     pub fn is_resource(&self, name: &str) -> bool {
-        if self.resource_types.contains(name) {
-            return true;
-        }
-        let unqualified = crate::short_name(name);
-        self.resource_types.contains(unqualified)
+        self.resource_types.contains(name)
     }
 
-    /// Report whether `name` is a `#[linear]` type. Matches the bare and
-    /// module-qualified-suffix spellings, mirroring `is_resource`.
+    /// Report whether `name` is a canonical `#[linear]` declaration.
     #[must_use]
     pub fn is_linear(&self, name: &str) -> bool {
-        if self.linear_types.contains(name) {
-            return true;
-        }
-        let unqualified = crate::short_name(name);
-        self.linear_types.contains(unqualified)
+        self.linear_types.contains(name)
     }
 
     /// Register a negative impl (type does NOT implement trait).
@@ -1528,10 +1507,10 @@ mod tests {
         registry.register_resource_type("Child".to_string());
         // Registered bare name resolves through the registry alone.
         assert!(registry.is_resource("Child"));
-        // Module-qualified receiver name resolves via the unqualified suffix,
-        // matching the imported-handle dispatch path.
-        assert!(registry.is_resource("process.Child"));
-        // A different qualified type is not admitted by the suffix fallback.
+        // A qualified declaration is a different nominal; no leaf retry is
+        // permitted at the registry boundary.
+        assert!(!registry.is_resource("process.Child"));
+        // Nor is an unrelated qualified type admitted.
         assert!(!registry.is_resource("process.Parent"));
     }
 

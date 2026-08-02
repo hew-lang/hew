@@ -525,7 +525,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             .expect("write to string");
             dump_expr(out, value, indent + 4);
         }
-        HirExprKind::Call { callee, args } => {
+        HirExprKind::Call { callee, args, .. } => {
             writeln!(out, "{pad}  call").expect("write to string");
             dump_expr(out, callee, indent + 4);
             for arg in args {
@@ -1018,6 +1018,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             args,
             ret_ty,
             signature: _,
+            ..
         } => {
             writeln!(
                 out,
@@ -1053,13 +1054,20 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         }
         HirExprKind::VarSelfMethodCall {
             receiver,
+            call_target,
             target,
             args,
             ret_ty,
             receiver_ty,
+            ..
         } => {
             let target_label = match target {
-                crate::node::HirVarSelfMethodTarget::Direct { callee } => callee.clone(),
+                crate::node::HirVarSelfMethodTarget::Direct => match call_target {
+                    hew_types::CallTarget::ImplMethod(declaration) => {
+                        declaration.full_path().to_string()
+                    }
+                    other => format!("invalid-direct-target:{other:?}"),
+                },
                 crate::node::HirVarSelfMethodTarget::StaticTrait {
                     receiver_type_param,
                     declaring_trait,
@@ -1090,6 +1098,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             type_args,
             args,
             ret_ty,
+            ..
         } => {
             writeln!(
                 out,

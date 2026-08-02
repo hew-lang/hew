@@ -8,8 +8,8 @@
 //! choke so iterator ownership can be strengthened without changing `xs[i]`.
 
 use super::{
-    short_name, ty_is_local_collection_handle, ty_is_vec, Builder, CmpPred, HirExpr, Instr,
-    MirDiagnostic, MirDiagnosticKind, Place, ResolvedTy, Terminator, TrapKind, ValueClass,
+    ty_is_local_collection_handle, ty_is_vec, Builder, CmpPred, HirExpr, Instr, MirDiagnostic,
+    MirDiagnosticKind, Place, ResolvedTy, Terminator, TrapKind, ValueClass,
 };
 
 impl Builder {
@@ -277,10 +277,9 @@ impl Builder {
             // Without this branch, direct enums fell through to the
             // `hew_vec_get_ptr` catch-all below — which uses an 8-byte pointer
             // stride, mis-strides the buffer, and causes a runtime panic.
-            ResolvedTy::Named { name, .. }
-                if self.enum_layouts.iter().any(|el| {
-                    (el.name == name.as_str() || el.name == short_name(name)) && !el.is_indirect
-                }) =>
+            ResolvedTy::Named { name, args, .. }
+                if crate::model::find_enum_layout(name, args, &self.enum_layouts)
+                    .is_some_and(|layout| !layout.is_indirect) =>
             {
                 "hew_vec_get_layout"
             }

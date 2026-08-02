@@ -64,31 +64,15 @@ pub(crate) fn declare_codec_prim<'ctx>(
         .unwrap_or_else(|| llvm_mod.add_function(name, fn_ty, Some(Linkage::External)))
 }
 
-/// Resolve a `Named { name, args }` to the layout-map registration key:
-/// the plain (short) name for a monomorphic type, the `mangle`d name for a
-/// generic instantiation. Mirrors `user_record_layout_key` / `lookup_enum_layout`.
-fn xnode_registry_key(
-    name: &str,
-    args: &[ResolvedTy],
-    records: &[RecordLayout],
-    enums: &[EnumLayout],
-) -> String {
-    let short = short_name(name);
+/// Resolve a `Named { name, args }` to the canonical layout-map registration
+/// key: the full owner for a monomorphic type, and the canonical layout mangle
+/// for a generic instantiation. Mirrors `user_record_layout_key` /
+/// `lookup_enum_layout`.
+fn xnode_registry_key(name: &str, args: &[ResolvedTy]) -> String {
     if args.is_empty() {
-        // Prefer an exact registered name; else the short form.
-        if records.iter().any(|r| r.name == name) || enums.iter().any(|e| e.name == name) {
-            return name.to_string();
-        }
-        short.to_string()
+        name.to_string()
     } else {
-        // Shorten the spine for the full-outer-name candidate too: registration
-        // keys on bare args, so a qualified payload must be normalised here or
-        // the `full` probe never matches and only the short form would.
-        let full = mangle_with_shortened_args(name, args);
-        if records.iter().any(|r| r.name == full) || enums.iter().any(|e| e.name == full) {
-            return full;
-        }
-        mangle_with_shortened_args(short, args)
+        mangle_with_shortened_args(name, args)
     }
 }
 
@@ -117,7 +101,6 @@ fn emit_de_drop_owned<'ctx>(
     dst: PointerValue<'ctx>,
     record_layouts: &RecordLayoutMap<'ctx>,
     machine_layouts: &MachineLayoutMap<'ctx>,
-    pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
@@ -195,7 +178,7 @@ fn emit_de_drop_owned<'ctx>(
         // helper (`__hew_record_drop_inplace_<name>`).  That helper walks the
         // struct's owned fields and drops them; null fields are safe.
         ResolvedTy::Named { name, args, .. } => {
-            let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+            let key = xnode_registry_key(name, args);
             if let Some(el) = enum_layouts.iter().find(|e| e.name == key) {
                 let drop_fn = get_or_declare_enum_drop_inplace(ctx, llvm_mod, &key);
                 if el.is_indirect {
@@ -310,13 +293,6 @@ fn cbor_field_key(
     };
     if let Some(tag) = probe(record_key) {
         return tag;
-    }
-    // Records are usually keyed by the short name; try it if the key was qualified.
-    let short = short_name(record_key);
-    if short != record_key {
-        if let Some(tag) = probe(short) {
-            return tag;
-        }
     }
     field_idx as u64 + 1
 }
@@ -632,7 +608,7 @@ fn emit_ser_named_cbor<'ctx>(
     enum_layouts: &[EnumLayout],
     target_data: &TargetData,
 ) -> CodegenResult<()> {
-    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    let key = xnode_registry_key(name, args);
     // Enum: encode under the map-of-one shape.
     if let (Some(layout), Some(el)) = (
         machine_layouts.get(&key),
@@ -1049,7 +1025,7 @@ fn emit_de_named_cbor<'ctx>(
     enum_layouts: &[EnumLayout],
     target_data: &TargetData,
 ) -> CodegenResult<()> {
-    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    let key = xnode_registry_key(name, args);
     // Enum: decode the map-of-one shape.
     if let (Some(layout), Some(el)) = (
         machine_layouts.get(&key),
@@ -1161,12 +1137,6 @@ fn cbor_variant_tag(
     };
     if let Some(tag) = probe(enum_key) {
         return tag;
-    }
-    let short = short_name(enum_key);
-    if short != enum_key {
-        if let Some(tag) = probe(short) {
-            return tag;
-        }
     }
     variant_idx as u64
 }
@@ -1386,7 +1356,7 @@ fn build_text_descriptor_named(
     enum_layouts: &[EnumLayout],
     visiting: &mut std::collections::HashSet<String>,
 ) -> String {
-    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    let key = xnode_registry_key(name, args);
     if !visiting.insert(key.clone()) {
         // Recursive back-edge: a recursive text type is outside the floor.
         return r#"{"k":"opaque"}"#.to_string();
@@ -1498,8 +1468,18 @@ struct CborHeapLayouts<'a> {
 }
 
 impl hew_mir::HeapOwnershipLayouts for CborHeapLayouts<'_> {
-    fn record_field_tys(&self, name: &str, args: &[ResolvedTy]) -> Option<Vec<ResolvedTy>> {
-        let key = xnode_registry_key(name, args, self.pipeline_records, self.enum_layouts);
+    fn record_field_tys(
+        &self,
+        name: &str,
+        args: &[ResolvedTy],
+        builtin: Option<hew_types::BuiltinType>,
+    ) -> Option<Vec<ResolvedTy>> {
+        let key = match builtin {
+            Some(
+                cursor @ (hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter),
+            ) => hew_hir::synthetic_cursor_layout_key(cursor, args)?,
+            _ => xnode_registry_key(name, args),
+        };
         self.pipeline_records
             .iter()
             .find(|r| r.name == key)
@@ -1511,7 +1491,7 @@ impl hew_mir::HeapOwnershipLayouts for CborHeapLayouts<'_> {
         name: &str,
         args: &[ResolvedTy],
     ) -> Option<Vec<Vec<ResolvedTy>>> {
-        let key = xnode_registry_key(name, args, self.pipeline_records, self.enum_layouts);
+        let key = xnode_registry_key(name, args);
         self.enum_layouts
             .iter()
             .find(|e| e.name == key)
@@ -1519,7 +1499,7 @@ impl hew_mir::HeapOwnershipLayouts for CborHeapLayouts<'_> {
     }
 
     fn enum_is_indirect(&self, name: &str, args: &[ResolvedTy]) -> bool {
-        let key = xnode_registry_key(name, args, self.pipeline_records, self.enum_layouts);
+        let key = xnode_registry_key(name, args);
         self.enum_layouts
             .iter()
             .any(|layout| layout.name == key && layout.is_indirect)
@@ -2380,7 +2360,7 @@ fn emit_ser_option_cbor<'ctx>(
 ) -> CodegenResult<()> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
-    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    let key = xnode_registry_key(name, args);
     let (Some(layout), Some(el)) = (
         machine_layouts.get(&key),
         enum_layouts.iter().find(|e| e.name == key),
@@ -2511,7 +2491,7 @@ fn emit_de_option_cbor<'ctx>(
     let void_ty = ctx.void_type();
     let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
-    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    let key = xnode_registry_key(name, args);
     let (Some(layout), Some(el)) = (
         machine_layouts.get(&key),
         enum_layouts.iter().find(|e| e.name == key),
@@ -3358,7 +3338,6 @@ pub(crate) fn emit_cbor_codec_thunks<'ctx>(
             dst,
             record_layouts,
             machine_layouts,
-            pipeline_records,
             enum_layouts,
         )?;
         let free_fn = declare_codec_prim(
@@ -3381,4 +3360,75 @@ pub(crate) fn emit_cbor_codec_thunks<'ctx>(
     }
 
     Ok((ser_sym, de_sym))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use hew_types::{WireFieldLayout, WireLayoutEntry};
+
+    fn wire_entry(field_tag: u32, variant_tag: u32) -> WireLayoutEntry {
+        WireLayoutEntry {
+            is_struct: true,
+            json_case: None,
+            yaml_case: None,
+            version: None,
+            min_version: None,
+            fields: vec![WireFieldLayout {
+                name: "payload".to_string(),
+                tag: field_tag,
+                json_name: None,
+                yaml_name: None,
+                optional: false,
+                repeated: false,
+            }],
+            variants: vec![("Ready".to_string(), variant_tag)],
+        }
+    }
+
+    #[test]
+    fn wire_record_tags_require_the_exact_full_owner() {
+        let layouts: WireLayoutTable = HashMap::from([
+            ("left.render.Packet".to_string(), wire_entry(11, 101)),
+            ("right.render.Packet".to_string(), wire_entry(22, 202)),
+        ]);
+
+        assert_eq!(
+            cbor_field_key(&layouts, "left.render.Packet", "payload", 0),
+            11
+        );
+        assert_eq!(
+            cbor_field_key(&layouts, "right.render.Packet", "payload", 0),
+            22
+        );
+        assert_eq!(
+            cbor_field_key(&layouts, "Packet", "payload", 0),
+            1,
+            "unqualified same-leaf lookup must not borrow either owner's tag"
+        );
+    }
+
+    #[test]
+    fn wire_enum_tags_require_the_exact_full_owner() {
+        let layouts: WireLayoutTable = HashMap::from([
+            ("left.render.Result".to_string(), wire_entry(11, 101)),
+            ("right.render.Result".to_string(), wire_entry(22, 202)),
+        ]);
+
+        assert_eq!(
+            cbor_variant_tag(&layouts, "left.render.Result", "Ready", 0),
+            101
+        );
+        assert_eq!(
+            cbor_variant_tag(&layouts, "right.render.Result", "Ready", 0),
+            202
+        );
+        assert_eq!(
+            cbor_variant_tag(&layouts, "Result", "Ready", 0),
+            0,
+            "unqualified same-leaf lookup must not borrow either owner's tag"
+        );
+    }
 }

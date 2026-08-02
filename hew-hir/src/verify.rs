@@ -513,6 +513,23 @@ impl Verifier {
         HirDiagnostic::new(kind, span, note).with_source_module(self.current_source_module.clone())
     }
 
+    /// The checker may preserve an unsupported target for diagnostics while
+    /// recovering its surrounding expression.  That sentinel must never cross
+    /// into an executable HIR call carrier: later phases intentionally consume
+    /// the structured target and have no name-based recovery path.
+    fn executable_call_target(&mut self, target: &hew_types::CallTarget, expr: &HirExpr) {
+        if let hew_types::CallTarget::Unsupported { reason } = target {
+            self.diagnostics.push(self.diagnostic(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "call target".to_string(),
+                    reason: reason.clone(),
+                },
+                expr.span.clone(),
+                "unsupported checker call target must not reach executable HIR",
+            ));
+        }
+    }
+
     fn block(&mut self, block: &HirBlock) {
         self.node(block.node, 0..0);
         for stmt in &block.statements {
@@ -820,7 +837,12 @@ impl Verifier {
                     self.expr(elem);
                 }
             }
-            HirExprKind::Call { callee, args } => {
+            HirExprKind::Call {
+                target,
+                callee,
+                args,
+            } => {
+                self.executable_call_target(target, expr);
                 self.expr(callee);
                 for arg in args {
                     self.expr(arg);
@@ -857,12 +879,44 @@ impl Verifier {
                     self.produced_value_source_anchor(anchor, expr.site);
                 }
             }
+            HirExprKind::CallDynMethod {
+                target,
+                receiver,
+                args,
+                ..
+            }
+            | HirExprKind::ResolvedImplCall {
+                target,
+                receiver,
+                args,
+                ..
+            }
+            | HirExprKind::CallTraitMethodStatic {
+                target,
+                receiver,
+                args,
+                ..
+            } => {
+                self.executable_call_target(target, expr);
+                self.expr(receiver);
+                for arg in args {
+                    self.expr(arg);
+                }
+            }
+            HirExprKind::VarSelfMethodCall {
+                call_target,
+                receiver,
+                args,
+                ..
+            } => {
+                self.executable_call_target(call_target, expr);
+                self.expr(receiver);
+                for arg in args {
+                    self.expr(arg);
+                }
+            }
             HirExprKind::ActorSend { receiver, args, .. }
-            | HirExprKind::ActorGenStream { receiver, args, .. }
-            | HirExprKind::CallDynMethod { receiver, args, .. }
-            | HirExprKind::ResolvedImplCall { receiver, args, .. }
-            | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
-            | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
+            | HirExprKind::ActorGenStream { receiver, args, .. } => {
                 self.expr(receiver);
                 for arg in args {
                     self.expr(arg);
@@ -1465,5 +1519,214 @@ impl Verifier {
             HirItem::Const(item) => item.id,
         };
         module.diagnostic_source_modules.get(&id).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::Arc,
+    };
+
+    use super::verify_hir;
+    use crate::ids::IdGen;
+    use crate::node::{
+        HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule,
+        HirVarSelfMethodTarget,
+    };
+    use crate::{IntentKind, ValueClass};
+    use hew_types::{CallTarget, ImplId, MethodTargetFamily, ResolvedTy, VecMethod};
+
+    fn unit_expr(ids: &mut IdGen) -> HirExpr {
+        HirExpr {
+            node: ids.node(),
+            site: ids.site(),
+            ty: ResolvedTy::Unit,
+            value_class: ValueClass::BitCopy,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::Unit),
+            span: 0..0,
+        }
+    }
+
+    fn executable_expr(ids: &mut IdGen, kind: HirExprKind) -> HirExpr {
+        HirExpr {
+            node: ids.node(),
+            site: ids.site(),
+            ty: ResolvedTy::Unit,
+            value_class: ValueClass::BitCopy,
+            intent: IntentKind::Read,
+            kind,
+            span: 0..0,
+        }
+    }
+
+    fn function_with_tail(ids: &mut IdGen, name: &str, tail: HirExpr) -> HirItem {
+        HirItem::Function(HirFn {
+            id: ids.item(),
+            node: ids.node(),
+            declaration: hew_types::DefId::new(name),
+            name: name.to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_ty: ResolvedTy::Unit,
+            body: HirBlock {
+                node: ids.node(),
+                scope: ids.scope(),
+                statements: Vec::new(),
+                tail: Some(Box::new(tail)),
+                ty: ResolvedTy::Unit,
+                span: 0..0,
+            },
+            span: 0..0,
+            is_generator: false,
+            intrinsic_id: None,
+        })
+    }
+
+    fn module(items: Vec<HirItem>) -> HirModule {
+        HirModule {
+            items,
+            produced_value_facts: HashMap::new(),
+            diagnostic_source_modules: HashMap::new(),
+            root_item_ids: HashSet::default(),
+            caller_visible_param_projections: HashSet::default(),
+            wire_layouts: Arc::new(HashMap::new()),
+            type_classes: HashMap::new(),
+            monomorphisations: Vec::new(),
+            call_site_type_args: HashMap::new(),
+            vec_generic_element_abi: HashMap::new(),
+            record_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            machine_instantiations: Vec::new(),
+            supervisor_child_slots: HashMap::new(),
+            pool_accessor_sites: HashMap::new(),
+            regex_literals: Vec::new(),
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the verifier regression exercises every executable call carrier in one shared fixture"
+    )]
+    fn unsupported_targets_are_rejected_for_every_executable_call_carrier() {
+        let mut ids = IdGen::default();
+        let unsupported = |carrier: &str| CallTarget::Unsupported {
+            reason: format!("unsupported {carrier}"),
+        };
+
+        let ordinary_callee = unit_expr(&mut ids);
+        let ordinary = executable_expr(
+            &mut ids,
+            HirExprKind::Call {
+                target: unsupported("ordinary call"),
+                callee: Box::new(ordinary_callee),
+                args: Vec::new(),
+            },
+        );
+        let indirect_callee = unit_expr(&mut ids);
+        let indirect = executable_expr(
+            &mut ids,
+            HirExprKind::Call {
+                target: CallTarget::IndirectFunctionValue,
+                callee: Box::new(indirect_callee),
+                args: Vec::new(),
+            },
+        );
+        let dynamic_receiver = unit_expr(&mut ids);
+        let dynamic = executable_expr(
+            &mut ids,
+            HirExprKind::CallDynMethod {
+                receiver: Box::new(dynamic_receiver),
+                target: unsupported("dynamic method call"),
+                trait_name: "T".to_string(),
+                method_name: "m".to_string(),
+                slot: 0,
+                args: Vec::new(),
+                ret_ty: ResolvedTy::Unit,
+                signature: Box::default(),
+            },
+        );
+        let resolved_impl_receiver = unit_expr(&mut ids);
+        let resolved_impl = executable_expr(
+            &mut ids,
+            HirExprKind::ResolvedImplCall {
+                receiver: Box::new(resolved_impl_receiver),
+                target: unsupported("resolved impl call"),
+                impl_id: ImplId(0),
+                method_name: "len".to_string(),
+                target_symbol: "hew_vec_len_i64".to_string(),
+                target_family: MethodTargetFamily::Vec(VecMethod::Len),
+                type_args: Vec::new(),
+                args: Vec::new(),
+                ret_ty: ResolvedTy::Unit,
+            },
+        );
+        let static_trait_receiver = unit_expr(&mut ids);
+        #[allow(
+            deprecated,
+            reason = "the verifier must continue rejecting the deprecated static carrier"
+        )]
+        let static_trait = executable_expr(
+            &mut ids,
+            HirExprKind::CallTraitMethodStatic {
+                receiver: Box::new(static_trait_receiver),
+                target: unsupported("static trait call"),
+                receiver_type_param: "T".to_string(),
+                bound_trait: "T".to_string(),
+                declaring_trait: "T".to_string(),
+                method_name: "m".to_string(),
+                args: Vec::new(),
+                ret_ty: ResolvedTy::Unit,
+            },
+        );
+        let var_self_receiver = unit_expr(&mut ids);
+        let var_self = executable_expr(
+            &mut ids,
+            HirExprKind::VarSelfMethodCall {
+                receiver: Box::new(var_self_receiver),
+                call_target: unsupported("var-self method call"),
+                target: HirVarSelfMethodTarget::Direct,
+                args: Vec::new(),
+                ret_ty: ResolvedTy::Unit,
+                receiver_ty: ResolvedTy::Unit,
+            },
+        );
+
+        let module = module(vec![
+            function_with_tail(&mut ids, "ordinary", ordinary),
+            function_with_tail(&mut ids, "indirect", indirect),
+            function_with_tail(&mut ids, "dynamic", dynamic),
+            function_with_tail(&mut ids, "resolved_impl", resolved_impl),
+            function_with_tail(&mut ids, "static_trait", static_trait),
+            function_with_tail(&mut ids, "var_self", var_self),
+        ]);
+        let diagnostics = verify_hir(&module);
+        let mut reasons: Vec<_> = diagnostics
+            .iter()
+            .filter_map(|diagnostic| match &diagnostic.kind {
+                crate::HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
+                    if name == "call target" =>
+                {
+                    Some(reason.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        reasons.sort_unstable();
+
+        assert_eq!(
+            reasons,
+            vec![
+                "unsupported dynamic method call",
+                "unsupported ordinary call",
+                "unsupported resolved impl call",
+                "unsupported static trait call",
+                "unsupported var-self method call",
+            ],
+            "every executable HIR call carrier must reject an Unsupported checker target, while a valid indirect function-value call remains executable"
+        );
     }
 }

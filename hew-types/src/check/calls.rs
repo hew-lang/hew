@@ -28,7 +28,21 @@ impl Checker {
         if let Some(pos) = func_name.rfind("::") {
             let type_prefix = &func_name[..pos];
             let variant_name = &func_name[pos + 2..];
-            let direct = self.type_defs.get(type_prefix).and_then(|td| {
+            // A constructor written inside its declaring package module uses
+            // the bare lexical prefix (`Parcel::Filled`), but the declaration
+            // is keyed under its full owner (`left.render.Parcel`). Resolve
+            // that owner before consulting the compatibility bare entry.
+            let local_owner_key = (!type_prefix.contains('.'))
+                .then(|| {
+                    self.current_module_identity()
+                        .map(|owner| format!("{owner}.{type_prefix}"))
+                })
+                .flatten();
+            let direct_key = local_owner_key
+                .as_deref()
+                .filter(|key| self.type_defs.contains_key(*key))
+                .unwrap_or(type_prefix);
+            let direct = self.type_defs.get(direct_key).and_then(|td| {
                 if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
                     return None;
                 }
@@ -38,7 +52,7 @@ impl Checker {
                         VariantDef::Tuple(p) => p.clone(),
                         VariantDef::Struct(_) => return None,
                     };
-                    Some((type_prefix.to_string(), params, td.type_params.clone()))
+                    Some((direct_key.to_string(), params, td.type_params.clone()))
                 })
             });
             if direct.is_some() {
@@ -116,6 +130,22 @@ impl Checker {
         }
     }
 
+    /// Rebuild a constructor result from the already-resolved expected
+    /// nominal, changing only its inferred arguments. The expected type owns
+    /// both declaration identity and builtin discrimination; consulting its
+    /// display spelling again would lose renamed builtin presentations or
+    /// retag a same-spelling source declaration.
+    pub(super) fn variant_nominal_from_expected(expected: &Ty, args: Vec<Ty>) -> Option<Ty> {
+        let Ty::Named { name, builtin, .. } = expected else {
+            return None;
+        };
+        Some(Ty::Named {
+            name: name.clone(),
+            args,
+            builtin: *builtin,
+        })
+    }
+
     fn lower_turbofish_elem(
         &mut self,
         constructor_name: &str,
@@ -164,12 +194,24 @@ impl Checker {
         match builtin {
             crate::BuiltinType::HashMap => {
                 self.validate_concrete_hashmap_type(&result_ty, span);
+                self.record_direct_call_target(
+                    span,
+                    CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::HashMapNew),
+                );
             }
             crate::BuiltinType::HashSet => {
                 self.validate_concrete_hashset_type(&result_ty, span);
+                self.record_direct_call_target(
+                    span,
+                    CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::HashSetNew),
+                );
             }
             crate::BuiltinType::Vec => {
                 self.validate_concrete_vec_type(&result_ty, span);
+                self.record_direct_call_target(
+                    span,
+                    CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::VecNew),
+                );
             }
             _ => {}
         }
@@ -561,6 +603,10 @@ impl Checker {
                 resolved_expected.clone()
             };
             self.record_type(span, &result_ty);
+            self.record_direct_call_target(
+                span,
+                CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::VecNew),
+            );
             return Some(result_ty);
         }
 
@@ -598,7 +644,8 @@ impl Checker {
                 .map(|ty| self.subst.resolve(&ty))
                 .collect();
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
-            let result_ty = Ty::normalize_named(type_name, resolved_args);
+            let result_ty = Self::variant_nominal_from_expected(&resolved_expected, resolved_args)
+                .expect("constructor expected-type match requires a named nominal");
             self.record_type(span, &result_ty);
             return Some(result_ty);
         }
@@ -771,7 +818,8 @@ impl Checker {
     ) {
         if matches!(
             (type_name, method),
-            ("http.Server" | "net.Listener", "accept") | ("net.Connection", "read")
+            ("http.Server" | crate::stdlib::STD_NET_LISTENER, "accept")
+                | (crate::stdlib::STD_NET_CONNECTION, "read")
         ) {
             let suggestion = "use the suspending form instead: `await` the call (e.g. \
                  `await listener.accept()` or `await conn.read()`) — it parks the \
@@ -821,7 +869,11 @@ impl Checker {
         if !self.modules.contains(module_name) {
             return None;
         }
-        let key = format!("{module_name}.{method}");
+        // The parsed qualifier is only a lexical binding. Resolve it through
+        // the import table before consulting declaration/export authority so
+        // nested modules and aliases retain their exact source identity.
+        let canonical_owner = self.canonical_module_import_owner(module_name);
+        let key = format!("{canonical_owner}.{method}");
         if !self.fn_sigs.contains_key(&key) {
             return None;
         }
@@ -915,7 +967,242 @@ impl Checker {
             &applied_sig.return_type,
             span,
         );
+        // A module-qualified call has one canonical target shared by its
+        // rewrite and its ordinary-call fact.  The signature key above may be
+        // a lexical compatibility alias, so never mint a second identity from
+        // it after the module resolver already selected the source owner.
+        let rewrite_target = self
+            .method_call_rewrites
+            .get(&SpanKey::in_module(span, self.current_module_idx))
+            .and_then(|rewrite| match rewrite {
+                crate::MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. } => {
+                    Some(target.clone())
+                }
+                _ => None,
+            });
+        self.record_direct_call_target(
+            span,
+            rewrite_target.unwrap_or_else(|| self.call_target_for_signature(&key)),
+        );
         Some(applied_sig.return_type)
+    }
+
+    /// Publish the canonical target of an admitted ordinary call.  This is the
+    /// authority boundary for `HirExprKind::Call`; lowerings never recover it
+    /// from a callee name or a linker symbol.
+    fn record_direct_call_target(&mut self, span: &Span, target: CallTarget) {
+        self.direct_call_targets
+            .insert(SpanKey::in_module(span, self.current_module_idx), target);
+    }
+
+    /// Recover a compiler intrinsic only through the exact declaration mapping
+    /// produced during canonical-floor registration.  The source spelling may
+    /// be an imported module alias or a named-import alias, but both paths
+    /// retain the declaring key; never infer an intrinsic from a callee leaf.
+    pub(super) fn intrinsic_runtime_target_for_signature(
+        &self,
+        signature_key: &str,
+    ) -> Option<crate::runtime_call::RuntimeCallFamily> {
+        let intrinsic_key = self
+            .intrinsic_declarations
+            .get(signature_key)
+            .or_else(|| {
+                let (surface_module, source_leaf) = signature_key.rsplit_once('.')?;
+                let source_module = self
+                    .module_import_bindings
+                    .get(&(self.current_module.clone(), surface_module.to_string()))?;
+                self.intrinsic_declarations
+                    .get(&format!("{source_module}.{source_leaf}"))
+            })
+            .or_else(|| {
+                let source_key = self
+                    .import_fn_name_aliases
+                    .get(&(self.current_module.clone(), signature_key.to_string()))?;
+                self.intrinsic_declarations.get(source_key)
+            })?;
+
+        // `abs`/`min`/`max` are a single source/catalog identity with a
+        // closed overload chosen from the resolved operand type. Their
+        // `GenericMathIntrinsic` rewrite carries that type-directed choice;
+        // never freeze one of the overloads here.
+        if matches!(intrinsic_key.as_str(), "math.abs" | "math.min" | "math.max") {
+            return None;
+        }
+        let math_symbol = intrinsic_key.strip_prefix("math.")?;
+        match crate::runtime_call::RuntimeCallFamily::from_c_symbol(math_symbol) {
+            Some(family @ crate::runtime_call::RuntimeCallFamily::MathIntrinsic(_)) => Some(family),
+            _ => None,
+        }
+    }
+
+    /// Return the type-directed generic math operation carried by an exact
+    /// intrinsic declaration. This preserves source/alias authority while HIR
+    /// selects its closed i64/f64 runtime discriminator from checked types.
+    pub(super) fn intrinsic_math_generic_op_for_signature(
+        &self,
+        signature_key: &str,
+    ) -> Option<crate::MathGenericOp> {
+        let intrinsic_key = self
+            .intrinsic_declarations
+            .get(signature_key)
+            .or_else(|| {
+                let (surface_module, source_leaf) = signature_key.rsplit_once('.')?;
+                let source_module = self
+                    .module_import_bindings
+                    .get(&(self.current_module.clone(), surface_module.to_string()))?;
+                self.intrinsic_declarations
+                    .get(&format!("{source_module}.{source_leaf}"))
+            })
+            .or_else(|| {
+                let source_key = self
+                    .import_fn_name_aliases
+                    .get(&(self.current_module.clone(), signature_key.to_string()))?;
+                self.intrinsic_declarations.get(source_key)
+            })?;
+        match intrinsic_key.as_str() {
+            "math.abs" => Some(crate::MathGenericOp::Abs),
+            "math.min" => Some(crate::MathGenericOp::Min),
+            "math.max" => Some(crate::MathGenericOp::Max),
+            _ => None,
+        }
+    }
+
+    fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
+        // Extern declarations are source declarations too and may therefore
+        // also have an fn_def_spans entry. Classify them first: their exact
+        // declaration identity is semantic authority, while the validated ABI
+        // symbol is the executable endpoint. Treating them as ordinary User
+        // calls loses that endpoint and leaves MIR without a symbol mapping.
+        if let Some(extern_decl) = self
+            .source_extern_declarations
+            .iter()
+            .find(|declaration| declaration.signature_key == signature_key)
+        {
+            if extern_decl.symbol.is_empty() {
+                return CallTarget::Unsupported {
+                    reason: format!(
+                        "generic extern declaration `{signature_key}` has no monomorphic endpoint"
+                    ),
+                };
+            }
+            return CallTarget::Extern {
+                declaration: crate::DefId::new(extern_decl.signature_key.clone()),
+                endpoint: extern_decl.symbol.clone(),
+            };
+        }
+        if let Some(family) = self.intrinsic_runtime_target_for_signature(signature_key) {
+            return CallTarget::Runtime(family);
+        }
+        if let Some((_, declaring_module)) = self.fn_def_spans.get(signature_key) {
+            let declaration = declaring_module.as_ref().map_or_else(
+                || signature_key.to_string(),
+                |module| {
+                    let name = signature_key.rsplit('.').next().unwrap_or(signature_key);
+                    format!("{module}.{name}")
+                },
+            );
+            return CallTarget::User(crate::DefId::new(declaration));
+        }
+        // A source declaration always wins over a catalog spelling.  Once that
+        // authority check above has ruled it out, every executable monomorphic
+        // catalog builtin publishes its exact catalog identity.  HIR/MIR use
+        // that identity to select the catalog row and its linkage; they never
+        // reclassify a callee by its leaf spelling.  In particular, this keeps
+        // `assert(true)` on the same path as every other catalog FFI shim.
+        if let Some(endpoint) =
+            crate::stdlib_catalog_identity::monomorphic_callable_identity(signature_key)
+        {
+            return CallTarget::Builtin {
+                endpoint: endpoint.to_string(),
+            };
+        }
+        // Compiler-registered source builtins outside the executable stdlib
+        // catalog have no source declaration span. Publish their typed runtime
+        // families only after the source and catalog identity checks above.
+        match signature_key {
+            "link" => {
+                return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorLink);
+            }
+            "monitor" => {
+                return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorMonitor);
+            }
+            "unlink" => {
+                return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorUnlink);
+            }
+            "supervisor_stop" => {
+                return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::SupervisorStop);
+            }
+            _ => {}
+        }
+        // A whole-module import may expose a source declaration through an
+        // arbitrary local binding (`import left::render as left_render`).  The
+        // signature registry deliberately keeps that surface key
+        // (`left_render.identity`) for checking, but it is not a declaration
+        // identity.  Re-anchor it through the exact importer binding before
+        // publishing a call target.  In particular, never recover ownership
+        // by stripping the module leaf: two nested modules can share both the
+        // leaf and every exported function name.
+        if let Some((surface_module, source_leaf)) = signature_key.rsplit_once('.') {
+            if let Some(source_module) = self
+                .module_import_bindings
+                .get(&(self.current_module.clone(), surface_module.to_string()))
+            {
+                let declaration = format!("{source_module}.{source_leaf}");
+                // Reaching this branch means the checker has already admitted
+                // the signature under `signature_key`; the binding supplies
+                // the missing declaration owner even when the signature was
+                // populated by an earlier graph-registration pass that did
+                // not retain a second `fn_def_spans` compatibility entry.
+                return CallTarget::User(crate::DefId::new(declaration));
+            }
+        }
+        if let Some(source_key) =
+            scoped_module_item_name(self.current_module.as_deref(), signature_key)
+                .filter(|source_key| self.fn_def_spans.contains_key(source_key))
+        {
+            return CallTarget::User(crate::DefId::new(source_key));
+        }
+        if let Some(source_key) = self
+            .import_fn_name_aliases
+            .get(&(self.current_module.clone(), signature_key.to_string()))
+        {
+            return CallTarget::User(crate::DefId::new(source_key));
+        }
+        // Compiler-registered builtins have no source declaration span. Their
+        // executable identity comes from the typed registry populated during
+        // builtin registration, never by reconstructing an ABI symbol from a
+        // signature string at this call-site boundary.
+        if let Some(family) = self.runtime_builtin_targets.get(signature_key) {
+            return CallTarget::Runtime(*family);
+        }
+        // These three layout-witness calls are compiler-intercepted ABI
+        // helpers declared synthetically while checking the shipped channel
+        // source. Their source key deliberately keeps its full owner, whereas
+        // the runtime catalogue is keyed by the ABI symbol alone. Bridge that
+        // representation boundary only after the module graph has proved the
+        // exact stdlib source owner; a user package named `channel` (or a
+        // spoofed `std.channel.channel` module) must not acquire a runtime
+        // call target merely by sharing these leaves.
+        if self
+            .canonical_std_module_sources
+            .contains("std.channel.channel")
+        {
+            if let Some(c_symbol) = signature_key.strip_prefix("std.channel.channel.") {
+                if let Some(family) =
+                    crate::runtime_call::RuntimeCallFamily::from_c_symbol(c_symbol)
+                {
+                    return CallTarget::Runtime(family);
+                }
+            }
+        }
+        if let Some(family) = crate::runtime_call::RuntimeCallFamily::from_c_symbol(signature_key) {
+            return CallTarget::Runtime(family);
+        }
+        CallTarget::Unsupported {
+            reason: format!(
+                "checker admitted `{signature_key}` without a source declaration or runtime family"
+            ),
+        }
     }
 
     fn record_resolved_direct_call_ownership(
@@ -1045,6 +1332,10 @@ impl Checker {
             }
         };
 
+        if self.report_bare_function_import_ambiguity(&func_name, span) {
+            return Ty::Error;
+        }
+
         self.require_unsafe(&func_name, span);
         self.reject_if_wasm_incompatible_call(&func_name, span);
 
@@ -1124,7 +1415,7 @@ impl Checker {
                 .map(|ty| self.subst.resolve(ty))
                 .collect();
             self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
-            let result_ty = Ty::normalize_named(type_name, resolved_args);
+            let result_ty = self.variant_nominal_ty(type_name, resolved_args);
             let non_owning = result_ty.is_copy()
                 || self
                     .registry
@@ -1229,6 +1520,10 @@ impl Checker {
                     args: vec![resolved_elem],
                 };
                 self.record_type(span, &result_ty);
+                self.record_direct_call_target(
+                    span,
+                    CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::VecNew),
+                );
                 return result_ty;
             }
             "HashMap::new" if type_args.is_some() => {
@@ -1576,6 +1871,7 @@ impl Checker {
                 &applied_sig.return_type,
                 span,
             );
+            self.record_direct_call_target(span, self.call_target_for_signature(&resolved_fn_name));
             return applied_sig.return_type;
         }
 
@@ -1781,6 +2077,45 @@ impl Checker {
         Ty::Error
     }
 
+    /// Reject a bare function binding published by more than one imported
+    /// owner before the legacy `fn_sigs` slot can select its last writer.
+    fn report_bare_function_import_ambiguity(&mut self, name: &str, span: &Span) -> bool {
+        if name.contains('.') || name.contains("::") {
+            return false;
+        }
+        let current_local = scoped_module_item_name(self.current_module.as_deref(), name)
+            .is_some_and(|qualified| self.fn_def_spans.contains_key(&qualified));
+        if current_local
+            || (self.current_module.is_none() && self.root_value_bindings.contains(name))
+        {
+            return false;
+        }
+        let Some(owners) = self
+            .published_bare_function_owners
+            .get(&(self.current_module.clone(), name.to_string()))
+        else {
+            return false;
+        };
+        if owners.len() < 2 {
+            return false;
+        }
+        let candidates: Vec<String> = owners.iter().cloned().collect();
+        self.mark_ambiguous_import_owners_used(&candidates);
+        self.report_error_with_suggestions(
+            TypeErrorKind::AmbiguousType,
+            span,
+            format!(
+                "ambiguous function `{name}`: published by {} imported modules",
+                candidates.len()
+            ),
+            candidates
+                .iter()
+                .map(|candidate| format!("qualify the call, e.g. `{candidate}(...)`"))
+                .collect(),
+        );
+        true
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "typed calls publish both ordinary call results and ownership boundaries"
@@ -1791,6 +2126,7 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        self.record_direct_call_target(span, CallTarget::IndirectFunctionValue);
         let resolved = self.subst.resolve(func_ty);
         match resolved {
             Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
@@ -1994,7 +2330,10 @@ impl Checker {
                 };
                 if matches!(
                     &recv_ty,
-                    Ty::Named { name, .. } if name == "Receiver" || name == "channel.Receiver"
+                    Ty::Named {
+                        builtin: Some(crate::BuiltinType::Receiver),
+                        ..
+                    }
                 ) {
                     let prev = self.inside_await_expr;
                     self.inside_await_expr = true;
@@ -2088,5 +2427,141 @@ impl Checker {
         }
 
         self.reject_wasm_feature(span, WasmUnsupportedFeature::BlockingChannelRecv);
+    }
+}
+
+#[cfg(test)]
+mod channel_layout_target_tests {
+    use super::*;
+
+    #[test]
+    fn channel_layout_runtime_target_requires_canonical_source_provenance() {
+        let signature = "std.channel.channel.hew_channel_recv_layout";
+
+        let mut canonical = Checker::default();
+        canonical
+            .canonical_std_module_sources
+            .insert("std.channel.channel".to_string());
+        assert_eq!(
+            canonical.call_target_for_signature(signature),
+            CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout)
+        );
+
+        let user_spelling = Checker::default();
+        assert!(matches!(
+            user_spelling.call_target_for_signature(signature),
+            CallTarget::Unsupported { .. }
+        ));
+    }
+
+    #[test]
+    fn executable_catalog_identities_publish_builtin_targets() {
+        let checker = Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
+
+        for endpoint in crate::stdlib_catalog_identity::MONOMORPHIC_CALLABLE_IDENTITIES {
+            assert_eq!(
+                checker.call_target_for_signature(endpoint),
+                CallTarget::Builtin {
+                    endpoint: (*endpoint).to_string(),
+                },
+                "catalog builtin `{endpoint}` must cross the checker boundary with its exact catalog identity"
+            );
+        }
+    }
+
+    #[test]
+    fn registered_runtime_builtin_families_publish_runtime_targets() {
+        let mut checker = Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
+        checker.register_builtins();
+        let mut registered_families = 0;
+
+        for (signature_key, family) in &checker.runtime_builtin_targets {
+            let target = checker.call_target_for_signature(signature_key);
+            if crate::stdlib_catalog_identity::monomorphic_callable_identity(signature_key)
+                .is_some()
+            {
+                assert!(
+                    matches!(target, CallTarget::Builtin { .. }),
+                    "catalog builtin `{signature_key}` must retain its catalog target, got {target:?}"
+                );
+            } else {
+                registered_families += 1;
+                assert_eq!(
+                    target,
+                    CallTarget::Runtime(*family),
+                    "registered runtime builtin `{signature_key}` must publish its exact executable family"
+                );
+            }
+        }
+
+        assert!(
+            registered_families > 0,
+            "the inventory must exercise at least one registered runtime builtin family"
+        );
+        assert_eq!(
+            checker.call_target_for_signature("duplex_pair"),
+            CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::DuplexPair)
+        );
+    }
+
+    #[test]
+    fn imported_duplex_pair_spelling_does_not_inherit_builtin_runtime_authority() {
+        let mut checker = Checker::default();
+        checker.register_builtins();
+        checker.fn_sigs.insert(
+            "wire.duplex_pair".to_string(),
+            FnSig {
+                params: vec![],
+                return_type: Ty::Unit,
+                ..FnSig::default()
+            },
+        );
+        checker
+            .module_import_bindings
+            .insert((None, "wire".to_string()), "app.transport".to_string());
+
+        assert_eq!(
+            checker.call_target_for_signature("wire.duplex_pair"),
+            CallTarget::User(crate::DefId::new("app.transport.duplex_pair".to_string()))
+        );
+    }
+
+    #[test]
+    fn user_function_named_assert_remains_a_user_target() {
+        let parsed = hew_parser::parse(
+            r"
+            fn assert(value: bool) -> () {}
+
+            fn main() -> i64 {
+                assert(true);
+                0
+            }
+            ",
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+
+        let mut checker = Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parsed.program);
+        assert!(
+            output.errors.is_empty(),
+            "type errors: {:#?}",
+            output.errors
+        );
+        assert!(
+            output.direct_call_targets.values().any(|target| {
+                matches!(target, CallTarget::User(declaration) if declaration.full_path() == "assert")
+            }),
+            "a user declaration must shadow the catalog `assert` endpoint"
+        );
+        assert!(
+            !output.direct_call_targets.values().any(
+                |target| matches!(target, CallTarget::Builtin { endpoint } if endpoint == "assert")
+            ),
+            "a user declaration must not inherit the catalog `assert` endpoint"
+        );
     }
 }

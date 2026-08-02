@@ -5,6 +5,69 @@
 pub(super) use super::*;
 
 #[test]
+fn nested_same_final_modules_resolve_own_nominals_to_full_identity() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.local_type_defs.insert("Box".to_string());
+    checker.source_type_defs.insert("Box".to_string());
+    let box_def = TypeDef {
+        kind: TypeDefKind::Struct,
+        name: "Box".to_string(),
+        type_params: vec!["T".to_string()],
+        bounds: HashMap::new(),
+        fields: HashMap::new(),
+        field_order: vec![],
+        variants: HashMap::new(),
+        methods: HashMap::new(),
+        doc_comment: None,
+        is_indirect: false,
+    };
+    for owner in ["left.render", "right.render"] {
+        checker
+            .type_defs
+            .insert(format!("{owner}.Box"), box_def.clone());
+    }
+    // Preserve the legacy bare compatibility entry as a deliberate trap: the
+    // exact current owner must win even when a bare definition is available.
+    checker.type_defs.insert("Box".to_string(), box_def);
+
+    let annotation = (
+        TypeExpr::Named {
+            name: "Box".to_string(),
+            type_args: Some(vec![(
+                TypeExpr::Named {
+                    name: "i64".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            )]),
+        },
+        0..0,
+    );
+    for owner in ["left.render", "right.render"] {
+        checker.current_module = Some(owner.to_string());
+        let expected = Ty::Named {
+            name: format!("{owner}.Box"),
+            args: vec![Ty::I64],
+            builtin: None,
+        };
+        assert_eq!(checker.resolve_type_expr(&annotation), expected);
+    }
+}
+
+#[test]
+fn nested_module_leaf_is_not_a_nominal_self_qualifier() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.current_module = Some("left.render".to_string());
+
+    assert_eq!(checker.strict_nominal_identity("left.render.Box"), "Box");
+    assert_eq!(
+        checker.strict_nominal_identity("render.Box"),
+        "render.Box",
+        "a shared final module component is a surface spelling, not the current nominal owner"
+    );
+}
+
+#[test]
 fn module_graph_body_type_error_is_reported() {
     // fn bad() -> i64 { true }  — body returns bool, declared i64
     let bad_fn = FnDecl {

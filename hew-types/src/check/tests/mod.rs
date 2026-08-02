@@ -75,6 +75,47 @@ pub(super) fn check_source_in_module(source: &str, module_path: Vec<String>) -> 
     checker.check_program(&program)
 }
 
+/// Like [`check_source_in_module`], but gives the graph node the real shipped
+/// stdlib source path. This exercises the same authority proof that production
+/// module loading uses; a module merely named `std.math` is deliberately not a
+/// compiler floor.
+pub(super) fn check_source_in_canonical_std_module(
+    source: &str,
+    module_path: &[String],
+) -> TypeCheckOutput {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "module source must parse cleanly: {:?}",
+        parsed.errors
+    );
+    let root_id = ModuleId::root();
+    let mod_id = ModuleId::new(module_path.to_vec());
+    let leaf = module_path.last().expect("canonical std module has a leaf");
+    let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-types has a workspace parent")
+        .join("std")
+        .join(module_path.iter().skip(1).collect::<std::path::PathBuf>())
+        .join(format!("{leaf}.hew"));
+    let module = Module {
+        id: mod_id.clone(),
+        items: parsed.program.items,
+        imports: vec![],
+        source_paths: vec![source_path],
+        doc: None,
+    };
+    let mut mg = ModuleGraph::new(root_id.clone());
+    mg.add_module(module).unwrap();
+    mg.topo_order = vec![mod_id, root_id];
+    let program = Program {
+        module_graph: Some(mg),
+        items: vec![],
+        module_doc: None,
+    };
+    Checker::new(ModuleRegistry::new(vec![])).check_program(&program)
+}
+
 pub(super) fn make_int_literal(n: i64, span: Span) -> Spanned<Expr> {
     (
         Expr::Literal(Literal::Integer {

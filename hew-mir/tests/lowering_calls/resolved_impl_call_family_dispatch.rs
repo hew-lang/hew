@@ -57,8 +57,8 @@ use hew_hir::{
 use hew_mir::lower_hir_module;
 use hew_mir::model::{IrPipeline, Terminator};
 use hew_types::{
-    BuiltinType, HashMapMethod, HashSetMethod, ImplId, MethodTargetFamily, ResolvedTy, TyPattern,
-    VecMethod,
+    BuiltinType, CallTarget, HashMapMethod, HashSetMethod, ImplId, MethodTargetFamily, ResolvedTy,
+    TyPattern, VecMethod,
 };
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
@@ -113,6 +113,7 @@ fn build_one_call_module(call: HirExpr) -> HirModule {
     empty_module(vec![HirItem::Function(HirFn {
         id: ids.item(),
         node: ids.node(),
+        declaration: hew_types::DefId::new("main"),
         name: "main".to_string(),
         type_params: vec![],
         params: vec![],
@@ -179,6 +180,7 @@ fn arity_dispatched_by_family_not_symbol_hashmap_symbol_hashset_family() {
         intent: IntentKind::Read,
         kind: HirExprKind::ResolvedImplCall {
             receiver: Box::new(receiver),
+            target: CallTarget::RuntimeCollection(MethodTargetFamily::HashSet(HashSetMethod::Len)),
             impl_id: ImplId(0),
             method_name: "len".to_string(),
             target_symbol: "hew_hashmap_len_layout".to_string(),
@@ -230,6 +232,7 @@ fn arity_dispatched_by_family_not_symbol_hashset_symbol_hashmap_family() {
         intent: IntentKind::Read,
         kind: HirExprKind::ResolvedImplCall {
             receiver: Box::new(receiver),
+            target: CallTarget::RuntimeCollection(MethodTargetFamily::HashMap(HashMapMethod::Len)),
             impl_id: ImplId(1),
             method_name: "len".to_string(),
             target_symbol: "hew_hashset_len_layout".to_string(),
@@ -272,6 +275,7 @@ fn arity_dispatched_by_family_not_symbol_vec_symbol_hashmap_family() {
         intent: IntentKind::Read,
         kind: HirExprKind::ResolvedImplCall {
             receiver: Box::new(receiver),
+            target: CallTarget::RuntimeCollection(MethodTargetFamily::HashMap(HashMapMethod::Len)),
             impl_id: ImplId(2),
             method_name: "len".to_string(),
             target_symbol: "hew_vec_len".to_string(),
@@ -323,6 +327,7 @@ fn arity_dispatched_by_family_not_symbol_hashmap_symbol_vec_family() {
         intent: IntentKind::Read,
         kind: HirExprKind::ResolvedImplCall {
             receiver: Box::new(receiver),
+            target: CallTarget::RuntimeCollection(MethodTargetFamily::Vec(VecMethod::Push)),
             impl_id: ImplId(3),
             method_name: "push".to_string(),
             target_symbol: "hew_hashmap_insert_layout".to_string(),
@@ -390,6 +395,7 @@ fn owned_push_rewrite_fires_when_target_family_is_vec_push() {
         intent: IntentKind::Read,
         kind: HirExprKind::ResolvedImplCall {
             receiver: Box::new(receiver),
+            target: CallTarget::RuntimeCollection(MethodTargetFamily::Vec(VecMethod::Push)),
             impl_id: ImplId(2),
             method_name: "push".to_string(),
             target_symbol: "hew_vec_push_layout".to_string(),
@@ -440,6 +446,7 @@ fn owned_push_rewrite_skipped_when_target_family_is_not_vec_push() {
         intent: IntentKind::Read,
         kind: HirExprKind::ResolvedImplCall {
             receiver: Box::new(receiver),
+            target: CallTarget::RuntimeCollection(MethodTargetFamily::Vec(VecMethod::Pop)),
             impl_id: ImplId(2),
             method_name: "push".to_string(),
             target_symbol: "hew_vec_push_layout".to_string(),
@@ -500,6 +507,7 @@ fn wellformed_hashmap_dispatch_emits_symbol_as_callee() {
         intent: IntentKind::Read,
         kind: HirExprKind::ResolvedImplCall {
             receiver: Box::new(receiver),
+            target: CallTarget::RuntimeCollection(MethodTargetFamily::HashMap(HashMapMethod::Len)),
             impl_id: ImplId(0),
             method_name: "len".to_string(),
             target_symbol: "hew_hashmap_len_layout".to_string(),

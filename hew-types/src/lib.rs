@@ -27,6 +27,7 @@ pub mod runtime_call;
 pub mod runtime_calling_convention;
 pub mod stdlib;
 pub mod stdlib_authority;
+pub mod stdlib_catalog_identity;
 pub mod stdlib_loader;
 pub mod traits;
 pub mod ty;
@@ -44,19 +45,19 @@ pub use builtin_type::{
 };
 pub use check::{
     builtin_function_names, directive_suppresses, ActorMethodKind, ActorStateGuard, ArmResolution,
-    AssignTargetKind, AssignTargetShape, Bound, CallAbiHint, CaptureModeOrigin, Checker, ChildKind,
-    ChildSlot, ClosureCaptureFact, ClosureCaptureMode, ClosureEscapeFact, ClosureEscapeKind,
-    ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
-    ExecutionContextReader, FnSig, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
-    LintId, LintLevel, LintLevels, LintSources, LookupError, MachineMethodKind, MathGenericOp,
-    MethodCallReceiverKind, MethodCallRewrite, MethodTarget, MethodTargetFamily,
-    NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
-    OptionResultMethod, PatternKind, PatternPlan, PayloadBinding, PayloadVariantPattern, PlanField,
-    PlanSub, PoolAccessor, PoolAccessorKind, ProducedValueDependency, ProducedValueFact,
-    RcIntrinsicOp, ResolvedCall, RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering,
-    TyPattern, TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod,
-    WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout, WireLayoutEntry,
-    WireLayoutTable, WireTextFormat,
+    AssignTargetKind, AssignTargetShape, Bound, CallAbiHint, CallTarget, CaptureModeOrigin,
+    Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode, ClosureEscapeFact,
+    ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall,
+    DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, HashMapMethod, HashSetMethod,
+    ImplDef, ImplId, ImplRegistry, LintId, LintLevel, LintLevels, LintSources, LookupError,
+    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, MethodTarget,
+    MethodTargetFamily, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
+    NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PatternPlan, PayloadBinding,
+    PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
+    ProducedValueDependency, ProducedValueFact, RcIntrinsicOp, ResolvedCall, RuntimeAbi, SpanKey,
+    TryConversionKind, TryWidthCastLowering, TyPattern, TypeCheckOutput, VariantDef, VariantMatch,
+    VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
+    WireFieldLayout, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{
@@ -74,7 +75,7 @@ pub use lowering_facts::{
     HashSetLoweringFact, HashSetLoweringFactError, LoweringFact, LoweringFactConsistencyError,
     LoweringFactError, LoweringKind,
 };
-pub use resolved_ty::{BoundaryError, ResolvedTraitBound, ResolvedTy};
+pub use resolved_ty::{BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy};
 pub use runtime_call::{
     AsyncSuspendKind, DescriptorError, MathIntrinsic, ProducedArgumentBoundary,
     ProducedValueAcquisition, ProducedValueOwnership, RuntimeCallDescriptor, RuntimeCallFamily,
@@ -92,10 +93,111 @@ pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;
 pub use vec_authority::VecElementToken;
 
+/// Canonical identity of one declared definition.
+///
+/// A `DefId` deliberately stores the complete declaration path rather than a
+/// leaf spelling.  It is suitable for semantic maps and dispatch tables; use
+/// [`DefId::display_name`] only when rendering a diagnostic.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct DefId {
+    full_path: String,
+}
+
+impl DefId {
+    /// Construct an identity from the declaration's canonical full path.
+    ///
+    /// Root declarations legitimately have a single path segment.  Every
+    /// imported declaration must retain its module prefix before reaching this
+    /// constructor; callers must not manufacture an id from a short-name
+    /// retry.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `full_path` is empty, because an empty declaration path has
+    /// no canonical identity.
+    #[must_use]
+    pub fn new(full_path: impl Into<String>) -> Self {
+        let full_path = full_path.into();
+        assert!(
+            !full_path.is_empty(),
+            "DefId requires a non-empty canonical declaration path"
+        );
+        Self { full_path }
+    }
+
+    /// The canonical full declaration path used for identity and linker
+    /// derivation.
+    #[must_use]
+    pub fn full_path(&self) -> &str {
+        &self.full_path
+    }
+
+    /// The non-authoritative display leaf for diagnostics.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        short_name(&self.full_path)
+    }
+}
+
+/// Canonical identity of a declared nominal type.
+///
+/// A nominal is backed by the declaration identity, so two `Box` declarations
+/// from different modules can never compare equal merely because they share a
+/// leaf spelling.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub struct NominalId {
+    declaration: DefId,
+}
+
+impl NominalId {
+    #[must_use]
+    pub fn new(full_path: impl Into<String>) -> Self {
+        Self {
+            declaration: DefId::new(full_path),
+        }
+    }
+
+    #[must_use]
+    pub fn declaration(&self) -> &DefId {
+        &self.declaration
+    }
+
+    #[must_use]
+    pub fn full_path(&self) -> &str {
+        self.declaration.full_path()
+    }
+
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        self.declaration.display_name()
+    }
+}
+
 /// Return the final segment of a dot-qualified name.
 #[must_use]
 pub fn short_name(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, short)| short)
+}
+
+/// Return the full current-module owner that a self-qualified type spelling
+/// denotes, without guessing whether that owner actually declares the type.
+///
+/// For example, in `hew.alpha.render`, `render.Box` has the candidate owner
+/// `hew.alpha.render.Box`. Callers must still prove that exact declaration
+/// exists in their authority table. An explicit import binding is the only
+/// authority that may take precedence over this lexical self spelling.
+#[must_use]
+pub fn current_module_qualified_type_candidate(
+    current_module: Option<&str>,
+    type_spelling: &str,
+) -> Option<String> {
+    let (binding, tail) = type_spelling.split_once('.')?;
+    let owner = current_module?;
+    (binding == short_name(owner)).then(|| format!("{owner}.{tail}"))
 }
 
 /// Native-only stdlib module short-names that are rejected on the wasm32 target
@@ -127,11 +229,33 @@ pub const NATIVE_ONLY_WASM_MODULES: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::short_name;
+    use super::{current_module_qualified_type_candidate, short_name, DefId, NominalId};
 
     #[test]
     fn short_name_uses_the_final_qualified_segment() {
         assert_eq!(short_name("a.b.c"), "c");
         assert_eq!(short_name("Name"), "Name");
+    }
+
+    #[test]
+    fn current_module_candidate_preserves_the_full_nested_owner() {
+        assert_eq!(
+            current_module_qualified_type_candidate(Some("hew.alpha.render"), "render.Box"),
+            Some("hew.alpha.render.Box".to_string())
+        );
+        assert_eq!(
+            current_module_qualified_type_candidate(Some("hew.alpha.render"), "other.render.Box"),
+            None
+        );
+    }
+
+    #[test]
+    fn canonical_ids_keep_same_leaf_declarations_distinct() {
+        let left = NominalId::new("left.Box");
+        let right = NominalId::new("right.Box");
+        assert_ne!(left, right);
+        assert_eq!(left.display_name(), "Box");
+        assert_eq!(left.full_path(), "left.Box");
+        assert_ne!(DefId::new("left.Box"), DefId::new("right.Box"));
     }
 }

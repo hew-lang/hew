@@ -78,6 +78,16 @@ fn poisoned_call_type_args_ty_error_emits_violation_and_fails_closed() {
          MonomorphisationCallTypeArgsViolation; got diagnostics: {:#?}",
         lower_output.diagnostics
     );
+    assert!(
+        !lower_output.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { reason, .. }
+                if reason == "missing direct_call_targets entry"
+        )),
+        "the poisoned checker contract is the specific root failure and must not be masked by \
+         the generic missing-target diagnostic: {:#?}",
+        lower_output.diagnostics
+    );
 
     let HirDiagnosticKind::MonomorphisationCallTypeArgsViolation { callee, reason } =
         &violations[0].kind

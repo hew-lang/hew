@@ -712,6 +712,7 @@ mod tests {
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
             import_type_name_aliases: HashMap::new(),
+            ..TypeCheckOutput::default()
         }
     }
 

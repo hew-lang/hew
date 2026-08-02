@@ -1425,7 +1425,7 @@ fn walk_expr_collect_lambdas<'a>(expr: &'a hew_hir::HirExpr, out: &mut Vec<&'a h
             walk_expr_collect_lambdas(right, out);
         }
         HirExprKind::Unary { operand, .. } => walk_expr_collect_lambdas(operand, out),
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             walk_expr_collect_lambdas(callee, out);
             for a in args {
                 walk_expr_collect_lambdas(a, out);

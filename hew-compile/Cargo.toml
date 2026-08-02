@@ -19,6 +19,7 @@ serde.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+hew-mir = { path = "../hew-mir" }
 tempfile.workspace = true
 
 [lints]

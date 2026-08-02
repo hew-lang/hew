@@ -915,7 +915,7 @@ fn classify_named<S: BuildHasher>(
     let layouts = ctx.heap_layouts();
 
     // 2. User record layout → in-place record drop iff it owns heap.
-    if layouts.record_field_tys(name, args).is_some() {
+    if layouts.record_field_tys(name, args, builtin).is_some() {
         return if ty_owns_heap(ty, &layouts) {
             OwnershipDecision::OwnsHeap {
                 drop: DropClass::RecordInPlace,

@@ -370,6 +370,8 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::Vec
             | BuiltinType::HashMap
             | BuiltinType::HashSet
+            | BuiltinType::VecIter
+            | BuiltinType::HashMapIter
             | BuiltinType::Task
             | BuiltinType::SupervisorPool
             | BuiltinType::StreamPair

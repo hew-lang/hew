@@ -179,7 +179,7 @@ pub(crate) fn predeclare_named_layouts<'ctx>(
             &mut map,
             &mut class_owner,
             Class::Machine,
-            &format!("{}Event", layout.name),
+            &layout.event_name,
         )?;
     }
     Ok(map)
@@ -329,8 +329,10 @@ pub(crate) fn register_machine_layouts<'ctx>(
         record_layout_map.insert(layout.name.clone(), machine_cg.outer_struct);
         map.insert(layout.name.clone(), machine_cg);
 
-        // The companion event enum: `<Name>Event` with event-variant payloads.
-        let event_name = format!("{}Event", layout.name);
+        // The companion event enum has its own nominal layout key.  For a
+        // generic machine this is `LifecycleEvent$$T`, not
+        // `Lifecycle$$TEvent`.
+        let event_name = layout.event_name.clone();
         let event_cg = build_tagged_union_layout(
             ctx,
             &event_name,
@@ -748,67 +750,30 @@ pub(crate) fn machine_layout_for_local<'a, 'ctx>(
             )));
         }
     };
-    // Generic-enum monomorphisations are registered under the mangled key
-    // (e.g. `"Option$$i64"`) by `register_enum_layouts`. When the local's
-    // type carries type args, compute the same mangled key used at
-    // registration so the lookup succeeds.
-    // WHY: bare-name lookup fails for any instantiated generic enum because
-    //   `register_enum_layouts` stores under `hir_layout.mangled_name`, not
-    //   the origin enum name. Bare lookup is correct only for monomorphic enums
-    //   (no type args) and machine/actor layouts.
-    // WHEN-OBSOLETE: if the layout map is ever re-keyed by a richer
-    //   identifier (e.g. a `(origin_id, mono_args)` pair), this branch goes away.
-    let lookup_key: String = if args.is_empty() {
-        // Monomorphic enums/machines register under their bare declaration
-        // name (`register_enum_layouts` / `register_machine_layouts` key by
-        // `EnumLayout.name` = the HIR `decl.name`, which is unqualified). A
-        // Place at an IMPORTER carries the module-qualified name (`fs.IoError`)
-        // because the local's `ResolvedTy::Named` was resolved against the
-        // importing scope. Strip the `module.` prefix when the qualified key
-        // is absent but the bare name is registered, mirroring the generic-enum
-        // branch's `short_name` fallback below.
-        // WHY: without this, constructing/matching an imported enum-with-data
-        //   (e.g. `IoError` from `std::fs`/`std::net`) fails closed at codegen
-        //   even though MIR registered the layout under the bare name.
-        // WHEN-OBSOLETE: if layouts are re-keyed by `(module, name)` so the
-        //   importer's qualified lookup matches directly.
-        if fn_ctx.machine_layouts.contains_key(name) {
-            name.clone()
-        } else {
-            short_name(name).to_string()
-        }
+    // The shared tagged-union registry contains two exact, class-disjoint key
+    // families: user enums use the ordinary layout key, while executable
+    // machines (and their event companions) use the machine-class key.  Probe
+    // those two canonical projections only; neither projection shortens the
+    // nominal owner or retries by leaf name.
+    let enum_key = if args.is_empty() {
+        name.clone()
     } else {
-        // Shorten the type-arg spine for the full-outer-name key too: the
-        // registration side keys on bare args, so a raw `mangle(name, args)`
-        // carrying a qualified payload would never hit and only the short_key
-        // fallback would save it. Keying both candidates off the shortened
-        // spine removes that raw-args trap at this layout-lookup site.
-        let key = mangle_with_shortened_args(name, args);
-        if !fn_ctx.machine_layouts.contains_key(&key) {
-            let short_key = mangle_with_shortened_args(short_name(name), args);
-            if fn_ctx.machine_layouts.contains_key(&short_key) {
-                short_key
-            } else if fn_ctx.machine_layouts.contains_key(short_name(name)) {
-                short_name(name).to_string()
-            } else {
-                return Err(CodegenError::FailClosed(format!(
-                    "Place::MachineTag/MachineVariant references generic enum `{name}` \
-                     with type args {args:?}: mangled key `{key}` is not in \
-                     IrPipeline.machine_layouts — the monomorphisation was not registered \
-                     by `register_enum_layouts` (registration-mismatch)"
-                )));
-            }
-        } else {
-            key
-        }
+        hew_hir::mangle_layout_key(name, args)
     };
-    fn_ctx.machine_layouts.get(&lookup_key).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "Place::MachineTag/MachineVariant references machine `{name}` which is not \
+    fn_ctx
+        .machine_layouts
+        .get(&enum_key)
+        .or_else(|| {
+            let machine_key = hew_hir::machine_layout_key(name, args);
+            fn_ctx.machine_layouts.get(&machine_key)
+        })
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "Place::MachineTag/MachineVariant references machine `{name}` which is not \
              in IrPipeline.machine_layouts — registration mismatch between MIR producer \
              and codegen"
-        ))
-    })
+            ))
+        })
 }
 
 /// Resolve the mangled `enum_layouts` registration key for a `ResolvedTy::Named`
@@ -838,17 +803,16 @@ pub(crate) fn enum_layout_key_for_ty_from(
             "enum in-place drop: ElabDrop::ty {ty:?} is not a named enum type"
         )));
     };
-    let short = short_name(name);
     let key = if args.is_empty() {
         enum_layouts
             .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
+            .find(|el| el.name == *name)
             .map(|el| el.name.clone())
     } else {
-        let mangled = mangle_with_shortened_args(short, args);
+        let mangled = mangle_with_shortened_args(name, args);
         enum_layouts
             .iter()
-            .find(|el| el.name == mangled || el.name == *name)
+            .find(|el| el.name == mangled)
             .map(|el| el.name.clone())
     };
     key.ok_or_else(|| {
@@ -879,16 +843,11 @@ pub(crate) fn is_inline_enum_composite_shape(ty: &ResolvedTy, enum_layouts: &[En
     let ResolvedTy::Named { name, args, .. } = ty else {
         return false;
     };
-    let short = short_name(name);
     let layout = if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
+        enum_layouts.iter().find(|el| el.name == *name)
     } else {
-        let mangled = mangle_with_shortened_args(short, args);
-        enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
+        let mangled = mangle_with_shortened_args(name, args);
+        enum_layouts.iter().find(|el| el.name == mangled)
     };
     let Some(layout) = layout else {
         return false;
@@ -3396,11 +3355,9 @@ pub(crate) fn layout_vec_element_needs_descriptor<'ctx>(
             let lookup_key = if args.is_empty() {
                 name.clone()
             } else {
-                mangle_with_shortened_args(short_name(name), args)
+                mangle_with_shortened_args(name, args)
             };
-            if fn_ctx.record_layouts.contains_key(lookup_key.as_str())
-                || fn_ctx.record_layouts.contains_key(short_name(name))
-            {
+            if fn_ctx.record_layouts.contains_key(lookup_key.as_str()) {
                 return Ok(Some(resolve_ty(
                     fn_ctx.ctx,
                     fn_ctx.target_data,
@@ -3445,24 +3402,24 @@ fn resolved_ty_is_plain_bitcopy(
             }
             Ok(true)
         }
-        ResolvedTy::Named { name, args, .. } => {
-            if name.as_str() == "LocalPid" {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            if *builtin == Some(BuiltinType::LocalPid) {
                 return Ok(true);
             }
             let lookup_key = if args.is_empty() {
                 name.clone()
             } else {
-                mangle_with_shortened_args(short_name(name), args)
+                mangle_with_shortened_args(name, args)
             };
-            let short_key = short_name(name);
-            let (record_key, fields) =
-                if let Some(fields) = fn_ctx.record_field_resolved_tys.get(lookup_key.as_str()) {
-                    (lookup_key.as_str(), fields)
-                } else if let Some(fields) = fn_ctx.record_field_resolved_tys.get(short_key) {
-                    (short_key, fields)
-                } else {
-                    return Ok(false);
-                };
+            let Some(fields) = fn_ctx.record_field_resolved_tys.get(lookup_key.as_str()) else {
+                return Ok(false);
+            };
+            let record_key = lookup_key.as_str();
             if !visited_records.insert(record_key.to_string()) {
                 return Err(CodegenError::FailClosed(format!(
                     "BitCopy tuple Vec layout probe found recursive record `{record_key}`"
@@ -3516,19 +3473,14 @@ pub(crate) fn lower_vec_constructor_call(
         )
     })?;
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    let ResolvedTy::Named {
-        name,
-        args: vec_args,
-        ..
-    } = dest_ty
-    else {
+    let Some(vec_args) = builtin_named_args(&dest_ty, BuiltinType::Vec) else {
         return Err(CodegenError::FailClosed(format!(
             "Vec::new dest must be Vec<T>, got {dest_ty:?}"
         )));
     };
-    if name != "Vec" || vec_args.len() != 1 {
+    if vec_args.len() != 1 {
         return Err(CodegenError::FailClosed(format!(
-            "Vec::new dest must be Vec<T>, got Named {{ name: {name:?}, args: {vec_args:?} }}"
+            "Vec::new dest must be Vec<T>, got {dest_ty:?}"
         )));
     }
     let elem_ty = &vec_args[0];
@@ -5267,24 +5219,22 @@ pub(crate) fn lower_vec_get_clone_call(
         }
     };
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    let dest_is_option = match &dest_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if (dest_ty.is_builtin(BuiltinType::Option) || name == "Option")
-            && ty_args.len() == 1
-            && resolved_ty_matches_checked_alias(&elem_resolved, &ty_args[0]) =>
-        {
+    let dest_is_option = if let Some(ty_args) = builtin_named_args(&dest_ty, BuiltinType::Option) {
+        if ty_args.len() == 1 && resolved_ty_matches_checked_alias(&elem_resolved, &ty_args[0]) {
             true
-        }
-        ty if resolved_ty_matches_checked_alias(&elem_resolved, ty) => false,
-        other => {
+        } else {
             return Err(CodegenError::FailClosed(format!(
                 "hew_vec_get_clone dest must be Option<{elem_resolved:?}> or bare \
-                 {elem_resolved:?}, got {other:?}"
+                 {elem_resolved:?}, got {dest_ty:?}"
             )));
         }
+    } else if resolved_ty_matches_checked_alias(&elem_resolved, &dest_ty) {
+        false
+    } else {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_vec_get_clone dest must be Option<{elem_resolved:?}> or bare \
+             {elem_resolved:?}, got {dest_ty:?}"
+        )));
     };
     let elem_llvm_ty = resolve_ty(
         fn_ctx.ctx,
@@ -5439,15 +5389,11 @@ pub(crate) fn lower_bytes_get_option_call(
         )));
     }
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    match &dest_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == ResolvedTy::U8 => {}
-        other => {
+    match builtin_named_args(&dest_ty, BuiltinType::Option) {
+        Some([ResolvedTy::U8]) => {}
+        _ => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_bytes_get dest must be Option<u8>, got {other:?}"
+                "hew_bytes_get dest must be Option<u8>, got {dest_ty:?}"
             )));
         }
     }
@@ -5622,15 +5568,11 @@ pub(crate) fn lower_string_get_option_call(
         )));
     }
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    match &dest_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == ResolvedTy::Char => {}
-        other => {
+    match builtin_named_args(&dest_ty, BuiltinType::Option) {
+        Some([ResolvedTy::Char]) => {}
+        _ => {
             return Err(CodegenError::FailClosed(format!(
-                "hew_string_get dest must be Option<char>, got {other:?}"
+                "hew_string_get dest must be Option<char>, got {dest_ty:?}"
             )));
         }
     }
@@ -5919,15 +5861,11 @@ pub(crate) fn lower_string_sentinel_option_call(
         }
     };
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    match &dest_ty {
-        ResolvedTy::Named {
-            name,
-            args: ty_args,
-            ..
-        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == expected_payload => {}
-        other => {
+    match builtin_named_args(&dest_ty, BuiltinType::Option) {
+        Some([payload]) if *payload == expected_payload => {}
+        _ => {
             return Err(CodegenError::FailClosed(format!(
-                "{callee} dest must be Option<{expected_payload:?}>, got {other:?}"
+                "{callee} dest must be Option<{expected_payload:?}>, got {dest_ty:?}"
             )));
         }
     }
@@ -6122,26 +6060,25 @@ pub(crate) fn lower_hashmap_constructor_call(
         ))
     })?;
     let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
-    let ResolvedTy::Named {
-        name,
-        args: ty_args,
-        ..
-    } = dest_ty
-    else {
+    let runtime_symbol = hashmap_constructor_runtime_symbol(callee)?;
+    let expected_builtin = match runtime_symbol {
+        "hew_hashmap_new_with_layout" => BuiltinType::HashMap,
+        "hew_hashset_new_with_layout" => BuiltinType::HashSet,
+        _ => unreachable!("guarded by hashmap_constructor_runtime_symbol"),
+    };
+    let Some(ty_args) = builtin_named_args(&dest_ty, expected_builtin) else {
         return Err(CodegenError::FailClosed(format!(
-            "{callee} dest must be a Named HashMap<K,V>/HashSet<T>, got {dest_ty:?}"
+            "{callee} dest must carry builtin {expected_builtin:?} identity, got {dest_ty:?}"
         )));
     };
-
-    let runtime_symbol = hashmap_constructor_runtime_symbol(callee)?;
     let fv = get_or_declare_hashmap_constructor(fn_ctx.ctx, fn_ctx.llvm_mod, runtime_symbol)?;
 
     let call = match runtime_symbol {
         "hew_hashmap_new_with_layout" => {
-            if name != "HashMap" || ty_args.len() != 2 {
+            if ty_args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
                     "hew_hashmap_new_with_layout dest must be HashMap<K,V>, \
-                     got Named {{ name: {name:?}, args: {ty_args:?} }}"
+                     got {dest_ty:?}"
                 )));
             }
             let key_resolved = &ty_args[0];
@@ -6172,10 +6109,10 @@ pub(crate) fn lower_hashmap_constructor_call(
                 .llvm_ctx("hew_hashmap_new_with_layout call")?
         }
         "hew_hashset_new_with_layout" => {
-            if name != "HashSet" || ty_args.len() != 1 {
+            if ty_args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
                     "hew_hashset_new_with_layout dest must be HashSet<T>, \
-                     got Named {{ name: {name:?}, args: {ty_args:?} }}"
+                     got {dest_ty:?}"
                 )));
             }
             let elem_resolved = &ty_args[0];

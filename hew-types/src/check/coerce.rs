@@ -462,7 +462,7 @@ impl Checker {
                         let satisfied = if self.trait_is_handler_style(trait_name) {
                             self.actor_satisfies_handler_trait(concrete_name, trait_name)
                         } else {
-                            self.type_implements_trait(concrete_name, trait_name)
+                            self.type_implements_trait_for_ty(actual_inner, trait_name)
                                 || self.actor_satisfies_handler_trait(concrete_name, trait_name)
                         };
                         if satisfied {
@@ -580,7 +580,7 @@ impl Checker {
         // Build the method-table. Prefer the nominal impl registries; fall
         // back to the structural match path so bare `impl T { fn ... }` that
         // structurally satisfies a trait also gets a populated table.
-        let nominal_impl = self.type_implements_trait(concrete_type_name, &trait_lookup_key);
+        let nominal_impl = self.type_implements_trait_for_ty(concrete_type, &trait_lookup_key);
 
         let primitive_impl_methods = self
             .primitive_trait_impls

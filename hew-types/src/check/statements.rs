@@ -1479,10 +1479,10 @@ impl Checker {
                         }
                     }
                     Ty::Named {
-                        name,
                         args,
-                        builtin: None,
-                    } if crate::short_name(name) == "VecIter" && !args.is_empty() => {
+                        builtin: Some(BuiltinType::VecIter),
+                        ..
+                    } if !args.is_empty() => {
                         if *is_await {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,

@@ -1154,14 +1154,13 @@ pub(crate) fn owned_elem_thunk_key(
         return None;
     };
     // Enum-first: an owned-payload / recursive enum is the F3/F4 shape.
-    let short = short_name(name);
     let enum_key = if args.is_empty() {
         regs.enum_layouts
             .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
+            .find(|el| el.name == *name)
             .map(|el| el.name.clone())
     } else {
-        let mangled = mangle_with_shortened_args(short, args);
+        let mangled = mangle_with_shortened_args(name, args);
         regs.enum_layouts
             .iter()
             .find(|el| el.name == mangled || el.name == *name)
@@ -1179,27 +1178,24 @@ pub(crate) fn owned_elem_thunk_key(
     // from event companions / plain enums by their state-name table.
     if regs
         .machine_layouts
-        .get(short)
+        .get(name)
         .is_some_and(|m| m.state_name_table.is_some())
     {
-        return Some((OwnedElemThunkKind::Enum, short.to_string()));
+        return Some((OwnedElemThunkKind::Enum, name.clone()));
     }
     // Record: look up the codegen record registry key (mangled if generic).
-    // A generic instantiation registers on the bare-normalised spine, so
-    // shorten the type-arg spine before mangling.
+    // The shared layout-key encoder preserves the exact declaration owner
+    // while mapping dots only for the native-safe symbol spelling.
     let lookup_key = if args.is_empty() {
         name.clone()
     } else {
-        mangle_with_shortened_args(short_name(name), args)
+        mangle_with_shortened_args(name, args)
     };
     if regs
         .record_field_resolved_tys
         .contains_key(lookup_key.as_str())
     {
         return Some((OwnedElemThunkKind::Record, lookup_key));
-    }
-    if regs.record_field_resolved_tys.contains_key(short) {
-        return Some((OwnedElemThunkKind::Record, short.to_string()));
     }
     None
 }
@@ -1286,19 +1282,15 @@ fn eq_struct_field_resolved_tys<'ctx>(
         return Some(fields.clone());
     }
     if let Some(ResolvedTy::Named { name, args, .. }) = resolved_ty {
-        let short = short_name(name);
         let key = if args.is_empty() {
             name.clone()
         } else {
-            mangle_with_shortened_args(short, args)
+            mangle_with_shortened_args(name, args)
         };
         if let Some(fields) = fn_ctx.record_field_resolved_tys.get(key.as_str()) {
             return Some(fields.clone());
         }
         if let Some(fields) = fn_ctx.record_field_resolved_tys.get(name.as_str()) {
-            return Some(fields.clone());
-        }
-        if let Some(fields) = fn_ctx.record_field_resolved_tys.get(short) {
             return Some(fields.clone());
         }
     }

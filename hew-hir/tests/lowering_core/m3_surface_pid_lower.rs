@@ -27,7 +27,7 @@ fn expr_contains_remote_actor_ask(expr: &HirExpr) -> bool {
         | HirExprKind::Scope { body: block }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => block_contains_remote_actor_ask(block),
-        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
             expr_contains_remote_actor_ask(callee)
                 || args.iter().any(expr_contains_remote_actor_ask)
         }

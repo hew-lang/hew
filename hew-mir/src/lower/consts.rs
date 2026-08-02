@@ -743,7 +743,11 @@ pub(super) fn is_crash_info_payload_ty(
         return false;
     };
     record_field_orders
-        .get(name)
+        .get(
+            &hew_hir::compiler_record_layout_key(hew_types::BuiltinType::CrashInfo, &[])
+                .expect("CrashInfo has a compiler-owned struct layout"),
+        )
+        .or_else(|| record_field_orders.get(name))
         .or_else(|| record_field_orders.get("std.failure.CrashInfo"))
         .or_else(|| record_field_orders.get(canonical_name))
         .is_some_and(|actual_fields| {
@@ -759,16 +763,13 @@ pub(super) fn register_builtin_record_layouts(
         else {
             continue;
         };
-        if let Some(existing_fields) = record_field_orders.get(registration.name) {
-            // A source declaration in the root namespace can deliberately
-            // shadow a builtin leaf (`type MonitorRef {}` is a valid user
-            // resource).  `record_field_orders` is keyed by the concrete HIR
-            // nominal identity, so that existing layout is already the only
-            // layout reachable through this bare spelling.  Do not turn the
-            // unrelated compiler registration into an assertion or replace the
-            // source layout: builtin identity travels on `ResolvedTy::builtin`,
-            // never on this leaf key.
-            let _same_shape = builtin_registration_fields_match(existing_fields, fields);
+        let key = hew_hir::compiler_record_layout_key(registration.builtin, &[])
+            .expect("every Struct builtin registration has a compiler record key");
+        if let Some(existing_fields) = record_field_orders.get(&key) {
+            assert!(
+                builtin_registration_fields_match(existing_fields, fields),
+                "compiler record layout `{key}` was registered with a conflicting shape"
+            );
             continue;
         }
 
@@ -777,11 +778,11 @@ pub(super) fn register_builtin_record_layouts(
             .map(|field| (field.name.to_string(), field.ty.to_resolved_ty()))
             .collect();
         record_layouts.push(crate::model::RecordLayout {
-            name: registration.name.to_string(),
+            name: key.clone(),
             field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
             field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
         });
-        record_field_orders.insert(registration.name.to_string(), fields);
+        record_field_orders.insert(key, fields);
     }
 }
 
@@ -1564,7 +1565,7 @@ mod builtin_carrier_tests {
     }
 
     #[test]
-    fn user_monitor_ref_layout_shadows_bare_builtin_registration() {
+    fn user_monitor_ref_layout_coexists_with_builtin_registration() {
         let mut layouts = Vec::new();
         let mut fields: HashMap<String, Vec<(String, ResolvedTy)>> =
             HashMap::from([("MonitorRef".to_string(), Vec::new())]);
@@ -1572,7 +1573,10 @@ mod builtin_carrier_tests {
         register_builtin_record_layouts(&mut layouts, &mut fields);
 
         assert_eq!(fields.get("MonitorRef"), Some(&Vec::new()));
-        assert!(layouts.iter().all(|layout| layout.name != "MonitorRef"));
+        let builtin_key = hew_hir::compiler_record_layout_key(BuiltinType::MonitorRef, &[])
+            .expect("MonitorRef compiler layout key");
+        assert!(fields.contains_key(&builtin_key));
+        assert!(layouts.iter().any(|layout| layout.name == builtin_key));
     }
 
     #[test]

@@ -185,6 +185,41 @@ pub fn synthetic_cursor_layout_key(
     ))
 }
 
+/// Build the class-discriminated registry key for any compiler-owned record
+/// layout. Synthetic iterator cursors and fixed-shape builtin structs share
+/// the compiler record namespace, while their distinct builtin discriminants
+/// keep each nominal disjoint. A user `type MonitorRef { .. }` therefore
+/// cannot collide with the runtime `MonitorRef` layout even though both retain
+/// the same source-facing leaf.
+#[must_use]
+pub fn compiler_record_layout_key(
+    builtin: hew_types::BuiltinType,
+    type_args: &[ResolvedTy],
+) -> Option<String> {
+    if matches!(
+        builtin,
+        hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter
+    ) {
+        return synthetic_cursor_layout_key(builtin, type_args);
+    }
+    let registration =
+        crate::builtin_type_classes::builtin_type_registration(builtin.canonical_name())?;
+    if !type_args.is_empty()
+        || !matches!(
+            registration.shape,
+            crate::builtin_type_classes::BuiltinTypeShape::Struct(_)
+        )
+    {
+        return None;
+    }
+    Some(crate::mono::mangle_instantiation(
+        crate::mono::SymbolClass::SyntheticRecord,
+        builtin.canonical_name(),
+        &[],
+        &[],
+    ))
+}
+
 /// Resolve a named type to the one layout-registry key its semantic carrier
 /// permits.  Generic user nominals use the ordinary layout mangle; compiler
 /// cursor records use their disjoint synthetic namespace selected by the
@@ -196,12 +231,13 @@ pub fn layout_key_for_named(
     type_args: &[ResolvedTy],
     builtin: Option<hew_types::BuiltinType>,
 ) -> Option<String> {
-    match builtin {
-        Some(cursor @ (hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter)) => {
-            synthetic_cursor_layout_key(cursor, type_args)
-        }
-        _ if type_args.is_empty() => Some(name.to_string()),
-        _ => Some(mangle_layout_key(name, type_args)),
+    if let Some(key) = builtin.and_then(|kind| compiler_record_layout_key(kind, type_args)) {
+        return Some(key);
+    }
+    if type_args.is_empty() {
+        Some(name.to_string())
+    } else {
+        Some(mangle_layout_key(name, type_args))
     }
 }
 
@@ -1048,6 +1084,27 @@ mod tests {
             synthetic_cursor_layout_key(hew_types::BuiltinType::HashMapIter, &map_args)
                 .expect("HashMapIter is a synthetic cursor");
         assert_ne!(synthetic_map, mangle_layout_key("HashMapIter", &map_args));
+    }
+
+    #[test]
+    fn compiler_struct_layout_keys_do_not_collide_with_user_same_leaf_records() {
+        for builtin in [
+            hew_types::BuiltinType::MonitorRef,
+            hew_types::BuiltinType::CrashInfo,
+            hew_types::BuiltinType::NodeId,
+        ] {
+            let compiler = compiler_record_layout_key(builtin, &[])
+                .expect("catalog Struct builtin has a compiler record layout");
+            assert_ne!(compiler, builtin.canonical_name());
+            assert_eq!(
+                layout_key_for_named(builtin.canonical_name(), &[], Some(builtin)),
+                Some(compiler)
+            );
+            assert_eq!(
+                layout_key_for_named(builtin.canonical_name(), &[], None),
+                Some(builtin.canonical_name().to_string())
+            );
+        }
     }
 
     #[test]

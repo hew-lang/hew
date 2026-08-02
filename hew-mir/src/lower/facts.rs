@@ -3647,26 +3647,15 @@ pub(super) fn user_record_layout_key(ty: &ResolvedTy) -> Option<String> {
             builtin: None,
             ..
         } => Some(mangle_layout_key(name, args)),
-        // M-5: a BUILTIN record with a registered `Struct` shape (today only
-        // `CrashInfo`, which carries an owned `message: string`) is keyed by its
-        // bare name so it routes through the SAME owned-aggregate record
-        // clone/drop synthesis (`__hew_record_{clone,drop}_inplace_<R>`) user
-        // records use. Its `record_field_orders` entry is seeded by
-        // `register_builtin_record_layouts` from the registration shape, so the
-        // field-kind classifier and the codegen thunk agree on the layout.
+        // Compiler-owned struct records use the discriminator-selected
+        // synthetic record namespace. Their source-facing leaf may coexist
+        // with an unrelated user record without sharing field order or drop
+        // thunks.
         ResolvedTy::Named {
-            name,
             args,
-            builtin: Some(_),
+            builtin: Some(builtin),
             ..
-        } if args.is_empty()
-            && matches!(
-                hew_hir::builtin_type_classes::builtin_type_registration(name).map(|r| r.shape),
-                Some(hew_hir::builtin_type_classes::BuiltinTypeShape::Struct(_))
-            ) =>
-        {
-            Some(name.clone())
-        }
+        } => hew_hir::compiler_record_layout_key(*builtin, args),
         _ => None,
     }
 }
@@ -4240,6 +4229,8 @@ mod runtime_callee_ownership_contract_parity {
         "hew_vec_join_str",
         "hew_vec_push_str",
         "hew_vec_set_str",
+        "string_concat",
+        "to_string_str",
     ];
 
     const PRINT_SINK_SYMBOLS: &[&str] = &["print", "print_str", "println", "println_str"];
@@ -4251,6 +4242,7 @@ mod runtime_callee_ownership_contract_parity {
         "hew_float_to_string",
         "hew_i64_to_string",
         "hew_int_to_string",
+        "hew_node_api_identity_key",
         "hew_string_clone",
         "hew_string_concat",
         "hew_string_from_char",
@@ -4267,11 +4259,13 @@ mod runtime_callee_ownership_contract_parity {
         "hew_vec_join_str",
         "hew_vec_pop_str",
         "hew_vec_remove_at_str",
+        "string_concat",
         "to_string_bool",
         "to_string_char",
         "to_string_f64",
         "to_string_i32",
         "to_string_i64",
+        "to_string_str",
         "to_string_u16",
         "to_string_u32",
         "to_string_u64",
@@ -4311,8 +4305,8 @@ mod runtime_callee_ownership_contract_parity {
         assert_eq!(vec_receiver.len(), 92);
         assert_eq!(collection_receiver.len(), 19);
         assert_eq!(bytes_receiver.len(), 11);
-        assert_eq!(string_use.len(), 29);
-        assert_eq!(fresh_string.len(), 31);
+        assert_eq!(string_use.len(), 31);
+        assert_eq!(fresh_string.len(), 34);
 
         for symbol in parity_symbols() {
             let contract = callee_ownership_contract(symbol);

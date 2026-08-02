@@ -308,6 +308,28 @@ impl std::fmt::Display for ModuleError {
 }
 
 impl ModuleRegistry {
+    fn module_info_declares_type(info: &ModuleInfo, leaf: &str) -> bool {
+        info.source_items
+            .iter()
+            .any(|(item, _)| matches!(item, Item::TypeDecl(decl) if decl.name == leaf))
+    }
+
+    /// Check an exact imported source without relying on dependency load
+    /// order. Signature normalization may run before the importer's own
+    /// dependencies have entered the module cache.
+    fn exact_module_source_declares_type(&self, owner: &str, leaf: &str) -> bool {
+        if let Some(info) = self.modules.get(&module_id_from_identity(owner)) {
+            return Self::module_info_declares_type(info, leaf);
+        }
+        let loader_path = module_id_from_identity(owner).path.join("::");
+        self.search_paths.iter().any(|search_path| {
+            load_module_checked(&loader_path, search_path)
+                .ok()
+                .flatten()
+                .is_some_and(|info| Self::module_info_declares_type(&info, leaf))
+        })
+    }
+
     fn receiver_spellings(info: &ModuleInfo, method_receiver: bool) -> Vec<&str> {
         let mut spellings = info
             .handle_types
@@ -580,16 +602,34 @@ impl ModuleRegistry {
         let extracted_owner = canonical_owner
             .rsplit_once('.')
             .map_or(canonical_owner, |(_, leaf)| leaf);
-        let leaf = name.strip_prefix(&format!("{extracted_owner}."))?;
-        if leaf.contains('.')
-            || !info
-                .source_items
-                .iter()
-                .any(|(item, _)| matches!(item, Item::TypeDecl(decl) if decl.name == leaf))
-        {
+        if let Some(leaf) = name.strip_prefix(&format!("{extracted_owner}.")) {
+            if !leaf.contains('.') && Self::module_info_declares_type(info, leaf) {
+                return Some(format!("{canonical_owner}.{leaf}"));
+            }
+        }
+
+        let (binding, leaf) = name.split_once('.')?;
+        if leaf.contains('.') {
             return None;
         }
-        Some(format!("{canonical_owner}.{leaf}"))
+        info.source_items.iter().find_map(|(item, _)| {
+            let Item::Import(import) = item else {
+                return None;
+            };
+            let import_binding = import
+                .module_alias
+                .as_deref()
+                .or_else(|| import.path.last().map(String::as_str))?;
+            if import_binding != binding {
+                return None;
+            }
+            let imported_owner = import.path.join(".");
+            if self.exact_module_source_declares_type(&imported_owner, leaf) {
+                Some(format!("{imported_owner}.{leaf}"))
+            } else {
+                None
+            }
+        })
     }
 
     /// Recursively project every declaration-proven registry signature type
@@ -1336,6 +1376,12 @@ mod tests {
         assert_eq!(request_close.0, "hew_http_request_free");
         assert_eq!(request_close.1, Vec::<crate::ty::Ty>::new());
         assert_eq!(request_close.2, crate::ty::Ty::Unit);
+
+        assert_eq!(
+            reg.canonical_registry_signature_type_identity("net.NetError", "std.net.http"),
+            Some("std.net.NetError".to_string()),
+            "a source-qualified imported type must use the import's exact declaration owner"
+        );
     }
 
     #[test]

@@ -9896,6 +9896,17 @@ impl Checker {
                         self.current_module.replace(module_full_path.to_string());
                     let (mut sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                     self.current_module = saved_importer_module;
+                    sig.params = sig
+                        .params
+                        .iter()
+                        .map(|ty| {
+                            self.module_registry
+                                .canonicalize_registry_signature_ty(ty, module_full_path)
+                        })
+                        .collect();
+                    sig.return_type = self
+                        .module_registry
+                        .canonicalize_registry_signature_ty(&sig.return_type, module_full_path);
                     // `accepts_kwargs` is transport metadata supplied by the
                     // registry for the log wrapper; it does not carry a type
                     // identity, so retain it while replacing every semantic

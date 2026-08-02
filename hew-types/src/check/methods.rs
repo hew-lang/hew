@@ -2666,6 +2666,10 @@ impl Checker {
             return mapped;
         };
         if name.contains('.') {
+            let name = self
+                .module_registry
+                .canonical_registry_signature_type_identity(&name, owner)
+                .unwrap_or(name);
             return Ty::Named {
                 name,
                 args,

@@ -4259,7 +4259,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("hew-compile lives below repository root");
-        let direct = repo_root.join("std/concurrency/concurrency.hew");
+        let direct = repo_root.join("std/concurrency/lambda_actor.hew");
         let direct = lower_to_mir(direct.to_str().expect("std path is UTF-8"));
 
         let dir = tempfile::tempdir().expect("create temp project");
@@ -4276,11 +4276,10 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         );
         let imported = lower_to_mir(&imported_input);
 
-        for pipeline in [&direct, &imported] {
-            for expected in [
-                "std.concurrency.LambdaActorHandle",
-                "std.concurrency.LambdaActorWeakHandle",
-            ] {
+        for (pipeline, owner) in [(&direct, None), (&imported, Some("std.concurrency"))] {
+            for leaf in ["LambdaActorHandle", "LambdaActorWeakHandle"] {
+                let expected =
+                    owner.map_or_else(|| leaf.to_string(), |owner| format!("{owner}.{leaf}"));
                 assert!(
                     pipeline
                         .record_layouts
@@ -4294,11 +4293,11 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
 
         // A user package can legally use the same leaf name, but its source
         // identity must never acquire the bundled lambda-actor layout.
-        write_source(dir.path(), "foreign.hew", "pub type LambdaActorHandle {}\n");
+        write_source(dir.path(), "spoofed.hew", "pub type LambdaActorHandle {}\n");
         let foreign_input = write_source(
             dir.path(),
             "foreign_main.hew",
-            "import foreign::{LambdaActorHandle};\n\
+            "import spoofed::{LambdaActorHandle};\n\
              fn main() { let _ = LambdaActorHandle {}; }\n",
         );
         let foreign = lower_to_mir(&foreign_input);
@@ -4306,7 +4305,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             foreign
                 .record_layouts
                 .iter()
-                .any(|layout| layout.name == "foreign.LambdaActorHandle"),
+                .any(|layout| layout.name == "spoofed.LambdaActorHandle"),
             "foreign declaration must retain its own owner: {:#?}",
             foreign.record_layouts
         );

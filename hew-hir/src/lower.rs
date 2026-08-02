@@ -21676,6 +21676,15 @@ impl LowerCtx {
         }
         if let Some(builtin) = hew_types::lookup_builtin_type(name)
             .or_else(|| hew_types::lookup_source_owned_lifecycle_type(name))
+            // Some bundled declarations deliberately retain their source
+            // owner in checker/HIR facts while the runtime catalog's canonical
+            // spelling is a leaf. Keep this mapping exact: a generic leaf
+            // retry would let compatibility spellings rewrite a different
+            // source-owned declaration (for example `failure.*`).
+            .or_else(|| {
+                (canonical_std_owner && name == "std.concurrency.LambdaActorHandle")
+                    .then_some(BuiltinType::LambdaActorHandle)
+            })
         {
             return Some(builtin);
         }

@@ -2005,7 +2005,13 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
                     .iter()
                     .map(|f| (f.name.clone(), f.ty.clone()))
                     .collect();
-                if !fields.is_empty() {
+                // A zero-field STRUCT declaration still owns a concrete
+                // layout. The bundled lambda-actor handles deliberately use
+                // this shape: their actual representation is supplied by the
+                // runtime ABI, but HIR/MIR must retain the declaration so a
+                // source-owned constructor never falls through as unknown.
+                // Enums use their distinct tagged-union layout below.
+                if decl.variants.is_empty() {
                     record_layouts.push(crate::model::RecordLayout {
                         name: layout_key.clone(),
                         field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),

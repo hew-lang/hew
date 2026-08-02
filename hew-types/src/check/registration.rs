@@ -1002,6 +1002,19 @@ impl Checker {
         self.register_builtin_fn("len", vec![Ty::Var(TypeVar::fresh())], Ty::I64);
 
         // I/O and system
+        // `instant::now` has no source declaration, but it is an ordinary
+        // compiler-provided runtime call.  Register its joined parser spelling
+        // here so the checker publishes the same typed runtime target that
+        // HIR and MIR consume for every other builtin call.
+        self.register_builtin_fn(
+            "instant::now",
+            vec![],
+            Ty::Named {
+                name: "instant".to_string(),
+                args: vec![],
+                builtin: Some(BuiltinType::Instant),
+            },
+        );
         self.register_builtin_fn("sleep", vec![Ty::Duration], Ty::Unit);
         self.register_builtin_fn(
             "sleep_until",
@@ -1780,7 +1793,14 @@ impl Checker {
         // can contain user and imported-source functions.  No call-site may
         // infer a runtime endpoint merely because a signature happens to have
         // a runtime-looking name.
-        let runtime_symbol = format!("hew_{name}");
+        // Namespace separators are source syntax, not ABI spelling.  The
+        // only compiler builtin with a namespace-qualified source name today
+        // is `instant::now`; retain an explicit mapping rather than making
+        // arbitrary source names look like runtime symbols.
+        let runtime_symbol = match name {
+            "instant::now" => "hew_instant_now".to_string(),
+            _ => format!("hew_{name}"),
+        };
         if let Some(family) = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&runtime_symbol)
         {
             self.runtime_builtin_targets

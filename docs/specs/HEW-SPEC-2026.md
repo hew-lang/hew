@@ -1216,8 +1216,8 @@ impl Connection {
     fn close(c: Connection) {}
 }
 
-fn example(host: string) {
-    let conn = Connection::open(host);
+fn main() {
+    let conn = Connection { fd: 0 };
     // ... use conn ...
 }  // conn.close() runs here automatically (implicit #[resource] drop)
 ```

@@ -10657,6 +10657,16 @@ impl LowerCtx {
         self.trait_method_ids
             .get(&format!("{declaring_trait}::{method_name}"))
             .cloned()
+            // Prelude `Display` is available without an import binding. Its
+            // lang-item declaration is the checker-owned authority for both
+            // generic call sites and `impl Display for UserType`; use it only
+            // after lexical/local identity lookups above have failed so a
+            // source-declared same-name trait still wins.
+            .or_else(|| {
+                let (trait_id, method_id) = self.lang_items.display_method_identity()?;
+                (declaring_trait == "Display" && method_name == self.lang_items.display_method()?)
+                    .then(|| (trait_id.clone(), method_id.clone()))
+            })
     }
 
     /// Resolve a trait bound written on an impl to the exact key used by the
@@ -21471,7 +21481,43 @@ impl LowerCtx {
                 is_opaque,
             };
         }
+        // `Ty::Named` facts emitted for generic actor handles can lose the
+        // builtin discriminator at the checker→HIR boundary.  Recover only a
+        // compiler-registered root carrier after lexical source authority has
+        // had a chance to win.  Named imports are real source bindings too:
+        // project them to their exact owner first, so `import peer::{RemotePid}`
+        // never acquires the runtime actor-handle representation.
+        if !name.contains('.')
+            && !self.current_scope_declares_source_type(&name, current_module_is_file_import)
+        {
+            if let Some(imported) = self
+                .import_type_name_aliases
+                .get(&(self.current_module_name.clone(), name.clone()))
+            {
+                return self.qualify_current_module_record_ty(ResolvedTy::named_user(
+                    imported.clone(),
+                    args,
+                ));
+            }
+            if let Some(registration) =
+                crate::builtin_type_classes::builtin_type_registration(&name)
+            {
+                return ResolvedTy::named_builtin(registration.name(), registration.builtin, args);
+            }
+        }
         let canonical = self.canonical_current_module_record_name(&name);
+        // Checker facts inside an imported stdlib module can retain a lexical
+        // module binding (`net.NetError`) while the declaration and its
+        // signatures use the exact owner (`std.net.NetError`).  Normalize that
+        // owner before the unchanged-name compatibility path so produced-value
+        // joins, layouts, and call signatures agree on one nominal identity.
+        // `qualified_source_builtin` remains provenance-gated, so this cannot
+        // grant a user package a std carrier merely from its spelling.
+        if canonical.contains('.') {
+            if let Some(builtin) = self.qualified_source_builtin(&canonical) {
+                return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+            }
+        }
         if canonical == name {
             if name.contains('.') {
                 if let Some(builtin) = self.qualified_source_builtin(&name) {
@@ -33695,6 +33741,69 @@ fn main() {}
                 "a user depth-two owner sharing std.net's leaf must stay distinct"
             );
         }
+    }
+
+    #[test]
+    fn checker_import_binding_nominal_facts_use_the_declaring_std_owner() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        ctx.current_module_name = Some("std.net.tls".to_string());
+        ctx.module_import_bindings.insert(
+            (Some("std.net.tls".to_string()), "net".to_string()),
+            "std.net".to_string(),
+        );
+        ctx.canonical_std_source_type_identities
+            .insert("std.net.NetError".to_string());
+
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "net.NetError",
+                Vec::new(),
+            )),
+            ResolvedTy::named_user("std.net.NetError", Vec::new()),
+            "a checker-produced lexical module binding must agree with the exact std declaration identity"
+        );
+    }
+
+    #[test]
+    fn checker_remote_pid_fact_recovers_builtin_without_reclassifying_source_names() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        let args = vec![ResolvedTy::named_user("Echo", Vec::new())];
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(
+                ResolvedTy::named_user("RemotePid", args.clone(),)
+            ),
+            ResolvedTy::named_builtin("RemotePid", BuiltinType::RemotePid, args.clone()),
+            "checker facts for the compiler-owned actor carrier retain its value class"
+        );
+
+        ctx.root_visible_source_type_short_names
+            .insert("RemotePid".to_string());
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(
+                ResolvedTy::named_user("RemotePid", args.clone(),)
+            ),
+            ResolvedTy::named_user("RemotePid", args.clone()),
+            "a root source declaration wins over the compiler carrier spelling"
+        );
+
+        ctx.root_visible_source_type_short_names.clear();
+        ctx.import_type_name_aliases.insert(
+            (None, "RemotePid".to_string()),
+            "peer.RemotePid".to_string(),
+        );
+        assert_eq!(
+            ctx.qualify_current_module_record_ty(ResolvedTy::named_user("RemotePid", args.clone())),
+            ResolvedTy::named_user("peer.RemotePid", args),
+            "an imported foreign RemotePid remains a user nominal"
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@
 //! REAL alloc/free sites. [`record_actor_box_alloc`] is called at the
 //! `Box::into_raw` in `spawn_actor_internal` — the single site that mints an
 //! actor box — and [`record_actor_box_free`] at the `Box::from_raw` in
-//! `free_actor_resources_with_options` — the single site that reclaims one.
+//! `free_actor_resources` — the single site that reclaims one.
 //! Nothing wraps or shims the allocator, so the counts are of the actual boxes
 //! the runtime handed out, not of a wrapper's idea of them.
 //!
@@ -68,7 +68,7 @@ const LEAK_SELFTEST_VAR: &str = "HEW_ACTOR_LEAK_SELFTEST";
 /// Actor boxes minted by `spawn_actor_internal`.
 static ACTOR_BOXES_ALLOCATED: AtomicU64 = AtomicU64::new(0);
 
-/// Actor boxes reclaimed by `free_actor_resources_with_options`.
+/// Actor boxes reclaimed by `free_actor_resources`.
 static ACTOR_BOXES_FREED: AtomicU64 = AtomicU64::new(0);
 
 /// Test-only, process-local counterpart of `HEW_ACTOR_LEAK_SELFTEST=skip-free`.

@@ -399,7 +399,7 @@ fn render_terminator(term: &Terminator) -> String {
                 .map(|p| format!("{} = ", render_place(p)))
                 .unwrap_or_default();
             let authority_tag = match authority {
-                crate::CallAuthority::Direct => String::new(),
+                crate::CallAuthority::Direct | crate::CallAuthority::Extern => String::new(),
                 other => format!(" [authority={other:?}]"),
             };
             format!("{dest_str}call {callee}({arg_str}){authority_tag} -> bb{next}")

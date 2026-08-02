@@ -3469,6 +3469,12 @@ pub enum CallAuthority {
     /// the generic linkage path until they explicitly carry an authority.
     #[default]
     Direct,
+    /// A checker-proven compiler-embedded standard-library extern. This is
+    /// still emitted through the ordinary linkage ABI, but it carries the
+    /// capability to consult its generated parameter-ownership contract.
+    /// User externs deliberately remain [`Self::Direct`] even when their
+    /// linker spelling collides with an audited runtime endpoint.
+    Extern,
     /// A catalogued runtime ABI call selected by the checker/HIR.
     Runtime(hew_types::runtime_call::RuntimeCallFamily),
     /// A compiler-owned structural operation with no public runtime catalog
@@ -3482,7 +3488,7 @@ impl CallAuthority {
     pub const fn runtime_family(self) -> Option<hew_types::runtime_call::RuntimeCallFamily> {
         match self {
             Self::Runtime(family) => Some(family),
-            Self::Direct | Self::Compiler(_) => None,
+            Self::Direct | Self::Extern | Self::Compiler(_) => None,
         }
     }
 }

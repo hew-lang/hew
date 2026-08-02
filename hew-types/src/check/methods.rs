@@ -1615,6 +1615,7 @@ impl Checker {
                 target: CallTarget::Extern {
                     declaration: crate::DefId::new(extern_identity.signature_key.clone()),
                     endpoint: extern_identity.endpoint.clone(),
+                    trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
                 },
                 c_symbol,
                 descriptor: None,
@@ -1687,6 +1688,7 @@ impl Checker {
                 |declaration| CallTarget::Extern {
                     declaration,
                     endpoint: extern_identity.endpoint.clone(),
+                    trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
                 },
             );
         self.record_method_call_rewrite(

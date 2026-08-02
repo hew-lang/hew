@@ -6065,3 +6065,90 @@ params = ["borrow"]
 resource-param-types = ["std.net.smtp.Conn"]
 release-symbol = ""
 discharge-depth = "none"
+
+# Developer metrics are direct `extern "C"` calls from std::metrics. The
+# register functions read the Hew string name while the registry assigns an
+# i64 slot; all mutation arguments are scalar handles/values. Keeping every
+# declaration in the generated contract table means the MIR representation
+# boundary has a complete, checker-authorized answer rather than a per-wrapper
+# exception. A user extern with one of these linker spellings is not admitted:
+# `CallAuthority::Extern` is minted only for compiler-embedded stdlib source.
+[[ownership.contracts]]
+symbol = "hew_metric_counter_register"
+result = "none"
+params = ["borrow"]
+resource-param-types = [""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_metric_counter_inc"
+result = "none"
+params = ["borrow"]
+resource-param-types = [""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_metric_counter_add"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_metric_gauge_register"
+result = "none"
+params = ["borrow"]
+resource-param-types = [""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_metric_gauge_inc"
+result = "none"
+params = ["borrow"]
+resource-param-types = [""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_metric_gauge_dec"
+result = "none"
+params = ["borrow"]
+resource-param-types = [""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_metric_gauge_set"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_metric_gauge_add"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_metric_histogram_register_simple"
+result = "none"
+params = ["borrow"]
+resource-param-types = [""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_metric_histogram_record"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["", ""]
+release-symbol = ""
+discharge-depth = "none"

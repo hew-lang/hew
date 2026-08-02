@@ -22045,8 +22045,10 @@ fn collect_helper_crash_cleanup_descriptors(
         match &block.terminator {
             Terminator::Call {
                 callee, authority, ..
-            } if (matches!(authority, hew_mir::CallAuthority::Direct)
-                && matches!(fn_symbols.get(callee), Some(FnSymbol::Real { .. })))
+            } if (matches!(
+                authority,
+                hew_mir::CallAuthority::Direct | hew_mir::CallAuthority::Extern
+            ) && matches!(fn_symbols.get(callee), Some(FnSymbol::Real { .. })))
                 || matches!(
                     authority,
                     hew_mir::CallAuthority::Runtime(
@@ -28863,7 +28865,7 @@ fn lower_terminator<'ctx>(
             use hew_types::runtime_call::RuntimeCallFamily as RtFamily;
             let builtin = authority.runtime_family();
             match authority {
-                hew_mir::CallAuthority::Direct => {}
+                hew_mir::CallAuthority::Direct | hew_mir::CallAuthority::Extern => {}
                 hew_mir::CallAuthority::Runtime(family) => {
                     if family.c_symbol() != callee {
                         return Err(CodegenError::FailClosed(format!(

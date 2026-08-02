@@ -339,6 +339,7 @@ fn module_private_extern_call_publishes_exact_executable_target() {
                 crate::check::dispatch::CallTarget::Extern {
                     declaration,
                     endpoint,
+                    ..
                 } if declaration.full_path() == "hew.testffi.hew_testffi_query"
                     && endpoint == "hew_testffi_query"
             )

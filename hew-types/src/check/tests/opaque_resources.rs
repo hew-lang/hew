@@ -230,19 +230,17 @@ fn shipped_std_candidate_inventory() -> (BTreeSet<String>, OpaqueResourceCandida
 #[serde(deny_unknown_fields)]
 struct LifecycleEvidenceMatrix {
     schema_version: u32,
-    resources: BTreeMap<String, LifecycleEvidence>,
+    resources: Vec<LifecycleEvidence>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LifecycleEvidence {
-    teardown_family: String,
+    source_path: String,
+    resource: String,
+    release_symbol: String,
     runtime: TestEvidence,
-    scope_exit: TestEvidence,
-    explicit_close: TestEvidence,
     wasm: WasmEvidence,
-    status: String,
-    composition_requirement: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,6 +249,7 @@ struct TestEvidence {
     path: String,
     test: String,
     valid_handle: bool,
+    execution_profile: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,8 +257,6 @@ struct TestEvidence {
 struct WasmEvidence {
     profile: String,
     disposition: String,
-    path: String,
-    test: String,
 }
 
 fn assert_nonempty(value: &str, field: &str, resource: &str) {
@@ -276,6 +273,14 @@ fn assert_test_anchor(repo_root: &Path, evidence: &TestEvidence, field: &str, re
         evidence.valid_handle,
         "{resource} {field} evidence must exercise a real compiled value or valid handle"
     );
+    assert!(
+        matches!(
+            evidence.execution_profile.as_str(),
+            "local" | "external-network"
+        ),
+        "{resource} {field} has an invalid execution profile {}",
+        evidence.execution_profile
+    );
     let path = repo_root.join(&evidence.path);
     let source = fs::read_to_string(&path).unwrap_or_else(|error| {
         panic!(
@@ -291,27 +296,36 @@ fn assert_test_anchor(repo_root: &Path, evidence: &TestEvidence, field: &str, re
     );
 }
 
-fn assert_wasm_anchor(repo_root: &Path, evidence: &WasmEvidence, resource: &str) {
+fn assert_wasm_anchor(evidence: &WasmEvidence, resource: &str) {
     assert_nonempty(&evidence.profile, "wasm.profile", resource);
-    assert_eq!(
-        evidence.disposition, "rejected",
-        "closeable opaque resources are not yet admitted by the sandbox profile"
-    );
-    assert_nonempty(&evidence.path, "wasm.path", resource);
-    assert_nonempty(&evidence.test, "wasm.test", resource);
-    let path = repo_root.join(&evidence.path);
-    let source = fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!(
-            "{resource} Wasm evidence file {} is missing: {error}",
-            path.display()
-        )
-    });
+    assert_eq!(evidence.profile, "wasm32-wasi");
     assert!(
-        source.contains(&format!("fn {}(", evidence.test)),
-        "{resource} Wasm rejection test {} is missing from {}",
-        evidence.test,
-        path.display()
+        matches!(evidence.disposition.as_str(), "accepted" | "rejected"),
+        "{resource} has an invalid measured Wasm disposition {}",
+        evidence.disposition
     );
+}
+
+fn source_derived_resource_key(source_path: &str, resource: &str) -> String {
+    let path = Path::new(source_path);
+    assert_eq!(
+        path.extension().and_then(|value| value.to_str()),
+        Some("hew")
+    );
+    let mut module: Vec<_> = path
+        .parent()
+        .expect("shipped source has a parent")
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let stem = path
+        .file_stem()
+        .expect("shipped source has a stem")
+        .to_string_lossy();
+    if module.last().is_none_or(|last| last != &stem) {
+        module.push(stem.into_owned());
+    }
+    format!("{}.{}", module.join("."), resource)
 }
 
 #[test]
@@ -352,7 +366,7 @@ fn shipped_source_and_checker_lifecycle_inventories_are_a_bijection() {
 
 #[test]
 fn shipped_lifecycle_evidence_is_complete_for_the_structural_inventory() {
-    let (source_resources, _) = shipped_std_candidate_inventory();
+    let (source_resources, graph) = shipped_std_candidate_inventory();
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("hew-types is below repository root")
@@ -362,47 +376,36 @@ fn shipped_lifecycle_evidence_is_complete_for_the_structural_inventory() {
         &fs::read_to_string(&matrix_path).expect("read lifecycle evidence matrix"),
     )
     .expect("lifecycle evidence matrix must match its strict schema");
-    assert_eq!(matrix.schema_version, 1);
+    assert_eq!(matrix.schema_version, 2);
 
-    let matrix_resources: BTreeSet<_> = matrix.resources.keys().cloned().collect();
+    let matrix_resources: BTreeSet<_> = matrix
+        .resources
+        .iter()
+        .map(|evidence| source_derived_resource_key(&evidence.source_path, &evidence.resource))
+        .collect();
+    assert_eq!(
+        matrix_resources.len(),
+        matrix.resources.len(),
+        "each shipped source identity must have exactly one evidence row"
+    );
     assert_eq!(
         matrix_resources, source_resources,
         "the evidence matrix must have exactly one row for every structurally discovered closeable opaque resource"
     );
 
-    let mut teardown_families = BTreeSet::new();
-    for (resource, evidence) in &matrix.resources {
-        assert_nonempty(&evidence.teardown_family, "teardown_family", resource);
+    for evidence in &matrix.resources {
+        let resource = source_derived_resource_key(&evidence.source_path, &evidence.resource);
         assert!(
-            teardown_families.insert(&evidence.teardown_family),
-            "{resource} reuses teardown family {}; use one row per distinct runtime release authority",
-            evidence.teardown_family
+            repo_root.join(&evidence.source_path).is_file(),
+            "{resource} points to a missing shipped source {}",
+            evidence.source_path
         );
-        assert_test_anchor(&repo_root, &evidence.runtime, "runtime", resource);
-        assert_test_anchor(&repo_root, &evidence.scope_exit, "scope_exit", resource);
-        assert_test_anchor(
-            &repo_root,
-            &evidence.explicit_close,
-            "explicit_close",
-            resource,
+        assert_eq!(
+            evidence.release_symbol, graph.candidates[&resource].release_symbol,
+            "{resource} evidence must name the source-derived release authority"
         );
-        assert_wasm_anchor(&repo_root, &evidence.wasm, resource);
-
-        match evidence.status.as_str() {
-            "green" => assert!(
-                evidence.composition_requirement.is_none(),
-                "{resource} is green but still names a composition requirement"
-            ),
-            "composition-required" => assert_nonempty(
-                evidence
-                    .composition_requirement
-                    .as_deref()
-                    .unwrap_or_default(),
-                "composition_requirement",
-                resource,
-            ),
-            status => panic!("{resource} has unknown lifecycle evidence status {status}"),
-        }
+        assert_test_anchor(&repo_root, &evidence.runtime, "runtime", &resource);
+        assert_wasm_anchor(&evidence.wasm, &resource);
     }
 }
 

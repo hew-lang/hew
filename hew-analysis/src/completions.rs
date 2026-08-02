@@ -1,6 +1,6 @@
 //! Completions analysis: build completion suggestions at a given cursor offset.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use hew_parser::ast::{
     Block, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TraitItem, TypeBodyItem,
@@ -342,10 +342,13 @@ fn variant_completion_detail(variant_def: &VariantDef) -> Option<String> {
 /// Returns `None` if no actors/supervisors are found, falling through to general completions.
 ///
 /// File-local actors keep their bare labels. Imported module actors surface
-/// under their qualified `module.Actor` label — the dotted key IS the actor's
-/// identity and the spawn spelling (`spawn bank.Account(...)`), so two
-/// same-named actors from different modules appear as two distinct,
-/// unambiguous entries instead of one bare name.
+/// under their *lexical* `module.Actor` label, while the checker retains their
+/// full declaration owner separately. This matters for package modules: the
+/// actor identity may be `hew.bank.Account`, but the source spelling accepted
+/// by the parser and checker is `bank.Account` (or an explicit import alias).
+/// Two same-named actors from different modules consequently remain distinct
+/// and directly insertable instead of leaking a canonical-only identity into
+/// the editor.
 fn try_spawn_completions(
     source: &str,
     parse_result: &hew_parser::ParseResult,
@@ -388,20 +391,15 @@ fn try_spawn_completions(
     }
 
     // Imported module actors live in the checker's `type_defs` under their
-    // dotted identity keys (`bank.Account`); the file's AST does not carry
-    // them. Surfacing the dotted label keeps two same-named module actors
-    // distinguishable and inserts the exact qualified spawn spelling.
+    // canonical dotted identities (`hew.bank.Account`); the file's AST does
+    // not carry them. Convert each identity back through the checker-published
+    // lexical binding table before emitting a completion. The table is the
+    // same authority that resolves `spawn bank.Account()` in the type checker;
+    // never infer a source qualifier by trimming a package path.
     if let Some(output) = type_output {
-        let mut imported: Vec<&String> = output
-            .type_defs
-            .iter()
-            .filter(|(name, def)| def.kind == TypeDefKind::Actor && name.contains('.'))
-            .map(|(name, _)| name)
-            .collect();
-        imported.sort_unstable();
-        for name in imported {
+        for label in imported_actor_spawn_labels(output) {
             items.push(CompletionItem {
-                label: name.clone(),
+                label,
                 kind: CompletionKind::Actor,
                 detail: Some("actor".to_string()),
                 documentation: None,
@@ -417,6 +415,33 @@ fn try_spawn_completions(
     } else {
         Some(items)
     }
+}
+
+/// Return source-spellable completion labels for imported actors in the root
+/// editor document.
+///
+/// `TypeCheckOutput::type_defs` stores the canonical declaration identity, but
+/// source code must use the import binding selected in
+/// `module_import_bindings`. Keeping that conversion here makes completion
+/// behavior follow the same exact owner/binding relation as type resolution:
+/// same-leaf package modules and explicit aliases cannot collapse into one
+/// candidate or produce an unspellable fully canonical label.
+fn imported_actor_spawn_labels(output: &TypeCheckOutput) -> Vec<String> {
+    let mut labels = BTreeSet::new();
+    for (identity, definition) in &output.type_defs {
+        if definition.kind != TypeDefKind::Actor {
+            continue;
+        }
+        let Some((owner, actor_name)) = identity.rsplit_once('.') else {
+            continue;
+        };
+        for ((importer, binding), bound_owner) in &output.module_import_bindings {
+            if importer.is_none() && bound_owner == owner {
+                labels.insert(format!("{binding}.{actor_name}"));
+            }
+        }
+    }
+    labels.into_iter().collect()
 }
 
 /// Collect local variable names from function/actor bodies that are in scope at `offset`.
@@ -828,10 +853,6 @@ fn fn_sig_completion(name: &str, sig: &FnSig) -> CompletionItem {
 
 /// Snippet completions for common language constructs.
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "data-table of snippet tuples; no logic to extract"
-)]
 pub fn keyword_snippets() -> Vec<CompletionItem> {
     let snippets = [
         (
@@ -861,11 +882,7 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
             "match value { pattern => ... }",
         ),
         ("actor", "actor ${1:Name} {\n\t$0\n}", "actor Name { ... }"),
-        (
-            "type",
-            "type ${1:Name} {\n\t$0\n}",
-            "type Name { ... }",
-        ),
+        ("type", "type ${1:Name} {\n\t$0\n}", "type Name { ... }"),
         ("enum", "enum ${1:Name} {\n\t$0\n}", "enum Name { ... }"),
         ("impl", "impl ${1:Type} {\n\t$0\n}", "impl Type { ... }"),
         (
@@ -905,11 +922,7 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
             "${1:expr} | after ${2:duration}",
             "expr | after duration",
         ),
-        (
-            "defer",
-            "defer ${0:expr};",
-            "defer expr;",
-        ),
+        ("defer", "defer ${0:expr};", "defer expr;"),
         (
             "while let",
             "while let ${1:Some(value)} = ${2:expr} {\n\t$0\n}",
@@ -996,13 +1009,17 @@ mod tests {
     }
 
     /// Type-check `root_source` together with pre-resolved module imports
-    /// (`(path, module_source)` pairs), mirroring the resolved-import shape
+    /// (`(path, lexical_alias, module_source)` triples), mirroring the
+    /// resolved-import shape
     /// `hew-compile` hands the checker for package imports.
-    fn type_check_with_modules(root_source: &str, modules: &[(&[&str], &str)]) -> TypeCheckOutput {
+    fn type_check_with_modules(
+        root_source: &str,
+        modules: &[(&[&str], Option<&str>, &str)],
+    ) -> TypeCheckOutput {
         use hew_parser::ast::{ImportDecl, Program};
         let mut items: Vec<Spanned<Item>> = modules
             .iter()
-            .map(|(path, module_source)| {
+            .map(|(path, module_alias, module_source)| {
                 let parsed = hew_parser::parse(module_source);
                 assert!(
                     parsed.errors.is_empty(),
@@ -1013,7 +1030,7 @@ mod tests {
                     Item::Import(ImportDecl {
                         path: path.iter().map(ToString::to_string).collect(),
                         spec: None,
-                        module_alias: None,
+                        module_alias: module_alias.map(str::to_string),
                         file_path: None,
                         resolved_items: Some(parsed.program.items),
                         resolved_item_source_paths: Vec::new(),
@@ -1053,8 +1070,8 @@ mod tests {
         let output = type_check_with_modules(
             "actor Local {}\nfn main() { }\n",
             &[
-                (&["hew", "bank"], actor_src),
-                (&["hew", "store"], actor_src),
+                (&["hew", "bank"], None, actor_src),
+                (&["hew", "store"], None, actor_src),
             ],
         );
         // Editor buffer mid-keystroke (parse errors tolerated, as in the
@@ -1078,6 +1095,37 @@ mod tests {
         assert!(
             !labels.contains(&"Account".to_string()),
             "no ambiguous bare entry for module actors: {labels:?}"
+        );
+    }
+
+    /// Completion labels must preserve the importer's lexical module aliases,
+    /// rather than exposing the checker's full package owners. The aliases are
+    /// the only spellings a subsequent `spawn` expression can resolve through.
+    #[test]
+    fn spawn_completions_use_lexical_module_aliases() {
+        let actor_src = "pub actor Account { receive fn who() -> i64 { 1 } }";
+        let output = type_check_with_modules(
+            "fn main() { }",
+            &[
+                (&["hew", "bank"], Some("ledger"), actor_src),
+                (&["hew", "store"], Some("vault"), actor_src),
+            ],
+        );
+        let cursor_src = "fn main() { let h = spawn  }\n";
+        let offset = cursor_src.find("spawn ").unwrap() + 6;
+        let parse_result = hew_parser::parse(cursor_src);
+        let labels: BTreeSet<String> = complete(cursor_src, &parse_result, Some(&output), offset)
+            .into_iter()
+            .map(|item| item.label)
+            .collect();
+
+        assert!(
+            labels.contains("ledger.Account") && labels.contains("vault.Account"),
+            "spawn completion must offer the exact import bindings: {labels:?}"
+        );
+        assert!(
+            !labels.contains("hew.bank.Account") && !labels.contains("hew.store.Account"),
+            "canonical owners are not valid source spellings: {labels:?}"
         );
     }
 

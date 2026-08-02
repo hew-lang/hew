@@ -93,6 +93,15 @@ fn main() -> i32 {
     // printf("Mutual recursion(15): %d\n", mutual_result);
     // printf("Nested recursion(6): %d\n", nested_result);
 
-    // Return sum of all results
-    fib_result + tail_fib_result + fact_result + ack_result + tree_result + mutual_result + nested_result
+    // Turn the workload into an execution proof and reserve non-zero process
+    // status for failure. Returning the sum made every successful run appear
+    // to the harness as a crash after OS exit-code truncation.
+    assert(fib_result == 55);
+    assert(tail_fib_result == 6765);
+    assert(fact_result == 40320);
+    assert(ack_result == 61);
+    assert(tree_result == 1520);
+    assert(mutual_result == 23);
+    assert(nested_result == 57);
+    0
 }

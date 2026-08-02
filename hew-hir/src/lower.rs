@@ -384,15 +384,58 @@ const SYNTHETIC_CRASH_KIND_ITEM: ItemId = ItemId(u32::MAX - 1008);
 const SYNTHETIC_MONITOR_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1009);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
 
+/// One compiler-owned cursor record admitted at the HIR layout boundary.
+///
+/// The typed builtin discriminator is the identity. Presentation names are
+/// derived from it and never participate in lookup, so a user declaration with
+/// the same leaf cannot enter the synthetic record namespace.
+pub(crate) struct SyntheticCursorLayoutSpec {
+    pub(crate) builtin: BuiltinType,
+    pub(crate) origin: ItemId,
+    pub(crate) type_params: &'static [&'static str],
+}
+
+pub(crate) const SYNTHETIC_CURSOR_LAYOUT_SPECS: &[SyntheticCursorLayoutSpec] = &[
+    SyntheticCursorLayoutSpec {
+        builtin: BuiltinType::VecIter,
+        origin: SYNTHETIC_VEC_ITER_ITEM,
+        type_params: &["T"],
+    },
+    SyntheticCursorLayoutSpec {
+        builtin: BuiltinType::HashMapIter,
+        origin: SYNTHETIC_HASHMAP_ITER_ITEM,
+        type_params: &["K", "V"],
+    },
+];
+
+/// Resolve the declaration and substituted field shape for one synthetic
+/// cursor instantiation. Every origin-site and post-monomorphisation layout
+/// registration consumes this catalog path.
+pub(crate) fn synthetic_cursor_layout(
+    builtin: BuiltinType,
+    type_args: &[ResolvedTy],
+) -> Option<(
+    &'static SyntheticCursorLayoutSpec,
+    Vec<(String, ResolvedTy)>,
+)> {
+    let spec = SYNTHETIC_CURSOR_LAYOUT_SPECS
+        .iter()
+        .find(|spec| spec.builtin == builtin)?;
+    let fields = match (builtin, type_args) {
+        (BuiltinType::VecIter, [elem]) => vec_iter_field_shape(elem),
+        (BuiltinType::HashMapIter, [key, value]) => hashmap_iter_field_shape(key, value),
+        _ => return None,
+    };
+    Some((spec, fields))
+}
+
 /// Field shape of the synthetic `VecIter<elem>` record — `{ vec: Vec<elem>,
 /// idx: i64 }` in declaration order.
 ///
-/// This is the SINGLE authority both the origin-site layout registration
-/// ([`LowerCtx::register_vec_iter_layout`]) and the per-monomorphisation
-/// layout discovery ([`crate::layout_mono::run_layout_mono_pass`], which seeds
-/// `VecIter` into its record-decl table) consume, so the two paths can never
-/// disagree on field order or field types. The for-in / into-iter desugar
-/// constructs the `VecIter` literal with exactly these fields in this order.
+/// This shape is selected by [`synthetic_cursor_layout`], the shared catalog
+/// path used by origin-site registration and per-monomorphisation discovery.
+/// The for-in / into-iter desugar constructs the `VecIter` literal with exactly
+/// these fields in this order.
 pub(crate) fn vec_iter_field_shape(elem_ty: &ResolvedTy) -> Vec<(String, ResolvedTy)> {
     vec![
         (
@@ -21463,29 +21506,34 @@ impl LowerCtx {
         self.register_option_layout(operand_ty, span, "checked numeric method");
     }
 
-    /// Register the concrete `HashMapIter$$<K, V>` record layout for a for-in
-    /// site, mirroring `register_vec_iter_layout`. Skips abstract instantiations
-    /// (a type param leaks `Vec<K>`/`Vec<V>` to the MIR boundary as
-    /// `UnknownType`); the concrete layout for each instantiation is registered
-    /// here once the enclosing fn is substituted, and `layout_mono` seeds the
-    /// decl so the substituted walk also discovers it. Field shape comes from
-    /// the single `hashmap_iter_field_shape` authority.
-    fn register_hashmap_iter_layout(
+    /// Register a concrete compiler-owned cursor layout from the typed catalog.
+    /// Abstract instantiations are deferred to `layout_mono`, which consumes the
+    /// same catalog after substituting the enclosing function.
+    fn register_synthetic_cursor_layout(
         &mut self,
-        key_ty: &ResolvedTy,
-        val_ty: &ResolvedTy,
+        builtin: BuiltinType,
+        type_args: &[ResolvedTy],
         span: &Span,
     ) {
-        if self.contains_abstract_type_param(key_ty) || self.contains_abstract_type_param(val_ty) {
+        if type_args
+            .iter()
+            .any(|ty| self.contains_abstract_type_param(ty))
+        {
             return;
         }
+        let Some((spec, fields)) = synthetic_cursor_layout(builtin, type_args) else {
+            debug_assert!(
+                false,
+                "invalid synthetic cursor layout request: {builtin:?}<{type_args:?}>"
+            );
+            return;
+        };
         let key = RecordMonoKey {
-            origin: SYNTHETIC_HASHMAP_ITER_ITEM,
-            origin_name: "HashMapIter".to_string(),
-            type_args: vec![key_ty.clone(), val_ty.clone()],
+            origin: spec.origin,
+            origin_name: builtin.canonical_name().to_string(),
+            type_args: type_args.to_vec(),
             symbol_class: crate::mono::SymbolClass::SyntheticRecord,
         };
-        let fields = hashmap_iter_field_shape(key_ty, val_ty);
         if self
             .record_layout_registry
             .insert(key, fields, span.clone())
@@ -21497,46 +21545,11 @@ impl LowerCtx {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::RecordLayoutCapExceeded { cap },
                 span.clone(),
-                "too many distinct HashMapIter<K, V> instantiations; the compiler refuses to \
-                 monomorphise beyond the configured record-layout cap",
-            ));
-        }
-    }
-
-    fn register_vec_iter_layout(&mut self, elem_ty: &ResolvedTy, span: &Span) {
-        // #1929 Stage 2: under a generic body the element is a declared type
-        // parameter, so registering an ABSTRACT `VecIter$$<T>` layout here would
-        // leak a `Vec<T>` field to the MIR value-class boundary (`UnknownType`).
-        // Skip it — exactly as the user-generic-record path (`record_record_layout`)
-        // fails closed on abstract args. The concrete `VecIter$$<elem>` for each
-        // instantiation is registered by the post-function-mono layout walk
-        // (`crate::layout_mono::run_layout_mono_pass`, which seeds `VecIter` into
-        // its record-decl table) once the enclosing fn is substituted. A concrete
-        // element never takes this branch, so the concrete for-in path is
-        // byte-identical.
-        if self.contains_abstract_type_param(elem_ty) {
-            return;
-        }
-        let key = RecordMonoKey {
-            origin: SYNTHETIC_VEC_ITER_ITEM,
-            origin_name: "VecIter".to_string(),
-            type_args: vec![elem_ty.clone()],
-            symbol_class: crate::mono::SymbolClass::SyntheticRecord,
-        };
-        let fields = vec_iter_field_shape(elem_ty);
-        if self
-            .record_layout_registry
-            .insert(key, fields, span.clone())
-            .is_err()
-            && !self.record_layout_cap_diag_emitted
-        {
-            self.record_layout_cap_diag_emitted = true;
-            let cap = self.record_layout_registry.cap();
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::RecordLayoutCapExceeded { cap },
-                span.clone(),
-                "too many distinct VecIter<T> instantiations; the compiler refuses to \
-                 monomorphise beyond the configured record-layout cap",
+                format!(
+                    "too many distinct {} instantiations; the compiler refuses to \
+                     monomorphise beyond the configured record-layout cap",
+                    builtin.canonical_name()
+                ),
             ));
         }
     }
@@ -22055,7 +22068,11 @@ impl LowerCtx {
     ) -> (HirExprKind, ResolvedTy) {
         let elem_ty = ResolvedTy::Tuple(vec![key_ty.clone(), val_ty.clone()]);
         let iter_ty = Self::resolved_hashmap_iter_ty(key_ty.clone(), val_ty.clone());
-        self.register_hashmap_iter_layout(key_ty, val_ty, &span);
+        self.register_synthetic_cursor_layout(
+            BuiltinType::HashMapIter,
+            &[key_ty.clone(), val_ty.clone()],
+            &span,
+        );
         self.register_option_layout(&elem_ty, &span, "HashMapIter::next");
         if Self::for_in_iterable_is_place(&receiver.0) {
             // Place source: re-read directly per projection (single owner, drop-safe).
@@ -22169,7 +22186,11 @@ impl LowerCtx {
         elem_ty: ResolvedTy,
         span: Span,
     ) -> HirExpr {
-        self.register_vec_iter_layout(&elem_ty, &span);
+        self.register_synthetic_cursor_layout(
+            BuiltinType::VecIter,
+            std::slice::from_ref(&elem_ty),
+            &span,
+        );
         let idx = self.make_i64_literal(0, span.clone());
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
         self.make_expr(
@@ -22265,7 +22286,11 @@ impl LowerCtx {
         let iter_ty = Self::resolved_hashmap_iter_ty(key_ty.clone(), val_ty.clone());
         // Register the concrete cursor layout and the `Option<(K, V)>` next
         // payload layout so MIR's field-order + value-class lookups resolve.
-        self.register_hashmap_iter_layout(&key_ty, &val_ty, iterable_span);
+        self.register_synthetic_cursor_layout(
+            BuiltinType::HashMapIter,
+            &[key_ty.clone(), val_ty.clone()],
+            iterable_span,
+        );
         self.register_option_layout(&elem_ty, iterable_span, "HashMapIter::next");
         // `keys()` and `values()` are taken from the single-eval `src` temp
         // (NOT a re-lowered clone of the iterable AST — that would evaluate a
@@ -22353,7 +22378,11 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         self.register_option_layout(elem_ty, &span, "VecIter::next");
-        self.register_vec_iter_layout(elem_ty, &span);
+        self.register_synthetic_cursor_layout(
+            BuiltinType::VecIter,
+            std::slice::from_ref(elem_ty),
+            &span,
+        );
         let option_ty = Self::resolved_option_ty(elem_ty.clone());
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
         let lowered_receiver = self.lower_synthetic_operand(receiver, IntentKind::Modify);

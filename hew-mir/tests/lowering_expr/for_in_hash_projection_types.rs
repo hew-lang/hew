@@ -4,10 +4,10 @@
 //! fresh `Vec` result. MIR then builds a complete `VecIter` owner, clones each
 //! yield, and releases the snapshot exactly once at loop-scope exit.
 
-use hew_mir::{Instr, IrPipeline, Terminator};
-use hew_types::{module_registry::ModuleRegistry, Checker};
+use hew_mir::{Instr, IrPipeline, MirDiagnosticKind, Terminator};
+use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy};
 
-fn pipeline(source: &str) -> IrPipeline {
+fn hir_module(source: &str) -> hew_hir::HirModule {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -23,7 +23,11 @@ fn pipeline(source: &str) -> IrPipeline {
         "HIR boundary diagnostics: {:#?}",
         hir.diagnostics
     );
-    let pipeline = hew_mir::lower_hir_module(&hir.module);
+    hir.module
+}
+
+fn pipeline(source: &str) -> IrPipeline {
+    let pipeline = hew_mir::lower_hir_module(&hir_module(source));
     assert!(
         pipeline.diagnostics.is_empty(),
         "MIR diagnostics: {:#?}",
@@ -31,6 +35,30 @@ fn pipeline(source: &str) -> IrPipeline {
     );
     pipeline
 }
+
+const CURSOR_LAYOUT_SOURCE: &str = r"
+type OwnedRow {
+    label: string;
+    children: Vec<string>;
+}
+
+fn strings(xs: Vec<string>) {
+    for value in xs { let _ = value.len(); }
+}
+
+fn owned_records(xs: Vec<OwnedRow>) {
+    for row in xs { let _ = row.label.len() + row.children.len(); }
+}
+
+fn nested_collections(xs: Vec<Vec<string>>) {
+    for inner in xs { let _ = inner.len(); }
+}
+
+fn map_owned_values(values: HashMap<string, string>) {
+    let cursor = values.into_iter();
+    let _ = cursor;
+}
+";
 
 fn function<'a>(pipeline: &'a IrPipeline, name: &str) -> &'a hew_mir::RawMirFunction {
     pipeline
@@ -125,4 +153,69 @@ fn owned_field(b: OwnedBox) {
             function.blocks
         );
     }
+}
+
+#[test]
+fn typed_cursor_catalog_closes_string_owned_record_and_nested_collection_layouts() {
+    let module = hir_module(CURSOR_LAYOUT_SOURCE);
+    let owned_row = ResolvedTy::named_user("OwnedRow", vec![]);
+    let nested_strings =
+        ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]);
+    let expected = [
+        (BuiltinType::VecIter, vec![ResolvedTy::String]),
+        (BuiltinType::VecIter, vec![owned_row]),
+        (BuiltinType::VecIter, vec![nested_strings.clone()]),
+        (
+            BuiltinType::HashMapIter,
+            vec![ResolvedTy::String, ResolvedTy::String],
+        ),
+    ];
+
+    for (builtin, args) in expected {
+        let key = hew_hir::synthetic_cursor_layout_key(builtin, &args)
+            .expect("test enumerates only synthetic cursor builtins");
+        assert!(
+            module
+                .record_layouts
+                .iter()
+                .any(|layout| layout.mangled_name == key),
+            "typed cursor catalog did not publish `{key}`; layouts: {:#?}",
+            module.record_layouts
+        );
+    }
+
+    let pipeline = hew_mir::lower_hir_module(&module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "cursor layouts must remain resolvable through MIR loads/stores: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn removing_a_typed_cursor_layout_fails_closed_at_mir() {
+    let mut module = hir_module(CURSOR_LAYOUT_SOURCE);
+    let missing = hew_hir::synthetic_cursor_layout_key(BuiltinType::VecIter, &[ResolvedTy::String])
+        .expect("VecIter is a synthetic cursor");
+    let before = module.record_layouts.len();
+    module
+        .record_layouts
+        .retain(|layout| layout.mangled_name != missing);
+    assert_eq!(
+        module.record_layouts.len() + 1,
+        before,
+        "counterfactual must remove exactly the string cursor layout"
+    );
+
+    let pipeline = hew_mir::lower_hir_module(&module);
+    assert!(
+        pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("not registered in field-order table")
+                    || construct.contains("unregistered record type")
+        )),
+        "missing cursor metadata must be rejected before codegen: {:#?}",
+        pipeline.diagnostics
+    );
 }

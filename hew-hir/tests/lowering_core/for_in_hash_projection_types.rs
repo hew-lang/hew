@@ -158,6 +158,30 @@ fn assert_hashmap_into_iter_field(output: &hew_hir::LowerOutput) {
     };
     assert_eq!(name, "HashMapIter");
     assert!(base.is_none());
+    let cursor_args = [ResolvedTy::I64, ResolvedTy::I64];
+    let cursor_key =
+        hew_hir::synthetic_cursor_layout_key(hew_types::BuiltinType::HashMapIter, &cursor_args)
+            .expect("HashMapIter is a synthetic cursor");
+    let cursor_layout = output
+        .module
+        .record_layouts
+        .iter()
+        .find(|layout| layout.mangled_name == cursor_key)
+        .unwrap_or_else(|| {
+            panic!(
+                "typed HashMapIter catalog entry `{cursor_key}` was not published: {:#?}",
+                output.module.record_layouts
+            )
+        });
+    assert_eq!(
+        cursor_layout
+            .fields
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["ks", "vs", "idx"],
+        "HashMap cursor layout must come from the shared typed catalog"
+    );
     assert_eq!(
         fields
             .iter()

@@ -880,6 +880,22 @@ pub(crate) unsafe fn timer_wheel_advance_cursor_for_test(tw: *mut HewTimerWheel,
     w.current_ms = w.current_ms.saturating_add(delta_ms);
 }
 
+/// Test-only: read the current wheel cursor without advancing it.
+///
+/// # Safety
+///
+/// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`].
+#[cfg(test)]
+pub(crate) unsafe fn timer_wheel_cursor_ms_for_test(tw: *mut HewTimerWheel) -> u64 {
+    // SAFETY: caller guarantees `tw` is valid.
+    let wheel = unsafe { &*tw };
+    wheel
+        .inner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .current_ms
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

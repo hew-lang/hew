@@ -2206,13 +2206,27 @@ pub fn lower_program_with_mono_cap(
                 .items
                 .iter()
                 .filter_map(|(item, _)| {
-                    let name = match item {
-                        Item::TypeDecl(decl) => &decl.name,
-                        Item::Record(decl) => &decl.name,
-                        _ => return None,
-                    };
-                    Some(format!("{module_full_path}.{name}"))
+                    match item {
+                        Item::TypeDecl(decl) => {
+                            Some(vec![format!("{module_full_path}.{}", decl.name)])
+                        }
+                        Item::Record(decl) => {
+                            Some(vec![format!("{module_full_path}.{}", decl.name)])
+                        }
+                        // A machine publishes two nominal declarations: its
+                        // value state and the generated event companion. Both
+                        // travel across imports with the exact source owner;
+                        // omitting the companion loses `MachineEvent` at HIR
+                        // lowering and poisons every `.step(event)` site at
+                        // the MIR value-class boundary.
+                        Item::Machine(decl) => Some(vec![
+                            format!("{module_full_path}.{}", decl.name),
+                            format!("{module_full_path}.{}Event", decl.name),
+                        ]),
+                        _ => None,
+                    }
                 })
+                .flatten()
                 .collect::<Vec<_>>();
             ctx.source_type_identities
                 .extend(identities.iter().cloned());
@@ -24069,6 +24083,30 @@ impl LowerCtx {
     /// symbol from the receiver type.  Only `RewriteToFunction` is recognised here;
     /// other rewrite variants are rejected as unsupported (they targeted the legacy
     /// codegen pipeline, not the Rust MIR pipeline).
+    /// Replace a presentation-only machine leaf with the checker-proven
+    /// declaration owner carried by `MachineMethodKind`. Machine method
+    /// dispatch is resolved before HIR lowering, so this is not a leaf-name
+    /// lookup: the call-site fact already selected the exact declaration.
+    ///
+    /// This keeps the receiver and generated event companion on the same
+    /// nominal identity that machine-mono and MIR layout classification use.
+    /// In particular, an imported `lifecycle.Lifecycle<i64>` must not leave a
+    /// bare `Lifecycle` / `LifecycleEvent` type on the runtime call boundary.
+    fn canonicalize_machine_runtime_ty(&self, expr: &mut HirExpr, canonical_name: &str) {
+        let ResolvedTy::Named { name, args, .. } = &expr.ty else {
+            return;
+        };
+        if name == canonical_name {
+            return;
+        }
+        let canonical_leaf = hew_types::short_name(canonical_name);
+        if name != canonical_leaf || name.contains('.') {
+            return;
+        }
+        expr.ty = ResolvedTy::named_user(canonical_name.to_string(), args.clone());
+        expr.value_class = ValueClass::of_ty(&expr.ty, &self.type_classes);
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single linear lowering path with three exclusive branches \
@@ -24543,7 +24581,9 @@ impl LowerCtx {
             let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
             return match dispatch {
                 hew_types::MachineMethodKind::Step { machine_name } => {
-                    let event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
+                    let mut receiver = lowered_receiver;
+                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
+                    let mut event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
                         value_class: ValueClass::PersistentShare,
@@ -24554,24 +24594,34 @@ impl LowerCtx {
                         ),
                         span: span.clone(),
                     });
+                    self.canonicalize_machine_runtime_ty(
+                        &mut event,
+                        &format!("{machine_name}Event"),
+                    );
                     (
                         HirExprKind::MachineStep {
                             machine_name,
-                            receiver: Box::new(lowered_receiver),
+                            receiver: Box::new(receiver),
                             event: Box::new(event),
                         },
                         ResolvedTy::Unit,
                     )
                 }
-                hew_types::MachineMethodKind::StateName { machine_name } => (
-                    HirExprKind::MachineStateName {
-                        machine_name,
-                        receiver: Box::new(lowered_receiver),
-                    },
-                    ResolvedTy::String,
-                ),
+                hew_types::MachineMethodKind::StateName { machine_name } => {
+                    let mut receiver = lowered_receiver;
+                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
+                    (
+                        HirExprKind::MachineStateName {
+                            machine_name,
+                            receiver: Box::new(receiver),
+                        },
+                        ResolvedTy::String,
+                    )
+                }
                 hew_types::MachineMethodKind::TakeEmits { machine_name } => {
-                    let event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
+                    let mut receiver = lowered_receiver;
+                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
+                    let mut event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
                         value_class: ValueClass::PersistentShare,
@@ -24582,10 +24632,14 @@ impl LowerCtx {
                         ),
                         span: span.clone(),
                     });
+                    self.canonicalize_machine_runtime_ty(
+                        &mut event,
+                        &format!("{machine_name}Event"),
+                    );
                     (
                         HirExprKind::MachineTakeEmits {
                             machine_name,
-                            receiver: Box::new(lowered_receiver),
+                            receiver: Box::new(receiver),
                             event: Box::new(event),
                         },
                         ResolvedTy::I64,

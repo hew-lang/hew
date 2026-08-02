@@ -5,14 +5,14 @@ use super::{
     cmp_select_by_signedness, context_reader_offset, describe_vec_element,
     dyn_rebind_source_binding, field_override_uses_record_field_drop, float_width,
     integer_bit_width, integer_signedness, is_self_expr, is_string_const_ty, machine_emit_type_id,
-    mangle_layout_key, mangle_machine_step, monomorphic_user_record_key, named_layout_key,
-    numeric_method_op, numeric_method_signedness, option_payload_ty, runtime_symbol_for_call_expr,
-    signed_min_value, ty_is_closure_pair, ty_is_generator_handle, ty_is_indirect_enum,
-    ty_is_stream_handle, unary_op_label, unresolved_fn_sig_reason, user_record_layout_key,
-    ActorStateLoadMode, BinaryOp, BindingId, Builder, BuiltinType, ChildKind, ClosurePairRhs,
-    CmpPred, Disposition, FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr,
-    HirExprKind, HirLiteral, HirStmtKind, HirVarSelfMethodTarget, Instr, IntArithOp, IntSignedness,
-    IntentKind, MirDiagnostic, MirDiagnosticKind, MirStatement, NumericMethodFamily, Place,
+    mangle_layout_key, mangle_machine_step, monomorphic_user_record_key, numeric_method_op,
+    numeric_method_signedness, option_payload_ty, runtime_symbol_for_call_expr, signed_min_value,
+    ty_is_closure_pair, ty_is_generator_handle, ty_is_indirect_enum, ty_is_stream_handle,
+    unary_op_label, unresolved_fn_sig_reason, user_record_layout_key, ActorStateLoadMode, BinaryOp,
+    BindingId, Builder, BuiltinType, ChildKind, ClosurePairRhs, CmpPred, Disposition,
+    FailClosedReason, FieldOffset, FloatWidth, HashMap, HashSet, HirExpr, HirExprKind, HirLiteral,
+    HirStmtKind, HirVarSelfMethodTarget, Instr, IntArithOp, IntSignedness, IntentKind,
+    MirDiagnostic, MirDiagnosticKind, MirStatement, NumericMethodFamily, Place,
     ProjectedPayloadOrigin, ProjectedPayloadRejectReason, ReleaseSymbolVerdict, ResolvedRef,
     ResolvedTy, RuntimeCallContext, SiteId, SuspendKind, Terminator, TrapKind, UnaryOp, ValueClass,
     VecElementRelease, FOR_ITER_CURSOR_NAME_PREFIX, SENTINEL_RECV_GEN_COMPANION_BINDING,
@@ -6369,7 +6369,12 @@ impl Builder {
                 let ret_local = self.alloc_local(ret_ty.clone());
                 let next = self.alloc_block();
                 let step_layout_key = match &receiver.ty {
-                    ResolvedTy::Named { name, args, .. } => named_layout_key(name, args),
+                    // The machine-mono registry and synthetic step emitter
+                    // both use the class-tagged machine layout key.  A plain
+                    // named-layout key drops that class/owner authority and
+                    // sends imported or generic machines to an undeclared
+                    // `<leaf>__step` symbol.
+                    ResolvedTy::Named { name, args, .. } => hew_hir::machine_layout_key(name, args),
                     _ => machine_name.clone(),
                 };
                 self.finish_current_block(Terminator::Call {
@@ -6426,7 +6431,16 @@ impl Builder {
                 };
                 let dest = self.alloc_local(ResolvedTy::String);
                 self.push_instr(Instr::MachineStateName {
-                    machine_name: machine_name.clone(),
+                    // State-name tables are emitted per concrete machine
+                    // layout, not per declaration leaf.  Carry the same
+                    // class-tagged instance key used by `.step()` so generic
+                    // imported machines select `mc$$owner$$Machine$$T`.
+                    machine_name: match &receiver.ty {
+                        ResolvedTy::Named { name, args, .. } => {
+                            hew_hir::machine_layout_key(name, args)
+                        }
+                        _ => machine_name.clone(),
+                    },
                     src_local,
                     dest,
                 });

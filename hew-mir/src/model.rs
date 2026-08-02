@@ -4868,6 +4868,8 @@ pub enum Instr {
     ActorStateFieldStore {
         field_offset: FieldOffset,
         src: Place,
+        /// Explicit MIR ownership authority for publication into state.
+        handoff: ActorStateStoreHandoff,
     },
     SpawnActor {
         actor_name: String,
@@ -5779,6 +5781,16 @@ pub enum ActorStateLoadMode {
     /// receiver borrow, and `dest` never escapes as a whole value. Codegen
     /// emits the bare load/store byte-copy alias — no retain, no clone.
     Borrowed,
+}
+
+/// Ownership handoff performed by [`Instr::ActorStateFieldStore`].
+///
+/// Actor-state stores are consuming MIR sinks. In copy mode the source owner
+/// transfers into state; borrowed ingress first clones an independent owner,
+/// and its source cleanup token is consequently never armed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActorStateStoreHandoff {
+    ConsumeSource,
 }
 
 /// Field-address selector for [`Instr::FieldDropInPlace`]: one op covers both

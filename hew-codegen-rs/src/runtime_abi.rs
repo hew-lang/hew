@@ -4358,6 +4358,16 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_cont_crash_cleanup_deactivate" | "hew_cont_crash_cleanup_retire" => {
             ctx.bool_type().fn_type(&[i64_ty.into()], false)
         }
+        // Per-field actor-state escrow validity. `clear` zeroes the matching
+        // field range before a potentially trapping overwrite release;
+        // `publish` copies the fully initialized replacement afterward.
+        "hew_dispatch_state_cleanup_clear" | "hew_dispatch_state_cleanup_publish" => ctx
+            .bool_type()
+            .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        "hew_dispatch_state_cleanup_transfer" => ctx.bool_type().fn_type(
+            &[i64_ty.into(), ptr_ty.into(), i64_ty.into()],
+            false,
+        ),
         // hew_context_reply_channel_swap_pop() -> void
         // (`hew-runtime/src/execution_context.rs`). Closes the innermost swap on
         // the NORMAL-return edge: restores the outer reply-channel pointer +

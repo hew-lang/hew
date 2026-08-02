@@ -14266,8 +14266,12 @@ fn lower_instruction_with_cancel_drops(
             lower_actor_state_field_load(fn_ctx, *field_offset, *dest, *mode)?;
             let _ = ctx;
         }
-        Instr::ActorStateFieldStore { field_offset, src } => {
-            lower_actor_state_field_store(fn_ctx, *field_offset, *src)?;
+        Instr::ActorStateFieldStore {
+            field_offset,
+            src,
+            handoff,
+        } => {
+            lower_actor_state_field_store(fn_ctx, *field_offset, *src, *handoff)?;
             let _ = ctx;
         }
         Instr::NeutralizePayloadSlot { place, .. } => {
@@ -17426,6 +17430,7 @@ fn lower_actor_state_field_store(
     fn_ctx: &FnCtx<'_, '_>,
     field_offset: FieldOffset,
     src: Place,
+    handoff: hew_mir::ActorStateStoreHandoff,
 ) -> CodegenResult<()> {
     let state_ty = fn_ctx.actor_state_ty.ok_or_else(|| {
         CodegenError::FailClosed("ActorStateFieldStore has no registered actor state type".into())
@@ -17507,6 +17512,16 @@ fn lower_actor_state_field_store(
     //     deliberately untouched.
     //   - `BitCopy` / `OpaqueHandle`: no owned heap / user-managed; nothing
     //     to release.
+    // Clear only this field from the dispatch-owned state escrow before any
+    // old-value release that may transitively panic. Untouched sibling fields
+    // remain valid in the snapshot and are still dropped on crash.
+    emit_checked_dispatch_state_cleanup_call(
+        fn_ctx,
+        "hew_dispatch_state_cleanup_clear",
+        field_ptr,
+        field_ty,
+        &format!("state_f{idx}_crash_clear"),
+    )?;
     if let Some(kinds) = fn_ctx.actor_state_field_kinds {
         let kind = kinds.get(idx as usize).ok_or_else(|| {
             CodegenError::FailClosed(format!(
@@ -17531,6 +17546,21 @@ fn lower_actor_state_field_store(
         .builder
         .build_store(field_ptr, src_val)
         .llvm_ctx("ActorStateFieldStore store")?;
+    // Validate and transfer the source token plus escrow publication in one
+    // non-failing runtime transaction. A rejected token/range leaves the
+    // source active; borrowed-message ingress has no armed source token and
+    // therefore takes the separately validated no-source publication path.
+    match handoff {
+        hew_mir::ActorStateStoreHandoff::ConsumeSource => {
+            emit_actor_state_cleanup_handoff(
+                fn_ctx,
+                src,
+                field_ptr,
+                field_ty,
+                &format!("state_f{idx}_crash_handoff"),
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -21894,9 +21924,10 @@ fn collect_helper_crash_cleanup_descriptors(
     enum_layouts: &[EnumLayout],
     fn_symbols: &FnSymbolMap<'_>,
 ) -> CodegenResult<Vec<HelperCrashCleanupDescriptor>> {
-    if !has_suspend && func.call_conv != FunctionCallConv::Default {
-        return Ok(Vec::new());
-    }
+    // Every generated calling convention may execute beneath an actor
+    // dispatch. Non-suspending functions use dispatch-scoped snapshots when no
+    // tracked coroutine is active; outside a cooperative dispatch the runtime
+    // deliberately returns token zero and these hooks remain benign.
     // Instruction producers are admitted through MIR's exhaustive write-set
     // authority. This keeps registration congruent with every whole-slot
     // producer while deliberately excluding interior field mutations.
@@ -22347,6 +22378,193 @@ fn emit_checked_crash_cleanup_token_call(
         .build_unreachable()
         .llvm_ctx_with(|| format!("{label} unreachable"))?;
     fn_ctx.builder.position_at_end(accepted_bb);
+    Ok(())
+}
+
+fn emit_checked_dispatch_state_cleanup_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    symbol: &str,
+    field: PointerValue<'_>,
+    field_ty: BasicTypeEnum<'_>,
+    label: &str,
+) -> CodegenResult<()> {
+    let (size, _) = abi_size_align(field_ty, Some(fn_ctx.target_data))?;
+    let callee = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        symbol,
+    )?;
+    let accepted = fn_ctx
+        .builder
+        .build_call(
+            callee,
+            &[
+                field.into(),
+                fn_ctx.ctx.i64_type().const_int(size, false).into(),
+            ],
+            &format!("{label}_call"),
+        )
+        .llvm_ctx_with(|| format!("{symbol} call"))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?
+        .into_int_value();
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::Llvm(format!("{label} has no parent function")))?;
+    let accepted_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_accepted"));
+    let rejected_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_rejected"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(accepted, accepted_bb, rejected_bb)
+        .llvm_ctx_with(|| format!("{label} result branch"))?;
+    fn_ctx.builder.position_at_end(rejected_bb);
+    let trap = Intrinsic::find("llvm.trap")
+        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap, &[], &format!("{label}_trap"))
+        .llvm_ctx_with(|| format!("{label} trap"))?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .llvm_ctx_with(|| format!("{label} unreachable"))?;
+    fn_ctx.builder.position_at_end(accepted_bb);
+    Ok(())
+}
+
+fn emit_actor_state_cleanup_handoff(
+    fn_ctx: &FnCtx<'_, '_>,
+    src: Place,
+    field: PointerValue<'_>,
+    field_ty: BasicTypeEnum<'_>,
+    label: &str,
+) -> CodegenResult<()> {
+    let Some(owner) = fn_ctx.helper_crash_cleanup_owners.get(&src).cloned() else {
+        return emit_checked_dispatch_state_cleanup_call(
+            fn_ctx,
+            "hew_dispatch_state_cleanup_publish",
+            field,
+            field_ty,
+            label,
+        );
+    };
+    let active = fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.bool_type(),
+            owner.active_slot,
+            &format!("{label}_source_active"),
+        )
+        .llvm_ctx("actor-state handoff active load")?
+        .into_int_value();
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("actor-state handoff has no parent".into()))?;
+    let transfer_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_transfer"));
+    let publish_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_no_source"));
+    let merge_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_merge"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(active, transfer_bb, publish_bb)
+        .llvm_ctx("actor-state handoff authority branch")?;
+
+    fn_ctx.builder.position_at_end(transfer_bb);
+    let token = fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.i64_type(),
+            owner.token_slot,
+            &format!("{label}_source_token"),
+        )
+        .llvm_ctx("actor-state handoff token load")?
+        .into_int_value();
+    let (size, _) = abi_size_align(field_ty, Some(fn_ctx.target_data))?;
+    let transfer = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_dispatch_state_cleanup_transfer",
+    )?;
+    let accepted = fn_ctx
+        .builder
+        .build_call(
+            transfer,
+            &[
+                token.into(),
+                field.into(),
+                fn_ctx.ctx.i64_type().const_int(size, false).into(),
+            ],
+            &format!("{label}_transfer_call"),
+        )
+        .llvm_ctx("hew_dispatch_state_cleanup_transfer call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_dispatch_state_cleanup_transfer returned void".into())
+        })?
+        .into_int_value();
+    let accepted_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_transfer_accepted"));
+    let rejected_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, &format!("{label}_transfer_rejected"));
+    fn_ctx
+        .builder
+        .build_conditional_branch(accepted, accepted_bb, rejected_bb)
+        .llvm_ctx("actor-state handoff result branch")?;
+    fn_ctx.builder.position_at_end(rejected_bb);
+    let trap = Intrinsic::find("llvm.trap")
+        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    fn_ctx
+        .builder
+        .build_call(trap, &[], &format!("{label}_transfer_trap"))
+        .llvm_ctx("actor-state handoff rejection trap")?;
+    fn_ctx
+        .builder
+        .build_unreachable()
+        .llvm_ctx("actor-state handoff rejection unreachable")?;
+    fn_ctx.builder.position_at_end(accepted_bb);
+    fn_ctx
+        .builder
+        .build_store(owner.active_slot, fn_ctx.ctx.bool_type().const_zero())
+        .llvm_ctx("actor-state transferred source inactive")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("actor-state transfer merge branch")?;
+
+    fn_ctx.builder.position_at_end(publish_bb);
+    emit_checked_dispatch_state_cleanup_call(
+        fn_ctx,
+        "hew_dispatch_state_cleanup_publish",
+        field,
+        field_ty,
+        &format!("{label}_publish"),
+    )?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("actor-state publish merge branch")?;
+    fn_ctx.builder.position_at_end(merge_bb);
     Ok(())
 }
 

@@ -1989,6 +1989,27 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                 // substrate is dormant), or the `coro.begin` handle when a
                 // handler suspended. The handle is captured here; the production
                 // wasm park edge (commit 4) consumes a non-null handle.
+                // SAFETY: this cooperative activation exclusively owns the
+                // actor state until the matching finish/recovery call.
+                let crash_state_drop = match (a.state_clone_fn, a.state_drop_fn) {
+                    (Some(_), Some(drop)) => Some(drop),
+                    (None, None) => None,
+                    _ => panic!("actor state has half-registered clone/drop classifier proof"),
+                };
+                // SAFETY: this cooperative activation exclusively owns the
+                // actor state until the matching finish/recovery call.
+                if !unsafe {
+                    crate::cont::begin_dispatch_crash_cleanup(
+                        a.state,
+                        a.state_size,
+                        // Paired clone/drop registration is the MIR
+                        // classifier's proof that the wrapper is safe to
+                        // relocate into the crash escrow.
+                        crash_state_drop,
+                    )
+                } {
+                    panic!("could not establish WASM actor dispatch crash cleanup");
+                }
                 let dispatch_result = catch_unwind(AssertUnwindSafe(|| match dispatch {
                     DispatchTarget::User(user_dispatch) =>
                     // SAFETY: `user_dispatch` is the actor's registered
@@ -2039,6 +2060,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     )
                 };
                 if release_result != crate::actor::HEW_ACTOR_STATE_LOCK_OK {
+                    // SAFETY: dispatch returned and this activation owns the
+                    // still-open cleanup scope.
+                    let _ = unsafe { crate::cont::recover_dispatch_crash_cleanup(true) };
                     a.actor_state
                         .store(HewActorState::Crashed as i32, Ordering::Release);
                     execution_context.reply_channel = std::ptr::null_mut();
@@ -2064,10 +2088,19 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
                     // the WASM counterpart of the native longjmp seam,
                     // which jumps directly out of dispatch with the code
                     // already installed.
-                    if a.error_code.load(Ordering::Acquire) != 0 {
+                    let cooperative_crash = a.error_code.load(Ordering::Acquire) != 0;
+                    // SAFETY: catch_unwind proves the dispatch stack is
+                    // abandoned and transfers its cleanup scope here.
+                    let _ =
+                        unsafe { crate::cont::recover_dispatch_crash_cleanup(cooperative_crash) };
+                    if cooperative_crash {
                         a.actor_state
                             .store(HewActorState::Crashed as i32, Ordering::Release);
                     }
+                // SAFETY: normal dispatch return matches the scope opened
+                // immediately before handler entry.
+                } else if !unsafe { crate::cont::finish_dispatch_crash_cleanup() } {
+                    panic!("WASM actor dispatch returned with live crash-cleanup owners");
                 }
 
                 let reply_consumed = (execution_context.flags

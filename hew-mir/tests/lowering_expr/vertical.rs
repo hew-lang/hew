@@ -1928,7 +1928,8 @@ fn recv_handler_conditional_record_ingress_retains_before_guarded_drop() {
                     instr,
                     Instr::ActorStateFieldStore {
                         field_offset: hew_mir::FieldOffset(1),
-                        src: Place::Local(0)
+                        src: Place::Local(0),
+                        ..
                     }
                 )
             })

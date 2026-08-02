@@ -20,6 +20,7 @@ use super::{
 };
 #[cfg(test)]
 use super::{FieldLoadClass, PlaceProvenance, Projection, ValueProvenance};
+use crate::model::ActorStateStoreHandoff;
 
 pub(super) fn binding_seeds_drop_elaboration(
     ty: &ResolvedTy,
@@ -2201,8 +2202,11 @@ impl Builder {
             }
         }
         if let Some((field_offset, _)) = self.actor_state_field_for_target(target) {
-            self.instructions
-                .push(Instr::ActorStateFieldStore { field_offset, src });
+            self.instructions.push(Instr::ActorStateFieldStore {
+                field_offset,
+                src,
+                handoff: ActorStateStoreHandoff::ConsumeSource,
+            });
             return;
         }
         match &target.kind {
@@ -6344,6 +6348,7 @@ impl Builder {
                     self.push_instr(Instr::ActorStateFieldStore {
                         field_offset,
                         src: ret_local,
+                        handoff: ActorStateStoreHandoff::ConsumeSource,
                     });
                 }
                 // `m.step(ev)` is typed Unit at the call site (HIR

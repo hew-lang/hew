@@ -1028,9 +1028,13 @@ fn render_instr(instr: &Instr) -> String {
                 render_actor_state_load_mode_suffix(*mode)
             )
         }
-        Instr::ActorStateFieldStore { field_offset, src } => {
+        Instr::ActorStateFieldStore {
+            field_offset,
+            src,
+            handoff,
+        } => {
             format!(
-                "actor_state_store field[{}] = {}",
+                "actor_state_store field[{}] = {} handoff={handoff:?}",
                 field_offset.0,
                 render_place(src)
             )

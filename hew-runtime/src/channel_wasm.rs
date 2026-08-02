@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(test)]
 std::thread_local! {
     static ACTIVE_HANDLES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static HANDLE_COUNT_UNDERFLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -45,12 +46,13 @@ fn record_handle_open() {
 #[cfg(test)]
 fn record_handle_close() {
     ACTIVE_HANDLES.with(|count| {
-        count.set(
-            count
-                .get()
-                .checked_sub(1)
-                .expect("wasm channel test handle count underflow"),
-        );
+        let current = count.get();
+        if current == 0 {
+            HANDLE_COUNT_UNDERFLOWED.set(true);
+        }
+        // This runs from Drop, including while unwinding. Record an underflow
+        // for the explicit test oracle below instead of risking a double panic.
+        count.set(current.saturating_sub(1));
     });
 }
 
@@ -513,6 +515,10 @@ pub unsafe extern "C" fn hew_channel_receiver_close(receiver: *mut HewWasmChanne
 
 #[cfg(test)]
 fn active_handle_count() -> usize {
+    assert!(
+        !HANDLE_COUNT_UNDERFLOWED.get(),
+        "wasm channel test handle count underflow"
+    );
     ACTIVE_HANDLES.get()
 }
 

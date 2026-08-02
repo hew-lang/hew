@@ -18771,7 +18771,7 @@ impl LowerCtx {
             };
             let fact = remaining_facts.remove(fact_idx);
             let ty = match ResolvedTy::from_ty(&fact.ty) {
-                Ok(ty) => ty,
+                Ok(ty) => self.qualify_current_module_record_ty(ty),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
@@ -33198,6 +33198,31 @@ fn main() {}
             std_ctx.resolve_named_type_ref("Connection", Vec::new()),
             ResolvedTy::named_opaque("std.net.Connection".to_string(), Vec::new()),
             "a bare std.net declaration must retain its full source owner"
+        );
+
+        let mut root_ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        root_ctx
+            .opaque_type_short_names
+            .insert("std.net.Connection".to_string());
+        assert_eq!(
+            root_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "std.net.Connection".to_string(),
+                Vec::new(),
+            )),
+            ResolvedTy::named_opaque("std.net.Connection".to_string(), Vec::new()),
+            "checker-authored closure capture facts must recover an imported opaque identity"
+        );
+        assert_eq!(
+            root_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
+                "acme.net.Connection".to_string(),
+                Vec::new(),
+            )),
+            ResolvedTy::named_user("acme.net.Connection".to_string(), Vec::new()),
+            "a same-leaf user closure capture must not inherit std.net opacity"
         );
         assert_eq!(
             std_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(

@@ -2179,6 +2179,30 @@ mod tests {
     }
 
     #[test]
+    fn actor_state_transaction_operations_refuse_a_missing_dispatch_domain() {
+        let mut field = 17_u64;
+        // SAFETY: the field is live for the exact supplied size. Range
+        // validity alone is deliberately insufficient: ordinary handler code
+        // must not succeed when the scheduler forgot its state domain.
+        unsafe {
+            assert!(!hew_dispatch_state_cleanup_clear(
+                ptr::from_mut(&mut field).cast(),
+                size_of::<u64>() as u64,
+            ));
+            assert!(!hew_dispatch_state_cleanup_publish(
+                ptr::from_mut(&mut field).cast(),
+                size_of::<u64>() as u64,
+            ));
+            assert!(!hew_dispatch_state_cleanup_transfer(
+                1,
+                ptr::from_mut(&mut field).cast(),
+                ptr::from_mut(&mut field).cast(),
+                size_of::<u64>() as u64,
+            ));
+        }
+    }
+
+    #[test]
     fn actor_state_escrow_withholds_only_inflight_field_and_drops_sibling_once() {
         let _ = take_crash_cleanup_test_drops();
         let mut state = CrashStatePair {

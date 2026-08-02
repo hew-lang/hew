@@ -2411,14 +2411,10 @@ impl Builder {
             // `hew_string_drop` after the unused producer. No Vec-specific
             // handling is owed here.
             //
-            // #2648 preflight — run BEFORE `lower_value`. A rejected discarded
-            // call-scrutinee (forwarded borrowed parameter, un-audited heap
-            // extern) pushes one diagnostic and emits no MIR / no owner. The
-            // early return is the safety guard; the non-Call HashMap-get owner
-            // path in `register_discarded_call_result_owner` is `NotApplicable`
-            // to the preflight and proceeds unchanged.
-            if let Err(diag) = self.classify_call_scrutinee_admission(expr) {
-                self.diagnostics.push(*diag);
+            if !self.typed_produced_value_demand_is_resolved(
+                expr,
+                "discarded result has unresolved ownership",
+            ) {
                 return;
             }
             let discarded_vec_iter_ty = self.subst_ty(&expr.ty);

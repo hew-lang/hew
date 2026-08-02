@@ -63,6 +63,9 @@
 //!   the re-entrancy check in `crash_signal_handler` below — if the
 //!   recovery path itself faulted, there is no safe `siglongjmp` target
 //!   and continuing would corrupt scheduler state.
+//! - **Crash-cleanup finalizer fault**: a signal arrives while a detached
+//!   typed cleanup drain is active. The finalizer may already have performed
+//!   a non-idempotent close; longjmp would bypass and poison the drain guard.
 //! - **No recovery context**: the faulting thread has no valid
 //!   `sigjmp_buf` installed (signal raised in scheduler internals,
 //!   pre-dispatch Rust code, or any worker before `init_worker_recovery`
@@ -124,6 +127,11 @@ mod shared {
         pub(super) worker_id: u32,
         /// Message type being processed when crash occurred.
         pub(super) msg_type: AtomicI32,
+        /// Set while the runtime is invoking detached typed cleanup callbacks.
+        /// The native signal handler reads this lock-free flag before any
+        /// longjmp decision: abandoning a partially executed finalizer would
+        /// poison the drain TLS and make retry safety unknowable.
+        pub(super) crash_cleanup_drain_active: AtomicBool,
         /// `true` when the recovery was entered through the runtime's
         /// intentional direct-longjmp path (a Hew `panic()` or a `HEW_TRAP_*`
         /// runtime trap), `false` when it was entered through the hardware
@@ -147,6 +155,7 @@ mod shared {
                 in_recovery: AtomicBool::new(false),
                 worker_id,
                 msg_type: AtomicI32::new(0),
+                crash_cleanup_drain_active: AtomicBool::new(false),
                 intentional_panic: AtomicBool::new(false),
             }
         }
@@ -730,6 +739,16 @@ mod platform {
         // SAFETY: ctx is valid (created in init_worker_recovery, same thread).
         let ctx = unsafe { &mut *ctx };
 
+        // A signal in a typed cleanup callback is not an actor-isolatable
+        // fault. The current callback may already have performed a
+        // non-idempotent close, and siglongjmp would bypass the durable drain
+        // guard. Terminate from the handler using only the async-signal-safe
+        // primitive promised by this module.
+        if ctx.state.crash_cleanup_drain_active.load(Ordering::Acquire) {
+            // SAFETY: _exit is async-signal-safe.
+            unsafe { libc::_exit(128 + sig) };
+        }
+
         // Re-entrancy check: if we're already recovering from a signal,
         // a second crash means the recovery path itself is broken.
         if ctx.state.in_recovery.swap(true, Ordering::Acquire) {
@@ -976,6 +995,20 @@ mod platform {
         // SAFETY: ctx is valid (same thread).
         let ctx = unsafe { &mut *ctx };
         super::shared::mark_recovery_active_impl(&mut ctx.state);
+    }
+
+    /// Publish crash-cleanup drain state to the async signal handler.
+    pub(crate) fn set_crash_cleanup_drain_active(active: bool) {
+        // SAFETY: this is called on the worker that owns its recovery context.
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        // SAFETY: the TLS context is exclusively owned by this thread.
+        unsafe { &*ctx }
+            .state
+            .crash_cleanup_drain_active
+            .store(active, Ordering::Release);
     }
 
     /// Handle crash recovery after sigsetjmp returned non-zero (crash path).
@@ -1284,6 +1317,14 @@ mod platform {
         // guaranteed because each worker thread has its own TLS slot.
         let ctx = unsafe { &mut *ctx };
 
+        // Windows cannot safely recover a fault from a partially executed
+        // cleanup callback either. Continue search so the OS applies the
+        // process-fatal hardware-exception policy rather than touching the
+        // saved dispatch context.
+        if ctx.state.crash_cleanup_drain_active.load(Ordering::Acquire) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+
         // Re-entrancy guard.
         if ctx.state.in_recovery.swap(true, Ordering::Acquire) {
             return EXCEPTION_CONTINUE_SEARCH;
@@ -1385,6 +1426,19 @@ mod platform {
         // guaranteed because each worker thread has its own TLS slot.
         let ctx = unsafe { &mut *ctx };
         super::shared::mark_recovery_active_impl(&mut ctx.state);
+    }
+
+    pub(crate) fn set_crash_cleanup_drain_active(active: bool) {
+        // SAFETY: retrieves this thread's exclusively owned recovery context.
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        // SAFETY: the TLS context belongs to this thread.
+        unsafe { &*ctx }
+            .state
+            .crash_cleanup_drain_active
+            .store(active, Ordering::Release);
     }
 
     pub(crate) unsafe fn handle_crash_recovery() -> (i32, usize) {
@@ -1490,6 +1544,7 @@ mod platform {
 
     pub(crate) fn init_crash_handling() {}
     pub(crate) fn init_worker_recovery(_worker_id: u32) {}
+    pub(crate) fn set_crash_cleanup_drain_active(_active: bool) {}
 
     /// No-op on WASM: wasm32 has no POSIX signals, so there is no `SIGPIPE` to
     /// ignore. A broken-pipe / reset condition on the simulated transport
@@ -1548,8 +1603,8 @@ mod platform {
 // Re-export platform-specific implementations.
 pub(crate) use platform::{
     clear_dispatch_recovery, handle_crash_recovery, ignore_sigpipe, init_crash_handling,
-    init_worker_recovery, mark_recovery_active, prepare_dispatch_recovery, sigsetjmp,
-    try_direct_longjmp, try_direct_longjmp_with_code,
+    init_worker_recovery, mark_recovery_active, prepare_dispatch_recovery,
+    set_crash_cleanup_drain_active, sigsetjmp, try_direct_longjmp, try_direct_longjmp_with_code,
 };
 
 // ── Terminal off-dispatch crash diagnostic (subprocess test) ─────────────────

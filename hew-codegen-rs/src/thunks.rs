@@ -3433,6 +3433,9 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
         .llvm_ctx("dispatch borrow payload null branch")?;
 
     // Fail-closed arm: hard panic, never return to the load.
+    // TRAP-DISPOSITION: actor-cooperative(hew_panic). This generated thunk
+    // calls the plain-C runtime symbol directly: an installed actor recovery
+    // frame catches it; otherwise the process exits. It cannot Rust-unwind.
     builder.position_at_end(borrow_null_bb);
     let panic_fn = llvm_mod.get_function("hew_panic").unwrap_or_else(|| {
         // `void hew_panic(void)` (hew-runtime/src/actor.rs) — diverges via

@@ -96,6 +96,12 @@ use crate::mem::{hew_alloc, hew_dealloc};
 /// full 16-byte strides so the returned frame pointer keeps this alignment.
 const FRAME_ALIGN: usize = 16;
 
+/// Maximum alignment requested for actor-state crash snapshots. Hew's current
+/// target ABIs require at most 16 bytes for generated state, while 64 leaves
+/// conservative headroom without turning an unusually aligned allocator
+/// address (for example, a page boundary) into a multi-kilobyte layout request.
+const MAX_STATE_ESCROW_ALIGN: usize = 64;
+
 /// Bytes reserved ahead of the frame for the stored block size, tracked-frame
 /// marker, and crash-cleanup-registry pointer. Two full [`FRAME_ALIGN`]
 /// strides keep the pointer handed to LLVM 16-byte aligned on every target.
@@ -119,10 +125,10 @@ const TRACKED_COROUTINE_FRAME_MAGIC: u64 = 0x4845_5743_4f52_4f31;
 /// for the ordinary "no active tracked coroutine" no-op.
 pub const CRASH_CLEANUP_ARM_FAILED: u64 = u64::MAX;
 
-/// Generated cleanup thunks may call runtime code which panics on unwind-capable
-/// targets.  The unwind ABI is therefore part of the callback contract: plain
-/// `extern "C"` would turn such a panic into an immediate abort before the
-/// drain can quarantine the failed entry and continue with independent owners.
+/// Rust-authored cleanup callbacks may explicitly use `C-unwind`, allowing the
+/// drain to quarantine their unwind on compatible host builds. Generated LLVM
+/// cleanup thunks call plain-`C` runtime symbols: a Rust panic in one of those
+/// symbols is process-fatal at that boundary and never reaches this quarantine.
 type CrashCleanupThunk = unsafe extern "C-unwind" fn(*mut c_void);
 type StateCrashCleanupThunk = unsafe extern "C" fn(*mut c_void);
 
@@ -192,6 +198,11 @@ struct CrashCleanupRegistry {
     state_align: u64,
     state_drop: Option<CrashCleanupThunk>,
     state_run_state: CrashCleanupRunState,
+    /// A generated field clear/publication has begun changing the escrow's
+    /// ownership shape. Once true, even a host-only caught Rust unwind cannot
+    /// return typed state authority to the original live wrapper: its field
+    /// bytes may already name a partially finalized value.
+    state_mutation_began: bool,
 }
 
 /// Process-wide non-reusing crash-cleanup identity source.
@@ -243,6 +254,9 @@ impl CrashCleanupDrainGuard {
             let current = depth.get();
             let next = current.checked_add(1)?;
             depth.set(next);
+            if current == 0 {
+                crate::signal::set_crash_cleanup_drain_active(true);
+            }
             Some(Self)
         })
     }
@@ -251,7 +265,11 @@ impl CrashCleanupDrainGuard {
 impl Drop for CrashCleanupDrainGuard {
     fn drop(&mut self) {
         CRASH_CLEANUP_DRAIN_DEPTH.with(|depth| {
-            depth.set(depth.get().saturating_sub(1));
+            let next = depth.get().saturating_sub(1);
+            depth.set(next);
+            if next == 0 {
+                crate::signal::set_crash_cleanup_drain_active(false);
+            }
         });
     }
 }
@@ -550,9 +568,10 @@ unsafe fn free_crash_cleanup_entry(entry: *mut CrashCleanupEntry, run: bool) -> 
         // SAFETY: codegen supplied the exact `void(ptr)` ElabDrop thunk for
         // this live frame slot or ABI-aligned byte snapshot. It remains live
         // throughout the call and the abandoned original will never be dropped.
-        // On unwind-capable targets this quarantines a transitive Rust panic.
-        // On panic=abort targets no Err edge exists and the process/module
-        // terminates; this code does not claim otherwise.
+        // A genuinely unwind-capable `C-unwind` callback (including the
+        // Rust-authored test/plugin boundary) is quarantined here. Generated
+        // LLVM thunks call plain-C runtime symbols, whose Rust panic policy is
+        // process-fatal before this catch can observe an Err.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             (entry.thunk)(cleanup_slot);
         }));
@@ -588,8 +607,9 @@ unsafe fn free_dispatch_state_snapshot(registry: &mut CrashCleanupRegistry, run:
             // the replacement became valid. The generated state-drop thunk is
             // therefore valid for this escrow even after longjmp/unwind.
             registry.state_run_state = CrashCleanupRunState::Running;
-            // Same profile contract as entry cleanup above: quarantine is
-            // available only when Rust unwinding is supported.
+            // This catch remains defensive for a callback that can genuinely
+            // cross C-unwind. Current generated state-drop thunks call plain-C
+            // runtime symbols and therefore have process-fatal panic behavior.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 // SAFETY: the state snapshot and generated descriptor remain
                 // live for this detached registry's exclusive drain.
@@ -795,25 +815,33 @@ unsafe fn copy_crash_cleanup_snapshot(entry: &mut CrashCleanupEntry, slot: *mut 
     if entry.storage != CrashCleanupStorage::Snapshot {
         return true;
     }
+    let Ok(align_host) = usize::try_from(entry.align) else {
+        return false;
+    };
+    if align_host == 0 || !align_host.is_power_of_two() {
+        return false;
+    }
+    let Ok(size_host) = usize::try_from(entry.size) else {
+        return false;
+    };
     if entry.snapshot.is_null() {
+        // Perform every fallible descriptor conversion before allocating so a
+        // rejected new arm cannot strand an unpublished snapshot pointer.
         // SAFETY: hew_alloc validates the DataLayout-derived size/alignment.
         entry.snapshot = unsafe { hew_alloc(entry.size, entry.align) };
         if entry.snapshot.is_null() {
             return false;
         }
     }
-    let Ok(align_host) = usize::try_from(entry.align) else {
-        return false;
-    };
-    if align_host == 0
-        || !align_host.is_power_of_two()
-        || !(entry.snapshot as usize).is_multiple_of(align_host)
-    {
+    if !(entry.snapshot as usize).is_multiple_of(align_host) {
+        // An allocator contract violation must still fail atomically: release
+        // the unpublished escrow before returning the hard-failure sentinel.
+        let snapshot = std::mem::replace(&mut entry.snapshot, ptr::null_mut());
+        // SAFETY: snapshot came from the matching allocation immediately above
+        // or an earlier successful arm with the same immutable descriptor.
+        unsafe { hew_dealloc(snapshot, entry.size, entry.align) };
         return false;
     }
-    let Ok(size_host) = usize::try_from(entry.size) else {
-        return false;
-    };
     // SAFETY: generated code guarantees the slot holds an initialized value of
     // exactly this descriptor type; the snapshot is a distinct matching block.
     unsafe {
@@ -1095,7 +1123,7 @@ pub(crate) unsafe fn begin_dispatch_crash_cleanup(
         // generated typed drop thunk requires. This avoids assuming that every
         // actor state fits the coroutine frame's fixed 16-byte alignment.
         let state_addr = state as usize;
-        let state_align = 1usize << state_addr.trailing_zeros();
+        let state_align = (1usize << state_addr.trailing_zeros()).min(MAX_STATE_ESCROW_ALIGN);
         let Ok(state_align_u64) = u64::try_from(state_align) else {
             return false;
         };
@@ -1109,14 +1137,13 @@ pub(crate) unsafe fn begin_dispatch_crash_cleanup(
         unsafe { ptr::copy_nonoverlapping(state.cast::<u8>(), snapshot, state_size) };
         registry.state_snapshot = snapshot;
         registry.state_align = state_align_u64;
-        // Generated state drops are LLVM functions and use the platform C
-        // calling convention, but cleanup invokes them through the unwind-safe
-        // callback type. `C` and `C-unwind` have identical argument/result ABI;
-        // the latter only permits a transitive panic to reach catch_unwind.
+        // Generated state drops are LLVM functions using the platform C
+        // calling convention. The callback pointer representation matches the
+        // runtime's C-unwind slot, but this does not manufacture containment:
+        // their plain-C runtime callees abort if a Rust panic reaches that ABI.
         registry.state_drop = state_drop.map(|drop| {
             // SAFETY: generated state thunks use the platform C calling
-            // convention; C-unwind has the same argument/result ABI and only
-            // relaxes whether an unwind may cross the boundary.
+            // convention; C-unwind has the same argument/result machine ABI.
             unsafe { std::mem::transmute::<StateCrashCleanupThunk, CrashCleanupThunk>(drop) }
         });
     }
@@ -1156,7 +1183,8 @@ pub(crate) unsafe fn finish_dispatch_crash_cleanup() -> bool {
 /// unwinds on an unwind-capable host parity build may drain abandoned lexical
 /// owners while preserving the original state. Production wasm32-wasip1 is
 /// panic=abort and has no recoverable unwind edge.
-pub(crate) unsafe fn recover_dispatch_crash_cleanup(drop_state: bool) -> bool {
+#[cfg(test)]
+unsafe fn recover_dispatch_crash_cleanup(drop_state: bool) -> bool {
     // SAFETY: this wrapper forwards the caller's exclusive recovery authority.
     let outcome = unsafe { recover_dispatch_crash_cleanup_with_outcome(drop_state) };
     outcome.registry_found && !outcome.finalizer_faulted
@@ -1185,11 +1213,16 @@ pub(crate) unsafe fn recover_dispatch_crash_cleanup_with_outcome(
     // A non-null state snapshot exists iff begin accepted a generated typed
     // state drop. Once its invocation begins it must never be retried, even if
     // that finalizer faults after partially closing a resource.
-    let state_authority_consumed = drop_state && unsafe { !(*registry).state_snapshot.is_null() };
+    let state_mutation_began = unsafe { (*registry).state_mutation_began };
+    let consume_state = drop_state || state_mutation_began;
+    // SAFETY: the detached registry remains exclusively owned here until the
+    // drain call below consumes it.
+    let state_authority_consumed =
+        consume_state && unsafe { !(*registry).state_snapshot.is_null() };
     // Detach before calling arbitrary generated/user cleanup code so re-entry
     // cannot observe a half-drained scope.
     // SAFETY: the popped TLS entry transfers sole registry ownership here.
-    let faulted = unsafe { free_crash_cleanup_registry(registry, true, drop_state) };
+    let faulted = unsafe { free_crash_cleanup_registry(registry, true, consume_state) };
     if faulted {
         eprintln!(
             "hew: crash-cleanup finalizer panicked; the failed owner was quarantined and remaining owners were drained"
@@ -1205,7 +1238,7 @@ pub(crate) unsafe fn recover_dispatch_crash_cleanup_with_outcome(
 fn dispatch_state_snapshot_range(
     field: *mut c_void,
     size: u64,
-) -> Option<(*mut u8, *mut u8, usize)> {
+) -> Option<(*mut CrashCleanupRegistry, *mut u8, *mut u8, usize)> {
     let registry = active_dispatch_cleanup_registry()?;
     // SAFETY: the active scheduler scope exclusively owns this registry.
     let registry = unsafe { &mut *registry };
@@ -1229,7 +1262,14 @@ fn dispatch_state_snapshot_range(
         unsafe { registry.state_snapshot.add(offset) }
     };
     // SAFETY: offset + size was checked within the live source range above.
-    Some(unsafe { (registry.state_source.add(offset), snapshot, size) })
+    Some(unsafe {
+        (
+            ptr::from_mut(registry),
+            registry.state_source.add(offset),
+            snapshot,
+            size,
+        )
+    })
 }
 
 /// Remove one actor-state field from the crash escrow before its old-value
@@ -1243,12 +1283,19 @@ fn dispatch_state_snapshot_range(
 /// by the current dispatch cleanup scope.
 #[no_mangle]
 pub unsafe extern "C" fn hew_dispatch_state_cleanup_clear(field: *mut c_void, size: u64) -> bool {
-    let Some((_source, snapshot, size)) = dispatch_state_snapshot_range(field, size) else {
+    let Some((registry, _source, snapshot, size)) = dispatch_state_snapshot_range(field, size)
+    else {
         return false;
     };
     if snapshot.is_null() {
         return true;
     }
+    // Commit the one-way authority transition before touching snapshot bytes.
+    // A caught unwind after this point must consume the typed snapshot and raw
+    // free the possibly stale live wrapper.
+    // SAFETY: range validation returned the active registry exclusively owned
+    // by this dispatch.
+    unsafe { (*registry).state_mutation_began = true };
     // SAFETY: range validation above proved `size` writable snapshot bytes.
     unsafe { ptr::write_bytes(snapshot, 0, size) };
     true
@@ -1262,12 +1309,18 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_clear(field: *mut c_void, si
 /// actor state named by the current dispatch cleanup scope.
 #[no_mangle]
 pub unsafe extern "C" fn hew_dispatch_state_cleanup_publish(field: *mut c_void, size: u64) -> bool {
-    let Some((source, snapshot, size)) = dispatch_state_snapshot_range(field, size) else {
+    let Some((registry, source, snapshot, size)) = dispatch_state_snapshot_range(field, size)
+    else {
         return false;
     };
     if snapshot.is_null() {
         return true;
     }
+    // Publication mutates typed escrow authority just as clear does. Mark it
+    // before copying so every subsequent false-recovery consumes this snapshot.
+    // SAFETY: range validation returned the active registry exclusively owned
+    // by this dispatch.
+    unsafe { (*registry).state_mutation_began = true };
     // SAFETY: range validation proved equal readable/writable field ranges.
     unsafe { ptr::copy_nonoverlapping(source, snapshot, size) };
     true
@@ -1296,7 +1349,9 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_transfer(
     if token == 0 || token == CRASH_CLEANUP_ARM_FAILED {
         return false;
     }
-    let Some((_source, snapshot, size)) = dispatch_state_snapshot_range(field, size) else {
+    let Some((state_registry, _source, snapshot, size)) =
+        dispatch_state_snapshot_range(field, size)
+    else {
         return false;
     };
     let Some((registry, owner_frame)) = current_crash_cleanup_registry() else {
@@ -1324,6 +1379,11 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_transfer(
 
     // All validation precedes authority mutation. The following flag write and
     // memcpy neither allocate nor call generated/user code.
+    if !snapshot.is_null() {
+        // SAFETY: range validation returned the active state registry, and all
+        // source-token validation completed before this authority mutation.
+        unsafe { (*state_registry).state_mutation_began = true };
+    }
     entry.active = false;
     if !snapshot.is_null() {
         // SAFETY: dispatch_state_snapshot_range proved equal valid ranges.
@@ -1920,6 +1980,15 @@ mod tests {
         panic!("intentional crash-cleanup finalizer fault");
     }
 
+    #[cfg(unix)]
+    unsafe extern "C-unwind" fn raise_sigsegv_during_crash_cleanup(_slot: *mut c_void) {
+        // SAFETY: raising SIGSEGV is intentional in the subprocess death test;
+        // the installed native handler must take its async-signal-safe fatal
+        // edge before this callback can return.
+        unsafe { libc::raise(libc::SIGSEGV) };
+        panic!("SIGSEGV cleanup finalizer unexpectedly returned");
+    }
+
     unsafe extern "C-unwind" fn trap_during_crash_cleanup(_slot: *mut c_void) {
         crate::actor::hew_panic();
     }
@@ -2203,6 +2272,27 @@ mod tests {
     }
 
     #[test]
+    fn actor_state_escrow_alignment_is_clamped_to_supported_abi_headroom() {
+        #[repr(C, align(4096))]
+        struct PageAlignedState(u64);
+
+        let mut state = PageAlignedState(17);
+        // SAFETY: state is initialized and remains live through normal escrow
+        // retirement; the test inspects only the active registry metadata.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<PageAlignedState>(),
+                Some(record_u64_state_cleanup),
+            ));
+            let registry = active_dispatch_cleanup_registry().expect("active dispatch registry");
+            assert!((*registry).state_align <= MAX_STATE_ESCROW_ALIGN as u64);
+            assert!((*registry).state_align.is_power_of_two());
+            assert!(finish_dispatch_crash_cleanup());
+        }
+    }
+
+    #[test]
     fn actor_state_escrow_withholds_only_inflight_field_and_drops_sibling_once() {
         let _ = take_crash_cleanup_test_drops();
         let mut state = CrashStatePair {
@@ -2405,13 +2495,15 @@ mod tests {
     }
 
     #[test]
-    fn crash_cleanup_finalizer_panic_is_quarantined_and_siblings_run_once() {
+    fn rust_c_unwind_cleanup_panic_is_quarantined_and_siblings_run_once() {
         let _ = take_crash_cleanup_test_drops();
         let mut state = 99_u64;
         let mut older = 11_u64;
         let mut faulty = 22_u64;
         // SAFETY: all registered values remain initialized through the
-        // detached drain; generated-thunk panic quarantine is under test.
+        // detached drain. This deliberately uses a Rust-authored `C-unwind`
+        // callback; generated LLVM thunks call plain-C runtime symbols and a
+        // panic there is process-fatal before catch_unwind can observe it.
         unsafe {
             assert!(begin_dispatch_crash_cleanup(
                 ptr::from_mut(&mut state).cast(),
@@ -2504,6 +2596,74 @@ mod tests {
             let _ = recover_dispatch_crash_cleanup(true);
         }
         panic!("finalizer trap helper unexpectedly survived");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns a subprocess and raises SIGSEGV; Miri has no native signal handler"
+    )]
+    fn hardware_fault_during_crash_cleanup_uses_async_signal_safe_exit() {
+        const HELPER: &str =
+            "cont::tests::_helper_hardware_fault_during_crash_cleanup_is_process_fatal";
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture", HELPER])
+            .env("RUST_TEST_THREADS", "1")
+            .env("HEW_CONT_FINALIZER_SIGSEGV_DEATH_TEST", "1")
+            .output()
+            .expect("spawn crash-cleanup SIGSEGV helper");
+        assert_eq!(
+            output.status.code(),
+            Some(128 + libc::SIGSEGV),
+            "cleanup SIGSEGV must _exit instead of longjmp across the drain; stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn _helper_hardware_fault_during_crash_cleanup_is_process_fatal() {
+        if std::env::var_os("HEW_CONT_FINALIZER_SIGSEGV_DEATH_TEST").is_none() {
+            return;
+        }
+        crate::signal::init_crash_handling();
+        crate::signal::init_worker_recovery(u32::MAX);
+        // Install a valid jump target so the counterfactual is meaningful: the
+        // old handler would siglongjmp here and bypass the drain guard.
+        // SAFETY: null actor/message are accepted test metadata; the returned
+        // buffer belongs to this initialized worker thread.
+        let jmp_buf =
+            unsafe { crate::signal::prepare_dispatch_recovery(ptr::null_mut(), ptr::null_mut()) };
+        assert!(!jmp_buf.is_null());
+        // SAFETY: jmp_buf is the current thread's live recovery buffer and this
+        // helper frame remains active until the expected process exit.
+        let jumped = unsafe { crate::signal::sigsetjmp(jmp_buf, 1) };
+        if jumped != 0 {
+            std::process::exit(77);
+        }
+        crate::signal::mark_recovery_active();
+
+        let mut value = 37_u64;
+        // SAFETY: value stays initialized through the detached drain; the
+        // registered callback deliberately terminates the subprocess.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(ptr::null_mut(), 0, None));
+            assert_ne!(
+                hew_cont_crash_cleanup_arm(
+                    0,
+                    ptr::from_mut(&mut value).cast(),
+                    size_of::<u64>() as u64,
+                    align_of::<u64>() as u64,
+                    Some(raise_sigsegv_during_crash_cleanup),
+                    CrashCleanupStorage::Snapshot as u32,
+                    CrashCleanupRelocation::Bitwise as u32,
+                ),
+                CRASH_CLEANUP_ARM_FAILED
+            );
+            let _ = recover_dispatch_crash_cleanup(true);
+        }
+        panic!("cleanup SIGSEGV helper unexpectedly survived");
     }
 
     #[test]

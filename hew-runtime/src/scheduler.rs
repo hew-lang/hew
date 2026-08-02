@@ -3376,13 +3376,24 @@ fn activate_queued_actor(actor: *mut HewActor) {
                                 std::ptr::null_mut(),
                             )
                         };
-                        // A caught Rust unwind is not a Hew actor crash on the
-                        // native compatibility path, so drain abandoned lexical
-                        // owners but preserve actor state. Explicit Hew panic
-                        // never reaches this branch: it longjmps below.
+                        // A caught Rust unwind is not normally a Hew actor crash
+                        // on the native compatibility path, so an untouched
+                        // state escrow can return authority to the live wrapper.
+                        // If generated code already cleared/published a field,
+                        // recovery upgrades this to snapshot consumption: the
+                        // live wrapper may contain a stale partially finalized
+                        // pointer and must never receive a second typed drop.
+                        // Explicit Hew panic never reaches this branch: it
+                        // longjmps below.
                         // SAFETY: catch_unwind proves the synchronous dispatch
                         // stack is abandoned and transfers its cleanup scope.
-                        let _ = unsafe { crate::cont::recover_dispatch_crash_cleanup(false) };
+                        let outcome = unsafe {
+                            crate::cont::recover_dispatch_crash_cleanup_with_outcome(false)
+                        };
+                        if outcome.state_authority_consumed {
+                            // SAFETY: this activation exclusively owns actor.
+                            unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
+                        }
                     }
 
                     let reply_consumed = current_reply_channel_consumed_on(ec_ptr);
@@ -8102,6 +8113,16 @@ mod tests {
             const { std::cell::Cell::new(std::ptr::null_mut()) };
     }
 
+    static CATCH_UNWIND_STATE_DROP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+    unsafe extern "C-unwind" fn catch_unwind_state_clone(_state: *const c_void) -> *mut c_void {
+        ptr::null_mut()
+    }
+
+    unsafe extern "C" fn catch_unwind_state_drop(_state: *mut c_void) {
+        CATCH_UNWIND_STATE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// A dispatch handler that models a child suspending-closure call which
     /// Rust-unwinds (panics) WHILE its scoped reply-channel swap is still open —
     /// exactly the bypass the `catch_unwind` `Err` edge must clean up. It
@@ -8110,12 +8131,18 @@ mod tests {
     /// swap-pop runs, so the swap is left open across the unwind.
     unsafe extern "C-unwind" fn swap_open_then_panic_dispatch(
         _ctx: *mut crate::execution_context::HewExecutionContext,
-        _state: *mut std::ffi::c_void,
+        state: *mut std::ffi::c_void,
         _msg_type: i32,
         _data: *mut std::ffi::c_void,
         _size: usize,
         _borrow_mode: i32,
     ) -> *mut c_void {
+        // Model generated overwrite lowering immediately before a Rust-authored
+        // C-unwind callback panics: the clear makes snapshot authority one-way.
+        // SAFETY: the test actor registers one live u64 state field.
+        assert!(unsafe {
+            crate::cont::hew_dispatch_state_cleanup_clear(state, std::mem::size_of::<u64>() as u64)
+        });
         let driver = CATCH_UNWIND_SWAP_DRIVER.with(std::cell::Cell::get);
         crate::execution_context::hew_context_reply_channel_swap_push(driver);
         panic!("suspending-closure child Rust-unwound with the reply-channel swap open");
@@ -8172,6 +8199,7 @@ mod tests {
         // SAFETY: driver_ch was just created and is live.
         unsafe { crate::reply_channel::hew_reply_channel_retain(driver_ch) };
         CATCH_UNWIND_SWAP_DRIVER.with(|c| c.set(driver_ch.cast()));
+        CATCH_UNWIND_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
 
         assert_eq!(
             crate::reply_channel::active_channel_count(),
@@ -8198,9 +8226,14 @@ mod tests {
             0
         );
 
+        let mut state = 73_u64;
         let mut actor = stub_actor();
         actor.dispatch = Some(swap_open_then_panic_dispatch);
         actor.mailbox = mailbox.cast();
+        actor.state = ptr::from_mut(&mut state).cast();
+        actor.state_size = std::mem::size_of::<u64>();
+        actor.state_clone_fn = Some(catch_unwind_state_clone);
+        actor.state_drop_fn = Some(catch_unwind_state_drop);
         actor
             .actor_state
             .store(HewActorState::Runnable as i32, Ordering::Release);
@@ -8211,6 +8244,16 @@ mod tests {
         // unwinds the still-open swap and tears the driver channel down BEFORE
         // the normal reply teardown reads/clears the reply channel.
         activate_actor(actor_ptr);
+
+        assert!(
+            actor.state_drop_consumed.load(Ordering::Acquire),
+            "the caught-unwind edge must transfer authority after generated state clear"
+        );
+        assert_eq!(
+            CATCH_UNWIND_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            1,
+            "the mutated state snapshot must be consumed exactly once"
+        );
 
         assert_eq!(
             crate::execution_context::reply_channel_swap_stack_depth(),

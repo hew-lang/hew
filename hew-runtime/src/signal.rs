@@ -98,7 +98,7 @@
 mod shared {
     use std::ffi::c_void;
     use std::ptr;
-    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 
     use crate::actor::HewActor;
 
@@ -136,10 +136,12 @@ mod shared {
         /// longjmp decision: abandoning a partially executed finalizer would
         /// poison the drain TLS and make retry safety unknowable.
         pub(super) crash_cleanup_drain_active: AtomicBool,
-        /// Set while generated code is between neutralizing an actor-state
-        /// escrow field and preparing its replacement. A hardware fault in
-        /// this non-idempotent finalizer interval cannot safely longjmp.
-        pub(super) state_field_finalizer_active: AtomicBool,
+        /// Exact nesting depth of generated actor-state replacement phases
+        /// between neutralizing an escrow field and preparing its replacement.
+        /// Dispatch cleanup registries can nest during old-value finalization,
+        /// so a boolean would let an inner completion hide an active outer
+        /// phase. Any nonzero depth forbids hardware or direct longjmp.
+        pub(super) state_field_finalizer_depth: AtomicUsize,
         /// `true` when the recovery was entered through the runtime's
         /// intentional direct-longjmp path (a Hew `panic()` or a `HEW_TRAP_*`
         /// runtime trap), `false` when it was entered through the hardware
@@ -164,7 +166,7 @@ mod shared {
                 worker_id,
                 msg_type: AtomicI32::new(0),
                 crash_cleanup_drain_active: AtomicBool::new(false),
-                state_field_finalizer_active: AtomicBool::new(false),
+                state_field_finalizer_depth: AtomicUsize::new(0),
                 intentional_panic: AtomicBool::new(false),
             }
         }
@@ -477,7 +479,7 @@ mod shared {
         state: &mut RecoveryState,
         code: i32,
     ) -> bool {
-        if state.state_field_finalizer_active.load(Ordering::Acquire) {
+        if state.state_field_finalizer_depth.load(Ordering::Acquire) != 0 {
             // An intentional Hew panic/trap is no safer than a hardware fault
             // while an old actor-state owner may be partially finalized.
             // Actor recovery would abandon indeterminate authority.
@@ -765,8 +767,9 @@ mod platform {
         }
         if ctx
             .state
-            .state_field_finalizer_active
+            .state_field_finalizer_depth
             .load(Ordering::Acquire)
+            != 0
         {
             // SAFETY: _exit is async-signal-safe. The old field may have been
             // partially finalized, so actor recovery cannot retry or abandon it.
@@ -1035,18 +1038,54 @@ mod platform {
             .store(active, Ordering::Release);
     }
 
-    /// Publish non-idempotent actor-state finalizer state to the signal handler.
-    pub(crate) fn set_state_field_finalizer_active(active: bool) {
+    /// Add one validated non-idempotent actor-state finalizer phase.
+    pub(crate) fn enter_state_field_finalizer() -> bool {
         // SAFETY: this is called on the worker that owns its recovery context.
         let ctx = unsafe { get_recovery_ctx() };
         if ctx.is_null() {
-            return;
+            return true;
         }
-        // SAFETY: the TLS context is exclusively owned by this thread.
+        // SAFETY: the TLS context is exclusively owned by this thread. Refuse
+        // overflow instead of wrapping to zero and re-enabling actor recovery.
         unsafe { &*ctx }
             .state
-            .state_field_finalizer_active
-            .store(active, Ordering::Release);
+            .state_field_finalizer_depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_add(1)
+            })
+            .is_ok()
+    }
+
+    /// Remove exactly one completed actor-state finalizer phase.
+    pub(crate) fn leave_state_field_finalizer() -> bool {
+        // SAFETY: this is called on the worker that owns its recovery context.
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return true;
+        }
+        // SAFETY: the TLS context is exclusively owned by this thread. Refuse
+        // underflow instead of wrapping to a permanently active huge depth.
+        unsafe { &*ctx }
+            .state
+            .state_field_finalizer_depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn state_field_finalizer_depth() -> usize {
+        // SAFETY: tests query their current worker thread's recovery context.
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return 0;
+        }
+        // SAFETY: the TLS context belongs to this thread.
+        unsafe { &*ctx }
+            .state
+            .state_field_finalizer_depth
+            .load(Ordering::Acquire)
     }
 
     /// Handle crash recovery after sigsetjmp returned non-zero (crash path).
@@ -1364,8 +1403,9 @@ mod platform {
         }
         if ctx
             .state
-            .state_field_finalizer_active
+            .state_field_finalizer_depth
             .load(Ordering::Acquire)
+            != 0
         {
             return EXCEPTION_CONTINUE_SEARCH;
         }
@@ -1486,17 +1526,52 @@ mod platform {
             .store(active, Ordering::Release);
     }
 
-    pub(crate) fn set_state_field_finalizer_active(active: bool) {
+    pub(crate) fn enter_state_field_finalizer() -> bool {
         // SAFETY: retrieves this thread's exclusively owned recovery context.
         let ctx = unsafe { get_recovery_ctx() };
         if ctx.is_null() {
-            return;
+            return true;
+        }
+        // SAFETY: the TLS context belongs to this thread. Checked increment
+        // prevents wraparound from concealing active outer phases.
+        unsafe { &*ctx }
+            .state
+            .state_field_finalizer_depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_add(1)
+            })
+            .is_ok()
+    }
+
+    pub(crate) fn leave_state_field_finalizer() -> bool {
+        // SAFETY: retrieves this thread's exclusively owned recovery context.
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return true;
+        }
+        // SAFETY: the TLS context belongs to this thread. Checked decrement
+        // makes an impossible unmatched reset observable and fail-closed.
+        unsafe { &*ctx }
+            .state
+            .state_field_finalizer_depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                depth.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn state_field_finalizer_depth() -> usize {
+        // SAFETY: tests query their current worker thread's recovery context.
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return 0;
         }
         // SAFETY: the TLS context belongs to this thread.
         unsafe { &*ctx }
             .state
-            .state_field_finalizer_active
-            .store(active, Ordering::Release);
+            .state_field_finalizer_depth
+            .load(Ordering::Acquire)
     }
 
     pub(crate) unsafe fn handle_crash_recovery() -> (i32, usize) {
@@ -1603,7 +1678,16 @@ mod platform {
     pub(crate) fn init_crash_handling() {}
     pub(crate) fn init_worker_recovery(_worker_id: u32) {}
     pub(crate) fn set_crash_cleanup_drain_active(_active: bool) {}
-    pub(crate) fn set_state_field_finalizer_active(_active: bool) {}
+    pub(crate) fn enter_state_field_finalizer() -> bool {
+        true
+    }
+    pub(crate) fn leave_state_field_finalizer() -> bool {
+        true
+    }
+    #[cfg(test)]
+    pub(crate) fn state_field_finalizer_depth() -> usize {
+        0
+    }
 
     /// No-op on WASM: wasm32 has no POSIX signals, so there is no `SIGPIPE` to
     /// ignore. A broken-pipe / reset condition on the simulated transport
@@ -1660,11 +1744,13 @@ mod platform {
 }
 
 // Re-export platform-specific implementations.
+#[cfg(test)]
+pub(crate) use platform::state_field_finalizer_depth;
 pub(crate) use platform::{
-    clear_dispatch_recovery, handle_crash_recovery, ignore_sigpipe, init_crash_handling,
-    init_worker_recovery, mark_recovery_active, prepare_dispatch_recovery,
-    set_crash_cleanup_drain_active, set_state_field_finalizer_active, sigsetjmp,
-    try_direct_longjmp, try_direct_longjmp_with_code,
+    clear_dispatch_recovery, enter_state_field_finalizer, handle_crash_recovery, ignore_sigpipe,
+    init_crash_handling, init_worker_recovery, leave_state_field_finalizer, mark_recovery_active,
+    prepare_dispatch_recovery, set_crash_cleanup_drain_active, sigsetjmp, try_direct_longjmp,
+    try_direct_longjmp_with_code,
 };
 
 // ── Terminal off-dispatch crash diagnostic (subprocess test) ─────────────────

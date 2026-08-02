@@ -1305,10 +1305,12 @@ fn dispatch_state_snapshot_range(
 unsafe fn reset_state_finalizer_critical(registry: *mut CrashCleanupRegistry) {
     // SAFETY: callers hold exclusive active or detached registry authority.
     if unsafe { (*registry).state_finalizer_critical } {
-        // Keep the signal-visible guard active until registry state is closed.
+        // Keep the signal-visible depth active until registry state is closed.
         // SAFETY: callers hold exclusive active or detached registry authority.
         unsafe { (*registry).state_finalizer_critical = false };
-        crate::signal::set_state_field_finalizer_active(false);
+        if !crate::signal::leave_state_field_finalizer() {
+            hew_dispatch_state_cleanup_abort_invariant();
+        }
     }
 }
 
@@ -1335,8 +1337,11 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_begin_replace(
     if unsafe { (*registry).state_finalizer_critical } {
         return false;
     }
-    // Publish the process-fatal phase before changing typed escrow bytes.
-    crate::signal::set_state_field_finalizer_active(true);
+    // Publish one nested process-fatal phase before changing typed escrow
+    // bytes. Overflow cannot wrap to zero and conceal active outer phases.
+    if !crate::signal::enter_state_field_finalizer() {
+        hew_dispatch_state_cleanup_abort_invariant();
+    }
     // SAFETY: no fallible work remains after the signal-visible phase begins.
     unsafe {
         (*registry).state_finalizer_critical = true;
@@ -2578,6 +2583,102 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(unix, windows))]
+    fn nested_state_finalizer_completion_preserves_outer_depth() {
+        crate::signal::init_crash_handling();
+        crate::signal::init_worker_recovery(u32::MAX);
+        assert_eq!(crate::signal::state_field_finalizer_depth(), 0);
+
+        let mut outer = 101_u64;
+        let outer_replacement = 102_u64;
+        let mut inner = 201_u64;
+        let inner_replacement = 202_u64;
+        // SAFETY: both nested state slots and their replacements remain live
+        // through their exactly nested prepare/finish transactions.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut outer).cast(),
+                size_of::<u64>(),
+                Some(record_u64_state_cleanup),
+            ));
+            assert!(hew_dispatch_state_cleanup_begin_replace(
+                ptr::from_mut(&mut outer).cast(),
+                size_of::<u64>() as u64,
+            ));
+            assert_eq!(crate::signal::state_field_finalizer_depth(), 1);
+
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut inner).cast(),
+                size_of::<u64>(),
+                Some(record_u64_state_cleanup),
+            ));
+            assert!(hew_dispatch_state_cleanup_begin_replace(
+                ptr::from_mut(&mut inner).cast(),
+                size_of::<u64>() as u64,
+            ));
+            assert_eq!(crate::signal::state_field_finalizer_depth(), 2);
+            hew_dispatch_state_cleanup_prepare(
+                ptr::from_ref(&inner_replacement).cast(),
+                ptr::from_mut(&mut inner).cast(),
+                size_of::<u64>() as u64,
+            );
+            assert_eq!(
+                crate::signal::state_field_finalizer_depth(),
+                1,
+                "closing an inner transaction must preserve the outer fatal guard"
+            );
+            assert!(finish_dispatch_crash_cleanup());
+
+            hew_dispatch_state_cleanup_prepare(
+                ptr::from_ref(&outer_replacement).cast(),
+                ptr::from_mut(&mut outer).cast(),
+                size_of::<u64>() as u64,
+            );
+            assert_eq!(
+                crate::signal::state_field_finalizer_depth(),
+                0,
+                "the final outer preparation must close the last fatal phase"
+            );
+            assert!(finish_dispatch_crash_cleanup());
+        }
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn sequential_state_finalizer_transactions_return_depth_to_zero() {
+        crate::signal::init_crash_handling();
+        crate::signal::init_worker_recovery(u32::MAX);
+        assert_eq!(crate::signal::state_field_finalizer_depth(), 0);
+
+        let mut state = 301_u64;
+        let first = 302_u64;
+        let second = 303_u64;
+        // SAFETY: the state and replacement slots remain initialized and live
+        // through both sequential transactions and the matching finish.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<u64>(),
+                Some(record_u64_state_cleanup),
+            ));
+            for replacement in [&first, &second] {
+                assert!(hew_dispatch_state_cleanup_begin_replace(
+                    ptr::from_mut(&mut state).cast(),
+                    size_of::<u64>() as u64,
+                ));
+                assert_eq!(crate::signal::state_field_finalizer_depth(), 1);
+                hew_dispatch_state_cleanup_prepare(
+                    ptr::from_ref(replacement).cast(),
+                    ptr::from_mut(&mut state).cast(),
+                    size_of::<u64>() as u64,
+                );
+                assert_eq!(crate::signal::state_field_finalizer_depth(), 0);
+            }
+            assert!(finish_dispatch_crash_cleanup());
+        }
+    }
+
+    #[test]
     fn crash_cleanup_snapshot_reactivation_preserves_first_activation_order() {
         // SAFETY: allocate one tracked frame, publish two stack snapshots, then
         // transfer raw ownership through the test drain exactly once.
@@ -2860,6 +2961,19 @@ mod tests {
             "post-begin no-source validation failure must abort, not actor-recover; stderr:\n{}",
             String::from_utf8_lossy(&prepare_failure.stderr)
         );
+
+        let underflow = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture", HELPER])
+            .env("RUST_TEST_THREADS", "1")
+            .env("HEW_STATE_FINALIZER_FATAL_TEST", "underflow")
+            .output()
+            .expect("spawn state-finalizer depth-underflow helper");
+        assert_eq!(
+            underflow.status.signal(),
+            Some(libc::SIGABRT),
+            "an unmatched finalizer-depth reset must abort instead of wrapping; stderr:\n{}",
+            String::from_utf8_lossy(&underflow.stderr)
+        );
     }
 
     #[test]
@@ -2884,18 +2998,60 @@ mod tests {
         crate::signal::mark_recovery_active();
 
         let mut state = 19_u64;
-        // SAFETY: state remains live and begin_replace validates its exact range
-        // before publishing the fatal phase.
+        // SAFETY: state remains live through the death-test process.
         unsafe {
             assert!(begin_dispatch_crash_cleanup(
                 ptr::from_mut(&mut state).cast(),
                 size_of::<u64>(),
                 Some(record_u64_state_cleanup),
             ));
+        }
+        if mode == "underflow" {
+            // Manufacture the impossible registry/counter drift that reset
+            // must treat as process-fatal rather than wrapping the depth.
+            let registry = active_dispatch_cleanup_registry()
+                .expect("underflow helper must have an active registry");
+            // SAFETY: this death-test exclusively owns the active registry.
+            unsafe { (*registry).state_finalizer_critical = true };
+            // SAFETY: deliberate invariant violation under test.
+            unsafe { reset_state_finalizer_critical(registry) };
+            std::process::exit(79);
+        }
+        // SAFETY: state remains live and begin_replace validates its exact range
+        // before publishing the fatal phase.
+        unsafe {
             assert!(hew_dispatch_state_cleanup_begin_replace(
                 ptr::from_mut(&mut state).cast(),
                 size_of::<u64>() as u64,
             ));
+        }
+        assert_eq!(crate::signal::state_field_finalizer_depth(), 1);
+
+        // Re-enter through an inner dispatch transaction. Completing it must
+        // decrement only its own phase and leave the outer guard observable to
+        // both the hardware handler and the intentional direct-trap preamble.
+        let mut inner = 29_u64;
+        let inner_replacement = 30_u64;
+        // SAFETY: inner state and replacement remain live until the nested
+        // transaction is prepared and normally finished.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut inner).cast(),
+                size_of::<u64>(),
+                Some(record_u64_state_cleanup),
+            ));
+            assert!(hew_dispatch_state_cleanup_begin_replace(
+                ptr::from_mut(&mut inner).cast(),
+                size_of::<u64>() as u64,
+            ));
+            assert_eq!(crate::signal::state_field_finalizer_depth(), 2);
+            hew_dispatch_state_cleanup_prepare(
+                ptr::from_ref(&inner_replacement).cast(),
+                ptr::from_mut(&mut inner).cast(),
+                size_of::<u64>() as u64,
+            );
+            assert_eq!(crate::signal::state_field_finalizer_depth(), 1);
+            assert!(finish_dispatch_crash_cleanup());
         }
         match mode.to_str() {
             Some("hardware") => {

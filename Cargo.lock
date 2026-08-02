@@ -1930,7 +1930,6 @@ version = "0.6.0-rc1"
 dependencies = [
  "base64",
  "clap",
- "clap_complete",
  "ed25519-dalek",
  "rand 0.10.1",
  "rand_core 0.10.1",

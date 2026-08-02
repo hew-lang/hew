@@ -254,7 +254,7 @@ pub fn validate_imports_against_manifest(
         }
         if !manifest_deps.contains(&module_str) {
             errors.push(format!(
-                "Error: module `{module_str}` is not declared in hew.toml\n  hint: add it with `adze add {module_str}`"
+                "Error: module `{module_str}` is not declared in hew.toml\n  hint: add it with `hew add {module_str}`"
             ));
         }
     }
@@ -1219,7 +1219,7 @@ fn resolve_file_imports_internal(
                         .manifest_deps
                         .is_some_and(|deps| deps.contains(&module_str))
                     {
-                        "\n  hint: this dependency is declared in hew.toml — run `adze install`"
+                        "\n  hint: this dependency is declared in hew.toml — run `hew install`"
                     } else if ctx.manifest_deps.is_some() {
                         "\n  hint: add this module to [dependencies] in hew.toml"
                     } else {
@@ -1631,7 +1631,7 @@ struct PackageSection {
 }
 
 /// Table form of a `hew.toml` dependency: `{ version = "^1.0", path = "...",
-/// features = [...], optional = true }`. The field set mirrors adze's `DepTable`
+/// features = [...], optional = true }`. The field set mirrors hew-pkg's `DepTable`
 /// so the compiler parses exactly the manifests the package manager accepts.
 /// Only dependency *names* (the map keys) are used by the compiler, so these
 /// values are parsed for cross-tool compatibility and are otherwise unused.
@@ -1655,13 +1655,13 @@ struct DepTable {
 }
 
 /// A `hew.toml` dependency value: a bare version string (`"^1.0"`) or a detailed
-/// table. Untagged to match adze's `DepSpec` so the compiler no longer rejects
-/// table/path/feature dependencies that `adze install` accepts.
+/// table. Untagged to match the package manager's `DepSpec` so the compiler no
+/// longer rejects table/path/feature dependencies that `hew install` accepts.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 #[allow(
     dead_code,
-    reason = "manifest compatibility variants preserve adze-compatible dependency syntax"
+    reason = "manifest compatibility variants preserve package-manager dependency syntax"
 )]
 enum DepSpec {
     Version(String),
@@ -1724,14 +1724,14 @@ fn load_manifest(dir: &Path) -> Result<Option<TomlManifest>, FrontendFailure> {
 fn verify_locked_project_package(check: &LockedPackageCheck) -> Result<(), FrontendFailure> {
     let Some(manifest) = load_manifest(&check.package_dir)? else {
         return Err(FrontendFailure::message_only(format!(
-            "Error: locked package `{}` resolved through `{}` is missing hew.toml\n  hint: run `adze install` to refresh .adze/packages",
+            "Error: locked package `{}` resolved through `{}` is missing hew.toml\n  hint: run `hew install` to refresh .adze/packages",
             check.name,
             check.package_dir.display()
         )));
     };
     let Some(package) = manifest.package else {
         return Err(FrontendFailure::message_only(format!(
-            "Error: locked package `{}` resolved through `{}` has no [package] section\n  hint: run `adze install` to refresh .adze/packages",
+            "Error: locked package `{}` resolved through `{}` has no [package] section\n  hint: run `hew install` to refresh .adze/packages",
             check.name,
             check.package_dir.display()
         )));
@@ -1742,7 +1742,7 @@ fn verify_locked_project_package(check: &LockedPackageCheck) -> Result<(), Front
             |version| format!("{}@{version}", package.name),
         );
         return Err(FrontendFailure::message_only(format!(
-            "Error: locked package `{}` resolved through `{}` does not match adze.lock (expected {}@{}, found {found})\n  hint: run `adze install` to refresh .adze/packages",
+            "Error: locked package `{}` resolved through `{}` does not match adze.lock (expected {}@{}, found {found})\n  hint: run `hew install` to refresh .adze/packages",
             check.name,
             check.package_dir.display(),
             check.name,
@@ -2846,7 +2846,7 @@ fn main() {
     #[test]
     fn manifest_with_table_deps_returns_keys() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        // Table / path / feature dependency forms are accepted by adze; the
+        // Table / path / feature dependency forms are accepted by the package manager; the
         // compiler must parse them too (it only needs the dependency names).
         write_toml(
             dir.path(),

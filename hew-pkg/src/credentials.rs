@@ -40,7 +40,7 @@ impl fmt::Display for CredentialError {
         match self {
             Self::Io(e) => write!(f, "credentials I/O error: {e}"),
             Self::Parse(msg) => write!(f, "invalid credentials file: {msg}"),
-            Self::NotLoggedIn => write!(f, "not logged in; run `adze login`"),
+            Self::NotLoggedIn => write!(f, "not logged in; run `hew login`"),
         }
     }
 }

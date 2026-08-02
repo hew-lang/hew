@@ -233,7 +233,19 @@ pub fn is_canonical_stdlib_module_source(
             candidates.iter().any(|candidate| {
                 std::fs::canonicalize(root.join(candidate))
                     .is_ok_and(|canonical| canonical == input_canonical)
-            })
+            }) || {
+                // Directory modules are assembled from their primary source
+                // plus peer `.hew` files.  A direct check of one such peer
+                // must retain the same canonical module authority as an
+                // import of the directory; comparing its canonical parent to
+                // the trusted stdlib module directory keeps this provenance
+                // path-based rather than granting it from a filename.
+                input_canonical.extension().is_some_and(|ext| ext == "hew")
+                    && input_canonical.parent().is_some_and(|parent| {
+                        std::fs::canonicalize(root.join(&rel))
+                            .is_ok_and(|module_dir| module_dir == parent)
+                    })
+            }
         })
 }
 

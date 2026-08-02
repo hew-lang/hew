@@ -21235,6 +21235,13 @@ impl LowerCtx {
             if let Some(module_owner) = self.current_module_name.as_deref() {
                 let qualified = format!("{module_owner}.{name}");
                 if self.source_type_identities.contains(&qualified) {
+                    if let Some(builtin) = self.qualified_source_builtin(&qualified) {
+                        return Some(ResolvedTy::named_builtin(
+                            builtin.canonical_name(),
+                            builtin,
+                            args,
+                        ));
+                    }
                     return Some(if self.resolves_to_opaque_handle(&qualified, name) {
                         ResolvedTy::named_opaque(qualified, args)
                     } else {
@@ -21371,6 +21378,11 @@ impl LowerCtx {
             && self.current_scope_declares_source_type(&name, current_module_is_file_import)
         {
             let canonical = self.canonical_current_module_record_name(&name);
+            if canonical.contains('.') {
+                if let Some(builtin) = self.qualified_source_builtin(&canonical) {
+                    return ResolvedTy::named_builtin(builtin.canonical_name(), builtin, args);
+                }
+            }
             if self.resolves_to_opaque_handle(&canonical, &name) {
                 return ResolvedTy::named_opaque(canonical, args);
             }

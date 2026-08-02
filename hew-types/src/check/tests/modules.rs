@@ -107,6 +107,58 @@ fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry()
 }
 
 #[test]
+fn generic_same_leaf_owner_conflict_is_rejected_before_inference_binds() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.local_type_defs.insert("Envelope".to_string());
+    checker.source_type_defs.insert("Envelope".to_string());
+
+    let element = TypeVar::fresh();
+    let local = Ty::Named {
+        name: "Envelope".to_string(),
+        args: vec![Ty::Var(element)],
+        builtin: None,
+    };
+    let foreign = Ty::Named {
+        name: "foreign.Envelope".to_string(),
+        args: vec![Ty::I64],
+        builtin: None,
+    };
+
+    checker.expect_type(&local, &foreign, &(10..20));
+
+    assert!(
+        checker
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "the outer nominal owner must be rejected even while an inner argument is unresolved"
+    );
+    assert_eq!(
+        checker.subst.resolve(&Ty::Var(element)),
+        Ty::Var(element),
+        "a rejected cross-owner probe must not bind the nested inference variable"
+    );
+}
+
+#[test]
+fn expected_constructor_args_do_not_cross_same_leaf_nominal_owners() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.local_type_defs.insert("Envelope".to_string());
+    checker.source_type_defs.insert("Envelope".to_string());
+    let expected = Ty::Named {
+        name: "Envelope".to_string(),
+        args: vec![Ty::String],
+        builtin: None,
+    };
+
+    assert_eq!(
+        checker.expected_constructor_type_args(&expected, "foreign.Envelope", 1),
+        None,
+        "expected-type inference must not lend local generic arguments to a foreign constructor"
+    );
+}
+
+#[test]
 fn module_graph_body_type_error_is_reported() {
     // fn bad() -> i64 { true }  — body returns bool, declared i64
     let bad_fn = FnDecl {

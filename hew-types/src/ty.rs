@@ -787,8 +787,8 @@ impl Ty {
     /// collision — a root-local `Widget` and an imported `widgeti8.Widget` share
     /// a final segment yet are DISTINCT nominal types (issue #2651). That
     /// discrimination requires the checker's resolution tables and is enforced
-    /// by `nominal_owner_conflict` at the `expect_type` boundary BEFORE this
-    /// permissive rule is reached; see `canonical_nominal_name`.
+    /// by `nominal_owner_conflict` at every checker unification boundary BEFORE
+    /// this permissive rule is reached; see `canonical_nominal_name`.
     #[must_use]
     pub fn names_match_qualified(a: &str, b: &str) -> bool {
         if a == b {

@@ -6845,13 +6845,16 @@ impl Checker {
             .trailing_expr
             .as_deref()
             .is_some_and(|(expr, _)| matches!(expr, Expr::Identifier(name) if name == "self"));
+        let receiver_identity = self.strict_nominal_identity(type_name);
         let returns_self_type = match return_type {
             Ty::Named { name, args, .. }
-                if name == "Self" || Ty::names_match_qualified(name, type_name) =>
+                if name == "Self" || self.strict_nominal_identity(name) == receiver_identity =>
             {
                 self.current_self_type
                     .as_ref()
-                    .filter(|(self_name, _)| Ty::names_match_qualified(self_name, type_name))
+                    .filter(|(self_name, _)| {
+                        self.strict_nominal_identity(self_name) == receiver_identity
+                    })
                     .is_none_or(|(_, self_args)| {
                         args.len() == self_args.len()
                             && args.iter().zip(self_args).all(|(actual, expected)| {

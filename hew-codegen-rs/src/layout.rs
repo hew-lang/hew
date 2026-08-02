@@ -30,7 +30,7 @@ use hew_mir::{
     StateFieldCloneKind, Terminator,
 };
 use hew_runtime::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
-use hew_types::{BuiltinType, ResolvedTy, Ty};
+use hew_types::{BuiltinType, ResolvedTy};
 
 #[allow(unused_imports)]
 use crate::llvm::*;
@@ -4810,15 +4810,15 @@ pub(crate) fn lower_hashmap_layout_direct_call(
     Ok(())
 }
 
-/// Compare checker-approved type spellings across a MIR call boundary.
+/// Compare resolved types across a layout-backed runtime ABI boundary.
 ///
-/// Imports can leave one side bare (`Key<T>`) and the other owner-qualified
-/// (`arena.Key<T>`). Raw `ResolvedTy` equality rejects that legal alias, while
-/// LLVM-layout equality alone is too permissive for distinct nominal types
-/// with the same ABI. This comparison admits only the checker's qualified-name
-/// alias rule and applies it recursively through the composite shapes these
-/// container operations can carry. The checker has already rejected ambiguous
-/// bare-name ownership before MIR; two distinct qualified owners never match.
+/// `ResolvedTy` is the checker→HIR identity carrier: its nominal spelling has
+/// already been canonicalised to the selected declaration owner. Codegen has
+/// neither the checker import table nor lexical scope needed to decide whether
+/// a bare `Key<T>` aliases `arena.Key<T>` or is a distinct root declaration.
+/// It must therefore require exact nominal identities here. Re-applying the
+/// checker's permissive suffix rule would let malformed MIR select a layout
+/// descriptor for a same-leaf foreign owner.
 fn resolved_ty_matches_checked_alias(expected: &ResolvedTy, actual: &ResolvedTy) -> bool {
     if expected == actual {
         return true;
@@ -4840,7 +4840,7 @@ fn resolved_ty_matches_checked_alias(expected: &ResolvedTy, actual: &ResolvedTy)
         ) => {
             expected_builtin == actual_builtin
                 && expected_opaque == actual_opaque
-                && Ty::names_match_qualified(expected_name, actual_name)
+                && expected_name == actual_name
                 && expected_args.len() == actual_args.len()
                 && expected_args
                     .iter()
@@ -4893,7 +4893,7 @@ mod checked_alias_tests {
     }
 
     #[test]
-    fn accepts_bare_and_qualified_spelling_recursively() {
+    fn rejects_bare_and_qualified_same_leaf_without_checker_owner_proof() {
         let bare = ResolvedTy::Tuple(vec![
             named("Key", vec![ResolvedTy::String]),
             ResolvedTy::I64,
@@ -4902,7 +4902,11 @@ mod checked_alias_tests {
             named("arena.Key", vec![ResolvedTy::String]),
             ResolvedTy::I64,
         ]);
-        assert!(resolved_ty_matches_checked_alias(&bare, &qualified));
+        assert!(
+            !resolved_ty_matches_checked_alias(&bare, &qualified),
+            "codegen must not reconstruct checker-only bare/qualified aliases: \
+             a root `Key` and `arena.Key` can have incompatible layouts"
+        );
     }
 
     #[test]

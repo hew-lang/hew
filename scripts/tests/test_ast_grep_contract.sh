@@ -115,6 +115,24 @@ if ! "$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --kind ERROR "$tmp/
     echo "pinned Hew grammar accepted invalid var-before-consume order" >&2
     exit 1
 fi
+cat > "$tmp/externs.hew" <<'EOF'
+extern "C" {
+    #[runtime_capability(blocking_offload)]
+    fn make() -> Handle;
+    fn close(consume handle: Handle);
+}
+#[resource]
+#[opaque]
+type Handle {}
+EOF
+[[ "$($ast_grep run --config "$tmp/sgconfig.yml" --lang hew --kind extern_function --json=stream "$tmp/externs.hew" | wc -l | tr -d ' ')" == 2 ]] || {
+    echo "pinned Hew grammar did not parse attributed consuming extern declarations" >&2
+    exit 1
+}
+if "$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --kind ERROR "$tmp/externs.hew" >/dev/null 2>&1; then
+    echo "pinned Hew grammar accepted ERROR nodes for consuming extern declarations" >&2
+    exit 1
+fi
 if "$ast_grep" run --config "$tmp/sgconfig.yml" --lang hew --kind ERROR "$tmp/dialect.hew" >/dev/null 2>&1; then
     echo "pinned Hew dialect corpus contains parser ERROR nodes" >&2
     exit 1

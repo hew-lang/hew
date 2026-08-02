@@ -4302,14 +4302,9 @@ mod enum_layout_tests {
             .enum_layouts
             .iter()
             .filter(|l| {
-                l.name != "LookupError"
-                    && l.name != "SendError"
-                    && l.name != "AskError"
-                    && l.name != "TimeoutError"
-                    && l.name != "LinkError"
-                    && l.name != "CrashAction"
-                    && l.name != "CrashKind"
-                    && l.name != "MonitorError"
+                !hew_types::builtin_enums::monomorphic_builtin_enums()
+                    .iter()
+                    .any(|fact| fact.canonical_name == l.name)
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
@@ -4364,14 +4359,9 @@ mod enum_layout_tests {
             .enum_layouts
             .iter()
             .filter(|l| {
-                l.name != "LookupError"
-                    && l.name != "SendError"
-                    && l.name != "AskError"
-                    && l.name != "TimeoutError"
-                    && l.name != "LinkError"
-                    && l.name != "CrashAction"
-                    && l.name != "CrashKind"
-                    && l.name != "MonitorError"
+                !hew_types::builtin_enums::monomorphic_builtin_enums()
+                    .iter()
+                    .any(|fact| fact.canonical_name == l.name)
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
@@ -4575,14 +4565,9 @@ mod enum_layout_tests {
             .enum_layouts
             .iter()
             .filter(|l| {
-                l.name != "LookupError"
-                    && l.name != "SendError"
-                    && l.name != "AskError"
-                    && l.name != "TimeoutError"
-                    && l.name != "LinkError"
-                    && l.name != "CrashAction"
-                    && l.name != "CrashKind"
-                    && l.name != "MonitorError"
+                !hew_types::builtin_enums::monomorphic_builtin_enums()
+                    .iter()
+                    .any(|fact| fact.canonical_name == l.name)
             })
             .collect();
         assert_eq!(

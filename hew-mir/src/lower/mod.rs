@@ -2135,7 +2135,7 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // in the same cluster; the HIR registry is unconsumed scaffolding without
     // this consumer.
     // Register layouts for monomorphic builtin enums declared in
-    // `std/builtins.hew` (today: `LookupError`). These never appear in
+    // stdlib authority sources (for example `std.builtins.LookupError`). These never appear in
     // `module.items` (builtins.hew is consumed for signature wiring, not
     // emitted into the items list) and never appear in
     // `module.enum_layouts` (they have no type params, so
@@ -2149,9 +2149,9 @@ pub fn lower_hir_module_with_facts(module: &HirModule, pointer_width: PointerWid
     // `register_enum_layouts` in codegen processes `pipeline.enum_layouts`
     // in order; an entry's `build_tagged_union_layout` call resolves each
     // variant's `field_tys` against the layouts registered so far. Generic
-    // instantiations like `Result<RemotePid<T>, LookupError>` reference
-    // `Named { name: "LookupError" }` in their Err variant — that lookup
-    // requires the `LookupError` layout to be registered first.
+    // instantiations like `Result<RemotePid<T>, LookupError>` reference the
+    // canonical `Named { name: "std.builtins.LookupError" }` in their Err
+    // variant — that exact layout must be registered first.
     register_builtin_monomorphic_enum_layouts(&mut enum_layouts);
 
     for hir_layout in &module.enum_layouts {

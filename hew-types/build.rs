@@ -41,9 +41,9 @@ fn main() {
     }
     println!("cargo:rerun-if-changed={}", ffi_contracts_path.display());
 
-    let builtins = read_source("builtins", &builtins_path);
-    let failure = read_source("failure", &failure_path);
-    let link_monitor = read_source("link_monitor", &link_monitor_path);
+    let builtins = read_source("std.builtins", &builtins_path);
+    let failure = read_source("std.failure", &failure_path);
+    let link_monitor = read_source("std.link_monitor", &link_monitor_path);
     let enums = derive_builtin_enums(&[builtins, failure, link_monitor])
         .unwrap_or_else(|error| panic!("failed to derive builtin enum ABI facts: {error}"));
     let monitor_projection = derive_monitor_ref_projection(builtins, link_monitor)
@@ -161,8 +161,11 @@ fn render_builtin_enums(enums: &[authority_codegen::DerivedBuiltinEnum]) -> Stri
         let variants_const = format!("{}_VARIANTS", screaming_snake(enum_fact.name));
         writeln!(
             output,
-            "    BuiltinMonomorphicEnum {{ name: {:?}, variants: {variants_const}, suppress_from_sandbox_emit: {} }},",
-            enum_fact.name, enum_fact.suppress_from_sandbox_emit
+            "    BuiltinMonomorphicEnum {{ owner: {:?}, name: {:?}, canonical_name: {:?}, variants: {variants_const}, suppress_from_sandbox_emit: {} }},",
+            enum_fact.owner,
+            enum_fact.name,
+            enum_fact.canonical_name,
+            enum_fact.suppress_from_sandbox_emit
         )
         .unwrap();
     }

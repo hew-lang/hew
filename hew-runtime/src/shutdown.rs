@@ -173,6 +173,11 @@ pub(crate) fn is_supervisor_registered_for_test(
     with_supervisor_roots(|sups| sups.iter().any(|candidate| candidate.0 == sup))
 }
 
+#[cfg(test)]
+pub(crate) fn registered_supervisor_count_for_test() -> usize {
+    with_supervisor_roots(|sups| sups.len())
+}
+
 /// Free all registered top-level supervisors without waiting for actors.
 ///
 /// Called by [`crate::scheduler::hew_runtime_cleanup`] **after** worker

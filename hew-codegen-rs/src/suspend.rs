@@ -7480,7 +7480,9 @@ pub(crate) fn emit_supervisor_bootstrap_body<'ctx>(
         .build_conditional_branch(is_ok, ok_bb, trap_bb)
         .llvm_ctx("sup start cond br")?;
     builder.position_at_end(trap_bb);
-    // llvm.trap; unreachable — fail-closed on supervisor start failure.
+    // TRAP-DISPOSITION: defense-only(main-bootstrap-no-actor-context). This
+    // function is the generated process bootstrap itself; no actor exists and
+    // therefore no lexical/state dispatch cleanup authority can be attached.
     let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
         CodegenError::FailClosed("llvm.trap intrinsic not available in this LLVM build".into())
     })?;
@@ -9486,24 +9488,11 @@ fn emit_select_winner_dispatch<'ctx>(
                 .llvm_ctx("select reply null branch")?;
             // Null-reply trap branch.
             fn_ctx.builder.position_at_end(null_bb);
-            let trap_intrinsic = Intrinsic::find("llvm.trap").ok_or_else(|| {
-                CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into())
-            })?;
-            let trap_fn = trap_intrinsic
-                .get_declaration(fn_ctx.llvm_mod, &[])
-                .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-            fn_ctx
-                .builder
-                .build_call(
-                    trap_fn,
-                    &[],
-                    &format!("select_reply_null_trap_call_{winner_slot}"),
-                )
-                .llvm_ctx("select reply null trap")?;
-            fn_ctx
-                .builder
-                .build_unreachable()
-                .llvm_ctx("select reply null unreachable")?;
+            emit_trap_with_code(
+                fn_ctx,
+                HEW_TRAP_ACTOR_SEND_FAILED as u64,
+                &format!("select_reply_null_trap_{winner_slot}"),
+            )?;
             // Ok branch: load + store + frees.
             fn_ctx.builder.position_at_end(ok_bb);
             emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, binding_place)?;
@@ -11867,20 +11856,11 @@ fn emit_select_setup_failure_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResu
 /// though we passed `-1` as the timeout and provided non-empty
 /// channels).
 fn emit_select_no_winner_trap<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<()> {
-    let trap_intrinsic = Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap intrinsic not found in LLVM build".into()))?;
-    let trap_fn = trap_intrinsic
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    fn_ctx
-        .builder
-        .build_call(trap_fn, &[], "select_no_winner_trap")
-        .llvm_ctx("select no winner trap")?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .llvm_ctx("select no winner unreachable")?;
-    Ok(())
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_JOIN_BRANCH_FAILED as u64,
+        "select_no_winner_trap",
+    )
 }
 
 #[cfg(test)]

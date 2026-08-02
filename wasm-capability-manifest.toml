@@ -88,6 +88,17 @@ runtime_status = "Implemented"
 categories = ["runtime", "actors"]
 
 [[feature]]
+id = "actor-crash-containment"
+label = "Actor-local panic/trap containment and restart"
+checker = "todo"
+runtime = "unavailable"
+runtime_status = "Unsupported on the production wasm32-wasip1 panic=abort artifact; a handler panic or canonical trap terminates the module instead of restarting one actor"
+categories = ["runtime", "actors", "failure"]
+tracking = "WASM-TODO"
+tracking_label = "WASM-TODO(actor-crash-containment):"
+note = "Tier 2 basic actor dispatch remains supported, but panic/trap containment is a separate capability. Host-side native parity tests may unwind to exercise bookkeeping; they are not evidence that the production WASI artifact can recover."
+
+[[feature]]
 id = "generators"
 label = "Generators (`gen fn`)"
 checker = "pass"
@@ -493,6 +504,12 @@ id = "channels"
 gap = "Blocking channel recv / full-queue backpressure parity"
 blocker = "Cooperative-scheduler recv yield/resume + send backpressure beyond the bounded fail-closed slice in `channel_wasm.rs`"
 tracking_label = "WASM-TODO(channels):"
+
+[[backlog]]
+id = "actor-crash-containment"
+gap = "Actor-local panic/trap containment and restart on production WASI"
+blocker = "The shipped wasm32-wasip1 Rust sysroot supports panic=abort; containment requires a supported unwind runtime or an explicit generated-code status/CPS failure ABI"
+tracking_label = "WASM-TODO(actor-crash-containment):"
 
 [[backlog]]
 id = "semaphore"

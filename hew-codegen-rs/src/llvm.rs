@@ -91,9 +91,9 @@ use hew_types::{
 // `emit_trap_with_code` takes `u64`, so each use site casts `as u64`.
 use hew_runtime::internal::types::{
     HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH,
-    HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE,
-    HEW_TRAP_MODULE_INIT_REGEX_FAILED, HEW_TRAP_SHIFT_OUT_OF_RANGE,
-    HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_WIRE_DECODE_FAILED,
+    HEW_TRAP_HEAP_EXCEEDED, HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW,
+    HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE, HEW_TRAP_MODULE_INIT_REGEX_FAILED,
+    HEW_TRAP_SHIFT_OUT_OF_RANGE, HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE, HEW_TRAP_WIRE_DECODE_FAILED,
 };
 
 use inkwell::builder::Builder;
@@ -10984,15 +10984,13 @@ fn emit_lifecycle_lock_call<'ctx>(
         .build_conditional_branch(ok, ok_bb, trap_bb)
         .llvm_ctx_with(|| format!("{symbol} branch"))?;
     builder.position_at_end(trap_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap, &[], &format!("{symbol}_trap"))
-        .llvm_ctx_with(|| format!("{symbol} trap"))?;
-    builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("{symbol} unreachable"))?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        builder,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        &format!("{symbol}_trap"),
+    )?;
     builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -11164,17 +11162,11 @@ fn emit_actor_state_lock_call(
         .build_conditional_branch(ok, ok_bb, trap_bb)
         .llvm_ctx_with(|| format!("{symbol} branch"))?;
     fn_ctx.builder.position_at_end(trap_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    fn_ctx
-        .builder
-        .build_call(trap, &[], &format!("{symbol}_trap"))
-        .llvm_ctx_with(|| format!("{symbol} trap"))?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("{symbol} unreachable"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        &format!("{symbol}_trap"),
+    )?;
     fn_ctx.builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -17229,16 +17221,11 @@ fn emit_actor_state_field_clone_inplace_trap<'ctx>(
         .build_conditional_branch(failed, trap_bb, ok_bb)
         .llvm_ctx_with(|| format!("{label} clone_inplace branch"))?;
     builder.position_at_end(trap_bb);
-    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap_fn, &[], &format!("{label}_trap"))
-        .llvm_ctx_with(|| format!("{label} trap"))?;
-    builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("{label} unreachable"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_HEAP_EXCEEDED as u64,
+        &format!("{label}_trap"),
+    )?;
     builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -18346,18 +18333,11 @@ fn trap_on_null_snapshot_clone<'ctx>(
         .build_conditional_branch(is_null, trap_bb, ok_bb)
         .llvm_ctx_with(|| format!("{label} null branch"))?;
     fn_ctx.builder.position_at_end(trap_bb);
-    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
-    fn_ctx
-        .builder
-        .build_call(trap_fn, &[], "trap")
-        .llvm_ctx_with(|| format!("{label} trap"))?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("{label} unreachable"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_HEAP_EXCEEDED as u64,
+        &format!("{label}_trap"),
+    )?;
     fn_ctx.builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -18510,18 +18490,11 @@ fn lower_value_snapshot_clone_instr<'ctx>(
                 .build_conditional_branch(failed, trap_bb, ok_bb)
                 .llvm_ctx("snapshot tuple branch")?;
             fn_ctx.builder.position_at_end(trap_bb);
-            let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-                .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
-                .get_declaration(fn_ctx.llvm_mod, &[])
-                .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
-            fn_ctx
-                .builder
-                .build_call(trap_fn, &[], "trap")
-                .llvm_ctx("snapshot tuple trap")?;
-            fn_ctx
-                .builder
-                .build_unreachable()
-                .llvm_ctx("snapshot tuple unreachable")?;
+            emit_trap_with_code(
+                fn_ctx,
+                HEW_TRAP_HEAP_EXCEEDED as u64,
+                "snapshot_tuple_clone_trap",
+            )?;
             fn_ctx.builder.position_at_end(ok_bb);
             Ok(())
         }
@@ -18933,16 +18906,11 @@ fn lower_record_clone_inplace_instr<'ctx>(
         .build_conditional_branch(failed, trap_bb, ok_bb)
         .llvm_ctx_with(|| format!("record_clone_inplace branch {record_name}"))?;
     builder.position_at_end(trap_bb);
-    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap_fn, &[], "trap")
-        .llvm_ctx_with(|| format!("record_clone_inplace trap {record_name}"))?;
-    builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("record_clone_inplace unreachable {record_name}"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_HEAP_EXCEEDED as u64,
+        "record_clone_inplace_trap",
+    )?;
     builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -19035,16 +19003,11 @@ fn lower_enum_clone_inplace_instr<'ctx>(
         .build_conditional_branch(failed, trap_bb, ok_bb)
         .llvm_ctx_with(|| format!("enum_clone_inplace branch {enum_name}"))?;
     builder.position_at_end(trap_bb);
-    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap_fn, &[], "trap")
-        .llvm_ctx_with(|| format!("enum_clone_inplace trap {enum_name}"))?;
-    builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("enum_clone_inplace unreachable {enum_name}"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_HEAP_EXCEEDED as u64,
+        "enum_clone_inplace_trap",
+    )?;
     builder.position_at_end(ok_bb);
     Ok(())
 }
@@ -22315,17 +22278,11 @@ fn emit_crash_cleanup_arm<'ctx>(
         .build_conditional_branch(hard_failure, rejected_bb, accepted_bb)
         .llvm_ctx("frame-cleanup arm result branch")?;
     fn_ctx.builder.position_at_end(rejected_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    fn_ctx
-        .builder
-        .build_call(trap, &[], "frame_cleanup_registration_trap")
-        .llvm_ctx("frame-cleanup registration trap")?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .llvm_ctx("frame-cleanup registration unreachable")?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        "frame_cleanup_registration_trap",
+    )?;
     fn_ctx.builder.position_at_end(accepted_bb);
     Ok(token)
 }
@@ -22366,17 +22323,11 @@ fn emit_checked_crash_cleanup_token_call(
         .build_conditional_branch(accepted, accepted_bb, rejected_bb)
         .llvm_ctx_with(|| format!("{label} result branch"))?;
     fn_ctx.builder.position_at_end(rejected_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    fn_ctx
-        .builder
-        .build_call(trap, &[], &format!("{label}_trap"))
-        .llvm_ctx_with(|| format!("{label} trap"))?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("{label} unreachable"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        &format!("{label}_trap"),
+    )?;
     fn_ctx.builder.position_at_end(accepted_bb);
     Ok(())
 }
@@ -22426,17 +22377,11 @@ fn emit_checked_dispatch_state_cleanup_call(
         .build_conditional_branch(accepted, accepted_bb, rejected_bb)
         .llvm_ctx_with(|| format!("{label} result branch"))?;
     fn_ctx.builder.position_at_end(rejected_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    fn_ctx
-        .builder
-        .build_call(trap, &[], &format!("{label}_trap"))
-        .llvm_ctx_with(|| format!("{label} trap"))?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .llvm_ctx_with(|| format!("{label} unreachable"))?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        &format!("{label}_trap"),
+    )?;
     fn_ctx.builder.position_at_end(accepted_bb);
     Ok(())
 }
@@ -22495,6 +22440,7 @@ fn emit_actor_state_cleanup_handoff(
         )
         .llvm_ctx("actor-state handoff token load")?
         .into_int_value();
+    let (source, _source_ty) = place_pointer(fn_ctx, src)?;
     let (size, _) = abi_size_align(field_ty, Some(fn_ctx.target_data))?;
     let transfer = intern_runtime_decl(
         fn_ctx.ctx,
@@ -22508,6 +22454,7 @@ fn emit_actor_state_cleanup_handoff(
             transfer,
             &[
                 token.into(),
+                source.into(),
                 field.into(),
                 fn_ctx.ctx.i64_type().const_int(size, false).into(),
             ],
@@ -22531,17 +22478,11 @@ fn emit_actor_state_cleanup_handoff(
         .build_conditional_branch(accepted, accepted_bb, rejected_bb)
         .llvm_ctx("actor-state handoff result branch")?;
     fn_ctx.builder.position_at_end(rejected_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(fn_ctx.llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    fn_ctx
-        .builder
-        .build_call(trap, &[], &format!("{label}_transfer_trap"))
-        .llvm_ctx("actor-state handoff rejection trap")?;
-    fn_ctx
-        .builder
-        .build_unreachable()
-        .llvm_ctx("actor-state handoff rejection unreachable")?;
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_ACTOR_SEND_FAILED as u64,
+        &format!("{label}_transfer_trap"),
+    )?;
     fn_ctx.builder.position_at_end(accepted_bb);
     fn_ctx
         .builder
@@ -27827,10 +27768,6 @@ fn emit_generator_env_owned_fields<'ctx>(
                 Some(Linkage::External),
             )
         });
-    let trap = Intrinsic::find("llvm.trap")
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic missing".into()))?
-        .get_declaration(fn_ctx.llvm_mod, &[])
-        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
     for (step_idx, rollback_bb) in rollback_bbs.iter().enumerate() {
         fn_ctx.builder.position_at_end(*rollback_bb);
         // The shallow memcpy made every moved field an owner before clone
@@ -27872,14 +27809,7 @@ fn emit_generator_env_owned_fields<'ctx>(
                 "gen_companion_rollback_free",
             )
             .llvm_ctx("generator companion rollback free")?;
-        fn_ctx
-            .builder
-            .build_call(trap, &[], "gen_env_clone_trap")
-            .llvm_ctx("generator env clone trap")?;
-        fn_ctx
-            .builder
-            .build_unreachable()
-            .llvm_ctx("generator env clone unreachable")?;
+        emit_trap_with_code(fn_ctx, HEW_TRAP_HEAP_EXCEEDED as u64, "gen_env_clone_trap")?;
     }
     fn_ctx.builder.position_at_end(success_bb);
     let thunk = crate::thunks::get_or_emit_generator_env_drop_thunk(

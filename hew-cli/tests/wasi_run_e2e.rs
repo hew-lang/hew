@@ -123,6 +123,50 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
 }
 
 #[test]
+fn actor_panic_is_module_fatal_on_production_wasi() {
+    require_wasi_runner();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("actor_panic_module_fatal.hew");
+    fs::write(
+        &source,
+        r#"actor Crasher {
+    receive fn fail() -> i64 {
+        panic("intentional actor panic")
+    }
+}
+
+fn main() {
+    let crasher = spawn Crasher;
+    match await crasher.fail() {
+        Ok(_) => println("contained"),
+        Err(_) => println("contained"),
+    }
+    println("survived");
+}
+"#,
+    )
+    .expect("write actor-panic WASI probe");
+
+    let output = run_wasi_example(&source);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "production panic=abort must terminate the WASI module, not contain one actor\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("contained") && !stdout.contains("survived"),
+        "control must not return to the awaiting actor after module-fatal panic; stdout:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("intentional actor panic") || stderr.contains("unreachable"),
+        "WASI failure should expose the panic/trap rather than a clean actor restart; stderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn task_scope_stays_on_the_fail_closed_diagnostic_path_under_wasi() {
     require_wasi_runner();
 

@@ -15,7 +15,6 @@
 use inkwell::context::Context;
 use std::collections::HashSet;
 
-use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::TargetData;
 use inkwell::types::{BasicType, BasicTypeEnum, FloatType, IntType, StructType};
@@ -2299,9 +2298,10 @@ pub(crate) fn get_or_emit_hash_thunk<'ctx>(
 /// pointer (offset 0) and all other dispatch-substrate state. `state` is
 /// present only to satisfy the `terminate_fn: fn(*mut c_void) -> void` ABI.
 ///
-/// Panic safety: if any on(stop) body panics, `call_terminate_fn`'s
-/// `catch_unwind` catches it and releases the lock via
+/// Panic safety on unwind-capable native profiles: if any on(stop) body panics,
+/// `call_terminate_fn`'s `catch_unwind` catches it and releases the lock via
 /// `hew_actor_state_lock_release_after_panic` (LESSONS: cleanup-all-exits P0).
+/// A panic=abort artifact has no catchable panic edge.
 pub(crate) fn emit_actor_terminate_trampoline<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -3852,15 +3852,13 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
     }
 
     builder.position_at_end(default_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap, &[], "actor_dispatch_unknown_msg_trap")
-        .llvm_ctx("actor dispatch trap")?;
-    builder
-        .build_unreachable()
-        .llvm_ctx("actor dispatch unreachable")?;
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        &builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "actor_dispatch_unknown_msg_trap",
+    )?;
 
     builder.position_at_end(after_bb);
     // D-A.2 / NEW-3a: the trampoline returns the dispatch suspend outcome — a

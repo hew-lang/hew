@@ -729,6 +729,7 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: id,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
         }
     }
 

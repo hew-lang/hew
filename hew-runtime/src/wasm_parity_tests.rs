@@ -354,6 +354,7 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         spawn_serial: 1,
         sys_dispatch: None,
+        state_drop_consumed: AtomicBool::new(false),
     })
 }
 
@@ -1478,10 +1479,9 @@ fn wasm_cooperate_returns_cancel_when_mailbox_closes_during_dispatch() {
 //
 // Native arena cap exhaustion routes through the longjmp seam, stamping
 // `HEW_TRAP_HEAP_EXCEEDED` on `actor.error_code` so the supervisor sees
-// `ExitReason::HeapExceeded`. WASM has no longjmp; the arena now stamps the
-// same code on the current actor and panics, and the activation's
-// catch_unwind boundary transitions the actor to `Crashed`. The two paths
-// surface the same `ExitReason`.
+// `ExitReason::HeapExceeded`. WASM has no longjmp and the production WASI
+// sysroot is panic=abort: the arena stamps the same code for diagnostics, then
+// terminates the module. Actor-local containment is intentionally not claimed.
 //
 // This test exercises the WASM-only branch of `arena_wasm::hew_arena_malloc`
 // directly: under the native-test build of the `arena_wasm` module the cap
@@ -1492,10 +1492,9 @@ fn wasm_cooperate_returns_cancel_when_mailbox_closes_during_dispatch() {
 // covered by:
 //   - `arena_wasm::hew_arena_malloc` returning null on cap-overflow when no
 //     ctx-actor is installed (existing test in `arena_wasm.rs`), and
-//   - the scheduler-loop change in `scheduler_wasm::activate_actor_wasm`
-//     that transitions to Crashed when `error_code` is non-zero after a
-//     dispatch unwind (covered by the dispatch-level wiring; ungated on
-//     wasm32 builds and exercised by the WASM end-to-end runs in `hew-cli`).
+//   - host-side parity coverage of the scheduler recovery bookkeeping. The
+//     actual wasm32 scheduler test asserts panic=abort, so no host unwind test
+//     is evidence of production actor-crash containment.
 
 /// Native test that confirms the substrate invariant: a `HEW_TRAP_*` code
 /// stamped on `actor.error_code` survives a `from_error_code` round-trip

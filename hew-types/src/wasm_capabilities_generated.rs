@@ -204,6 +204,7 @@ impl WasmUnsupportedFeature {
 /// Typed constants for every reject/warn feature and backlog identity.
 pub mod wasm_capability_ids {
     use super::WasmCapabilityId;
+    pub const ACTOR_CRASH_CONTAINMENT: WasmCapabilityId = WasmCapabilityId("actor-crash-containment");
     pub const ACTOR_DRAIN: WasmCapabilityId = WasmCapabilityId("actor-drain");
     pub const ACTOR_HEAP_LIMITS: WasmCapabilityId = WasmCapabilityId("actor-heap-limits");
     pub const ALIAS_MESSAGING: WasmCapabilityId = WasmCapabilityId("alias-messaging");

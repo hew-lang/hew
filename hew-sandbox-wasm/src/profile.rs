@@ -1081,9 +1081,10 @@ impl<'a> ProfileChecker<'a> {
                 )
             }
             Ty::Named { name, .. }
-                if name.eq_ignore_ascii_case("Regex")
-                    || name.ends_with(".Regex")
-                    || name == "regex.Pattern" =>
+                if matches!(
+                    name.as_str(),
+                    "Regex" | "regex.Pattern" | "std.text.regex.Pattern"
+                ) =>
             {
                 // `Pattern` is a `#[resource]`; `close()` is its canonical
                 // release method (renamed from `free()` in the resource

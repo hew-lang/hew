@@ -6,11 +6,21 @@ message: >-
   borrowed/consumed provenance. Do not add a restart- or lifecycle-specific
   free helper or a state-drop suppression option; route teardown through the
   common actor free path and update provenance at the ownership-transfer edge.
-files:
-  - 'hew-runtime/src/actor.rs'
-  - 'hew-runtime/src/supervisor.rs'
-  - 'hew-runtime/src/scheduler.rs'
-  - 'hew-runtime/src/scheduler_wasm.rs'
 rule:
-  kind: identifier
-  regex: '(^.*actor.*restart.*free.*$|^.*actor.*free.*restart.*$|^.*restart.*actor.*free.*$|^.*restart.*free.*actor.*$|^.*free.*actor.*restart.*$|^.*free.*restart.*actor.*$|^free_actor_resources.*options$|^.*(skip|suppress|omit|disable).*state_drop.*$|^.*state_drop.*(skip|suppress|omit|disable).*$)'
+  any:
+    # Rust parses declaration/use names and `.field` members as different node
+    # kinds. Cover both, plus the complete field expression so a member access
+    # cannot escape merely by moving the forbidden word behind `opts.`.
+    - kind: identifier
+      regex: '(^.*actor.*restart.*free.*$|^.*actor.*free.*restart.*$|^.*restart.*actor.*free.*$|^.*restart.*free.*actor.*$|^.*free.*actor.*restart.*$|^.*free.*restart.*actor.*$|^(free_actor_resources|finalize_quiescent_actor_cleanup).*options.*$|^.*(skip|suppress|omit|disable).*state_drop.*$|^.*state_drop.*(skip|suppress|omit|disable).*$)'
+    - kind: field_identifier
+      regex: '(^.*(skip|suppress|omit|disable).*state_drop.*$|^.*state_drop.*(skip|suppress|omit|disable).*$)'
+    - kind: field_expression
+      regex: '(^|.*\.)(.*(skip|suppress|omit|disable).*state_drop.*|.*state_drop.*(skip|suppress|omit|disable).*)$'
+    # Structural arity teeth: a renamed boolean such as `release_fields` must
+    # not turn the common authority choke points into option-bearing helpers.
+    # These match calls independently of argument names.
+    - pattern: free_actor_resources($ACTOR, $$$OPTIONS)
+    - pattern: free_actor_resources_wasm($ACTOR, $$$OPTIONS)
+    - pattern: finalize_quiescent_actor_cleanup($ACTOR, $STATE, $$$OPTIONS)
+    - pattern: finalize_quiescent_actor_cleanup_with_options($$$ARGS)

@@ -5585,14 +5585,12 @@ impl Checker {
                                 // native-only stdlib function is itself a
                                 // `PlatformLimitation` rejection on wasm32, mirroring
                                 // the call-form guard in methods.rs.
-                                // NATIVE_ONLY_WASM_MODULE_REJECTIONS is the single source
-                                // of truth; both guards iterate the same slice.
+                                // The manifest-generated rejection slice is the
+                                // single source; both guards iterate it.
                                 if self.wasm_target && !self.user_modules.contains(name.as_str()) {
-                                    for &(module, feature) in
-                                        Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS
-                                    {
-                                        if name.as_str() == module {
-                                            self.reject_wasm_feature(span, feature);
+                                    for rejection in crate::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
+                                        if name.as_str() == rejection.module {
+                                            self.reject_wasm_feature(span, rejection.feature);
                                         }
                                     }
                                     // crypto.random_bytes and its fallible twin depend on a

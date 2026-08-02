@@ -4569,6 +4569,11 @@ fn wasm_exclusion_scan_flags_runtime_duplex_close_in_elab_drop() {
     };
     let found = uses_wasm_excluded_symbol(&pipeline)
         .expect("Duplex::close ElabDrop must be flagged as WASM-excluded");
+    assert_eq!(
+        found.capability,
+        wasm_capability_ids::DUPLEX,
+        "duplex drop must retain its manifest capability identity"
+    );
     assert!(
         found.starts_with("hew_duplex_"),
         "found symbol must be the hew_duplex_ C-ABI: got {found}"
@@ -4604,6 +4609,33 @@ fn raw_mir_only_pipeline(body: RawMirFunction) -> IrPipeline {
         resource_record_close: vec![],
         resource_opaque_close: vec![],
     }
+}
+
+#[test]
+fn wasm_runtime_family_exclusions_return_manifest_capability_identity() {
+    use hew_types::runtime_call::RuntimeCallFamily as F;
+
+    let cases = [
+        (F::DuplexPair, wasm_capability_ids::DUPLEX),
+        (
+            F::SupervisorChildGet,
+            wasm_capability_ids::SUPERVISION_TREES,
+        ),
+        (F::TaskNew, wasm_capability_ids::TASKS),
+        (F::TaskScopeNew, wasm_capability_ids::STRUCTURED_CONCURRENCY),
+    ];
+    for (family, expected) in cases {
+        assert_eq!(
+            wasm_excluded_call_family(family),
+            Some(expected),
+            "{family:?} must retain a stable manifest capability identity"
+        );
+    }
+    assert_eq!(
+        wasm_excluded_call_family(F::ActorSpawn),
+        None,
+        "a wasm-available family must not acquire an authority-free exclusion"
+    );
 }
 
 /// Code-2 (NEW-4 wasm fail-closed): a `select{}` arm that receives from a
@@ -4666,6 +4698,11 @@ fn wasm_exclusion_scan_flags_select_channel_recv_arm_as_channel_poll() {
     let pipeline = raw_mir_only_pipeline(body);
     let found = uses_wasm_excluded_symbol(&pipeline)
         .expect("a select{} ChannelRecv arm must be flagged as WASM-excluded");
+    assert_eq!(
+        found.capability,
+        wasm_capability_ids::CHANNEL_BLOCKING_RECV,
+        "channel receive carrier must map to the checker-owned capability"
+    );
     assert_eq!(
         found, "hew_channel_poll",
         "WASM exclusion scan must surface `hew_channel_poll` for a \
@@ -4816,6 +4853,11 @@ fn wasm_exclusion_scan_flags_suspending_stream_next_as_await_next() {
     let found = uses_wasm_excluded_symbol(&pipeline)
         .expect("a collapsed StreamNext suspend carrier must be flagged as WASM-excluded");
     assert_eq!(
+        found.capability,
+        wasm_capability_ids::STREAMS,
+        "stream carrier must map to the manifest streams capability"
+    );
+    assert_eq!(
         found, "hew_stream_await_next",
         "WASM exclusion scan must surface `hew_stream_await_next` for a \
              `Terminator::SuspendingStreamNext` carrier; got `{found}`"
@@ -4887,6 +4929,11 @@ fn wasm_exclusion_scan_flags_suspending_task_await() {
     let found = uses_wasm_excluded_symbol(&pipeline)
         .expect("a collapsed TaskAwait suspend carrier must be flagged as WASM-excluded");
     assert_eq!(
+        found.capability,
+        wasm_capability_ids::TASKS,
+        "task-await carrier must map to the manifest tasks capability"
+    );
+    assert_eq!(
         found, "hew_task_await_suspend",
         "WASM exclusion scan must surface `hew_task_await_suspend` for a \
              `Terminator::SuspendingTaskAwait` carrier; got `{found}`"
@@ -4952,6 +4999,11 @@ fn wasm_exclusion_scan_flags_suspending_sleep() {
     let pipeline = raw_mir_only_pipeline(body);
     let found = uses_wasm_excluded_symbol(&pipeline)
         .expect("a collapsed Sleep suspend carrier must be flagged as WASM-excluded");
+    assert_eq!(
+        found.capability,
+        wasm_capability_ids::TIMER_SUSPENSION,
+        "suspending sleep must name the manifest timer-suspension gap"
+    );
     assert_eq!(
         found, "hew_await_cancel_schedule_deadline_ms",
         "WASM exclusion scan must surface `hew_await_cancel_schedule_deadline_ms` \

@@ -21,6 +21,8 @@ ID_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 ID_RE = re.compile(rf"^{ID_PATTERN}$")
 MARKER_RE = re.compile(rf"WASM-TODO\((?P<id>{ID_PATTERN})\):")
 REQUIRED_BACKLOG_FIELDS = ("id", "gap", "blocker", "tracking_label")
+SOURCE_MARKER_DISPOSITION = "source"
+NON_SOURCE_MARKER_DISPOSITION = "non-source"
 
 # These files describe the convention or render the authority; occurrences in
 # them are labels/examples rather than actionable source markers.
@@ -71,6 +73,15 @@ class Marker:
     backlog_id: str
 
 
+@dataclass(frozen=True)
+class BacklogAuthority:
+    """Parsed backlog identities and their required source-marker coverage."""
+
+    ids: frozenset[str]
+    source_marker_ids: frozenset[str]
+    non_source_ids: frozenset[str]
+
+
 def _required_string(row: object, field: str, index: int) -> str:
     if not isinstance(row, dict):
         raise LintError(f"backlog row {index} must be a TOML table")
@@ -80,7 +91,7 @@ def _required_string(row: object, field: str, index: int) -> str:
     return value
 
 
-def parse_authority(path: Path) -> frozenset[str]:
+def parse_authority(path: Path) -> BacklogAuthority:
     try:
         data = toml_compat.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, toml_compat.TOMLDecodeError) as err:
@@ -99,6 +110,8 @@ def parse_authority(path: Path) -> frozenset[str]:
         )
 
     seen: set[str] = set()
+    source_marker_ids: set[str] = set()
+    non_source_ids: set[str] = set()
     for index, row in enumerate(backlog, start=1):
         values = {
             field: _required_string(row, field, index)
@@ -116,9 +129,33 @@ def parse_authority(path: Path) -> frozenset[str]:
             raise LintError(
                 f"backlog `{backlog_id}` tracking_label must be `{expected_label}`"
             )
+        marker_disposition = row.get("marker_disposition", SOURCE_MARKER_DISPOSITION)
+        if not isinstance(marker_disposition, str) or marker_disposition not in {
+            SOURCE_MARKER_DISPOSITION,
+            NON_SOURCE_MARKER_DISPOSITION,
+        }:
+            raise LintError(
+                f"backlog `{backlog_id}` marker_disposition must be "
+                f"`{SOURCE_MARKER_DISPOSITION}` or "
+                f"`{NON_SOURCE_MARKER_DISPOSITION}`"
+            )
+        if marker_disposition == NON_SOURCE_MARKER_DISPOSITION:
+            _required_string(row, "non_source_reason", index)
+            non_source_ids.add(backlog_id)
+        else:
+            if "non_source_reason" in row:
+                raise LintError(
+                    f"backlog `{backlog_id}` non_source_reason requires "
+                    f'marker_disposition = "{NON_SOURCE_MARKER_DISPOSITION}"'
+                )
+            source_marker_ids.add(backlog_id)
         seen.add(backlog_id)
 
-    return frozenset(seen)
+    return BacklogAuthority(
+        ids=frozenset(seen),
+        source_marker_ids=frozenset(source_marker_ids),
+        non_source_ids=frozenset(non_source_ids),
+    )
 
 
 def tracked_files(repo: Path) -> list[str]:
@@ -139,7 +176,7 @@ def is_actionable_path(path: str) -> bool:
 
 
 def scan_markers(
-    repo: Path, authority: frozenset[str], paths: Iterable[str]
+    repo: Path, authority: BacklogAuthority, paths: Iterable[str]
 ) -> list[Marker]:
     markers: list[Marker] = []
     violations: list[str] = []
@@ -178,7 +215,7 @@ def scan_markers(
                     offset = token_offset + len(TOKEN)
                     continue
                 backlog_id = marker_match.group("id")
-                if backlog_id not in authority:
+                if backlog_id not in authority.ids:
                     violations.append(
                         f"{relative}:{line_number}: unknown WASM backlog id "
                         f"`{backlog_id}`"
@@ -195,13 +232,38 @@ def scan_markers(
     return markers
 
 
+def validate_backlog_coverage(
+    authority: BacklogAuthority, markers: Iterable[Marker]
+) -> None:
+    """Enforce manifest identity and actionable source-marker coverage both ways."""
+    used = {marker.backlog_id for marker in markers}
+    violations: list[str] = []
+    unused = sorted(authority.source_marker_ids - used)
+    if unused:
+        violations.append(
+            "backlog id(s) without an actionable WASM-TODO marker: "
+            + ", ".join(f"`{backlog_id}`" for backlog_id in unused)
+        )
+    non_source_markers = sorted(authority.non_source_ids & used)
+    if non_source_markers:
+        violations.append(
+            "backlog id(s) declared non-source have an actionable "
+            "WASM-TODO marker: "
+            + ", ".join(f"`{backlog_id}`" for backlog_id in non_source_markers)
+        )
+    if violations:
+        raise LintError("\n".join(violations))
+
+
 def lint(
     repo: Path, manifest: Path, paths: Iterable[str] | None = None
 ) -> list[Marker]:
     authority = parse_authority(manifest)
-    return scan_markers(
+    markers = scan_markers(
         repo, authority, tracked_files(repo) if paths is None else paths
     )
+    validate_backlog_coverage(authority, markers)
+    return markers
 
 
 def _manifest(*ids: str) -> str:
@@ -238,6 +300,46 @@ def self_test() -> None:
             _manifest("channels"),
             "WASM-TODO(channels): live gap\n",
             None,
+        ),
+        SelfTestCase(
+            "unused-backlog-row",
+            _manifest("channels", "semaphore"),
+            "WASM-TODO(channels): live gap\n",
+            "backlog id(s) without an actionable WASM-TODO marker: `semaphore`",
+        ),
+        SelfTestCase(
+            "explicit-non-source-row",
+            _manifest("channels", "semaphore").replace(
+                'tracking_label = "WASM-TODO(semaphore):"',
+                'tracking_label = "WASM-TODO(semaphore):"\n'
+                'marker_disposition = "non-source"\n'
+                'non_source_reason = "no source registration site"',
+            ),
+            "WASM-TODO(channels): live gap\n",
+            None,
+        ),
+        SelfTestCase(
+            "non-source-row-with-marker",
+            _manifest("channels", "semaphore").replace(
+                'tracking_label = "WASM-TODO(semaphore):"',
+                'tracking_label = "WASM-TODO(semaphore):"\n'
+                'marker_disposition = "non-source"\n'
+                'non_source_reason = "no source registration site"',
+            ),
+            "WASM-TODO(channels): live gap\nWASM-TODO(semaphore): stale marker\n",
+            "backlog id(s) declared non-source have an actionable WASM-TODO "
+            "marker: `semaphore`",
+        ),
+        SelfTestCase(
+            "non-source-without-reason",
+            _manifest("channels").replace(
+                'tracking_label = "WASM-TODO(channels):"',
+                'tracking_label = "WASM-TODO(channels):"\n'
+                'marker_disposition = "non-source"',
+            ),
+            "no markers here\n",
+            "empty or missing `non_source_reason`",
+            expected_markers=0,
         ),
         SelfTestCase(
             "manifest-version-bool",

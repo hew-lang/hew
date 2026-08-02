@@ -48,10 +48,14 @@
 # intentional actor-boundary error demos, corrected spec-0122..spec-0133 labels,
 # and bound entries to cksum metadata.
 #
-# ─── Guide failures (0) ─────────────────────────────────────────────────────────
+# ─── Guide failures (4) ─────────────────────────────────────────────────────────
 
 # guide-0107 was removed 2026-06-23: std::string.from_int fence now passes;
 # the NYI label was stale (fence renumbered as guide grew).
+guide-0082   3488817387   # IMPL-GAP: ownership checker reports a leaked endpoint parser result
+guide-0152   519919606    # IMPL-GAP: ownership checker reports a leaked template render result
+guide-0154   2464738241   # IMPL-GAP: ownership checker reports a leaked scanner call result
+guide-0161   2324030670   # IMPL-GAP: ownership checker reports a leaked TLS call result
 
 # ─── Spec failures (86) ──────────────────────────────────────────────────────────
 

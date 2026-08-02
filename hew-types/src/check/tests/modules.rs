@@ -138,6 +138,25 @@ fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry()
         "the unique compatibility surface must project through the proven exact std owner"
     );
 
+    // A registration seed for a nearby module is not a declaration of
+    // `std.net.tls.NetError`. Finalising the TLS helper's branch result must
+    // still follow the exact `net` import owner, rather than leaving a bare
+    // child that disagrees with its `net.NetError` join type.
+    checker.source_type_defs.insert("NetError".to_string());
+    assert_eq!(
+        checker.canonical_nominal_name("NetError"),
+        Some("std.net.NetError".to_string()),
+        "a stale bare registration seed must not block the canonical module binding"
+    );
+    checker.source_type_defs.remove("NetError");
+
+    checker.known_types.insert("std.net.NetError".to_string());
+    assert_eq!(
+        checker.canonical_nominal_name("NetError"),
+        Some("std.net.NetError".to_string()),
+        "compatibility and canonical registrations of one declaration are not ambiguous"
+    );
+
     checker.module_import_bindings.insert(
         (Some("std.net.tls".to_string()), "sibling".to_string()),
         "acme.net".to_string(),

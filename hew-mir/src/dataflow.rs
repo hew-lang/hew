@@ -1208,6 +1208,16 @@ pub fn analyze(
 
     for block in blocks {
         let blk_id = block.id;
+        // `finalize_blocks` preserves a structurally valid home for source
+        // after a failed/never-returning sub-lowering (for example, the loop
+        // exit following a match whose scrutinee could not lower).  Such a
+        // block has no path from entry, so it must not diagnose its implicit
+        // `Uninit` state as though user code could execute there.  The
+        // predecessor meet already excludes these blocks; keep the diagnostic
+        // sweep aligned with that same reachability boundary.
+        if !reachable.contains(&blk_id) {
+            continue;
+        }
         let entry = if blk_id == entry_id {
             let mut entry_state: BTreeMap<BindingId, BindingState> = BTreeMap::new();
             for &id in param_bindings {
@@ -1253,6 +1263,9 @@ pub fn analyze(
     //                          Live on that block's path. Defensive.
     let mut must_consume_seen: HashSet<(BindingId, u32)> = HashSet::new();
     for block in blocks {
+        if !reachable.contains(&block.id) {
+            continue;
+        }
         let Terminator::Return = &block.terminator else {
             continue;
         };
@@ -1926,6 +1939,55 @@ mod tests {
             instructions: vec![],
             terminator,
         }
+    }
+
+    #[test]
+    fn unreachable_post_loop_cursor_does_not_report_uninitialised_reads() {
+        // A failed sub-lowering can leave a loop with no `break` edge while
+        // preserving its post-loop cursor as a structural CFG home.  The
+        // cursor is unreachable; it must not turn a pre-loop binding into a
+        // spurious source diagnostic merely because its entry state is empty.
+        let acc = BindingId(33);
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![MirStatement::Bind {
+                    binding: acc,
+                    name: "acc".to_string(),
+                    site: SiteId(10),
+                    ty: ResolvedTy::I64,
+                }],
+                instructions: vec![],
+                terminator: Terminator::Goto { target: 1 },
+            },
+            bb(1, Terminator::Goto { target: 1 }),
+            BasicBlock {
+                id: 2,
+                statements: vec![MirStatement::Use {
+                    binding: acc,
+                    name: "acc".to_string(),
+                    site: SiteId(20),
+                    ty: ResolvedTy::I64,
+                    intent: IntentKind::Read,
+                }],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+
+        let result = analyze(&blocks, &TypeClassTable::default(), &[]);
+        assert!(
+            !result.checks.iter().any(|check| matches!(
+                check,
+                MirCheck::InitialisedBeforeUse { binding, .. } if *binding == acc
+            )),
+            "unreachable post-loop cursor must not diagnose a read: {:?}",
+            result.checks
+        );
+        assert!(
+            !result.entry_states.contains_key(&2),
+            "the diagnostic dataflow pass must not materialise unreachable cursor state"
+        );
     }
 
     /// A simple leaf function: two blocks, no loops, no calls, fewer than

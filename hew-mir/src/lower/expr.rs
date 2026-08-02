@@ -22,6 +22,121 @@ use super::{
 use super::{FieldLoadClass, PlaceProvenance, Projection, ValueProvenance};
 use crate::model::ActorStateStoreHandoff;
 
+/// Compiler-owned primitive `Display::fmt` implementations live in the
+/// catalog, not as emitted Hew impl bodies.  Static dispatch reaches here only
+/// after the checker has selected the exact Display method declaration, so map
+/// that declaration plus the substituted primitive type to its catalog call.
+/// Other traits and user-defined `Display` impls continue through the
+/// declaration-keyed impl registry below.
+fn primitive_display_static_callee(
+    target: &hew_types::CallTarget,
+    receiver: &ResolvedTy,
+    explicit_arg_count: usize,
+) -> Option<&'static str> {
+    let hew_types::CallTarget::StaticTraitMethod {
+        declaring_trait,
+        method,
+    } = target
+    else {
+        return None;
+    };
+    if explicit_arg_count != 0
+        || declaring_trait.full_path() != "std.builtins.Display"
+        || method.full_path() != "std.builtins.Display::fmt"
+    {
+        return None;
+    }
+    match receiver {
+        ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => Some("to_string_i32"),
+        ResolvedTy::I64 | ResolvedTy::Isize => Some("to_string_i64"),
+        ResolvedTy::U8 => Some("to_string_u8"),
+        ResolvedTy::U16 | ResolvedTy::U32 => Some("to_string_u32"),
+        ResolvedTy::U64 | ResolvedTy::Usize => Some("to_string_u64"),
+        ResolvedTy::F64 => Some("to_string_f64"),
+        ResolvedTy::Bool => Some("to_string_bool"),
+        ResolvedTy::Char => Some("to_string_char"),
+        ResolvedTy::String => Some("to_string_str"),
+        _ => None,
+    }
+}
+
+/// The stdlib's generic `Iterator::next` body reaches MIR as static trait
+/// dispatch after its `I` parameter is monomorphised. `VecIter<T>` is a
+/// compiler-owned cursor, though: its concrete next operation is the same
+/// checked clone-out state machine HIR uses for a direct `iter.next()` call.
+///
+/// Keep this discriminator declaration-keyed and builtin-tagged. A user type
+/// named `VecIter`, a different `next` trait, or an iterator with arguments
+/// must continue through ordinary impl dispatch rather than borrowing this
+/// runtime protocol.
+fn builtin_vec_iter_static_next_element<'a>(
+    target: &hew_types::CallTarget,
+    receiver: &'a ResolvedTy,
+    explicit_arg_count: usize,
+) -> Option<&'a ResolvedTy> {
+    let hew_types::CallTarget::StaticTraitMethod {
+        declaring_trait,
+        method,
+    } = target
+    else {
+        return None;
+    };
+    if explicit_arg_count != 0
+        || declaring_trait.full_path() != "std.builtins.Iterator"
+        || method.full_path() != "std.builtins.Iterator::next"
+    {
+        return None;
+    }
+    let ResolvedTy::Named {
+        args,
+        builtin: Some(BuiltinType::VecIter),
+        ..
+    } = receiver
+    else {
+        return None;
+    };
+    (args.len() == 1).then(|| &args[0])
+}
+
+#[cfg(test)]
+mod builtin_vec_iter_static_next_tests {
+    use super::*;
+
+    fn iterator_next_target() -> hew_types::CallTarget {
+        hew_types::CallTarget::static_trait(
+            hew_types::DefId::new("std.builtins.Iterator"),
+            hew_types::DefId::new("std.builtins.Iterator::next"),
+        )
+    }
+
+    #[test]
+    fn builtin_vec_iter_next_requires_exact_builtin_and_declaration_identities() {
+        let builtin_cursor =
+            ResolvedTy::named_builtin("VecIter", BuiltinType::VecIter, vec![ResolvedTy::I64]);
+        assert_eq!(
+            builtin_vec_iter_static_next_element(&iterator_next_target(), &builtin_cursor, 0),
+            Some(&ResolvedTy::I64),
+            "the builtin Iterator::next identity selects the VecIter state machine"
+        );
+
+        let user_spoof = ResolvedTy::named_user("VecIter", vec![ResolvedTy::I64]);
+        assert!(
+            builtin_vec_iter_static_next_element(&iterator_next_target(), &user_spoof, 0).is_none(),
+            "a user VecIter spelling must not acquire the builtin cursor protocol"
+        );
+
+        let other_iterator_method = hew_types::CallTarget::static_trait(
+            hew_types::DefId::new("std.builtins.Iterator"),
+            hew_types::DefId::new("std.builtins.Iterator::peek"),
+        );
+        assert!(
+            builtin_vec_iter_static_next_element(&other_iterator_method, &builtin_cursor, 0)
+                .is_none(),
+            "a different Iterator method must remain ordinary static dispatch"
+        );
+    }
+}
+
 pub(super) fn binding_seeds_drop_elaboration(
     ty: &ResolvedTy,
     type_classes: &hew_hir::TypeClassTable,
@@ -29,7 +144,223 @@ pub(super) fn binding_seeds_drop_elaboration(
     ValueClass::of_ty(ty, type_classes) != ValueClass::BitCopy
 }
 
+/// The specialised terminal either does not apply, or it owns the call site
+/// completely (including a possible diagnostic/lowering failure).
+enum VecIterStaticNextLowering {
+    NotApplicable,
+    Lowered(Option<Place>),
+}
+
 impl Builder {
+    /// Lower the exact builtin `Iterator::next` dispatch for `VecIter<T>`.
+    ///
+    /// HIR expands direct `cursor.next()` syntax before generic functions are
+    /// specialised. A call originating in `std::iter::fold<I: Iterator>` is
+    /// necessarily still a static-trait call in HIR, so after `I = VecIter<T>`
+    /// substitution MIR materialises the identical cursor state machine here:
+    /// compare `idx` with the snapshot Vec length, clone the current element
+    /// into `Some`, advance `idx`, or construct `None`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one cursor advancement must emit a contiguous CFG: split helpers would obscure the ownership and block transitions"
+    )]
+    fn lower_builtin_vec_iter_static_next(
+        &mut self,
+        receiver: &HirExpr,
+        elem_ty: &ResolvedTy,
+        ret_ty: &ResolvedTy,
+        site: SiteId,
+    ) -> Option<Place> {
+        if let Err(reason) = self.validate_collection_clone_value(elem_ty) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("`VecIter<{}>` clone-out", elem_ty.user_facing()),
+                    site,
+                },
+                note: format!(
+                    "`VecIter::next()` must clone each element into an independent owner, \
+                     but {reason}; MIR refuses to lower the generic Iterator dispatch"
+                ),
+            });
+            return None;
+        }
+
+        let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding),
+            name,
+        } = &receiver.kind
+        else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnsupportedNode {
+                    reason: "builtin VecIter Iterator::next receiver is not a binding".to_string(),
+                },
+                note: "the builtin cursor state machine mutates the receiver's existing local slot"
+                    .to_string(),
+            });
+            return None;
+        };
+        let Some(cursor) = self.binding_locals.get(binding).copied() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::UnresolvedPlace {
+                    binding: *binding,
+                    name: name.clone(),
+                    site: receiver.site,
+                },
+                note: "builtin VecIter Iterator::next receiver has no MIR place".to_string(),
+            });
+            return None;
+        };
+        // `VecIter::next` advances the cursor in place; it does not transfer
+        // the cursor out of its binding.  The generic `var self` HIR carrier
+        // models an ordinary method's dual-return write-back as Consume, but
+        // this builtin intercept replaces that carrier with field mutation, so
+        // record the read directly and keep the VecIter scope owner live.
+        self.statements.push(MirStatement::Use {
+            binding: *binding,
+            name: name.clone(),
+            site: receiver.site,
+            ty: self.subst_ty(&receiver.ty),
+            intent: IntentKind::Read,
+        });
+        let vec_ty = ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![elem_ty.clone()]);
+        let vec = self.alloc_local(vec_ty);
+        self.push_instr(Instr::RecordFieldLoad {
+            record: cursor,
+            field_offset: FieldOffset(0),
+            dest: vec,
+        });
+        let idx = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::RecordFieldLoad {
+            record: cursor,
+            field_offset: FieldOffset(1),
+            dest: idx,
+        });
+
+        let len = self.alloc_local(ResolvedTy::I64);
+        let after_len = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_vec_len".to_string(),
+            authority: crate::CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::VecLen,
+            ),
+            args: vec![vec],
+            dest: Some(len),
+            next: after_len,
+        });
+        self.start_block(after_len);
+
+        let exhausted = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            pred: CmpPred::SignedGreaterEq,
+            lhs: idx,
+            rhs: len,
+            dest: exhausted,
+        });
+        let none_bb = self.alloc_block();
+        let some_bb = self.alloc_block();
+        let join_bb = self.alloc_block();
+        let result = self.alloc_local(ret_ty.clone());
+        self.finish_current_block(Terminator::Branch {
+            cond: exhausted,
+            then_target: none_bb,
+            else_target: some_bb,
+        });
+
+        self.start_block(none_bb);
+        let none_tag = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: none_tag,
+            value: 1,
+        });
+        let Place::Local(result_local) = result else {
+            unreachable!("alloc_local returns Place::Local");
+        };
+        self.push_instr(Instr::Move {
+            dest: Place::EnumTag(result_local),
+            src: none_tag,
+        });
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        self.start_block(some_bb);
+        let after_get = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_vec_get_clone".to_string(),
+            authority: crate::CallAuthority::Runtime(
+                hew_types::runtime_call::RuntimeCallFamily::VecGet(
+                    hew_types::runtime_call::VecGetElem::Clone,
+                ),
+            ),
+            args: vec![vec, idx],
+            dest: Some(result),
+            next: after_get,
+        });
+        self.start_block(after_get);
+        let one = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: one,
+            value: 1,
+        });
+        let next_idx = self.alloc_local(ResolvedTy::I64);
+        let overflow = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntArithChecked {
+            op: IntArithOp::Add,
+            signed: IntSignedness::Signed,
+            dest: next_idx,
+            lhs: idx,
+            rhs: one,
+            overflow_flag: overflow,
+        });
+        let overflow_bb = self.alloc_block();
+        let advance_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: overflow,
+            then_target: overflow_bb,
+            else_target: advance_bb,
+        });
+        self.start_block(overflow_bb);
+        self.finish_current_block(Terminator::Trap {
+            kind: TrapKind::IntegerOverflow,
+        });
+        self.start_block(advance_bb);
+        self.push_instr(Instr::RecordFieldStore {
+            record: cursor,
+            field_offset: FieldOffset(1),
+            src: next_idx,
+        });
+        self.finish_current_block(Terminator::Goto { target: join_bb });
+
+        self.start_block(join_bb);
+        Some(result)
+    }
+
+    /// Recognises only the exact builtin `VecIter<T>::Iterator::next`
+    /// terminal after substitution. Every adapter stays on ordinary
+    /// declaration-indexed static dispatch.
+    fn lower_builtin_vec_iter_static_next_if_applicable(
+        &mut self,
+        receiver_type_param: &str,
+        receiver: &HirExpr,
+        call_target: &hew_types::CallTarget,
+        args: &[HirExpr],
+        ret_ty: &ResolvedTy,
+        site: SiteId,
+    ) -> VecIterStaticNextLowering {
+        let Some(concrete_ty) = self.subst.get(receiver_type_param).cloned() else {
+            return VecIterStaticNextLowering::NotApplicable;
+        };
+        let Some(elem_ty) =
+            builtin_vec_iter_static_next_element(call_target, &concrete_ty, args.len())
+        else {
+            return VecIterStaticNextLowering::NotApplicable;
+        };
+        VecIterStaticNextLowering::Lowered(self.lower_builtin_vec_iter_static_next(
+            receiver,
+            elem_ty,
+            &self.subst_ty(ret_ty),
+            site,
+        ))
+    }
+
     /// The `let` / `var` binder's combined seed-and-provenance gate.
     ///
     /// `Some(warrant)` when this binding earns a scope-exit owner: its type
@@ -5959,6 +6290,18 @@ impl Builder {
                     });
                     return None;
                 };
+                if let Some(callee) =
+                    primitive_display_static_callee(target, &concrete_ty, args.len())
+                {
+                    return self.lower_direct_call(
+                        callee,
+                        None,
+                        None,
+                        std::slice::from_ref(receiver),
+                        &resolved_ret_ty,
+                        expr.site,
+                    );
+                }
                 // (3) structured registry lookup by checker-owned IDs. The
                 // only fallback inside the HIR index is the exact same nominal's
                 // generic implementation; there is no string/leaf retry.
@@ -8851,20 +9194,7 @@ impl Builder {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the var-self carrier is intentionally explicit across site, target, receiver, result, and writeback types"
-    )]
-    fn lower_var_self_method_call(
-        &mut self,
-        site: SiteId,
-        receiver: &HirExpr,
-        call_target: &hew_types::CallTarget,
-        target: &HirVarSelfMethodTarget,
-        args: &[HirExpr],
-        ret_ty: &ResolvedTy,
-        receiver_ty: &ResolvedTy,
-    ) -> Option<Place> {
+    fn var_self_receiver_slot(&mut self, receiver: &HirExpr) -> Option<(BindingId, String, Place)> {
         let HirExprKind::BindingRef {
             resolved: ResolvedRef::Binding(binding_id),
             name: receiver_name,
@@ -8905,6 +9235,48 @@ impl Builder {
                     .to_string(),
             });
             return None;
+        }
+        Some((*binding_id, receiver_name.clone(), receiver_slot))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the var-self carrier is intentionally explicit across site, target, receiver, result, and writeback types"
+    )]
+    fn lower_var_self_method_call(
+        &mut self,
+        site: SiteId,
+        receiver: &HirExpr,
+        call_target: &hew_types::CallTarget,
+        target: &HirVarSelfMethodTarget,
+        args: &[HirExpr],
+        ret_ty: &ResolvedTy,
+        receiver_ty: &ResolvedTy,
+    ) -> Option<Place> {
+        let (binding_id, receiver_name, receiver_slot) = self.var_self_receiver_slot(receiver)?;
+        // Generic `Iterator::next(var self)` calls retain their static-trait
+        // HIR shape until the enclosing function is monomorphised.  Direct
+        // VecIter syntax was already rewritten by HIR, but the same concrete
+        // cursor reached through `std::iter::fold<I: Iterator>` arrives here.
+        // Intercept only the exact builtin declaration identity; all other
+        // static var-self calls still use the declaration-keyed impl registry.
+        if let HirVarSelfMethodTarget::StaticTrait {
+            receiver_type_param,
+            ..
+        } = target
+        {
+            if let VecIterStaticNextLowering::Lowered(result) = self
+                .lower_builtin_vec_iter_static_next_if_applicable(
+                    receiver_type_param,
+                    receiver,
+                    call_target,
+                    args,
+                    ret_ty,
+                    site,
+                )
+            {
+                return result;
+            }
         }
         let callee_symbol = match target {
             HirVarSelfMethodTarget::Direct => {
@@ -8956,8 +9328,8 @@ impl Builder {
             dest: receiver_slot,
         });
         self.restore_var_self_receiver_binding(
-            *binding_id,
-            receiver_name,
+            binding_id,
+            &receiver_name,
             &resolved_receiver_ty,
             site,
         );

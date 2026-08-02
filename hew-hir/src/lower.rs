@@ -7518,7 +7518,9 @@ impl LowerCtx {
             let mut call_args = Vec::with_capacity(raw_call_args.len());
             for ty in &raw_call_args {
                 match ResolvedTy::from_ty(ty) {
-                    Ok(resolved) => call_args.push(resolved),
+                    Ok(resolved) => {
+                        call_args.push(self.qualify_current_module_record_ty(resolved));
+                    }
                     Err(err) => {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::MonomorphisationCallTypeArgsViolation {
@@ -7731,7 +7733,7 @@ impl LowerCtx {
         let mut type_args: Vec<ResolvedTy> = Vec::with_capacity(type_args_raw.len());
         for ty in &type_args_raw {
             match ResolvedTy::from_ty(ty) {
-                Ok(resolved) => type_args.push(resolved),
+                Ok(resolved) => type_args.push(self.qualify_current_module_record_ty(resolved)),
                 Err(err) => {
                     // Fail-closed: poisoned side-table for this call.
                     // Emit a diagnostic; skip the registry entry so the
@@ -7891,7 +7893,7 @@ impl LowerCtx {
         let mut type_args: Vec<ResolvedTy> = Vec::with_capacity(type_args_raw.len());
         for ty in &type_args_raw {
             match ResolvedTy::from_ty(ty) {
-                Ok(resolved) => type_args.push(resolved),
+                Ok(resolved) => type_args.push(self.qualify_current_module_record_ty(resolved)),
                 Err(err) => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::RecordLayoutTypeArgsViolation {
@@ -10657,6 +10659,26 @@ impl LowerCtx {
         self.trait_method_ids
             .get(&format!("{declaring_trait}::{method_name}"))
             .cloned()
+            // `Iterator` is a compiler prelude trait, available inside an
+            // imported stdlib module without a lexical import binding. The
+            // checker retains its declaration under the canonical builtins
+            // owner rather than a bare compatibility key. Select that one
+            // exact published identity only after local and imported-binding
+            // lookups above have failed, so a user-declared/imported trait
+            // named `Iterator` still wins. This is deliberately not a
+            // leaf/suffix search: both declaration IDs must match the one
+            // compiler-owned prelude method exactly.
+            .or_else(|| {
+                (declaring_trait == "Iterator" && method_name == "next").then(|| {
+                    self.trait_method_ids
+                        .values()
+                        .find_map(|(trait_id, method_id)| {
+                            (trait_id.full_path() == "std.builtins.Iterator"
+                                && method_id.full_path() == "std.builtins.Iterator::next")
+                                .then(|| (trait_id.clone(), method_id.clone()))
+                        })
+                })?
+            })
             // Prelude `Display` is available without an import binding. Its
             // lang-item declaration is the checker-owned authority for both
             // generic call sites and `impl Display for UserType`; use it only

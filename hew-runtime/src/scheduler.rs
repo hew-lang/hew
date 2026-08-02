@@ -2287,7 +2287,11 @@ unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewEx
     // state escrow, all before arena reset and raw state disposal.
     // SAFETY: longjmp proves the dispatch stack is abandoned and this recovery
     // path exclusively owns its cleanup scope.
-    let _ = unsafe { crate::cont::recover_dispatch_crash_cleanup(true) };
+    let outcome = unsafe { crate::cont::recover_dispatch_crash_cleanup_with_outcome(true) };
+    if outcome.state_authority_consumed {
+        // SAFETY: this recovery frame exclusively owns the crashed actor.
+        unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
+    }
 
     // Capture the crashed resume's reply-channel state from the still-installed
     // resume context (carrying the handler's stashed reply channel) before
@@ -3140,7 +3144,13 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     if !lock_acquired {
                         // SAFETY: the handler was not entered; this activation
                         // exclusively owns the open dispatch cleanup scope.
-                        let _ = unsafe { crate::cont::recover_dispatch_crash_cleanup(true) };
+                        let outcome = unsafe {
+                            crate::cont::recover_dispatch_crash_cleanup_with_outcome(true)
+                        };
+                        if outcome.state_authority_consumed {
+                            // SAFETY: this activation exclusively owns actor.
+                            unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
+                        }
                         // Refuse to enter the handler without the per-actor lock.
                         // SAFETY: `actor` is the actor currently owned by this
                         // scheduler frame.
@@ -3247,7 +3257,13 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     if release_result != crate::actor::HEW_ACTOR_STATE_LOCK_OK {
                         // SAFETY: dispatch returned and this activation owns
                         // the still-open cleanup scope.
-                        let _ = unsafe { crate::cont::recover_dispatch_crash_cleanup(true) };
+                        let outcome = unsafe {
+                            crate::cont::recover_dispatch_crash_cleanup_with_outcome(true)
+                        };
+                        if outcome.state_authority_consumed {
+                            // SAFETY: this activation exclusively owns actor.
+                            unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
+                        }
                         // SAFETY: `actor` is the actor currently owned by this
                         // scheduler frame.
                         unsafe {
@@ -3488,7 +3504,12 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     };
                     // SAFETY: longjmp proves the dispatch stack is abandoned;
                     // this recovery path owns the open cleanup scope.
-                    let _ = unsafe { crate::cont::recover_dispatch_crash_cleanup(true) };
+                    let outcome =
+                        unsafe { crate::cont::recover_dispatch_crash_cleanup_with_outcome(true) };
+                    if outcome.state_authority_consumed {
+                        // SAFETY: this recovery frame exclusively owns actor.
+                        unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
+                    }
                     // Capture the crashed dispatch's reply-channel state from
                     // the still-installed ctx before restoring `prev_context`.
                     // The ctx pointer becomes stale after the restore, so we
@@ -4578,6 +4599,7 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 1,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
         }
     }
 
@@ -5719,6 +5741,7 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 0,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -7906,6 +7929,7 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: 0,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

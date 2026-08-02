@@ -75,6 +75,7 @@ The **Checker disposition** column documents what the type checker emits when
 | ID | Feature surface | Diagnostic label | Checker disposition | Diagnostic reason | Runtime status | Tracking |
 |----|-----------------|------------------|---------------------|-------------------|----------------|----------|
 | `basic-actors` | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Pass | — | Implemented | — |
+| `actor-crash-containment` | Actor-local panic/trap containment and restart | Actor-local panic/trap containment and restart | WASM-TODO (not checker-gated) | — | Unsupported on the production wasm32-wasip1 panic=abort artifact; a handler panic or canonical trap terminates the module instead of restarting one actor | WASM-TODO(actor-crash-containment): |
 | `generators` | Generators (`gen fn`) | Generators (`gen fn`) | Pass (not checker-gated — Tier 2 has no dedicated `WasmUnsupportedFeature` guard) | — | Scalar-parameter and fn-typed-parameter `gen fn` forms execute and tear down correctly on Tier 2 via the unified `llvm.coro` switched-resume substrate (identical IR to native) | Note below |
 | `patterns-adts-generics` | Pattern matching, ADTs, generics | Pattern matching, ADTs, generics | Pass | — | Implemented | — |
 | `collections-arithmetic` | Standard collections, arithmetic | Standard collections, arithmetic | Pass | — | Implemented | — |

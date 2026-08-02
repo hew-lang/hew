@@ -1298,6 +1298,9 @@ codegen-stable = [
   "hew_observe_probe_suspend",
   "hew_observe_probe_turn",
   "hew_dealloc",
+  "hew_dispatch_state_cleanup_clear",
+  "hew_dispatch_state_cleanup_publish",
+  "hew_dispatch_state_cleanup_transfer",
   "hew_dyn_box_alloc",
   "hew_dyn_box_free",
   "hew_gen_coro_destroy",
@@ -3187,6 +3190,30 @@ result-retention = "transferred"
 symbol = "hew_glob_free"
 result = "none"
 params = ["consume"]
+release-symbol = ""
+discharge-depth = "none"
+
+# Generated actor-state crash-escrow bookkeeping. These functions mutate only
+# runtime-owned metadata/snapshot bytes and never consume or return a Hew heap
+# owner; source/field pointers remain borrowed from the live dispatch frame.
+[[ownership.contracts]]
+symbol = "hew_dispatch_state_cleanup_clear"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dispatch_state_cleanup_publish"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dispatch_state_cleanup_transfer"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 

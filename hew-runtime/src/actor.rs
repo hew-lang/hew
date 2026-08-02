@@ -1510,6 +1510,13 @@ pub struct HewActor {
     /// previously-mirrored offset moves. Registered post-spawn via
     /// [`hew_actor_set_sys_dispatch`], never through the spawn arg list.
     pub sys_dispatch: Option<HewSysDispatchFn>,
+
+    /// Explicit one-shot authority proving the dispatch crash escrow already
+    /// invoked (or quarantined after entering) the typed state finalizer.
+    /// Lifecycle state alone is insufficient: actors may become `Crashed`
+    /// before dispatch opens an escrow or while idle. Only the recovery path
+    /// that actually consumes a state snapshot sets this bit.
+    pub state_drop_consumed: AtomicBool,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -1520,6 +1527,28 @@ unsafe impl Send for HewActor {}
 // SAFETY: Concurrent reads/writes of shared mutable fields use atomics.
 // Raw-pointer fields are lifecycle-managed by scheduler CAS transitions.
 unsafe impl Sync for HewActor {}
+
+/// Transfer the actor's one-shot typed state-drop authority to a completed
+/// dispatch crash escrow.
+///
+/// The descriptor remains installed for supervisor/restart metadata; this bit
+/// belongs to one actor incarnation and is initialized false for every spawn.
+/// A second transfer is an invariant violation (it would imply two escrows
+/// both believed they owned the same initialized state).
+pub(crate) unsafe fn record_dispatch_state_drop_consumed(actor: *mut HewActor) {
+    if actor.is_null() {
+        eprintln!("fatal: null actor while recording crash-escrow state authority");
+        std::process::abort();
+    }
+    // SAFETY: caller owns the actor activation or terminal recovery edge.
+    let already_consumed = unsafe { &*actor }
+        .state_drop_consumed
+        .swap(true, Ordering::AcqRel);
+    if already_consumed {
+        eprintln!("fatal: actor state-drop authority consumed by more than one crash escrow");
+        std::process::abort();
+    }
+}
 
 pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
     let token = actor
@@ -2448,14 +2477,11 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
     // implementing `impl Drop` (Vec, String, HashMap, IO handles) release
     // their resources before the underlying allocation goes away.
     //
-    // Crashed actors are skipped: their state may be partially torn down
-    // by the panic that crashed them, so re-entering user Drop on it
-    // risks a second crash or a double-free of fields the crash already
-    // released. This mirrors the terminate-skip in
-    // `finalize_quiescent_actor_cleanup` and the comment in
-    // `cleanup_all_actors` ("Skip crashed actors — their state may be
-    // corrupted"). Structural cleanup (libc::free, arena, mailbox,
-    // Box::from_raw) below still runs unconditionally.
+    // Lifecycle state is deliberately not used as drop authority. An actor can
+    // be marked Crashed before dispatch begins (or externally while idle), in
+    // which case no escrow ever touched its initialized state. Conversely, an
+    // in-dispatch recovery sets `state_drop_consumed` only after taking the
+    // typed escrow. The atomic bit is the exact once-only authority.
     //
     // SAFETY rationale for NOT calling `state_drop_fn` on `a.init_state`:
     //
@@ -2483,8 +2509,7 @@ unsafe fn free_actor_resources_with_options(actor: *mut HewActor, suppress_state
     //    which `hew_supervisor_add_child_spec` (supervisor.rs:1379) created
     //    by independent `libc::malloc` + `ptr::copy_nonoverlapping` from
     //    the caller's spec bytes at registration time.
-    let actor_is_crashed = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
-    if !actor_is_crashed && !suppress_state_drop {
+    if !suppress_state_drop && !a.state_drop_consumed.swap(true, Ordering::AcqRel) {
         if let Some(state_drop_fn) = a.state_drop_fn {
             if !a.state.is_null() {
                 // SAFETY: `a.state` is the live state allocation;
@@ -2642,11 +2667,9 @@ pub(crate) unsafe fn free_actor_resources_wasm_with_options(
     // rationale, including why `suppress_state_drop` is required on
     // supervisor-restart paths.
     //
-    // Crashed actors are skipped here too: same rationale as the native
-    // path. Structural cleanup below still runs unconditionally so the
-    // allocation, arena, mailbox, and HewActor box are always released.
-    let actor_is_crashed = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
-    if !actor_is_crashed && !suppress_state_drop {
+    // As on native, the explicit escrow-consumed bit—not lifecycle state—is
+    // the typed teardown authority.
+    if !suppress_state_drop && !a.state_drop_consumed.swap(true, Ordering::AcqRel) {
         if let Some(state_drop_fn) = a.state_drop_fn {
             if !a.state.is_null() {
                 // SAFETY: `a.state` is the live state allocation;
@@ -3139,6 +3162,7 @@ fn build_spawned_actor(
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         spawn_serial: identity.serial,
         sys_dispatch: config.sys_dispatch,
+        state_drop_consumed: AtomicBool::new(false),
     })
 }
 
@@ -6759,7 +6783,7 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
 /// the trampoline's `llvm.trap` is unreachable because a `HewSysMsg::Exit` only
 /// arrives at a scheduler-driven dispatch.
 #[no_mangle]
-pub extern "C" fn hew_actor_exit_unhandled(reason: i32) {
+pub extern "C-unwind" fn hew_actor_exit_unhandled(reason: i32) {
     // Coerce a zero (clean) reason to a non-zero crash sentinel: an unhandled
     // EXIT always crashes the non-trapping linked actor (Crashed, not Stopped).
     let crash_code = if reason == 0 {
@@ -6812,15 +6836,16 @@ pub(crate) fn stamp_wasm_actor_panic() -> bool {
 
 /// Trigger a panic in the current execution context.
 ///
-/// Inside an actor: longjmps back to the scheduler on native, or stamps the
-/// panic sentinel and unwinds to the scheduler on WASM. The supervisor (if any)
-/// will restart the actor according to its restart strategy.
+/// Inside an actor: longjmps back to the scheduler on native. On the production
+/// wasm32-wasip1 panic=abort artifact it stamps the panic sentinel and then
+/// terminates the module; actor-local containment is not available there.
 ///
 /// Outside an actor (e.g. `main`): exits the process with code 101.
 ///
 /// This function never returns.
 #[no_mangle]
-pub extern "C" fn hew_panic() {
+pub extern "C-unwind" fn hew_panic() {
+    crate::cont::abort_if_crash_cleanup_finalizer_trap("Hew panic");
     #[cfg(target_arch = "wasm32")]
     {
         if stamp_wasm_actor_panic() {
@@ -6828,9 +6853,7 @@ pub extern "C" fn hew_panic() {
         }
         // JUSTIFIED: wasm32 non-actor Hew panic terminates the process
         // immediately with Rust's panic exit convention, so bypassing Rust Drop
-        // is deliberate and the WASI host reclaims process resources. Actor
-        // paths stamp `actor.error_code` and unwind above; they do not use this
-        // process-exit route.
+        // is deliberate and the WASI host reclaims process resources.
         std::process::exit(101);
     }
 
@@ -6859,7 +6882,7 @@ pub extern "C" fn hew_panic() {
 ///
 /// `msg` must be a valid null-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_panic_msg(msg: *const std::ffi::c_char) {
+pub unsafe extern "C-unwind" fn hew_panic_msg(msg: *const std::ffi::c_char) {
     if !msg.is_null() {
         // SAFETY: msg is non-null (checked above) and caller guarantees valid C string.
         let s = unsafe { std::ffi::CStr::from_ptr(msg) };
@@ -8006,6 +8029,7 @@ pub mod composition_test_support {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial: u64::MAX - 2_848,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
         }))
     }
 
@@ -9600,6 +9624,7 @@ mod tests {
                 local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
                 spawn_serial: id,
                 sys_dispatch: None,
+                state_drop_consumed: AtomicBool::new(false),
             }));
             (actor, mailbox)
         }
@@ -10696,6 +10721,7 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });
@@ -14618,20 +14644,16 @@ mod tests {
     }
 
     #[test]
-    fn free_actor_resources_skips_state_drop_on_crashed_actor() {
-        // Crashed actors may have partially torn-down state; running user
-        // Drop on it risks a second crash or a double-free of fields the
-        // crash already released. The free path must skip the state-drop
-        // callback when actor_state is Crashed but still run structural
-        // cleanup (libc::free, arena, mailbox, Box::from_raw) so the
-        // allocation is not leaked.
+    fn externally_crashed_actor_without_escrow_runs_state_drop_once() {
+        // An actor may be marked Crashed while idle, before dispatch has opened
+        // or consumed any state escrow. Lifecycle state cannot suppress its
+        // still-live typed owner.
         let _guard = crate::runtime_test_guard();
         CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
 
         // Spawn with a malloc'd source so the resulting actor has a
         // non-null `state` field (deep-copied). This ensures the
-        // state-drop call is only suppressed by the actor_state ==
-        // Crashed check, not by the inner is_null guard.
+        // state-drop call is not hidden by the inner is_null guard.
         // SAFETY: malloc returns a valid 8-byte allocation or null.
         let src = unsafe { libc::malloc(8) };
         assert!(!src.is_null());
@@ -14652,22 +14674,54 @@ mod tests {
             // Go through the public hew_actor_free entry point so the
             // LIVE_ACTORS untracking, timer cancellation, and link/monitor
             // teardown all fire in the order the runtime expects. The
-            // crash-skip lives in free_actor_resources, which
-            // hew_actor_free calls after the prerequisites above.
             let rc = hew_actor_free(actor);
             assert_eq!(rc, 0);
         }
 
         assert_eq!(
             CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
-            0,
-            "state-drop callback must not run on a Crashed actor"
+            1,
+            "an externally crashed actor retained final typed-drop authority"
+        );
+    }
+
+    #[test]
+    fn crash_escrow_consumed_state_is_not_dropped_twice_at_free() {
+        let _guard = crate::runtime_test_guard();
+        CRASH_SKIP_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+        // SAFETY: malloc returns a valid 8-byte allocation or null.
+        let src = unsafe { libc::malloc(8) };
+        assert!(!src.is_null());
+        // SAFETY: spawn deep-copies initialized bytes; src is released below.
+        let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: spawn completed its deep copy and retains no source pointer.
+        unsafe { libc::free(src) };
+
+        // Model the scheduler's post-drain authority transfer. The callback
+        // count represents the escrow's exactly-once typed drop.
+        // SAFETY: the test exclusively owns the live actor and intentionally
+        // models the scheduler's ordered drop-then-authority transfer.
+        unsafe {
+            hew_actor_set_state_drop(actor, crash_skip_state_drop_callback);
+            crash_skip_state_drop_callback((*actor).state);
+            record_dispatch_state_drop_consumed(actor);
+            (*actor)
+                .actor_state
+                .store(HewActorState::Crashed as i32, Ordering::Release);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+        assert_eq!(
+            CRASH_SKIP_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            1,
+            "final free must not retry state already consumed by crash escrow"
         );
     }
 
     #[test]
     fn free_actor_resources_runs_state_drop_on_stopped_actor() {
-        // Companion to free_actor_resources_skips_state_drop_on_crashed_actor:
+        // Companion to the crash-authority tests above:
         // a non-Crashed actor MUST still see its state-drop callback fire.
         // Pins the negative case so the crash-skip guard cannot regress to
         // an unconditional skip.
@@ -15205,6 +15259,7 @@ mod tests {
             local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
             spawn_serial,
             sys_dispatch: None,
+            state_drop_consumed: AtomicBool::new(false),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         assert!(unsafe { live_actors::track_actor(actor) });

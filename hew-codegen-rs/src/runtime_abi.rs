@@ -4365,7 +4365,7 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             .bool_type()
             .fn_type(&[ptr_ty.into(), i64_ty.into()], false),
         "hew_dispatch_state_cleanup_transfer" => ctx.bool_type().fn_type(
-            &[i64_ty.into(), ptr_ty.into(), i64_ty.into()],
+            &[i64_ty.into(), ptr_ty.into(), ptr_ty.into(), i64_ty.into()],
             false,
         ),
         // hew_context_reply_channel_swap_pop() -> void

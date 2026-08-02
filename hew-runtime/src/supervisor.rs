@@ -403,7 +403,8 @@ pub use crate::internal::types::{
 /// `unreachable` to keep the LLVM basic block terminated when the
 /// longjmp path is inactive.
 #[no_mangle]
-pub unsafe extern "C" fn hew_trap_with_code(code: i32) {
+pub unsafe extern "C-unwind" fn hew_trap_with_code(code: i32) {
+    crate::cont::abort_if_crash_cleanup_finalizer_trap(trap_kind_name(code));
     // SAFETY: `try_direct_longjmp_with_code` checks the per-thread
     // recovery context internally; it is a no-op when none is active.
     unsafe {
@@ -5697,6 +5698,14 @@ mod tests {
             assert!(
                 (*restarted).init_state.is_null(),
                 "adopt-spawn path must leave actor.init_state null (spec holds the template)"
+            );
+            assert!(
+                (*restarted).state_drop_fn.is_some(),
+                "the second actor incarnation must retain the state-drop descriptor"
+            );
+            assert!(
+                !(*restarted).state_drop_consumed.load(Ordering::Acquire),
+                "a fresh restarted incarnation begins with unconsumed final-drop authority"
             );
 
             // Sentinel survived the round-trip.

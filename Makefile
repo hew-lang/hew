@@ -1166,7 +1166,7 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate verify-ffi verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check corpus-floor-check
+lint: structural-lint runtime-poison-safe-lint lint-wasm-todo leak-scan codegen-carried-identity-gate codegen-trap-inventory-check verify-ffi verify-sys-lane-closure hew-fmt-check preflight-parity-selftest sandbox-parity-coverage-check corpus-floor-check
 	cargo clippy --workspace --tests -- -D warnings
 
 # Pinned, cache-only by default: local lint never downloads a grammar/tool as a
@@ -1269,6 +1269,10 @@ hew-check-all: hew
 .PHONY: codegen-carried-identity-gate
 codegen-carried-identity-gate:
 	bash scripts/codegen-carried-identity-gate.sh
+
+.PHONY: codegen-trap-inventory-check
+codegen-trap-inventory-check:
+	python3 scripts/check-codegen-trap-inventory.py
 
 # Smoke-test the release binary with `hew run` to catch process-exit aborts
 # (e.g. libc++ ABI mismatch at locale destructor — issue #1606).

@@ -2317,7 +2317,6 @@ impl Builder {
             .filter(|name| {
                 self.type_classes
                     .get(name.as_str())
-                    .or_else(|| self.type_classes.get(hew_types::short_name(name)))
                     .is_some_and(|(marker, _)| matches!(marker, ResourceMarker::Resource))
             })
             .cloned()

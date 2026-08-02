@@ -20,7 +20,7 @@ use super::{
     instr_source_places, local_is_byte_copy_aggregate, note_payload_escape,
     place_is_interior_projection, place_is_tag_read, propagate_whole_value_alias_roots,
     readmit_retained_bytes_tuple_roots, render_owned_handle_ty,
-    retained_string_terminator_drop_safe, shift_instr_spans_on_insert, short_name,
+    retained_string_terminator_drop_safe, shift_instr_spans_on_insert,
     string_binder_read_is_user_fn_borrow, string_field_load_producer_dest,
     terminator_escape_places, terminator_source_places, ty_is_heap_owning_enum_composite,
     ty_is_heap_owning_tuple, ty_is_owned_handle_leaf, user_record_layout_key,
@@ -6543,17 +6543,12 @@ pub(super) fn detect_opaque_resource_field_misuse(
         // `ResourceMarker::Resource` ∩ user-`close`. A MIR local's `is_opaque`
         // flag is NOT reliably propagated (the field-load dest arrives as
         // `is_opaque: false` even for a `#[opaque]` type), so match on the
-        // resolved type NAME against the registry, not the flag: within a
-        // compilation a name resolves to exactly one type, so a `Named` whose
-        // name is in the registry IS that opaque resource. Full-name match with
-        // a short-name fallback bridges any module-prefix asymmetry; the only
-        // residual (a cross-module short-name twin) over-refuses — a compile
-        // error, never a double-free (boundary-fail-closed).
+        // resolved type NAME against the registry, not the flag. The match is
+        // exact nominal identity: a same-leaf declaration from another owner
+        // must not acquire this resource's close discipline.
         matches!(
             ty,
-            ResolvedTy::Named { name, .. }
-                if opaque_resource_names.contains(name.as_str())
-                    || opaque_resource_names.contains(short_name(name))
+            ResolvedTy::Named { name, .. } if opaque_resource_names.contains(name.as_str())
         )
     };
     // local → the user binding it carries (for the diagnostic name): the

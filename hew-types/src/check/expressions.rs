@@ -6630,13 +6630,12 @@ impl Checker {
         //
         // `name` at this point may be qualified (`module.Handle`) after
         // `published_bare_type_qualified` resolves a bare import reference.
-        // `user_opaque_type_names` stores only unqualified names (from `td.name`),
-        // so we must also check the unqualified component of the qualified name.
+        // `user_opaque_type_names` stores exact declaration identities. A
+        // same-leaf type from another module must not acquire opacity.
         let unqualified = name.split_once('.').map_or(name, |(_, unqual)| unqual);
         let is_declaring_module = self.local_type_defs.contains(unqualified);
         let is_opaque_handle = !is_declaring_module
             && (self.user_opaque_type_names.contains(name)
-                || self.user_opaque_type_names.contains(unqualified)
                 || self.canonical_owned_handle_type_name(name).is_some());
         if is_opaque_handle {
             self.report_error(

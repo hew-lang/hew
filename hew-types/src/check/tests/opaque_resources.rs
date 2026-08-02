@@ -13,8 +13,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const TCP_CONNECTION_SOURCE: &str = r#"
+#[resource]
 #[opaque]
 pub type Connection {}
+
+impl Connection {
+    fn close(consuming self) {
+        unsafe { hew_tcp_close(self) };
+    }
+}
 
 extern "C" {
     fn hew_tcp_connect(addr: string) -> Connection;
@@ -980,8 +987,14 @@ fn imported_producers_aggregate_only_with_matching_lifecycle() {
 fn synthetic_non_net_contract_uses_the_same_candidate_graph() {
     let checker = checker_with_registered_module(
         r#"
+        #[resource]
         #[opaque]
         pub type Socket {}
+        impl Socket {
+            fn close(consuming self) {
+                unsafe { example_socket_close(self) };
+            }
+        }
         extern "C" {
             fn example_socket_open() -> Socket;
             fn example_socket_close(consume socket: Socket) -> i32;
@@ -1030,8 +1043,14 @@ fn synthetic_non_net_contract_uses_the_same_candidate_graph() {
 fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
     let checker = checker_with_registered_module(
         r#"
+        #[resource]
         #[opaque]
         pub type Socket {}
+        impl Socket {
+            fn close(consuming self) {
+                unsafe { example_socket_close(self) };
+            }
+        }
         extern "C" {
             fn example_socket_open() -> Socket;
             fn example_socket_clone() -> Socket;

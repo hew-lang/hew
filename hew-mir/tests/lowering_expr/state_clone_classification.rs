@@ -19,8 +19,7 @@ use std::collections::HashSet;
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::model::RecordLayout;
 use hew_mir::{
-    lower_hir_module, ty_contains_unclonable_opaque, ClassificationError, ResourceCloseAuthority,
-    StateFieldCloneKind,
+    lower_hir_module, ty_contains_unclonable_opaque, ClassificationError, StateFieldCloneKind,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -72,20 +71,6 @@ fn classify_actor_for_test(
         &[],
         empty_lifecycles(),
     )
-}
-
-fn user_close(name: &str, symbol: &str) -> ResourceCloseAuthority {
-    ResourceCloseAuthority::User(Box::new(hew_hir::OpaqueResourceLifecycle {
-        resource_declaration: hew_types::DefId::new(name),
-        close_declaration: hew_types::DefId::new(symbol),
-        release_declaration: hew_types::DefId::new(symbol),
-        close_symbol: symbol.to_string(),
-        release_symbol: symbol.to_string(),
-        discharge_depth: hew_types::ffi_contracts::ReleaseDischargeDepth::Shallow,
-        producer_declarations: std::collections::BTreeSet::new(),
-        producer_symbols: std::collections::BTreeSet::new(),
-        producer_modules: std::collections::BTreeSet::new(),
-    }))
 }
 
 /// Pipe a `.hew` source through parser → checker → HIR → MIR, returning
@@ -167,7 +152,7 @@ fn trivial_state_actor_gets_paired_clone_and_drop_symbols() {
 }
 
 #[test]
-fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped() {
+fn unproven_opaque_resource_actor_field_stays_opaque_directly_and_when_wrapped() {
     let src = r"
         #[resource]
         #[opaque]
@@ -196,15 +181,14 @@ fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped(
         pipeline.diagnostics
     );
 
-    let resource_kind = StateFieldCloneKind::Resource {
+    let resource_kind = StateFieldCloneKind::OpaqueHandle {
         name: "Dq".to_string(),
-        close: user_close("Dq", "Dq::close"),
     };
     let direct = find_actor(&pipeline, "Direct");
     assert_eq!(
         direct.state_field_clone_kinds.as_deref(),
         Some(std::slice::from_ref(&resource_kind)),
-        "a direct `#[resource] #[opaque]` actor field must not fall through to OpaqueHandle",
+        "a source marker without an exact admitted release body must not mint lifecycle authority",
     );
 
     let wrapped = find_actor(&pipeline, "Wrapped");
@@ -220,10 +204,9 @@ fn opaque_resource_actor_field_classifies_as_resource_directly_and_when_wrapped(
     assert_eq!(
         pipeline
             .lifecycle_registry
-            .opaque_resource(&hew_types::DefId::new("Dq"))
-            .map(|lifecycle| lifecycle.close_symbol.as_str()),
-        Some("Dq::close"),
-        "the shared resource registry must remain available to nested-record codegen",
+            .opaque_resource(&hew_types::DefId::new("Dq")),
+        None,
+        "the immutable HIR registry must not admit a marker-only opaque lifecycle",
     );
 }
 
@@ -280,19 +263,18 @@ fn main() {{}}
         assert_eq!(
             keeper.state_field_clone_kinds.as_deref(),
             Some(
-                &[StateFieldCloneKind::Resource {
+                &[StateFieldCloneKind::OpaqueHandle {
                     name: name.to_string(),
-                    close: user_close(name, &format!("{name}::{method}")),
                 }][..]
             ),
-            "root opaque user `{name}` must retain user-close authority"
+            "root opaque user `{name}` must not inherit a builtin lifecycle by leaf name"
         );
         assert!(
             pipeline
                 .lifecycle_registry
                 .opaque_resource(&hew_types::DefId::new(name))
-                .is_some_and(|lifecycle| lifecycle.close_symbol == format!("{name}::{method}")),
-            "root opaque user `{name}` must be present in the resource registry"
+                .is_none(),
+            "root opaque user `{name}` must remain absent from the exact lifecycle registry"
         );
     }
 }
@@ -929,9 +911,9 @@ fn machine_actor_state_field_classifies_as_enum() {
     assert!(
         matches!(
             kinds.as_slice(),
-            [StateFieldCloneKind::Enum { name }] if name == "Light"
+            [StateFieldCloneKind::Enum { name }] if name == "mc$$Light$$"
         ),
-        "machine field must classify as Enum {{ name: \"Light\" }}; got {kinds:?}",
+        "machine field must retain the exact synthesized layout identity; got {kinds:?}",
     );
 }
 
@@ -984,9 +966,9 @@ fn heap_payload_machine_state_field_classifies_as_enum() {
     assert!(
         matches!(
             kinds.as_slice(),
-            [StateFieldCloneKind::Enum { name }] if name == "Conn"
+            [StateFieldCloneKind::Enum { name }] if name == "mc$$Conn$$"
         ),
-        "heap-payload machine field must classify as Enum {{ name: \"Conn\" }}; got {kinds:?}",
+        "heap-payload machine field must retain the exact synthesized layout identity; got {kinds:?}",
     );
 }
 

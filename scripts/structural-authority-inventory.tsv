@@ -66,7 +66,7 @@ semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/registration.rs	4	stage
 semantic-leaf-name	leaf-rsplit-field	hew-types/src/check/resolution.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-field	hew-types/src/stdlib_loader.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-identifier	hew-types/src/check/registration.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	5	stage-1	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	leaf-rsplit-once-field	hew-hir/src/lower.rs	6	stage-1	reviewed unique imported constructor surface compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/calls.rs	3	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/expressions.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	leaf-rsplit-once-field	hew-types/src/check/generics.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
@@ -86,13 +86,8 @@ semantic-leaf-name	short-name-identifier	hew-codegen-rs/src/llvm.rs	10	stage-5	r
 semantic-leaf-name	short-name-identifier	hew-hir/src/lower.rs	9	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-hir/src/stdlib_catalog.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-mir/src/lib.rs	1	stage-4	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-mir/src/lower/composite_own.rs	2	stage-4	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-mir/src/lower/drop_plan.rs	4	stage-3	reviewed remaining leaf-name presentation or compatibility seam
+semantic-leaf-name	short-name-identifier	hew-mir/src/lower/drop_plan.rs	3	stage-3	reviewed remaining leaf-name presentation or compatibility seam after exact resource owner cutover
 semantic-leaf-name	short-name-identifier	hew-mir/src/lower/mod.rs	1	stage-3	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-mir/src/lower/ownership.rs	1	stage-4	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-mir/src/return_provenance.rs	7	stage-4	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-mir/src/state_clone.rs	2	stage-5	reviewed remaining leaf-name presentation or compatibility seam
-semantic-leaf-name	short-name-identifier	hew-types/src/check/admissibility.rs	4	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-types/src/check/calls.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-types/src/check/expressions.rs	2	stage-1	reviewed remaining leaf-name presentation or compatibility seam
 semantic-leaf-name	short-name-identifier	hew-types/src/check/mod.rs	1	stage-1	reviewed remaining leaf-name presentation or compatibility seam
@@ -114,7 +109,7 @@ string-method-identity	qualified-format-macro	hew-codegen-rs/src/runtime_abi.rs	
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/suspend.rs	11	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-codegen-rs/src/thunks.rs	3	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-hir/src/dump.rs	2	stage-1	reviewed qualified string identity construction
-string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	27	stage-1	reviewed qualified string identity construction after generated enum owner retirement
+string-method-identity	qualified-format-macro	hew-hir/src/lower.rs	37	stage-1	reviewed qualified string identity construction including unique imported constructor surfaces
 string-method-identity	qualified-format-macro	hew-hir/src/node.rs	1	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/dump.rs	6	stage-5	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-mir/src/lower/actor.rs	1	stage-5	reviewed qualified string identity construction

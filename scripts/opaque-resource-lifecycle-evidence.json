@@ -86,9 +86,9 @@
       "resource": "Connection",
       "runtime": {
         "path": "hew-runtime/src/transport.rs",
-        "test": "tcp_resource_release_symbols_remove_live_handles_exactly_once",
+        "test": "exact_tcp_connection_and_listener_release_valid_handles",
         "valid_handle": true,
-        "execution_profile": "local"
+        "execution_profile": "external-network"
       },
       "wasm": {
         "profile": "wasm32-wasi",
@@ -102,9 +102,9 @@
       "resource": "Listener",
       "runtime": {
         "path": "hew-runtime/src/transport.rs",
-        "test": "tcp_resource_release_symbols_remove_live_handles_exactly_once",
+        "test": "exact_tcp_connection_and_listener_release_valid_handles",
         "valid_handle": true,
-        "execution_profile": "local"
+        "execution_profile": "external-network"
       },
       "wasm": {
         "profile": "wasm32-wasi",

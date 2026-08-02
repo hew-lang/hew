@@ -11,7 +11,7 @@
 //!   `UserRecord` recursion + visited-set machinery end-to-end through
 //!   `parser → checker → HIR → MIR`.
 //! - Representative samples of the audit's 110 classified actors (Counter,
-//!   `ChatRoom`-shape, `mqtt_broker` `Router`, Connection-bearing actor)
+//!   `ChatRoom`-shape, `mqtt_broker` `Router`, resource-bearing actor)
 //!   produce the expected classifications.
 
 use std::collections::HashSet;
@@ -572,7 +572,7 @@ fn router_shape_vec_of_user_connection_carries_user_record_through() {
     // Updated post-review: in the real corpus, `Connection` is a
     // user-declared `type Connection { ... }` in `std/net/net.hew`,
     // so `Vec<Connection>` classifies as `Vec<UserRecord("Connection")>`
-    // — NOT `Vec<IoHandle{Connection}>`. Stage 2's supervisor gate
+    // — NOT a Connection-specific IoHandle. Stage 2's supervisor gate
     // must pattern-match on the user record's owned-heap fields (or
     // detect by another channel — see W4.011), not on the IoHandle
     // arm. This test pins the post-fix behaviour so Stage 2's gate

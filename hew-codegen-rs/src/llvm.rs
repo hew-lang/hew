@@ -5080,11 +5080,9 @@ pub(crate) fn emit_owned_config_field_clone<'ctx>(
 //   contexts (the runtime path uses sync-return only today).
 //
 // Fail-closed posture (CLAUDE.md custom #2, A249):
-// - Connection-bearing state actors: clone fn returns null immediately
-//   (defence-in-depth — Stage 2's supervisor-site codegen-gate is the
-//   primary surface, see plan §4.5 B). Drop is a no-op for the Connection
-//   field itself (the underlying fd is closed by actor teardown, not by
-//   `state_drop_fn`).
+// - Resource-bearing state actors: clone fn returns null immediately because
+//   an affine lifecycle has no implicit dup authority. Drop remains independent
+//   and invokes the exact registry-carried close.
 // - Half-populated symbol pairs (clone Some / drop None or vice versa)
 //   are rejected up front as a Stage 1 invariant violation by
 //   `resolve_state_clone_drop_symbols` (defined in Stage 2's section).
@@ -5206,9 +5204,7 @@ pub(crate) fn get_or_declare_drop_helper<'ctx>(
 ///   memcpy.
 /// - `Ok(None)` — BitCopy; the wholesale memcpy is sufficient and there
 ///   is no per-field work.
-/// - `Err(_)` — Connection (fail-closed at the actor-clone level — the
-///   actor body returns null immediately rather than entering the
-///   per-field loop) OR an unsupported composite (HashMap/HashSet of
+/// - `Err(_)` — an unsupported composite (HashMap/HashSet of
 ///   owned-heap elements where the runtime helper does not deep-clone
 ///   the element bytes itself).
 ///
@@ -5256,16 +5252,9 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
              consults the witness before reaching this helper, so this per-type \
              arm is retired and must never be reached for Vec/HashMap/HashSet"
         ),
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => Err(CodegenError::FailClosed(
-            "Connection field reached per-field clone helper; the actor-level \
-             body must intercept this arm and return null up front per plan §4.5 B"
-                .into(),
-        )),
         // W5.021 — Stream<T> / Sink<T> have no dup runtime helper, so the
         // clone direction (supervisor-restart / aggregate clone) fails closed,
-        // matching the Connection posture. The owned-tuple drop spine only
+        // matching the affine-resource posture. The owned-tuple drop spine only
         // exercises the DROP direction (handles are moved, never cloned), so
         // this arm is unreachable on that path; it stays fail-closed so a
         // future clone caller cannot silently alias a handle pointer.
@@ -5367,15 +5356,6 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
              consults the witness before reaching this helper, so this per-type \
              arm is retired and must never be reached for Vec/HashMap/HashSet"
         ),
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => {
-            // Connection drop is a no-op at the state level — the underlying
-            // fd is closed by the runtime's actor-teardown path (after
-            // `terminate_fn` runs), not by `state_drop_fn`. See plan §4.5 B
-            // + `hew-runtime/src/actor.rs:766` C1 fix block.
-            Ok(None)
-        }
         // W5.021 — Stream<T> / Sink<T> handle drop routes to the same C-ABI
         // close symbol the single-handle `.close()` and standalone-binding drop
         // use (`runtime_drop_symbol`: "Stream::close" -> hew_stream_close).
@@ -5443,7 +5423,7 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
         // without `@resource` — the type system treats it as BitCopy. The
         // user is responsible for calling `.free()` explicitly; actor state
         // drop does not auto-free opaque handles (consistent with BitCopy
-        // ownership semantics). No-op here matches the Connection posture.
+        // ownership semantics).
         StateFieldCloneKind::OpaqueHandle { .. } => Ok(None),
         // ClosurePair drop is the env free-thunk dispatch (load env slot,
         // call the planted thunk, null-store), emitted by the dedicated arm
@@ -5916,7 +5896,8 @@ fn emit_state_clone_drop_synthesis<'ctx>(
 /// ```
 ///
 /// For actors holding a non-clonable pointer-backed IoHandle in state (any
-/// field is `IoHandle{Connection | Stream | Sink | Generator | CancellationToken}`),
+/// field is a registry-backed `Resource` or a non-clonable pointer-backed
+/// `IoHandle{Stream | Sink | Generator | CancellationToken}`),
 /// the body is short-circuited to `ret ptr null` — see plan §4.5 B. These
 /// handles have no dup runtime symbol; direct spawn is move-only and the null
 /// clone fn blocks supervisor restart fail-closed.
@@ -5965,14 +5946,14 @@ fn emit_actor_state_clone_body<'ctx>(
         .into_pointer_value();
 
     // ── Non-clonable IoHandle fail-closed short-circuit §4.5 B) ────────────
-    // Connection, Stream, Sink, Generator, and CancellationToken are
-    // pointer-backed handles with no dup runtime symbol. An actor holding any
+    // Stream, Sink, Generator, and CancellationToken are pointer-backed
+    // handles with no dup runtime symbol. An actor holding any
     // of them in state is move-only: direct spawn byte-copies the handle in and
     // the runtime never invokes the clone fn, so returning null up front is
     // correct for the spawn path and blocks supervisor restart fail-closed (the
     // runtime cannot deep-copy a handle it cannot dup). The DROP direction is
     // fully wired — `state_drop_fn` closes the handle exactly once.
-    if has_nonclonable_io_handle_field(kinds) {
+    if has_nonclonable_handle_field(kinds) {
         // Defence-in-depth: Stage 2's supervisor codegen-time gate is
         // the primary fail-closed surface. The synthesised body here is
         // only reachable from the direct-spawn path (where the handle
@@ -6410,16 +6391,6 @@ fn emit_field_clone_step<'ctx>(
                 .llvm_ctx_with(|| format!("record clone next branch f{field_idx}"))?;
             return Ok(());
         }
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => {
-            // Should have been intercepted by has_connection_field at the
-            // actor-body level. Defensive fail-closed.
-            return Err(CodegenError::FailClosed(format!(
-                "field_clone_step reached Connection arm at f{field_idx}; actor \
-                 body must short-circuit to null up front per plan §4.5 B"
-            )));
-        }
         StateFieldCloneKind::Enum { name } => {
             // In-place tag-dispatched clone: helper deep-clones the active
             // variant's owned payload fields into dst.<field_idx> (the
@@ -6624,9 +6595,8 @@ fn emit_field_clone_step<'ctx>(
 /// Emit one field's drop step (used by both per-actor and per-record drop
 /// bodies, AND by per-actor clone's rollback chain). Reads
 /// `state.<field_idx>` and invokes the matching runtime drop helper or
-/// the synthesised in-place record-drop helper. BitCopy / Connection
-/// fields are no-ops (caller filters them out, but this helper is
-/// defensive).
+/// the synthesised in-place record-drop helper. BitCopy fields are no-ops
+/// (caller filters them out, but this helper is defensive).
 #[allow(
     clippy::too_many_arguments,
     reason = "GEP witnesses (struct type, base pointer, field index) plus the \
@@ -6658,9 +6628,6 @@ pub(crate) fn emit_field_drop_step<'ctx>(
     })?;
     match kind {
         StateFieldCloneKind::BitCopy { .. } => Ok(()),
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => Ok(()),
         // OpaqueHandle (e.g. json.Value, cron.Expr) is BitCopy-class: the user
         // owns the call to `.free()`. Actor state drop does not auto-free opaque
         // handles — consistent with `drop_helper_for_kind` returning `Ok(None)`.
@@ -7322,15 +7289,6 @@ fn emit_actor_state_drop_body<'ctx>(
         if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
             continue;
         }
-        // Connection arm is no-op at drop (see plan §4.5 B + actor.rs:766).
-        if matches!(
-            kind,
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection
-            }
-        ) {
-            continue;
-        }
         emit_field_drop_step(
             ctx,
             llvm_mod,
@@ -7622,14 +7580,6 @@ fn emit_aggregate_drop_inplace_body_with_close<'ctx>(
     }
     for (idx, kind) in kinds.iter().enumerate().rev() {
         if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
-            continue;
-        }
-        if matches!(
-            kind,
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection
-            }
-        ) {
             continue;
         }
         emit_field_drop_step(
@@ -8025,8 +7975,8 @@ fn emit_enum_clone_inplace_body<'ctx>(
         )));
     }
     // Fail closed: if any variant carries an OpaqueHandle field — or an
-    // IoHandle field (Connection / Stream / Sink / Generator /
-    // CancellationToken, none of which has a dup runtime symbol) — emit a
+    // non-clonable IoHandle field (Stream / Sink / Generator /
+    // CancellationToken) — emit a
     // trap body rather than a shallow-copy clone. Silently treating such a
     // handle as BitCopy (pointer bit-copy via the outer memcpy) would
     // produce two owners of the same resource — a double-free on drop.
@@ -8471,15 +8421,8 @@ fn emit_owned_payload_field_drop<'ctx>(
     kind: &StateFieldCloneKind,
     w: &DropSynthWitnesses<'_, 'ctx>,
 ) -> CodegenResult<()> {
-    // BitCopy and borrowed connection handles own no heap — nothing to release.
-    if matches!(kind, StateFieldCloneKind::BitCopy { .. })
-        || matches!(
-            kind,
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection
-            }
-        )
-    {
+    // BitCopy payloads own no heap — nothing to release.
+    if matches!(kind, StateFieldCloneKind::BitCopy { .. }) {
         return Ok(());
     }
     // Bounds-guard against classifier/layout drift before any GEP.
@@ -9859,12 +9802,6 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
                     )?;
                 }
             }
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection,
-            } => {
-                // Connection drop is a no-op at the state level; nothing to
-                // neutralise.
-            }
             StateFieldCloneKind::IoHandle { .. } => {
                 // Close-on-reassign is a behavioural decision deliberately
                 // NOT taken by the overwrite release: null the handle slot
@@ -9969,11 +9906,7 @@ fn emit_overwrite_neutralize_enum<'ctx>(
     let needs_walk = variants.iter().flatten().any(|k| {
         !matches!(
             k,
-            StateFieldCloneKind::BitCopy { .. }
-                | StateFieldCloneKind::OpaqueHandle { .. }
-                | StateFieldCloneKind::IoHandle {
-                    kind: IoHandleKind::Connection
-                }
+            StateFieldCloneKind::BitCopy { .. } | StateFieldCloneKind::OpaqueHandle { .. }
         )
     });
     if !needs_walk {
@@ -10178,10 +10111,8 @@ fn emit_overwrite_slot_allocas<'ctx>(
     Ok(slots)
 }
 
-/// True if any field in `kinds` is `IoHandle { Connection }`. Drives the
-/// actor-clone short-circuit (return null up front).
-/// True when any state field is a pointer-backed IoHandle with NO dup runtime
-/// symbol — `Connection`, `Stream`, `Sink`, `Generator`, or `CancellationToken`.
+/// True when any state field is an affine resource or a pointer-backed
+/// IoHandle with no dup runtime symbol.
 /// The actor-state clone body short-circuits to `ret ptr null` for these
 /// actors: the handle is move-only (byte-copied into the actor on direct spawn,
 /// never cloned), and a null clone fn blocks supervisor restart fail-closed —
@@ -10189,17 +10120,17 @@ fn emit_overwrite_slot_allocas<'ctx>(
 /// is wired (the actor's `state_drop_fn` closes the handle exactly once); the
 /// per-field clone loop is never entered for these actors, so the per-kind
 /// `clone_helper_for_kind` arms for these handles stay defensively unreachable.
-fn has_nonclonable_io_handle_field(kinds: &[StateFieldCloneKind]) -> bool {
+fn has_nonclonable_handle_field(kinds: &[StateFieldCloneKind]) -> bool {
     kinds.iter().any(|k| {
         matches!(
             k,
-            StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection
-                    | IoHandleKind::Stream
-                    | IoHandleKind::Sink
-                    | IoHandleKind::Generator
-                    | IoHandleKind::CancellationToken
-            }
+            StateFieldCloneKind::Resource { .. }
+                | StateFieldCloneKind::IoHandle {
+                    kind: IoHandleKind::Stream
+                        | IoHandleKind::Sink
+                        | IoHandleKind::Generator
+                        | IoHandleKind::CancellationToken
+                }
         )
     })
 }
@@ -17476,12 +17407,6 @@ fn emit_field_overwrite_release(
              {kind:?}; MIR must reject the store until it carries source-slot \
              neutralisation"
         ))),
-        // Connection state teardown is actor-owned; this field kind carries no
-        // per-slot close, so replacing its pointer abandons no independent
-        // close obligation. Keep the established actor-state posture.
-        StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => Ok(()),
         StateFieldCloneKind::Resource {
             name,
             close: ResourceCloseAuthority::Runtime(descriptor),

@@ -26,8 +26,8 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use hew_hir::mangle_dotted_name;
 use hew_mir::{
-    model::CoalesceKeyKind, ActorLayout, IoHandleKind, LambdaEnvFieldDrop, Place,
-    SpawnEnvFieldOwnership, StateFieldCloneKind,
+    model::CoalesceKeyKind, ActorLayout, LambdaEnvFieldDrop, Place, SpawnEnvFieldOwnership,
+    StateFieldCloneKind,
 };
 use hew_runtime::internal::types::HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH;
 use hew_runtime::mailbox_header::HewSysMsg;
@@ -367,14 +367,11 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
 
     match &kind {
         // No embedded heap: the free leg frees the buffer alone (prior
-        // behaviour). Opaque handles are user-owned (`.free()` is explicit) and
-        // a borrowed `Connection` is not released by the reply path, so both are
-        // also null here — matching `emit_field_drop_step`'s no-op arms.
-        StateFieldCloneKind::BitCopy { .. }
-        | StateFieldCloneKind::OpaqueHandle { .. }
-        | StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => Ok(ptr_ty.const_null()),
+        // behaviour). Opaque handles are user-owned (`.free()` is explicit),
+        // so they are also null here — matching `emit_field_drop_step`'s no-op arm.
+        StateFieldCloneKind::BitCopy { .. } | StateFieldCloneKind::OpaqueHandle { .. } => {
+            Ok(ptr_ty.const_null())
+        }
         // Record / enum reply: register the already-seeded in-place drop thunk.
         StateFieldCloneKind::UserRecord { name } => {
             Ok(
@@ -856,8 +853,8 @@ pub(crate) fn get_or_emit_closure_env_free_thunk<'ctx>(
     // (LIFO — the same order the elaboration pass drops scope-exit locals and
     // the record/actor-state drop bodies use). `env` IS the captures region
     // pointer (the header sits BEFORE it at `env - HEADER`), so the env struct
-    // GEPs land directly on the capture fields. BitCopy / Connection / opaque
-    // arms are no-ops inside `emit_field_drop_step`; every owning class routes
+    // GEPs land directly on the capture fields. BitCopy / opaque arms are
+    // no-ops inside `emit_field_drop_step`; every owning class routes
     // to its single canonical release.
     let record_layouts = crate::llvm::codegen_record_layouts(fn_ctx);
     let w = crate::llvm::fn_ctx_drop_witnesses(fn_ctx, &record_layouts);

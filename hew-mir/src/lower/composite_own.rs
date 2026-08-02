@@ -1142,7 +1142,7 @@ pub(super) fn proven_borrow_whole_arg_locals(
 /// composite is not free: an `EnumInPlace` drop makes codegen synthesise the
 /// whole in-place helper family for that layout, and the clone half of that
 /// family fails closed on payloads with no dup symbol (`Stream` / `Sink` /
-/// `Generator` / `CancellationToken` handles, `Connection`). A
+/// `Generator` / `CancellationToken` handles, registry-backed resources). A
 /// `Result<(Stream<string>, Sink<string>), string>` scrutinee whose `Err(e)`
 /// binder is interpolated would otherwise turn a leak into a hard
 /// `E_NOT_YET_IMPLEMENTED` compile failure.
@@ -1198,7 +1198,7 @@ fn enum_payloads_are_plain_string(
 /// authority (the same one the audited extern-return table uses to admit a
 /// scalar-return extern), extended here to `char`-sized aggregates of scalars.
 /// Deliberately EXHAUSTIVE-by-rejection: every non-listed form — `Named` (which
-/// covers `Stream`/`Sink`/`Generator`/`CancellationToken`/`Connection`, every
+/// covers `Stream`/`Sink`/`Generator`/`CancellationToken` and resources, every
 /// user record and nested enum, every `#[opaque]` handle and `#[resource]`),
 /// `String`, `Bytes`, `Slice`, `Function`, `Closure`, `Pointer`, `Borrow`,
 /// `TraitObject`, `Task`, `TypeParam` — answers `false`.
@@ -6662,8 +6662,8 @@ pub(super) fn detect_opaque_resource_field_misuse(
 ///   - kinds with an existing release-before-store — `String`/`Bytes`/`Vec`/
 ///     `HashMap`/`HashSet` go through `emit_state_field_old_value_release`'s
 ///     pointer-inequality guard, which releases the old payload before the store;
-///   - every `IoHandle`, including the temporary `Connection` compatibility
-///     carrier; clone refusal never transfers drop authority to the runtime;
+///   - no-drop `IoHandle` kinds; clone refusal never transfers drop authority
+///     to the runtime;
 ///   - no-close `OpaqueHandle` (e.g. `json.Value`) and `BitCopy` — no owned
 ///     resource to leak.
 fn actor_state_kind_leaks_on_overwrite(kind: &crate::state_clone::StateFieldCloneKind) -> bool {
@@ -6672,8 +6672,7 @@ fn actor_state_kind_leaks_on_overwrite(kind: &crate::state_clone::StateFieldClon
         kind,
         StateFieldCloneKind::Resource { .. }
             | StateFieldCloneKind::IoHandle {
-                kind: IoHandleKind::Connection
-                    | IoHandleKind::Stream
+                kind: IoHandleKind::Stream
                     | IoHandleKind::Sink
                     | IoHandleKind::Generator
                     | IoHandleKind::CancellationToken,

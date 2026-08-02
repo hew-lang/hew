@@ -10662,57 +10662,6 @@ fn non_actor_main_omits_drain_epilogue() {
     );
 }
 
-#[test]
-fn connection_actor_state_clone_returns_null() {
-    let conn_ty = ResolvedTy::named_opaque("Connection", vec![]);
-    let actor = ActorLayout {
-        name: "ConnActor".to_string(),
-        defining_module: None,
-        state_field_names: vec!["conn".to_string()],
-        state_field_tys: vec![conn_ty.clone()],
-        state_field_defaults: vec![None],
-        init_param_names: vec![],
-        init_param_tys: vec![],
-        init_symbol: None,
-        on_start_symbol: None,
-        on_stop_symbols: vec![],
-        on_crash_symbol: None,
-        on_exit_symbol: None,
-        on_down_symbol: None,
-        max_heap_bytes: None,
-        cycle_capable: false,
-        mailbox_capacity: None,
-        overflow_policy: None,
-        coalesce_key_plan: None,
-        handlers: vec![],
-        state_clone_fn_symbol: Some("__hew_state_clone_ConnActor".to_string()),
-        state_drop_fn_symbol: Some("__hew_state_drop_ConnActor".to_string()),
-        state_field_clone_kinds: Some(vec![StateFieldCloneKind::IoHandle {
-            kind: hew_mir::IoHandleKind::Connection,
-        }]),
-    };
-    let mut pipeline = minimal_pipeline_with_unit_main(false);
-    pipeline.opaque_handle_names = vec!["Connection".to_string()];
-    pipeline.record_layouts = vec![RecordLayout {
-        name: "ConnActor".to_string(),
-        field_tys: vec![conn_ty],
-        field_names: vec![],
-    }];
-    pipeline.actor_layouts = vec![actor];
-
-    let ctx = Context::create();
-    let module = build_module(&ctx, &pipeline, "connection_state_clone")
-        .expect("Connection actor-state clone module must build");
-    module
-        .verify()
-        .unwrap_or_else(|e| panic!("Connection actor-state clone module failed verify: {e}"));
-    let ir = module.print_to_string().to_string();
-    assert!(
-        ir.contains("define ptr @__hew_state_clone_ConnActor(ptr") && ir.contains("ret ptr null"),
-        "Connection actor state clone body must reset the restart template by returning null:\n{ir}"
-    );
-}
-
 fn crash_state_probe_fn(source_origin: SourceOrigin) -> RawMirFunction {
     RawMirFunction {
         source_origin,
@@ -14798,19 +14747,6 @@ fn builtin_handle_field_overwrite_fails_closed_before_store() {
             other => panic!("expected FailClosed for {kind:?}, got {other:?}"),
         }
     }
-    emit_field_overwrite_release(
-        &fn_ctx,
-        field_ptr,
-        ptr_ty.into(),
-        src_ptr,
-        src_val,
-        &StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        },
-        "state_connection_f0",
-        false,
-    )
-    .expect("Connection carries no per-field close obligation");
     let receiver_err = emit_field_overwrite_release(
         &fn_ctx,
         field_ptr,

@@ -706,7 +706,7 @@ impl StateFieldCloneKind {
     /// MIR-admits/codegen-refuses seam. This predicate moves the refusal back to
     /// the W3.029 value-class gate (`fail-closed at the gate, not late`).
     ///
-    /// `IoHandle` (`Generator`/`Stream`/`Sink`/`Connection`/`CancellationToken`)
+    /// `IoHandle` (`Generator`/`Stream`/`Sink`/`CancellationToken`)
     /// is admitted: a `ValueClass::AffineResource`/`Linear` field is NOT
     /// owned-aggregate-by-value, so a record carrying one is dropped field-wise
     /// through the resource-drop path (`hew_gen_coro_destroy` / `*_close`) and is
@@ -792,17 +792,11 @@ impl StateFieldCloneKind {
 }
 
 /// Runtime handle kinds whose clone policy is independent of their drop
-/// authority. Opaque resources use [`StateFieldCloneKind::Resource`] when the
-/// canonical lifecycle registry is available; the `Connection` variant is
-/// retained only as a fail-closed compatibility carrier during the codegen
-/// classifier cutover and must never suppress teardown.
+/// authority. Opaque resources, including `std.net.Connection`, use
+/// [`StateFieldCloneKind::Resource`] when the canonical lifecycle registry is
+/// available.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum IoHandleKind {
-    /// `net.Connection` (`hew-runtime/src/transport.rs:2020`). No
-    /// `hew_connection_dup` runtime helper exists. Direct spawn is
-    /// move-semantic (byte-copy at spawn). Supervisor-restart clone path
-    /// must `FailClosed` at codegen time per plan §4.5 B.
-    Connection,
     /// `Stream<T>` read handle. Its scope-exit release is `hew_stream_close`
     /// (the same symbol `Stream.close()` and the single-handle drop path use).
     /// No `hew_stream_dup` runtime helper exists, so the clone/restart path
@@ -1877,7 +1871,7 @@ fn classify_named(
     // handles above (they returned `OpaqueHandle`), so any `Named` reaching
     // here with an `EnumLayout` is a genuine enum (monomorphic, generic, or
     // indirect) and classifies as `Enum`.
-    // Non-opaque enum layouts were handled before the `Connection` exception.
+    // Non-opaque enum layouts were handled before builtin-handle classification.
 
     // ── Typed builtin arms ───────────────────────────────────────────
 
@@ -1917,7 +1911,7 @@ fn classify_named(
     // `hew_stream_close` / `hew_sink_close` (the same symbols the single-handle
     // `.close()` and standalone-binding drop paths use). No dup helper exists,
     // so the clone/restart direction fails closed (handled in the codegen clone
-    // step), matching the `Connection` posture.
+    // step), matching the affine-resource posture.
     if matches!(builtin, Some(hew_types::BuiltinType::Stream)) {
         return Ok(StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Stream,
@@ -4210,10 +4204,6 @@ mod tests {
         // synthesis. The proven `Holder { inner: Generator<i64,()> }` corpus
         // (generator_exec) drops the handle once with no record thunk; rejecting
         // it here would over-reject that working shape.
-        assert!(StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        }
-        .supports_value_class_drop_spine());
         assert!(StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Generator,
         }

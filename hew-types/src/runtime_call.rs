@@ -201,6 +201,12 @@ pub enum VecGetElem {
     I16,
     I32,
     I64,
+    /// Descriptor-backed deep clone into a caller-provided output slot.
+    ///
+    /// Unlike the scalar getters, this family rides the intercepted
+    /// `Terminator::Call` path because its concrete element layout determines
+    /// the hidden output-pointer ABI.
+    Clone,
     Layout,
     Owned,
     Ptr,
@@ -984,6 +990,7 @@ impl RuntimeCallFamily {
             Self::VecGet(VecGetElem::I16) => "hew_vec_get_i16",
             Self::VecGet(VecGetElem::I32) => "hew_vec_get_i32",
             Self::VecGet(VecGetElem::I64) => "hew_vec_get_i64",
+            Self::VecGet(VecGetElem::Clone) => "hew_vec_get_clone",
             Self::VecGet(VecGetElem::Layout) => "hew_vec_get_layout",
             Self::VecGet(VecGetElem::Owned) => "hew_vec_get_owned",
             Self::VecGet(VecGetElem::Ptr) => "hew_vec_get_ptr",
@@ -1291,6 +1298,7 @@ impl RuntimeCallFamily {
             "hew_vec_get_i16" => Self::VecGet(VecGetElem::I16),
             "hew_vec_get_i32" => Self::VecGet(VecGetElem::I32),
             "hew_vec_get_i64" => Self::VecGet(VecGetElem::I64),
+            "hew_vec_get_clone" => Self::VecGet(VecGetElem::Clone),
             "hew_vec_get_layout" => Self::VecGet(VecGetElem::Layout),
             "hew_vec_get_owned" => Self::VecGet(VecGetElem::Owned),
             "hew_vec_get_ptr" => Self::VecGet(VecGetElem::Ptr),
@@ -2365,6 +2373,7 @@ pub const fn is_pre_staged_family(family: RuntimeCallFamily) -> bool {
             | F::VecCloneOwned
             | F::VecContainsLayout
             | F::VecContainsOwned
+            | F::VecGet(VecGetElem::Clone)
             | F::VecNew
             | F::VecPopBool
             | F::VecPopLayout

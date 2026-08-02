@@ -2,7 +2,7 @@
 //! classification of what an indexed read hands its reader.
 //!
 //! Carved out of `expr.rs` as one coherent concern. `lower_vec_index` emits the
-//! bounds-checked load; [`Builder::vec_element_get_symbol`] is the single
+//! bounds-checked load; [`Builder::vec_element_get_family`] is the single
 //! authority for WHICH runtime getter that load uses. `VecIter::next` does not
 //! come through this module: it synthesises the separate `Vec::get` clone-out
 //! choke so iterator ownership can be strengthened without changing `xs[i]`.
@@ -11,6 +11,7 @@ use super::{
     ty_is_local_collection_handle, ty_is_vec, Builder, CmpPred, HirExpr, Instr, MirDiagnostic,
     MirDiagnosticKind, Place, ResolvedTy, Terminator, TrapKind, ValueClass,
 };
+use hew_types::runtime_call::{RuntimeCallFamily, VecGetElem};
 
 impl Builder {
     fn reject_drop_only_receiver_index(
@@ -68,7 +69,7 @@ impl Builder {
     /// the trap is always emitted; the compiler never relies on the runtime's
     /// own bounds check.
     ///
-    /// Element-type dispatch lives in [`Builder::vec_element_get_symbol`], the
+    /// Element-type dispatch lives in [`Builder::vec_element_get_family`], the
     /// single element-load ABI authority the `for x in …` cursor gate also reads.
     ///
     /// Unsupported element types emit `MirDiagnostic::NotYetImplemented`
@@ -149,7 +150,7 @@ impl Builder {
         self.start_block(cont_bb);
 
         // Dispatch to the typed runtime getter based on element type.
-        let Some(get_symbol) = self.vec_element_get_symbol(elem_ty) else {
+        let Some(get_family) = self.vec_element_get_family(elem_ty) else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: format!("Vec<{elem_ty:?}> element type for xs[i]"),
@@ -167,15 +168,20 @@ impl Builder {
         };
         // The clone getter is a block-terminating `Terminator::Call` (codegen
         // owns its out-pointer marshalling); every other getter is a plain
-        // `CallRuntimeAbi` instruction. The symbol IS the discriminator, so the
-        // two stay congruent by construction.
-        let clone_owned_value = get_symbol == "hew_vec_get_clone";
+        // `CallRuntimeAbi` instruction. The typed family is the discriminator;
+        // its C spelling is derived only at the ABI edge.
+        let clone_owned_value = get_family == RuntimeCallFamily::VecGet(VecGetElem::Clone);
+        let get_symbol = get_family.c_symbol();
 
         let result_place = self.alloc_local(elem_ty.clone());
         if clone_owned_value {
             let next = self.alloc_block();
             self.finish_current_block(Terminator::Call {
                 callee: get_symbol.to_string(),
+                // Clone-out remains a direct-call interceptor: codegen owns
+                // its element-layout-dependent output slot. The typed family
+                // above chooses the call; it is not an `Instr::CallRuntimeAbi`
+                // builtin carrier.
                 builtin: None,
                 args: vec![vec_place, index_place],
                 dest: Some(result_place),
@@ -217,7 +223,7 @@ impl Builder {
     /// - nested collection handles → `hew_vec_get_owned` borrow
     /// - ptr-shaped (`Duplex`, `LambdaActorHandle`, non-`BitCopy` Named heap
     ///   types) → `hew_vec_get_ptr`
-    pub(crate) fn vec_element_get_symbol(&self, elem_ty: &ResolvedTy) -> Option<&'static str> {
+    pub(crate) fn vec_element_get_family(&self, elem_ty: &ResolvedTy) -> Option<RuntimeCallFamily> {
         // Named element types split into two paths:
         //   - BitCopy value records (e.g. `type Point { x: i64; y: i64 }`) and
         //     tuples: their elements are stored inline in the vec buffer at the
@@ -237,34 +243,34 @@ impl Builder {
         let owned_elem = self.is_owned_vec_element(elem_ty);
         let clone_owned_value =
             owned_elem && !ty_is_vec(elem_ty) && !ty_is_local_collection_handle(elem_ty);
-        let symbol = match elem_ty {
-            ResolvedTy::Bool => "hew_vec_get_bool",
-            ResolvedTy::I8 => "hew_vec_get_i8",
-            ResolvedTy::U8 => "hew_vec_get_u8",
-            ResolvedTy::I16 => "hew_vec_get_i16",
-            ResolvedTy::U16 => "hew_vec_get_u16",
-            ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
+        let elem = match elem_ty {
+            ResolvedTy::Bool => VecGetElem::Bool,
+            ResolvedTy::I8 => VecGetElem::I8,
+            ResolvedTy::U8 => VecGetElem::U8,
+            ResolvedTy::I16 => VecGetElem::I16,
+            ResolvedTy::U16 => VecGetElem::U16,
+            ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => VecGetElem::I32,
             // `duration` is a signed 8-byte newtype — same i64-class getter as
             // i64 (`instant` reaches here already canonicalised to I64).
             ResolvedTy::I64
             | ResolvedTy::U64
             | ResolvedTy::Isize
             | ResolvedTy::Usize
-            | ResolvedTy::Duration => "hew_vec_get_i64",
-            ResolvedTy::F32 => "hew_vec_get_f32",
-            ResolvedTy::F64 => "hew_vec_get_f64",
-            ResolvedTy::String => "hew_vec_get_str",
-            _ if clone_owned_value => "hew_vec_get_clone",
-            _ if owned_elem => "hew_vec_get_owned",
+            | ResolvedTy::Duration => VecGetElem::I64,
+            ResolvedTy::F32 => VecGetElem::F32,
+            ResolvedTy::F64 => VecGetElem::F64,
+            ResolvedTy::String => VecGetElem::Str,
+            _ if clone_owned_value => VecGetElem::Clone,
+            _ if owned_elem => VecGetElem::Owned,
             // BitCopy Named value records: use layout-descriptor getter so the
             // runtime applies the correct element stride.
             ResolvedTy::Named { .. }
                 if ValueClass::of_ty(elem_ty, &self.type_classes) == ValueClass::BitCopy =>
             {
-                "hew_vec_get_layout"
+                VecGetElem::Layout
             }
             // Tuples are BitCopy aggregates stored inline; same layout path.
-            ResolvedTy::Tuple(_) => "hew_vec_get_layout",
+            ResolvedTy::Tuple(_) => VecGetElem::Layout,
             // DIRECT (non-indirect) enums are stored inline in the vec buffer
             // at the full tagged-union struct stride — same as BitCopy records.
             // They must use `hew_vec_get_layout` so the runtime applies the
@@ -281,7 +287,7 @@ impl Builder {
                 if crate::model::find_enum_layout(name, args, &self.enum_layouts)
                     .is_some_and(|layout| !layout.is_indirect) =>
             {
-                "hew_vec_get_layout"
+                VecGetElem::Layout
             }
             // Pointer-shaped heap handles (Resource, Linear): Duplex,
             // LambdaActorHandle, indirect enums, and other non-BitCopy Named
@@ -295,97 +301,100 @@ impl Builder {
             // pair-typed dest and copies the pair out of the box (a borrow —
             // the vec slot keeps ownership of the box and the env).
             ResolvedTy::Named { .. } | ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => {
-                "hew_vec_get_ptr"
+                VecGetElem::Ptr
             }
             _ => return None,
         };
-        Some(symbol)
+        Some(RuntimeCallFamily::VecGet(elem))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Builder, ResolvedTy};
-    use hew_types::BuiltinType;
+    use hew_types::{
+        runtime_call::{all_runtime_call_families, RuntimeCallFamily, VecGetElem},
+        BuiltinType,
+    };
+
+    /// One type-checker witness for each typed getter variant. This match is
+    /// deliberately exhaustive: extending `VecGetElem` cannot compile until
+    /// ordinary-index dispatch proves how the new family is reached.
+    fn witness_type(elem: VecGetElem) -> ResolvedTy {
+        match elem {
+            VecGetElem::Bool => ResolvedTy::Bool,
+            VecGetElem::F32 => ResolvedTy::F32,
+            VecGetElem::F64 => ResolvedTy::F64,
+            VecGetElem::I8 => ResolvedTy::I8,
+            VecGetElem::I16 => ResolvedTy::I16,
+            VecGetElem::I32 => ResolvedTy::I32,
+            VecGetElem::I64 => ResolvedTy::I64,
+            VecGetElem::Clone => ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+            VecGetElem::Layout => ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
+            VecGetElem::Owned => {
+                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String])
+            }
+            VecGetElem::Ptr => ResolvedTy::Function {
+                params: vec![ResolvedTy::I64],
+                ret: Box::new(ResolvedTy::Unit),
+            },
+            VecGetElem::Str => ResolvedTy::String,
+            VecGetElem::U8 => ResolvedTy::U8,
+            VecGetElem::U16 => ResolvedTy::U16,
+        }
+    }
 
     /// Pin ordinary indexing independently of `VecIter` clone-out: nested
     /// collections must retain their established borrowing getters while the
     /// iterator path always calls `hew_vec_get_clone`.
     #[test]
-    fn vec_element_get_symbol_pins_ordinary_index_getter_per_element_class() {
+    fn vec_element_get_family_pins_ordinary_index_getter_per_element_class() {
         let builder = Builder::default();
-        let table: [(ResolvedTy, Option<&'static str>); 8] = [
-            (ResolvedTy::I64, Some("hew_vec_get_i64")),
-            (ResolvedTy::Bool, Some("hew_vec_get_bool")),
-            (ResolvedTy::String, Some("hew_vec_get_str")),
-            (
-                ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
-                Some("hew_vec_get_layout"),
-            ),
-            (
-                ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
-                Some("hew_vec_get_clone"),
-            ),
-            (
-                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![ResolvedTy::String]),
-                Some("hew_vec_get_owned"),
-            ),
-            (
-                ResolvedTy::named_builtin(
-                    "HashMap",
-                    BuiltinType::HashMap,
-                    vec![ResolvedTy::String, ResolvedTy::I64],
-                ),
-                Some("hew_vec_get_owned"),
-            ),
-            (
-                ResolvedTy::named_builtin("HashSet", BuiltinType::HashSet, vec![ResolvedTy::I64]),
-                Some("hew_vec_get_owned"),
-            ),
-        ];
-        for (elem, want) in table {
+        for family in all_runtime_call_families() {
+            let RuntimeCallFamily::VecGet(elem) = family else {
+                continue;
+            };
+            let witness = witness_type(elem);
             assert_eq!(
-                builder.vec_element_get_symbol(&elem),
-                want,
-                "vec_element_get_symbol({elem:?}) must stay pinned to its element-load ABI"
+                builder.vec_element_get_family(&witness),
+                Some(family),
+                "ordinary index dispatch for {witness:?} must reach {family:?}"
+            );
+            assert_eq!(
+                RuntimeCallFamily::from_c_symbol(family.c_symbol()),
+                Some(family)
             );
         }
     }
 
     /// Every getter spelling ordinary indexing can emit carries the ownership
-    /// contract used by the alias/temporary analyses.
+    /// contract used by the alias/temporary analyses. Derive the inventory from
+    /// the production dispatch rather than mirroring its symbol list here: a
+    /// new getter arm must classify its result as exactly one of independent
+    /// owner or receiver-interior alias in the same change.
     #[test]
-    fn every_element_getter_spelling_has_a_decided_admission_verdict() {
-        // Sourced from `vec_element_get_symbol`'s match arms.
-        let table: [(&str, bool); 14] = [
-            ("hew_vec_get_bool", true),
-            ("hew_vec_get_i8", true),
-            ("hew_vec_get_u8", true),
-            ("hew_vec_get_i16", true),
-            ("hew_vec_get_u16", true),
-            ("hew_vec_get_i32", true),
-            ("hew_vec_get_i64", true),
-            ("hew_vec_get_f32", true),
-            ("hew_vec_get_f64", true),
-            ("hew_vec_get_str", true),
-            ("hew_vec_get_clone", true),
-            ("hew_vec_get_layout", true),
-            ("hew_vec_get_owned", false),
-            ("hew_vec_get_ptr", false),
-        ];
-        for (symbol, admitted) in table {
-            let contract = crate::runtime_symbols::callee_ownership_contract(symbol);
-            assert_ne!(
-                contract,
-                crate::runtime_symbols::CalleeOwnershipContract::FAIL_CLOSED,
-                "{symbol} is reachable from `vec_element_get_symbol` but has no contract row"
+    fn every_typed_element_getter_has_a_decided_admission_verdict() {
+        for family in all_runtime_call_families() {
+            let RuntimeCallFamily::VecGet(_) = family else {
+                continue;
+            };
+            let contract = crate::runtime_symbols::vec_getter_ownership_contract(family)
+                .expect("every typed Vec getter must have a result contract");
+            assert!(
+                contract.yields_independent_owner() ^ contract.returns_receiver_interior_alias(),
+                "{family:?} must be exactly independent or receiver-aliasing"
             );
             assert_eq!(
-                contract.yields_independent_owner(),
-                admitted,
-                "{symbol}'s ownership contract must describe whether ordinary indexing \
-                 returns an independent value or an interior alias"
+                crate::runtime_symbols::callee_ownership_contract(family.c_symbol()),
+                contract,
+                "the string ABI edge must project the typed contract without drift"
             );
         }
+
+        assert!(
+            crate::runtime_symbols::vec_getter_ownership_contract(RuntimeCallFamily::VecLen)
+                .is_none(),
+            "a non-getter family mutation must stay outside the ownership authority"
+        );
     }
 }

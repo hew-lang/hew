@@ -196,7 +196,7 @@ fn main() -> () [conv=default]
     stmt: use BindingId(4) __hew_for_iter_3 site=SiteId(44) ty=VecIter<string> intent=Read
     _36 = _26.field[0]
     _37 = _26.field[1]
-    _38 = call hew_vec_get_clone(_36, _37) -> bb22
+    _38 = call hew_vec_get_clone(_36, _37) [builtin=VecGet(Clone)] -> bb22
   bb21:
     _45 = move _28
     _46 = move etag45
@@ -309,7 +309,7 @@ fn main() -> () [conv=default]
   bb43:
     trap(IndexOutOfBounds)
   bb44:
-    _79 = call hew_vec_get_clone(_69, _76) -> bb45
+    _79 = call hew_vec_get_clone(_69, _76) [builtin=VecGet(Clone)] -> bb45
   bb45:
     stmt: bind BindingId(11) t site=SiteId(96) ty=Tag
     stmt: use BindingId(11) t site=SiteId(101) ty=Tag intent=Read
@@ -341,7 +341,7 @@ fn main() -> () [conv=default]
   bb50:
     trap(IndexOutOfBounds)
   bb51:
-    _92 = call hew_vec_get_clone(_88, _89) -> bb52
+    _92 = call hew_vec_get_clone(_88, _89) [builtin=VecGet(Clone)] -> bb52
   bb52:
     stmt: bind BindingId(4294967231) __hew_vec_get_clone_projection_base site=SiteId(109) ty=Tag
     _93 = _92.field[1]
@@ -628,4 +628,3 @@ fn duration::fmt(duration) -> string [conv=default]
     drop _2 ty=string fn=release(hew_string_drop)
     ret = move _4
     return
-

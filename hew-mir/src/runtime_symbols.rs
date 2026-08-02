@@ -681,7 +681,30 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_string_to_lowercase"
         | "hew_string_to_uppercase"
         | "hew_string_trim"
-        | "string_concat" => CalleeOwnershipContract::new(Escapes, BorrowingUse, FreshOwnedString),
+        | "string_concat"
+        // Scalar and catalog display producers allocate a fresh string result.
+        // The `to_string_*` catalog spellings are the MIR presentation for
+        // f-string display dispatch and map to the `hew_*_to_string` runtime
+        // allocation entries.
+        | "hew_bool_to_string"
+        | "hew_char_to_string"
+        | "hew_float_to_string"
+        | "hew_i64_to_string"
+        | "hew_int_to_string"
+        | "hew_node_api_identity_key"
+        | "hew_string_from_char"
+        | "hew_u64_to_string"
+        | "hew_uint_to_string"
+        | "to_string_bool"
+        | "to_string_char"
+        | "to_string_f64"
+        | "to_string_i32"
+        | "to_string_i64"
+        | "to_string_str"
+        | "to_string_u16"
+        | "to_string_u32"
+        | "to_string_u64"
+        | "to_string_u8" => CalleeOwnershipContract::new(Escapes, BorrowingUse, FreshOwnedString),
 
         // String inspectors and container producers borrow their string input
         // without handing back a tracked string result. Scalar/bytes/Vec
@@ -704,29 +727,6 @@ pub fn callee_ownership_contract(callee: &str) -> CalleeOwnershipContract {
         | "hew_string_split"
         | "hew_string_starts_with"
         | "hew_string_to_bytes" => CalleeOwnershipContract::new(Escapes, BorrowingUse, Untracked),
-
-        // Scalar and catalog display producers allocate a fresh string result.
-        // The `to_string_*` catalog spellings are the MIR presentation for
-        // f-string display dispatch and map to the `hew_*_to_string` runtime
-        // allocation entries.
-        "hew_bool_to_string"
-        | "hew_char_to_string"
-        | "hew_float_to_string"
-        | "hew_i64_to_string"
-        | "hew_int_to_string"
-        | "hew_node_api_identity_key"
-        | "hew_string_from_char"
-        | "hew_u64_to_string"
-        | "hew_uint_to_string"
-        | "to_string_bool"
-        | "to_string_char"
-        | "to_string_f64"
-        | "to_string_i32"
-        | "to_string_i64"
-        | "to_string_u16"
-        | "to_string_u32"
-        | "to_string_u64"
-        | "to_string_u8" => CalleeOwnershipContract::new(Escapes, Escaping, FreshOwnedString),
 
         // Print sinks borrow their string operands for output.
         "print" | "print_str" | "println" | "println_str" => {

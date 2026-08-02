@@ -547,8 +547,10 @@ pub const fn builtin_types() -> &'static [BuiltinTypeInfo] {
 #[must_use]
 pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
     match name {
-        "channel.Sender" | "std.channel.channel.Sender" => return Some(BuiltinType::Sender),
-        "channel.Receiver" | "std.channel.channel.Receiver" => {
+        "channel.Sender" | "std.channel.Sender" | "std.channel.channel.Sender" => {
+            return Some(BuiltinType::Sender);
+        }
+        "channel.Receiver" | "std.channel.Receiver" | "std.channel.channel.Receiver" => {
             return Some(BuiltinType::Receiver);
         }
         "stream.Stream" | "std.stream.Stream" => return Some(BuiltinType::Stream),
@@ -649,6 +651,22 @@ mod tests {
             lookup_builtin_type("std.link_monitor.MonitorError"),
             Some(BuiltinType::MonitorError)
         );
+    }
+
+    #[test]
+    fn lookup_accepts_exact_channel_owners_without_leaf_fallback() {
+        for owner in ["std.channel", "std.channel.channel"] {
+            assert_eq!(
+                lookup_builtin_type(&format!("{owner}.Sender")),
+                Some(BuiltinType::Sender)
+            );
+            assert_eq!(
+                lookup_builtin_type(&format!("{owner}.Receiver")),
+                Some(BuiltinType::Receiver)
+            );
+        }
+        assert_eq!(lookup_builtin_type("acme.channel.Sender"), None);
+        assert_eq!(lookup_builtin_type("acme.channel.Receiver"), None);
     }
 
     #[test]

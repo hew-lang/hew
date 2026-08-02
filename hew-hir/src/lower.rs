@@ -21354,6 +21354,28 @@ impl LowerCtx {
             .current_module_name
             .as_deref()
             .is_some_and(|module| self.file_import_module_names.contains(module));
+        // A checker compatibility marker is representation metadata, not a
+        // license to replace a declaration selected from the current source
+        // scope.  This is especially important for generic prelude names:
+        // `type Result { .. }` is a user record even when an actor-dispatch
+        // side table still presents its reply as `Ty::Named(Result, builtin)`.
+        //
+        // Canonical standard-library declarations have already taken the
+        // exact-provenance path below (the `std.*` owner check), so this only
+        // removes an unproven presentation marker.  Preserve the source
+        // owner's complete identity rather than returning a bare leaf, so the
+        // same rule also keeps package-local `module.Result` nominally
+        // distinct from prelude `Result`.
+        if builtin.is_some()
+            && !name.contains('.')
+            && self.current_scope_declares_source_type(&name, current_module_is_file_import)
+        {
+            let canonical = self.canonical_current_module_record_name(&name);
+            if self.resolves_to_opaque_handle(&canonical, &name) {
+                return ResolvedTy::named_opaque(canonical, args);
+            }
+            return ResolvedTy::named_user(canonical, args);
+        }
         if let Some(canonical) = self.canonical_monomorphic_builtin_enum_name(
             &name,
             builtin,
@@ -21363,19 +21385,6 @@ impl LowerCtx {
                 Some(builtin) => ResolvedTy::named_builtin(canonical, builtin, args),
                 None => ResolvedTy::named_user(canonical.to_string(), args),
             };
-        }
-        if builtin.is_some()
-            && !name.contains('.')
-            && MONOMORPHIC_BUILTIN_ENUMS
-                .iter()
-                .any(|fact| fact.name == name)
-            && self.current_scope_declares_source_type(&name, current_module_is_file_import)
-        {
-            // A checker compatibility discriminator attached by leaf spelling
-            // cannot override exact source ownership. The local declaration
-            // won resolution, so discard the builtin marker at the HIR
-            // boundary instead of letting it acquire the generated layout.
-            return ResolvedTy::named_user(name, args);
         }
         if !name.contains('.')
             && (self.current_module_name.is_none() || current_module_is_file_import)
@@ -21674,22 +21683,29 @@ impl LowerCtx {
         if !canonical_std_owner {
             return None;
         }
-        if let Some(builtin) = hew_types::lookup_builtin_type(name)
-            .or_else(|| hew_types::lookup_source_owned_lifecycle_type(name))
-            // Some bundled declarations deliberately retain their source
-            // owner in checker/HIR facts while the runtime catalog's canonical
-            // spelling is a leaf. Keep this mapping exact: a generic leaf
-            // retry would let compatibility spellings rewrite a different
-            // source-owned declaration (for example `failure.*`).
-            .or_else(|| {
-                (canonical_std_owner && name == "std.concurrency.LambdaActorHandle")
-                    .then_some(BuiltinType::LambdaActorHandle)
-            })
-        {
+        if let Some(builtin) = hew_types::lookup_builtin_type(name).or_else(|| {
+            // Lifecycle declarations are source-owned.  Their old short-owner
+            // compatibility spellings (`failure.CrashNotification`) remain
+            // readable as ordinary nominal identities, but do not acquire
+            // compiler representation authority.  Only the exact canonical
+            // `std.failure` / `std.link_monitor` declaration identity can
+            // carry that authority across this boundary.
+            (name.starts_with("std.failure.") || name.starts_with("std.link_monitor."))
+                .then(|| hew_types::lookup_source_owned_lifecycle_type(name))
+                .flatten()
+                // Some bundled declarations deliberately retain their source
+                // owner in checker/HIR facts while the runtime catalog's canonical
+                // spelling is a leaf. Keep this mapping exact: a generic leaf
+                // retry would let compatibility spellings rewrite a different
+                // source-owned declaration (for example `failure.*`).
+                .or_else(|| {
+                    (canonical_std_owner && name == "std.concurrency.LambdaActorHandle")
+                        .then_some(BuiltinType::LambdaActorHandle)
+                })
+        }) {
             return Some(builtin);
         }
-
-        hew_types::lookup_source_owned_lifecycle_type(name)
+        None
     }
 
     /// Project a checker-owned implementation declaration onto the one HIR

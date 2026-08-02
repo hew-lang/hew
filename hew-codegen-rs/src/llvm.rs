@@ -23091,8 +23091,69 @@ fn emit_helper_crash_cleanup_retire_before_place_drop(
     emit_helper_crash_cleanup_retire_before_drop(fn_ctx, &owner.descriptor)
 }
 
+fn emit_helper_crash_cleanup_retire_stale_return_token<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    owner: &HelperCrashCleanupOwner<'ctx>,
+    local: u32,
+    merge_bb: inkwell::basic_block::BasicBlock<'ctx>,
+) -> CodegenResult<()> {
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|block| block.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("helper return sweep has no parent".into()))?;
+    let retire_bb = fn_ctx.ctx.append_basic_block(
+        parent,
+        &format!("helper_crash_cleanup_return_retire_{local}"),
+    );
+    let token = fn_ctx
+        .builder
+        .build_load(
+            fn_ctx.ctx.i64_type(),
+            owner.token_slot,
+            &format!("helper_crash_cleanup_return_token_{local}"),
+        )
+        .llvm_ctx("helper return stale token load")?
+        .into_int_value();
+    let has_token = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::NE,
+            token,
+            fn_ctx.ctx.i64_type().const_zero(),
+            &format!("helper_crash_cleanup_return_has_token_{local}"),
+        )
+        .llvm_ctx("helper return stale token compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(has_token, retire_bb, merge_bb)
+        .llvm_ctx("helper return stale token branch")?;
+    fn_ctx.builder.position_at_end(retire_bb);
+    emit_checked_crash_cleanup_token_call(
+        fn_ctx,
+        "hew_cont_crash_cleanup_retire",
+        token,
+        &format!("helper_crash_cleanup_return_retire_{local}"),
+    )?;
+    fn_ctx
+        .builder
+        .build_store(owner.token_slot, fn_ctx.ctx.i64_type().const_zero())
+        .llvm_ctx("helper return stale token clear")?;
+    fn_ctx
+        .builder
+        .build_store(owner.active_slot, fn_ctx.ctx.bool_type().const_zero())
+        .llvm_ctx("helper return stale active clear")?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("helper return stale-token merge branch")?;
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
+}
+
 fn emit_helper_crash_cleanup_retire_remaining_on_return(
     fn_ctx: &FnCtx<'_, '_>,
+    return_block: u32,
 ) -> CodegenResult<()> {
     let mut owners = fn_ctx
         .helper_crash_cleanup_owners
@@ -23108,6 +23169,45 @@ fn emit_helper_crash_cleanup_retire_remaining_on_return(
             Place::Local(local) => local,
             _ => u32::MAX,
         };
+        // `emit_elab_drops` runs before the Return terminator. When this exact
+        // owner is already present in the Return block's ordinary plan, that
+        // emission retires its token and owns the sole normal-path destructor
+        // site. Synthesising the residual-owner branch as well would duplicate
+        // the typed drop ritual in the function. A deactivated owner can still
+        // carry a nonzero stale token, however, so a planned owner keeps a
+        // retire-only token sweep after its ordinary destructor.
+        let mut has_return_drop = false;
+        for drop in fn_ctx
+            .drop_plans
+            .iter()
+            .filter(
+                |(exit, _)| matches!(exit, ExitPath::Return { block } if *block == return_block),
+            )
+            .flat_map(|(_, plan)| &plan.drops)
+            .filter(|drop| drop.place == place)
+        {
+            if drop != &owner.descriptor {
+                return Err(CodegenError::FailClosed(format!(
+                    "return drop descriptor drift at {place:?}: planned {drop:?}, \
+                     registered {:?}",
+                    owner.descriptor
+                )));
+            }
+            has_return_drop = true;
+        }
+        if has_return_drop {
+            let parent = fn_ctx
+                .builder
+                .get_insert_block()
+                .and_then(|block| block.get_parent())
+                .ok_or_else(|| CodegenError::Llvm("helper return sweep has no parent".into()))?;
+            let merge_bb = fn_ctx.ctx.append_basic_block(
+                parent,
+                &format!("helper_crash_cleanup_return_merge_{local}"),
+            );
+            emit_helper_crash_cleanup_retire_stale_return_token(fn_ctx, &owner, local, merge_bb)?;
+            continue;
+        }
         let parent = fn_ctx
             .builder
             .get_insert_block()
@@ -23120,10 +23220,6 @@ fn emit_helper_crash_cleanup_retire_remaining_on_return(
         let active_drop_bb = fn_ctx
             .ctx
             .append_basic_block(parent, &format!("helper_crash_cleanup_return_drop_{local}"));
-        let retire_bb = fn_ctx.ctx.append_basic_block(
-            parent,
-            &format!("helper_crash_cleanup_return_retire_{local}"),
-        );
         let merge_bb = fn_ctx.ctx.append_basic_block(
             parent,
             &format!("helper_crash_cleanup_return_merge_{local}"),
@@ -23160,48 +23256,7 @@ fn emit_helper_crash_cleanup_retire_remaining_on_return(
             .llvm_ctx("helper return active cleanup merge branch")?;
 
         fn_ctx.builder.position_at_end(inactive_bb);
-        let token = fn_ctx
-            .builder
-            .build_load(
-                fn_ctx.ctx.i64_type(),
-                owner.token_slot,
-                &format!("helper_crash_cleanup_return_token_{local}"),
-            )
-            .llvm_ctx("helper return token load")?
-            .into_int_value();
-        let has_token = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::NE,
-                token,
-                fn_ctx.ctx.i64_type().const_zero(),
-                &format!("helper_crash_cleanup_return_has_token_{local}"),
-            )
-            .llvm_ctx("helper return token compare")?;
-        fn_ctx
-            .builder
-            .build_conditional_branch(has_token, retire_bb, merge_bb)
-            .llvm_ctx("helper return token branch")?;
-        fn_ctx.builder.position_at_end(retire_bb);
-        emit_checked_crash_cleanup_token_call(
-            fn_ctx,
-            "hew_cont_crash_cleanup_retire",
-            token,
-            &format!("helper_crash_cleanup_return_retire_{local}"),
-        )?;
-        fn_ctx
-            .builder
-            .build_store(owner.token_slot, fn_ctx.ctx.i64_type().const_zero())
-            .llvm_ctx("helper return retired token clear")?;
-        fn_ctx
-            .builder
-            .build_store(owner.active_slot, fn_ctx.ctx.bool_type().const_zero())
-            .llvm_ctx("helper return retired active clear")?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(merge_bb)
-            .llvm_ctx("helper return retire merge branch")?;
-        fn_ctx.builder.position_at_end(merge_bb);
+        emit_helper_crash_cleanup_retire_stale_return_token(fn_ctx, &owner, local, merge_bb)?;
     }
     Ok(())
 }
@@ -28468,7 +28523,7 @@ fn lower_terminator<'ctx>(
     fn_ctx.suspend_abandon_block.set(block_id);
     match term {
         Terminator::Return => {
-            emit_helper_crash_cleanup_retire_remaining_on_return(fn_ctx)?;
+            emit_helper_crash_cleanup_retire_remaining_on_return(fn_ctx, block_id)?;
             // Implicit actor-drain floor: emit `hew_shutdown_initiate_implicit(0)` then
             // `hew_shutdown_wait()` before `main` returns. This ensures
             // fire-and-forget actor messages (spawned actors, pending handler

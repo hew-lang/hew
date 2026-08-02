@@ -687,7 +687,7 @@ fn canonical_direct_stdlib_module_for_source(
         // (not a filename/module spelling) is what permits direct `hew check
         // std/net/net.hew` to retain its std.net provenance without granting
         // that authority to a user's net.hew.
-        .chain(["std.stream", "std.net"])
+        .chain(["std.stream", "std.net", "std.concurrency"])
     {
         let segments = dotted.split('.').collect::<Vec<_>>();
         if hew_types::module_registry::is_canonical_stdlib_module_source(source_file, dotted) {
@@ -2991,6 +2991,10 @@ fn main() {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this provenance integration test keeps positive and spoofed-source controls together"
+    )]
     fn direct_std_stream_provenance_is_exact_to_the_shipped_source() {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -3019,6 +3023,24 @@ fn main() {
                 .map(|module| module.path),
             Some(vec!["std".to_string(), "net".to_string()]),
             "direct compilation of the shipped TCP module must retain std.net identity"
+        );
+
+        let shipped_lambda = repo_root.join("std/concurrency/lambda_actor.hew");
+        assert_eq!(
+            super::canonical_direct_stdlib_module_for_source(&shipped_lambda)
+                .map(|module| module.path),
+            Some(vec!["std".to_string(), "concurrency".to_string()]),
+            "a direct check of a canonical directory-module peer must retain std.concurrency identity"
+        );
+        fs::create_dir_all(dir.path().join("concurrency")).expect("create user module dir");
+        let user_lambda = write_source(
+            &dir.path().join("concurrency"),
+            "lambda_actor.hew",
+            "pub type LambdaActorHandle {}\n",
+        );
+        assert!(
+            super::canonical_direct_stdlib_module_for_source(Path::new(&user_lambda)).is_none(),
+            "a same-named user directory peer must not acquire std.concurrency provenance"
         );
         let user_net = write_source(dir.path(), "net.hew", "fn main() {}\n");
         assert!(
@@ -4276,7 +4298,15 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         );
         let imported = lower_to_mir(&imported_input);
 
-        for (pipeline, owner) in [(&direct, None), (&imported, Some("std.concurrency"))] {
+        for (pipeline, owner) in [
+            (&direct, Some("std.concurrency")),
+            (&imported, Some("std.concurrency")),
+        ] {
+            assert!(
+                pipeline.diagnostics.is_empty(),
+                "bundled source must lower without MIR authority diagnostics: {:#?}",
+                pipeline.diagnostics
+            );
             for leaf in ["LambdaActorHandle", "LambdaActorWeakHandle"] {
                 let expected =
                     owner.map_or_else(|| leaf.to_string(), |owner| format!("{owner}.{leaf}"));
@@ -4316,6 +4346,14 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 .any(|layout| layout.name == "std.concurrency.LambdaActorHandle"),
             "a same-leaf user declaration must not inherit bundled ownership: {:#?}",
             foreign.record_layouts
+        );
+        assert!(
+            foreign.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.kind,
+                hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
+            )),
+            "the foreign same-leaf handle must remain fail-closed instead of inheriting the bundled resource class: {:#?}",
+            foreign.diagnostics
         );
     }
 }

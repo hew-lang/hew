@@ -826,6 +826,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::ChannelRecvAwait {
             receiver,
             deadline_ns,
+            ..
         } => {
             let deadline = deadline_ns
                 .map(|ns| format!(" | after {ns}ns"))
@@ -836,6 +837,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         HirExprKind::StreamRecvAwait {
             stream,
             deadline_ns,
+            ..
         } => {
             let deadline = deadline_ns
                 .map(|ns| format!(" | after {ns}ns"))

@@ -1810,6 +1810,10 @@ pub enum HirExprKind {
         /// present as `Option<i64>` to share the same lowering interface as the
         /// other deadline kinds).
         deadline_ns: Option<i64>,
+        /// Non-executed `.recv()` occurrence consumed by the specialised
+        /// deadline node. It preserves the checker relation
+        /// `timeout -> await -> recv` without executing the receive twice.
+        source_anchor: HirProducedValueSourceAnchor,
     },
     /// `await stream.recv() | after d` — a suspending stream recv with a
     /// deadline (NEW-6b).  Produced by [`super::lower::lower_await_deadline`]
@@ -1822,6 +1826,10 @@ pub enum HirExprKind {
         stream: Box<HirExpr>,
         /// Deadline in nanoseconds.
         deadline_ns: Option<i64>,
+        /// Non-executed `.recv()` occurrence consumed by the specialised
+        /// deadline node. It preserves the checker relation
+        /// `timeout -> await -> recv` without executing the receive twice.
+        source_anchor: HirProducedValueSourceAnchor,
     },
     /// Sealed `select{}` expression.
     ///
@@ -2827,6 +2835,7 @@ mod produced_value_tests {
                 HirExprKind::ChannelRecvAwait {
                     receiver: receiver(),
                     deadline_ns: Some(1),
+                    source_anchor: source_anchor(HirProducedValueProducer::ChannelRecvAwait),
                 },
                 HirProducedValueProducer::ChannelRecvAwait,
             ),
@@ -2834,6 +2843,7 @@ mod produced_value_tests {
                 HirExprKind::StreamRecvAwait {
                     stream: receiver(),
                     deadline_ns: Some(1),
+                    source_anchor: source_anchor(HirProducedValueProducer::StreamRecvAwait),
                 },
                 HirProducedValueProducer::StreamRecvAwait,
             ),

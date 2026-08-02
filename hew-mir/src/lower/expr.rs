@@ -4961,10 +4961,12 @@ impl Builder {
             HirExprKind::ChannelRecvAwait {
                 receiver,
                 deadline_ns,
+                ..
             } => self.lower_channel_recv_await(receiver, *deadline_ns, expr),
             HirExprKind::StreamRecvAwait {
                 stream,
                 deadline_ns,
+                ..
             } => self.lower_stream_recv_await(stream, *deadline_ns, expr),
             HirExprKind::RemoteActorAsk {
                 receiver,

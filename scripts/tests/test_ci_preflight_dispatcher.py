@@ -111,6 +111,31 @@ def test_ci_required_names_freebsd_authoritative_job() -> None:
     assert result.stdout.splitlines().count(expected) == 1, result.stdout
 
 
+def test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps() -> None:
+    required = run_ci_required()
+    assert required.returncode == 0, required.stderr
+    expected = (
+        "Pinned structural lint (ci.yml: make structural-lint)\tmake structural-lint"
+    )
+    assert required.stdout.splitlines().count(expected) == 1, required.stdout
+    assert "ci.yml: make structural-lint-bootstrap)" not in required.stdout
+
+    local = run_dispatcher("scripts/structural-authority-audit.py")
+    assert local.returncode == 0, local.stderr
+    assert "  - make structural-lint " in local.stdout, local.stdout
+    assert "make structural-lint-bootstrap" not in local.stdout, local.stdout
+
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert re.search(
+        r"name: Bootstrap pinned structural lint toolchain\s+run: make structural-lint-bootstrap",
+        workflow,
+    ), "hosted CI must explicitly bootstrap on a clean checkout"
+    assert re.search(
+        r"name: Run structural authority lint\s+run: make structural-lint",
+        workflow,
+    ), "the required parity step must dispatch the labeled cache-only command"
+
+
 # ---------------------------------------------------------------------------
 # Slice 1: Instrumentation & hang-bound tests
 # ---------------------------------------------------------------------------
@@ -788,6 +813,7 @@ _TESTS = [
     test_dot_cargo_config_routes_to_scripts_config_profile,
     test_rust_toolchain_routes_to_scripts_config_profile,
     test_ci_required_names_freebsd_authoritative_job,
+    test_structural_lint_label_matches_dispatched_command_and_ci_bootstraps,
     # Slice 1 instrumentation tests
     test_dry_run_shows_budget_annotation_narrow_lane,
     test_dry_run_shows_budget_annotation_fallback_lane,

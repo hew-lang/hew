@@ -713,8 +713,22 @@ impl Verifier {
                 self.expr(listener);
                 self.produced_value_source_anchor(source_anchor, expr.site);
             }
-            HirExprKind::ChannelRecvAwait { receiver, .. } => self.expr(receiver),
-            HirExprKind::StreamRecvAwait { stream, .. } => self.expr(stream),
+            HirExprKind::ChannelRecvAwait {
+                receiver,
+                source_anchor,
+                ..
+            } => {
+                self.expr(receiver);
+                self.produced_value_source_anchor(source_anchor, expr.site);
+            }
+            HirExprKind::StreamRecvAwait {
+                stream,
+                source_anchor,
+                ..
+            } => {
+                self.expr(stream);
+                self.produced_value_source_anchor(source_anchor, expr.site);
+            }
             HirExprKind::NumericCast {
                 value,
                 from_ty,

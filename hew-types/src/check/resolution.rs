@@ -7,6 +7,30 @@ use super::*;
 use crate::BuiltinType;
 
 impl Checker {
+    /// Return the generated discriminator only when the exact enum owner is
+    /// backed by a selected canonical std source (or the equivalent recorded
+    /// import/prelude authority for the current checker frame).
+    pub(super) fn source_authorized_generated_enum_builtin(
+        &self,
+        name: &str,
+    ) -> Option<BuiltinType> {
+        let fact = crate::builtin_enums::monomorphic_builtin_enum(name)?;
+        if fact.canonical_name != name {
+            return None;
+        }
+        let builtin = crate::lookup_builtin_type(fact.name)?;
+        if !crate::builtin_enums::has_exact_monomorphic_builtin_enum_identity(name, Some(builtin)) {
+            return None;
+        }
+        let selected_source =
+            self.canonical_std_module_sources.contains(fact.owner)
+                || self.in_stdlib_registration
+                || self.canonical_lifecycle_import_authority.iter().any(
+                    |(importer, _, identity)| importer == &self.current_module && identity == name,
+                );
+        selected_source.then_some(builtin)
+    }
+
     /// Resolve a compiler-known nominal discriminator only after the source
     /// owner has already been selected. Qualified spellings are presentation
     /// aliases unless either the module binding points at a canonical shipped
@@ -2543,7 +2567,16 @@ impl Checker {
                         .type_defs
                         .get(resolved_name.as_str())
                         .is_some_and(|td| td.type_params.is_empty());
-                let resolved_builtin = self.resolved_builtin_type(resolved_name.as_str());
+                let generated_prelude_builtin = (!name.contains('.'))
+                    .then(|| self.published_bare_type_qualified(name))
+                    .flatten()
+                    .filter(|published| published == &resolved_name)
+                    .and_then(|published| {
+                        self.source_authorized_generated_enum_builtin(&published)
+                    });
+                let resolved_builtin = self
+                    .resolved_builtin_type(resolved_name.as_str())
+                    .or(generated_prelude_builtin);
                 let is_channel_handle = resolved_builtin
                     .is_some_and(BuiltinType::is_channel_handle)
                     || builtin_named_type(resolved_name.as_str()).is_some_and(
@@ -2587,7 +2620,12 @@ impl Checker {
                 // shadows.
                 let builtin_overrides_source_decl = self.in_stdlib_registration
                     || (builtin.is_some() && crate::ty::is_reserved_type_name(&resolved_name))
-                    || builtin.is_some_and(BuiltinType::requires_source_import)
+                    || self.source_authorized_generated_enum_builtin(&resolved_name) == builtin
+                        && builtin.is_some()
+                    || crate::builtin_type::has_exact_source_owned_lifecycle_identity(
+                        &resolved_name,
+                        builtin,
+                    )
                     || (resolved_name.contains('.')
                         && builtin.is_some_and(|kind| {
                             kind.is_collection() || kind.is_substrate_handle()

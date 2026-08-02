@@ -49,6 +49,18 @@ pub fn monomorphic_builtin_enum(name: &str) -> Option<&'static BuiltinMonomorphi
     unique_monomorphic_builtin_enum(monomorphic_builtin_enums(), name)
 }
 
+/// Whether a named type carries both axes of generated enum authority: the
+/// exact catalog owner and that catalog row's builtin discriminator.
+#[must_use]
+pub fn has_exact_monomorphic_builtin_enum_identity(
+    name: &str,
+    builtin: Option<crate::BuiltinType>,
+) -> bool {
+    monomorphic_builtin_enum(name).is_some_and(|fact| {
+        name == fact.canonical_name && crate::lookup_builtin_type(fact.name) == builtin
+    }) && builtin.is_some()
+}
+
 fn unique_monomorphic_builtin_enum<'a>(
     facts: &'a [BuiltinMonomorphicEnum],
     name: &str,
@@ -95,6 +107,7 @@ mod tests {
     fn generated_enum_constructors_retain_exact_identity() {
         for fact in monomorphic_builtin_enums() {
             let ty = monomorphic_builtin_enum_ty(fact.name).expect("catalog type");
+            let normalized = crate::Ty::normalize_named(fact.canonical_name.to_string(), vec![]);
             let resolved =
                 resolved_monomorphic_builtin_enum_ty(fact.name).expect("resolved catalog type");
             assert!(matches!(
@@ -104,6 +117,14 @@ mod tests {
             assert!(matches!(
                 resolved,
                 crate::ResolvedTy::Named { ref name, .. } if name == fact.canonical_name
+            ));
+            assert!(matches!(
+                normalized,
+                crate::Ty::Named {
+                    ref name,
+                    builtin: Some(_),
+                    ..
+                } if name == fact.canonical_name
             ));
         }
     }
@@ -134,6 +155,28 @@ mod tests {
             Some("std.left.Collision"),
             "an exact canonical identity remains unambiguous"
         );
+    }
+
+    #[test]
+    fn exact_enum_authority_requires_owner_and_discriminator_independently() {
+        let fact = monomorphic_builtin_enum("CrashAction").expect("CrashAction catalog row");
+        let discriminator = crate::lookup_builtin_type(fact.name).expect("builtin discriminator");
+        assert!(has_exact_monomorphic_builtin_enum_identity(
+            fact.canonical_name,
+            Some(discriminator)
+        ));
+        for missing_or_wrong in [None, Some(crate::BuiltinType::AskError)] {
+            assert!(!has_exact_monomorphic_builtin_enum_identity(
+                fact.canonical_name,
+                missing_or_wrong
+            ));
+        }
+        for leaf_or_foreign in [fact.name, "foreign.CrashAction"] {
+            assert!(!has_exact_monomorphic_builtin_enum_identity(
+                leaf_or_foreign,
+                Some(discriminator)
+            ));
+        }
     }
 
     #[test]

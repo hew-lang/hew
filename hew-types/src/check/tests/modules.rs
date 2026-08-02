@@ -731,6 +731,25 @@ fn module_graph_body_prefers_same_module_private_extern_over_global_bare_name() 
 mod module_body_diagnostic_envelope {
     use super::*;
 
+    #[test]
+    fn generated_enum_owner_and_discriminator_still_require_selected_std_source() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.canonical_std_module_sources.clear();
+        checker.canonical_lifecycle_import_authority.clear();
+        checker.in_stdlib_registration = false;
+
+        assert_eq!(
+            crate::lookup_builtin_type("std.failure.CrashAction"),
+            Some(BuiltinType::CrashAction),
+            "the counterfactual must retain both catalog axes"
+        );
+        assert_eq!(
+            checker.source_authorized_generated_enum_builtin("std.failure.CrashAction"),
+            None,
+            "canonical spelling plus discriminator cannot replace selected-source provenance"
+        );
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────────
 
     /// Build a minimal `Program` with a non-root module `mod_name` whose items

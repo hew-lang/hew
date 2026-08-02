@@ -1790,6 +1790,17 @@ pub(crate) struct FrameCleanupThunkCache<'ctx> {
     next_internal_name: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActorStateStoreTransaction {
+    /// The scheduler has opened a crash-cleanup domain for this handler's
+    /// actor state. Every clear/publish/transfer must validate against it.
+    Required,
+    /// The function is a lifecycle/template phase whose state is not the
+    /// active scheduler dispatch domain. Old-value release and source-owner
+    /// handoff still run; only state escrow mutation is suppressed.
+    LifecycleOutsideDispatch,
+}
+
 pub(crate) struct FnCtx<'a, 'ctx> {
     pub(crate) ctx: &'ctx Context,
     pub(crate) llvm_mod: &'a LlvmModule<'ctx>,
@@ -1883,6 +1894,18 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// `{ ptr, i32, i32 }` layout could alias (LESSONS:
     /// boundary-fail-closed, checker-authority).
     pub(crate) actor_state_field_kinds: Option<&'a [StateFieldCloneKind]>,
+    /// Whether an `ActorStateFieldStore` in this function executes inside the
+    /// scheduler-owned crash transaction for the SAME actor state.
+    ///
+    /// Receive and system handlers are entered by the scheduler after it has
+    /// escrowed their fully initialized state, including every resumed
+    /// activation. Lifecycle hooks are different: init/start run synchronously
+    /// at spawn (and may be nested beneath a different actor's dispatch), stop
+    /// runs from the teardown trampoline, and crash mutates the child's restart
+    /// template while the supervisor's dispatch domain is active. Those phases
+    /// must retain ordinary overwrite release/ownership handoff without asking
+    /// the active registry to clear or publish bytes from the wrong domain.
+    actor_state_store_transaction: ActorStateStoreTransaction,
     /// Local-register id → (stack slot, slot's LLVM type). Keyed by the
     /// `Place::Local(N)` index — an MIR identity, not a checker derivative.
     pub(crate) locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
@@ -17502,13 +17525,22 @@ fn lower_actor_state_field_store(
     // Clear only this field from the dispatch-owned state escrow before any
     // old-value release that may transitively panic. Untouched sibling fields
     // remain valid in the snapshot and are still dropped on crash.
-    emit_checked_dispatch_state_cleanup_call(
-        fn_ctx,
-        "hew_dispatch_state_cleanup_clear",
-        field_ptr,
-        field_ty,
-        &format!("state_f{idx}_crash_clear"),
-    )?;
+    //
+    // Lifecycle/template functions deliberately have no state transaction for
+    // THIS pointer. They may execute with no scheduler registry at all (direct
+    // init/start/stop), or nested beneath a different actor's registry (spawn
+    // from a handler and supervisor on(crash)). Never snapshot or clear that
+    // unrelated domain, and never fabricate a whole-state escrow for init:
+    // lifecycle lowering does not carry per-field initialization validity.
+    if fn_ctx.actor_state_store_transaction == ActorStateStoreTransaction::Required {
+        emit_checked_dispatch_state_cleanup_call(
+            fn_ctx,
+            "hew_dispatch_state_cleanup_clear",
+            field_ptr,
+            field_ty,
+            &format!("state_f{idx}_crash_clear"),
+        )?;
+    }
     if let Some(kinds) = fn_ctx.actor_state_field_kinds {
         let kind = kinds.get(idx as usize).ok_or_else(|| {
             CodegenError::FailClosed(format!(
@@ -17537,15 +17569,26 @@ fn lower_actor_state_field_store(
     // non-failing runtime transaction. A rejected token/range leaves the
     // source active; borrowed-message ingress has no armed source token and
     // therefore takes the separately validated no-source publication path.
+    //
+    // Outside a dispatch state transaction the stored value still consumes its
+    // lexical source owner. Retire that dynamic authority without publishing
+    // the field into whichever unrelated/no registry happens to be current.
     match handoff {
         hew_mir::ActorStateStoreHandoff::ConsumeSource => {
-            emit_actor_state_cleanup_handoff(
-                fn_ctx,
-                src,
-                field_ptr,
-                field_ty,
-                &format!("state_f{idx}_crash_handoff"),
-            )?;
+            match fn_ctx.actor_state_store_transaction {
+                ActorStateStoreTransaction::Required => {
+                    emit_actor_state_cleanup_handoff(
+                        fn_ctx,
+                        src,
+                        field_ptr,
+                        field_ty,
+                        &format!("state_f{idx}_crash_handoff"),
+                    )?;
+                }
+                ActorStateStoreTransaction::LifecycleOutsideDispatch => {
+                    emit_helper_crash_cleanup_deactivate_before_write(fn_ctx, src)?;
+                }
+            }
         }
     }
     Ok(())
@@ -20993,6 +21036,36 @@ fn is_receive_handler(func: &RawMirFunction) -> bool {
 
 fn is_crash_handler(func: &RawMirFunction) -> bool {
     actor_handler_identity(func).is_some_and(|(kind, _)| kind == ActorHandlerKind::Crash)
+}
+
+/// Classify the actor-state transaction expected by one generated function.
+///
+/// This consumes the carried MIR identity rather than symbol spelling. The
+/// match is intentionally exhaustive over `ActorHandlerKind`: adding a new
+/// hook/handler phase must decide whether its state pointer is the scheduler's
+/// active dispatch domain before codegen will compile.
+fn actor_state_store_transaction(func: &RawMirFunction) -> ActorStateStoreTransaction {
+    actor_state_store_transaction_for_kind(actor_handler_identity(func).map(|(kind, _)| kind))
+}
+
+fn actor_state_store_transaction_for_kind(
+    kind: Option<ActorHandlerKind>,
+) -> ActorStateStoreTransaction {
+    match kind {
+        Some(ActorHandlerKind::Receive | ActorHandlerKind::Exit | ActorHandlerKind::Down) => {
+            ActorStateStoreTransaction::Required
+        }
+        Some(
+            ActorHandlerKind::Init
+            | ActorHandlerKind::Start
+            | ActorHandlerKind::Stop
+            | ActorHandlerKind::Crash,
+        ) => ActorStateStoreTransaction::LifecycleOutsideDispatch,
+        // A hand-built/unknown function gets no permission to bypass runtime
+        // validation. In a real pipeline it also lacks actor_state_ty and an
+        // ActorStateFieldStore therefore fails closed earlier.
+        None => ActorStateStoreTransaction::Required,
+    }
 }
 
 fn compute_borrow_taint(func: &RawMirFunction) -> HashSet<u32> {
@@ -33043,6 +33116,7 @@ fn lower_function<'ctx>(
         execution_context_is_actor_handler: func.call_conv == FunctionCallConv::ActorHandler,
         actor_state_ty,
         actor_state_field_kinds,
+        actor_state_store_transaction: actor_state_store_transaction(func),
         locals,
         local_tys,
         blocks: blocks.clone(),

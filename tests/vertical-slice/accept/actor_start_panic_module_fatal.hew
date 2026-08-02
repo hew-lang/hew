@@ -1,0 +1,19 @@
+// Init/on(start) execute synchronously at spawn without a scheduler recovery
+// domain for this actor. A lifecycle-phase store must work, but a following
+// panic is not falsely advertised as actor-contained: native main-context and
+// production WASI both terminate.
+
+actor StartPanic {
+    var value: i64 = 0;
+
+    #[on(start)]
+    fn start() {
+        value = 1;
+        panic("intentional on(start) panic");
+    }
+}
+
+fn main() -> i64 {
+    let _actor = spawn StartPanic;
+    0
+}

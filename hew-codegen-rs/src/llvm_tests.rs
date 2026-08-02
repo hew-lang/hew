@@ -3,6 +3,38 @@ use hew_mir::{BasicBlock, DecisionFact, IrPipeline};
 use inkwell::values::AnyValue;
 
 #[test]
+fn actor_state_transaction_classifier_is_explicit_for_every_handler_phase() {
+    for kind in [
+        ActorHandlerKind::Receive,
+        ActorHandlerKind::Exit,
+        ActorHandlerKind::Down,
+    ] {
+        assert_eq!(
+            actor_state_store_transaction_for_kind(Some(kind)),
+            ActorStateStoreTransaction::Required,
+            "{kind:?} must retain scheduler-domain validation"
+        );
+    }
+    for kind in [
+        ActorHandlerKind::Init,
+        ActorHandlerKind::Start,
+        ActorHandlerKind::Stop,
+        ActorHandlerKind::Crash,
+    ] {
+        assert_eq!(
+            actor_state_store_transaction_for_kind(Some(kind)),
+            ActorStateStoreTransaction::LifecycleOutsideDispatch,
+            "{kind:?} must not address an absent or foreign scheduler state domain"
+        );
+    }
+    assert_eq!(
+        actor_state_store_transaction_for_kind(None),
+        ActorStateStoreTransaction::Required,
+        "unknown/hand-built MIR must fail closed rather than inherit lifecycle permission"
+    );
+}
+
+#[test]
 fn owned_config_field_collections_are_fail_closed_backstop() {
     // #2238 item 1: collection kinds must take the same typed error path
     // used by the init thunk, rather than reaching clone_helper_for_kind's
@@ -5595,6 +5627,9 @@ fn make_test_fn_ctx<'a, 'ctx>(
         execution_context_is_actor_handler: false,
         actor_state_ty: None,
         actor_state_field_kinds: None,
+        // Hand-built helper MIR carries no proven lifecycle identity, so it
+        // keeps the fail-closed scheduler-domain requirement.
+        actor_state_store_transaction: ActorStateStoreTransaction::Required,
         locals: HashMap::new(),
         local_tys: HashMap::new(),
         blocks: HashMap::new(),
@@ -10791,6 +10826,11 @@ fn crash_state_probe_fn(source_origin: SourceOrigin) -> RawMirFunction {
                     dest: Place::Local(2),
                     mode: ActorStateLoadMode::Borrowed,
                 },
+                Instr::ActorStateFieldStore {
+                    field_offset: FieldOffset(0),
+                    src: Place::Local(2),
+                    handoff: hew_mir::ActorStateStoreHandoff::ConsumeSource,
+                },
                 Instr::Move {
                     dest: Place::ReturnSlot,
                     src: Place::Local(2),
@@ -10878,6 +10918,10 @@ fn on_crash_definition_consumes_trailing_actor_state_pointer() {
     assert!(
         !body.contains("ctx_actor_ptr_slot") && !body.contains("actor_state_slot"),
         "crash hook must not recover the supervisor actor's state through ctx:\n{body}"
+    );
+    assert!(
+        !body.contains("hew_dispatch_state_cleanup_"),
+        "crash-hook stores target a child restart template outside the supervisor's active dispatch transaction:\n{body}"
     );
 }
 

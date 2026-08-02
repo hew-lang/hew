@@ -6845,16 +6845,16 @@ impl Checker {
             .trailing_expr
             .as_deref()
             .is_some_and(|(expr, _)| matches!(expr, Expr::Identifier(name) if name == "self"));
-        let receiver_identity = self.strict_nominal_identity(type_name);
         let returns_self_type = match return_type {
-            Ty::Named { name, args, .. }
-                if name == "Self" || self.strict_nominal_identity(name) == receiver_identity =>
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } if name == "Self"
+                || self.strict_names_same_owner(name, *builtin, type_name, None) =>
             {
                 self.current_self_type
                     .as_ref()
-                    .filter(|(self_name, _)| {
-                        self.strict_nominal_identity(self_name) == receiver_identity
-                    })
                     .is_none_or(|(_, self_args)| {
                         args.len() == self_args.len()
                             && args.iter().zip(self_args).all(|(actual, expected)| {
@@ -10162,19 +10162,31 @@ impl Checker {
                     }
                     self.register_qualified_type_alias(module_short, &td.name);
                     self.record_module_type_export(module_short, &td.name);
+                    self.record_module_type_export(module_full_path, &td.name);
                 }
                 Item::Machine(md) => {
                     if !md.visibility.is_pub() {
                         continue;
                     }
                     self.register_qualified_type_alias(module_short, &md.name);
-                    self.register_qualified_type_alias(module_short, &format!("{}Event", md.name));
+                    let event_name = format!("{}Event", md.name);
+                    self.register_qualified_type_alias(module_short, &event_name);
+                    // A public machine publishes its generated event enum as
+                    // part of the same declaration surface.  Keep the export
+                    // ledger paired with the qualified aliases so import
+                    // validation, checker resolution, and HIR all agree that
+                    // `module.MachineEvent::Payload` is callable.
+                    self.record_module_type_export(module_short, &md.name);
+                    self.record_module_type_export(module_short, &event_name);
+                    self.record_module_type_export(module_full_path, &md.name);
+                    self.record_module_type_export(module_full_path, &event_name);
                 }
                 Item::Actor(ad) => {
                     // The dotted `{module_short}.{name}` entry is authored
                     // directly by `register_actor_base`; only the export
                     // record is added here.
                     self.record_module_type_export(module_short, &ad.name);
+                    self.record_module_type_export(module_full_path, &ad.name);
                 }
                 _ => {}
             }

@@ -2650,7 +2650,10 @@ impl Checker {
         else {
             return None;
         };
-        let sig = self.lookup_named_method_sig(name, type_args, method)?;
+        let canonical_name = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| name.clone());
+        let sig = self.lookup_named_method_sig(&canonical_name, type_args, method)?;
         let return_type = self
             .apply_instantiated_call_signature(
                 &sig,
@@ -2663,7 +2666,81 @@ impl Checker {
                 true,
             )
             .return_type;
-        Some(self.qualify_method_return_to_receiver_owner(name, &return_type))
+        // The successful signature lookup and the emitted impl body must use
+        // the same declaration identity.  In particular, a fielded resource
+        // wrapper such as `std.text.regex.Pattern` deliberately cannot be
+        // rewritten to its raw handle extern: its source impl forwards
+        // `self.handle` and reconstructs wrappers where needed.  Resolve the
+        // canonical, source-qualified impl key here, at the lookup boundary,
+        // rather than making HIR rediscover it from a presentation name.
+        self.record_named_source_method_rewrite(receiver_ty, method, &sig, span);
+        Some(self.qualify_method_return_to_receiver_owner(&canonical_name, &return_type))
+    }
+
+    /// Record a direct call to the exact source implementation that supplied
+    /// a named-method signature.  This is intentionally keyed only by the
+    /// checker-owned declaration map: same-leaf user types and registry
+    /// aliases cannot mint an imported stdlib impl dispatch.
+    fn record_named_source_method_rewrite(
+        &mut self,
+        receiver_ty: &Ty,
+        method: &str,
+        sig: &FnSig,
+        span: &Span,
+    ) {
+        let Ty::Named {
+            name,
+            args: type_args,
+            builtin,
+            ..
+        } = receiver_ty
+        else {
+            return;
+        };
+        let canonical_name = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| name.clone());
+        let method_key = format!("{canonical_name}::{method}");
+        let dispatch_key = if type_args.is_empty() {
+            method_key.clone()
+        } else {
+            type_args
+                .iter()
+                .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
+                .collect::<Option<Vec<_>>>()
+                .as_ref()
+                .and_then(|args| crate::resolved_ty::mangle_impl_self_name(&canonical_name, args))
+                .map(|owner| format!("{owner}::{method}"))
+                .filter(|key| self.impl_method_declaration_ids.contains_key(key))
+                .unwrap_or_else(|| method_key.clone())
+        };
+        let Some(declaration) = self.impl_method_declaration_ids.get(&dispatch_key).cloned() else {
+            return;
+        };
+        let consumes_receiver = sig.consumes_receiver
+            || self.named_type_method_consumes_receiver(&canonical_name, method)
+            || self.named_type_inherent_close_consumes_receiver(
+                &canonical_name,
+                *builtin,
+                method,
+                sig,
+            );
+        if consumes_receiver {
+            self.method_call_consumes_receiver
+                .insert(SpanKey::in_module(span, self.current_module_idx));
+        }
+        self.record_method_call_rewrite(
+            span,
+            MethodCallRewrite::RewriteToFunction {
+                target: CallTarget::impl_method(declaration),
+                c_symbol: dispatch_key,
+                descriptor: None,
+                extern_identity: None,
+                elem_ty: None,
+                consumes_receiver,
+                returns_receiver_identity: sig.returns_receiver_identity,
+            },
+        );
     }
 
     /// Restore the source owner on bare nominal types in a qualified receiver's
@@ -8950,6 +9027,9 @@ impl Checker {
                 },
                 _,
             ) => {
+                let canonical_receiver_name = self
+                    .canonical_nominal_name(name)
+                    .unwrap_or_else(|| name.clone());
                 // Builtin `Result<T, E>` / `Option<T>` receivers (e.g. the
                 // `Result<T, AskError>` wrapper an actor ask produces) resolve
                 // their methods against the origin-based stdlib snapshot ONLY,
@@ -8970,7 +9050,7 @@ impl Checker {
                     Some(b @ (BuiltinType::Result | BuiltinType::Option)) => {
                         self.lookup_builtin_result_option_method_sig(*b, type_args, method)
                     }
-                    _ => self.lookup_named_method_sig(name, type_args, method),
+                    _ => self.lookup_named_method_sig(&canonical_receiver_name, type_args, method),
                 };
                 if let Some(sig) = sig {
                     // Mutable-receiver enforcement (Q297 Stage 1): methods
@@ -9158,7 +9238,7 @@ impl Checker {
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     MachineMethodKind::Step {
-                                        machine_name: name.clone(),
+                                        machine_name: canonical_receiver_name.clone(),
                                     },
                                 );
                             }
@@ -9166,7 +9246,7 @@ impl Checker {
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     MachineMethodKind::StateName {
-                                        machine_name: name.clone(),
+                                        machine_name: canonical_receiver_name.clone(),
                                     },
                                 );
                             }
@@ -9174,7 +9254,7 @@ impl Checker {
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
                                     MachineMethodKind::TakeEmits {
-                                        machine_name: name.clone(),
+                                        machine_name: canonical_receiver_name.clone(),
                                     },
                                 );
                             }
@@ -9258,7 +9338,7 @@ impl Checker {
                         // that exact source identity even when compatibility
                         // `fn_sigs` aliases retain a shorter presentation.
                         // Never retry through either the type or method leaf.
-                        let method_owner = name.as_str();
+                        let method_owner = canonical_receiver_name.as_str();
                         let method_key = format!("{method_owner}::{method}");
                         // Wire codec instance serialize methods on a `#[wire]`
                         // struct or enum. `encode` is the binary CBOR path
@@ -9408,8 +9488,10 @@ impl Checker {
                             );
                         }
                     }
-                    return self
-                        .qualify_method_return_to_receiver_owner(name, &applied_sig.return_type);
+                    return self.qualify_method_return_to_receiver_owner(
+                        &canonical_receiver_name,
+                        &applied_sig.return_type,
+                    );
                 }
                 // Type-parameter method dispatch: resolve from trait bounds.
                 // When the receiver is a generic type parameter (e.g. `T` in

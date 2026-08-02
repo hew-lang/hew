@@ -1456,7 +1456,7 @@ impl Checker {
             }
             if let Some(variant) = td.variants.get(name) {
                 if matches!(variant, VariantDef::Unit) {
-                    let ty = self.variant_nominal_ty(type_name.clone(), vec![]);
+                    let ty = self.instantiated_unit_variant_ty(type_name, td);
                     found = Some(ty);
                     break;
                 }
@@ -1472,7 +1472,7 @@ impl Checker {
                 }
                 if let Some(variant) = td.variants.get(name) {
                     if matches!(variant, VariantDef::Unit) {
-                        let ty = self.variant_nominal_ty(type_name.clone(), vec![]);
+                        let ty = self.instantiated_unit_variant_ty(type_name, td);
                         found = Some(ty);
                         break;
                     }
@@ -1510,32 +1510,7 @@ impl Checker {
                             // declaring `None`) would collide in fn_sigs because the key is the
                             // bare variant name; without the guard, `A::None` could return
                             // `Named { B, [?] }`.
-                            let ty = if let Some(sig) = self.fn_sigs.get(variant_name).cloned() {
-                                let sig_names_correct_enum =
-                                    sig.return_type.type_name().is_some_and(|n| {
-                                        self.strict_nominal_identity(n) == canonical_type_prefix
-                                    });
-                                if sig_names_correct_enum {
-                                    let mut ret = sig.return_type.clone();
-                                    for tp in &sig.type_params {
-                                        ret = ret
-                                            .substitute_named_param(tp, &Ty::Var(TypeVar::fresh()));
-                                    }
-                                    match ret {
-                                        Ty::Named { args, .. } => self.variant_nominal_ty(
-                                            canonical_type_prefix.clone(),
-                                            args,
-                                        ),
-                                        other => other,
-                                    }
-                                } else {
-                                    // fn_sig belongs to a different enum; bare name is correct.
-                                    self.variant_nominal_ty(canonical_type_prefix.clone(), vec![])
-                                }
-                            } else {
-                                // No fn_sig (monomorphic or machine variant) — bare name is correct.
-                                self.variant_nominal_ty(canonical_type_prefix.clone(), vec![])
-                            };
+                            let ty = self.instantiated_unit_variant_ty(&canonical_type_prefix, td);
                             found = Some(ty);
                         }
                     }
@@ -1565,31 +1540,7 @@ impl Checker {
                         if let Some(td) = self.type_defs.get(canonical.as_str()) {
                             if let Some(variant) = td.variants.get(variant_name) {
                                 if matches!(variant, VariantDef::Unit) {
-                                    let ty = if let Some(sig) =
-                                        self.fn_sigs.get(variant_name).cloned()
-                                    {
-                                        let sig_names_correct_enum =
-                                            sig.return_type.type_name().is_some_and(|n| {
-                                                self.strict_nominal_identity(n) == canonical
-                                            });
-                                        if sig_names_correct_enum {
-                                            let mut ret = sig.return_type.clone();
-                                            if let Ty::Named { name, .. } = &mut ret {
-                                                name.clone_from(&canonical);
-                                            }
-                                            for tp in &sig.type_params {
-                                                ret = ret.substitute_named_param(
-                                                    tp,
-                                                    &Ty::Var(TypeVar::fresh()),
-                                                );
-                                            }
-                                            ret
-                                        } else {
-                                            self.variant_nominal_ty(canonical.clone(), vec![])
-                                        }
-                                    } else {
-                                        self.variant_nominal_ty(canonical.clone(), vec![])
-                                    };
+                                    let ty = self.instantiated_unit_variant_ty(&canonical, td);
                                     found = Some(ty);
                                 }
                             }
@@ -1651,6 +1602,21 @@ impl Checker {
             }
             Ty::Error
         }
+    }
+
+    /// Materialize a unit enum or machine-state constructor from the owning
+    /// declaration, not the globally shared variant-name signature.  A
+    /// generic `Lifecycle::Created` has no payload from which to infer `T`, so
+    /// it must introduce fresh variables that its expected type can unify;
+    /// consulting a bare `Created` signature lets an unrelated owner erase
+    /// that generic identity.
+    fn instantiated_unit_variant_ty(&self, type_name: &str, td: &TypeDef) -> Ty {
+        let args = td
+            .type_params
+            .iter()
+            .map(|_| Ty::Var(TypeVar::fresh()))
+            .collect();
+        self.variant_nominal_ty(type_name.to_string(), args)
     }
 
     #[allow(
@@ -6644,7 +6610,16 @@ impl Checker {
         // `user_opaque_type_names` stores exact declaration identities. A
         // same-leaf type from another module must not acquire opacity.
         let unqualified = name.split_once('.').map_or(name, |(_, unqual)| unqual);
-        let is_declaring_module = self.local_type_defs.contains(unqualified);
+        let canonical_owner_is_current_source = name
+            .rsplit_once('.')
+            .is_some_and(|(owner, _)| self.checking_canonical_stdlib_source(owner));
+        let is_declaring_module = self.local_type_defs.contains(unqualified)
+            // A bundled stdlib package can contain several source files that
+            // are registered into one source-owner frame.  Let that proven
+            // source owner build its opaque wrapper stubs, but never extend
+            // the exemption to an importer or to a user module with a
+            // std-looking spelling.
+            || canonical_owner_is_current_source;
         let is_opaque_handle = !is_declaring_module
             && (self.user_opaque_type_names.contains(name)
                 || self.canonical_owned_handle_type_name(name).is_some());

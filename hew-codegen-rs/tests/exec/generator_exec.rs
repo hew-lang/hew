@@ -348,14 +348,31 @@ fn count_main_release_calls(ir: &str, symbol: &str) -> usize {
     count
 }
 
-/// Count direct `call void @<symbol>(` sites across the WHOLE emitted module.
-/// Used where the release fires through a drop thunk (the generator-in-tuple
-/// member drop): the module-wide count must be exactly one (the thunk's single
-/// recursing call) with no second direct `main`-body call aliasing the same
-/// handle.
+/// Count normal-flow direct `call void @<symbol>(` sites across the emitted
+/// module. Generated `__hew_frame_cleanup_*` thunks are excluded: those are
+/// crash-only alternatives to an ordinary drop whose dynamic token is retired
+/// before normal cleanup, so including both call sites would report a false
+/// double-release even though their paths are mutually exclusive.
 fn count_release_calls_in_module(ir: &str, symbol: &str) -> usize {
     let needle = format!("call void @{symbol}(");
-    ir.lines().filter(|line| line.contains(&needle)).count()
+    let mut in_crash_cleanup_thunk = false;
+    let mut count = 0;
+    for line in ir.lines() {
+        if line.starts_with("define internal void @__hew_frame_cleanup_") {
+            in_crash_cleanup_thunk = true;
+            continue;
+        }
+        if in_crash_cleanup_thunk {
+            if line == "}" {
+                in_crash_cleanup_thunk = false;
+            }
+            continue;
+        }
+        if line.contains(&needle) {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Leak 1 (consumer side): `for v in lists()` over a `Vec<i64>` yield must

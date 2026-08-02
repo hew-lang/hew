@@ -1,5 +1,8 @@
 use super::*;
-use hew_mir::{BasicBlock, DecisionFact, IrPipeline};
+use hew_mir::{
+    BasicBlock, CallAuthority, CollectionLayoutProbeKind, CompilerCallKind, DecisionFact,
+    IrPipeline,
+};
 use inkwell::values::AnyValue;
 
 #[test]
@@ -1146,8 +1149,9 @@ fn hashmap_descriptor_width_probe_pipeline() -> IrPipeline {
         instructions: Vec::new(),
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            // Probe callee: codegen-internal synthetic, no catalog family.
-            authority: Default::default(),
+            authority: CallAuthority::Compiler(CompilerCallKind::LayoutProbe(
+                CollectionLayoutProbeKind::HashMap,
+            )),
             args: vec![Place::Local(0), Place::Local(1)],
             dest: None,
             next: 1,
@@ -1286,7 +1290,9 @@ fn vec_descriptor_width_probe_pipeline() -> IrPipeline {
         instructions: Vec::new(),
         terminator: Terminator::Call {
             callee: "__hew_codegen_emit_vec_layout_probe".to_string(),
-            authority: Default::default(),
+            authority: CallAuthority::Compiler(CompilerCallKind::LayoutProbe(
+                CollectionLayoutProbeKind::Vec,
+            )),
             args: vec![Place::Local(0)],
             dest: None,
             next: 1,
@@ -11904,20 +11910,10 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 };"#,
                 r#"if owner.text.len() + owner.data.len() == -1 { panic("record"); }"#,
             ),
-            // `RecordInit` retains the fresh bytes producer before copying it
-            // into `Packet`.  The record field and the original producer local
-            // are therefore two independent owners, and the Suspend plan must
-            // retire both of them.
-            vec![
-                hew_mir::DropKind::RecordInPlace,
-                hew_mir::DropKind::CowHeap {
-                    release: hew_mir::CowHeapRelease::Bytes,
-                },
-            ],
-            vec![
-                "call void @__hew_record_drop_inplace_Packet(",
-                "call void @hew_bytes_drop(",
-            ],
+            // The fresh bytes producer hands its sole owner directly to
+            // `Packet`; only the record owns a release at suspension.
+            vec![hew_mir::DropKind::RecordInPlace],
+            vec!["call void @__hew_record_drop_inplace_Packet("],
         ),
         (
             "closure",
@@ -11928,13 +11924,11 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 r#"let owner = make_nested("nested-owner".to_upper());"#,
                 r#"if owner() == -1 { panic("closure"); }"#,
             ),
-            vec![
-                hew_mir::DropKind::ClosurePair,
-                hew_mir::DropKind::CowHeap {
-                    release: hew_mir::CowHeapRelease::String,
-                },
-            ],
-            vec!["closure_drop_env_free_thunk", "call void @hew_string_drop("],
+            // The closure env owns its captured String. The caller's fresh
+            // argument is retired before suspension, so it is not a competing
+            // frame owner.
+            vec![hew_mir::DropKind::ClosurePair],
+            vec!["closure_drop_env_free_thunk"],
         ),
     ];
 
@@ -11949,8 +11943,8 @@ fn suspending_closure_frame_cleanup_reuses_bytes_record_and_closure_rituals() {
                 .filter(|instr| matches!(instr, Instr::BytesRetain { .. }))
                 .count();
             assert_eq!(
-                ingress_retain_count, 1,
-                "the Packet field and fresh producer may have two releases only when aggregate ingress retains the Bytes owner exactly once"
+                ingress_retain_count, 0,
+                "fresh Bytes aggregate ingress transfers its existing owner; a retain would create an unbalanced producer generation"
             );
         }
         let drops = suspending_call_closure_drops(&pipeline);
@@ -12299,7 +12293,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
     owner_locals.dedup();
     assert_eq!(
         owner_locals,
-        [2, 5, 9, 11, 14, 17, 19, 21],
+        [2, 5, 11, 14, 19, 21],
         "grounded helper owner topology drifted"
     );
 
@@ -12330,7 +12324,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
                     line.contains("%helper_crash_cleanup_token_") && line.contains(" = alloca i64")
                 })
                 .count(),
-            8,
+            6,
             "{triple}: every exact owner needs one stable token alloca:\n{helper}"
         );
         let arms = helper
@@ -12339,7 +12333,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
             .collect::<Vec<_>>();
         assert_eq!(
             arms.len(),
-            8,
+            6,
             "{triple}: every grounded Move/Call owner must arm once:\n{helper}"
         );
         assert!(
@@ -12350,7 +12344,7 @@ fn ordinary_helper_source_arms_all_grounded_owners_native_and_wasm32() {
             helper
                 .matches("call i1 @hew_cont_crash_cleanup_deactivate")
                 .count(),
-            8,
+            6,
             "{triple}: every destination write must gate stale authority before replacement"
         );
         assert!(

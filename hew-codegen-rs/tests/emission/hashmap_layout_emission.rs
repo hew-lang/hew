@@ -41,6 +41,32 @@ fn vec_of(elem: ResolvedTy) -> ResolvedTy {
     }
 }
 
+/// Construct synthetic layout probes with the same compiler-owned identity
+/// that production lowering carries into codegen.  Probe spellings are not
+/// runtime ABI calls, so letting fixtures default to `Direct` would exercise
+/// a different (and deliberately fail-closed) codegen path.
+fn layout_probe_authority(callee: &str) -> hew_mir::CallAuthority {
+    use hew_mir::{CallAuthority, CollectionLayoutProbeKind as Probe, CompilerCallKind};
+
+    let kind = match callee {
+        "__hew_codegen_emit_hashmap_layout_probe" => Probe::HashMap,
+        "__hew_codegen_emit_hashset_layout_probe" => Probe::HashSet,
+        "__hew_codegen_emit_vec_layout_probe" => Probe::Vec,
+        other => panic!("unknown layout-probe fixture callee `{other}`"),
+    };
+    CallAuthority::Compiler(CompilerCallKind::LayoutProbe(kind))
+}
+
+fn layout_probe_call(callee: &str, args: Vec<Place>, dest: Option<Place>, next: u32) -> Terminator {
+    Terminator::Call {
+        callee: callee.to_string(),
+        authority: layout_probe_authority(callee),
+        args,
+        dest,
+        next,
+    }
+}
+
 /// Build a minimal `IrPipeline` whose `main` function lowers `entry_block`,
 /// then branches to a trivial return block.  `locals` lists the local-slot
 /// types in MIR order.
@@ -170,17 +196,12 @@ fn emit_hashmap_probe_ll(
         id: 0,
         statements: vec![],
         instructions: vec![],
-        terminator: Terminator::Call {
-            callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                "__hew_codegen_emit_hashmap_layout_probe",
-            ))
-            .map(hew_mir::CallAuthority::Runtime)
-            .unwrap_or_default(),
-            args: vec![Place::Local(0), Place::Local(1)],
-            dest: None,
-            next: 1,
-        },
+        terminator: layout_probe_call(
+            "__hew_codegen_emit_hashmap_layout_probe",
+            vec![Place::Local(0), Place::Local(1)],
+            None,
+            1,
+        ),
     };
     emit_ll(
         base_pipeline(block, vec![key_ty, val_ty], record_layouts),
@@ -197,17 +218,12 @@ fn emit_hashset_probe_ll(
         id: 0,
         statements: vec![],
         instructions: vec![],
-        terminator: Terminator::Call {
-            callee: "__hew_codegen_emit_hashset_layout_probe".to_string(),
-            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                "__hew_codegen_emit_hashset_layout_probe",
-            ))
-            .map(hew_mir::CallAuthority::Runtime)
-            .unwrap_or_default(),
-            args: vec![Place::Local(0)],
-            dest: None,
-            next: 1,
-        },
+        terminator: layout_probe_call(
+            "__hew_codegen_emit_hashset_layout_probe",
+            vec![Place::Local(0)],
+            None,
+            1,
+        ),
     };
     emit_ll(
         base_pipeline(block, vec![elem_ty], record_layouts),
@@ -496,33 +512,23 @@ fn hash_thunk_dedup_one_per_record_per_module() {
         id: 0,
         statements: vec![],
         instructions: vec![],
-        terminator: Terminator::Call {
-            callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                "__hew_codegen_emit_hashmap_layout_probe",
-            ))
-            .map(hew_mir::CallAuthority::Runtime)
-            .unwrap_or_default(),
-            args: vec![Place::Local(0), Place::Local(1)],
-            dest: None,
-            next: 1,
-        },
+        terminator: layout_probe_call(
+            "__hew_codegen_emit_hashmap_layout_probe",
+            vec![Place::Local(0), Place::Local(1)],
+            None,
+            1,
+        ),
     };
     let mid = BasicBlock {
         id: 1,
         statements: vec![],
         instructions: vec![],
-        terminator: Terminator::Call {
-            callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                "__hew_codegen_emit_hashmap_layout_probe",
-            ))
-            .map(hew_mir::CallAuthority::Runtime)
-            .unwrap_or_default(),
-            args: vec![Place::Local(0), Place::Local(1)],
-            dest: None,
-            next: 2,
-        },
+        terminator: layout_probe_call(
+            "__hew_codegen_emit_hashmap_layout_probe",
+            vec![Place::Local(0), Place::Local(1)],
+            None,
+            2,
+        ),
     };
     let ret = BasicBlock {
         id: 2,
@@ -667,17 +673,12 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
         id: 1,
         statements: vec![],
         instructions: vec![],
-        terminator: Terminator::Call {
-            callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                "__hew_codegen_emit_hashmap_layout_probe",
-            ))
-            .map(hew_mir::CallAuthority::Runtime)
-            .unwrap_or_default(),
-            args: vec![Place::Local(1), Place::Local(2)],
-            dest: None,
-            next: 2,
-        },
+        terminator: layout_probe_call(
+            "__hew_codegen_emit_hashmap_layout_probe",
+            vec![Place::Local(1), Place::Local(2)],
+            None,
+            2,
+        ),
     };
     let ret = BasicBlock {
         id: 2,
@@ -808,17 +809,12 @@ fn hashmap_layout_emit_for_wasm_target_emits_descriptor_object() {
         id: 0,
         statements: vec![],
         instructions: vec![],
-        terminator: Terminator::Call {
-            callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                "__hew_codegen_emit_hashmap_layout_probe",
-            ))
-            .map(hew_mir::CallAuthority::Runtime)
-            .unwrap_or_default(),
-            args: vec![Place::Local(0), Place::Local(1)],
-            dest: None,
-            next: 1,
-        },
+        terminator: layout_probe_call(
+            "__hew_codegen_emit_hashmap_layout_probe",
+            vec![Place::Local(0), Place::Local(1)],
+            None,
+            1,
+        ),
     };
     let pipeline = base_pipeline(
         block,
@@ -872,17 +868,12 @@ fn hashset_layout_emit_for_wasm_target_emits_descriptor_object() {
         id: 0,
         statements: vec![],
         instructions: vec![],
-        terminator: Terminator::Call {
-            callee: "__hew_codegen_emit_hashset_layout_probe".to_string(),
-            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                "__hew_codegen_emit_hashset_layout_probe",
-            ))
-            .map(hew_mir::CallAuthority::Runtime)
-            .unwrap_or_default(),
-            args: vec![Place::Local(0)],
-            dest: None,
-            next: 1,
-        },
+        terminator: layout_probe_call(
+            "__hew_codegen_emit_hashset_layout_probe",
+            vec![Place::Local(0)],
+            None,
+            1,
+        ),
     };
     let pipeline = base_pipeline(block, vec![named("Point")], vec![point_layout()]);
     let tmp = tempfile::Builder::new()
@@ -937,17 +928,7 @@ fn pipeline_with_probe_call(
         id: 0,
         statements: vec![],
         instructions: vec![],
-        terminator: Terminator::Call {
-            callee: callee.to_string(),
-            // Mirror the producer lift: the walker classifies layout-op
-            // sites by their carried typed family.
-            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(callee))
-                .map(hew_mir::CallAuthority::Runtime)
-                .unwrap_or_default(),
-            args,
-            dest,
-            next: 1,
-        },
+        terminator: layout_probe_call(callee, args, dest, 1),
     };
     base_pipeline(block, locals, record_layouts)
 }
@@ -1082,33 +1063,23 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
         id: 0,
         statements: vec![],
         instructions: vec![],
-        terminator: Terminator::Call {
-            callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                "__hew_codegen_emit_hashmap_layout_probe",
-            ))
-            .map(hew_mir::CallAuthority::Runtime)
-            .unwrap_or_default(),
-            args: vec![Place::Local(0), Place::Local(2)],
-            dest: None,
-            next: 1,
-        },
+        terminator: layout_probe_call(
+            "__hew_codegen_emit_hashmap_layout_probe",
+            vec![Place::Local(0), Place::Local(2)],
+            None,
+            1,
+        ),
     };
     let mid = BasicBlock {
         id: 1,
         statements: vec![],
         instructions: vec![],
-        terminator: Terminator::Call {
-            callee: "__hew_codegen_emit_hashmap_layout_probe".to_string(),
-            authority: (hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                "__hew_codegen_emit_hashmap_layout_probe",
-            ))
-            .map(hew_mir::CallAuthority::Runtime)
-            .unwrap_or_default(),
-            args: vec![Place::Local(1), Place::Local(2)],
-            dest: None,
-            next: 2,
-        },
+        terminator: layout_probe_call(
+            "__hew_codegen_emit_hashmap_layout_probe",
+            vec![Place::Local(1), Place::Local(2)],
+            None,
+            2,
+        ),
     };
     let ret = BasicBlock {
         id: 2,

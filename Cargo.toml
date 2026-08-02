@@ -1,11 +1,11 @@
 [workspace]
 members = [
-  "adze-cli",
   "hew-cabi",
   "hew-std",
   "std/encoding/binary",
   "std/text/template",
   "hew-cli",
+  "hew-pkg",
   "hew-lexer",
   "hew-lib",
   "hew-lsp",

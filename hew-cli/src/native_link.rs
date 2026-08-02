@@ -5,7 +5,7 @@
 //! final binary — without the user passing `--link-lib` by hand. This module
 //! walks the resolved import graph of the type-checked program, finds each
 //! imported package directory that declares `[native]`, and (build-on-demand)
-//! compiles + locates its staticlib via [`adze_cli::native::build_native`].
+//! compiles + locates its staticlib via [`hew_pkg::native::build_native`].
 //!
 //! Linking only succeeds when the staticlib embeds a byte-identical `libstd` to
 //! `libhew.a` (same pinned rustc) and is built `panic = "abort"`; otherwise the
@@ -51,7 +51,7 @@ fn collect_items(items: &[Spanned<Item>], dirs: &mut BTreeSet<PathBuf>) {
 pub fn build_native_link_libs(dirs: &[PathBuf]) -> Result<Vec<String>, String> {
     let mut libs = Vec::new();
     for dir in dirs {
-        if let Some(artifact) = adze_cli::native::build_native(dir)? {
+        if let Some(artifact) = hew_pkg::native::build_native(dir)? {
             let path = artifact.path.to_str().ok_or_else(|| {
                 format!(
                     "native library path is not valid UTF-8: {}",

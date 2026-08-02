@@ -40,28 +40,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "adze-cli"
-version = "0.6.0-rc1"
-dependencies = [
- "base64",
- "clap",
- "clap_complete",
- "ed25519-dalek",
- "rand 0.10.1",
- "rand_core 0.10.1",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tar",
- "tempfile",
- "tiny_http",
- "toml",
- "ureq",
- "zstd",
-]
-
-[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1804,7 +1782,6 @@ dependencies = [
 name = "hew-cli"
 version = "0.6.0-rc1"
 dependencies = [
- "adze-cli",
  "clap",
  "clap_complete",
  "dirs",
@@ -1817,6 +1794,7 @@ dependencies = [
  "hew-lexer",
  "hew-mir",
  "hew-parser",
+ "hew-pkg",
  "hew-runtime",
  "hew-testutil",
  "hew-types",
@@ -1944,6 +1922,28 @@ dependencies = [
  "serde",
  "serde_json",
  "walkdir",
+]
+
+[[package]]
+name = "hew-pkg"
+version = "0.6.0-rc1"
+dependencies = [
+ "base64",
+ "clap",
+ "clap_complete",
+ "ed25519-dalek",
+ "rand 0.10.1",
+ "rand_core 0.10.1",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "tiny_http",
+ "toml",
+ "ureq",
+ "zstd",
 ]
 
 [[package]]

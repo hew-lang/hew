@@ -1,7 +1,7 @@
-//! Library re-exports for integration testing.
+//! The Hew package manager, consumed as a library by the `hew` CLI.
 //!
-//! The `adze` binary lives in `main.rs`; this module exposes the core types
-//! so that integration tests in `tests/` can construct a `RegistryClient` and
+//! Exposes the package-manager command surface (`cli`) plus the core types so
+//! that integration tests in `tests/` can construct a `RegistryClient` and
 //! interact with it against a mock server.
 
 pub mod client;

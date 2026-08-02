@@ -40,7 +40,8 @@ fn timeout_await_operation_preserves_ordered_subsumption_spine() {
         "#,
     );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    assert!(verify_hir(&output.module).is_empty());
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "{verify:?}");
     let facts = &output.module.produced_value_facts;
     let (&timeout_site, timeout_fact) = facts
         .iter()
@@ -100,6 +101,65 @@ fn timeout_await_operation_preserves_ordered_subsumption_spine() {
                 if name == "produced value receiver identity" && reason.contains("has type")
         )
     }));
+}
+
+#[test]
+fn channel_recv_deadline_preserves_await_and_method_occurrences() {
+    let output = support::checker_pipeline::lower_through_checker_with_modules(
+        r"
+        import std::channel::channel;
+
+        actor Worker {
+            receive fn run() {
+                let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+                let _got: Result<Option<i64>, TimeoutError> =
+                    await rx.recv() | after 1ms;
+                let _ = tx;
+            }
+        }
+        ",
+    );
+    assert!(
+        !output.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { .. }
+        )),
+        "deadline lowering must preserve every checker occurrence: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(
+        !verify.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            HirDiagnosticKind::CheckerBoundaryViolation { .. }
+        )),
+        "{verify:?}"
+    );
+
+    let facts = &output.module.produced_value_facts;
+    let (&timeout_site, timeout_fact) = facts
+        .iter()
+        .find(|(_, fact)| fact.producer == hew_hir::HirProducedValueProducer::Timeout)
+        .expect("timeout boundary fact");
+    let hew_hir::HirProducedValueRelation::Subsumes(await_site) = timeout_fact.relation else {
+        panic!("timeout must subsume the channel await occurrence: {timeout_fact:?}");
+    };
+    let await_fact = &facts[&await_site];
+    assert_eq!(
+        await_fact.producer,
+        hew_hir::HirProducedValueProducer::ChannelRecvAwait
+    );
+    let hew_hir::HirProducedValueRelation::Subsumes(method_site) = await_fact.relation else {
+        panic!("channel await must subsume the recv method occurrence: {await_fact:?}");
+    };
+    assert_eq!(
+        facts[&method_site].producer,
+        hew_hir::HirProducedValueProducer::ChannelRecvAwait
+    );
+
+    let parents = hew_hir::verify::collect_site_parents(&output.module);
+    assert_eq!(parents.get(&await_site), Some(&Some(timeout_site)));
+    assert_eq!(parents.get(&method_site), Some(&Some(await_site)));
 }
 
 #[test]
@@ -1489,6 +1549,39 @@ fn make() {
         hew_hir::HirCaptureKind::Strong,
         "`outer` is a free variable captured by the inner lambda; it must \
          be Strong, not the inner's own self-binding. captures = {captures:?}",
+    );
+}
+
+#[test]
+fn actor_lambda_body_and_spawn_handle_have_distinct_ownership_facts() {
+    let output = lower(
+        r"
+        fn make() {
+            let _worker = actor |value: i64| -> i64 { value + 1 };
+        }
+        ",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(verify_hir(&output.module).is_empty());
+
+    let lambda = collect_spawn_lambdas(&output)
+        .into_iter()
+        .next()
+        .expect("spawned actor lambda");
+    let HirExprKind::SpawnLambdaActor { body, .. } = &lambda.kind else {
+        unreachable!();
+    };
+    assert_eq!(
+        output.module.produced_value_facts[&lambda.site].ownership,
+        hew_types::ProducedValueOwnership::Owned {
+            acquisition: hew_types::ProducedValueAcquisition::Fresh,
+        },
+        "the enclosing expression creates the actor handle"
+    );
+    assert_eq!(
+        output.module.produced_value_facts[&body.site].ownership,
+        hew_types::ProducedValueOwnership::NoOwner,
+        "the i64 body result must not inherit the handle's fresh owner"
     );
 }
 

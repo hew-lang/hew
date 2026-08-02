@@ -51,10 +51,10 @@ use crate::node::{
     HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
     HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
     HirPayloadVariantPredicate, HirProducedValueFact, HirProducedValueProducer,
-    HirProducedValueSourceAnchor, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
-    HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild,
-    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant,
-    HirVariantKind,
+    HirProducedValueRelation, HirProducedValueSourceAnchor, HirRecordDecl, HirRegexLiteral,
+    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
+    HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
+    HirVarSelfMethodTarget, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
@@ -98,7 +98,7 @@ fn collect_match_payload_predicates(
     match &pattern.0 {
         Pattern::Constructor { name, patterns } => {
             let field_tys = ctx
-                .lookup_variant_ctor(name)
+                .lookup_variant_ctor(name, Some(scrutinee_ty))
                 .map(|(_, _, kind)| match kind {
                     HirVariantKind::Tuple(field_tys) => field_tys.clone(),
                     HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
@@ -2901,36 +2901,18 @@ pub fn lower_program_with_mono_cap(
                                 let source_event_type =
                                     format!("{source_module}.{event_type_name}");
                                 for (idx, state) in md.states.iter().enumerate() {
-                                    let qualified = format!("{}::{}", md.name, state.name);
-                                    ctx.machine_ctor_registry
-                                        .insert(qualified, (source_state_type.clone(), idx));
                                     let module_qualified =
                                         format!("{source_module}.{}::{}", md.name, state.name);
                                     ctx.machine_ctor_registry
                                         .insert(module_qualified, (source_state_type.clone(), idx));
-                                    if bare_counts.get(&state.name).copied().unwrap_or(0) == 1 {
-                                        ctx.machine_ctor_registry.insert(
-                                            state.name.clone(),
-                                            (source_state_type.clone(), idx),
-                                        );
-                                    }
                                 }
                                 for (idx, event) in md.events.iter().enumerate() {
-                                    let qualified = format!("{}::{}", event_type_name, event.name);
-                                    ctx.machine_ctor_registry
-                                        .insert(qualified, (source_event_type.clone(), idx));
                                     let module_qualified = format!(
                                         "{source_module}.{event_type_name}::{}",
                                         event.name
                                     );
                                     ctx.machine_ctor_registry
                                         .insert(module_qualified, (source_event_type.clone(), idx));
-                                    if bare_counts.get(&event.name).copied().unwrap_or(0) == 1 {
-                                        ctx.machine_ctor_registry.insert(
-                                            event.name.clone(),
-                                            (source_event_type.clone(), idx),
-                                        );
-                                    }
                                 }
                             }
                             Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
@@ -2938,23 +2920,12 @@ pub fn lower_program_with_mono_cap(
                                 let mut variant_idx: usize = 0;
                                 for body_item in &td.body {
                                     if let TypeBodyItem::Variant(v) = body_item {
-                                        let qualified = format!("{}::{}", td.name, v.name);
-                                        ctx.machine_ctor_registry.insert(
-                                            qualified,
-                                            (source_enum_name.clone(), variant_idx),
-                                        );
                                         let module_qualified =
                                             format!("{source_module}.{}::{}", td.name, v.name);
                                         ctx.machine_ctor_registry.insert(
                                             module_qualified,
                                             (source_enum_name.clone(), variant_idx),
                                         );
-                                        if bare_counts.get(&v.name).copied().unwrap_or(0) == 1 {
-                                            ctx.machine_ctor_registry.insert(
-                                                v.name.clone(),
-                                                (source_enum_name.clone(), variant_idx),
-                                            );
-                                        }
                                         variant_idx += 1;
                                     }
                                 }
@@ -3166,23 +3137,14 @@ pub fn lower_program_with_mono_cap(
                             if decl.visibility.is_pub() && decl.kind == TypeDeclKind::Enum =>
                         {
                             let hir_decl = ctx.lower_type_decl(decl, span.clone());
+                            let canonical_name = format!("{source_module}.{}", hir_decl.name);
                             if !hir_decl.variants.is_empty() {
                                 ctx.enum_variants_by_name
-                                    .insert(hir_decl.name.clone(), hir_decl.variants.clone());
-                                ctx.enum_variants_by_name.insert(
-                                    format!("{source_module}.{}", hir_decl.name),
-                                    hir_decl.variants.clone(),
-                                );
+                                    .insert(canonical_name.clone(), hir_decl.variants.clone());
                             }
                             ctx.enum_type_params
-                                .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
-                            ctx.enum_type_params.insert(
-                                format!("{source_module}.{}", hir_decl.name),
-                                hir_decl.type_params.clone(),
-                            );
-                            ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
-                            ctx.enum_item_ids
-                                .insert(format!("{source_module}.{}", hir_decl.name), hir_decl.id);
+                                .insert(canonical_name.clone(), hir_decl.type_params.clone());
+                            ctx.enum_item_ids.insert(canonical_name, hir_decl.id);
                         }
                         Item::Machine(machine) if machine.visibility.is_pub() => {
                             ctx.register_machine_ctor_variant_metadata(
@@ -3301,8 +3263,6 @@ pub fn lower_program_with_mono_cap(
                                 qualified_entry.1 = close_method;
                             }
                             if !hir_decl.variants.is_empty() {
-                                ctx.enum_variants_by_name
-                                    .insert(hir_decl.name.clone(), hir_decl.variants.clone());
                                 ctx.enum_variants_by_name.insert(
                                     format!("{source_module}.{}", hir_decl.name),
                                     hir_decl.variants.clone(),
@@ -3320,13 +3280,10 @@ pub fn lower_program_with_mono_cap(
                             // layout then never registers and codegen-front
                             // fails closed with registration-mismatch).
                             if decl.kind == TypeDeclKind::Enum {
-                                ctx.enum_type_params
-                                    .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
                                 ctx.enum_type_params.insert(
                                     format!("{source_module}.{}", hir_decl.name),
                                     hir_decl.type_params.clone(),
                                 );
-                                ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
                                 ctx.enum_item_ids.insert(
                                     format!("{source_module}.{}", hir_decl.name),
                                     hir_decl.id,
@@ -3367,7 +3324,7 @@ pub fn lower_program_with_mono_cap(
                                 })
                                 .collect();
                             ctx.enum_variants_by_name
-                                .insert(md.name.clone(), state_variants);
+                                .insert(format!("{source_module}.{}", md.name), state_variants);
 
                             // Synthesise event companion variants under the
                             // `{Name}Event` key, matching the checker's
@@ -3396,8 +3353,10 @@ pub fn lower_program_with_mono_cap(
                                     }
                                 })
                                 .collect();
-                            ctx.enum_variants_by_name
-                                .insert(event_type_name, event_variants);
+                            ctx.enum_variants_by_name.insert(
+                                format!("{source_module}.{event_type_name}"),
+                                event_variants,
+                            );
                         }
                         // #2755: a type-decl the emission guard above excluded
                         // (a module-private generic struct — pub/enum/non-generic
@@ -11773,12 +11732,12 @@ impl LowerCtx {
                 }
             })
             .collect();
+        let state_type_name = module_short.map_or_else(
+            || decl.name.clone(),
+            |module| format!("{module}.{}", decl.name),
+        );
         self.enum_variants_by_name
-            .insert(decl.name.clone(), state_variants.clone());
-        if let Some(module_short) = module_short {
-            self.enum_variants_by_name
-                .insert(format!("{module_short}.{}", decl.name), state_variants);
-        }
+            .insert(state_type_name, state_variants);
 
         let event_type_name = format!("{}Event", decl.name);
         let event_variants: Vec<HirVariant> = decl
@@ -11802,12 +11761,11 @@ impl LowerCtx {
                 }
             })
             .collect();
+        let event_type_name = module_short.map_or(event_type_name.clone(), |module| {
+            format!("{module}.{event_type_name}")
+        });
         self.enum_variants_by_name
-            .insert(event_type_name.clone(), event_variants.clone());
-        if let Some(module_short) = module_short {
-            self.enum_variants_by_name
-                .insert(format!("{module_short}.{event_type_name}"), event_variants);
-        }
+            .insert(event_type_name, event_variants);
     }
 
     #[expect(
@@ -14598,7 +14556,7 @@ impl LowerCtx {
         let mut prelude = Vec::new();
         let mut had_error = false;
         let field_tys = self
-            .lookup_variant_ctor(ctor_name)
+            .lookup_variant_ctor(ctor_name, Some(scrutinee_ty))
             .map(|(type_name, _, kind)| match kind {
                 HirVariantKind::Tuple(field_tys) => {
                     let scrutinee_args = match scrutinee_ty {
@@ -14692,7 +14650,7 @@ impl LowerCtx {
         // Declared struct-variant fields in declaration order, with generic
         // type params substituted from the scrutinee's type args.
         let field_decls: Vec<(String, ResolvedTy)> = self
-            .lookup_variant_ctor(variant_name)
+            .lookup_variant_ctor(variant_name, Some(scrutinee_ty))
             .map(|(type_name, _, kind)| match kind {
                 HirVariantKind::Struct(field_decls) => {
                     let scrutinee_args = match scrutinee_ty {
@@ -15259,6 +15217,19 @@ impl LowerCtx {
     }
 
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
+        let lowered = self.lower_expr_without_root_fact(expr, intent);
+        self.record_produced_value_fact(&expr.1, &lowered);
+        lowered
+    }
+
+    /// Lower an authored expression while leaving its root occurrence for a
+    /// specialised caller to publish. Recursive child expressions still use
+    /// `lower_expr` and therefore retain their ordinary checker facts.
+    fn lower_expr_without_root_fact(
+        &mut self,
+        expr: &Spanned<Expr>,
+        intent: IntentKind,
+    ) -> HirExpr {
         let lowered = self.lower_expr_inner(expr, intent);
 
         // Function-tail Ok-coercion: the checker marked this tail expression's
@@ -15268,13 +15239,43 @@ impl LowerCtx {
         // function returns the declared `Result`. The marker is keyed by the
         // tail span and is set only at genuine tail positions, so this fires
         // exactly once per coerced tail and never on a non-tail sub-expression.
-        let lowered = if self.tail_ok_coercions.contains(&self.mk_key(&expr.1)) {
+        if self.tail_ok_coercions.contains(&self.mk_key(&expr.1)) {
             self.wrap_tail_ok(lowered, &expr.1)
         } else {
             lowered
+        }
+    }
+
+    /// Publish a synthetic expression root that deliberately has no checker
+    /// span identity of its own. Actor-lambda bodies can share the enclosing
+    /// spawn span, so consuming the spawn's fresh-handle fact for the body
+    /// would mint an owner of the wrong type. Bit-copy bodies are exactly
+    /// `NoOwner`; all other body roots fail closed as `Unknown` while their
+    /// authored child facts remain intact.
+    fn record_synthetic_body_fact(&mut self, span: &Span, lowered: &HirExpr) {
+        let key = self.mk_key(span);
+        self.produced_value_source_sites
+            .entry(key.clone())
+            .or_default()
+            .push(lowered.site);
+        self.produced_value_fact_keys
+            .insert(lowered.site, (key, Some(ProducedValueDependency::Leaf)));
+        let ownership = if lowered.value_class == ValueClass::BitCopy {
+            hew_types::ProducedValueOwnership::NoOwner
+        } else {
+            hew_types::ProducedValueOwnership::Unknown
         };
-        self.record_produced_value_fact(&expr.1, &lowered);
-        lowered
+        self.produced_value_fact_sites.insert(
+            lowered.site,
+            HirProducedValueFact {
+                producer: HirProducedValueProducer::classify(&lowered.kind),
+                ownership,
+                relation: HirProducedValueRelation::Leaf,
+                receiver: None,
+                receiver_boundary: None,
+                arguments: Vec::new(),
+            },
+        );
     }
 
     /// Project the checker fact for one parsed expression onto its stable HIR
@@ -15628,8 +15629,9 @@ impl LowerCtx {
                     // positionally) emits a structured diagnostic and falls
                     // through to the regular-call path so checker-stream
                     // coverage is preserved.
+                    let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
                     let variant_kind_for_call = self
-                        .lookup_variant_ctor(name)
+                        .lookup_variant_ctor(name, checker_ctor_ty.as_ref())
                         .map(|(_, _, kind)| kind.clone());
                     if let Some(HirVariantKind::Tuple(_)) = &variant_kind_for_call {
                         let taken = std::mem::take(&mut args);
@@ -15757,8 +15759,9 @@ impl LowerCtx {
                 // enum variant in `enum_variants_by_name`. Resolved before
                 // the machine-state path so a qualified `Shape::Box` is
                 // routed correctly even outside any machine body.
+                let checker_ctor_ty = self.checker_expr_ty_if_present(&span);
                 let enum_struct_variant = if let Some((type_name, variant_idx, kind)) =
-                    self.lookup_variant_ctor(name)
+                    self.lookup_variant_ctor(name, checker_ctor_ty.as_ref())
                 {
                     match kind {
                         HirVariantKind::Struct(_) => Some((type_name, variant_idx, kind.clone())),
@@ -18560,7 +18563,9 @@ impl LowerCtx {
         // prior value on exit.
         let my_self_id = self.current_actor_self.take();
         let lowered_body = self.with_current_return_type(reply_ty.clone(), |ctx| {
-            ctx.lower_expr(body, IntentKind::Read)
+            let body = ctx.lower_expr_without_root_fact(body, IntentKind::Read);
+            ctx.record_synthetic_body_fact(&body.span, &body);
+            body
         });
         self.current_actor_self = my_self_id;
         self.pop_scope();
@@ -20246,41 +20251,13 @@ impl LowerCtx {
         // unit ctors resolving correctly across builtin/user name collisions
         // without depending on registration-order races in the pre-pass.
         let key = self.mk_key(&span);
-        let checker_qualified = match self.expr_types.get(&key) {
-            Some(Ty::Named { name: n, .. }) => Some(format!("{n}::{name}")),
-            _ => None,
-        };
-        let registry_hit = self.machine_ctor_registry.get(name).cloned().or_else(|| {
-            checker_qualified
-                .as_deref()
-                .and_then(|q| self.machine_ctor_registry.get(q).cloned())
-        });
-        // Import-alias fallback: `Hue::Red` where "Hue" is an alias for
-        // "aliassrc.Color".  Resolve the prefix through `import_type_name_aliases`
-        // and retry with the canonical qualified key ("aliassrc.Color::Red").
-        let registry_hit = if registry_hit.is_none() {
-            if let Some(sep) = name.rfind("::") {
-                let prefix = &name[..sep];
-                let variant_part = &name[sep + 2..];
-                let canonical = self
-                    .import_type_name_aliases
-                    .get(&(self.current_module_name.clone(), prefix.to_string()))
-                    .cloned();
-                if let Some(canonical) = canonical {
-                    let canonical_key = format!("{canonical}::{variant_part}");
-                    self.machine_ctor_registry
-                        .get(&canonical_key)
-                        .cloned()
-                        .or(registry_hit)
-                } else {
-                    registry_hit
-                }
-            } else {
-                registry_hit
-            }
-        } else {
-            registry_hit
-        };
+        let checker_owner = self
+            .expr_types
+            .get(&key)
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok());
+        let registry_hit = self
+            .lookup_variant_ctor(name, checker_owner.as_ref())
+            .map(|(type_name, variant_idx, _)| (type_name, variant_idx));
         if let Some((tagged_union_name, variant_idx)) = registry_hit {
             let checker_agrees = match self.expr_types.get(&key) {
                 None => true,
@@ -24924,38 +24901,54 @@ impl LowerCtx {
             .find_map(|scope| scope.get(name).map(|(id, ty, _)| (*id, ty.clone())))
     }
 
-    /// Look up an enum variant constructor by surface name (bare or
-    /// qualified). Returns `(type_name, variant_idx, &HirVariantKind)` when
-    /// `name` resolves to a registered enum variant. `None` for unknown
-    /// names, machine-state names (whose layout lives in machine descriptors
-    /// rather than `enum_variants_by_name`), and registry hits that point at
-    /// an enum which somehow has no recorded variant at that index (should
-    /// never happen — same-source ordering invariant).
-    fn lookup_variant_ctor(&self, name: &str) -> Option<(String, usize, &HirVariantKind)> {
-        // Direct lookup first.
-        if let Some((type_name, idx)) = self.machine_ctor_registry.get(name) {
-            let variants = self.enum_variants_by_name.get(type_name)?;
-            let variant = variants.get(*idx)?;
-            return Some((type_name.clone(), *idx, &variant.kind));
+    /// Look up a tagged-union constructor using canonical owner identity.
+    ///
+    /// Imported declarations are registered only under module-qualified keys.
+    /// The checker-selected result/scrutinee type therefore wins over surface
+    /// spelling, then import aliases and the module currently being lowered are
+    /// considered. Direct lookup is last and is intentionally limited by the
+    /// registry producer to root-local and builtin short keys. This prevents
+    /// two imported modules that both declare `Shape::Box` from overwriting one
+    /// another through a process-global short key.
+    fn lookup_variant_ctor(
+        &self,
+        name: &str,
+        owner_ty: Option<&ResolvedTy>,
+    ) -> Option<(String, usize, &HirVariantKind)> {
+        let variant_name = name.rsplit_once("::").map_or(name, |(_, variant)| variant);
+        let mut candidates = Vec::with_capacity(5);
+        if let Some(ResolvedTy::Named { name: owner, .. }) = owner_ty {
+            candidates.push(format!("{owner}::{variant_name}"));
+            if !owner.contains('.') {
+                if let Some(module) = self.current_module_name.as_deref() {
+                    candidates.push(format!("{module}.{owner}::{variant_name}"));
+                }
+            }
         }
-        // Import-alias fallback: `Geo::Box` where "Geo" is an alias for
-        // "shapes.Shape".  The `machine_ctor_registry` has "shapes.Shape::Box"
-        // but not "Geo::Box".  Resolve the prefix through the alias table and
-        // retry with the canonical qualified key.
-        if let Some(sep) = name.find("::") {
-            let prefix = &name[..sep];
-            let variant_suffix = &name[sep..]; // includes the "::"
+        if let Some((prefix, variant)) = name.rsplit_once("::") {
             if let Some(canonical_prefix) = self
                 .import_type_name_aliases
                 .get(&(self.current_module_name.clone(), prefix.to_string()))
             {
-                let canonical_key = format!("{canonical_prefix}{variant_suffix}");
-                if let Some((type_name, idx)) = self.machine_ctor_registry.get(&canonical_key) {
-                    let variants = self.enum_variants_by_name.get(type_name)?;
-                    let variant = variants.get(*idx)?;
-                    return Some((type_name.clone(), *idx, &variant.kind));
-                }
+                candidates.push(format!("{canonical_prefix}::{variant}"));
             }
+            if let Some(module) = self.current_module_name.as_deref() {
+                candidates.push(format!("{module}.{name}"));
+            }
+        }
+        candidates.push(name.to_string());
+
+        for candidate in candidates {
+            let Some((type_name, idx)) = self.machine_ctor_registry.get(&candidate) else {
+                continue;
+            };
+            let Some(variants) = self.enum_variants_by_name.get(type_name) else {
+                continue;
+            };
+            let Some(variant) = variants.get(*idx) else {
+                continue;
+            };
+            return Some((type_name.clone(), *idx, &variant.kind));
         }
         None
     }
@@ -25844,7 +25837,10 @@ impl LowerCtx {
         args: Vec<HirExpr>,
         span: &std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((type_name, variant_idx, variant_kind)) = self.lookup_variant_ctor(name) else {
+        let checker_ctor_ty = self.checker_expr_ty_if_present(span);
+        let Some((type_name, variant_idx, variant_kind)) =
+            self.lookup_variant_ctor(name, checker_ctor_ty.as_ref())
+        else {
             unreachable!("lower_variant_ctor_tuple_call called without registry hit");
         };
         let HirVariantKind::Tuple(field_tys) = variant_kind else {
@@ -26394,7 +26390,7 @@ impl LowerCtx {
                 };
                 let result_ty = ResolvedTy::Named {
                     name: "Result".to_string(),
-                    args: vec![option_ty, timeout_error_ty],
+                    args: vec![option_ty.clone(), timeout_error_ty],
                     builtin: Some(BuiltinType::Result),
                     is_opaque: false,
                 };
@@ -26406,7 +26402,13 @@ impl LowerCtx {
                 // span in the checker's type map, which holds the pre-deadline
                 // plain type — so call _ty directly instead.
                 self.try_register_enum_instantiation_ty(&result_ty, span);
-                return HirExpr {
+                let source_anchor = self.produced_value_source_anchor(
+                    &await_inner.1,
+                    option_ty,
+                    intent,
+                    HirProducedValueProducer::ChannelRecvAwait,
+                );
+                let source = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     value_class,
@@ -26415,9 +26417,12 @@ impl LowerCtx {
                     kind: HirExprKind::ChannelRecvAwait {
                         receiver: Box::new(recv_expr),
                         deadline_ns: Some(deadline_ns),
+                        source_anchor,
                     },
-                    span: span.clone(),
+                    span: inner.1.clone(),
                 };
+                self.record_produced_value_fact(&inner.1, &source);
+                return source;
             }
             self.unsupported(
                 span.clone(),
@@ -26445,14 +26450,20 @@ impl LowerCtx {
                 };
                 let result_ty = ResolvedTy::Named {
                     name: "Result".to_string(),
-                    args: vec![option_ty, timeout_error_ty],
+                    args: vec![option_ty.clone(), timeout_error_ty],
                     builtin: Some(BuiltinType::Result),
                     is_opaque: false,
                 };
                 let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
                 // Same registration as ChannelRecvAwait above.
                 self.try_register_enum_instantiation_ty(&result_ty, span);
-                return HirExpr {
+                let source_anchor = self.produced_value_source_anchor(
+                    &await_inner.1,
+                    option_ty,
+                    intent,
+                    HirProducedValueProducer::StreamRecvAwait,
+                );
+                let source = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     value_class,
@@ -26461,9 +26472,12 @@ impl LowerCtx {
                     kind: HirExprKind::StreamRecvAwait {
                         stream: Box::new(stream_expr),
                         deadline_ns: Some(deadline_ns),
+                        source_anchor,
                     },
-                    span: span.clone(),
+                    span: inner.1.clone(),
                 };
+                self.record_produced_value_fact(&inner.1, &source);
+                return source;
             }
             self.unsupported(
                 span.clone(),
@@ -35350,36 +35364,59 @@ fn main() {}
     fn same_leaf_enum_aliases_keep_their_source_owners_in_both_import_orders() {
         use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
-        let alpha_source = r"pub enum Color { Red; AlphaOnly; }";
-        let beta_source = r"pub enum Color { Red; BetaOnly; }";
+        // Deliberately disagree on both ordinal and payload shape. A flat
+        // `Color::Red` registry key would make one import order diagnose the
+        // tuple call as a struct ctor and the other mis-tag the struct ctor.
+        let alpha_source = r"
+            pub enum Color { AlphaOnly; Red(i64); }
+            pub machine Switch {
+                events { AlphaTick; }
+                state Empty;
+                state Shared;
+                on AlphaTick: Empty => Empty;
+                on AlphaTick: Shared => Empty;
+            }
+        ";
+        let beta_source = r"
+            pub enum Color { Red { value: i64 }; BetaOnly; }
+            pub machine Switch {
+                events { BetaTick; }
+                state Shared;
+                state Full;
+                on BetaTick: Shared => Full;
+                on BetaTick: Full => Full reenter;
+            }
+        ";
         let root_with_alpha_first = r"
-            import hew::alpha::{ Color as Hue };
+            import hew::alpha::{ Color as Hue, Switch };
             import hew::beta::{ Color as Shade };
 
             fn alpha_value(value: Hue) -> i64 {
-                match value { Hue::Red => 1, Hue::AlphaOnly => 2 }
+                match value { Hue::AlphaOnly => 2, Hue::Red(v) => v }
             }
             fn beta_value(value: Shade) -> i64 {
-                match value { Shade::Red => 3, Shade::BetaOnly => 4 }
+                match value { Shade::Red { value } => value, Shade::BetaOnly => 4 }
             }
             fn main() {
-                println(alpha_value(Hue::Red));
-                println(beta_value(Shade::Red));
+                println(alpha_value(Hue::Red(11)));
+                println(beta_value(Shade::Red { value: 22 }));
+                let _switch = Switch::Shared;
             }
         ";
         let root_with_beta_first = r"
-            import hew::beta::{ Color as Shade };
+            import hew::beta::{ Color as Shade, Switch };
             import hew::alpha::{ Color as Hue };
 
             fn alpha_value(value: Hue) -> i64 {
-                match value { Hue::Red => 1, Hue::AlphaOnly => 2 }
+                match value { Hue::AlphaOnly => 2, Hue::Red(v) => v }
             }
             fn beta_value(value: Shade) -> i64 {
-                match value { Shade::Red => 3, Shade::BetaOnly => 4 }
+                match value { Shade::Red { value } => value, Shade::BetaOnly => 4 }
             }
             fn main() {
-                println(alpha_value(Hue::Red));
-                println(beta_value(Shade::Red));
+                println(alpha_value(Hue::Red(11)));
+                println(beta_value(Shade::Red { value: 22 }));
+                let _switch = Switch::Shared;
             }
         ";
 
@@ -35483,6 +35520,32 @@ fn main() {}
                 "same-leaf alias resolution must be owner-stable regardless of \
                  declaration order: {:#?}",
                 lowered.diagnostics
+            );
+            let dump = crate::dump_hir(&lowered.module);
+            assert!(
+                dump.contains("machine-variant-ctor hew.alpha.Color[1]"),
+                "tuple constructor must retain alpha's exact owner and ordinal: {dump}"
+            );
+            assert!(
+                dump.contains("machine-variant-ctor hew.beta.Color[0]"),
+                "struct constructor must retain beta's exact owner and ordinal: {dump}"
+            );
+            assert!(
+                !dump.contains("machine-variant-ctor Color["),
+                "imported constructors must never fall back to a legacy short owner: {dump}"
+            );
+            let expected_machine_ctor = if alpha_first_in_topo {
+                "machine-variant-ctor hew.alpha.Switch[1]"
+            } else {
+                "machine-variant-ctor hew.beta.Switch[0]"
+            };
+            assert!(
+                dump.contains(expected_machine_ctor),
+                "machine state must retain the selectively imported exact owner and ordinal: {dump}"
+            );
+            assert!(
+                !dump.contains("machine-variant-ctor Switch["),
+                "imported machine states must never use a legacy short owner: {dump}"
             );
         }
     }

@@ -5655,6 +5655,8 @@ fn make_test_fn_ctx<'a, 'ctx>(
         // Hand-built helper MIR carries no proven lifecycle identity, so it
         // keeps the fail-closed scheduler-domain requirement.
         actor_state_store_transaction: ActorStateStoreTransaction::Required,
+        actor_state_replacement_slots: RefCell::new(HashMap::new()),
+        alloca_prologue: entry,
         locals: HashMap::new(),
         local_tys: HashMap::new(),
         blocks: HashMap::new(),
@@ -13037,6 +13039,116 @@ fn suspendable_handler_fn(symbol: &str) -> RawMirFunction {
     }
 }
 
+fn suspendable_state_store_handler_fn(symbol: &str) -> RawMirFunction {
+    let ptr_ty = ResolvedTy::Pointer {
+        is_mutable: true,
+        pointee: Box::new(ResolvedTy::Unit),
+    };
+    RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: symbol.to_string(),
+        return_ty: ptr_ty,
+        call_conv: FunctionCallConv::ActorHandler,
+        params: vec![ResolvedTy::I64],
+        locals: vec![ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::EnterContext,
+                    Instr::ActorStateFieldStore {
+                        field_offset: FieldOffset(0),
+                        src: Place::Local(0),
+                        handoff: hew_mir::ActorStateStoreHandoff::ConsumeSource,
+                    },
+                ],
+                terminator: Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Suspend {
+                    resume: 2,
+                    cleanup: 2,
+                    is_final: true,
+                },
+            },
+            BasicBlock {
+                id: 2,
+                statements: Vec::new(),
+                instructions: vec![Instr::ExitContext],
+                terminator: Terminator::Return,
+            },
+        ],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    }
+}
+
+fn owned_string_state_store_handler_fn(symbol: &str) -> RawMirFunction {
+    RawMirFunction {
+        source_origin: hew_mir::SourceOrigin::Unknown,
+        name: symbol.to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::ActorHandler,
+        params: vec![ResolvedTy::String],
+        locals: vec![ResolvedTy::String],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![
+            BasicBlock {
+                id: 0,
+                statements: Vec::new(),
+                instructions: vec![
+                    Instr::EnterContext,
+                    Instr::ActorStateFieldStore {
+                        field_offset: FieldOffset(0),
+                        src: Place::Local(0),
+                        handoff: hew_mir::ActorStateStoreHandoff::ConsumeSource,
+                    },
+                    Instr::ExitContext,
+                ],
+                terminator: Terminator::Return,
+            },
+            // This disconnected trap block supplies the crash-only drop-plan
+            // authority for the incoming owner without adding a normal-return
+            // source drop after the state-store consumes it.
+            BasicBlock {
+                id: 1,
+                statements: Vec::new(),
+                instructions: vec![Instr::ExitContext],
+                terminator: Terminator::Trap {
+                    kind: hew_mir::TrapKind::IntegerOverflow,
+                },
+            },
+        ],
+        decisions: Vec::new(),
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: std::collections::BTreeMap::new(),
+    }
+}
+
 /// Build a context-bearing run-to-completion handler MIR function returning
 /// unit. bb0 enters the context, moves nothing into the (unit) return slot,
 /// exits the context, and returns. Carries NO `Terminator::Suspend`, so
@@ -13241,6 +13353,163 @@ fn dispatch_trampoline_drives_suspendable_handler() {
     module
         .verify()
         .unwrap_or_else(|e| panic!("suspend dispatch module failed verify: {e}"));
+}
+
+#[test]
+fn coroutine_state_replacement_scratch_stays_in_alloca_prologue() {
+    let ctx = Context::create();
+    let symbol = "SuspendStateActor__recv__work";
+    let mut layout = unit_suspendable_layout(symbol, 17);
+    layout.param_tys = vec![ResolvedTy::I64];
+    let mut pipeline = pipeline_with_actor_handlers(
+        "SuspendStateActor",
+        vec![(layout, suspendable_state_store_handler_fn(symbol))],
+    );
+    pipeline.actor_layouts[0].state_field_names = vec!["value".to_string()];
+    pipeline.actor_layouts[0].state_field_tys = vec![ResolvedTy::I64];
+    pipeline.actor_layouts[0].state_field_defaults = vec![None];
+    pipeline.actor_layouts[0].state_field_clone_kinds =
+        Some(vec![StateFieldCloneKind::BitCopy { size_bytes: 8 }]);
+    pipeline.actor_layouts[0].state_clone_fn_symbol =
+        Some("__hew_state_clone_SuspendStateActor".to_string());
+    pipeline.actor_layouts[0].state_drop_fn_symbol =
+        Some("__hew_state_drop_SuspendStateActor".to_string());
+    pipeline.record_layouts.push(RecordLayout {
+        name: "SuspendStateActor".to_string(),
+        field_tys: vec![ResolvedTy::I64],
+        field_names: vec!["value".to_string()],
+    });
+
+    let module = build_module(&ctx, &pipeline, "suspend_state_scratch")
+        .expect("suspendable state-store handler must build");
+    let ir = module.print_to_string().to_string();
+    let body = llvm_defined_function_body(&ir, symbol);
+    let prologue_start = body
+        .find("\nalloca.prologue:")
+        .unwrap_or_else(|| panic!("coroutine must carry an alloca.prologue:\n{body}"));
+    let coro_id = body
+        .find("@llvm.coro.id")
+        .unwrap_or_else(|| panic!("coroutine must initialize its coroutine id:\n{body}"));
+    let coro_begin = body
+        .find("@llvm.coro.begin")
+        .unwrap_or_else(|| panic!("coroutine must begin before its alloca prologue:\n{body}"));
+    assert!(
+        coro_id < coro_begin && coro_begin < prologue_start,
+        "coro.id and coro.begin must remain ordered in the real entry block before alloca.prologue:\n{body}"
+    );
+    let entry = &body[..prologue_start];
+    assert!(
+        entry.contains("@llvm.coro.id") && entry.contains("@llvm.coro.begin"),
+        "coro.id/coro.begin must remain in the real entry block:\n{body}"
+    );
+    assert!(
+        !entry.contains("state_f0_replacement"),
+        "replacement scratch must not precede coro.begin:\n{body}"
+    );
+    let prologue_tail = &body[prologue_start..];
+    let prologue_end = prologue_tail
+        .find("\nbb0:")
+        .unwrap_or_else(|| panic!("missing first MIR block after alloca prologue:\n{body}"));
+    let prologue = &prologue_tail[..prologue_end];
+    assert_eq!(
+        prologue
+            .matches("%state_f0_replacement = alloca i64")
+            .count(),
+        1,
+        "coroutine replacement scratch must be allocated once in alloca.prologue:\n{body}"
+    );
+    module
+        .verify()
+        .unwrap_or_else(|e| panic!("suspend state scratch module failed verify: {e}"));
+}
+
+#[test]
+fn owned_state_source_transfer_rejection_is_process_fatal_before_live_store() {
+    let ctx = Context::create();
+    let symbol = "OwnedStateActor__recv__replace";
+    let mut layout = unit_suspendable_layout(symbol, 23);
+    layout.param_tys = vec![ResolvedTy::String];
+    let mut pipeline = pipeline_with_actor_handlers(
+        "OwnedStateActor",
+        vec![(layout, owned_string_state_store_handler_fn(symbol))],
+    );
+    pipeline.actor_layouts[0].state_field_names = vec!["value".to_string()];
+    pipeline.actor_layouts[0].state_field_tys = vec![ResolvedTy::String];
+    pipeline.actor_layouts[0].state_field_defaults = vec![None];
+    pipeline.actor_layouts[0].state_field_clone_kinds = Some(vec![StateFieldCloneKind::String]);
+    pipeline.actor_layouts[0].state_clone_fn_symbol =
+        Some("__hew_state_clone_OwnedStateActor".to_string());
+    pipeline.actor_layouts[0].state_drop_fn_symbol =
+        Some("__hew_state_drop_OwnedStateActor".to_string());
+    pipeline.record_layouts.push(RecordLayout {
+        name: "OwnedStateActor".to_string(),
+        field_tys: vec![ResolvedTy::String],
+        field_names: vec!["value".to_string()],
+    });
+    pipeline
+        .elaborated_mir
+        .push(hew_mir::ElaboratedMirFunction {
+            name: symbol.to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: Vec::new(),
+            decisions: Vec::new(),
+            blocks: Vec::new(),
+            drop_plans: vec![(
+                hew_mir::ExitPath::Panic { block: 1 },
+                hew_mir::DropPlan {
+                    drops: vec![frame_cleanup_string_descriptor(Place::Local(0))],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: Vec::new(),
+        });
+
+    let module = build_module(&ctx, &pipeline, "owned_state_transfer")
+        .expect("owned state transfer module must build");
+    let ir = module.print_to_string().to_string();
+    let body = llvm_defined_function_body(&ir, symbol);
+    let begin = body
+        .find("@hew_dispatch_state_cleanup_begin_replace")
+        .expect("fatal begin-replace call");
+    let materialize_line = body
+        .lines()
+        .find(|line| line.contains("store ptr") && line.contains("ptr %state_f0_replacement"))
+        .unwrap_or_else(|| panic!("missing exact replacement materialization:\n{body}"));
+    let materialize = body
+        .find(materialize_line)
+        .expect("materialization line belongs to function body");
+    let old_release = body
+        .find("call void @hew_string_drop")
+        .expect("old state owner release");
+    let transfer = body
+        .find("@hew_dispatch_state_cleanup_prepare_transfer")
+        .expect("source-token replacement preparation");
+    let live_store_line = body
+        .lines()
+        .find(|line| line.contains("store ptr") && line.contains("%actor_state_field_0_ptr"))
+        .unwrap_or_else(|| panic!("missing live actor-state store:\n{body}"));
+    let live_store = body
+        .find(live_store_line)
+        .expect("live store line belongs to function body");
+    assert!(
+        begin < materialize
+            && materialize < old_release
+            && old_release < transfer
+            && transfer < live_store,
+        "token path must order begin < materialize < old release < prepare-transfer < live store:\n{body}"
+    );
+    let rejected = body
+        .find("state_f0_crash_prepare_transfer_rejected:")
+        .expect("explicit rejected-transfer block");
+    let rejected_tail = &body[rejected..];
+    assert!(
+        rejected_tail.contains("call void @hew_dispatch_state_cleanup_abort_invariant()")
+            && rejected_tail.contains("unreachable"),
+        "prepare-transfer false must terminate the process, never resume actor recovery:\n{body}"
+    );
+    module
+        .verify()
+        .unwrap_or_else(|e| panic!("owned state transfer module failed verify: {e}"));
 }
 
 /// A run-to-completion handler's trampoline arm is byte-identical to the

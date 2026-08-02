@@ -190,19 +190,24 @@ struct CrashCleanupRegistry {
     next_order: u64,
     /// Dispatch scopes additionally escrow the actor's complete state. The
     /// snapshot is kept structurally drop-safe across field updates by the
-    /// generated clear/publish hooks below; coroutine-frame registries leave
-    /// these fields null/zero.
+    /// generated begin/prepare transaction hooks below; coroutine-frame
+    /// registries leave these fields null/zero.
     state_source: *mut u8,
     state_snapshot: *mut u8,
     state_size: u64,
     state_align: u64,
     state_drop: Option<CrashCleanupThunk>,
     state_run_state: CrashCleanupRunState,
-    /// A generated field clear/publication has begun changing the escrow's
-    /// ownership shape. Once true, even a host-only caught Rust unwind cannot
-    /// return typed state authority to the original live wrapper: its field
-    /// bytes may already name a partially finalized value.
+    /// A generated field replacement transaction has begun changing the
+    /// escrow's ownership shape. Once true, even a host-only caught Rust unwind
+    /// cannot return typed state authority to the original live wrapper: its
+    /// field bytes may already name a partially finalized value.
     state_mutation_began: bool,
+    /// An actor-state overwrite has neutralized its old escrow field and may
+    /// be running a non-idempotent old-value finalizer. Hardware faults,
+    /// intentional traps, and unwind attempts in this interval are all
+    /// process-fatal; no actor recovery may abandon indeterminate authority.
+    state_finalizer_critical: bool,
 }
 
 /// Process-wide non-reusing crash-cleanup identity source.
@@ -1182,6 +1187,12 @@ pub(crate) unsafe fn finish_dispatch_crash_cleanup() -> bool {
     };
     // SAFETY: detachment gives this function sole registry access.
     let has_entries = unsafe { !(*registry).entries.is_empty() };
+    // A normal return after an unclosed non-idempotent finalizer phase is a
+    // compiler/runtime invariant failure, not a recoverable cleanup omission.
+    // SAFETY: detachment gives this function sole registry access.
+    if unsafe { (*registry).state_finalizer_critical } {
+        hew_dispatch_state_cleanup_abort_invariant();
+    }
     // SAFETY: normal return owns the original actor state and every lexical
     // value; discard escrow bytes only, never run typed drops.
     let faulted = unsafe { free_crash_cleanup_registry(registry, false, false) };
@@ -1221,6 +1232,13 @@ pub(crate) unsafe fn recover_dispatch_crash_cleanup_with_outcome(
     let Some(registry) = take_dispatch_crash_cleanup_registry() else {
         return DispatchCrashCleanupOutcome::default();
     };
+    // No failure may actor-recover from an indeterminate old-value finalizer.
+    // A rejected prepare call leaves the phase active; only a later successful
+    // exact-token preparation can close it.
+    // SAFETY: detachment transfers exclusive registry ownership here.
+    if unsafe { (*registry).state_finalizer_critical } {
+        hew_dispatch_state_cleanup_abort_invariant();
+    }
     // SAFETY: the registry has been detached from TLS and is exclusively ours.
     // A non-null state snapshot exists iff begin accepted a generated typed
     // state drop. Once its invocation begins it must never be retried, even if
@@ -1284,6 +1302,53 @@ fn dispatch_state_snapshot_range(
     })
 }
 
+unsafe fn reset_state_finalizer_critical(registry: *mut CrashCleanupRegistry) {
+    // SAFETY: callers hold exclusive active or detached registry authority.
+    if unsafe { (*registry).state_finalizer_critical } {
+        // Keep the signal-visible guard active until registry state is closed.
+        // SAFETY: callers hold exclusive active or detached registry authority.
+        unsafe { (*registry).state_finalizer_critical = false };
+        crate::signal::set_state_field_finalizer_active(false);
+    }
+}
+
+/// Enter the non-idempotent actor-state overwrite phase and neutralize the old
+/// escrow field before generated code begins its release ritual.
+///
+/// All validation precedes mutation. Once accepted, hardware faults,
+/// intentional Hew traps, and unwind attempts are process-fatal until
+/// prepare/prepare-transfer establishes replacement escrow authority.
+///
+/// # Safety
+///
+/// `field..field+size` must be a live field range in the current actor state.
+#[no_mangle]
+pub unsafe extern "C" fn hew_dispatch_state_cleanup_begin_replace(
+    field: *mut c_void,
+    size: u64,
+) -> bool {
+    let Some((registry, _source, snapshot, size)) = dispatch_state_snapshot_range(field, size)
+    else {
+        return false;
+    };
+    // SAFETY: range validation returned the exclusively active registry.
+    if unsafe { (*registry).state_finalizer_critical } {
+        return false;
+    }
+    // Publish the process-fatal phase before changing typed escrow bytes.
+    crate::signal::set_state_field_finalizer_active(true);
+    // SAFETY: no fallible work remains after the signal-visible phase begins.
+    unsafe {
+        (*registry).state_finalizer_critical = true;
+        (*registry).state_mutation_began = true;
+    }
+    if !snapshot.is_null() {
+        // SAFETY: range validation proved `size` writable snapshot bytes.
+        unsafe { ptr::write_bytes(snapshot, 0, size) };
+    }
+    true
+}
+
 /// Remove one actor-state field from the crash escrow before its old-value
 /// release/overwrite begins. Zero is the generated state-drop spine's neutral
 /// representation for every owned state leaf (pointer handles and recursively
@@ -1313,52 +1378,82 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_clear(field: *mut c_void, si
     true
 }
 
-/// Publish a fully initialized replacement field into the crash escrow.
+/// Prepare a fully initialized replacement field in crash escrow before the
+/// corresponding live actor-state store becomes observable.
 ///
 /// # Safety
 ///
-/// `field..field+size` must be a fully initialized live field range within the
-/// actor state named by the current dispatch cleanup scope.
+/// `replacement..replacement+size` must contain the exact initialized bytes
+/// that generated code will subsequently store into `field`; the field range
+/// must belong to the current dispatch cleanup scope.
 #[no_mangle]
-pub unsafe extern "C" fn hew_dispatch_state_cleanup_publish(field: *mut c_void, size: u64) -> bool {
-    let Some((registry, source, snapshot, size)) = dispatch_state_snapshot_range(field, size)
-    else {
-        return false;
-    };
-    if snapshot.is_null() {
-        return true;
+pub unsafe extern "C" fn hew_dispatch_state_cleanup_prepare(
+    replacement: *const c_void,
+    field: *mut c_void,
+    size: u64,
+) {
+    if replacement.is_null() {
+        hew_dispatch_state_cleanup_abort_invariant();
     }
-    // Publication mutates typed escrow authority just as clear does. Mark it
-    // before copying so every subsequent false-recovery consumes this snapshot.
+    let Some((registry, _source, snapshot, size)) = dispatch_state_snapshot_range(field, size)
+    else {
+        hew_dispatch_state_cleanup_abort_invariant();
+    };
+    // SAFETY: range validation returned the exclusively active registry.
+    if unsafe { !(*registry).state_finalizer_critical } {
+        hew_dispatch_state_cleanup_abort_invariant();
+    }
+    // Preparation replaces the neutralized escrow field with the incoming owner
+    // after generated code releases the old live field and before it exposes the
+    // replacement through the live store. Mark it before copying so a fault
+    // during this copy remains process-fatal instead of consuming partial bytes.
     // SAFETY: range validation returned the active registry exclusively owned
     // by this dispatch.
     unsafe { (*registry).state_mutation_began = true };
-    // SAFETY: range validation proved equal readable/writable field ranges.
-    unsafe { ptr::copy_nonoverlapping(source, snapshot, size) };
-    true
+    if !snapshot.is_null() {
+        // SAFETY: caller guarantees the initialized replacement range and range
+        // validation proved the snapshot destination range.
+        unsafe { ptr::copy_nonoverlapping(replacement.cast::<u8>(), snapshot, size) };
+    }
+    // Replacement escrow is authoritative before the process-fatal phase is
+    // relaxed. SAFETY: registry remains exclusively active.
+    unsafe { reset_state_finalizer_critical(registry) };
 }
 
-/// Transfer one active lexical cleanup token into an initialized actor-state
-/// field and publish the same bytes into the state crash escrow.
+/// Terminate on an impossible post-begin actor-state transaction mismatch.
+/// Actor recovery would leak an untracked materialized replacement on the
+/// no-source path, so this boundary must never degrade to cooperative panic.
+#[cold]
+#[no_mangle]
+pub extern "C" fn hew_dispatch_state_cleanup_abort_invariant() -> ! {
+    eprintln!("hew: actor-state cleanup preparation invariant failed");
+    std::process::abort();
+}
+
+/// Prepare an actor-state replacement from one active lexical cleanup token
+/// before the corresponding live store becomes observable.
 ///
 /// Validation is completed before either authority changes. On `false`, the
 /// source token remains active and the escrow is untouched. After validation,
-/// deactivation plus the in-process byte copy contain no cooperative panic
-/// edge, so a `true` result is one indivisible ownership publication.
+/// the escrow holds the exact replacement bytes and the lexical token is
+/// inactive, so recovery has one typed authority before and after the live
+/// store.
 ///
 /// # Safety
 ///
-/// `token` must name the initialized source owner whose bytes were just stored
-/// into `field`; `field..field+size` must lie within the current dispatch's
-/// live actor state.
+/// `token` must name `owner_source`, the initialized lexical owner being
+/// consumed. `replacement..replacement+size` must contain the exact bytes
+/// generated code will subsequently store into `field`; it may differ from
+/// `owner_source` after borrow-gated materialization.
 #[no_mangle]
-pub unsafe extern "C" fn hew_dispatch_state_cleanup_transfer(
+pub unsafe extern "C" fn hew_dispatch_state_cleanup_prepare_transfer(
     token: u64,
-    source: *mut c_void,
+    owner_source: *mut c_void,
+    replacement: *const c_void,
     field: *mut c_void,
     size: u64,
 ) -> bool {
-    if token == 0 || token == CRASH_CLEANUP_ARM_FAILED {
+    if token == 0 || token == CRASH_CLEANUP_ARM_FAILED || replacement.is_null() {
         return false;
     }
     let Some((state_registry, _source, snapshot, size)) =
@@ -1366,6 +1461,11 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_transfer(
     else {
         return false;
     };
+    // SAFETY: range validation returned the exclusively active registry. A
+    // transfer outside the begun replace phase is a compiler/runtime mismatch.
+    if unsafe { !(*state_registry).state_finalizer_critical } {
+        return false;
+    }
     let Some((registry, owner_frame)) = current_crash_cleanup_registry() else {
         return false;
     };
@@ -1383,24 +1483,27 @@ pub unsafe extern "C" fn hew_dispatch_state_cleanup_transfer(
     if entry.owner_registry != registry
         || entry.owner_frame != owner_frame
         || !entry.active
-        || entry.slot != source
+        || entry.slot != owner_source
         || usize::try_from(entry.size).ok() != Some(size)
     {
         return false;
     }
 
-    // All validation precedes authority mutation. The following flag write and
-    // memcpy neither allocate nor call generated/user code.
+    // All validation precedes authority mutation. The following flag write,
+    // memcpy, and source deactivation call no generated/user code.
     if !snapshot.is_null() {
         // SAFETY: range validation returned the active state registry, and all
         // source-token validation completed before this authority mutation.
         unsafe { (*state_registry).state_mutation_began = true };
+        // SAFETY: caller guarantees the initialized replacement range;
+        // dispatch_state_snapshot_range proved the destination range.
+        unsafe { ptr::copy_nonoverlapping(replacement.cast::<u8>(), snapshot, size) };
     }
+    // Commit lexical handoff only after the replacement bytes are prepared.
     entry.active = false;
-    if !snapshot.is_null() {
-        // SAFETY: dispatch_state_snapshot_range proved equal valid ranges.
-        unsafe { ptr::copy_nonoverlapping(field.cast::<u8>(), snapshot, size) };
-    }
+    // Escrow now owns the replacement and the lexical source is inactive.
+    // SAFETY: state_registry remains exclusively active.
+    unsafe { reset_state_finalizer_critical(state_registry) };
     true
 }
 
@@ -2120,8 +2223,9 @@ mod tests {
         // SAFETY: the field range is valid; absence of a dispatch registry is
         // the condition under test and must fail before any access/mutation.
         assert!(!unsafe {
-            hew_dispatch_state_cleanup_transfer(
+            hew_dispatch_state_cleanup_prepare_transfer(
                 1,
+                ptr::from_mut(&mut field).cast(),
                 ptr::from_mut(&mut field).cast(),
                 ptr::from_mut(&mut field).cast(),
                 size_of::<u64>() as u64,
@@ -2134,6 +2238,7 @@ mod tests {
         let _ = take_crash_cleanup_test_drops();
         let mut state = 90_u64;
         let mut source = 91_u64;
+        let mut replacement = 92_u64;
         // SAFETY: both initialized u64 slots remain live through recovery; the
         // transaction is exercised with forged token/range inputs before the
         // one valid authority handoff.
@@ -2154,38 +2259,46 @@ mod tests {
             );
             assert_ne!(token, 0);
             assert_ne!(token, CRASH_CLEANUP_ARM_FAILED);
-            state = source;
-
-            assert!(!hew_dispatch_state_cleanup_transfer(
+            assert!(hew_dispatch_state_cleanup_begin_replace(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<u64>() as u64,
+            ));
+            assert!(!hew_dispatch_state_cleanup_prepare_transfer(
                 token.wrapping_add(1),
                 ptr::from_mut(&mut source).cast(),
+                ptr::from_mut(&mut replacement).cast(),
                 ptr::from_mut(&mut state).cast(),
                 size_of::<u64>() as u64,
             ));
             let outside = ptr::from_mut(&mut state)
                 .cast::<u8>()
                 .wrapping_add(size_of::<u64>());
-            assert!(!hew_dispatch_state_cleanup_transfer(
+            assert!(!hew_dispatch_state_cleanup_prepare_transfer(
                 token,
                 ptr::from_mut(&mut source).cast(),
+                ptr::from_mut(&mut replacement).cast(),
                 outside.cast(),
                 size_of::<u64>() as u64,
             ));
 
             // Both rejected validations left the source active, so the same
             // token can still complete the one valid transfer.
-            assert!(hew_dispatch_state_cleanup_transfer(
+            assert!(hew_dispatch_state_cleanup_prepare_transfer(
                 token,
                 ptr::from_mut(&mut source).cast(),
+                ptr::from_mut(&mut replacement).cast(),
                 ptr::from_mut(&mut state).cast(),
                 size_of::<u64>() as u64,
             ));
+            // Counterfactual async crash window: the live state still contains
+            // its stale old bytes. Prepared escrow must nevertheless own and
+            // drop the actual replacement, while the lexical token is inactive.
             assert!(recover_dispatch_crash_cleanup(true));
         }
         assert_eq!(
             take_crash_cleanup_test_drops(),
-            [91],
-            "only the published state owner drops after the source transfer"
+            [92],
+            "pre-store token handoff must drop the materialized replacement, not the stale state or source bytes"
         );
     }
 
@@ -2198,7 +2311,11 @@ mod tests {
         // SAFETY: all test slots are initialized and remain live through the
         // rejected forged transfer and final authoritative recovery.
         unsafe {
-            assert!(begin_dispatch_crash_cleanup(ptr::null_mut(), 0, None));
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<u64>(),
+                Some(record_u64_state_cleanup),
+            ));
             let intended_token = hew_cont_crash_cleanup_arm(
                 0,
                 ptr::from_mut(&mut intended).cast(),
@@ -2219,13 +2336,27 @@ mod tests {
             );
             assert_ne!(intended_token, CRASH_CLEANUP_ARM_FAILED);
             assert_ne!(forged_token, CRASH_CLEANUP_ARM_FAILED);
-            assert!(!hew_dispatch_state_cleanup_transfer(
+            assert!(hew_dispatch_state_cleanup_begin_replace(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<u64>() as u64,
+            ));
+            assert!(!hew_dispatch_state_cleanup_prepare_transfer(
                 forged_token,
+                ptr::from_mut(&mut intended).cast(),
                 ptr::from_mut(&mut intended).cast(),
                 ptr::from_mut(&mut state).cast(),
                 size_of::<u64>() as u64,
             ));
-            assert!(recover_dispatch_crash_cleanup(false));
+            // The rejected call mutated nothing, so the intended token can
+            // still complete preparation and close the critical phase.
+            assert!(hew_dispatch_state_cleanup_prepare_transfer(
+                intended_token,
+                ptr::from_mut(&mut intended).cast(),
+                ptr::from_mut(&mut intended).cast(),
+                ptr::from_mut(&mut state).cast(),
+                size_of::<u64>() as u64,
+            ));
+            assert!(recover_dispatch_crash_cleanup(true));
         }
         assert_eq!(
             take_crash_cleanup_test_drops(),
@@ -2270,12 +2401,9 @@ mod tests {
                 ptr::from_mut(&mut field).cast(),
                 size_of::<u64>() as u64,
             ));
-            assert!(!hew_dispatch_state_cleanup_publish(
-                ptr::from_mut(&mut field).cast(),
-                size_of::<u64>() as u64,
-            ));
-            assert!(!hew_dispatch_state_cleanup_transfer(
+            assert!(!hew_dispatch_state_cleanup_prepare_transfer(
                 1,
+                ptr::from_mut(&mut field).cast(),
                 ptr::from_mut(&mut field).cast(),
                 ptr::from_mut(&mut field).cast(),
                 size_of::<u64>() as u64,
@@ -2340,37 +2468,76 @@ mod tests {
     }
 
     #[test]
-    fn actor_state_escrow_publishes_replacement_only_after_valid_store() {
+    fn actor_state_escrow_prepares_no_source_owner_before_live_store() {
         let _ = take_crash_cleanup_test_drops();
         let mut state = CrashStatePair {
             updated: Box::into_raw(Box::new(71)),
             sibling: Box::into_raw(Box::new(72)),
         };
+        let stale_old = state.updated;
+        let replacement = Box::into_raw(Box::new(73));
         // SAFETY: the initialized state remains live through matching recovery;
-        // each raw Box owner is transferred or released exactly once below.
+        // prepared escrow owns replacement while the stale live field is raw.
         unsafe {
             assert!(begin_dispatch_crash_cleanup(
                 ptr::from_mut(&mut state).cast(),
                 size_of::<CrashStatePair>(),
                 Some(drop_crash_state_pair),
             ));
-            assert!(hew_dispatch_state_cleanup_clear(
+            assert!(hew_dispatch_state_cleanup_begin_replace(
                 ptr::from_mut(&mut state.updated).cast(),
                 size_of::<*mut u64>() as u64,
             ));
-            // Model the ordinary old-value release before the fully initialized
-            // replacement store.
-            drop(Box::from_raw(state.updated));
-            state.updated = Box::into_raw(Box::new(73));
-            assert!(hew_dispatch_state_cleanup_publish(
+            // Old release completes under the fatal critical phase.
+            drop(Box::from_raw(stale_old));
+            hew_dispatch_state_cleanup_prepare(
+                std::ptr::from_ref(&replacement).cast(),
                 ptr::from_mut(&mut state.updated).cast(),
                 size_of::<*mut u64>() as u64,
-            ));
+            );
+            // Counterfactual async actor crash immediately before the store.
             assert!(recover_dispatch_crash_cleanup(true));
         }
         assert_eq!(
             take_crash_cleanup_test_drops(),
             [73, 72],
+            "pre-store no-source preparation must release the new owner and sibling exactly once"
+        );
+    }
+
+    #[test]
+    fn actor_state_escrow_keeps_prepared_owner_after_live_store() {
+        let _ = take_crash_cleanup_test_drops();
+        let mut state = CrashStatePair {
+            updated: Box::into_raw(Box::new(74)),
+            sibling: Box::into_raw(Box::new(75)),
+        };
+        let replacement = Box::into_raw(Box::new(76));
+        // SAFETY: old live ownership is released before the store; prepared
+        // escrow remains the crash authority for the replacement afterward.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<CrashStatePair>(),
+                Some(drop_crash_state_pair),
+            ));
+            assert!(hew_dispatch_state_cleanup_begin_replace(
+                ptr::from_mut(&mut state.updated).cast(),
+                size_of::<*mut u64>() as u64,
+            ));
+            drop(Box::from_raw(state.updated));
+            hew_dispatch_state_cleanup_prepare(
+                std::ptr::from_ref(&replacement).cast(),
+                ptr::from_mut(&mut state.updated).cast(),
+                size_of::<*mut u64>() as u64,
+            );
+            state.updated = replacement;
+            assert_eq!(state.updated, replacement);
+            assert!(recover_dispatch_crash_cleanup(true));
+        }
+        assert_eq!(
+            take_crash_cleanup_test_drops(),
+            [76, 75],
             "post-store crash must release the new field and untouched sibling exactly once"
         );
     }
@@ -2382,20 +2549,32 @@ mod tests {
             updated: Box::into_raw(Box::new(81)),
             sibling: Box::into_raw(Box::new(82)),
         };
-        // SAFETY: the initialized state remains live through matching finish,
-        // after which ordinary teardown is its sole drop authority.
+        let replacement = Box::into_raw(Box::new(83));
+        // SAFETY: the initialized state remains live through prepare/store and
+        // matching finish, after which ordinary teardown is sole authority.
         unsafe {
             assert!(begin_dispatch_crash_cleanup(
                 ptr::from_mut(&mut state).cast(),
                 size_of::<CrashStatePair>(),
                 Some(drop_crash_state_pair),
             ));
+            assert!(hew_dispatch_state_cleanup_begin_replace(
+                ptr::from_mut(&mut state.updated).cast(),
+                size_of::<*mut u64>() as u64,
+            ));
+            drop(Box::from_raw(state.updated));
+            hew_dispatch_state_cleanup_prepare(
+                std::ptr::from_ref(&replacement).cast(),
+                ptr::from_mut(&mut state.updated).cast(),
+                size_of::<*mut u64>() as u64,
+            );
+            state.updated = replacement;
             assert!(finish_dispatch_crash_cleanup());
             assert!(take_crash_cleanup_test_drops().is_empty());
             // Normal actor teardown remains the sole typed owner.
             drop_crash_state_pair(ptr::from_mut(&mut state).cast());
         }
-        assert_eq!(take_crash_cleanup_test_drops(), [81, 82]);
+        assert_eq!(take_crash_cleanup_test_drops(), [83, 82]);
     }
 
     #[test]
@@ -2631,6 +2810,112 @@ mod tests {
             "cleanup SIGSEGV must _exit instead of longjmp across the drain; stderr:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[cfg_attr(
+        miri,
+        ignore = "spawns subprocesses that raise SIGSEGV/SIGABRT; Miri has no native signal handler"
+    )]
+    fn state_field_finalizer_phase_is_fatal_for_hardware_and_direct_traps() {
+        use std::os::unix::process::ExitStatusExt;
+
+        const HELPER: &str = "cont::tests::_helper_state_field_finalizer_phase_is_process_fatal";
+        let hardware = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture", HELPER])
+            .env("RUST_TEST_THREADS", "1")
+            .env("HEW_STATE_FINALIZER_FATAL_TEST", "hardware")
+            .output()
+            .expect("spawn state-finalizer hardware-fault helper");
+        assert_eq!(
+            hardware.status.code(),
+            Some(128 + libc::SIGSEGV),
+            "hardware fault in pre-release phase must _exit, not actor-longjmp; stderr:\n{}",
+            String::from_utf8_lossy(&hardware.stderr)
+        );
+
+        let direct = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture", HELPER])
+            .env("RUST_TEST_THREADS", "1")
+            .env("HEW_STATE_FINALIZER_FATAL_TEST", "direct")
+            .output()
+            .expect("spawn state-finalizer direct-trap helper");
+        assert_eq!(
+            direct.status.signal(),
+            Some(libc::SIGABRT),
+            "intentional Hew panic in pre-release phase must abort, not actor-longjmp; stderr:\n{}",
+            String::from_utf8_lossy(&direct.stderr)
+        );
+
+        let prepare_failure = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture", HELPER])
+            .env("RUST_TEST_THREADS", "1")
+            .env("HEW_STATE_FINALIZER_FATAL_TEST", "prepare_failure")
+            .output()
+            .expect("spawn state-finalizer no-source prepare-failure helper");
+        assert_eq!(
+            prepare_failure.status.signal(),
+            Some(libc::SIGABRT),
+            "post-begin no-source validation failure must abort, not actor-recover; stderr:\n{}",
+            String::from_utf8_lossy(&prepare_failure.stderr)
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn _helper_state_field_finalizer_phase_is_process_fatal() {
+        let Some(mode) = std::env::var_os("HEW_STATE_FINALIZER_FATAL_TEST") else {
+            return;
+        };
+        crate::signal::init_crash_handling();
+        crate::signal::init_worker_recovery(u32::MAX);
+        // Install a valid actor recovery target. Surviving via longjmp returns
+        // the sentinel 77, making both counterfactuals distinguishable from the
+        // required process-fatal disposition.
+        // SAFETY: null actor/message are accepted test metadata.
+        let jmp_buf =
+            unsafe { crate::signal::prepare_dispatch_recovery(ptr::null_mut(), ptr::null_mut()) };
+        assert!(!jmp_buf.is_null());
+        // SAFETY: the helper frame remains live until the child terminates.
+        if unsafe { crate::signal::sigsetjmp(jmp_buf, 1) } != 0 {
+            std::process::exit(77);
+        }
+        crate::signal::mark_recovery_active();
+
+        let mut state = 19_u64;
+        // SAFETY: state remains live and begin_replace validates its exact range
+        // before publishing the fatal phase.
+        unsafe {
+            assert!(begin_dispatch_crash_cleanup(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<u64>(),
+                Some(record_u64_state_cleanup),
+            ));
+            assert!(hew_dispatch_state_cleanup_begin_replace(
+                ptr::from_mut(&mut state).cast(),
+                size_of::<u64>() as u64,
+            ));
+        }
+        match mode.to_str() {
+            Some("hardware") => {
+                // SAFETY: intentional death-test signal.
+                unsafe { libc::raise(libc::SIGSEGV) };
+            }
+            Some("prepare_failure") => {
+                // SAFETY: null replacement deliberately exercises the
+                // process-fatal post-begin no-source invariant boundary.
+                unsafe {
+                    hew_dispatch_state_cleanup_prepare(
+                        ptr::null(),
+                        ptr::from_mut(&mut state).cast(),
+                        size_of::<u64>() as u64,
+                    );
+                }
+            }
+            _ => crate::actor::hew_panic(),
+        }
+        std::process::exit(78);
     }
 
     #[test]

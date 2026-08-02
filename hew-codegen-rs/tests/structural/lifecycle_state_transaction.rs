@@ -214,13 +214,34 @@ fn lifecycle_ir_skips_only_state_transaction_hooks_and_keeps_exact_releases() {
     ] {
         let body = function_body(&ir, symbol);
         assert!(
-            body.contains("@hew_dispatch_state_cleanup_clear("),
-            "required receive/system store must clear its transactional escrow before overwrite\n{body}"
+            body.contains("@hew_dispatch_state_cleanup_begin_replace("),
+            "required receive/system store must enter its transactional finalizer phase before overwrite\n{body}"
         );
         assert!(
-            body.contains("@hew_dispatch_state_cleanup_transfer(")
-                || body.contains("@hew_dispatch_state_cleanup_publish("),
-            "required receive/system store must validate transfer/publication into its transactional escrow\n{body}"
+            body.contains("@hew_dispatch_state_cleanup_prepare_transfer(")
+                || body.contains("@hew_dispatch_state_cleanup_prepare("),
+            "required receive/system store must prepare transfer/publication before its live write\n{body}"
+        );
+        assert!(
+            !body.contains("@hew_dispatch_state_cleanup_clear("),
+            "state-store lowering must use the fatal begin-replace transaction, not a recoverable standalone clear\n{body}"
+        );
+        let begin = body
+            .find("@hew_dispatch_state_cleanup_begin_replace(")
+            .expect("begin replace call");
+        let release = body
+            .find("call void @hew_vec_free")
+            .expect("old Vec release");
+        let prepare = body
+            .find("@hew_dispatch_state_cleanup_prepare_transfer(")
+            .or_else(|| body.find("@hew_dispatch_state_cleanup_prepare("))
+            .expect("replacement prepare call");
+        let live_store = body
+            .rfind("ptr %actor_state_field_0_ptr")
+            .expect("final actor-state field store");
+        assert!(
+            begin < release && release < prepare && prepare < live_store,
+            "required ordering is fatal begin < old release < replacement prepare < live store\n{body}"
         );
         assert_eq!(
             vec_release_calls(body),

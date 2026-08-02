@@ -1298,9 +1298,11 @@ codegen-stable = [
   "hew_observe_probe_suspend",
   "hew_observe_probe_turn",
   "hew_dealloc",
+  "hew_dispatch_state_cleanup_abort_invariant",
+  "hew_dispatch_state_cleanup_begin_replace",
   "hew_dispatch_state_cleanup_clear",
-  "hew_dispatch_state_cleanup_publish",
-  "hew_dispatch_state_cleanup_transfer",
+  "hew_dispatch_state_cleanup_prepare",
+  "hew_dispatch_state_cleanup_prepare_transfer",
   "hew_dyn_box_alloc",
   "hew_dyn_box_free",
   "hew_gen_coro_destroy",
@@ -3204,16 +3206,30 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
-symbol = "hew_dispatch_state_cleanup_publish"
+symbol = "hew_dispatch_state_cleanup_begin_replace"
 result = "none"
 params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
-symbol = "hew_dispatch_state_cleanup_transfer"
+symbol = "hew_dispatch_state_cleanup_prepare"
 result = "none"
-params = ["borrow", "borrow", "borrow", "borrow"]
+params = ["borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dispatch_state_cleanup_prepare_transfer"
+result = "none"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_dispatch_state_cleanup_abort_invariant"
+result = "none"
+params = []
 release-symbol = ""
 discharge-depth = "none"
 

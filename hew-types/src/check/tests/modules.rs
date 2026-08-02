@@ -157,6 +157,14 @@ fn canonical_std_module_binding_projects_bare_enum_identity_without_leaf_retry()
         "compatibility and canonical registrations of one declaration are not ambiguous"
     );
 
+    checker.local_type_defs.insert("NetError".to_string());
+    assert_eq!(
+        checker.canonical_nominal_name("NetError"),
+        None,
+        "a local same-leaf enum wins even when the imported owner is otherwise unique"
+    );
+    checker.local_type_defs.remove("NetError");
+
     checker.module_import_bindings.insert(
         (Some("std.net.tls".to_string()), "sibling".to_string()),
         "acme.net".to_string(),

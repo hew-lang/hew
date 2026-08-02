@@ -100,14 +100,15 @@ use self::cfg_util::{
 };
 #[cfg(not(test))]
 use self::composite_own::{
-    apply_escaped_record_sibling_field_drops, derive_consumed_local_aggregate_member_bindings,
-    derive_enum_composite_drop_allowed, derive_local_bytes_drop_allowed,
-    derive_local_collection_drop_allowed, derive_owned_record_drop_allowed,
-    derive_returned_aggregate_member_bindings, derive_returned_member_transfer_blocks,
-    derive_spawn_consumed_handle_bindings, derive_tuple_composite_drop_allowed,
-    detect_actor_state_handle_consume, detect_actor_state_resource_overwrite,
-    detect_builtin_handle_record_field_overwrite, detect_opaque_resource_field_misuse,
-    detect_unproven_aggregate_handle_double_free,
+    apply_escaped_record_sibling_field_drops,
+    derive_borrowed_builtin_handle_projection_alias_bindings,
+    derive_consumed_local_aggregate_member_bindings, derive_enum_composite_drop_allowed,
+    derive_local_bytes_drop_allowed, derive_local_collection_drop_allowed,
+    derive_owned_record_drop_allowed, derive_returned_aggregate_member_bindings,
+    derive_returned_member_transfer_blocks, derive_spawn_consumed_handle_bindings,
+    derive_tuple_composite_drop_allowed, detect_actor_state_handle_consume,
+    detect_actor_state_resource_overwrite, detect_builtin_handle_record_field_overwrite,
+    detect_opaque_resource_field_misuse, detect_unproven_aggregate_handle_double_free,
 };
 #[cfg(not(test))]
 use self::consts::{
@@ -5728,6 +5729,22 @@ pub(crate) fn lower_function(
     let mut source_excluded = returned_aggregate_members;
     source_excluded.extend(consumed_local_aggregate_members);
     source_excluded.extend(spawn_consumed_handle_members);
+    // A no-retain payload/field projection of a builtin handle is a borrow of
+    // the still-live aggregate owner, not a fresh close authority. The same
+    // typed set suppresses its affine drop during elaboration. A real move-out
+    // carries `NeutralizePayloadSlot`, which removes projection taint and keeps
+    // the destination as the sole owner instead.
+    let projection_alias_tainted = compute_projection_alias_taint(
+        &raw.blocks,
+        &builder.match_project_consumed_binder_locals,
+        &builder.fresh_variant_payload_binder_locals,
+        &builder.locals,
+    );
+    source_excluded.extend(derive_borrowed_builtin_handle_projection_alias_bindings(
+        &builder.binding_locals,
+        &builder.locals,
+        &projection_alias_tainted,
+    ));
     let alias_field_binders = builder.alias_owner_field_binders();
     let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &raw.blocks,

@@ -871,6 +871,46 @@ fn monitor_registration_resource_close_elaborates_scope_exit_drop() {
     );
 }
 
+/// A generator extracted from a returned tuple is a transferred projection:
+/// the tuple slot is neutralized before the handle is re-packed and consumed.
+/// The MIR obligation model must count that as one owner moving through the
+/// chain, never as a retained second owner.
+#[test]
+fn generator_projection_transfer_repack_stays_one_owner() {
+    let pipeline = lower_source(
+        r"
+        gen fn count() -> i64 { yield 1; yield 2; yield 3 }
+
+        fn make() -> (Generator<i64, ()>, i64) {
+            let g = count();
+            return (g, 0);
+        }
+
+        fn main() {
+            let pair = make();
+            let g = pair.0;
+            let repacked = (g, 99);
+            var total = 0;
+            for n in repacked.0 {
+                total = total + n;
+            }
+            println(total);
+        }
+        ",
+    );
+    assert!(
+        !pipeline.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            MirDiagnosticKind::ObligationUnderReleased { .. }
+                | MirDiagnosticKind::ObligationOverReleased { .. }
+                | MirDiagnosticKind::OwnedHandleAggregateExtractionUnsupported { .. }
+        )),
+        "a neutralized generator projection/repack is one transferred owner:\n{}\ndiagnostics: {:#?}",
+        hew_mir::dump_mir(&pipeline, hew_mir::DumpStage::Raw),
+        pipeline.diagnostics
+    );
+}
+
 /// #1933 — a `#[resource]` consumed on ONE branch of an `if` (live on the
 /// fall-through) reaches the function's single exit at dataflow state
 /// `MaybeConsumed`. The binding must STAY in the scope-exit drop set there

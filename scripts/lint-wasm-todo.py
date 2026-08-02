@@ -51,6 +51,12 @@ DESCRIPTIVE_LINES = {
         {
             "/// WASM-TODO backlog rows — one per row of the backlog table.",
             "/// A WASM-TODO backlog row.",
+            'CheckerDisposition::Todo => "WASM-TODO (not checker-gated)".to_string(),',
+        }
+    ),
+    "hew-capability-gen/tests/authority.rs": frozenset(
+        {
+            '"WASM-TODO(changed-supervision):",',
         }
     ),
     "hew-capability-gen/tests/row_count.rs": frozenset(

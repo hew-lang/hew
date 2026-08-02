@@ -135,8 +135,6 @@ pub fn link_executable(
     // from the compile-time host `#[cfg]` world.
     let plan = target.native_link_plan();
 
-    let hew_lib = find_hew_lib(target.hew_lib_name(), target.normalized_triple())?;
-
     // Prevent output paths starting with '-' from being interpreted as cc flags
     let safe_output = if output_path.starts_with('-') {
         format!("./{output_path}")
@@ -196,6 +194,18 @@ pub fn link_executable(
     let sanitize_address = std::env::var_os("HEW_SANITIZE_ADDRESS").as_deref()
         == Some(std::ffi::OsStr::new("1"))
         && compiler.program == "clang";
+
+    // Instrumented builds deliberately rebuild `libhew.a` in the compiler's
+    // matching Cargo profile. Normal linking prefers the shipped release-lib
+    // archive, but that can silently select an uninstrumented sibling and
+    // produce a green-running binary with no coverage counters or sanitizer.
+    // Prefer the matching-profile archive for either instrumentation mode,
+    // then retain the normal installed/release candidates as fallbacks.
+    let hew_lib = find_hew_lib(
+        target.hew_lib_name(),
+        target.normalized_triple(),
+        coverage_instrument || sanitize_address,
+    )?;
 
     let mut cmd = std::process::Command::new(compiler.program);
 
@@ -806,6 +816,7 @@ fn hew_lib_candidates(
     exe_dir: &std::path::Path,
     name: &str,
     triple: &str,
+    prefer_matching_profile: bool,
 ) -> Vec<std::path::PathBuf> {
     let cargo_profiles: &[&str] = match exe_dir.file_name().and_then(|name| name.to_str()) {
         // A debug compiler normally has a matching debug archive. Keep the
@@ -815,12 +826,24 @@ fn hew_lib_candidates(
         _ => &[],
     };
 
-    let mut candidates = vec![
+    let mut candidates = Vec::new();
+    if prefer_matching_profile {
+        // Cross-target Cargo output first, then the host-profile archive next
+        // to the compiler (`target/debug/hew` + `target/debug/libhew.a`).
+        // These are the two locations `cargo build -p hew-lib` can populate
+        // for the profile that built this compiler.
+        if let (Some(target_dir), Some(profile)) = (exe_dir.parent(), cargo_profiles.first()) {
+            candidates.push(target_dir.join(triple).join(profile).join(name));
+        }
+        candidates.push(exe_dir.join(name));
+    }
+
+    candidates.extend([
         // Installed target-aware layouts.
         exe_dir.join("../lib").join(triple).join(name),
         exe_dir.join("../lib/hew").join(triple).join(name), // /usr/lib/hew/<triple>/
         exe_dir.join("../lib64/hew").join(triple).join(name), // /usr/lib64/hew/<triple>/
-    ];
+    ]);
 
     // Cargo places a cross-target archive under the same target root as the
     // compiler binary: <target-dir>/<triple>/<profile>/<archive>. This must be
@@ -914,10 +937,10 @@ fn unresolved_hew_wasm_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
 }
 
 /// Resolves the combined runtime + stdlib archive for the link line.
-fn find_hew_lib(name: &str, triple: &str) -> Result<String, String> {
+fn find_hew_lib(name: &str, triple: &str, prefer_matching_profile: bool) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
-    let candidates = hew_lib_candidates(exe_dir, name, triple);
+    let candidates = hew_lib_candidates(exe_dir, name, triple, prefer_matching_profile);
 
     for c in &candidates {
         if c.exists() {
@@ -1981,7 +2004,7 @@ mod tests {
 
     #[test]
     fn find_hew_lib_nonexistent_returns_error() {
-        let result = find_hew_lib("nonexistent_lib_xyz.a", "aarch64-apple-darwin");
+        let result = find_hew_lib("nonexistent_lib_xyz.a", "aarch64-apple-darwin", false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("cannot find nonexistent_lib_xyz.a"));
@@ -1991,7 +2014,7 @@ mod tests {
     #[test]
     fn hew_lib_candidates_prioritize_target_specific_installed_paths() {
         let exe_dir = std::path::Path::new("/opt/hew/bin");
-        let candidates = hew_lib_candidates(exe_dir, "libhew.a", "aarch64-apple-darwin");
+        let candidates = hew_lib_candidates(exe_dir, "libhew.a", "aarch64-apple-darwin", false);
         let expected: Vec<_> = [
             "/opt/hew/bin/../lib/aarch64-apple-darwin/libhew.a",
             "/opt/hew/bin/../lib/hew/aarch64-apple-darwin/libhew.a",
@@ -2007,6 +2030,52 @@ mod tests {
     }
 
     #[test]
+    fn coverage_candidates_prefer_the_compilers_matching_cargo_profile() {
+        let exe_dir = std::path::Path::new("/repo/target/debug");
+        let candidates = hew_lib_candidates(exe_dir, "libhew.a", "aarch64-apple-darwin", true);
+
+        assert_eq!(
+            candidates[0],
+            std::path::PathBuf::from("/repo/target/aarch64-apple-darwin/debug/libhew.a")
+        );
+        assert_eq!(
+            candidates[1],
+            std::path::PathBuf::from("/repo/target/debug/libhew.a")
+        );
+        let release_lib = candidates
+            .iter()
+            .position(|candidate| candidate.ends_with("target/release-lib/libhew.a"))
+            .expect("release-lib fallback remains available");
+        assert!(
+            release_lib > 1,
+            "coverage must not let an uninstrumented release-lib shadow the matching debug archive"
+        );
+    }
+
+    #[test]
+    fn asan_candidates_prefer_the_compilers_matching_cargo_profile() {
+        let exe_dir = std::path::Path::new("/repo/target/debug");
+        let candidates = hew_lib_candidates(exe_dir, "libhew.a", "aarch64-apple-darwin", true);
+
+        assert_eq!(
+            candidates[0],
+            std::path::PathBuf::from("/repo/target/aarch64-apple-darwin/debug/libhew.a")
+        );
+        assert_eq!(
+            candidates[1],
+            std::path::PathBuf::from("/repo/target/debug/libhew.a")
+        );
+        let release_lib = candidates
+            .iter()
+            .position(|candidate| candidate.ends_with("target/release-lib/libhew.a"))
+            .expect("release-lib fallback remains available");
+        assert!(
+            release_lib > 1,
+            "ASan must not let an uninstrumented release-lib shadow the matching debug archive"
+        );
+    }
+
+    #[test]
     fn hew_lib_candidates_prefer_release_lib_over_stale_release() {
         // The shipped archive builds under `[profile.release-lib]` (non-LTO).
         // A plain `cargo build --release` still leaves a fat-LTO archive in
@@ -2019,7 +2088,7 @@ mod tests {
             ("hew.lib", "x86_64-pc-windows-msvc"),
         ] {
             let exe_dir = std::path::Path::new("/repo/target/debug");
-            let candidates = hew_lib_candidates(exe_dir, name, triple);
+            let candidates = hew_lib_candidates(exe_dir, name, triple, false);
             let position = |suffix: String| {
                 candidates
                     .iter()
@@ -2054,7 +2123,7 @@ mod tests {
     #[test]
     fn hew_lib_candidates_probe_cargo_target_triple_dirs_before_host_fallbacks() {
         let exe_dir = std::path::Path::new("/repo/target/debug");
-        let candidates = hew_lib_candidates(exe_dir, "hew.lib", "x86_64-pc-windows-msvc");
+        let candidates = hew_lib_candidates(exe_dir, "hew.lib", "x86_64-pc-windows-msvc", false);
         let cross_release = std::path::PathBuf::from(
             "/repo/target/debug/../../target/x86_64-pc-windows-msvc/release/hew.lib",
         );
@@ -2082,7 +2151,7 @@ mod tests {
     fn hew_lib_candidates_follow_an_external_cargo_target_dir() {
         let exe_dir = std::path::Path::new("/scratch/cargo-out/debug");
         let triple = "aarch64-unknown-linux-gnu";
-        let candidates = hew_lib_candidates(exe_dir, "libhew.a", triple);
+        let candidates = hew_lib_candidates(exe_dir, "libhew.a", triple, false);
         let cross_debug =
             std::path::PathBuf::from("/scratch/cargo-out/aarch64-unknown-linux-gnu/debug/libhew.a");
         let host_debug = std::path::PathBuf::from("/scratch/cargo-out/debug/libhew.a");
